@@ -40,7 +40,8 @@ const [
   usageStatsRepository,
   accountQualityRepository,
   accountQualityFailurePrecheckService,
-  cooldownRetestService
+  cooldownRetestService,
+  { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -54,7 +55,8 @@ const [
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/account-quality.repository.js'),
   import('../../modules/background/account-quality-failure-precheck.service.js'),
-  import('../../modules/background/cooldown-account-retest.service.js')
+  import('../../modules/background/cooldown-account-retest.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface MockUpstreamState {
@@ -63,6 +65,7 @@ interface MockUpstreamState {
 }
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const regressionModel = 'gpt-5.5'
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
@@ -77,7 +80,8 @@ try {
     updateSystemSettingsForTest({
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
-      defaultTemporaryUnschedulableMinutes: 5
+      defaultTemporaryUnschedulableMinutes: 5,
+      noAvailableAccountWaitTimeoutSeconds: 10
     })
     gatewayCache.clearGatewayRuntimeCache()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -102,8 +106,11 @@ try {
       },
       groupId: group.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      supportedModels: [regressionModel],
+      healthCheckModel: regressionModel
     }, access)
+    activateFixtureAccount(account.id)
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量 mock AI Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -116,9 +123,11 @@ try {
     const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
     for (let index = 0; index < 5; index += 1) {
+      const hitsBeforeRequest = upstreamState.hits
       const response = await requestChatCompletion(baseUrl, apiKey.key, `mock upstream 504 ${index}`)
-      assert.equal(response.status, 503, `单账号上游 504 用尽候选后应返回网关 503，实际 HTTP ${response.status}: ${response.text}`)
-      assert.match(response.text, /没有可用的上游账户/, `网关失败响应应说明没有可用上游账户：${response.text}`)
+      assert.equal(response.status, 504, `通用 POST 完整收到上游 504 后应保持不透明响应，实际 HTTP ${response.status}: ${response.text}`)
+      assert.match(response.text, /mock_upstream_504/, `通用 POST 应保留完整上游错误契约：${response.text}`)
+      assert.equal(upstreamState.hits, hitsBeforeRequest + 1, `第 ${index + 1} 次质量失败请求必须真实命中 mock 上游：${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
     assert.equal(upstreamState.hits, 5, 'mock 上游应收到 5 次真实失败请求')
@@ -143,7 +152,7 @@ try {
     assert.equal(listed.qualityRecentRequestCount, 6, '账户列表应返回真实聚合的近窗口请求数')
     assert.equal(listed.qualityRecentErrorCount, 5, '账户列表应返回真实聚合的近窗口失败数')
     assert.equal(Math.round((listed.qualityRecentSuccessRate ?? 0) * 100), 17, '账户列表应返回真实聚合的近窗口成功率')
-    assert.match(listed.qualityLastErrorMessage ?? '', /mock upstream 504/, '账户列表应返回 mock 上游最后失败原因')
+    assert.equal(listed.qualityLastErrorMessage, undefined, '通用不透明上游正文不应复制到账号质量错误文案')
 
     const capacityGroup = repositories.createGroup({
       name: '状态质量本地容量失败 mock AI 分组',
@@ -162,8 +171,11 @@ try {
       groupId: capacityGroup.id,
       status: 'active',
       schedulable: true,
-      concurrencyLimit: 1
+      concurrencyLimit: 1,
+      supportedModels: [regressionModel],
+      healthCheckModel: regressionModel
     }, access)
+    activateFixtureAccount(capacityAccount.id)
     const capacityApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量本地容量失败 mock AI Key',
       groupBindings: [{ groupId: capacityGroup.id, priority: 1, status: 'active' }],
@@ -178,7 +190,7 @@ try {
       for (let index = 0; index < 5; index += 1) {
         const response = await requestChatCompletion(baseUrl, capacityApiKey.key, `local capacity saturated ${index}`)
         assert.equal(response.status, 503, `账号并发满应由网关返回 503，实际 HTTP ${response.status}: ${response.text}`)
-        assert.match(response.text, /并发已达到上限|没有可用的上游账户/, `账号并发满响应应保留容量失败原因：${response.text}`)
+        assert.match(response.text, /upstream_retryable_error/, `账号并发满响应应返回统一脱敏可重试错误：${response.text}`)
         accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
       }
     } finally {
@@ -225,8 +237,11 @@ try {
       },
       groupId: abortGroup.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      supportedModels: [regressionModel],
+      healthCheckModel: regressionModel
     }, access)
+    activateFixtureAccount(abortAccount.id)
     const abortApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量客户端断开 mock AI Key',
       groupBindings: [{ groupId: abortGroup.id, priority: 1, status: 'active' }],
@@ -274,8 +289,11 @@ try {
       },
       groupId: failureGroup.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      supportedModels: [regressionModel],
+      healthCheckModel: regressionModel
     }, access)
+    activateFixtureAccount(failureAccount.id)
     const failureApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '状态质量确认失败 mock AI Key',
       groupBindings: [{ groupId: failureGroup.id, priority: 1, status: 'active' }],
@@ -286,7 +304,7 @@ try {
     const failureHitsBefore = upstreamState.hits
     for (let index = 0; index < 5; index += 1) {
       const response = await requestChatCompletion(baseUrl, failureApiKey.key, `mock precheck failure ${index}`)
-      assert.equal(response.status, 503, `频繁失败确认前置请求应由 mock 上游失败触发网关 503，实际 HTTP ${response.status}: ${response.text}`)
+      assert.equal(response.status, 504, `频繁失败确认前置请求应保留完整上游 504，实际 HTTP ${response.status}: ${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
     assert.equal(upstreamState.hits - failureHitsBefore, 5, '频繁失败确认账号应收到 5 次真实 mock 上游失败请求')
@@ -333,8 +351,8 @@ try {
     await closeServer(upstreamServer)
   }
 } finally {
+  await closeSqliteReadWorkerPool().catch(() => undefined)
   try {
-    databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
@@ -399,6 +417,15 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
   })
 }
 
+function activateFixtureAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `Mock AI 测试账户 ${accountId} 应能通过健康检查激活`)
+}
+
 async function requestChatCompletion(baseUrl: string, apiKey: string, content: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -407,7 +434,7 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, content: s
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'gpt-5.5',
+      model: regressionModel,
       messages: [{ role: 'user', content }],
       stream: false
     })
@@ -432,7 +459,7 @@ async function requestAndAbortAfterUpstreamHit(
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'gpt-5.5',
+      model: regressionModel,
       messages: [{ role: 'user', content }],
       stream: false
     }),
