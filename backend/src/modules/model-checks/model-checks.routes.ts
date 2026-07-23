@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
@@ -12,6 +12,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
 import {
   getModelCheckOptions,
+  listModelCheckAccountOptions,
   getModelCheckRun,
   listModelCheckRunPage,
   ModelCheckRequestError,
@@ -83,6 +84,46 @@ modelChecksRouter.get('/options', (req, res, next) => {
     next(error)
   }
 })
+
+modelChecksRouter.get('/account-options', handleModelCheckAccountOptions)
+modelChecksRouter.get('/options/accounts', handleModelCheckAccountOptions)
+
+async function handleModelCheckAccountOptions(req: Request, res: Response, next: NextFunction) {
+  const purpose = req.query.purpose
+  if (purpose !== 'run' && purpose !== 'history') {
+    res.status(400).json(badRequest('模型检测账户选项 purpose 仅支持 run 或 history'))
+    return
+  }
+  if (req.query.keyword !== undefined && (typeof req.query.keyword !== 'string' || req.query.keyword.trim().length > 100)) {
+    res.status(400).json(badRequest('模型检测账户选项 keyword 无效'))
+    return
+  }
+  const keyword = typeof req.query.keyword === 'string' ? req.query.keyword.trim() || undefined : undefined
+  const limitRaw = req.query.limit
+  const limit = limitRaw === undefined ? 50 : Number(limitRaw)
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    res.status(400).json(badRequest('模型检测账户选项 limit 必须是 1 到 50 的整数'))
+    return
+  }
+  const bareSelected = req.query.selectedIds
+  const bracketSelected = req.query['selectedIds[]']
+  if (bareSelected !== undefined && bracketSelected !== undefined) {
+    res.status(400).json(badRequest('模型检测账户选项 selectedIds 无效'))
+    return
+  }
+  const rawSelected = bareSelected ?? bracketSelected
+  const selectedValues = Array.isArray(rawSelected) ? rawSelected : rawSelected === undefined ? [] : [rawSelected]
+  if (selectedValues.some((value) => typeof value !== 'string' || !value.trim() || value.trim().length > 120 || /[,[\]]/.test(value)) || selectedValues.length > 20) {
+    res.status(400).json(badRequest('模型检测账户选项 selectedIds 无效'))
+    return
+  }
+  try {
+    const values = await listModelCheckAccountOptions(getRequestAccessScope(req.query.systemAccountId), { purpose, keyword, selectedIds: selectedValues as string[], limit })
+    res.json(ok(values))
+  } catch (error) {
+    next(error)
+  }
+}
 
 modelChecksRouter.get('/run/active', (req, res, next) => {
   try {

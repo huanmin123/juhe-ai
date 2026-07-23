@@ -66,6 +66,7 @@ try {
 
   const teamA = repositories.createSystemTeam({ name: '授权分页团队A' }, adminAccess)
   const teamB = repositories.createSystemTeam({ name: '授权分页团队B' }, adminAccess)
+  repositories.addSystemTeamMembers(teamB.id, { systemAccountIds: [granteeA.id] }, adminAccess)
   const group = repositories.createGroup({
     name: '授权分页分组',
     providerCode: 'gpt',
@@ -157,40 +158,55 @@ try {
     lastUsedAt: '2026-01-01T00:03:00.000Z'
   })
 
-  const teamPageOne = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, ownerAccess, range, { page: 1, pageSize: 1 })
+  const teamPageOne = authorizationUsageRepository.getAuthorizationTeamUsageRows({}, ownerAccess, range, { page: 1, pageSize: 1 })
   assert.equal(teamPageOne.rows.length, 1, '团队消耗第一页应只返回当前页窗口')
   assert.equal(teamPageOne.rows[0]?.teamId, teamA.id, '团队消耗第一页应按成本排序返回第一行')
   assert.equal(teamPageOne.rows[0]?.resourceName, account.name, '团队消耗页只应为当前页行补资源名称')
-  assert.equal(teamPageOne.summary.requestCount, 50, '团队消耗摘要应来自摘要窗口行')
-  assert.equal(teamPageOne.teamCount, 2, '团队消耗团队数应来自窗口表 distinct 统计')
+  assert.deepEqual(Object.keys(teamPageOne).sort(), ['hasMore', 'page', 'pageSize', 'range', 'rows', 'total'].sort(), '团队 rows result 必须保持严格字段白名单')
+  assert.deepEqual(Object.keys(teamPageOne.rows[0] ?? {}).sort(), [
+    'accountOwnerSystemAccountId', 'accountOwnerSystemAccountName', 'id', 'lastUsedAt', 'resourceId',
+    'resourceName', 'resourceType', 'teamId', 'teamName', 'usage'
+  ].sort(), '团队 row 只能返回展示与跳转需要的字段')
+  assert.deepEqual(Object.keys(teamPageOne.rows[0]?.usage ?? {}).sort(), ['requestCount', 'totalCost', 'totalTokens'].sort(), '团队 row usage 必须保持三字段窄投影')
   assert.equal(teamPageOne.page, 1, '团队消耗第一页页码应稳定返回')
   assert.equal(teamPageOne.pageSize, 1, '团队消耗第一页 pageSize 应稳定返回')
   assert.equal(teamPageOne.total, 2, '团队消耗第一页分页上界 total 应覆盖当前页和下一页')
   assert.equal(teamPageOne.hasMore, true, '团队消耗第一页应标记还有下一页')
+  const teamSummary = authorizationUsageRepository.getAuthorizationTeamUsageSummary({}, ownerAccess, range)
+  assert.equal(teamSummary.summary.requestCount, 50, '独立团队摘要必须精确读取摘要窗口，不能累加明细窗口')
+  assert.deepEqual(Object.keys(teamSummary.summary).sort(), ['cacheWriteTokens', 'inputTokens', 'lastUsedAt', 'requestCount', 'totalCost', 'totalTokens'].sort(), '团队 summary 必须保持页面消费的六字段窄投影')
 
-  const teamPageTwo = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, ownerAccess, range, { page: 2, pageSize: 1 })
+  const teamPageTwo = authorizationUsageRepository.getAuthorizationTeamUsageRows({}, ownerAccess, range, { page: 2, pageSize: 1 })
   assert.equal(teamPageTwo.rows.length, 1, '团队消耗第二页应只返回当前页窗口')
   assert.equal(teamPageTwo.rows[0]?.teamId, teamB.id, '团队消耗第二页应返回下一行')
   assert.equal(teamPageTwo.total, 2, '团队消耗第二页分页上界 total 应保持已知总量')
   assert.equal(teamPageTwo.hasMore, false, '团队消耗第二页应标记没有更多')
 
-  const adminTeamPage = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, adminOwnerAccess, range, { page: 1, pageSize: 1 })
+  const adminTeamPage = authorizationUsageRepository.getAuthorizationTeamUsageRows({}, adminOwnerAccess, range, { page: 1, pageSize: 1 })
   assert.equal(adminTeamPage.rows[0]?.teamId, teamA.id, '管理侧指定资源归属用户时应读取同一分页窗口')
 
-  const userPageOne = authorizationUsageRepository.getAuthorizationUserUsageOverview({}, ownerAccess, range, { page: 1, pageSize: 1 })
+  const userPageOne = authorizationUsageRepository.getAuthorizationUserUsageRows({}, ownerAccess, range, { page: 1, pageSize: 1 })
   assert.equal(userPageOne.rows.length, 1, '用户消耗第一页应只返回当前页窗口')
-  assert.equal(userPageOne.rows[0]?.systemAccountId, granteeA.id, '用户消耗第一页应按成本排序返回第一行')
+  assert.equal(userPageOne.rows[0]?.userName, granteeA.displayName, '用户消耗第一页应按成本排序返回第一行')
   assert.equal(userPageOne.rows[0]?.resourceName, account.name, '用户消耗页只应为当前页行补资源名称')
-  assert.equal(userPageOne.summary.requestCount, 70, '用户消耗摘要应来自摘要窗口行')
-  assert.equal(userPageOne.userCount, 2, '用户消耗用户数应来自窗口表 distinct 统计')
+  assert.deepEqual(userPageOne.rows[0]?.teamNames, [], '未筛团队时不得泄露被授权用户当前所属的其他团队名称')
+  assert.deepEqual(Object.keys(userPageOne).sort(), ['hasMore', 'page', 'pageSize', 'range', 'rows', 'total'].sort(), '用户 rows result 必须保持严格字段白名单')
+  assert.deepEqual(Object.keys(userPageOne.rows[0] ?? {}).sort(), [
+    'accountOwnerSystemAccountName', 'id', 'lastUsedAt', 'resourceName', 'resourceType',
+    'teamNames', 'usage', 'userName', 'username'
+  ].sort(), '用户 row 只能返回页面实际需要的字段')
+  assert.deepEqual(Object.keys(userPageOne.rows[0]?.usage ?? {}).sort(), ['requestCount', 'totalCost', 'totalTokens'].sort(), '用户 row usage 必须保持三字段窄投影')
   assert.equal(userPageOne.page, 1, '用户消耗第一页页码应稳定返回')
   assert.equal(userPageOne.pageSize, 1, '用户消耗第一页 pageSize 应稳定返回')
   assert.equal(userPageOne.total, 2, '用户消耗第一页分页上界 total 应覆盖当前页和下一页')
   assert.equal(userPageOne.hasMore, true, '用户消耗第一页应标记还有下一页')
+  const userSummary = authorizationUsageRepository.getAuthorizationUserUsageSummary({}, ownerAccess, range)
+  assert.equal(userSummary.summary.requestCount, 70, '独立用户摘要必须精确读取摘要窗口，不能累加明细窗口')
+  assert.deepEqual(Object.keys(userSummary.summary).sort(), ['cacheWriteTokens', 'inputTokens', 'lastUsedAt', 'requestCount', 'totalCost', 'totalTokens'].sort(), '用户 summary 必须保持页面消费的六字段窄投影')
 
-  const userPageTwo = authorizationUsageRepository.getAuthorizationUserUsageOverview({}, ownerAccess, range, { page: 2, pageSize: 1 })
+  const userPageTwo = authorizationUsageRepository.getAuthorizationUserUsageRows({}, ownerAccess, range, { page: 2, pageSize: 1 })
   assert.equal(userPageTwo.rows.length, 1, '用户消耗第二页应只返回当前页窗口')
-  assert.equal(userPageTwo.rows[0]?.systemAccountId, granteeB.id, '用户消耗第二页应返回下一行')
+  assert.equal(userPageTwo.rows[0]?.userName, granteeB.displayName, '用户消耗第二页应返回下一行')
   assert.equal(userPageTwo.total, 2, '用户消耗第二页分页上界 total 应保持已知总量')
   assert.equal(userPageTwo.hasMore, false, '用户消耗第二页应标记没有更多')
 

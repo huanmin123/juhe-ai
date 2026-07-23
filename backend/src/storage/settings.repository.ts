@@ -83,6 +83,16 @@ type SettingValidator = (value: unknown, key: string) => unknown
 
 const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
+export const managementSettingsSectionCatalog = {
+  brand: { domain: 'global', keys: globalSettingKeys },
+  'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
+  'account-health': { domain: 'system', keys: ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'] as const },
+  'api-rate-limit': { domain: 'system', keys: ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'] as const },
+  'account-test': { domain: 'system', keys: ['accountTestTaskConcurrency'] as const },
+  'cooldown-retest': { domain: 'system', keys: ['cooldownAccountRetestMaxBackoffHours'] as const },
+  'data-retention': { domain: 'system', keys: ['usageRecordRetentionDays', 'runtimeLogIndexRetentionDays', 'publicApiLogRetentionDays'] as const }
+} as const
+export type ManagementSettingsSectionKey = keyof typeof managementSettingsSectionCatalog
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
@@ -208,6 +218,95 @@ export async function listGlobalSettingsAsync(): Promise<Record<string, unknown>
     : await loadGlobalSettingsFromDatabaseAsync()
   await setGlobalSettingsCacheAsync(settings)
   return { ...settings }
+}
+
+export function getManagementSettingsSectionReadOnly(sectionKey: ManagementSettingsSectionKey): Record<string, unknown> {
+  const section = managementSettingsSectionCatalog[sectionKey]
+  const table = section.domain === 'global' ? 'global_settings' : 'system_settings'
+  const where = section.domain === 'global'
+    ? `key IN (${sqlPlaceholders(section.keys.length)})`
+    : `system_account_id = ? AND key IN (${sqlPlaceholders(section.keys.length)})`
+  const params = section.domain === 'global' ? [...section.keys] : [SYSTEM_SETTINGS_ACCOUNT_ID, ...section.keys]
+  const rows = getBusinessDatabase().prepare(`SELECT key, value_json FROM ${table} WHERE ${where} ORDER BY key ASC`).all(...params) as Array<{ key: string; value_json: string }>
+  const values: Record<string, unknown> = {}
+  for (const row of rows) {
+    values[row.key] = section.domain === 'global'
+      ? normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
+      : normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(values, section.keys, `${sectionKey} 设置`)
+  return values
+}
+
+export async function getManagementSettingsSectionAsync(sectionKey: ManagementSettingsSectionKey): Promise<Record<string, unknown>> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return await requestSqliteReadWorker({ type: 'get_management_settings_section_read_only', sectionKey })
+  }
+  const section = managementSettingsSectionCatalog[sectionKey]
+  const client = await getSettingsDatabaseClient()
+  const placeholders = client.dialect.bindPlaceholders(section.keys.length)
+  const table = settingsTable(client, section.domain === 'global' ? 'global_settings' : 'system_settings')
+  const where = section.domain === 'global'
+    ? `key IN (${placeholders})`
+    : `system_account_id = ? AND key IN (${placeholders})`
+  const params = section.domain === 'global' ? [...section.keys] : [SYSTEM_SETTINGS_ACCOUNT_ID, ...section.keys]
+  const rows = await client.query<{ key: string; value_json: string }>(`SELECT key, value_json FROM ${table} WHERE ${where} ORDER BY key ASC`, params)
+  const values: Record<string, unknown> = {}
+  for (const row of rows) {
+    values[row.key] = section.domain === 'global'
+      ? normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
+      : normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
+  }
+  assertAllSettingsPresent(values, section.keys, `${sectionKey} 设置`)
+  return values
+}
+
+export async function updateManagementSettingsSectionAsync(sectionKey: ManagementSettingsSectionKey, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const section = managementSettingsSectionCatalog[sectionKey]
+  const allowed = new Set<string>(section.keys)
+  const keys = Object.keys(input)
+  if (keys.length === 0) throw new Error('设置更新不能为空')
+  if (keys.some((key) => !allowed.has(key) || key === '__proto__' || key === 'constructor' || key === 'prototype')) {
+    throw new Error(`${sectionKey} 包含不允许的字段`)
+  }
+  const normalized: Record<string, unknown> = {}
+  for (const key of keys) {
+    normalized[key] = section.domain === 'global'
+      ? normalizeGlobalSetting(key, input[key])
+      : normalizeSystemSetting(key, input[key])
+  }
+  if (section.domain === 'system') assertUsageStatsTimezoneUpdateAllowed(normalized)
+  const client = await getSettingsDatabaseClient()
+  const now = nowIso()
+  await client.transaction(async (tx) => {
+    for (const [key, value] of Object.entries(normalized)) {
+      const table = settingsTable(tx, section.domain === 'global' ? 'global_settings' : 'system_settings')
+      const columns = section.domain === 'global' ? '(key, value_json, updated_at)' : '(system_account_id, key, value_json, updated_at)'
+      const values = section.domain === 'global' ? [key, JSON.stringify(value), now] : [SYSTEM_SETTINGS_ACCOUNT_ID, key, JSON.stringify(value), now]
+      await tx.execute(`INSERT INTO ${table} ${columns} VALUES (${values.map(() => '?').join(', ')}) ON CONFLICT(${section.domain === 'global' ? 'key' : 'system_account_id, key'}) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`, values)
+    }
+  })
+  if (section.domain === 'global') await refreshGlobalSettingsCacheAfterSectionWrite()
+  else {
+    await refreshSystemSettingsCacheAfterSectionWrite()
+    notifyGatewayRuntimeCacheInvalidation('settings_updated')
+  }
+  return getManagementSettingsSectionAsync(sectionKey)
+}
+
+async function refreshSystemSettingsCacheAfterSectionWrite(): Promise<void> {
+  systemSettingsCache.clear()
+  clearUsageStatsTimezoneCache()
+  if (runtimeConfig.cacheDriver === 'redis') await systemSettingsSharedCache.clear()
+  const settings = await loadSystemSettingsFromDatabaseAsync()
+  await setSystemSettingsCacheAsync(settings)
+}
+
+async function refreshGlobalSettingsCacheAfterSectionWrite(): Promise<void> {
+  globalSettingsCache.clear()
+  if (runtimeConfig.cacheDriver === 'redis') await globalSettingsSharedCache.clear()
+  const settings = await loadGlobalSettingsFromDatabaseAsync()
+  await setGlobalSettingsCacheAsync(settings)
 }
 
 async function loadGlobalSettingsFromDatabaseAsync(): Promise<Record<string, unknown>> {

@@ -230,10 +230,10 @@ export interface GroupAccountStats {
   disabled: number
   error: number
   rateLimited: number
-  currentConcurrency: number
+  currentConcurrency?: number
   currentConcurrencyAvailable?: boolean
   concurrencyLimit: number
-  todayUsage: AccountUsageSummary
+  todayUsage?: AccountUsageSummary
   usage: AccountUsageSummary
 }
 
@@ -399,7 +399,18 @@ export type AccountListItem = Omit<AccountSummary,
   | 'supportedModels'
   | 'modelMappings'
   | 'apiKeyRuntimeDetails'
+  | 'apiKeyRuntime'
+  | 'balanceQueryEnabled'
+  | 'balanceQueryConfig'
+  | 'balanceQueryNextRefreshAt'
+  | 'balanceSnapshot'
   | 'usage'
+  | 'todayUsage'
+  | 'currentConcurrency'
+  | 'lastUsedAt'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'availabilityPresentation'
   | 'oauthUsage'
   | 'authorizationSources'
   | 'authorizationUsageAvailable'
@@ -443,6 +454,9 @@ export interface AccountStatusSnapshotItem {
   authorizationInstanceSourceAccountLastHealthCheckErrorMessage?: string
   authorizationInstanceSourceAccountLastHealthCheckTraceId?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
+  balanceQueryEnabled?: boolean
+  balanceQueryNextRefreshAt?: string
+  balanceSnapshot?: AccountBalanceSnapshot
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
   availabilityPresentation?: AccountAvailabilityPresentation

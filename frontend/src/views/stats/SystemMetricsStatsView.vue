@@ -36,7 +36,7 @@
 
     <a-row :gutter="[16, 16]" class="system-metrics-section">
       <a-col :xs="24">
-        <StatsChartCard :title="`系统性能 / 网络吞吐趋势（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasSystemTrend" :empty-description="systemTrendEmptyDescription">
+        <StatsChartCard :title="`系统性能 / 网络吞吐趋势（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasSystemTrend" :empty-description="systemTrendEmptyDescription" :error="trendError" :on-retry="loadData">
           <div ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
@@ -49,6 +49,8 @@
           :loading="initialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
+          :error="trendError"
+          :on-retry="loadData"
         >
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
           <a-empty v-else class="process-event-loop-trend-empty" :description="processEventLoopTrendEmptyDescription" />
@@ -64,6 +66,8 @@
           :loading="initialLoading"
           :has-data="hasProcessMemoryTrend"
           :empty-description="processMemoryTrendEmptyDescription"
+          :error="trendError"
+          :on-retry="loadData"
         >
           <div ref="processMemoryChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
@@ -80,6 +84,8 @@
           :rows="backgroundJobRows"
           :runtime-alert-description="systemRuntimeAlertDescription"
           :runtime-alert-visible="systemRuntimeAlertVisible"
+          :error="runtimeError"
+          :on-retry="loadRuntimeData"
           @change="handleBackgroundJobTableChange"
         />
       </a-col>
@@ -95,6 +101,8 @@
           :rows="backgroundQueueRows"
           :runtime-alert-description="systemRuntimeAlertDescription"
           :runtime-alert-visible="systemRuntimeAlertVisible"
+          :error="runtimeError"
+          :on-retry="loadRuntimeData"
           @change="handleBackgroundQueueTableChange"
         />
       </a-col>
@@ -103,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, onActivated, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
@@ -113,7 +121,7 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import type { SystemMetricsOverview, SystemMetricsRuntimeOverview } from '@/types/domain'
+import type { SystemMetricsTrendOverview, SystemMetricsRuntimeOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { buildBackgroundQueueRows } from './statsBackgroundQueues'
 import { buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption } from './statsChartOptions'
@@ -147,7 +155,7 @@ const runtimeLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
-const systemMetrics = ref<SystemMetricsOverview>()
+const systemMetrics = ref<SystemMetricsTrendOverview>()
 const systemMetricsRuntime = ref<SystemMetricsRuntimeOverview>()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
@@ -163,16 +171,32 @@ const backgroundQueuePageSize = 10
 const backgroundQueuePage = ref(1)
 let requestSeq = 0
 let runtimeRequestSeq = 0
+let needsReloadOnActivate = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderSystemCharts,
   resizeCharts,
   disposeCharts,
-  onMounted: loadPageData
+  onMounted: loadPageData,
+  onDeactivate: () => {
+    requestSeq += 1
+    runtimeRequestSeq += 1
+    loading.value = false
+    runtimeLoading.value = false
+    needsReloadOnActivate = true
+  }
+})
+
+onActivated(() => {
+  if (!needsReloadOnActivate) return
+  needsReloadOnActivate = false
+  void loadPageData()
 })
 
 const hasOverview = computed(() => Boolean(systemMetrics.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
+const trendError = ref('')
+const runtimeError = ref('')
 const runtimeInitialLoading = computed(() => runtimeLoading.value && !systemMetricsRuntime.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
@@ -249,18 +273,17 @@ const systemRuntimeAlertDescription = computed(() => {
 async function loadData() {
   const currentRequestSeq = ++requestSeq
   loading.value = true
+  trendError.value = ''
   try {
     const rangeParams = selectedRangeParams()
-    const [metrics] = await Promise.all([
-      api.stats.systemMetrics(rangeParams),
-      loadUsageStatsWindow()
-    ])
+    const metrics = await api.stats.systemMetricsTrend(rangeParams)
     if (currentRequestSeq !== requestSeq) return
     syncImplicitDateRangeToStatsWindow()
     systemMetrics.value = metrics
   } catch (error) {
     if (currentRequestSeq !== requestSeq) return
     console.error(error)
+    trendError.value = '系统指标趋势加载失败'
     message.error('系统指标统计加载失败')
   } finally {
     if (currentRequestSeq === requestSeq) {
@@ -271,6 +294,9 @@ async function loadData() {
 }
 
 function loadPageData() {
+  void loadUsageStatsWindow().then(() => {
+    if (!dateRangeExplicit.value) syncImplicitDateRangeToStatsWindow()
+  }).catch(() => undefined)
   void loadRuntimeData()
   return loadData()
 }
@@ -278,6 +304,7 @@ function loadPageData() {
 async function loadRuntimeData() {
   const currentRequestSeq = ++runtimeRequestSeq
   runtimeLoading.value = true
+  runtimeError.value = ''
   try {
     const runtime = await api.stats.systemMetricsRuntime()
     if (currentRequestSeq !== runtimeRequestSeq) return
@@ -285,6 +312,7 @@ async function loadRuntimeData() {
   } catch (error) {
     if (currentRequestSeq !== runtimeRequestSeq) return
     console.error(error)
+    runtimeError.value = '后台运行状态加载失败'
     message.error('后台运行状态加载失败')
   } finally {
     if (currentRequestSeq === runtimeRequestSeq) {

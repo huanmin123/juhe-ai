@@ -8,6 +8,7 @@ import {
   type ModelCheckScopeParams,
   type ModelCheckStreamOptions,
   type OperationLogListParams,
+  type ListParams,
   type UsageRecordListParams
 } from '@/api/client'
 import type { ModelCheckRunPayload } from '@/types/domain'
@@ -30,6 +31,9 @@ export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
     list: (params?: ApiKeyListParams) => isManagementView.value
       ? api.apiKeys.list(params)
       : api.myApiKeys.list(params),
+    usage: (params: Parameters<typeof api.apiKeys.usage>[0]) => isManagementView.value
+      ? api.apiKeys.usage(params)
+      : api.myApiKeys.usage(params),
     create: (payload: ApiKeyMutationPayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.create(payload, params)
       : api.myApiKeys.create(payload),
@@ -53,6 +57,14 @@ export function useScopedAccountsApi(isManagementView: Ref<boolean>) {
     options: (params?: AccountOptionParams) => isManagementView.value
       ? api.accounts.options(params)
       : api.myAccounts.options(params)
+  }
+}
+
+export function useScopedModelCheckAccountOptionsApi(isManagementView: Ref<boolean>) {
+  return {
+    options: (params: Parameters<typeof api.modelChecks.accountOptions>[0]) => isManagementView.value
+      ? api.modelChecks.accountOptions(params)
+      : api.myModelChecks.accountOptions(params)
   }
 }
 
@@ -89,7 +101,10 @@ export function useScopedUsageRecordsApi(isManagementView: Ref<boolean>) {
   return {
     list: (params?: UsageRecordListParams) => isManagementView.value
       ? api.usageRecords.list(params)
-      : api.myUsageRecords.list(params)
+      : api.myUsageRecords.list(params),
+    detail: (id: string, params?: ListParams) => isManagementView.value
+      ? api.usageRecords.detail(id, params)
+      : api.myUsageRecords.detail(id)
   }
 }
 

@@ -55,9 +55,9 @@ const account = {
 } as unknown as AccountSummary
 
 assert.deepEqual(
-  projectAccountListItem(account).runtimeAvailability,
-  expectedPublicRuntime,
-  '账户列表投影不得返回运行态内部字段'
+  'runtimeAvailability' in projectAccountListItem(account),
+  false,
+  '账户列表首包不得返回运行态字段'
 )
 assert.deepEqual(
   sanitizeAccountBasicDetailResponse(account).runtimeAvailability,
@@ -71,7 +71,6 @@ assert.deepEqual(
 )
 
 for (const [label, value] of [
-  ['list', projectAccountListItem(account).runtimeAvailability],
   ['detail', sanitizeAccountBasicDetailResponse(account).runtimeAvailability],
   ['status-snapshot', publicAccountRuntimeAvailability(unsafeRuntime)]
 ] as const) {

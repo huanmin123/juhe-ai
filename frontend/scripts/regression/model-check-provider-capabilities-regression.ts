@@ -98,6 +98,10 @@ assert.equal(canSelectTrustedModelCheckAccount(gptOpenAIAccount, {
 }), false, '可信对比账户不能跨供应商或跨协议 profile 选择')
 
 assert.match(accountOptionsSource, /from '\.\/modelCheckProviderCapabilities'/, '模型检测账户选项应通过能力 helper 过滤')
+assert.match(accountOptionsSource, /purpose: 'run'/, '运行下拉必须请求专用 run purpose options')
+assert.match(accountOptionsSource, /purpose: 'history'/, '历史筛选必须请求专用 history purpose options')
+assert.match(accountOptionsSource, /selectedIds(?:\s*:\s*|\s*\n)/, '模型检测选项请求必须携带已选 ID 以避免搜索窗口丢失当前值')
+assert.match(accountOptionsSource, /systemAccountId === input\.modelCheckScopeParams\.value\?\.systemAccountId/, '模型检测选项不得让旧身份请求覆盖新身份状态')
 assert.doesNotMatch(accountOptionsSource, /isGptVendorCode|GPT_VENDOR_CODE/, '模型检测账户选项不应再绑定 GPT 供应商名')
 assert.doesNotMatch(accountOptionsSource, /isOpenAIProtocolProfile/, '模型检测账户选项不应内联协议判断')
 assert.match(capabilitySource, /gpt-5\.6-sol/, '能力 helper 必须包含 GPT-5.6 Sol 完整模型 ID')

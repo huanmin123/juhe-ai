@@ -57,8 +57,6 @@ export type ChatProcessStatus = 'started' | 'completed' | 'failed' | 'canceled'
 export type ChatToolStatus = ChatProcessStatus | 'updated'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
-export interface ChatApiKeyOption { id: string; name: string; status: string }
-
 export interface ChatAsset {
   id: string
   fileName: string

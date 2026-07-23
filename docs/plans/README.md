@@ -2,6 +2,16 @@
 
 - [PLAN-0162-20260723](计划-0162-20260723T账户路由全生命周期验证.md)：完成 Node 网关从质量/速度选路、异常切号、账户电路到恢复重入调度的全生命周期 Mock 验证；不包含生产流量。
 
+## 按需加载专项（当前工作树）
+
+- [PLAN-0157（授权用量渐进加载）](计划-0157-授权用量渐进加载.md)：严格 rows/summary DTO、SQLite worker、权限矩阵、身份签名和竞态门已实现，真实 PostgreSQL 与浏览器证据待补。
+- [PLAN-0156（首页统计渐进加载）](计划-0156-首页统计渐进加载.md)：四端点、SQLite worker、Vue 视口加载与本地浏览器网络已验证，真实 PostgreSQL 和失活/失败注入竞态证据待补。
+- [PLAN-0159（低风险接口收敛）](计划-0159-低风险接口收敛.md)：品牌/Auth、Chat 死 GET、公告 mutation、授权死 loader 与外部来源回归已实现；Vue `updateToken` 死 method 和完整浏览器证据待补。
+- [PLAN-0160（AI 性能与统计窗口渐进加载）](计划-0160-AI性能与统计窗口渐进加载.md)：AI base/series、身份请求门、AI/IP usage-window 与 table history 六字段已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0154（供应商管理渐进加载）](计划-0154-供应商管理渐进加载.md)：供应商窄 list/options、单 detail/code lookup 与 Vue 点击加载已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0155（模型检查账户选项渐进加载）](计划-0155-模型检查账户选项渐进加载.md)：专用六字段 account-options、run/history 资格、SQLite worker、PG async 与 Vue 按需 consumer 已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0158（系统设置分区渐进加载）](计划-0158-系统设置分区渐进加载.md)：section GET/PATCH、SQLite read-worker、完整 settings cache 回填和 Vue 分区已通过本地专项，真实 PostgreSQL、浏览器与完整生命周期证据待补。
+
 - [PLAN-0161-20260723T055453949Z](计划-0161-20260723T055453949Z-发布模型快照完整退场.md)：完整删除已无消费者的发布模型快照、dirty rebuild 和内部 bridge，并校验 AI 问答前后端接口对齐。
 
 - [PLAN-0160-20260723T042256730Z](计划-0160-20260723T042256730Z-AI问答专用Key与动态模型目录.md)：为每个系统账户建立可修改路由的 AI 对话专用 API Key，并将聊天模型列表从发布快照迁移到按 Key 路由供应商合集动态聚合。

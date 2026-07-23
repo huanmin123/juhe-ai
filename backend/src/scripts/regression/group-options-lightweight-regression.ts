@@ -105,26 +105,34 @@ try {
   }
   const baseUrl = `http://127.0.0.1:${address.port}`
 
+  const invalidPurposeResponse = await fetch(`${baseUrl}/__aisys__/api/groups/options?purpose=detail`, { headers: { cookie: seed.adminCookie } })
+  assert.equal(invalidPurposeResponse.status, 400, '分组选项未知 purpose 必须返回 400')
+
   const adminOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}`, seed.adminCookie)
   const adminTargetOption = adminOptions.find((group) => group.id === seed.userGroupId)
   assert(adminTargetOption, '分组选项应包含目标分组 ID')
-  assert.equal(adminTargetOption.systemAccountId, seed.userId, '管理侧分组选项应保留系统账户归属字段')
-  assert.equal(adminTargetOption.permissions?.canAuthorize, true, '自有分组选项应保留可授权权限')
+  assert.deepEqual(Object.keys(adminTargetOption).sort(), ['id', 'name'], '默认分组选项必须只返回 id/name')
   assertLightweightGroupOption(adminTargetOption)
   const adminAuthorizedOption = adminOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
   assert(adminAuthorizedOption, '普通分组选项仍应包含用户可见的授权分组')
-  assert.equal(adminAuthorizedOption.permissions?.canBindToApiKey, true, '有效授权分组选项应标记为可绑定 API Key')
+  assert.deepEqual(Object.keys(adminAuthorizedOption).sort(), ['id', 'name'], '授权分组的默认选项也必须只返回 id/name')
+
+  const expandedAdminOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&purpose=account`, seed.adminCookie)
+  const expandedAdminTarget = expandedAdminOptions.find((group) => group.id === seed.userGroupId)
+  assert.equal(expandedAdminTarget?.systemAccountId, seed.userId, '账户用途分组选项应保留系统账户归属字段')
+  assert.equal(expandedAdminTarget?.permissions?.canAuthorize, true, '账户用途分组选项应保留可授权权限')
+  const expandedAuthorizedTarget = expandedAdminOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
+  assert.equal(expandedAuthorizedTarget?.permissions?.canBindToApiKey, true, '账户用途分组选项应标记授权分组可绑定 API Key')
 
   const userOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/my-groups/options?systemAccountId=sys_admin`, seed.userCookie)
   assert.equal(userOptions.some((group) => group.id === seed.userGroupId), true, '用户侧分组选项应包含当前用户分组')
-  assert.equal(userOptions.every((group) => group.ownerSystemAccountId === seed.userId || group.id === seed.adminAuthorizedGroupId), true, '用户侧分组选项必须固定当前用户可见作用域，不能被查询参数改写')
   const userTargetOption = userOptions.find((group) => group.id === seed.userGroupId)
   assert(userTargetOption, '用户侧分组选项应包含目标分组')
-  assert.equal(userTargetOption.systemAccountId, undefined, '用户侧分组选项不应暴露管理侧系统账户字段')
+  assert.deepEqual(Object.keys(userTargetOption).sort(), ['id', 'name'], '用户侧默认分组选项必须只返回 id/name')
   assertLightweightGroupOption(userTargetOption)
   const userAuthorizedOption = userOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
   assert(userAuthorizedOption, '用户侧普通分组选项应保留已授权给当前用户的分组')
-  assert.equal(userAuthorizedOption.permissions?.canBindToApiKey, true, '用户侧有效授权分组选项应标记为可绑定 API Key')
+  assert.deepEqual(Object.keys(userAuthorizedOption).sort(), ['id', 'name'], '用户侧授权分组默认选项必须只返回 id/name')
 
   const accountOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, '/__aisys__/api/my-groups/account-options', seed.userCookie)
   const accountTargetOption = accountOptions.find((group) => group.id === seed.userGroupId)
@@ -176,7 +184,7 @@ try {
     const limitedOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=1`, seed.adminCookie)
     assert.equal(limitedOptions.length, 1, '分组选项关键词查询应遵守 limit')
 
-    const providerOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&providerCode=gpt&manageableOnly=true&preferDefault=true&limit=20`, seed.adminCookie)
+    const providerOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&providerCode=gpt&manageableOnly=true&preferDefault=true&limit=20&purpose=account`, seed.adminCookie)
     assert(providerOptions.length > 0, '供应商分组选项应返回当前用户可管理分组')
     assert.equal(providerOptions[0]?.id, seed.userDefaultGroupId, 'preferDefault 应让默认分组排在首位')
     assert.equal(providerOptions.every((group) => group.providerCode === 'gpt'), true, '供应商分组选项必须按 providerCode 精确过滤')

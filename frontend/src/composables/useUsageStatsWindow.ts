@@ -16,11 +16,12 @@ type UsageStatsWindowScopeState = {
   loadedAtMs: number
   request?: Promise<UsageStatsWindow>
   generation: number
+  lastLoadFailed: boolean
 }
 
 const scopeStates: Record<UsageStatsWindowScope, UsageStatsWindowScopeState> = {
-  admin: { loadedAtMs: 0, generation: 0 },
-  self: { loadedAtMs: 0, generation: 0 }
+  admin: { loadedAtMs: 0, generation: 0, lastLoadFailed: false },
+  self: { loadedAtMs: 0, generation: 0, lastLoadFailed: false }
 }
 let displayGeneration = 0
 
@@ -58,6 +59,7 @@ async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): 
       if (scopeState.generation === requestGeneration) {
         scopeState.value = window
         scopeState.loadedAtMs = Date.now()
+        scopeState.lastLoadFailed = false
       }
       if (displayGeneration === requestDisplayGeneration) {
         windowState.value = window
@@ -68,8 +70,9 @@ async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): 
       console.error(error)
       const fallback = fallbackWindow()
       if (scopeState.generation === requestGeneration) {
-        scopeState.value = fallback
-        scopeState.loadedAtMs = Date.now()
+        scopeState.value = undefined
+        scopeState.loadedAtMs = 0
+        scopeState.lastLoadFailed = true
       }
       if (displayGeneration === requestDisplayGeneration) {
         windowState.value = fallback
@@ -85,6 +88,10 @@ async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): 
   return request
 }
 
+export function didUsageStatsWindowLoadFail(viewScope: UsageStatsWindowScope): boolean {
+  return scopeStates[viewScope].lastLoadFailed
+}
+
 export function clearUsageStatsWindowCache() {
   displayGeneration += 1
   windowState.value = undefined
@@ -93,6 +100,7 @@ export function clearUsageStatsWindowCache() {
     scopeState.loadedAtMs = 0
     scopeState.request = undefined
     scopeState.generation += 1
+    scopeState.lastLoadFailed = false
   }
 }
 

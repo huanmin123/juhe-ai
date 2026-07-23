@@ -13,7 +13,7 @@
       :disabled-date="disabledDate"
       :has-active-account-filter="hasActiveAccountFilter"
       :is-management-view="isManagementView"
-      :loading="loading"
+      :loading="contextLoading || baseLoading"
       :system-account-options-loading="systemAccountOptionsLoading"
       :system-accounts="systemAccounts"
       @account-dropdown-visible-change="handleAccountDropdownVisibleChange"
@@ -31,6 +31,18 @@
       @toggle-account="toggleAccountFilter"
     />
 
+    <a-alert v-if="baseError" :message="baseError" type="error" show-icon>
+      <template #action>
+        <a-button size="small" @click="retryBase">重试基础数据</a-button>
+      </template>
+    </a-alert>
+    <a-alert v-if="seriesError" :message="seriesError" type="warning" show-icon>
+      <template #action>
+        <a-button size="small" @click="retrySeries">重试追加账户</a-button>
+      </template>
+    </a-alert>
+    <a-alert v-else-if="seriesLoading" message="正在加载追加账户性能序列" type="info" show-icon />
+
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
     <a-row :gutter="[16, 16]" class="ai-performance-section">
@@ -44,29 +56,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, onActivated, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
-import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountSelection } from '@/shared/accountLabelCache'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
-import type { AiPerformanceOverview } from '@/types/domain'
+import type { AiPerformanceBaseResult, AiPerformanceSeriesResult } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 import AiPerformanceFilterToolbar from './AiPerformanceFilterToolbar.vue'
+import { buildAiPerformanceRequestSignature, createAiPerformanceRequestGate } from './aiPerformanceRequestGate'
 import { useAiPerformanceAccountSelection } from './useAiPerformanceAccountSelection'
 
 const MAX_RANGE_DAYS = 31
@@ -100,11 +113,19 @@ const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.dateRange
   : undefined))
 const dateRangeExplicit = ref(Boolean(initialPageState.dateRange))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
-const overview = ref<AiPerformanceOverview>()
+const overview = ref<AiPerformanceBaseResult>()
+const additionalSeries = ref<AiPerformanceSeriesResult>()
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
-const loading = ref(false)
-let performanceRequestSeq = 0
+const baseLoading = ref(false)
+const seriesLoading = ref(false)
+const contextLoading = ref(false)
+const baseError = ref('')
+const seriesError = ref('')
+const resolvedSeriesAccountIds = new Set<string>()
+const performanceRequestGate = createAiPerformanceRequestGate()
+let contextRequestSeq = 0
+let reloadAfterActivate = false
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -135,19 +156,27 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   resizeCharts,
   disposeCharts,
   onMounted: () => {
-    void loadPerformance()
+    void loadPerformanceContext()
   },
-  onDeactivate: clearAccountSearchTimer,
-  onBeforeUnmount: clearAccountSearchTimer
+  onDeactivate: () => {
+    clearAccountSearchTimer()
+    deactivatePerformanceRequests(true)
+  },
+  onBeforeUnmount: () => {
+    clearAccountSearchTimer()
+    deactivatePerformanceRequests(false)
+  }
 })
 
 const accountSelection = useAiPerformanceAccountSelection({
   isManagementView,
   isPageActive: () => pageActive.value,
-  overview,
-  reloadPerformance: () => {
-    void loadPerformance()
+  base: overview,
+  series: additionalSeries,
+  loadMissingSeries: (accountIds) => {
+    void loadAdditionalSeries(accountIds)
   },
+  clearSeries: clearAdditionalSeries,
   requestRender: renderCharts,
   selectedSystemAccountId: selectedPerformanceSystemAccountId
 })
@@ -166,6 +195,7 @@ const {
   handleAccountSearch,
   handleAddedAccountsChange,
   hasActiveAccountFilter,
+  invalidateAccountOptions,
   pruneAccountState,
   removeAddedAccount,
   seriesColorByAccountId,
@@ -179,7 +209,7 @@ addedAccountIds.value = [...initialPageState.addedAccountIds]
 addedAccountSelections.value = [...initialPageState.addedAccountSelections]
 
 const hasOverview = computed(() => Boolean(overview.value))
-const initialLoading = computed(() => loading.value && !hasOverview.value)
+const initialLoading = computed(() => (contextLoading.value || baseLoading.value) && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
@@ -241,41 +271,147 @@ const summaryCards = computed(() => {
   ]
 })
 
-async function loadPerformance(options: { force?: boolean } = {}) {
-  const requestSeq = ++performanceRequestSeq
-  loading.value = true
+async function loadPerformanceContext(options: { force?: boolean } = {}) {
+  const contextSeq = ++contextRequestSeq
+  invalidatePerformanceRequests()
+  contextLoading.value = true
   try {
-    if (requestSeq !== performanceRequestSeq) return
-    await loadUsageStatsWindow({ force: true })
-    const systemAccountId = selectedPerformanceSystemAccountId()
-    const rangeParams = selectedRangeParams()
-    const performanceParams = {
-      ...rangeParams,
-      systemAccountId,
-      accountIds: addedAccountIds.value
-    }
-    const performanceOverview = isManagementView.value
-      ? await api.stats.aiPerformance(performanceParams)
-      : await api.myStats.aiPerformance(performanceParams)
-    if (requestSeq !== performanceRequestSeq) return
-    overview.value = performanceOverview
-    syncDateRangeFromResponse(performanceOverview.range)
+    const windowScope = isManagementView.value ? 'admin' : 'self'
+    await loadUsageStatsWindow({
+      force: options.force === true,
+      viewScope: windowScope
+    })
+    if (didUsageStatsWindowLoadFail(windowScope)) throw new Error('统计窗口加载失败')
+    if (contextSeq !== contextRequestSeq || !pageActive.value) return
+    await Promise.allSettled([
+      loadPerformanceBase(),
+      loadAdditionalSeries(addedAccountIds.value)
+    ])
+  } catch (error) {
+    if (contextSeq !== contextRequestSeq || !pageActive.value) return
+    console.error(error)
+    baseError.value = extractApiErrorMessage(error, '统计窗口加载失败')
+    seriesError.value = baseError.value
+  } finally {
+    if (contextSeq === contextRequestSeq) contextLoading.value = false
+  }
+}
+
+function refreshPerformance() {
+  void loadPerformanceContext({ force: true })
+}
+
+async function loadPerformanceBase() {
+  const request = currentPerformanceRequest('base')
+  const token = performanceRequestGate.begin('base', request.signature)
+  baseLoading.value = true
+  baseError.value = ''
+  try {
+    const result = isManagementView.value
+      ? await api.stats.aiPerformance(request.params)
+      : await api.myStats.aiPerformance(request.params)
+    if (!performanceRequestGate.acceptsRange(token, currentPerformanceRequest('base').signature, result.range, request.params)) return
+    overview.value = result
+    syncDateRangeFromResponse(result.range)
     pruneAccountState()
     renderCharts()
   } catch (error) {
-    if (requestSeq !== performanceRequestSeq) return
+    if (!performanceRequestGate.isCurrent(token, currentPerformanceRequest('base').signature)) return
     console.error(error)
-    message.error(extractApiErrorMessage(error, 'AI 性能监控数据加载失败'))
+    baseError.value = extractApiErrorMessage(error, 'AI 性能基础数据加载失败')
   } finally {
-    if (requestSeq === performanceRequestSeq) {
-      loading.value = false
+    if (performanceRequestGate.isCurrent(token, currentPerformanceRequest('base').signature)) {
+      baseLoading.value = false
       renderCharts()
     }
   }
 }
 
-function refreshPerformance() {
-  void loadPerformance({ force: true })
+async function loadAdditionalSeries(candidateIds: string[]) {
+  const requestedIds = missingSeriesAccountIds(candidateIds)
+  if (!requestedIds.length) return
+  const request = currentPerformanceRequest('series', requestedIds)
+  const token = performanceRequestGate.begin('series', request.signature)
+  seriesLoading.value = true
+  seriesError.value = ''
+  try {
+    const params = { ...request.params, accountIds: requestedIds }
+    const result = isManagementView.value
+      ? await api.stats.aiPerformanceSeries(params)
+      : await api.myStats.aiPerformanceSeries(params)
+    if (!performanceRequestGate.acceptsRange(token, currentPerformanceRequest('series', requestedIds).signature, result.range, request.params)) return
+    mergeAdditionalSeries(result, requestedIds)
+    renderCharts()
+  } catch (error) {
+    if (!performanceRequestGate.isCurrent(token, currentPerformanceRequest('series', requestedIds).signature)) return
+    console.error(error)
+    seriesError.value = extractApiErrorMessage(error, '追加账户性能序列加载失败')
+  } finally {
+    if (performanceRequestGate.isCurrent(token, currentPerformanceRequest('series', requestedIds).signature)) {
+      seriesLoading.value = false
+      renderCharts()
+    }
+  }
+}
+
+function currentPerformanceRequest(channel: 'base' | 'series', accountIds: string[] = []) {
+  const user = authState.currentUser.value
+  const params = {
+    ...selectedRangeParams(),
+    systemAccountId: selectedPerformanceSystemAccountId()
+  }
+  return {
+    params,
+    signature: buildAiPerformanceRequestSignature({
+      channel,
+      scope: isManagementView.value ? 'admin' : 'self',
+      authRevision: authState.revision.value,
+      viewerId: user?.id,
+      viewerRole: user?.role,
+      ownerSystemAccountId: params.systemAccountId,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      accountIds
+    })
+  }
+}
+
+function mergeAdditionalSeries(result: AiPerformanceSeriesResult, requestedIds: string[]) {
+  const desiredIds = new Set(addedAccountIds.value)
+  const previousAccounts = additionalSeries.value?.accounts ?? []
+  const previousSeries = additionalSeries.value?.hourlySeries ?? []
+  const accounts = dedupeById([...previousAccounts, ...result.accounts], (item) => item.id)
+    .filter((account) => desiredIds.has(account.id))
+  const hourlySeries = dedupeById([...previousSeries, ...result.hourlySeries], (item) => item.accountId)
+    .filter((series) => desiredIds.has(series.accountId))
+  additionalSeries.value = { range: result.range, accounts, hourlySeries }
+  for (const id of requestedIds) {
+    if (desiredIds.has(id)) resolvedSeriesAccountIds.add(id)
+  }
+}
+
+function clearAdditionalSeries() {
+  additionalSeries.value = undefined
+  resolvedSeriesAccountIds.clear()
+  seriesError.value = ''
+  seriesLoading.value = false
+  performanceRequestGate.invalidate('series')
+}
+
+function missingSeriesAccountIds(accountIds: string[]) {
+  const defaultIds = new Set(overview.value?.accounts.map((account) => account.id) ?? [])
+  return [...new Set(accountIds)]
+    .filter((id) => id && !defaultIds.has(id) && !resolvedSeriesAccountIds.has(id))
+    .slice(0, 20)
+}
+
+function retryBase() {
+  void loadPerformanceBase()
+}
+
+function retrySeries() {
+  resolvedSeriesAccountIds.clear()
+  void loadAdditionalSeries(addedAccountIds.value)
 }
 
 function handleDateRangeChange() {
@@ -284,7 +420,7 @@ function handleDateRangeChange() {
     endDate: formatDateKey(dateRange.value[1])
   })
   dateRangeExplicit.value = true
-  void loadPerformance()
+  void loadPerformanceContext()
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
@@ -307,8 +443,9 @@ function handleSystemAccountChange() {
   if (selectedSystemAccountId.value === allSystemAccountsValue) {
     selectedSystemAccount.value = undefined
   }
-  clearAccountState()
-  void loadPerformance()
+  invalidateAccountOptions()
+  clearAdditionalSeries()
+  void loadPerformanceContext()
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {
@@ -330,7 +467,7 @@ function resetFilters() {
   resetSystemAccountOptionsSearch()
   clearAccountState()
   pageStateCache.clear()
-  void loadPerformance()
+  void loadPerformanceContext()
 }
 
 function defaultAiPerformancePageState(): AiPerformancePageState {
@@ -481,8 +618,51 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
   return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
+function invalidatePerformanceRequests() {
+  performanceRequestGate.invalidate()
+  overview.value = undefined
+  additionalSeries.value = undefined
+  resolvedSeriesAccountIds.clear()
+  baseLoading.value = false
+  seriesLoading.value = false
+  baseError.value = ''
+  seriesError.value = ''
+  renderCharts()
+}
+
+function deactivatePerformanceRequests(shouldReloadOnActivate: boolean) {
+  const hadInflightRequest = contextLoading.value || baseLoading.value || seriesLoading.value
+  contextRequestSeq += 1
+  reloadAfterActivate = shouldReloadOnActivate && hadInflightRequest
+  performanceRequestGate.deactivate()
+  contextLoading.value = false
+  baseLoading.value = false
+  seriesLoading.value = false
+}
+
+function dedupeById<T>(items: T[], idFor: (item: T) => string): T[] {
+  const byId = new Map<string, T>()
+  for (const item of items) byId.set(idFor(item), item)
+  return [...byId.values()]
+}
+
+onActivated(() => {
+  performanceRequestGate.activate()
+  if (!reloadAfterActivate) return
+  reloadAfterActivate = false
+  void loadPerformanceContext()
+})
+
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(() => authState.revision.value, () => {
+  invalidateAccountOptions()
+  if (!pageActive.value) {
+    reloadAfterActivate = true
+    return
+  }
+  void loadPerformanceContext()
+})
 </script>
 
 <style scoped>

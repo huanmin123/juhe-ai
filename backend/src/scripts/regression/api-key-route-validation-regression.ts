@@ -127,6 +127,8 @@ async function main(): Promise<void> {
     assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'clientProfile'), 'API Key 摘要不应返回 clientProfile')
     assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'explicitHybridRouteRules'), 'API Key 摘要不应返回 explicitHybridRouteRules')
 
+    await assertApiKeyUsageQueryContracts(baseUrl, adminCookie, validApiKey.id)
+
     const secretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
     assert(secretResult.key === validApiKey.key, '复制完整密钥接口应返回创建时的完整 API Key')
     assert(secretResult.key.startsWith(validApiKey.keyPrefix), '复制完整密钥接口返回值应匹配安全展示前缀')
@@ -320,6 +322,22 @@ async function assertPatchBadRequestMessage(baseUrl: string, cookie: string, id:
   assert(response.status === 400, `更新 API Key 应返回 400，实际 HTTP ${response.status}: ${text}`)
   const parsed = JSON.parse(text) as { message?: string }
   assert(parsed.message === expectedMessage, `更新 API Key 错误文案异常：${parsed.message}`)
+}
+
+async function assertApiKeyUsageQueryContracts(baseUrl: string, cookie: string, apiKeyId: string): Promise<void> {
+  const valid = await fetch(`${baseUrl}/__aisys__/api/api-keys/usage?ids=${encodeURIComponent(apiKeyId)}&ids=${encodeURIComponent(apiKeyId)}`, { headers: { cookie } })
+  assert(valid.status === 200, `重复 ids 查询键应被接受，实际 HTTP ${valid.status}: ${await valid.text()}`)
+  for (const query of [
+    '',
+    '?ids=',
+    `?ids=${encodeURIComponent(`${apiKeyId},other`)}`,
+    `?ids[]=${encodeURIComponent(apiKeyId)}`,
+    `?${Array.from({ length: 101 }, (_, index) => `ids=id_${index}`).join('&')}`
+  ]) {
+    const response = await fetch(`${baseUrl}/__aisys__/api/api-keys/usage${query}`, { headers: { cookie } })
+    const text = await response.text()
+    assert(response.status === 400, `非法 usage ids 查询应返回 400，query=${query || '<missing>'}，实际 HTTP ${response.status}: ${text}`)
+  }
 }
 
 async function login(baseUrl: string): Promise<string> {

@@ -29,7 +29,6 @@ import {
   loadGroupAccountIdsByGroupIdsAsync,
   loadGroupAccountStatsByGroupIds,
   loadGroupAccountStatsByGroupIdsAsync,
-  loadGroupConcurrencyAccountIdsByGroupIdsAsync,
   type GroupAccountStatsRow
 } from './group-read-loaders.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -41,7 +40,6 @@ import { authorizedGroupPermissions, hasActiveManualAuthorizationSource, ownerPe
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { loadGroupUsageSummariesForScopes, loadGroupUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
-import { loadAccountConcurrencyByIds } from '../modules/gateway/runtime/runtime-snapshot.service.js'
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
   return listGroupsReadOnly(access)
@@ -137,76 +135,13 @@ export async function listGroupItemsPageAsync(access?: AccessScope, options?: Gr
   const page = runtimeConfig.databaseDriver === 'postgres'
     ? await listGroupRowsPageForAccessAsync(access, options)
     : listGroupRowsPageForAccess(access, options)
-  const [items, dynamic] = await Promise.all([
-    buildGroupListItemsAsync(page.rows, access),
-    loadGroupListDynamicValuesAsync(page.rows)
-  ])
   return {
-    items: items.map((item) => ({
-      ...item,
-      accountStats: {
-        ...item.accountStats,
-        currentConcurrency: dynamic.currentConcurrencyByGroup.get(item.id) ?? 0,
-        currentConcurrencyAvailable: dynamic.accountConcurrencyAvailable,
-        todayUsage: dynamic.todayUsageByGroup.get(item.id) ?? emptyAccountUsageSummary()
-      }
-    })),
+    items: await buildGroupListItemsAsync(page.rows, access),
     total: page.total,
     hasMore: page.hasMore,
     page: page.page,
-    pageSize: page.pageSize,
-    runtimeSnapshot: {
-      accountConcurrencyAvailable: dynamic.accountConcurrencyAvailable
-    }
+    pageSize: page.pageSize
   }
-}
-
-async function loadGroupListDynamicValuesAsync(rows: GroupListRow[]): Promise<{
-  accountConcurrencyAvailable: boolean
-  currentConcurrencyByGroup: Map<string, number>
-  todayUsageByGroup: Map<string, import('../domain/types.js').AccountUsageSummary>
-}> {
-  if (!rows.length) {
-    return {
-      accountConcurrencyAvailable: true,
-      currentConcurrencyByGroup: new Map(),
-      todayUsageByGroup: new Map()
-    }
-  }
-  const [timezone, concurrencyAccountIdsByGroup] = await Promise.all([
-    usageStatsTimezoneAsync(),
-    loadGroupConcurrencyAccountIdsByGroupIdsAsync(rows.map((row) => row.id))
-  ])
-  const ownerScopes = rows
-    .filter((row) => row.access_type !== 'authorized')
-    .map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const authorizationScopes = rows
-    .filter((row) => row.access_type === 'authorized' && row.authorization_id)
-    .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const [concurrency, ownerUsage, authorizationUsage] = await Promise.all([
-    loadAccountConcurrencyByIds([...new Set([...concurrencyAccountIdsByGroup.values()].flat())]),
-    loadGroupUsageSummariesForScopesAsync(ownerScopes, todayDateKey(timezone)),
-    loadGroupAuthorizationUsageSummariesAsync(authorizationScopes, todayDateKey(timezone))
-  ])
-  const currentConcurrencyByGroup = new Map(rows.map((row) => [
-    row.id,
-    sumGroupCurrentConcurrency(concurrencyAccountIdsByGroup.get(row.id) ?? [], concurrency.values)
-  ]))
-  const todayUsageByGroup = new Map(rows.map((row) => [
-    row.id,
-    row.access_type === 'authorized' && row.authorization_id
-      ? authorizationUsage.get(row.authorization_id) ?? emptyAccountUsageSummary()
-      : ownerUsage.get(row.id) ?? emptyAccountUsageSummary()
-  ]))
-  return {
-    accountConcurrencyAvailable: concurrency.available,
-    currentConcurrencyByGroup,
-    todayUsageByGroup
-  }
-}
-
-function sumGroupCurrentConcurrency(accountIds: string[], concurrencyByAccount: Record<string, number>): number {
-  return accountIds.reduce((total, accountId) => total + Math.max(0, Math.trunc(concurrencyByAccount[accountId] ?? 0)), 0)
 }
 
 /** Build the groups table projection without usage, authorization source, quota or policy reads. */

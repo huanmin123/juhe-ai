@@ -91,6 +91,15 @@ try {
     assert(!nameIds.includes(middleNameOnly.id), 'API Key 搜索不应命中名称中间包含值')
     const matchedListItem = nameResult.items.find((item) => item.id === matchedByName.id) as Record<string, unknown> | undefined
     assert.equal(Object.prototype.hasOwnProperty.call(matchedListItem ?? {}, 'key'), false, 'API Key 列表不应包含完整本地密钥字段')
+    assert.equal(Object.prototype.hasOwnProperty.call(matchedListItem ?? {}, 'usage'), false, 'API Key 列表 DTO 不应混入累计用量')
+    const usageResult = await repositories.getApiKeyUsageByIdsAsync([matchedByName.id], access)
+    assert.deepEqual(usageResult.items.map((item) => item.id), [matchedByName.id], 'API Key 用量应按当前页 ID 独立批量读取')
+    const inaccessibleUsage = await repositories.getApiKeyUsageByIdsAsync([matchedByName.id], {
+      systemAccountId: 'sys_other',
+      systemAccountFilterId: 'sys_other',
+      role: 'admin'
+    })
+    assert.deepEqual(inaccessibleUsage.items, [], 'API Key 用量批量读取不得跨系统账户泄露')
     assert.equal(matchedByName.key.startsWith(matchedByName.keyPrefix), true, 'API Key 创建响应仍应返回一次完整密钥供用户保存')
     assert.equal(matchedByName.key.endsWith(matchedByName.keySuffix), true, 'API Key 创建响应应返回后缀供列表安全识别')
 

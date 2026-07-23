@@ -225,6 +225,10 @@ interface AiPerformanceOverview {
   }
 }
 
+interface AiPerformanceSeries {
+  accounts: AiPerformanceAccountOption[]
+}
+
 interface SystemTeamMemberSummary {
   id: string
   systemAccountId: string
@@ -572,8 +576,9 @@ async function main(): Promise<void> {
     const userAAiPerformanceAccounts = await getEnvelope<AiPerformanceAccountOption[]>(baseUrl, `/__aisys__/api/my-stats/ai-performance/accounts?keyword=${encodeURIComponent('用户 B')}`, seed.userACookie)
     assert(userAAiPerformanceAccounts.some((account) => account.id === seed.userAAuthorizedUserBAccountId), 'AI性能监控应返回当前用户自己的授权实例账户')
     const aiPerformanceRangeQuery = `startDate=${seed.usageToday}&endDate=${seed.usageToday}`
-    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}&accountIds=${seed.userAAuthorizedUserBAccountId}`, seed.userACookie)
-    assert(userAAiPerformance.accounts.some((account) => account.id === seed.userAAuthorizedUserBAccountId), 'AI性能监控选中参数应能加入当前用户自己的授权实例')
+    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userACookie)
+    const userAAiPerformanceSeries = await getEnvelope<AiPerformanceSeries>(baseUrl, `/__aisys__/api/my-stats/ai-performance/series?${aiPerformanceRangeQuery}&accountIds=${seed.userAAuthorizedUserBAccountId}`, seed.userACookie)
+    assert(userAAiPerformanceSeries.accounts.some((account) => account.id === seed.userAAuthorizedUserBAccountId), 'AI性能监控 series 应能加入当前用户自己的授权实例')
     assert(userAAiPerformance.summary.requestCount === 3, `AI性能监控用户 A 摘要应包含自有和授权实例调用，实际 ${userAAiPerformance.summary.requestCount}`)
     const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userBCookie)
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')

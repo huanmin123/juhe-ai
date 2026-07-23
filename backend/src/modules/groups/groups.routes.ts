@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -50,7 +50,13 @@ groupsRouter.get('/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const query = parseGroupOptionListOptions(req.query)
-    const options = await listGroupOptionsAsync(access, query)
+    if (!query.purpose) {
+      res.status(400).json(badRequest('分组选项 purpose 仅支持 select 或 account'))
+      return
+    }
+    const options = query.purpose === 'account'
+      ? await listGroupOptionsAsync(access, query)
+      : await listGroupSelectOptionsAsync(access, query)
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -119,8 +125,15 @@ function parseGroupOptionListOptions(query: Record<string, unknown>) {
     providerCode: optionalQueryText(query.providerCode),
     limit: optionLimitValue(integerQueryValue(query.limit)),
     manageableOnly: booleanQueryValue(query.manageableOnly),
-    preferDefault: booleanQueryValue(query.preferDefault)
+    preferDefault: booleanQueryValue(query.preferDefault),
+    purpose: groupOptionPurpose(query.purpose)
   }
+}
+
+function groupOptionPurpose(value: unknown): 'select' | 'account' | undefined {
+  const purpose = optionalQueryText(value)
+  if (!purpose || purpose === 'select') return 'select'
+  return purpose === 'account' ? 'account' : undefined
 }
 
 function optionLimitValue(value: number | undefined): number {

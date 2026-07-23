@@ -69,7 +69,8 @@
         </a-tooltip>
       </template>
       <template v-else-if="column.key === 'usage'">
-        <UsageSummaryTags :usage="groupStats(record).todayUsage" />
+        <UsageSummaryTags v-if="groupTodayUsageAvailable(record)" :usage="groupStats(record).todayUsage" />
+        <span v-else class="muted-cell">未知</span>
       </template>
       <template v-else-if="column.key === 'status'">
         <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
@@ -124,7 +125,7 @@
           </div>
           <div class="mobile-list-meta-item">
             <span>用量(日)</span>
-            <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
+            <strong>{{ groupTodayUsageAvailable(record) ? formatUsageSummary(groupStats(record).todayUsage) : '未知' }}</strong>
           </div>
         </div>
         <div v-if="groupRowActions(record).length || groupMoreActions(record).length" class="mobile-list-card-actions">
@@ -160,7 +161,8 @@ import {
   groupStats,
   groupStatusColor,
   groupStatusText,
-  groupSystemAccountText
+  groupSystemAccountText,
+  groupTodayUsageAvailable
 } from './groupDisplay'
 import {
   groupPolicySummary,

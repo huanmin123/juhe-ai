@@ -266,7 +266,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -341,6 +341,8 @@ const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 let modelRequestSequence = 0
+let pageActive = true
+let pageWasDeactivated = false
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
@@ -452,6 +454,8 @@ async function loadProviders(force = false) {
       force,
       includeDisabled: isManagementView.value,
       includeDefinitions: !isManagementView.value,
+      listItemsOnly: true,
+      viewScope: isManagementView.value ? 'admin' : 'self',
       isManagementView: isManagementView.value
     })
     providers.value = providerResult.data
@@ -483,6 +487,7 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 
 function resetModelModal() {
   modelRequestSequence += 1
+  modelLoading.value = false
   activeProvider.value = null
   modelKeyword.value = ''
   modelLoadError.value = ''
@@ -564,37 +569,44 @@ async function reloadActiveProviderModels(force = false) {
   if (!provider) return
   ensureModelSystemAccountFilter()
   const requestSequence = ++modelRequestSequence
+  const requestSignature = modelRequestSignature(provider.code)
   const modelQuery = modelCatalogQueryParams()
   modelLoading.value = true
   modelLoadError.value = ''
   try {
-    const scopedProviders = await loadProviderOptionsResource({
-      force: force || !isManagementView.value,
-      includeDisabled: isManagementView.value,
-      includeDefinitions: !isManagementView.value,
-      isManagementView: isManagementView.value,
-      systemAccountId: modelQuery.systemAccountId
-    })
-    if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
-    const scopedProvider = scopedProviders.data.find((item) => item.code === provider.code)
-    if (scopedProvider) {
-      activeProvider.value = scopedProvider
-    }
-    const modelResult = await loadProviderModelCatalogResource({
-      force,
-      isManagementView: isManagementView.value,
-      providerCode: provider.code,
-      query: modelQuery
-    })
+    const [detail, modelResult] = await Promise.all([
+      api.providers.detail(provider.code, { ...modelQuery, viewScope: isManagementView.value ? 'admin' : 'self' }),
+      loadProviderModelCatalogResource({ force, isManagementView: isManagementView.value, providerCode: provider.code, query: modelQuery })
+    ])
+    if (!isCurrentModelRequest(requestSequence, requestSignature, provider.code)) return
+    activeProvider.value = detail
     applyProviderModelResult(modelResult, requestSequence, provider.code)
   } catch (error) {
-    if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
+    if (!isCurrentModelRequest(requestSequence, requestSignature, provider.code)) return
     console.error(error)
     modelLoadError.value = extractModelErrorMessage(error, '加载模型价格失败')
     message.error(modelLoadError.value)
   } finally {
     if (requestSequence === modelRequestSequence) modelLoading.value = false
   }
+}
+
+function modelRequestSignature(providerCode: string): string {
+  const viewer = authState.currentUser.value
+  return JSON.stringify([
+    authState.revision.value,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    isManagementView.value ? 'admin' : 'self',
+    providerCode
+  ])
+}
+
+function isCurrentModelRequest(sequence: number, signature: string, providerCode: string): boolean {
+  return pageActive
+    && sequence === modelRequestSequence
+    && signature === modelRequestSignature(providerCode)
+    && activeProvider.value?.code === providerCode
 }
 
 function applyProviderModelResult(models: ProviderModelPricing[], requestSequence: number, providerCode: string): void {
@@ -717,10 +729,10 @@ function modelCatalogQueryParams(): ProviderModelsParams {
   }
 }
 
-function modelProviderQueryParams(): Pick<ProviderModelsParams, 'systemAccountId'> | undefined {
-  if (!isManagementView.value) return undefined
+function modelProviderQueryParams(): Pick<ProviderModelsParams, 'systemAccountId' | 'viewScope'> {
+  if (!isManagementView.value) return { viewScope: 'self' }
   const systemAccountId = modelSystemAccountFilter.value.trim()
-  return systemAccountId ? { systemAccountId } : undefined
+  return systemAccountId ? { systemAccountId, viewScope: 'admin' } : { viewScope: 'admin' }
 }
 
 function modelOperationQueryParams(payload: ProviderModelUpsertPayload): Pick<ProviderModelsParams, 'systemAccountId'> | undefined {
@@ -803,7 +815,32 @@ function extractModelErrorMessage(error: unknown, fallback: string) {
   return typeof messageText === 'string' && messageText.trim() ? messageText.trim() : fallback
 }
 
+function invalidateProviderPageRequests(): void {
+  pageActive = false
+  modelRequestSequence += 1
+  resetModelModal()
+  customModelModalOpen.value = false
+}
+
 onMounted(loadProviders)
+onDeactivated(() => {
+  pageWasDeactivated = true
+  invalidateProviderPageRequests()
+})
+onBeforeUnmount(invalidateProviderPageRequests)
+onActivated(() => {
+  pageActive = true
+  if (!pageWasDeactivated) return
+  pageWasDeactivated = false
+  void loadProviders(true)
+})
+watch(() => authState.revision.value, () => {
+  modelRequestSequence += 1
+  resetModelModal()
+  customModelModalOpen.value = false
+  if (pageActive) void loadProviders(true)
+  else pageWasDeactivated = true
+})
 </script>
 
 <style scoped>

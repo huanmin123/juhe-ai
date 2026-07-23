@@ -69,7 +69,10 @@ try {
   assert.deepEqual(targetHistory.map((row) => row.rowCount), [100, 123], 'PG 表历史应保留各采样 row_count')
 
   const databaseHistory = await listDatabaseStorageHistoryAsync({ startAt, endAt, limit: 10 })
-  const smokeDatabaseHistory = databaseHistory.filter((row) => row.databasePath.includes(marker))
+  const smokeDatabaseHistory = databaseHistory.filter((row) => (
+    (row.databaseRole === 'business' || row.databaseRole === 'stats')
+    && (row.sampledAt === startAt || row.sampledAt === middleAt)
+  ))
   assert.deepEqual(
     smokeDatabaseHistory.map((row) => `${row.databaseRole}:${row.sampledAt}`),
     [`business:${startAt}`, `business:${middleAt}`, `stats:${middleAt}`],
@@ -187,7 +190,11 @@ async function assertPostgresCollectorWritesSnapshots(): Promise<void> {
   })
   const datasetSnapshot = databaseHistory.find((row) => row.databaseRole === 'dataset' && row.sampledAt === sampledAt)
   assert(datasetSnapshot, 'PG 采样应写入 dataset schema 数据库快照')
-  assert.equal(datasetSnapshot?.databasePath, 'postgres:juhe_dataset', 'PG 采样不应暴露 SQLite 文件路径')
+  assert.deepEqual(
+    Object.keys(datasetSnapshot ?? {}).sort(),
+    ['databaseRole', 'fileBytes', 'freeBytes', 'sampledAt', 'tableCount', 'walBytes'].sort(),
+    'PG 数据库历史必须使用严格六字段投影'
+  )
   assert((datasetSnapshot?.fileBytes ?? 0) > 0, 'PG schema 快照应记录 schema 总大小')
 }
 

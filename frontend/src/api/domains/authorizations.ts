@@ -1,7 +1,9 @@
 import type {
   AuthorizationResourceType,
-  AuthorizationTeamUsageOverview,
-  AuthorizationUserUsageOverview,
+  AuthorizationTeamUsageRowsResult,
+  AuthorizationTeamUsageSummary,
+  AuthorizationUserUsageRowsResult,
+  AuthorizationUserUsageSummary,
   RequestQuotaLimits,
   ResourceAuthorizationListResult,
   ResourceAuthorizationSummary
@@ -9,8 +11,10 @@ import type {
 import type {
   AuthorizationListParams,
   AuthorizationScopeParams,
-  AuthorizationUsageOverviewParams,
-  AuthorizationUsageParams
+  AuthorizationTeamUsageSummaryParams,
+  AuthorizationUsageRowsParams,
+  AuthorizationUsageParams,
+  AuthorizationUserUsageSummaryParams
 } from '../contracts'
 import { http, unwrap } from '../http'
 import { boundedAuthorizationListParams, stripSystemAccountParam } from '../params'
@@ -47,8 +51,10 @@ export const authorizationsApi = {
   revoke: (id: string, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { params })),
   returnAuthorization: (id: string, params?: AuthorizationScopeParams) => http.delete(`/authorizations/${id}/return`, { params }),
   usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params })),
-  teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/authorizations/usage/team-details', { params })),
-  userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/authorizations/usage/user-details', { params }))
+  teamUsage: (params?: AuthorizationUsageRowsParams) => unwrap<AuthorizationTeamUsageRowsResult>(http.get('/authorizations/usage/team-details', { params })),
+  userUsage: (params?: AuthorizationUsageRowsParams) => unwrap<AuthorizationUserUsageRowsResult>(http.get('/authorizations/usage/user-details', { params })),
+  teamUsageSummary: (params?: AuthorizationTeamUsageSummaryParams) => unwrap<AuthorizationTeamUsageSummary>(http.get('/authorizations/usage/team-summary', { params })),
+  userUsageSummary: (params?: AuthorizationUserUsageSummaryParams) => unwrap<AuthorizationUserUsageSummary>(http.get('/authorizations/usage/user-summary', { params }))
 }
 
 export const myAuthorizationsApi = {
@@ -61,6 +67,8 @@ export const myAuthorizationsApi = {
   revoke: (id: string) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`)),
   returnAuthorization: (id: string) => http.delete(`/my-authorizations/${id}/return`),
   usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`, { params: stripSystemAccountParam(params) })),
-  teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/my-authorizations/usage/team-details', { params: stripSystemAccountParam(params) })),
-  userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/my-authorizations/usage/user-details', { params: stripSystemAccountParam(params) }))
+  teamUsage: (params?: AuthorizationUsageRowsParams) => unwrap<AuthorizationTeamUsageRowsResult>(http.get('/my-authorizations/usage/team-details', { params: stripSystemAccountParam(params) })),
+  userUsage: (params?: AuthorizationUsageRowsParams) => unwrap<AuthorizationUserUsageRowsResult>(http.get('/my-authorizations/usage/user-details', { params: stripSystemAccountParam(params) })),
+  teamUsageSummary: (params?: AuthorizationTeamUsageSummaryParams) => unwrap<AuthorizationTeamUsageSummary>(http.get('/my-authorizations/usage/team-summary', { params: stripSystemAccountParam(params) })),
+  userUsageSummary: (params?: AuthorizationUserUsageSummaryParams) => unwrap<AuthorizationUserUsageSummary>(http.get('/my-authorizations/usage/user-summary', { params: stripSystemAccountParam(params) }))
 }

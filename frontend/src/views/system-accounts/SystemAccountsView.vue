@@ -119,7 +119,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
-import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
+import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus } from '@/types/domain'
 
 interface SystemAccountsPageState {
   keyword: string
@@ -207,7 +207,7 @@ const {
   loadMoreMobile: loadMoreMobileAccounts,
   refreshMobile: refreshMobileAccounts,
   resetPagination
-} = useResponsivePagedList<SystemAccountSummary>({
+} = useResponsivePagedList<SystemAccountListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -231,7 +231,7 @@ function openCreate() {
   modalOpen.value = true
 }
 
-function openEdit(record: SystemAccountSummary) {
+function openEdit(record: SystemAccountListItem) {
   if (!canManageSystemAccounts.value) return
   editingId.value = record.id
   Object.assign(form, {
@@ -247,7 +247,7 @@ function openEdit(record: SystemAccountSummary) {
   modalOpen.value = true
 }
 
-function openResetPassword(record: SystemAccountSummary) {
+function openResetPassword(record: SystemAccountListItem) {
   if (!canManageSystemAccounts.value) return
   resettingId.value = record.id
   resettingAccountRole.value = record.role
@@ -255,7 +255,7 @@ function openResetPassword(record: SystemAccountSummary) {
   passwordModalOpen.value = true
 }
 
-function handleSystemAccountAction(key: string, record: SystemAccountSummary) {
+function handleSystemAccountAction(key: string, record: SystemAccountListItem) {
   if (key === 'edit') {
     openEdit(record)
     return

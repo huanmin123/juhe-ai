@@ -10,6 +10,7 @@ import {
   type AccountModelMappingSourceEndpointFamily,
   type AccountSummary,
   type ModelCheckOptions,
+  type ModelCheckAccountOption,
   type ModelCheckProfile,
   type ModelCheckRunDetail,
   type ModelCheckRunListResult,
@@ -29,6 +30,7 @@ import {
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { listModelCheckAccountOptionsAsync } from '../../storage/account-options.repository.js'
 import { currentSystemAccountId } from '../../storage/access-scope.js'
 import type { OpenAIGatewayRequestIdentity } from '../gateway/routes.js'
 import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
@@ -224,6 +226,11 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
     defaultProfile,
     trustedComparison
   }
+}
+
+export async function listModelCheckAccountOptions(access: AccessScope | undefined, options: { purpose: 'run' | 'history'; keyword?: string; selectedIds?: string[]; limit?: number }): Promise<ModelCheckAccountOption[]> {
+  const selectedIds = [...new Set((options.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 20)
+  return listModelCheckAccountOptionsAsync(access, { purpose: options.purpose, keyword: options.keyword?.trim() || undefined, selectedIds, limit: options.limit ?? 50 })
 }
 
 export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckRunDetail> {

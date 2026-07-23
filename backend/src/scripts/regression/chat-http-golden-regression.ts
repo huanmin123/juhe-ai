@@ -103,7 +103,6 @@ const expectedCommonErrors = [
 ]
 
 const expectedRoutes: ExpectedRoute[] = [
-  route('list-api-keys', 'GET', '/api-keys', 'chatApi.listApiKeys', [], [], 'none', [], ['200:json-data:ChatApiKeyOption[]'], []),
   route('get-image-policy', 'GET', '/image-policy', 'chatApi.getImagePolicy', [], [], 'none', [], ['200:json-data:ChatImagePolicy'], []),
   route('list-conversations', 'GET', '/conversations', 'chatApi.listConversations', [], ['beforeIsPinned', 'beforeLastMessageAt', 'beforeId', 'limit'], 'none', [], ['200:json-data:ChatConversation[]'], []),
   route('create-conversation', 'POST', '/conversations', 'chatApi.createConversation', [], [], 'json-strict', ['apiKeyId'], ['201:json-data:ChatConversation'], ['request_body_invalid', 'request_body_too_large', 'chat_invalid_request', 'chat_conversation_limit_exceeded']),
@@ -127,7 +126,6 @@ const expectedRoutes: ExpectedRoute[] = [
 ]
 
 const expectedDtoFields: Record<string, { required: string[]; optional: string[] }> = {
-  ChatApiKeyOption: fields(['id', 'name', 'status']),
   ChatImageOptimizationPolicy: fields(['mimeType', 'maxEdge', 'quality', 'maxBytes']),
   ChatImagePolicy: fields(['input']),
   ChatModelListOption: fields(['id', 'name']),
@@ -153,7 +151,7 @@ assert.equal(golden.version, 1)
 assert.equal(golden.basePath, '/__aisys__/api/my-chat')
 assert.equal(golden.frontendBasePath, '/my-chat')
 assert.deepEqual(golden.commonErrors, expectedCommonErrors)
-assert.equal(golden.routes.length, 21, 'AI Chat HTTP golden 必须冻结全部 21 条路由')
+assert.equal(golden.routes.length, 20, 'AI Chat HTTP golden 必须冻结全部 20 条路由')
 assert(golden.concerns.some((item) => item.includes('000070')), '两条模型路由必须记录 master 000070 的 HTTP 影响判断')
 
 const actualRouteKeys = [...routesSource.matchAll(/chatRouter\.(get|post|patch|delete)\('([^']+)'/g)]
@@ -504,7 +502,6 @@ const frontendInterfaceFields: Record<string, { required: string[]; optional: st
   ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'userTurnLimit', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'defaultModel', 'lastModel', 'activeTurnId']),
   ChatMessage: fields(['id', 'conversationId', 'turnId', 'sequenceNo', 'role', 'status', 'contentText', 'model', 'createdAt', 'expiresAt'], ['clientMessageId', 'contentBlocks', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt', 'reasoningText', 'toolEvents', 'eventVersion', 'renderRevision']),
   ChatToolEvent: fields(['id', 'type', 'status'], ['item']),
-  ChatApiKeyOption: fields(['id', 'name', 'status']),
   ChatAsset: fields(['id', 'fileName', 'mimeType', 'width', 'height', 'byteSize']),
   ChatImageOptimizationPolicy: fields(['mimeType', 'maxEdge', 'quality', 'maxBytes']),
   ChatImagePolicy: fields(['input']),
@@ -537,7 +534,6 @@ const frontendInterfaceTypes: Record<string, Record<string, string>> = {
     finishReason: '?string', errorCode: '?string', errorMessage: '?string', createdAt: 'string', completedAt: '?string', expiresAt: 'string',
     reasoningText: '?string', toolEvents: '?ChatToolEvent[]', eventVersion: '?number', renderRevision: '?number'
   },
-  ChatApiKeyOption: { id: 'string', name: 'string', status: 'string' },
   ChatAsset: { id: 'string', fileName: 'string', mimeType: 'string', width: 'number', height: 'number', byteSize: 'number' },
   ChatImageOptimizationPolicy: { mimeType: "'image/webp'", maxEdge: 'number', quality: 'number', maxBytes: 'number' },
   ChatImagePolicy: { input: 'ChatImageOptimizationPolicy' },
@@ -581,7 +577,6 @@ const backendInterfaceTypes: Record<string, Record<string, string>> = {
 }
 
 const frontendRouteMarkers: Record<string, RegExp> = {
-  'list-api-keys': /listApiKeys:[\s\S]{0,120}http\.get\('\/my-chat\/api-keys'\)/,
   'get-image-policy': /getImagePolicy:[\s\S]{0,120}http\.get\('\/my-chat\/image-policy'\)/,
   'list-conversations': /listConversations:[\s\S]{0,220}http\.get\('\/my-chat\/conversations'/,
   'create-conversation': /createConversation:[\s\S]{0,220}http\.post\('\/my-chat\/conversations'/,

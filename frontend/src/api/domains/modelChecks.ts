@@ -1,5 +1,6 @@
 import type {
   ModelCheckOptions,
+  ModelCheckAccountOption,
   ModelCheckRunDetail,
   ModelCheckRunListParams,
   ModelCheckRunListResult,
@@ -14,6 +15,7 @@ import { modelCheckRunListParams } from '../params'
 
 export const modelChecksApi = {
   options: (params?: ModelCheckScopeParams) => unwrap<ModelCheckOptions>(http.get('/model-checks/options', { params })),
+  accountOptions: (params: ModelCheckScopeParams & { purpose: 'run' | 'history'; keyword?: string; limit: number; selectedIds?: string[] }) => unwrap<ModelCheckAccountOption[]>(http.get('/model-checks/account-options', { params })),
   active: (params?: ModelCheckScopeParams) => unwrap<ActiveModelCheckRunSummary | null>(http.get('/model-checks/run/active', { params })),
   run: (payload: ModelCheckRunPayload, params?: ModelCheckScopeParams) => unwrap<ModelCheckRunDetail>(http.post('/model-checks/run', payload, { ...noTimeout, params })),
   runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions, params?: ModelCheckScopeParams) => runModelCheckStream('/model-checks/run/stream', payload, options, params),
@@ -24,6 +26,7 @@ export const modelChecksApi = {
 
 export const myModelChecksApi = {
   options: () => unwrap<ModelCheckOptions>(http.get('/my-model-checks/options')),
+  accountOptions: (params: { purpose: 'run' | 'history'; keyword?: string; limit: number; selectedIds?: string[] }) => unwrap<ModelCheckAccountOption[]>(http.get('/my-model-checks/account-options', { params })),
   active: () => unwrap<ActiveModelCheckRunSummary | null>(http.get('/my-model-checks/run/active')),
   run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/my-model-checks/run', payload, noTimeout)),
   runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => runModelCheckStream('/my-model-checks/run/stream', payload, options),

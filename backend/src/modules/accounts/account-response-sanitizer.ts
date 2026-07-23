@@ -114,7 +114,18 @@ export function projectAccountListItem(account: AccountSummary): AccountListItem
     supportedModels: _supportedModels,
     modelMappings: _modelMappings,
     apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    apiKeyRuntime: _apiKeyRuntime,
+    balanceQueryEnabled: _balanceQueryEnabled,
+    balanceQueryConfig: _balanceQueryConfig,
+    balanceQueryNextRefreshAt: _balanceQueryNextRefreshAt,
+    balanceSnapshot: _balanceSnapshot,
     usage: _usage,
+    todayUsage: _todayUsage,
+    currentConcurrency: _currentConcurrency,
+    lastUsedAt: _lastUsedAt,
+    runtimeAvailability: _runtimeAvailability,
+    effectiveAvailability: _effectiveAvailability,
+    availabilityPresentation: _availabilityPresentation,
     oauthUsage: _oauthUsage,
     authorizationSources: _authorizationSources,
     authorizationCount: _authorizationCount,
@@ -122,10 +133,7 @@ export function projectAccountListItem(account: AccountSummary): AccountListItem
     authorizationUsageAvailable: _authorizationUsageAvailable,
     ...item
   } = account
-  return {
-    ...item,
-    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
-  }
+  return item
 }
 
 export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {

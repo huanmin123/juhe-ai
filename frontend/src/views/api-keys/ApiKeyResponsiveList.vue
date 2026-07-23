@@ -47,7 +47,12 @@
         </a-tag>
       </template>
       <template v-else-if="column.key === 'usage'">
-        <UsageSummaryTags :usage="record.usage" />
+        <a-spin v-if="usageState[record.id] === 'pending'" size="small" />
+        <a-tooltip v-else-if="usageState[record.id] === 'error'" :title="usageErrors[record.id] || '用量加载失败'">
+          <a-button type="link" danger size="small" @click="emit('retry-usage', record.id)">重试</a-button>
+        </a-tooltip>
+        <UsageSummaryTags v-else-if="usageState[record.id] === 'loaded'" :usage="record.usage" />
+        <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'key'">
         <div class="key-preview-cell">
@@ -129,7 +134,10 @@
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>累计用量</span>
-            <strong>{{ formatUsageSummary(record.usage) }}</strong>
+            <strong v-if="usageState[record.id] === 'pending'"><a-spin size="small" /></strong>
+            <strong v-else-if="usageState[record.id] === 'error'"><a-button type="link" danger size="small" @click="emit('retry-usage', record.id)">重试</a-button></strong>
+            <strong v-else-if="usageState[record.id] === 'loaded'">{{ formatUsageSummary(record.usage) }}</strong>
+            <strong v-else>-</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>美元额度</span>
@@ -191,6 +199,8 @@ defineProps<{
   pagination: ResponsiveDataListTablePagination
   primaryActions: (record: ApiKeySummary) => RowActionItem[]
   isManagementView: boolean
+  usageState: Record<string, 'pending' | 'loaded' | 'error'>
+  usageErrors: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -199,6 +209,7 @@ const emit = defineEmits<{
   'copy-key': [record: ApiKeySummary]
   'mobile-load-more': []
   'mobile-refresh': []
+  'retry-usage': [id: string]
 }>()
 </script>
 

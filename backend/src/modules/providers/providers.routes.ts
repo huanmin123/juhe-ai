@@ -2,8 +2,13 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
-import { listProvidersAsync } from '../../storage/repositories.js'
-import { isAdminRole, type ProviderDefinition, type ProviderModelPricing } from '../../domain/types.js'
+import {
+  findProviderOptionByCodeAsync,
+  listEnabledProviderOptionsAsync,
+  listProvidersAsync,
+  listProviderListItemsAsync
+} from '../../storage/repositories.js'
+import { isAdminRole, type ProviderDefinition, type ProviderListItem, type ProviderModelPricing } from '../../domain/types.js'
 import { isHybridProviderCode } from '../../domain/provider-protocol.js'
 import {
   clearProviderDefaultHealthCheckModelPreferenceIfModelAsync,
@@ -39,6 +44,19 @@ import {
 
 export const providersRouter = Router()
 
+providersRouter.get('/list', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = providerModelRequestSystemAccountId(access)
+    const includeDisabled = isManagementProviderRequest(req)
+    const providers = await listProviderListItemsForRequestAsync(systemAccountId, includeDisabled)
+    res.json(ok(providers))
+  } catch (error) {
+    next(error)
+  }
+})
+
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
     const providers = await listProvidersForRequestAsync()
@@ -50,11 +68,7 @@ providersRouter.get('/', requireAdmin, async (req, res, next) => {
 
 providersRouter.get('/options', async (req, res, next) => {
   try {
-    const access = getRequestAccessScope(req.query.systemAccountId)
-    const systemAccountId = providerModelRequestSystemAccountId(access)
-    const providers = (await listProvidersAsync())
-      .filter((provider) => provider.enabled)
-      .map((provider) => ({ id: provider.code, code: provider.code, name: provider.name, enabled: true as const }))
+    const providers = await listEnabledProviderOptionsAsync()
     res.json(ok(providers))
   } catch (error) {
     next(error)
@@ -84,8 +98,8 @@ providersRouter.get('/models/options', async (req, res, next) => {
       return
     }
     if (query.providerCode) {
-      const provider = (await listProvidersAsync()).find((item) => item.code === query.providerCode && item.enabled)
-      if (!provider) {
+      const provider = await findProviderOptionByCodeAsync(query.providerCode)
+      if (!provider?.enabled) {
         sendNotFound(res, '供应商不存在或已停用')
         return
       }
@@ -97,11 +111,33 @@ providersRouter.get('/models/options', async (req, res, next) => {
   }
 })
 
+providersRouter.get('/:code', async (req, res, next) => {
+  try {
+    const context = getRequestAuthContext()
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const [provider] = await listProvidersAsync(req.params.code)
+    const [preferences, systemDefaults] = await Promise.all([
+      listProviderDefaultHealthCheckModelPreferencesAsync(provider ? providerModelRequestSystemAccountId(access) : undefined, provider ? [provider.code] : []),
+      listProviderSystemDefaultHealthCheckModelsAsync(provider ? [provider.code] : [])
+    ])
+    const resolvedProvider = provider
+      ? providerWithDefaultHealthCheckModelPreference(provider, preferences.get(provider.code), systemDefaults.get(provider.code))
+      : undefined
+    if (!resolvedProvider || (!resolvedProvider.enabled && !isManagementProviderRequest(req))) {
+      sendNotFound(res, '供应商不存在或已停用')
+      return
+    }
+    res.json(ok(resolvedProvider))
+  } catch (error) {
+    next(error)
+  }
+})
+
 providersRouter.get('/:code/models', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
-    const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code)
-    if (!provider) {
+    const provider = await findProviderOptionByCodeAsync(req.params.code)
+    if (!provider || (!provider.enabled && !isManagementProviderRequest(req))) {
       res.status(404).json({ message: '供应商不存在' })
       return
     }
@@ -161,7 +197,7 @@ providersRouter.put('/:code/default-health-check-model', async (req, res, next) 
       res.status(400).json(badRequest('默认检查模型参数无效'))
       return
     }
-    const saveAsSystemDefault = isAdminRole(context.role)
+    const saveAsSystemDefault = isManagementProviderRequest(req)
     const access = getRequestAccessScope(req.query.systemAccountId)
     const targetSystemAccountId = saveAsSystemDefault
       ? undefined
@@ -512,6 +548,43 @@ function providerModelRequestSystemAccountId(access?: RequestAccessScope): strin
   return access?.systemAccountFilterId ?? access?.systemAccountId
 }
 
+function isManagementProviderRequest(req: { query: unknown }): boolean {
+  const context = getRequestAuthContext()
+  const viewScope = typeof req.query === 'object' && req.query !== null
+    ? (req.query as { viewScope?: unknown }).viewScope
+    : undefined
+  return viewScope === 'admin' && Boolean(context && isAdminRole(context.role))
+}
+
+async function listProviderListItemsForRequestAsync(systemAccountId: string | undefined, includeDisabled: boolean): Promise<ProviderListItem[]> {
+  const items = (await listProviderListItemsAsync()).filter((item) => includeDisabled || item.enabled)
+  const codes = items.map((item) => item.code)
+  const [preferences, systemDefaults] = await Promise.all([
+    listProviderDefaultHealthCheckModelPreferencesAsync(systemAccountId, codes),
+    listProviderSystemDefaultHealthCheckModelsAsync(codes)
+  ])
+  return items.map((item) => ({
+    ...item,
+    defaultHealthCheckModel: preferences.get(item.code) || systemDefaults.get(item.code) || item.defaultHealthCheckModel
+  }))
+}
+
+function providerListItem(provider: ProviderDefinition): ProviderListItem {
+  return {
+    id: provider.id,
+    code: provider.code,
+    name: provider.name,
+    parentCode: provider.parentCode,
+    description: provider.description,
+    enabled: provider.enabled,
+    baseUrl: provider.baseUrl,
+    defaultHealthCheckModel: provider.defaultHealthCheckModel,
+    defaultSupportedModels: provider.defaultSupportedModels,
+    accountTypes: provider.accountTypes,
+    capabilities: provider.capabilities
+  }
+}
+
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {
   const providers = await listProvidersAsync()
   const providerCodes = providers.map((provider) => provider.code)
@@ -547,7 +620,7 @@ async function listProviderModelsForRequestAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
   if (isHybridProviderCode(input.providerCode)) {
-    const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && !isHybridProviderCode(provider.code))
+    const providers = (await listEnabledProviderOptionsAsync()).filter((provider) => !isHybridProviderCode(provider.code))
     return (await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
       providerCode: provider.code,
       systemAccountId: input.systemAccountId,

@@ -97,11 +97,14 @@
       :key-copying-id="keyCopyingId"
       :primary-actions="apiKeyPrimaryActions"
       :more-actions="apiKeyMoreActions"
+      :usage-state="apiKeyUsageState"
+      :usage-errors="apiKeyUsageErrors"
       @action-click="handleApiKeyAction"
       @change="handleTableChange"
       @copy-key="copyKeyPreview"
       @mobile-load-more="loadMoreMobileApiKeys"
       @mobile-refresh="refreshMobileApiKeys"
+      @retry-usage="retryApiKeyUsage"
     />
 
     <ApiKeyHelpModal
@@ -141,7 +144,7 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
@@ -149,6 +152,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -159,7 +163,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { routeStrategySelectionFromOption } from '@/shared/routeStrategyLabelCache'
-import type { ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyListItem, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
 import {
@@ -198,6 +202,11 @@ let routeStrategyOptionsKeyword = ''
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
+let apiKeyUsageRequestToken = 0
+const apiKeyUsageState = ref<Record<string, 'pending' | 'loaded' | 'error'>>({})
+const apiKeyUsageErrors = ref<Record<string, string>>({})
+let pageActive = true
+let pageWasDeactivated = false
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -249,18 +258,25 @@ const {
     : `共 ${formatNumber(total)} 个 API Key`,
   fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
-    return apiKeysApi.list(apiKeyListParams(systemAccountId, pageState))
+    const result = await apiKeysApi.list(apiKeyListParams(systemAccountId, pageState))
+    return { ...result, items: result.items.map(apiKeyListRow) }
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
     return [
       isManagementView.value ? 'management' : 'self',
+      authState.revision.value,
+      authState.currentUser.value?.id,
+      authState.currentUser.value?.role,
       apiKeyListParams(systemAccountId, pageState)
     ]
   },
   onError: (error) => {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载 API Key 失败'))
+  },
+  onLoaded: () => {
+    void loadApiKeyUsage(apiKeys.value.map((item) => item.id))
   }
 })
 const {
@@ -478,6 +494,93 @@ function apiKeyListParams(systemAccountId: string | undefined, pageState: { curr
   }
 }
 
+function apiKeyListRow(item: ApiKeyListItem): ApiKeySummary {
+  return { ...item, usage: emptyApiKeyUsage() }
+}
+
+async function loadApiKeyUsage(ids: string[]): Promise<void> {
+  const normalizedIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+  if (!normalizedIds.length) return
+  const requestToken = ++apiKeyUsageRequestToken
+  const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
+  const requestSignature = JSON.stringify([
+    isManagementView.value ? 'management' : 'self',
+    systemAccountId ?? '',
+    authState.revision.value,
+    authState.currentUser.value?.id ?? '',
+    authState.currentUser.value?.role ?? '',
+    normalizedIds
+  ])
+  const nextState = { ...apiKeyUsageState.value }
+  const nextErrors = { ...apiKeyUsageErrors.value }
+  for (const id of normalizedIds) {
+    nextState[id] = 'pending'
+    delete nextErrors[id]
+  }
+  apiKeyUsageState.value = nextState
+  apiKeyUsageErrors.value = nextErrors
+  try {
+    const result = await apiKeysApi.usage({ ids: normalizedIds, systemAccountId })
+    if (requestToken !== apiKeyUsageRequestToken) return
+    const currentSignature = JSON.stringify([
+      isManagementView.value ? 'management' : 'self',
+      isManagementView.value ? apiKeyScopeParams.value?.systemAccountId ?? '' : '',
+      authState.revision.value,
+      authState.currentUser.value?.id ?? '',
+      authState.currentUser.value?.role ?? '',
+      normalizedIds
+    ])
+    if (requestSignature !== currentSignature) return
+    const usageById = new Map(result.items.map((item) => [item.id, item.usage]))
+    updateApiKeyItems(
+      (item) => usageById.has(item.id),
+      (item) => ({ ...item, usage: usageById.get(item.id) ?? item.usage })
+    )
+    const resolvedState = { ...apiKeyUsageState.value }
+    const resolvedErrors = { ...apiKeyUsageErrors.value }
+    for (const id of normalizedIds) {
+      resolvedState[id] = usageById.has(id) ? 'loaded' : 'error'
+      if (!usageById.has(id)) resolvedErrors[id] = '未返回该 API Key 的用量数据'
+    }
+    apiKeyUsageState.value = resolvedState
+    apiKeyUsageErrors.value = resolvedErrors
+  } catch (error) {
+    if (requestToken !== apiKeyUsageRequestToken) return
+    console.error(error)
+    const errorMessage = extractApiErrorMessage(error, 'API Key 用量加载失败')
+    const failedState = { ...apiKeyUsageState.value }
+    const failedErrors = { ...apiKeyUsageErrors.value }
+    for (const id of normalizedIds) {
+      failedState[id] = 'error'
+      failedErrors[id] = errorMessage
+    }
+    apiKeyUsageState.value = failedState
+    apiKeyUsageErrors.value = failedErrors
+  }
+}
+
+function retryApiKeyUsage(id: string): void {
+  void loadApiKeyUsage([id])
+}
+
+function emptyApiKeyUsage(): AccountUsageSummary {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWriteCost: 0,
+    thinkingTokens: 0,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
 function openCreate() {
   void apiKeyEditModalRef.value?.openCreate()
 }
@@ -597,7 +700,35 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
 watch(apiKeys, () => rememberPrincipalSelection(systemAccountFilterSelection.value), { immediate: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
-onBeforeUnmount(clearRouteStrategyOptionsSearchTimer)
+onBeforeUnmount(() => {
+  apiKeyUsageRequestToken += 1
+  pageActive = false
+  clearRouteStrategyOptionsSearchTimer()
+})
+
+onDeactivated(() => {
+  pageActive = false
+  pageWasDeactivated = true
+  apiKeyUsageRequestToken += 1
+})
+
+onActivated(() => {
+  pageActive = true
+  if (!pageWasDeactivated) return
+  pageWasDeactivated = false
+  resetPagination()
+  void loadData({ quiet: true })
+})
+
+watch(() => authState.revision.value, () => {
+  apiKeyUsageRequestToken += 1
+  if (pageActive) {
+    resetPagination()
+    void loadData({ quiet: true })
+  } else {
+    pageWasDeactivated = true
+  }
+})
 
 onMounted(loadData)
 </script>

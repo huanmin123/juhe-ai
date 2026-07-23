@@ -4,7 +4,7 @@ import { message } from '@/lib/antd'
 import { api } from '@/api/client'
 import type {
   AuditLogHotSearchResult,
-  AuditLogSummary
+  AuditLogListItem
 } from '@/types/domain'
 import {
   auditLogHotSearchActiveFilterCount,
@@ -19,7 +19,7 @@ type AuditLogHotSearchStateOptions = {
 export function useAuditLogHotSearchState(options: AuditLogHotSearchStateOptions) {
   const hotSearchKeywordFilter = ref(options.initialKeyword)
   const hotSearchResult = ref<AuditLogHotSearchResult>()
-  const hotSearchRecords = ref<AuditLogSummary[]>([])
+  const hotSearchRecords = ref<AuditLogListItem[]>([])
   const hotSearchLoading = ref(false)
   let hotSearchRequestSeq = 0
 

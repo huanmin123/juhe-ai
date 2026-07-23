@@ -103,11 +103,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'copyTraceId', traceId: string): void
+  (event: 'openDetail'): void
   (event: 'openAuditLogs'): void
   (event: 'openRuntimeLogs'): void
 }>()
 
 const traceActions = computed<RowActionItem[]>(() => [
+  { key: 'open-detail', label: '查看详情', icon: 'detail', tone: 'info' },
   { key: 'copy-trace-id', label: '复制 traceId', icon: 'copy', tone: 'primary' }
 ])
 const traceMoreActions = computed<RowActionItem[]>(() => {
@@ -120,6 +122,10 @@ const traceMoreActions = computed<RowActionItem[]>(() => {
 })
 
 function handleTraceAction(key: string): void {
+  if (key === 'open-detail') {
+    emit('openDetail')
+    return
+  }
   if (key === 'copy-trace-id') {
     emit('copyTraceId', props.record.traceId)
     return

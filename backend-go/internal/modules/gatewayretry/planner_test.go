@@ -52,15 +52,66 @@ func TestPlannerStopsAtMaxAttemptsEvenWhenCandidatesRemain(t *testing.T) {
 
 	planner := mustPlanner(t, testPlan(2, "a", "b", "c"))
 	first := planner.Start(context.Background())
-	second := planner.Fail(context.Background(), *first.Attempt, Failure{Phase: PhaseUpstreamResponse, StatusCode: 503})
+	second := planner.Fail(context.Background(), *first.Attempt, Failure{Phase: PhaseUpstreamResponse, StatusCode: 503, ResponseDisposition: ResponseDispositionExplicitPolicy})
 	assertAttempt(t, second, "binding", "b", 2)
 
-	terminal := planner.Fail(context.Background(), *second.Attempt, Failure{Phase: PhaseUpstreamResponse, StatusCode: 429})
+	terminal := planner.Fail(context.Background(), *second.Attempt, Failure{Phase: PhaseUpstreamResponse, StatusCode: 429, ResponseDisposition: ResponseDispositionExplicitPolicy})
 	if terminal.Action != ActionStopped || terminal.Reason != ReasonMaxAttempts {
 		t.Fatalf("terminal decision = %+v, want max attempts", terminal)
 	}
 	if terminal.AttemptCount != 2 || terminal.AttemptsRemaining != 0 {
 		t.Fatalf("terminal budget = count %d remaining %d", terminal.AttemptCount, terminal.AttemptsRemaining)
+	}
+}
+
+func TestClassifyFailureAcceptsExplicitTwoXXProtocolSignals(t *testing.T) {
+	for _, signal := range []ResponseSignal{ResponseSignalProtocolContract, ResponseSignalStreamInterrupted} {
+		classification := ClassifyFailure(Failure{Phase: PhaseUpstreamResponse, ResponseSignal: signal})
+		if !classification.Retryable || classification.Class == FailureClassUnknown {
+			t.Fatalf("signal %q classification = %#v", signal, classification)
+		}
+	}
+	invalid := ClassifyFailure(Failure{Phase: PhaseUpstreamResponse, ResponseSignal: ResponseSignal("future")})
+	if invalid.Retryable || invalid.Class != FailureClassUnknown {
+		t.Fatalf("invalid signal classification = %#v", invalid)
+	}
+}
+
+func TestClassifyFailureKeepsCompleteHTTPResponseTransparentWithoutPolicy(t *testing.T) {
+	transparent := ClassifyFailure(Failure{
+		Phase: PhaseUpstreamResponse, StatusCode: 503,
+		ResponseDisposition: ResponseDispositionCompleteTransparent,
+	})
+	if transparent.Retryable || transparent.Reason != "complete_response_transparent" {
+		t.Fatalf("transparent classification = %#v", transparent)
+	}
+	explicit := ClassifyFailure(Failure{
+		Phase: PhaseUpstreamResponse, StatusCode: 503,
+		ResponseDisposition: ResponseDispositionExplicitPolicy,
+	})
+	if !explicit.Retryable || explicit.Class != FailureClassUpstreamService {
+		t.Fatalf("explicit policy classification = %#v", explicit)
+	}
+}
+
+func TestPlannerAdvancesOnExplicitProtocolResponseSignal(t *testing.T) {
+	planner := mustPlanner(t, testPlan(2, "a", "b"))
+	first := planner.Start(context.Background())
+	second := planner.Fail(context.Background(), *first.Attempt, Failure{
+		Phase: PhaseUpstreamResponse, ResponseSignal: ResponseSignalProtocolContract,
+	})
+	assertAttempt(t, second, "binding", "b", 2)
+}
+
+func TestPlannerDoesNotRotateOnCompleteResponseWithoutExplicitPolicy(t *testing.T) {
+	planner := mustPlanner(t, testPlan(2, "a", "b"))
+	first := planner.Start(context.Background())
+	terminal := planner.Fail(context.Background(), *first.Attempt, Failure{
+		Phase: PhaseUpstreamResponse, StatusCode: 503,
+		ResponseDisposition: ResponseDispositionCompleteTransparent,
+	})
+	if terminal.Action != ActionStopped || terminal.Reason != ReasonNonRetryableFailure {
+		t.Fatalf("terminal = %#v", terminal)
 	}
 }
 
@@ -108,9 +159,10 @@ func TestPlannerNeverRetriesAfterFirstDownstreamByte(t *testing.T) {
 	planner := mustPlanner(t, testPlan(3, "a", "b"))
 	first := planner.Start(context.Background())
 	terminal := planner.Fail(context.Background(), *first.Attempt, Failure{
-		Phase:              PhaseUpstreamResponse,
-		StatusCode:         503,
-		FirstByteForwarded: true,
+		Phase:               PhaseUpstreamResponse,
+		StatusCode:          503,
+		FirstByteForwarded:  true,
+		ResponseDisposition: ResponseDispositionExplicitPolicy,
 	})
 	if terminal.Action != ActionStopped || terminal.Reason != ReasonDownstreamCommitted {
 		t.Fatalf("terminal decision = %+v", terminal)
@@ -130,13 +182,14 @@ func TestPlannerRetriesOnlyNodeEquivalentFailureClasses(t *testing.T) {
 		wantRetry bool
 	}{
 		{name: "transport", failure: Failure{Phase: PhaseUpstreamRequest, Err: errors.New("connection reset")}, wantClass: FailureClassTransport, wantRetry: true},
-		{name: "credential status", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 401}, wantClass: FailureClassCredential, wantRetry: true},
-		{name: "rate limit code", failure: Failure{Phase: PhaseUpstreamResponse, ErrorCode: " RATE_LIMIT_EXCEEDED "}, wantClass: FailureClassRateLimit, wantRetry: true},
-		{name: "server response", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 500}, wantClass: FailureClassUpstreamService, wantRetry: true},
-		{name: "request semantic code", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 500, ErrorCode: "model_not_found"}, wantClass: FailureClassRequestSemantic, wantRetry: false},
-		{name: "unknown client response", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 400}, wantClass: FailureClassUnknown, wantRetry: false},
+		{name: "credential status", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 401, ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassCredential, wantRetry: true},
+		{name: "rate limit code", failure: Failure{Phase: PhaseUpstreamResponse, ErrorCode: " RATE_LIMIT_EXCEEDED ", ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassRateLimit, wantRetry: true},
+		{name: "server response", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 500, ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassUpstreamService, wantRetry: true},
+		{name: "request semantic code", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 500, ErrorCode: "model_not_found", ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassRequestSemantic, wantRetry: false},
+		{name: "unknown client response", failure: Failure{Phase: PhaseUpstreamResponse, StatusCode: 400, ResponseDisposition: ResponseDispositionExplicitPolicy}, wantClass: FailureClassUnknown, wantRetry: false},
 		{name: "invalid phase is fail closed", failure: Failure{Phase: FailurePhase("typo"), StatusCode: 503}, wantClass: FailureClassUnknown, wantRetry: false},
 		{name: "client lifecycle", failure: Failure{Phase: PhaseClientLifecycle}, wantClass: FailureClassClientLifecycle, wantRetry: false},
+		{name: "gateway policy", failure: Failure{Phase: PhaseGatewayPolicy}, wantClass: FailureClassGatewayPolicy, wantRetry: false},
 	}
 
 	for _, test := range tests {

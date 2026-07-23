@@ -29,8 +29,16 @@ export interface SystemAccountSummary {
   updatedAt: string
 }
 
+export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'>
+
+export interface SystemAccountOptionSummary {
+  id: string
+  name: string
+  disabledReason?: 'account_disabled'
+}
+
 export interface SystemAccountListResult {
-  items: SystemAccountSummary[]
+  items: SystemAccountListItem[]
   total: number
   hasMore: boolean
   page: number

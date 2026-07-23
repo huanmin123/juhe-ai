@@ -109,7 +109,57 @@ try {
   assert.equal(typeof adminItem.contentPreview, 'string', '管理列表应返回显式正文预览字段')
   assert.equal('content' in adminItem, false, '管理列表不能伪装成完整详情返回 content')
 
-  console.log('公告渐进式 HTTP 回归通过：公共轮询仅返回摘要，公共详情按 ID 取正文，管理列表仅返回 contentPreview')
+  const forbiddenCreateResponse = await fetch(baseUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: '越权公告', content: '不应创建' })
+  })
+  assert.equal(forbiddenCreateResponse.status, 403, '普通用户不能创建公告')
+
+  const createResponse = await fetch(baseUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ title: '轻量响应公告', content: '创建响应不应回传正文', level: 'info', status: 'draft' })
+  })
+  assert.equal(createResponse.status, 201, '管理员应能创建公告')
+  const createPayload = await createResponse.json() as { data: Record<string, unknown> }
+  assertAnnouncementMutationResult(createPayload.data, '创建')
+  const createdId = String(createPayload.data.id)
+
+  const updateResponse = await fetch(`${baseUrl}/${createdId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-test-role': 'admin' },
+    body: JSON.stringify({ content: '已更新但响应仍保持轻量' })
+  })
+  assert.equal(updateResponse.status, 200, '管理员应能更新公告')
+  const updatePayload = await updateResponse.json() as { data: Record<string, unknown> }
+  assertAnnouncementMutationResult(updatePayload.data, '更新')
+  assert.equal(updatePayload.data.id, createdId, '更新响应应标识目标公告')
+
+  const publishResponse = await fetch(`${baseUrl}/${createdId}/publish`, {
+    method: 'POST',
+    headers: { 'x-test-role': 'admin' }
+  })
+  assert.equal(publishResponse.status, 200, '管理员应能发布公告')
+  const publishPayload = await publishResponse.json() as { data: Record<string, unknown> }
+  assertAnnouncementMutationResult(publishPayload.data, '发布')
+
+  const unpublishResponse = await fetch(`${baseUrl}/${createdId}/unpublish`, {
+    method: 'POST',
+    headers: { 'x-test-role': 'admin' }
+  })
+  assert.equal(unpublishResponse.status, 200, '管理员应能下线公告')
+  const unpublishPayload = await unpublishResponse.json() as { data: Record<string, unknown> }
+  assertAnnouncementMutationResult(unpublishPayload.data, '下线')
+
+  const deleteResponse = await fetch(`${baseUrl}/${createdId}`, {
+    method: 'DELETE',
+    headers: { 'x-test-role': 'admin' }
+  })
+  assert.equal(deleteResponse.status, 204, '删除公告应使用空响应')
+  assert.equal(await deleteResponse.text(), '', '删除公告不能返回旧公告摘要')
+
+  console.log('公告渐进式 HTTP 回归通过：读接口按需返回，写接口仅返回 id/revision 或 204')
 } finally {
   await closeServer(server)
   try {
@@ -139,4 +189,10 @@ async function closeServer(server: Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
   })
+}
+
+function assertAnnouncementMutationResult(value: Record<string, unknown>, action: string): void {
+  assert.deepEqual(Object.keys(value).sort(), ['id', 'revision'], `${action}响应只能返回 id 和 revision`)
+  assert.equal(typeof value.id, 'string', `${action}响应必须返回公告 ID`)
+  assert.equal(typeof value.revision, 'string', `${action}响应必须返回可失效缓存的 revision`)
 }

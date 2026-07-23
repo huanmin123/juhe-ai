@@ -3,7 +3,10 @@ import type { DatabaseSync } from 'node:sqlite'
 import type {
   AiPerformanceAccount,
   AiPerformanceAccountOption,
+  AiPerformanceBase,
   AiPerformanceOverview,
+  AiPerformanceSeries,
+  AiPerformanceSummary,
   AccountUsageStatsRange
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
@@ -169,6 +172,131 @@ export async function getAiPerformanceOverviewAsync(access?: AccessScope, range?
       averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
       maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
     }
+  }
+}
+
+export function getAiPerformanceBase(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): AiPerformanceBase {
+  const database = getStatsDatabase()
+  const scope = aiPerformanceScope(access)
+  const hourBuckets = hourBucketsForRange(range)
+  const defaultRows = loadDefaultAiPerformanceAccounts(database, scope, 10)
+  const defaultIds = new Set(defaultRows.map((row) => row.id))
+  const accounts = defaultRows.map((row) => mapAiPerformanceAccount(row, defaultIds, new Set()))
+  const hourlyRows = accounts.length
+    ? loadAiPerformanceHourlyRows(database, scope, accounts.map((account) => account.id), firstHour(range, hourBuckets), lastHour(range, hourBuckets))
+    : []
+  return {
+    range,
+    summary: mapAiPerformanceSummary(loadAiPerformanceSummaryRow(database, scope.systemAccountId, range)),
+    accounts,
+    hourlySeries: mapAiPerformanceHourlySeries(accounts, hourBuckets, hourlyRows)
+  }
+}
+
+export async function getAiPerformanceBaseAsync(
+  access?: AccessScope,
+  range?: AccountUsageStatsRange
+): Promise<AiPerformanceBase> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_ai_performance_base_read_only',
+      access,
+      range
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAiPerformanceBase(access, range)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const timezone = await usageStatsTimezoneAsync()
+  const normalizedRange = range ?? normalizeDefaultUsageStatsRange(timezone)
+  const scope = aiPerformanceScope(access)
+  const hourBuckets = hourBucketsForRange(normalizedRange)
+  const defaultRows = await loadDefaultAiPerformanceAccountsAsync(client, scope, 10)
+  const defaultIds = new Set(defaultRows.map((row) => row.id))
+  const accounts = defaultRows.map((row) => mapAiPerformanceAccount(row, defaultIds, new Set()))
+  const [hourlyRows, summaryRow] = await Promise.all([
+    accounts.length
+      ? loadAiPerformanceHourlyRowsAsync(client, scope, accounts.map((account) => account.id), firstHour(normalizedRange, hourBuckets), lastHour(normalizedRange, hourBuckets))
+      : Promise.resolve([]),
+    loadAiPerformanceSummaryRowAsync(client, scope.systemAccountId, normalizedRange)
+  ])
+  return {
+    range: normalizedRange,
+    summary: mapAiPerformanceSummary(summaryRow),
+    accounts,
+    hourlySeries: mapAiPerformanceHourlySeries(accounts, hourBuckets, hourlyRows)
+  }
+}
+
+export function getAiPerformanceSeries(
+  access: AccessScope | undefined,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(),
+  accountIds: string[]
+): AiPerformanceSeries {
+  const database = getStatsDatabase()
+  const timezone = usageStatsTimezone()
+  const scope = aiPerformanceScope(access)
+  const hourBuckets = hourBucketsForRange(range)
+  const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
+  const selectedRows = loadSelectedAiPerformanceAccounts(
+    database,
+    scope,
+    hourKey(new Date(Date.now() - 6 * DAY_MS), timezone),
+    selectedAccountIds
+  )
+  const selectedIds = new Set(selectedRows.map((row) => row.id))
+  const accounts = selectedRows.map((row) => mapAiPerformanceAccount(row, new Set(), selectedIds))
+  const hourlyRows = accounts.length
+    ? loadAiPerformanceHourlyRows(database, scope, accounts.map((account) => account.id), firstHour(range, hourBuckets), lastHour(range, hourBuckets))
+    : []
+  return {
+    range,
+    accounts,
+    hourlySeries: mapAiPerformanceHourlySeries(accounts, hourBuckets, hourlyRows)
+  }
+}
+
+export async function getAiPerformanceSeriesAsync(
+  access: AccessScope | undefined,
+  range: AccountUsageStatsRange | undefined,
+  accountIds: string[]
+): Promise<AiPerformanceSeries> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_ai_performance_series_read_only',
+      access,
+      range,
+      accountIds
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getAiPerformanceSeries(access, range, accountIds)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const timezone = await usageStatsTimezoneAsync()
+  const normalizedRange = range ?? normalizeDefaultUsageStatsRange(timezone)
+  const scope = aiPerformanceScope(access)
+  const hourBuckets = hourBucketsForRange(normalizedRange)
+  const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
+  const selectedRows = await loadSelectedAiPerformanceAccountsAsync(
+    client,
+    scope,
+    hourKey(new Date(Date.now() - 6 * DAY_MS), timezone),
+    selectedAccountIds
+  )
+  const selectedIds = new Set(selectedRows.map((row) => row.id))
+  const accounts = selectedRows.map((row) => mapAiPerformanceAccount(row, new Set(), selectedIds))
+  const hourlyRows = accounts.length
+    ? await loadAiPerformanceHourlyRowsAsync(client, scope, accounts.map((account) => account.id), firstHour(normalizedRange, hourBuckets), lastHour(normalizedRange, hourBuckets))
+    : []
+  return {
+    range: normalizedRange,
+    accounts,
+    hourlySeries: mapAiPerformanceHourlySeries(accounts, hourBuckets, hourlyRows)
   }
 }
 
@@ -853,6 +981,60 @@ function mapAiPerformanceAccount(row: AiPerformanceAccountRow, defaultIds: Set<s
     requestCountLast7d: Number(row.request_count_last_7d ?? 0),
     selected: selectedIds.has(row.id),
     defaultVisible: defaultIds.has(row.id)
+  }
+}
+
+function firstHour(range: AccountUsageStatsRange, hourBuckets: string[]): string {
+  return hourBuckets[0] ?? `${range.startDate}T00`
+}
+
+function lastHour(range: AccountUsageStatsRange, hourBuckets: string[]): string {
+  return hourBuckets[hourBuckets.length - 1] ?? `${range.endDate}T23`
+}
+
+function mapAiPerformanceHourlySeries(
+  accounts: AiPerformanceAccount[],
+  hourBuckets: string[],
+  hourlyRows: AiPerformanceHourlyRow[]
+) {
+  const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
+  return accounts.map((account) => ({
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    systemAccountId: account.systemAccountId,
+    points: hourBuckets.map((statHour) => {
+      const row = hourlyRowsByAccountHour.get(`${account.id}\n${statHour}`)
+      const requestCount = Number(row?.request_count ?? 0)
+      const firstTokenCount = Number(row?.first_token_ms_count ?? 0)
+      const durationCount = Number(row?.duration_ms_count ?? 0)
+      return {
+        statHour,
+        requestCount,
+        averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
+        maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
+        averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
+        maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
+      }
+    })
+  }))
+}
+
+function mapAiPerformanceSummary(row: {
+  request_count: number
+  first_token_ms_sum: number
+  first_token_ms_count: number
+  first_token_ms_max: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  duration_ms_max: number
+} | undefined): AiPerformanceSummary {
+  return {
+    requestCount: Number(row?.request_count ?? 0),
+    averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
+    maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, Number(row?.first_token_ms_count ?? 0)),
+    averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
+    maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, Number(row?.duration_ms_count ?? 0))
   }
 }
 

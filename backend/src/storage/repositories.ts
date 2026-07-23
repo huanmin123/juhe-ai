@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 
-import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsListResult, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { resolveHealthCheckEndpointMode } from '../domain/account-health-check-endpoint-mode.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
@@ -100,7 +100,7 @@ import {
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot, upsertAccountUsageSnapshotsAsync } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
+import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, getApiKeyUsageByIdsAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
@@ -148,6 +148,7 @@ import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders
 import {
   findProviderDefaultHealthCheckModel,
   findProviderDefaultHealthCheckModelAsync,
+  findProviderOptionByCodeAsync,
   findProviderDefaultSupportedModels,
   findProviderDefaultSupportedModelsAsync,
   listOpenAIProtocolProfileIds,
@@ -484,6 +485,7 @@ export {
   findApiKeySecretAsync,
   findApiKeySummary,
   findApiKeySummaryAsync,
+  getApiKeyUsageByIdsAsync,
   ensureDefaultApiKeysForSystemAccount,
   ensureDefaultApiKeysForSystemAccountAsync,
   ensureChatApiKeyForSystemAccount,
@@ -543,6 +545,7 @@ export {
   findProviderDefaultSupportedModelsAsync,
   findProviderDefaultHealthCheckModel,
   findProviderDefaultHealthCheckModelAsync,
+  findProviderOptionByCodeAsync,
   findProviderProtocolProfile,
   findProviderProtocolProfileAsync,
   isOpenAIProtocolProviderCode,
@@ -555,7 +558,9 @@ export {
   listOpenAIProtocolProfileIdsAsync,
   listOpenAIProtocolProviderCodes,
   listOpenAIProtocolProviderCodesAsync,
+  listEnabledProviderOptionsAsync,
   listProviders,
+  listProviderListItemsAsync,
   listProvidersAsync,
   requireEnabledProviderProtocolProfileAsync
 } from './provider.repository.js'
@@ -688,6 +693,7 @@ export {
   type UsageRecordInput,
   type UsageFailureAttribution,
   type UsageRecordListResult,
+  type UsageRecordListItem,
   type UsageRecordListOptions,
   type UsageRecordLogSnapshot,
   type UsageRecordSortDirection,
@@ -1057,7 +1063,7 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
   return withAllAccountsDefaultTrendIds(access, overview)
 }
 
-export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): AccountUsageStatsOverview {
+export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): AccountUsageStatsListResult {
   const listOptions = normalizeAccountListOptions(options)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
   const range = options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
@@ -1073,7 +1079,7 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
   return withAllAccountsDefaultTrendIds(access, overview)
 }
 
-export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): Promise<AccountUsageStatsOverview> {
+export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): Promise<AccountUsageStatsListResult> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'get_account_usage_stats_overview_page_read_only',
@@ -1102,13 +1108,13 @@ export async function getAccountUsageStatsOverviewPageAsync(access?: AccessScope
   return withAllAccountsDefaultTrendIds(access, overview)
 }
 
-function withAllAccountsDefaultTrendIds(access: AccessScope | undefined, overview: AccountUsageStatsOverview): AccountUsageStatsOverview {
+function withAllAccountsDefaultTrendIds<T extends AccountUsageStatsOverview | AccountUsageStatsListResult>(access: AccessScope | undefined, overview: T): T {
   if (overview.defaultTrendAccountIds.length > 0) return overview
   const defaultTrendAccountIds = allAccountsDefaultTrendAccountIds(access, overview.rows)
-  return defaultTrendAccountIds ? { ...overview, defaultTrendAccountIds } : overview
+  return (defaultTrendAccountIds ? { ...overview, defaultTrendAccountIds } : overview) as T
 }
 
-function allAccountsDefaultTrendAccountIds(access: AccessScope | undefined, rows: AccountUsageStatsOverview['rows']): string[] | undefined {
+function allAccountsDefaultTrendAccountIds(access: AccessScope | undefined, rows: AccountUsageStatsListResult['rows']): string[] | undefined {
   if (scopedSystemAccountId(access) || !canAccessAll(access)) return undefined
   return rows
     .filter((row) => row.rangeUsage.requestCount > 0 || row.rangeUsage.totalTokens > 0 || row.rangeUsage.totalCost > 0)

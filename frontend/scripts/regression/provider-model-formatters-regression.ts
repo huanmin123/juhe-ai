@@ -41,13 +41,13 @@ assert.equal(formatModelServiceTierCapabilities(providerModel()), '仅标准', '
 assert.equal(formatModelReasoningCapabilities(providerModel()), '不支持', '未声明思考能力时应明确表示不支持')
 assert.equal(
   formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'] })),
-  'Low / High；默认：上游决定',
-  '支持思考但没有正式默认值时必须明确由上游决定，不能看起来像漏字段'
+  'Low / High',
+  '模型目录只声明客户端可选的思考级别'
 )
 assert.equal(
   formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' })),
-  'Low / High（默认）',
-  '思考级别必须标明默认值'
+  'Low / High',
+  '模型目录不能把上游元数据标成客户端默认思考级别'
 )
 assert.equal(formatPrice(undefined), '官方未公布', '缺失价格不能显示成含义不明的短横线')
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
@@ -99,6 +99,7 @@ assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInMode
 assert.doesNotMatch(providersViewSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
 assert.doesNotMatch(providersViewSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
 assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
+assert.doesNotMatch(catalogModalSource, /默认由上游决定|（默认）/, '模型目录思考级别只展示客户端可选能力，不展示默认语义')
 assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
 assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
 assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')

@@ -17,10 +17,19 @@ const fetchPageSource = sourceBetween(
   'requestSignature:'
 )
 
-assert.match(fetchPageSource, /return\s+apiKeysApi\.list\(/, 'API Key 首屏必须只等待列表接口')
+assert.match(fetchPageSource, /await\s+apiKeysApi\.list\(/, 'API Key 首屏必须只等待列表接口')
 assert.doesNotMatch(fetchPageSource, /loadApiKeyOptions|loadRouteStrategyOptions/, 'API Key 首屏不得预取策略路由候选')
 assert.doesNotMatch(fetchPageSource, /Promise\.all/, 'API Key 列表请求不得与辅助 options 绑定成同一个首屏等待链')
 assert.doesNotMatch(apiKeysViewSource, /function loadApiKeyOptions\(/, '页面不得保留由列表加载链调用的宽 options 聚合入口')
+assert.match(apiKeysViewSource, /onLoaded:[\s\S]*loadApiKeyUsage/, '列表落地后应独立加载当前页 API Key 用量')
+const usageSource = sourceBetween(apiKeysViewSource, 'async function loadApiKeyUsage', 'function emptyApiKeyUsage')
+assert.match(usageSource, /apiKeysApi\.usage\(\{ ids: normalizedIds, systemAccountId \}\)/, '用量接口必须只携带当前页 ids 与作用域')
+assert.match(usageSource, /requestToken !== apiKeyUsageRequestToken/, '用量回填必须拒绝过期请求')
+assert.match(apiKeysViewSource, /apiKeyUsageState = ref<Record<string, 'pending' \| 'loaded' \| 'error'>>/, '用量必须显式维护 pending/loaded/error 状态')
+assert.match(apiKeysViewSource, /@retry-usage="retryApiKeyUsage"/, '用量失败必须提供独立重试入口')
+assert.match(apiKeysViewSource, /onDeactivated\(\(\) =>/, 'KeepAlive 失活时必须作废用量请求')
+assert.match(apiKeysViewSource, /onActivated\(\(\) =>/, 'KeepAlive 激活时必须重载列表')
+assert.match(usageSource, /authState\.revision\.value/, '用量请求签名必须包含 auth revision')
 
 const filterDropdownSource = sourceBetween(
   apiKeysViewSource,

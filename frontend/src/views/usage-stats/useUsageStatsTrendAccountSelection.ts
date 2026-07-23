@@ -1,5 +1,5 @@
 import { accountSelectionForId, accountSelectOptionLabel, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
-import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow } from '@/types/domain'
+import type { AccountOptionSummary, AccountUsageStatsListResult, AccountUsageStatsRow } from '@/types/domain'
 import { computed, ref, watch, type Ref } from 'vue'
 
 import { dedupeRowsById, metricText, metricValue, placeholderTrendRow, usageTrendDateKeys } from './usageStatsHelpers'
@@ -7,7 +7,7 @@ import { chartColors, orderedUsageRows } from './usageTrendChartOptions'
 import type { UsageTrendMetric } from './usageTrendMetrics'
 
 interface UseUsageStatsTrendAccountsOptions {
-  overview: Ref<AccountUsageStatsOverview | undefined>
+  overview: Ref<AccountUsageStatsListResult | undefined>
   rows: Ref<AccountUsageStatsRow[]>
   accountOptionRows: Ref<AccountOptionSummary[]>
   addedTrendAccountIds: Ref<string[]>

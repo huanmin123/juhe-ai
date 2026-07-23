@@ -1,6 +1,6 @@
 import { toRaw } from 'vue'
 
-import type { AccountBalanceSnapshot, AccountSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountStatusSnapshotItem, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
@@ -80,6 +80,24 @@ export function replaceAccountBalanceSnapshot(
   nextAccounts[accountIndex] = {
     ...accounts[accountIndex],
     balanceSnapshot: snapshot
+  }
+  return nextAccounts
+}
+
+export function mergeAccountStatusSnapshot(
+  accounts: AccountSummary[],
+  snapshot: AccountStatusSnapshotItem,
+  runtimeSnapshot: AccountStatusSnapshotResult['runtimeSnapshot']
+): AccountSummary[] {
+  const accountIndex = accounts.findIndex((account) => account.id === snapshot.id)
+  if (accountIndex < 0) return accounts
+  const current = accounts[accountIndex]
+  const nextAccounts = [...accounts]
+  nextAccounts[accountIndex] = {
+    ...current,
+    ...snapshot,
+    currentConcurrencyAvailable: runtimeSnapshot.accountConcurrencyAvailable,
+    accountRuntimeAvailabilityAvailable: runtimeSnapshot.accountRuntimeAvailabilityAvailable
   }
   return nextAccounts
 }

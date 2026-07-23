@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { computed, createSSRApp, h, nextTick, ref, type ComputedRef, type Ref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
@@ -29,6 +30,7 @@ const createModelOptions = useUsageRecordModelOptions as unknown as UsageRecordM
 const originalModelOptions = api.providers.modelOptions
 const originalAdminUsageWindow = api.stats.usageWindow
 const originalSelfUsageWindow = api.myStats.usageWindow
+const usageRecordsViewSource = readFileSync(new URL('../../views/usage-records/UsageRecordsView.vue', import.meta.url), 'utf8')
 
 try {
   await verifyDesktopManagementScopeAndCache()
@@ -37,6 +39,16 @@ try {
   await verifyRevisitedQueryRequestsCurrentData()
   await verifyUsageWindowAdminTtlAndInflightCache()
   await verifyUsageWindowScopeIsolationAndForceRace()
+  assert.match(
+    usageRecordsViewSource,
+    /loadUsageStatsWindow\(\{ viewScope: isManagementView\.value \? 'admin' : 'self' \}\)/,
+    '使用记录管理页和个人页都必须复用对应作用域的 usage-window 时区'
+  )
+  assert.doesNotMatch(
+    usageRecordsViewSource,
+    /if \(!isManagementView\.value\) return[\s\S]{0,160}loadUsageStatsWindow/,
+    '个人使用记录页不得跳过 usage-window 而退回浏览器时区'
+  )
   console.log('使用记录模型候选按需加载行为回归通过：桌面、移动、作用域、并发、竞态和时区缓存均符合契约')
 } finally {
   api.providers.modelOptions = originalModelOptions

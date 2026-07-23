@@ -84,28 +84,6 @@ interface RuntimeLogFacetsResponse {
   totalIndexed: number
   levels: Array<{ value: string; count: number }>
   events: string[]
-  indexEnabled: boolean
-  unavailableReason?: string
-  runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
-  ingestWorkerAvailable: boolean
-  runtimeLogIndexQueueAvailable: boolean
-  runtime: { lastError?: string } | null
-  worker: { ready: boolean | null; pendingMessageCount: number | null }
-  queueHealth: {
-    available: boolean
-    workerSnapshotAvailable: boolean
-    serverIpcQueueAvailable: boolean
-    status: string
-    summary: { unavailableCount: number; droppedCount: number; rejectedCount: number }
-  }
-  dbService: {
-    statusAvailable: boolean
-    stateAvailable: boolean
-    ready: boolean | null
-  }
-  gatewayAccountSideEffectsAvailable: boolean
-  gatewayAccountSideEffects: unknown
 }
 
 interface RuntimeLogRuntimeResponse {
@@ -148,10 +126,10 @@ interface SystemMetricsRuntimeResponse {
 interface AccountListResponse {
   items: Array<{
     id: string
-    currentConcurrency: number
+    currentConcurrency?: number
     currentConcurrencyAvailable?: boolean
   }>
-  runtimeSnapshot: {
+  runtimeSnapshot?: {
     accountConcurrencyAvailable: boolean
     accountRuntimeAvailabilityAvailable: boolean
   }
@@ -173,7 +151,7 @@ interface GroupListResponse {
     id: string
     accountStats: Record<string, unknown>
   }>
-  runtimeSnapshot: {
+  runtimeSnapshot?: {
     accountConcurrencyAvailable: boolean
   }
 }
@@ -225,21 +203,10 @@ try {
   assert(Array.isArray(runtimeLogFacets.levels), '运行日志 facets 必须返回级别选项')
   assert(Array.isArray(runtimeLogFacets.events), '运行日志 facets 必须返回事件选项')
   const expectedRuntimeLogFacetKeys = [
-    'dbService',
     'events',
-    'gatewayAccountSideEffects',
-    'gatewayAccountSideEffectsAvailable',
-    'grep',
-    'indexEnabled',
     'levels',
-    'queueHealth',
     'retentionDays',
-    'runtime',
-    'runtimeAvailable',
-    'runtimeLogIndexQueueAvailable',
-    'totalIndexed',
-    'worker',
-    'workerSnapshotAvailable'
+    'totalIndexed'
   ]
   if ('earliestIndexedAt' in runtimeLogFacets) expectedRuntimeLogFacetKeys.push('earliestIndexedAt')
   if ('latestIndexedAt' in runtimeLogFacets) expectedRuntimeLogFacetKeys.push('latestIndexedAt')
@@ -248,27 +215,6 @@ try {
     expectedRuntimeLogFacetKeys.sort(),
     '运行日志 facets 只应返回筛选与范围信息，不得夹带进程、队列和 DB service 运行态'
   )
-  assert.equal(runtimeLogFacets.indexEnabled, true, '未配置总开关时运行日志索引必须标记启用')
-  assert.equal(runtimeLogFacets.unavailableReason, undefined)
-  assert.equal(runtimeLogFacets.runtimeAvailable, false, '运行日志 facets 应标记 server runtime 不可用')
-  assert.equal(runtimeLogFacets.workerSnapshotAvailable, false, '运行日志 facets 应标记 worker snapshot 不可用')
-  assert.equal(runtimeLogFacets.runtimeLogIndexQueueAvailable, false, '运行日志 facets 应标记索引队列不可用')
-  assert.equal(runtimeLogFacets.runtime, null, '运行日志 runtime 不可用时不能伪装成空队列')
-  assert.equal(runtimeLogFacets.worker.ready, null, 'worker 状态不可用时 facets ready 不能伪装成 false')
-  assert.equal(runtimeLogFacets.worker.pendingMessageCount, null, 'worker 状态不可用时 facets pendingMessageCount 不能伪装成 0')
-  assert.equal(runtimeLogFacets.queueHealth.available, false, '队列健康快照应标记 server runtime 不可用')
-  assert.equal(runtimeLogFacets.queueHealth.workerSnapshotAvailable, false, '队列健康快照应标记 worker snapshot 不可用')
-  assert.equal(runtimeLogFacets.queueHealth.serverIpcQueueAvailable, false, '队列健康快照应标记 server IPC 队列不可用')
-  assert.equal(runtimeLogFacets.queueHealth.status, 'unavailable', '运行态不可用时队列健康状态不能伪装成 normal')
-  assert(runtimeLogFacets.queueHealth.summary.unavailableCount > 0, '运行态不可用时队列健康应记录不可用队列数量')
-  assert.equal(runtimeLogFacets.queueHealth.summary.droppedCount, 0, '不可用不应伪造 dropped 指标')
-  assert.equal(runtimeLogFacets.queueHealth.summary.rejectedCount, 0, '不可用不应伪造 rejected 指标')
-  assert.equal(runtimeLogFacets.dbService.statusAvailable, true, 'DB service 本地 status 仍应可用')
-  assert.equal(runtimeLogFacets.dbService.stateAvailable, false, 'server runtime 缺失时 DB service 父进程状态应标记不可用')
-  assert.equal(runtimeLogFacets.dbService.ready, true, 'DB service 本地 status 可用时 ready 应来自本地 status')
-  assert.equal(runtimeLogFacets.gatewayAccountSideEffectsAvailable, false, '网关账户副作用运行态应标记不可用')
-  assert.equal(runtimeLogFacets.gatewayAccountSideEffects, null, '网关账户副作用不可用时不能伪装成 0 队列')
-
   const runtimeLogGrepOptions = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/runtime-logs/grep-options', seed.adminCookie)
   assert('defaultRangeDays' in runtimeLogGrepOptions, 'grep 模式应通过独立接口读取文件时间范围')
 
@@ -325,10 +271,9 @@ try {
   const accountPage = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   const account = accountPage.items.find((item) => item.id === seed.accountId)
   assert(account, '测试账户应出现在账户列表')
-  assert.equal(accountPage.runtimeSnapshot.accountConcurrencyAvailable, false, '账户分页必须内联并发不可用标记')
-  assert.equal(accountPage.runtimeSnapshot.accountRuntimeAvailabilityAvailable, false, '账户分页必须内联运行态不可用标记')
-  assert.equal(account.currentConcurrency, 0, '账户并发不可用时列表只保留数值占位')
-  assert.equal(account.currentConcurrencyAvailable, false, '账户列表不得把占位并发标记为可信')
+  assert.equal(accountPage.runtimeSnapshot, undefined, '账户静态分页不得内联运行态快照')
+  assert.equal('currentConcurrency' in account, false, '账户静态分页不得内联当前并发')
+  assert.equal('currentConcurrencyAvailable' in account, false, '账户静态分页不得内联并发可用性')
 
   const accountStatusSnapshot = await getEnvelope<AccountStatusSnapshotResponse>(
     baseUrl,
@@ -342,10 +287,10 @@ try {
   const groupPage = await getEnvelope<GroupListResponse>(baseUrl, '/__aisys__/api/groups?page=1&pageSize=20', seed.adminCookie)
   const group = groupPage.items.find((item) => item.id === seed.groupId)
   assert(group, '测试分组应出现在分组列表')
-  assert.equal(groupPage.runtimeSnapshot.accountConcurrencyAvailable, false, '分组分页必须内联并发不可用标记')
-  assert.equal(group.accountStats.currentConcurrency, 0, '分组并发不可用时列表只保留数值占位')
-  assert.equal(group.accountStats.currentConcurrencyAvailable, false, '分组列表不得把占位并发标记为可信')
-  assert.equal('todayUsage' in group.accountStats, true, '分组列表必须内联当日用量')
+  assert.equal(groupPage.runtimeSnapshot, undefined, '分组静态分页不得内联运行态快照')
+  assert.equal('currentConcurrency' in group.accountStats, false, '分组静态分页不得内联当前并发')
+  assert.equal('currentConcurrencyAvailable' in group.accountStats, false, '分组静态分页不得内联并发可用性')
+  assert.equal('todayUsage' in group.accountStats, false, '分组静态分页不得内联当日用量')
 
   const groupStatusSnapshot = await getEnvelope<GroupStatusSnapshotResponse>(
     baseUrl,

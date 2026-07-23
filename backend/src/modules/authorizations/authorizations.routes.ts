@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
-import { getAuthorizationTeamUsageOverviewAsync, getAuthorizationUserUsageOverviewAsync } from '../../storage/authorization-usage.repository.js'
+import { getAuthorizationTeamUsageRowsAsync, getAuthorizationTeamUsageSummaryAsync, getAuthorizationUserUsageRowsAsync, getAuthorizationUserUsageSummaryAsync } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorizationAsync,
   findResourceAuthorizationAsync,
@@ -55,18 +55,40 @@ const authorizationUsageQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').optional()
 })
 
-const authorizationUsageOverviewQuerySchema = z.object({
+const authorizationUsageCommonQueryShape = {
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   resourceType: z.enum(['account', 'group']).optional(),
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
-  resourceOwnerSystemAccountId: z.string().trim().min(1, '资源归属用户 ID 不能为空').optional(),
-  granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
-  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
+}
+
+const authorizationUsageTeamRowsQuerySchema = z.object({
+  ...authorizationUsageCommonQueryShape,
   page: z.coerce.number().int().min(1, '页码必须大于 0').optional(),
   pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').max(200, '每页最多 200 条').optional()
-})
+}).strict().refine(validAuthorizationUsageResourceFilter, { path: ['resourceId'], message: '按资源筛选时必须指定资源类型' })
+
+const authorizationUsageUserRowsQuerySchema = z.object({
+  ...authorizationUsageCommonQueryShape,
+  granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
+  page: z.coerce.number().int().min(1, '页码必须大于 0').optional(),
+  pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').max(200, '每页最多 200 条').optional()
+}).strict().refine(validAuthorizationUsageResourceFilter, { path: ['resourceId'], message: '按资源筛选时必须指定资源类型' })
+
+const authorizationUsageTeamSummaryQuerySchema = z.object(authorizationUsageCommonQueryShape)
+  .strict()
+  .refine(validAuthorizationUsageResourceFilter, { path: ['resourceId'], message: '按资源筛选时必须指定资源类型' })
+
+const authorizationUsageUserSummaryQuerySchema = z.object({
+  ...authorizationUsageCommonQueryShape,
+  granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional()
+}).strict().refine(validAuthorizationUsageResourceFilter, { path: ['resourceId'], message: '按资源筛选时必须指定资源类型' })
+
+function validAuthorizationUsageResourceFilter(value: { resourceType?: string; resourceId?: string }): boolean {
+  return !value.resourceId || Boolean(value.resourceType)
+}
 
 const createAuthorizationSchema = z.object({
   resourceType: z.enum(['account', 'group']),
@@ -135,7 +157,7 @@ authorizationsRouter.get('/', async (req, res, next) => {
 })
 
 authorizationsRouter.get('/usage/team-details', async (req, res, next) => {
-  const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
+  const parsed = parseOrBadRequest(authorizationUsageTeamRowsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
@@ -143,14 +165,24 @@ authorizationsRouter.get('/usage/team-details', async (req, res, next) => {
   try {
     const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
     const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
-    res.json(ok(await getAuthorizationTeamUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+    res.json(ok(await getAuthorizationTeamUsageRowsAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
   } catch (error) {
     next(error)
   }
 })
 
+authorizationsRouter.get('/usage/team-summary', async (req, res, next) => {
+  const parsed = parseOrBadRequest(authorizationUsageTeamSummaryQuerySchema, req.query, '查询参数不合法')
+  if (!parsed.success) { sendBadRequest(res, parsed.message); return }
+  try {
+    const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+    const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
+    res.json(ok(await getAuthorizationTeamUsageSummaryAsync(filters, getRequestAccessScope(systemAccountId), range)))
+  } catch (error) { next(error) }
+})
+
 authorizationsRouter.get('/usage/user-details', async (req, res, next) => {
-  const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
+  const parsed = parseOrBadRequest(authorizationUsageUserRowsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
     return
@@ -158,10 +190,20 @@ authorizationsRouter.get('/usage/user-details', async (req, res, next) => {
   try {
     const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
     const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
-    res.json(ok(await getAuthorizationUserUsageOverviewAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
+    res.json(ok(await getAuthorizationUserUsageRowsAsync(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
   } catch (error) {
     next(error)
   }
+})
+
+authorizationsRouter.get('/usage/user-summary', async (req, res, next) => {
+  const parsed = parseOrBadRequest(authorizationUsageUserSummaryQuerySchema, req.query, '查询参数不合法')
+  if (!parsed.success) { sendBadRequest(res, parsed.message); return }
+  try {
+    const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+    const range = await normalizeAuthorizationUsageRangeAsync({ startDate, endDate })
+    res.json(ok(await getAuthorizationUserUsageSummaryAsync(filters, getRequestAccessScope(systemAccountId), range)))
+  } catch (error) { next(error) }
 })
 
 authorizationsRouter.post('/', mutationGuard({

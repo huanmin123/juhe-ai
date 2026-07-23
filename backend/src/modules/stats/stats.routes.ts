@@ -1,6 +1,7 @@
-import { Router } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
+import type { AccountUsageStatsRange } from '../../domain/types.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
@@ -8,9 +9,14 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
-import { getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
 import {
-  getAiPerformanceOverviewAsync,
+  getAiPerformanceBaseAsync,
+  getAiPerformanceSeriesAsync,
+  getUsageStatsOverviewErrorsAsync,
+  getUsageStatsOverviewHourlyTrendAsync,
+  getUsageStatsOverviewModelDistributionAsync,
+  getUsageStatsOverviewSummaryAsync,
   getSystemMetricsOverviewAsync,
   getUsageStatsOverviewAsync,
   listAiPerformanceAccountOptionsAsync,
@@ -21,6 +27,7 @@ import type { RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js
 import { getAuditLogRedisStreamRuntime } from '../audit-logs/audit-log-queue.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import { buildBackgroundQueueHealthSnapshot, type BackgroundQueueHealthItem } from '../background/background-queue-health.service.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import type { DbServiceRuntimeQueueSnapshot, DbServiceServerRuntimeSnapshot } from '../db-service/db-service-types.js'
@@ -32,6 +39,8 @@ import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/re
 
 export const statsRouter = Router()
 
+type UsageOverviewSectionLoader<T> = (access: AccessScope | undefined, range: AccountUsageStatsRange) => Promise<T>
+
 const usageOverviewQuerySchema = z.object({
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
@@ -41,6 +50,26 @@ const aiPerformanceAccountOptionsQuerySchema = z.object({
   keyword: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(50).optional()
 })
+
+async function handleUsageOverviewSectionRequest<T>(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  load: UsageOverviewSectionLoader<T>
+): Promise<void> {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '统计日期范围不合法')))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const range = await normalizeUsageOverviewDateRangeAsync(parsed.data)
+    res.json(ok(await load(access, range)))
+  } catch (error) {
+    next(error)
+  }
+}
 
 interface BackgroundScheduledJobSnapshot {
   name: string
@@ -108,6 +137,22 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
   }
 })
 
+statsRouter.get('/usage-overview/summary', async (req, res, next) => {
+  await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewSummaryAsync(access, range))
+})
+
+statsRouter.get('/usage-overview/hourly-trend', async (req, res, next) => {
+  await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewHourlyTrendAsync(access, range))
+})
+
+statsRouter.get('/usage-overview/model-distribution', async (req, res, next) => {
+  await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewModelDistributionAsync(access, range))
+})
+
+statsRouter.get('/usage-overview/errors', async (req, res, next) => {
+  await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewErrorsAsync(access, range))
+})
+
 statsRouter.get('/usage-window', async (_req, res, next) => {
   try {
     const timezone = await usageStatsTimezoneAsync()
@@ -125,6 +170,10 @@ statsRouter.get('/usage-window', async (_req, res, next) => {
 })
 
 statsRouter.get('/ai-performance', async (req, res, next) => {
+  if (hasAiPerformanceAccountIdsQuery(req.query)) {
+    res.status(400).json(badRequest('AI 性能基础数据不接受 accountIds，请使用 /ai-performance/series'))
+    return
+  }
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '性能监控日期范围不合法')))
@@ -133,9 +182,27 @@ statsRouter.get('/ai-performance', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const range = await normalizeStatsDateRangeAsync(parsed.data)
-    const accountIds = parseAccountIds(req.query.accountIds)
-    const overview = await getAiPerformanceOverviewAsync(access, range, accountIds)
-    res.json(ok(overview))
+    res.json(ok(await getAiPerformanceBaseAsync(access, range)))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/ai-performance/series', async (req, res, next) => {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '性能监控日期范围不合法')))
+    return
+  }
+  const accountIds = parseAiPerformanceSeriesAccountIds(req.query)
+  if (!accountIds.success) {
+    res.status(400).json(badRequest(accountIds.message))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const range = await normalizeStatsDateRangeAsync(parsed.data)
+    res.json(ok(await getAiPerformanceSeriesAsync(access, range, accountIds.data)))
   } catch (error) {
     next(error)
   }
@@ -163,11 +230,29 @@ statsRouter.get('/ai-performance/accounts', async (req, res, next) => {
 
 statsRouter.get('/account-usage', async (req, res, next) => {
   try {
+    if (req.query.includeSummary !== undefined) {
+      res.status(400).json(badRequest('account-usage 列表不支持 includeSummary，请使用 /account-usage/summary'))
+      return
+    }
     const timezone = await usageStatsTimezoneAsync()
     const access = getRequestAccessScope(req.query.systemAccountId)
     const query = parseAccountUsageOptions(req.query, timezone)
     const overview = await getAccountUsageStatsOverviewPageAsync(access, query)
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/account-usage/summary', async (req, res, next) => {
+  try {
+    const timezone = await usageStatsTimezoneAsync()
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const range = normalizeAccountUsageStatsRange({
+      startDate: optionalQueryText(req.query.startDate),
+      endDate: optionalQueryText(req.query.endDate)
+    }, timezone)
+    res.json(ok(await getAccountUsageStatsSummaryAsync(access, range)))
   } catch (error) {
     next(error)
   }
@@ -231,6 +316,40 @@ function parseAccountIds(value: unknown): string[] {
     }
   }
   return ids
+}
+
+function hasAiPerformanceAccountIdsQuery(query: Record<string, unknown>): boolean {
+  return Object.keys(query).some((key) => key === 'accountIds' || key.startsWith('accountIds['))
+}
+
+function parseAiPerformanceSeriesAccountIds(query: Record<string, unknown>):
+  | { success: true; data: string[] }
+  | { success: false; message: string } {
+  const unsupportedKey = Object.keys(query).find((key) => key.startsWith('accountIds[') && key !== 'accountIds[]')
+  if (unsupportedKey) {
+    return { success: false, message: 'accountIds 仅支持重复参数 accountIds=value' }
+  }
+  const rawValues = [query.accountIds, query['accountIds[]']]
+    .flatMap((value) => Array.isArray(value) ? value : value === undefined ? [] : [value])
+  if (rawValues.length < 1 || rawValues.length > 20) {
+    return { success: false, message: 'accountIds 必须重复传入 1 到 20 个' }
+  }
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const rawValue of rawValues) {
+    if (typeof rawValue !== 'string' || rawValue.includes(',')) {
+      return { success: false, message: 'accountIds 不接受 CSV，必须使用重复参数' }
+    }
+    const id = rawValue.trim()
+    if (!id) {
+      return { success: false, message: 'accountIds 不能为空' }
+    }
+    if (!seen.has(id)) {
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+  return { success: true, data: ids }
 }
 
 function backgroundJobsFromSnapshot(snapshot: BackgroundJobsSnapshot | undefined): BackgroundJobRuntimeRow[] | undefined {
@@ -560,6 +679,25 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   try {
     const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) => {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控日期范围不合法')))
+    return
+  }
+  try {
+    const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
+    res.json(ok({
+      hourlyTrend: overview.hourlyTrend,
+      processEventLoopLatestStatus: overview.processEventLoopLatestStatus,
+      processEventLoopPeakStatus: overview.processEventLoopPeakStatus,
+      processEventLoopTrend: overview.processEventLoopTrend
+    }))
   } catch (error) {
     next(error)
   }

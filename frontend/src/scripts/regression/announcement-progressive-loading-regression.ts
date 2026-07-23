@@ -11,7 +11,15 @@ const typeSource = readFileSync(fileURLToPath(new URL('../../types/domain/announ
 assert.match(typeSource, /interface PublishedAnnouncementListItem[\s\S]*?id: string[\s\S]*?title: string[\s\S]*?level: AnnouncementLevel[\s\S]*?publishedAt: string/, '公共公告列表类型应只表达轻量摘要')
 assert.doesNotMatch(typeSource.match(/interface PublishedAnnouncementListItem[\s\S]*?\n}/)?.[0] ?? '', /content:/, '公共公告列表类型不能包含正文')
 assert.match(typeSource, /interface AnnouncementListItem[\s\S]*?contentPreview: string/, '管理公告列表应使用显式 contentPreview 字段')
+assert.match(typeSource, /interface AnnouncementMutationResult[\s\S]*?id: string[\s\S]*?revision: string/, '公告写操作必须使用轻量 id/revision 响应类型')
 assert.match(apiSource, /publicDetail:\s*\(id: string\)[\s\S]*?\/announcements\/public\/\$\{id\}/, '公告 API 应提供公共详情按 ID 读取')
+for (const actionName of ['create', 'update', 'publish', 'unpublish']) {
+  assert.match(
+    apiSource,
+    new RegExp(`${actionName}:[\\s\\S]{0,240}unwrap<AnnouncementMutationResult>`),
+    `${actionName} API 不能继续声明返回完整 AnnouncementSummary`
+  )
+}
 
 const loadSummariesBody = layoutSource.match(/async function loadAnnouncements[\s\S]*?\n}/)?.[0] ?? ''
 assert.match(loadSummariesBody, /api\.announcements\.publicList/, '登录首屏和轮询仍应加载轻量公告摘要')
@@ -41,5 +49,9 @@ for (const actionName of ['saveAnnouncement', 'publishAnnouncement', 'unpublishA
     `${actionName} 成功后必须失效公告详情缓存`
   )
 }
+assert.doesNotMatch(adminViewSource, /const\s+\w+\s*=\s*await api\.announcements\.(?:create|update|publish|unpublish)/, '公告管理页面不能依赖写操作返回完整公告摘要')
+assert.match(adminViewSource, /await api\.announcements\.update[\s\S]{0,800}await loadData\(\)/, '公告编辑成功后应重新加载权威列表')
+assert.match(adminViewSource, /async function publishAnnouncement[\s\S]{0,800}await loadData\(\)/, '公告发布成功后应重新加载权威列表')
+assert.match(adminViewSource, /async function unpublishAnnouncement[\s\S]{0,800}await loadData\(\)/, '公告下线成功后应重新加载权威列表')
 
 console.log('公告前端渐进加载回归通过：首屏与轮询仅取摘要，展开单条才按 ID 取正文')

@@ -91,10 +91,13 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
+/** Paged table rows intentionally exclude request/response snapshots; fetch detail to inspect those. */
+export type UsageRecordListItem = Omit<UsageRecordSummary, 'requestSnapshot' | 'responseSnapshot'>
+
 export type UsageRecordReasoningEffort = string
 
 export interface UsageRecordListResult {
-  items: UsageRecordSummary[]
+  items: UsageRecordListItem[]
   total: number
   hasMore: boolean
   page: number

@@ -305,9 +305,11 @@ try {
   assert.match(postgresSchemaSource, /idx_accounts_name_c_lookup/, 'PG AI 性能账号选项全局名称前缀查询必须有 C collation 索引')
   assert.match(postgresSchemaSource, /idx_accounts_owner_name_c_lookup/, 'PG AI 性能账号选项租户名称前缀查询必须有 owner + C collation 索引')
   const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
-  assert.match(statsRoutesSource, /getAiPerformanceOverviewAsync/, 'AI 性能概览路由应使用 async repository')
+  assert.match(statsRoutesSource, /getAiPerformanceBaseAsync/, 'AI 性能 base 路由应使用 async repository')
+  assert.match(statsRoutesSource, /getAiPerformanceSeriesAsync/, 'AI 性能 series 路由应使用 async repository')
   assert.match(statsRoutesSource, /listAiPerformanceAccountOptionsAsync/, 'AI 性能账号选项路由应使用 async repository')
-  assert.doesNotMatch(statsRoutesSource, /\bgetAiPerformanceOverview\(/, 'AI 性能概览路由不应直接调用同步 repository')
+  assert.doesNotMatch(statsRoutesSource, /\bgetAiPerformanceBase\(/, 'AI 性能 base 路由不应直接调用同步 repository')
+  assert.doesNotMatch(statsRoutesSource, /\bgetAiPerformanceSeries\(/, 'AI 性能 series 路由不应直接调用同步 repository')
   assert.doesNotMatch(statsRoutesSource, /\blistAiPerformanceAccountOptions\(/, 'AI 性能账号选项路由不应直接调用同步 repository')
 
   console.log('AI 性能账号选项查询防护回归通过：关键词仅按账号名称精确/前缀匹配，显式账号 ID 仅用于已选项回填')

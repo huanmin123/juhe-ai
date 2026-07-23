@@ -96,7 +96,7 @@ function assertProviderEnabledPredicateBoundary(): void {
   assert.doesNotMatch(source, /providerEnabledPredicate[\s\S]{0,300}\bTRUE\b/, '供应商 INTEGER enabled 字段不得与 PostgreSQL boolean TRUE 比较')
   assert.equal(
     source.match(/providerEnabledPredicate\(client, '[^']+'\)/g)?.length,
-    11,
+    12,
     '全部供应商异步 enabled 查询都必须复用 INTEGER predicate'
   )
 }
@@ -228,11 +228,16 @@ async function assertRepositoryBarrelAsync(): Promise<void> {
   const providers = await repositories.listProvidersAsync()
   assert.ok(providers.some((provider) => provider.code === GPT_VENDOR_CODE), '统一 repository 出口应暴露异步供应商读取')
   assert.ok((await repositories.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '统一 repository 出口应暴露默认支持模型读取')
+  assert.equal((await repositories.findProviderOptionByCodeAsync(GPT_VENDOR_CODE))?.code, GPT_VENDOR_CODE, '统一 repository 出口应暴露按 code 的轻量供应商查询')
 }
 
 async function assertProviderRepositoryAsync(repository: typeof import('../../storage/provider.repository.js')): Promise<void> {
   const providers = await repository.listProvidersAsync()
   assert.ok(providers.length >= 6, '应读取默认内置供应商')
+  const options = await repository.listEnabledProviderOptionsAsync()
+  assert.ok(options.length > 0 && options.every((item) => item.enabled), '轻量供应商 options 必须只返回启用项')
+  assert.deepEqual(Object.keys(options[0]!).sort(), ['code', 'enabled', 'id', 'name'], '轻量供应商 options 必须保持严格四字段 DTO')
+  assert.equal((await repository.findProviderOptionByCodeAsync(GPT_VENDOR_CODE))?.code, GPT_VENDOR_CODE, '必须支持按 code 的轻量存在性查询')
 
   const gpt = providers.find((provider) => provider.code === GPT_VENDOR_CODE)
   assert.ok(gpt, '应包含 GPT 供应商')

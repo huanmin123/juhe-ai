@@ -304,6 +304,9 @@ try {
   assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
   const accountUsageRepositorySource = readFileSync(resolve('src/storage/account-usage.repository.ts'), 'utf8')
   assert.match(accountUsageRepositorySource, /export async function getAccountUsageStatsTrendAsync/, '账户用量趋势必须提供独立按账户查询入口')
+  assert.match(accountUsageRepositorySource, /export async function getAccountUsageStatsSummaryAsync/, '账户用量汇总必须提供独立查询入口')
+  assert.match(statsRoutesSource, /req\.query\.includeSummary !== undefined[\s\S]{0,220}status\(400\)/, '旧 includeSummary 列表参数必须明确拒绝')
+  assert.match(accountUsageRepositorySource, /AccountUsageStatsListResult/, '分页列表必须使用严格无 summary DTO')
   const sqlitePageSource = accountUsageRepositorySource.slice(
     accountUsageRepositorySource.indexOf('export function getAccountUsageStatsOverviewPageFromWindows'),
     accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsOverviewPageFromWindowsAsync')
@@ -314,6 +317,8 @@ try {
   )
   assert.doesNotMatch(postgresPageSource, /loadUsageDailySeriesForScopeRequestsAsync/, '账户用量分页接口不得加载整页 dailyUsage')
   assert.doesNotMatch(sqlitePageSource, /loadUsageDailySeriesForScopeRequests\(/, 'SQLite 账户用量分页接口不得加载整页 dailyUsage')
+  assert.doesNotMatch(sqlitePageSource, /usage_window\.(?:cache_write|thinking|input_image|output_image)/, 'SQLite 账户用量列表窗口只应读取表格所需 rangeUsage 字段')
+  assert.doesNotMatch(postgresPageSource, /usage_window\.(?:cache_write|thinking|input_image|output_image)/, 'PG 账户用量列表窗口只应读取表格所需 rangeUsage 字段')
   const accountUsageAsyncKeywordSnippet = accountUsageRepositorySource.slice(
     accountUsageRepositorySource.indexOf('async function loadAccountUsageKeywordAccountIdsAsync'),
     accountUsageRepositorySource.indexOf('function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword')

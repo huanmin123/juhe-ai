@@ -581,6 +581,8 @@ try {
         stream: false,
         statusCode: 200,
         success: true,
+        requestSnapshot: { marker: 'detail-request-snapshot' },
+        responseSnapshot: { marker: 'detail-response-snapshot' },
         createdAt: routeDefaultWindowInsideAt
       },
       {
@@ -606,6 +608,15 @@ try {
       sessionCookie(admin.id)
     )
     assert.deepEqual(routeDefaultWindow.items.map((item) => item.id), [routeDefaultWindowInsideId], '使用记录路由未传日期时应默认限制今天')
+    assert.equal('requestSnapshot' in routeDefaultWindow.items[0], false, '使用记录列表 DTO 不应返回请求快照')
+    assert.equal('responseSnapshot' in routeDefaultWindow.items[0], false, '使用记录列表 DTO 不应返回响应快照')
+    const routeDetail = await getEnvelope<Record<string, unknown>>(
+      routeBaseUrl,
+      `/__aisys__/api/usage-records/${routeDefaultWindowInsideId}?systemAccountId=sys_admin`,
+      sessionCookie(admin.id)
+    )
+    assert.deepEqual(routeDetail.requestSnapshot, { marker: 'detail-request-snapshot' }, '使用记录详情必须保留完整请求快照')
+    assert.deepEqual(routeDetail.responseSnapshot, { marker: 'detail-response-snapshot' }, '使用记录详情必须保留完整响应快照')
 
     const routeWithoutSystemAccount = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,

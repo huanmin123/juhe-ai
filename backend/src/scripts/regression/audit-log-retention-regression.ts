@@ -62,7 +62,8 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const unsampledEvents = repositories.listAuditLogs({ traceId: unsampledTraceId })
   assert.equal(unsampledEvents.total, 1, '未命中 10% 稳定采样的成功请求应按热保留写入 audit_logs')
-  assert.equal(unsampledEvents.items[0]?.sampleReason, 'success_hot_full_retention', '未采样成功请求应标记为成功热保留')
+  const unsampledDetail = repositories.getAuditLogDetail(unsampledEvents.items[0]?.id ?? '')
+  assert.equal(unsampledDetail?.sampleReason, 'success_hot_full_retention', '未采样成功请求应标记为成功热保留')
 
   finalizeSuccessfulRequest(sampledTraceId)
   auditQueue.flushAllAuditLogQueue()
@@ -187,9 +188,9 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const overflowEvents = repositories.listAuditLogs({ traceId: overflowTraceId })
   assert.equal(overflowEvents.total, 1, 'active capture 超限时应保留失败事件')
-  assert.equal(overflowEvents.items[0]?.captureStatus, 'overflow', 'server 常驻正文超过 64MiB 后事件必须标记 overflow')
-  assert(overflowEvents.items[0]?.payloadCount > 0, '超大失败 body 应保留摘要 payload')
   const overflowDetail = repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')
+  assert.equal(overflowDetail?.captureStatus, 'overflow', 'server 常驻正文超过 64MiB 后事件必须标记 overflow')
+  assert((overflowDetail?.payloadCount ?? 0) > 0, '超大失败 body 应保留摘要 payload')
   assert.equal(overflowDetail?.payloads.some((payload) => payload.partType === 'client_request'), false, '超限后不得继续持有 client_request 正文')
   const overflowMetadata = overflowDetail?.payloads.find((payload) => payload.partType === 'gateway_metadata')
   assert.equal(overflowMetadata?.captureStatus, 'overflow', '超限后应保留轻量 overflow metadata')
@@ -212,8 +213,8 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const rejectedEvents = repositories.listAuditLogs({ traceId: 'trace-body-rejected-retained' })
   assert.equal(rejectedEvents.total, 1, '请求体被网关拒绝时也应保留失败事件')
-  assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
   const rejectedDetail = repositories.getAuditLogDetail(rejectedEvents.items[0]?.id ?? '')
+  assert.equal(rejectedDetail?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
   const rejectedClientPayload = rejectedDetail?.payloads.find((payload) => payload.partType === 'client_request')
   assert(rejectedClientPayload, '请求体被网关拒绝时应保留无正文客户端请求 payload')
   assert.equal(rejectedClientPayload.captureStatus, 'overflow', '被拒绝正文的 payload 应标记为 overflow')
@@ -286,13 +287,13 @@ try {
   const largeFailedEvents = repositories.listAuditLogs({ traceId: largeFailedTraceId })
   assert.equal(largeFailedEvents.total, 1, '失败大请求应保留审计事件')
   const largeFailedEvent = largeFailedEvents.items[0]
-  assert(largeFailedEvent.rawPayloadBytes > largeFailedRequestBody.byteLength, '失败大请求报表原始字节应按原始 body 计入')
-  assert(largeFailedEvent.compressedPayloadBytes < largeFailedEvent.rawPayloadBytes, '失败大请求报表落盘字节应小于原始逻辑字节')
+  const largeFailedDetail = repositories.getAuditLogDetail(largeFailedEvent.id)
+  assert((largeFailedDetail?.rawPayloadBytes ?? 0) > largeFailedRequestBody.byteLength, '失败大请求报表原始字节应按原始 body 计入')
+  assert((largeFailedDetail?.compressedPayloadBytes ?? 0) < (largeFailedDetail?.rawPayloadBytes ?? 0), '失败大请求报表落盘字节应小于原始逻辑字节')
   assertAuditPayloadByteColumns(largeFailedEvent.id, {
     compressedLessThanRaw: true,
     rawGreaterThan: largeFailedRequestBody.byteLength
   })
-  const largeFailedDetail = repositories.getAuditLogDetail(largeFailedEvent.id)
   const largeFailedClientPayload = largeFailedDetail?.payloads.find((payload) => payload.partType === 'client_request')
   assert(largeFailedClientPayload, '失败大请求应保留客户端请求 payload 摘要')
   assert.equal(largeFailedClientPayload.captureStatus, 'summary_only', '超过 2MB 的失败请求 body 应转为摘要保全')
@@ -329,7 +330,8 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const hotTrimSuccessEvents = repositories.listAuditLogs({ traceId: hotTrimSuccessTraceId })
   assert.equal(hotTrimSuccessEvents.total, 1, '未采样成功大请求应先按 1 小时热保留写入审计')
-  assert.equal(hotTrimSuccessEvents.items[0]?.sampleReason, 'success_hot_full_retention', '未采样成功大请求应标记为成功热保留')
+  const hotTrimSuccessDetail = repositories.getAuditLogDetail(hotTrimSuccessEvents.items[0]?.id ?? '')
+  assert.equal(hotTrimSuccessDetail?.sampleReason, 'success_hot_full_retention', '未采样成功大请求应标记为成功热保留')
 
   const hotTrimmed = await repositories.cleanupAuditLogsByRetentionAsync({
     successHotCutoffCreatedAt: '2999-01-01T00:00:00.000Z',
@@ -483,8 +485,9 @@ try {
   const list = repositories.listAuditLogs({ outcome: 'upstream_failed', pageSize: 10 })
   assert.equal(list.total, 2, '应写入两条失败审计事件')
   assert(list.items.every((item) => item.auditOutcome === 'upstream_failed'), '失败事件应按 upstream_failed 保留')
-  assert(list.items.every((item) => item.errorGroupId), '重复失败事件应关联错误组')
-  assert.equal(new Set(list.items.map((item) => item.errorGroupId)).size, 1, '同一窗口内重复错误应聚合到同一个错误组')
+  const failureDetails = list.items.map((item) => repositories.getAuditLogDetail(item.id))
+  assert(failureDetails.every((item) => item?.errorGroupId), '重复失败事件应关联错误组')
+  assert.equal(new Set(failureDetails.map((item) => item?.errorGroupId)).size, 1, '同一窗口内重复错误应聚合到同一个错误组')
 
   const groups = repositories.listAuditErrorGroups({ pageSize: 10, statusCode: 429 })
   assert.equal(groups.total, 1, '应产生一个错误聚合组')
@@ -614,10 +617,10 @@ function assertHttpCompletionTiming(): void {
   response.emit('finish')
   assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'HTTP finish 后审计活动计数应归还')
   auditQueue.flushAllAuditLogQueue()
-  const summary = repositories.listAuditLogs({ traceId }).items[0]
-  assert(summary?.httpCompletedAt, 'HTTP finish 后审计应保存返回客户端时间')
-  assert((summary?.httpDurationMs ?? 0) >= 25, 'HTTP 客户端耗时应从请求开始计算')
-  assert((summary?.durationMs ?? 0) >= (summary?.httpDurationMs ?? 0), '审计完成耗时不得早于 HTTP 客户端耗时')
+  const detail = repositories.getAuditLogDetail(repositories.listAuditLogs({ traceId }).items[0]?.id ?? '')
+  assert(detail?.httpCompletedAt, 'HTTP finish 后审计应保存返回客户端时间')
+  assert((detail?.httpDurationMs ?? 0) >= 25, 'HTTP 客户端耗时应从请求开始计算')
+  assert((detail?.durationMs ?? 0) >= (detail?.httpDurationMs ?? 0), '审计完成耗时不得早于 HTTP 客户端耗时')
 }
 
 function assertCaptureCancellationLifecycle(): void {

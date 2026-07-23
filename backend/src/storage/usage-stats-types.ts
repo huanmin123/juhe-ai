@@ -211,6 +211,26 @@ export interface UsageStatsOverview {
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
 }
 
+export interface UsageStatsOverviewSummaryResult {
+  range: AccountUsageStatsRange
+  summary: UsageStatsOverview['summary']
+}
+
+export interface UsageStatsOverviewHourlyTrendResult {
+  range: AccountUsageStatsRange
+  hourlyTrend: UsageStatsOverview['hourlyTrend']
+}
+
+export interface UsageStatsOverviewModelDistributionResult {
+  range: AccountUsageStatsRange
+  modelDistribution: UsageStatsOverview['modelDistribution']
+}
+
+export interface UsageStatsOverviewErrorsResult {
+  range: AccountUsageStatsRange
+  errors: UsageStatsOverview['errors']
+}
+
 export interface SystemMetricsOverview {
   hourlyTrend: Array<{
     statHour: string

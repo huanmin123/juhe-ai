@@ -76,6 +76,13 @@ export interface SystemAccountSummary {
 }
 
 export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>
+export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'>
+
+export interface SystemAccountOptionSummary {
+  id: string
+  name: string
+  disabledReason?: 'account_disabled'
+}
 
 export interface CurrentUserSummary {
   id: string
@@ -232,6 +239,21 @@ export interface ProviderDefinition {
   accountTypes: AccountType[]
   capabilities: string[]
   protocolProfiles: ProviderProtocolProfileDefinition[]
+}
+
+/** Fields rendered by the provider catalogue list; protocol profiles are loaded on demand. */
+export interface ProviderListItem {
+  id: string
+  code: ProviderCode
+  name: string
+  parentCode?: ProviderCode
+  description?: string
+  enabled: boolean
+  baseUrl: string
+  defaultHealthCheckModel: string
+  defaultSupportedModels: string[]
+  accountTypes: AccountType[]
+  capabilities: string[]
 }
 
 export interface ProtocolEndpointFamilyDefinition {
@@ -394,8 +416,30 @@ export interface AiPerformancePoint {
 export interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
+  providerCode: string
   systemAccountId: string
   points: AiPerformancePoint[]
+}
+
+export interface AiPerformanceSummary {
+  requestCount: number
+  averageFirstTokenMs?: number
+  maxFirstTokenMs?: number
+  averageDurationMs?: number
+  maxDurationMs?: number
+}
+
+export interface AiPerformanceBase {
+  range: AccountUsageStatsRange
+  summary: AiPerformanceSummary
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
+}
+
+export interface AiPerformanceSeries {
+  range: AccountUsageStatsRange
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
 }
 
 export interface AiPerformanceOverview {
@@ -404,13 +448,7 @@ export interface AiPerformanceOverview {
   selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]
   hourlySeries: AiPerformanceAccountSeries[]
-  summary: {
-    requestCount: number
-    averageFirstTokenMs?: number
-    maxFirstTokenMs?: number
-    averageDurationMs?: number
-    maxDurationMs?: number
-  }
+  summary: AiPerformanceSummary
 }
 
 export interface AccountUsageStatsRange {
@@ -767,7 +805,18 @@ export type AccountListItem = Omit<AccountSummary,
   | 'supportedModels'
   | 'modelMappings'
   | 'apiKeyRuntimeDetails'
+  | 'apiKeyRuntime'
+  | 'balanceQueryEnabled'
+  | 'balanceQueryConfig'
+  | 'balanceQueryNextRefreshAt'
+  | 'balanceSnapshot'
   | 'usage'
+  | 'todayUsage'
+  | 'currentConcurrency'
+  | 'lastUsedAt'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'availabilityPresentation'
   | 'oauthUsage'
   | 'authorizationSources'
   | 'authorizationCount'
@@ -811,6 +860,9 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'authorizationInstanceSourceAccountLastHealthCheckErrorMessage'
   | 'authorizationInstanceSourceAccountLastHealthCheckTraceId'
   | 'apiKeyRuntime'
+  | 'balanceQueryEnabled'
+  | 'balanceQueryNextRefreshAt'
+  | 'balanceSnapshot'
   | 'runtimeAvailability'
   | 'circuitSummary'
   | 'effectiveAvailability'
@@ -941,6 +993,8 @@ export interface AccountUsageStatsOverview {
   pageSize: number
 }
 
+export type AccountUsageStatsListResult = Omit<AccountUsageStatsOverview, 'summary'>
+
 export interface AccountTestResult {
   accountId: string
   accountName: string
@@ -1069,6 +1123,8 @@ export interface ModelCheckOptions {
   defaultProfile: ModelCheckProfile
   trustedComparison: ModelCheckTrustedComparisonStatus
 }
+
+export type ModelCheckAccountOption = Pick<AccountOptionSummary, 'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>
 
 export interface ModelCheckRunRequest {
   targetType: ModelCheckTargetType
@@ -1376,60 +1432,69 @@ export interface ResourceAuthorizationListResult {
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
 
+export interface AuthorizationUsageRowSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
+export interface AuthorizationUsageAggregateSummary extends AuthorizationUsageRowSummary {
+  inputTokens: number
+  cacheWriteTokens: number
+  lastUsedAt?: string
+}
+
 export interface AuthorizationTeamUsageRow {
   id: string
   teamId: string
   teamName: string
-  status: SystemTeamStatus
   resourceType?: ResourceAuthorizationResourceType
   resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
   accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationTeamUsageOverview {
+export interface AuthorizationTeamUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationTeamUsageRow[]
-  teamCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationTeamUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export interface AuthorizationUserUsageRow {
   id: string
-  systemAccountId: string
   userName: string
   username?: string
   teamNames?: string[]
   resourceType?: ResourceAuthorizationResourceType
-  resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
-  accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  sourceLabels: string[]
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationUserUsageOverview {
+export interface AuthorizationUserUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationUserUsageRow[]
-  userCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationUserUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export type ApiKeyGroupBindingStatus = 'active' | 'disabled'

@@ -62,14 +62,14 @@ try {
   assert.equal(accountUsage.page, 5, '账号用量 pageSize=200 时页码应收敛到 5 页以内')
   assert.equal((accountUsage.page - 1) * accountUsage.pageSize, 800, '账号用量深翻页 offset 应限制在 1000 行内')
 
-  const teamUsage = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, access, range, {
+  const teamUsage = authorizationUsageRepository.getAuthorizationTeamUsageRows({}, access, range, {
     page: 999999,
     pageSize: 200
   })
   assert.equal(teamUsage.page, 5, '团队授权消耗 pageSize=200 时页码应收敛到 5 页以内')
   assert.equal((teamUsage.page - 1) * teamUsage.pageSize, 800, '团队授权消耗深翻页 offset 应限制在 1000 行内')
 
-  const userUsage = authorizationUsageRepository.getAuthorizationUserUsageOverview({}, access, range, {
+  const userUsage = authorizationUsageRepository.getAuthorizationUserUsageRows({}, access, range, {
     page: 999999,
     pageSize: 200
   })

@@ -2,7 +2,7 @@ import { Router } from 'express'
 
 import { ok, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
+import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListItem, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { canAccessAll, scopedSystemAccountId } from '../../storage/access-scope.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -61,6 +61,10 @@ const allSystemAccountUnsupportedFilterKeys = [
 ] as const
 
 export type UsageRecordResponse = Omit<UsageRecordSummary, 'pricingSnapshot'> & {
+  costBreakdown?: ProviderCostBreakdown
+}
+
+export type UsageRecordListResponse = Omit<UsageRecordListItem, 'pricingSnapshot'> & {
   costBreakdown?: ProviderCostBreakdown
 }
 

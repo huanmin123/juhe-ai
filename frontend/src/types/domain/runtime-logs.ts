@@ -143,34 +143,6 @@ export interface RuntimeLogFacets {
   totalIndexed: number
   levels: Array<{ value: string; count: number }>
   events: string[]
-  indexEnabled?: boolean
-  unavailableReason?: string
-  runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
-  runtimeLogIndexQueueAvailable: boolean
-  runtime: { lastError?: string } | null
-  worker: {
-    ready: boolean | null
-    pendingMessageCount: number | null
-  }
-  queueHealth: {
-    available: boolean
-    workerSnapshotAvailable: boolean
-    serverIpcQueueAvailable: boolean
-    status: string
-    summary: {
-      unavailableCount: number
-      droppedCount: number
-      rejectedCount: number
-    }
-  }
-  dbService: {
-    statusAvailable: boolean
-    stateAvailable: boolean
-    ready: boolean | null
-  }
-  gatewayAccountSideEffectsAvailable: boolean
-  gatewayAccountSideEffects: unknown
 }
 
 export interface RuntimeLogRuntime {

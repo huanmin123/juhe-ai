@@ -37,8 +37,11 @@ assertIncludes(modelChecksRepository, 'modelCheckRunListSelectColumns', '模型�
 assertIncludes(modelChecksRepository, 'includeSummaries: false', '模型检查列表不得返回 requestSummary/resultSummary 大摘要')
 
 const operationLogRoutes = readSource('modules/operation-logs/operation-logs.routes.ts')
-assertIncludes(operationLogRoutes, 'toOperationLogListResponse', '操作日志列表必须经过轻量 DTO 映射')
-assertIncludes(operationLogRoutes, '({ changes, metadata, userAgent, ...item }) => item', '操作日志列表必须剥离 changes、metadata 和 userAgent')
+assertIncludes(operationLogRoutes, 'listOperationLogsAsync', '操作日志列表必须调用专用轻量 repository')
+assertIncludes(operationLogRoutes, 'res.json(ok(result))', '操作日志列表必须直接返回 repository 构造的轻量 DTO')
+const operationLogRepository = readSource('storage/operation-log-read.repository.ts')
+assertFunctionExcludes(operationLogRepository, 'listOperationLogsWithFilters', 'changes_json', '操作日志列表查询不得读取 changes payload')
+assertFunctionExcludes(operationLogRepository, 'listOperationLogsWithFilters', 'metadata_json', '操作日志列表查询不得读取 metadata payload')
 
 const runtimeLogRepository = readSource('storage/runtime-logs.repository.ts')
 assertIncludes(runtimeLogRepository, 'includeRawJson: false', '运行日志列表不得返回 rawJson')

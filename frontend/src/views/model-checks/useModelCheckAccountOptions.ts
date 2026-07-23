@@ -1,5 +1,5 @@
 import type { ComputedRef } from 'vue'
-import { computed, ref } from 'vue'
+import { computed, onActivated, onDeactivated, ref } from 'vue'
 
 import { message } from '@/lib/antd'
 import {
@@ -11,7 +11,7 @@ import {
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { AccountOptionSummary, ModelCheckRunPayload } from '@/types/domain'
+import type { ModelCheckAccountOption, ModelCheckRunPayload } from '@/types/domain'
 import {
   canSelectModelCheckAccount,
   canSelectTrustedModelCheckAccount,
@@ -23,12 +23,12 @@ type SelectValue = string | string[] | undefined
 
 interface ModelCheckAccountOptionsApi {
   options(params: {
+    purpose: 'run' | 'history'
     systemAccountId?: string
     keyword?: string
-    status?: 'active'
-    schedulable?: 'enabled'
-    limit?: number
-  }): Promise<AccountOptionSummary[]>
+    limit: number
+    selectedIds?: string[]
+  }): Promise<ModelCheckAccountOption[]>
 }
 
 interface UseModelCheckAccountOptionsInput {
@@ -36,7 +36,10 @@ interface UseModelCheckAccountOptionsInput {
   modelCheckScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   form: ModelCheckRunPayload
   knownTargetName: (id: string) => string | undefined
+  identityKey: ComputedRef<string>
 }
+
+const accountOptionsInFlight = new Map<string, Promise<ModelCheckAccountOption[]>>()
 
 export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsInput) {
   const targetOptionsLoading = ref(false)
@@ -55,13 +58,22 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   let targetOptionsRequestId = 0
   let comparisonOptionsRequestId = 0
   let historyTargetOptionsRequestId = 0
+  let active = true
+  onActivated(() => { active = true })
+  onDeactivated(() => {
+    active = false
+    targetOptionsRequestId += 1
+    comparisonOptionsRequestId += 1
+    historyTargetOptionsRequestId += 1
+  })
   const selectedTargetAccountProfile = computed(() => accountProfilesById.value[input.form.targetId])
   const selectedComparisonAccountProfile = computed(() => accountProfilesById.value[input.form.trustedComparisonAccountId ?? ''])
 
   async function loadTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
-    const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
+    const selectedIds = [input.form.targetId].filter(Boolean).sort()
+    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds])
     const requestId = ++targetOptionsRequestId
     const cachedOptions = targetOptionsCache.get(requestKey)
     if (cachedOptions) {
@@ -71,19 +83,19 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     }
     targetOptionsLoading.value = true
     try {
-      const accounts = await input.accountsApi.options({
+      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+        purpose: 'run',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
-        status: 'active',
-        schedulable: 'enabled',
-        limit: 50
-      })
+        limit: 50,
+        selectedIds
+      }))
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
       targetOptionsCache.set(requestKey, nextOptions)
-      if (requestId === targetOptionsRequestId) {
+      if (active && requestId === targetOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
         targetOptions.value = nextOptions
       }
     } catch (error) {
@@ -99,7 +111,8 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadComparisonOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
-    const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword, input.form.targetId, input.form.model])
+    const selectedIds = [input.form.targetId, input.form.trustedComparisonAccountId ?? ''].filter(Boolean).sort()
+    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds, input.form.targetId, input.form.model])
     const requestId = ++comparisonOptionsRequestId
     const cachedOptions = comparisonOptionsCache.get(requestKey)
     if (cachedOptions) {
@@ -109,13 +122,13 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     }
     comparisonOptionsLoading.value = true
     try {
-      const accounts = await input.accountsApi.options({
+      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+        purpose: 'run',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
-        status: 'active',
-        schedulable: 'enabled',
-        limit: 50
-      })
+        limit: 50,
+        selectedIds
+      }))
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectTrustedModelCheckAccount(account, {
@@ -125,7 +138,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         }))
         .map(accountTargetOption)
       comparisonOptionsCache.set(requestKey, nextOptions)
-      if (requestId === comparisonOptionsRequestId) {
+      if (active && requestId === comparisonOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
         comparisonOptions.value = nextOptions
       }
     } catch (error) {
@@ -141,7 +154,8 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadHistoryTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
-    const requestKey = JSON.stringify([systemAccountId ?? 'self', normalizedKeyword])
+    const selectedIds = [selectedHistoryTargetAccount.value?.id ?? ''].filter(Boolean).sort()
+    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'history', normalizedKeyword, 50, selectedIds])
     const requestId = ++historyTargetOptionsRequestId
     const cachedOptions = historyTargetOptionsCache.get(requestKey)
     if (cachedOptions) {
@@ -151,17 +165,19 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     }
     historyTargetOptionsLoading.value = true
     try {
-      const accounts = await input.accountsApi.options({
+      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+        purpose: 'history',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
-        limit: 50
-      })
+        limit: 50,
+        selectedIds
+      }))
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
       historyTargetOptionsCache.set(requestKey, nextOptions)
-      if (requestId === historyTargetOptionsRequestId) {
+      if (active && requestId === historyTargetOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
         historyTargetOptions.value = nextOptions
       }
     } catch (error) {
@@ -259,14 +275,14 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     return value?.trim() || undefined
   }
 
-  function accountTargetOption(account: AccountOptionSummary) {
+  function accountTargetOption(account: ModelCheckAccountOption) {
     const label = accountSelectOptionLabel(account)
     rememberAccountLabel(account.id, label)
     rememberAccountProfile(account)
     return { label, value: account.id }
   }
 
-  function rememberAccountProfiles(accounts: AccountOptionSummary[]) {
+  function rememberAccountProfiles(accounts: ModelCheckAccountOption[]) {
     if (!accounts.length) return
     accountProfilesById.value = {
       ...accountProfilesById.value,
@@ -274,14 +290,14 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     }
   }
 
-  function rememberAccountProfile(account: AccountOptionSummary) {
+  function rememberAccountProfile(account: ModelCheckAccountOption) {
     accountProfilesById.value = {
       ...accountProfilesById.value,
       [account.id]: accountProfile(account)
     }
   }
 
-  function accountProfile(account: AccountOptionSummary): ModelCheckAccountProfile {
+  function accountProfile(account: ModelCheckAccountOption): ModelCheckAccountProfile {
     return {
       id: account.id,
       name: account.name,
@@ -329,4 +345,14 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     selectValueOrUndefined,
     targetOptionText
   }
+}
+
+function loadShared(key: string, loader: () => Promise<ModelCheckAccountOption[]>): Promise<ModelCheckAccountOption[]> {
+  const existing = accountOptionsInFlight.get(key)
+  if (existing) return existing
+  const request = loader().finally(() => {
+    if (accountOptionsInFlight.get(key) === request) accountOptionsInFlight.delete(key)
+  })
+  accountOptionsInFlight.set(key, request)
+  return request
 }

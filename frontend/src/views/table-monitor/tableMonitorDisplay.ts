@@ -1,7 +1,7 @@
 import type { EChartsOption } from 'echarts'
 
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverviewSummary } from '@/types/domain'
+import type { DatabaseStorageHistoryPoint, DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverviewSummary } from '@/types/domain'
 
 export const tableMonitorColumns = [
   { title: '库', key: 'databaseRole', width: 168, fixed: 'left' },
@@ -79,6 +79,12 @@ export function totalDatabaseBytes(database?: DatabaseStorageSnapshotSummary): n
   return total > 0 ? total : undefined
 }
 
+export function totalDatabaseHistoryBytes(database?: DatabaseStorageHistoryPoint): number | undefined {
+  if (!database) return undefined
+  const total = (numberValue(database.fileBytes) ?? 0) + (numberValue(database.walBytes) ?? 0)
+  return total > 0 ? total : undefined
+}
+
 export function growthColor(value?: unknown) {
   const numericValue = numberValue(value)
   if (numericValue === undefined || numericValue === 0) return 'default'
@@ -122,7 +128,7 @@ export function matchesTableNameKeyword(tableName: string, keyword: string): boo
 }
 
 export function buildTableMonitorHistoryChartOption(input: {
-  rows: Array<DatabaseStorageSnapshotSummary & { databaseRole: MonitoredDatabaseRole }>
+  rows: DatabaseStorageHistoryPoint[]
   roles: MonitoredDatabaseRole[]
 }): EChartsOption {
   const buckets = [...new Set(input.rows.map((row) => row.sampledAt))].sort()
@@ -153,7 +159,7 @@ export function buildTableMonitorHistoryChartOption(input: {
 }
 
 function historySeries(
-  rows: Array<DatabaseStorageSnapshotSummary & { databaseRole: MonitoredDatabaseRole }>,
+  rows: DatabaseStorageHistoryPoint[],
   role: MonitoredDatabaseRole,
   buckets: string[]
 ) {
@@ -166,7 +172,7 @@ function historySeries(
     connectNulls: false,
     data: buckets.map((bucket) => {
       const row = rowsByTime.get(bucket)
-      const total = totalDatabaseBytes(row)
+      const total = totalDatabaseHistoryBytes(row)
       return total === undefined
         ? null
         : {

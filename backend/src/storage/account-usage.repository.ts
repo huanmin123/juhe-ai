@@ -4,6 +4,7 @@ import type {
   AccountType,
   AccountUsageStatsRange,
   AccountUsageStatsOverview,
+  AccountUsageStatsListResult,
   AccountUsageStatsRow,
   AccountUsageStatsTrendOverview
 } from '../domain/types.js'
@@ -111,7 +112,7 @@ interface AccountUsageMetadataRow {
 
 const accountUsageSelectedAccountLimit = 50
 
-export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsOverview {
+export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
   const maxPage = Math.max(1, Math.floor((accountUsageMaxListWindowRows - 1) / pageSize))
   const page = Math.min(maxPage, Math.max(1, Math.trunc(input.page)))
@@ -128,12 +129,6 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       usage_window.cache_read_cost_usd,
-      usage_window.cache_write_tokens,
-      usage_window.cache_write_1h_tokens,
-      usage_window.cache_write_cost_usd,
-      usage_window.thinking_tokens,
-      usage_window.input_image_tokens,
-      usage_window.output_image_tokens,
       usage_window.total_cost_usd AS total_cost,
       usage_window.last_used_at
     FROM usage_scope_range_windows usage_window
@@ -194,7 +189,6 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
 
   return {
     range: input.range,
-    summary: loadAccountUsageOverviewSummary(input.access, input.range),
     rows: overviewRows,
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
@@ -204,7 +198,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   }
 }
 
-export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: AccountUsageStatsPageOptions): Promise<AccountUsageStatsOverview> {
+export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: AccountUsageStatsPageOptions): Promise<AccountUsageStatsListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getAccountUsageStatsOverviewPageFromWindows(input)
   }
@@ -224,12 +218,6 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
-      usage_window.cache_write_tokens,
-      usage_window.cache_write_1h_tokens,
-      CAST(usage_window.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
-      usage_window.thinking_tokens,
-      usage_window.input_image_tokens,
-      usage_window.output_image_tokens,
       CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
       usage_window.last_used_at
     FROM ${accountUsageStatsTable(client, 'usage_scope_range_windows')} usage_window
@@ -265,7 +253,6 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
   const sourceRows = mergeAccountUsageSourceRows(pageRows.rows, selectedRows)
   const metadataRows = await loadAccountUsageMetadataRowsAsync(client, input.access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
   const metadataById = new Map(metadataRows.map((row) => [row.id, row]))
-  const summary = await loadAccountUsageOverviewSummaryAsync(client, input.access, input.range)
   const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
     const metadata = metadataById.get(row.scope_id)
     if (!metadata) return []
@@ -291,7 +278,6 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
 
   return {
     range: input.range,
-    summary,
     rows: overviewRows,
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
@@ -330,6 +316,22 @@ export async function getAccountUsageStatsTrendAsync(
   const metadataRows = await loadAccountUsageMetadataRowsAsync(client, access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
   const dailySeries = await loadUsageDailySeriesForScopeRequestsAsync(accountUsageTrendScopes(usageScope, metadataRows), range)
   return accountUsageTrendOverview(range, usageScope, metadataRows, dailySeries, access)
+}
+
+export function getAccountUsageStatsSummary(
+  access: AccessScope | undefined,
+  range: AccountUsageStatsRange
+): { range: AccountUsageStatsRange; summary: ReturnType<typeof loadAccountUsageOverviewSummary> } {
+  return { range, summary: loadAccountUsageOverviewSummary(access, range) }
+}
+
+export async function getAccountUsageStatsSummaryAsync(
+  access: AccessScope | undefined,
+  range: AccountUsageStatsRange
+): Promise<{ range: AccountUsageStatsRange; summary: Awaited<ReturnType<typeof loadAccountUsageOverviewSummaryAsync>> }> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return getAccountUsageStatsSummary(access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return { range, summary: await loadAccountUsageOverviewSummaryAsync(client, access, range) }
 }
 
 function accountUsageTrendScopes(
@@ -386,12 +388,6 @@ function loadSelectedAccountUsageRows(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       usage_window.cache_read_cost_usd,
-      usage_window.cache_write_tokens,
-      usage_window.cache_write_1h_tokens,
-      usage_window.cache_write_cost_usd,
-      usage_window.thinking_tokens,
-      usage_window.input_image_tokens,
-      usage_window.output_image_tokens,
       usage_window.total_cost_usd AS total_cost,
       usage_window.last_used_at
     FROM usage_scope_range_windows usage_window
@@ -427,12 +423,6 @@ async function loadSelectedAccountUsageRowsAsync(input: {
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
       CAST(usage_window.cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
-      usage_window.cache_write_tokens,
-      usage_window.cache_write_1h_tokens,
-      CAST(usage_window.cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
-      usage_window.thinking_tokens,
-      usage_window.input_image_tokens,
-      usage_window.output_image_tokens,
       CAST(usage_window.total_cost_usd AS double precision) AS total_cost,
       usage_window.last_used_at
     FROM ${accountUsageStatsTable(input.client, 'usage_scope_range_windows')} usage_window
@@ -460,10 +450,9 @@ function mergeAccountUsageSourceRows(pageRows: AccountUsageStatsSourceRow[], sel
   return merged
 }
 
-function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, page: number, pageSize: number): AccountUsageStatsOverview {
+function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, page: number, pageSize: number): AccountUsageStatsListResult {
   return {
     range: input.range,
-    summary: loadAccountUsageOverviewSummary(input.access, input.range),
     rows: [],
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: 0,

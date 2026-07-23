@@ -1,4 +1,4 @@
-import { isAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
+import { isAdminRole, type SystemAccountListItem, type SystemAccountOptionSummary, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 
 export interface SystemAccountRow {
   id: string
@@ -33,6 +33,20 @@ export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): Syste
   }
 }
 
+export function systemAccountListItemFromRow(row: Omit<SystemAccountSummaryRow, 'created_at' | 'updated_at'>): SystemAccountListItem {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    description: row.description ?? undefined,
+    role: row.role,
+    status: row.status,
+    mustChangePassword: effectiveMustChangePassword(row.role, row.must_change_password === 1),
+    imageGenerationEnabled: row.image_generation_enabled === 1,
+    lastLoginAt: row.last_login_at ?? undefined
+  }
+}
+
 function effectiveMustChangePassword(role: SystemAccountRole, mustChangePassword: boolean): boolean {
   return mustChangePassword && !isAdminRole(role)
 }
@@ -43,5 +57,13 @@ export function systemAccountPrincipalSummaryFromRow(row: Pick<SystemAccountRow,
     username: row.username,
     displayName: row.display_name,
     status: row.status
+  }
+}
+
+export function systemAccountOptionSummaryFromRow(row: Pick<SystemAccountRow, 'id' | 'display_name' | 'status'>): SystemAccountOptionSummary {
+  return {
+    id: row.id,
+    name: row.display_name,
+    ...(row.status === 'disabled' ? { disabledReason: 'account_disabled' as const } : {})
   }
 }

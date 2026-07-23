@@ -41,7 +41,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { loadCaptcha, login } from '@/composables/useAuth'
-import { appBrand, loadGlobalBrandSettings } from '@/composables/useAppBrand'
+import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { CaptchaChallengeSummary } from '@/types/domain'
@@ -214,7 +214,7 @@ onBeforeUnmount(() => {
 
 async function loadBrandSettings(): Promise<void> {
   try {
-    await loadGlobalBrandSettings()
+    await loadAppBrandSettings()
   } catch (error) {
     console.error(error)
   }

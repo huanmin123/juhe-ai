@@ -59,7 +59,18 @@ try {
     'supportedModels',
     'modelMappings',
     'apiKeyRuntimeDetails',
+    'apiKeyRuntime',
+    'balanceQueryEnabled',
+    'balanceQueryConfig',
+    'balanceQueryNextRefreshAt',
+    'balanceSnapshot',
     'usage',
+    'todayUsage',
+    'currentConcurrency',
+    'lastUsedAt',
+    'runtimeAvailability',
+    'effectiveAvailability',
+    'availabilityPresentation',
     'oauthUsage',
     'authorizationSources',
     'authorizationCount',
@@ -68,16 +79,12 @@ try {
   for (const field of forbiddenFields) {
     assert.equal(Object.prototype.hasOwnProperty.call(item, field), false, `账户基础列表不应返回重量字段 ${field}`)
   }
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'todayUsage'), true, '今日用量必须随列表一次返回')
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'currentConcurrency'), true, '当前并发必须随列表一次返回')
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'lastUsedAt'), true, '最近使用时间必须随列表一次返回')
-
   assert.equal(item.name, '列表严格投影账户')
   assert.equal(item.providerCode, 'gpt')
   assert.equal(item.qualityScore, 1234, '基础列表必须保留轻量质量快照字段')
   assert.equal(item.permissions?.canEdit, true, '基础列表必须保留行操作权限')
 
-  console.log('AI 账户列表投影回归通过：动态字段与轻量静态字段均在列表一次返回')
+  console.log('AI 账户列表投影回归通过：首包只返回轻量静态字段，动态字段由当前页快照补齐')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

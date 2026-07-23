@@ -119,6 +119,9 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
+/** Fields needed by the paged table. Snapshot payloads are detail-only. */
+export type UsageRecordListItem = Omit<UsageRecordSummary, 'requestSnapshot' | 'responseSnapshot'>
+
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
@@ -142,7 +145,7 @@ export interface UsageRecordListOptions {
 }
 
 export interface UsageRecordListResult {
-  items: UsageRecordSummary[]
+  items: UsageRecordListItem[]
   total: number
   hasMore: boolean
   page: number
@@ -234,7 +237,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
     : new Map<string, string>()
-  const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -271,7 +274,7 @@ export async function listUsageRecordsAsync(access?: AccessScope, options?: Usag
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, rowsWithNames.map((row) => optionalString(row.system_account_id)))
     : new Map<string, string>()
-  const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),

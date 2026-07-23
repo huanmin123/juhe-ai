@@ -23,6 +23,8 @@ const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
   import('../../storage/repositories.js'),
   import('../../storage/usage-stats.repository.js')
 ])
+const providerProfile = await (await import('../../storage/provider.repository.js')).defaultProviderProtocolProfile('gpt')
+if (!providerProfile) throw new Error('AI 性能小时查询回归缺少 GPT 协议档案')
 
 try {
   const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -33,6 +35,7 @@ try {
   }, adminAccess)
   const accountA = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: providerProfile.id,
     name: 'AI 性能小时查询 A',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-a', base_url: 'https://api.openai.com/v1' },
@@ -40,6 +43,7 @@ try {
   }, adminAccess)
   const accountB = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: providerProfile.id,
     name: 'AI 性能小时查询 B',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-b', base_url: 'https://api.openai.com/v1' },
@@ -49,8 +53,10 @@ try {
 
   const database = databaseModule.getStatsDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const capturedSql: string[] = []
   const capturedCalls: Array<{ sql: string; params: SQLInputValue[] }> = []
   database.prepare = ((sql: string) => {
+    capturedSql.push(sql)
     const statement = originalPrepare(sql)
     if (/\bFROM\s+usage_stats_hourly\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
@@ -63,24 +69,26 @@ try {
   }) as typeof database.prepare
 
   try {
-    const overview = usageStatsRepository.getAiPerformanceOverview(adminAccess, {
+    const series = usageStatsRepository.getAiPerformanceSeries(adminAccess, {
       startDate: '2026-01-01',
       endDate: '2026-01-01',
       days: 1,
       maxDays: 31
     }, [accountA.id, accountB.id])
-    assert.equal(overview.accounts.length, 2, 'AI 性能概览应返回手动选择账号')
+    assert.equal(series.accounts.length, 2, 'AI 性能 series 应返回手动选择账号')
     const hourlyCall = capturedCalls.find((call) => /\bscope_id\s+IN\s*\(/i.test(call.sql))
     assert(hourlyCall, 'AI 性能概览应按选中账号读取小时趋势')
     assert(!/\bORDER\s+BY\b/i.test(hourlyCall.sql), 'AI 性能小时趋势不应为了排序改走范围内全账号扫描')
     const plan = explainQueryPlan(database, hourlyCall.sql, hourlyCall.params)
     assertNoTempBtree(plan, 'AI 性能小时趋势查询')
     assert(plan.includes('idx_usage_stats_hourly_scope_hour'), `AI 性能小时趋势应使用账号维度小时索引，实际计划：${plan}`)
+    assert(!capturedSql.some((sql) => /\bFROM\s+ai_performance_summary_windows\b/i.test(sql)), 'series 不应读取 summary window')
+    assert(!capturedSql.some((sql) => /\bFROM\s+usage_rank_snapshots\b[\s\S]*\bORDER\s+BY\s+rank\b/i.test(sql)), 'series 不应读取默认排行')
   } finally {
     database.prepare = originalPrepare
   }
 
-  console.log('AI 性能小时趋势查询防护回归通过：选中账号趋势按账号小时索引读取，不再为了 ORDER BY 扫范围内全部账号')
+  console.log('AI 性能小时趋势查询防护回归通过：series 只按显式账号读取小时索引，不读取默认排行或 summary')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

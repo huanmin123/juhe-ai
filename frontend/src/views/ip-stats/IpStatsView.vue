@@ -8,7 +8,7 @@
       :refresh-loading="loading"
       @search="applyFilters"
       @reset="resetFilters"
-      @refresh="loadData"
+      @refresh="() => loadData({ force: true })"
     >
       <template #inline-filters>
         <a-segmented
@@ -254,7 +254,7 @@ import { api, type ClientIpStatsDetailParams, type ClientIpStatsListParams, type
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
@@ -321,6 +321,7 @@ const pageStateCache = usePageStateCache<IpStatsPageState>(undefined, defaultIpS
 })
 const initialPageState = pageStateCache.read()
 const loading = ref(false)
+let listRequestSeq = 0
 const keyword = ref(initialPageState.keyword)
 const statusFilter = ref<ClientIpStatus>(initialPageState.statusFilter)
 const usageWindow = ref<UsageWindow>(initialPageState.usageWindow)
@@ -379,20 +380,28 @@ onMounted(() => {
   void loadData()
 })
 
-async function loadData(): Promise<void> {
+async function loadData(options: { force?: boolean } = {}): Promise<void> {
+  const requestSeq = ++listRequestSeq
   loading.value = true
   try {
-    await loadUsageStatsWindow({ force: true })
+    await loadUsageStatsWindow({
+      force: options.force === true,
+      viewScope: 'admin'
+    })
+    if (didUsageStatsWindowLoadFail('admin')) throw new Error('统计窗口加载失败')
+    if (requestSeq !== listRequestSeq) return
     const result = await api.ipStats.list(buildListParams())
+    if (requestSeq !== listRequestSeq) return
     rows.value = result.items
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     paginationUpperBound.value = result.pageUpperBound
     rangeReady.value = result.rangeReady
   } catch (error) {
+    if (requestSeq !== listRequestSeq) return
     message.error(extractApiErrorMessage(error, '加载 IP 统计失败'))
   } finally {
-    loading.value = false
+    if (requestSeq === listRequestSeq) loading.value = false
   }
 }
 

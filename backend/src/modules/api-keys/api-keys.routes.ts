@@ -8,6 +8,7 @@ import {
   deleteApiKeyWithRelatedCleanupAsync,
   findApiKeySecretAsync,
   findApiKeySummaryAsync,
+  getApiKeyUsageByIdsAsync,
   listApiKeysPageAsync,
   refreshApiKeySecretAsync,
   updateApiKeyAsync,
@@ -44,6 +45,19 @@ const apiKeyUpdateSchema = apiKeyMutationSchema.partial().refine((value) => Obje
 apiKeysRouter.get('/', async (req, res, next) => {
   try {
     res.json(ok(await listApiKeysPageAsync(getRequestAccessScope(req.query.systemAccountId), parseApiKeyListOptions(req.query))))
+  } catch (error) {
+    next(error)
+  }
+})
+
+apiKeysRouter.get('/usage', async (req, res, next) => {
+  try {
+    const parsedIds = parseApiKeyUsageIds(req.originalUrl)
+    if (!parsedIds.success) {
+      res.status(400).json(badRequest(parsedIds.message))
+      return
+    }
+    res.json(ok(await getApiKeyUsageByIdsAsync(parsedIds.ids, getRequestAccessScope(req.query.systemAccountId))))
   } catch (error) {
     next(error)
   }
@@ -323,6 +337,25 @@ function parseApiKeyListOptions(query: Record<string, unknown>): ApiKeyListOptio
     status: apiKeyStatusQueryValue(query.status),
     routeStrategyId: optionalQueryText(query.routeStrategyId)
   }
+}
+
+function parseApiKeyUsageIds(originalUrl: string): { success: true; ids: string[] } | { success: false; message: string } {
+  const searchParams = new URL(originalUrl, 'http://localhost').searchParams
+  if ([...searchParams.keys()].some((key) => key.startsWith('ids['))) {
+    return { success: false, message: 'ids 必须使用重复查询键传递' }
+  }
+  const rawValues = searchParams.getAll('ids')
+  if (rawValues.length < 1 || rawValues.length > 100) {
+    return { success: false, message: 'ids 数量必须为 1 到 100' }
+  }
+  const ids: string[] = []
+  for (const rawValue of rawValues) {
+    if (!rawValue.trim() || rawValue.includes(',')) {
+      return { success: false, message: 'ids 必须使用非空重复查询键传递，不支持逗号拼接' }
+    }
+    ids.push(rawValue.trim())
+  }
+  return { success: true, ids }
 }
 
 function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {

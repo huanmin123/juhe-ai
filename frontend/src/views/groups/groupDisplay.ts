@@ -5,7 +5,7 @@ import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { isAuthorizedGroup } from './groupRowActions'
 
-export function groupStats(group?: GroupSummary): GroupAccountStats {
+export function groupStats(group?: GroupSummary): GroupAccountStats & { currentConcurrency: number; todayUsage: AccountUsageSummary } {
   const stats = group?.accountStats
   return {
     total: normalizedNumber(stats?.total),
@@ -35,15 +35,19 @@ export function groupAccountStatsTooltip(group: GroupSummary): string {
 }
 
 export function groupConcurrencyAvailable(group: GroupSummary): boolean {
-  return groupStats(group).currentConcurrencyAvailable !== false
+  return groupStats(group).currentConcurrencyAvailable === true
 }
 
 export function groupConcurrencyText(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? String(groupStats(group).currentConcurrency) : '暂不可用'
+  return groupConcurrencyAvailable(group) ? String(groupStats(group).currentConcurrency) : '未知'
 }
 
 export function groupConcurrencyTooltip(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? '当前正在转发的请求数' : '实时并发快照暂不可用'
+  return groupConcurrencyAvailable(group) ? '当前正在转发的请求数' : '实时并发快照尚未加载或暂不可用'
+}
+
+export function groupTodayUsageAvailable(group: GroupSummary): boolean {
+  return Boolean(group.accountStats?.todayUsage)
 }
 
 export function groupStatusText(group: GroupSummary): string {
