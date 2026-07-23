@@ -381,12 +381,12 @@ function assertPostgresSchemaParity(): void {
   assert.deepEqual(
     tableColumnNames(generatedIncident),
     tableColumnNames(extractMigrationTable(migration, 'account_circuit_incidents')),
-    'SQLite 生成的 PostgreSQL incident 当前 schema 必须与 Goose 71 列集合一致'
+    'SQLite 生成的 PostgreSQL incident 当前 schema 必须与 Goose 72 列集合一致'
   )
   assert.deepEqual(
     tableColumnNames(generatedOutbox),
     tableColumnNames(extractMigrationTable(migration, 'account_circuit_outbox')),
-    'SQLite 生成的 PostgreSQL outbox 当前 schema 必须与 Goose 71 列集合一致'
+    'SQLite 生成的 PostgreSQL outbox 当前 schema 必须与 Goose 72 列集合一致'
   )
 }
 

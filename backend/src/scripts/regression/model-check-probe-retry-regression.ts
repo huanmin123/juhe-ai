@@ -100,7 +100,7 @@ try {
   assert(Date.now() - rateLimitedStartedAt >= 35, '失败重试应执行统一等待，不能贴着重打')
   assert.equal(rateLimitedBasic.status, 'passed', '第 3 次限流恢复后 basic 探针应通过')
   assert.equal(rateLimitedBasic.evidenceSummary.retryAttemptCount, 2, '429 basic 探针应记录重试次数')
-  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], '429 basic 探针应记录网关侧状态码')
+  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [429, 429, 200], '429 basic 探针应记录网关侧状态码')
   assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429, 200], '429 basic 探针应记录真实上游状态码')
 
   const persistentFixture = createMockGatewayFixture({

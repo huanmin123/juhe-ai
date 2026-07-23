@@ -155,12 +155,15 @@
                 :mapping-source-model-options="mappingSourceModelOptions"
                 :mapping-upstream-model-options="mappingUpstreamModelOptions"
                 :proxy-options="proxyOptions"
+                :proxy-options-loading="proxyOptionsLoading"
                 :selected-protocol-profile="selectedProtocolProfile"
                 :authorized-editing="authorizedEditing"
                 @current-provider-model-options-open="$emit('model-options-open', $event)"
                 @current-provider-model-options-search="$emit('model-options-search', $event)"
                 @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
                 @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
+                @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
+                @proxy-options-search="$emit('proxyOptionsSearch', $event)"
               />
 
               <section class="form-section probe-toggle-row">
@@ -205,6 +208,38 @@
                 v-model:rules="responseInspectionRules"
                 :readonly="authorizedEditing"
               />
+
+              <section v-if="form.clientCompatibility === 'codex_responses'" class="form-section codex-guard-section">
+                <div class="codex-guard-heading">Codex Responses 响应防护</div>
+                <div class="probe-toggle-row">
+                  <div class="probe-toggle-label">
+                    <span>默认安全修复</span>
+                    <a-tooltip title="识别到确定的历史或响应 ID 问题时复制并修复后再下发；未知类型只记录，不修改正文。">
+                      <QuestionCircleOutlined class="probe-toggle-help" />
+                    </a-tooltip>
+                  </div>
+                  <a-switch
+                    v-model:checked="form.codexResponsesSafeRepairEnabled"
+                    :disabled="authorizedEditing || form.codexResponsesStrictInterceptEnabled"
+                    checked-children="开启"
+                    un-checked-children="关闭"
+                  />
+                </div>
+                <div class="probe-toggle-row">
+                  <div class="probe-toggle-label">
+                    <span>严格拦截并换号</span>
+                    <a-tooltip title="识别到确定的协议异常时不向客户端下发，直接将账户置为运行态异常并请求下一账户。未知类型不会误拦截。">
+                      <QuestionCircleOutlined class="probe-toggle-help" />
+                    </a-tooltip>
+                  </div>
+                  <a-switch
+                    v-model:checked="form.codexResponsesStrictInterceptEnabled"
+                    :disabled="authorizedEditing"
+                    checked-children="开启"
+                    un-checked-children="关闭"
+                  />
+                </div>
+              </section>
             </div>
           </a-collapse-panel>
         </a-collapse>
@@ -301,6 +336,7 @@ const props = withDefaults(defineProps<{
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
   testButtonDisabled?: boolean
@@ -419,6 +455,8 @@ const emit = defineEmits<{
   (event: 'model-capabilities-load', modelIds: string[]): void
   (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
+  (event: 'proxyOptionsDropdown', open: boolean): void
+  (event: 'proxyOptionsSearch', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void
@@ -455,6 +493,20 @@ const emit = defineEmits<{
 .probe-toggle-help {
   color: #8c8c8c;
   cursor: help;
+}
+
+.codex-guard-section {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.codex-guard-heading {
+  color: #92400e;
+  font-weight: 600;
 }
 
 .readonly-config-section {

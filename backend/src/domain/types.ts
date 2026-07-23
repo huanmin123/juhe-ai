@@ -332,6 +332,8 @@ export interface AccountCredentials {
   service_tier_override?: string
   reasoning_effort_override?: string
   response_inspection_rules?: unknown[]
+  codex_responses_safe_repair_enabled?: boolean
+  codex_responses_strict_intercept_enabled?: boolean
   [key: string]: unknown
 }
 
@@ -678,6 +680,9 @@ export interface AccountSummary {
   qualityLastErrorMessage?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
+  proxyProfileName?: string
+  proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
   schedulable: boolean
@@ -1039,7 +1044,7 @@ export interface AccountTestTask {
 }
 
 export type ModelCheckTargetType = 'account'
-export type ModelCheckProfile = 'full'
+export type ModelCheckProfile = 'quick' | 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckRunStatus = 'running' | 'completed' | 'failed' | 'canceled'
 export type ModelCheckItemStatus = 'passed' | 'warning' | 'failed' | 'skipped'
@@ -1546,11 +1551,20 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  groupBindingPreview: RouteStrategyGroupBindingPreview[]
-  bindingCount: number
-  apiKeyCount?: number
   createdAt: string
   updatedAt: string
+}
+
+export interface RouteStrategyListSnapshotItem {
+  id: string
+  bindingCount: number
+  apiKeyCount: number
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+}
+
+export interface RouteStrategyListSnapshotResult {
+  generatedAt: string
+  items: RouteStrategyListSnapshotItem[]
 }
 
 export interface RouteStrategyOptionSummary {

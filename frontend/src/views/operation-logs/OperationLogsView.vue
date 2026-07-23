@@ -85,7 +85,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { loadEntityDetailCached } from '@/shared/entityDetailCache'
-import type { OperationLogDetail, OperationLogSummary } from '@/types/domain'
+import type { OperationLogDetail, OperationLogListItem } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
 import OperationLogFilterToolbar from './OperationLogFilterToolbar.vue'
@@ -99,19 +99,23 @@ import {
 } from './operationLogPageStateModel'
 import { operationLogTableColumns } from './operationLogTableConfig'
 import { useOperationLogSystemAccountOptions } from './useOperationLogSystemAccountOptions'
-import { defaultOperationLogsPageState, type OperationLogsPageState } from './operationLogPageState'
+import {
+  defaultOperationLogsPageState,
+  operationLogPageStateForTrace,
+  type OperationLogsPageState
+} from './operationLogPageState'
 
 const pageSize = 20
-const defaultPageState = () => defaultOperationLogsPageState(pageSize)
-const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultPageState, { version: 4 })
-const initialPageState = pageStateCache.read()
 const { isManagementView } = useScopedMenuView()
+const defaultPageState = () => defaultOperationLogsPageState(pageSize, isManagementView.value)
+const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultPageState, { version: 5 })
+const initialPageState = pageStateCache.read()
 const operationLogsApi = useScopedOperationLogsApi(isManagementView)
 const route = useRoute()
 const router = useRouter()
 const initialTraceId = routeTraceId()
 const effectiveInitialPageState: OperationLogsPageState = initialTraceId
-  ? { ...defaultPageState(), traceIdFilter: initialTraceId }
+  ? operationLogPageStateForTrace(pageSize, isManagementView.value, initialTraceId)
   : initialPageState
 
 const detailLoading = ref(false)
@@ -177,7 +181,7 @@ const {
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecords,
   resetPagination
-} = useResponsivePagedList<OperationLogSummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<OperationLogListItem, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -227,7 +231,7 @@ function applyPageState(state: OperationLogsPageState): void {
 
 function applyRouteTraceId(traceId: string): void {
   pageStateCache.flushPendingWrite()
-  applyPageState({ ...defaultPageState(), traceIdFilter: traceId })
+  applyPageState(operationLogPageStateForTrace(pageSize, isManagementView.value, traceId))
   resetPagination()
   void loadData()
 }
@@ -283,7 +287,7 @@ function operationLogRequestParams(pageState: { current: number; pageSize: numbe
   return operationLogListParams(currentFilterValues.value, pageState, isManagementView.value)
 }
 
-async function openDetail(record: OperationLogSummary): Promise<void> {
+async function openDetail(record: OperationLogListItem): Promise<void> {
   const requestId = detailRequestId + 1
   detailRequestId = requestId
   detailOpen.value = true

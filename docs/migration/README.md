@@ -51,16 +51,17 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、使用记录列表 / 详情、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
 27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
-28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000071` 后的连续版本规则和删除门禁。
+28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000073` 后的连续版本规则和删除门禁。
 29. [W7 模型检测写入与任务契约迁移记录](W7-模型检测写入与任务契约迁移记录.md)：模型检测 durable job payload、幂等写阶段、终态 CAS、停止 / SSE 语义和 Node 专用复杂度删除边界。
 30. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
 31. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
 32. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
 33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、陈旧任务护栏和 Go 原生 worker 接线规则。
 34. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-35. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
-36. [精确路由 Owner 清单设计](精确路由Owner清单设计.md)：四大域默认 owner、method + path template 精确 allowlist、回滚 manifest 和未来代理接入门禁。
-37. [Goose 与 Node 初始化边界复审记录](Goose与Node初始化边界复审记录.md)：schema 70 的 Go-only Goose 执行命令、Node 补充 DDL 仍保留的原因和未追踪 schema 拒绝门禁。
+35. [W10 网关上游请求与流式中转核心迁移记录](W10-网关上游请求与流式中转核心迁移记录.md)：Go-native 上游请求构造、HTTP transport dispatch seam、凭据与 header 隔离、有界 body、流式背压、超时、取消、终态和 usage/audit handoff；当前不接生产 listener、upstream policy 或 owner 切换。
+36. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+37. [精确路由 Owner 清单设计](精确路由Owner清单设计.md)：四大域默认 owner、method + path template 精确 allowlist、回滚 manifest 和未来代理接入门禁。
+38. [Goose 与 Node 初始化边界复审记录](Goose与Node初始化边界复审记录.md)：schema 73 的 Go-only Goose 执行命令、Node 补充 DDL 仍保留的原因和未追踪 schema 拒绝门禁。
 
 ## 4. 目录职责
 

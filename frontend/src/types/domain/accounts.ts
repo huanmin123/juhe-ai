@@ -54,6 +54,8 @@ export interface AccountCredentials {
   service_tier_override?: Exclude<AccountGptServiceTierOverride, ''>
   reasoning_effort_override?: Exclude<AccountGptReasoningEffortOverride, ''>
   response_inspection_rules?: unknown[]
+  codex_responses_safe_repair_enabled?: boolean
+  codex_responses_strict_intercept_enabled?: boolean
   [key: string]: unknown
 }
 
@@ -325,6 +327,9 @@ export interface AccountSummary {
   qualityLastErrorMessage?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
+  proxyProfileName?: string
+  proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
   schedulable: boolean

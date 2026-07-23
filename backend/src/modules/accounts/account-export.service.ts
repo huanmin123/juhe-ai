@@ -87,7 +87,9 @@ const apiKeyExportCredentialKeys = [
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
 ]
 
 const oauthExportCredentialKeys = [
@@ -105,7 +107,9 @@ const oauthExportCredentialKeys = [
   'chatgpt_user_id',
   'plan_type',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
 ]
 
 export function exportAccountsAsImportDocument(options: AccountExportOptions, access: AccessScope): AccountExportResult {

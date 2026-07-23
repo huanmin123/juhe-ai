@@ -9,8 +9,11 @@
     :placeholder="placeholder"
     :cache-key="cacheKey"
     :preference-key="preferenceKey"
+    :filter-option="filterOption"
     v-bind="$attrs"
     @change="handleChange"
+    @dropdown-visible-change="handleDropdownVisibleChange"
+    @search="handleSearch"
     @update:value="handleUpdateValue"
   />
 </template>
@@ -50,6 +53,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   loading?: boolean
   mode?: SelectMode
+  filterOption?: boolean | ((input: string, option: SelectOption) => boolean)
   placeholder?: string
 }>(), {
   proxies: () => [],
@@ -63,6 +67,7 @@ const props = withDefaults(defineProps<{
   disabled: false,
   loading: false,
   mode: undefined,
+  filterOption: false,
   placeholder: '输入代理名称搜索'
 })
 
@@ -70,6 +75,8 @@ const emit = defineEmits<{
   (event: 'update:value', value: SelectValue): void
   (event: 'update:selectedProxy', value: ProxySelection | undefined): void
   (event: 'change', value: SelectValue, option: unknown): void
+  (event: 'dropdownVisibleChange', open: boolean): void
+  (event: 'search', value: string): void
 }>()
 
 const baseOptions = computed(() => [
@@ -114,6 +121,14 @@ function handleUpdateValue(value: SelectValue) {
 function handleChange(value: SelectValue, option: unknown) {
   emitSelectedProxy(value)
   emit('change', value, option)
+}
+
+function handleDropdownVisibleChange(open: boolean) {
+  emit('dropdownVisibleChange', open)
+}
+
+function handleSearch(value: string) {
+  emit('search', value)
 }
 
 function emitSelectedProxy(value: SelectValue): void {

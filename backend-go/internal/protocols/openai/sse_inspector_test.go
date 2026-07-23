@@ -290,3 +290,43 @@ func TestSSEInspectorSnapshotDoesNotExposeMutableUsage(t *testing.T) {
 		t.Fatal("last event type is empty")
 	}
 }
+
+func TestSSEInspectorObserverReceivesParsedEventsAndCannotMutateParserState(t *testing.T) {
+	events := make([]SSEEvent, 0)
+	inspector, err := NewSSEInspectorWithObserver(DefaultSSELimits(), func(event SSEEvent) error {
+		events = append(events, event)
+		if response, ok := event.Data["response"].(map[string]any); ok {
+			response["status"] = "mutated"
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("NewSSEInspectorWithObserver() error = %v", err)
+	}
+	stream := "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n" +
+		"data: [DONE]\n\n"
+	if _, err := inspector.Write([]byte(stream)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if len(events) != 2 || events[0].EventType != "response.completed" || !events[1].Done {
+		t.Fatalf("events = %#v", events)
+	}
+	snapshot := inspector.Snapshot()
+	if !snapshot.TerminalReceived || snapshot.TerminalEventType != "response.completed" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestSSEInspectorObserverErrorIsSticky(t *testing.T) {
+	observerErr := errors.New("observer failed")
+	inspector, err := NewSSEInspectorWithObserver(DefaultSSELimits(), func(SSEEvent) error { return observerErr })
+	if err != nil {
+		t.Fatalf("NewSSEInspectorWithObserver() error = %v", err)
+	}
+	if _, err := inspector.Write([]byte("data: {}\n\n")); !errors.Is(err, observerErr) {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if _, err := inspector.Write([]byte("data: {}\n\n")); !errors.Is(err, observerErr) {
+		t.Fatalf("sticky Write() error = %v", err)
+	}
+}

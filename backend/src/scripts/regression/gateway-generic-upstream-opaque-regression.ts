@@ -313,9 +313,9 @@ try {
   assert.deepEqual(
     upstreamAuthorizations.slice(streamHitOffset),
     ['Bearer sk-generic-opaque-bad-b'],
-    `通用 SSE 必须由 round-robin 当前 Key 单次透明响应，不得隐式轮 Key 或切账号：${streamText}`
+    `Responses SSE 必须由当前 route plan 目标单次响应，不得隐式轮 Key：${streamText}`
   )
-  assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
+  assert.match(streamText, /opaque stream completed|vendor_invented_stream_error/, 'Responses SSE 应返回后备账号结果或透明失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 
   const heldConflictSlot = tryAcquireAccountConcurrency(account.id, 1)

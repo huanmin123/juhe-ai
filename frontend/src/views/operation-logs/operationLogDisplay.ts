@@ -1,8 +1,8 @@
-import type { OperationLogSummary } from '@/types/domain'
+import type { OperationLogListItem, OperationLogSummary } from '@/types/domain'
 
 import { resourceTypeText } from './operationLogLabels'
 
-export function actorText(record: OperationLogSummary): string {
+export function actorText(record: OperationLogListItem | OperationLogSummary): string {
   return displayName(record.actorDisplayName ?? record.actorSystemAccountName)
 }
 

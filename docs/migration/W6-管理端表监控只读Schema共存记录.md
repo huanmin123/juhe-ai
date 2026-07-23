@@ -8,7 +8,7 @@
 
 ## Schema 决策
 
-`000070_w2_gateway_model_catalog_chat_snapshot_variants.sql` 已正式发布；page-data 退场随后新增 `000071_w7_drop_page_data_dirty_domains.sql`，权威 Goose catalog 当前连续到 `000071`。本表监控切片没有新增 migration；后续工作必须从真实 catalog 派生下一连续版本，不能复用或改写已发布版本。
+`000070_w2_gateway_model_catalog_chat_snapshot_variants.sql`、`000071_w2_gpt_codex_auto_review_default.sql` 和 `000072_w1_account_circuit_control_plane.sql` 已正式发布；page-data 退场随后新增 `000073_w7_drop_page_data_dirty_domains.sql`，权威 Goose catalog 当前连续到 `000073`。本表监控切片没有新增 migration；后续工作必须从真实 catalog 派生下一连续版本，不能复用或改写已发布版本。
 
 因此本轮选择运行时只读能力门禁，而不是抢占 migration 版本：
 
@@ -18,7 +18,7 @@
 4. catalog 查询失败保持原始 infrastructure error 链，不能误报成 schema 缺失。
 5. capability check 与实际查询之间若并发发生 drop / alter / revoke，reader 把 PostgreSQL `42P01`、`42703`、`42501` 统一映射回 typed unavailable；不为低频管理读开启跨多条查询的长事务。
 
-这允许 fresh Go schema 70 正常启动并与 Node 共存。部署层只有在 Node 初始化过上述 PostgreSQL schema 且门禁通过后，才能把三条精确 GET 路径 opt-in 到 Go；否则这些路径继续由 Node 持有。
+这允许 fresh Go schema 73 正常启动并与 Node 共存。部署层只有在 Node 初始化过上述 PostgreSQL schema 且门禁通过后，才能把三条精确 GET 路径 opt-in 到 Go；否则这些路径继续由 Node 持有。
 
 ## 后续 Schema Owner 门禁
 
