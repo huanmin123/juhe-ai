@@ -321,7 +321,12 @@ async function assertCandidateFilterLoadsModelAwareCandidates(): Promise<void> {
     systemAccountId: 'sys_model_filter',
     groupId: 'group_model_filter',
     endpoint: 'POST /v1/chat/completions',
-    attemptFallback: async () => ({ attempted: false }),
+    routeCoordinator: {
+      requestFallback: async () => ({ attempted: false }),
+      completeFailure: async (failure) => {
+        throw new Error(failure.message)
+      }
+    },
     loadModelAwareCandidateAccounts: async (requestedModel) => {
       loaderCalls += 1
       assert.equal(requestedModel, 'gpt-5.5')

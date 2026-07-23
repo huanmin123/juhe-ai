@@ -302,6 +302,7 @@ try {
     'Bearer sk-generic-image-bad'
   ], '未配置显式规则的图片 HTTP 失败不得切换后备账号')
 
+  const streamHitOffset = upstreamAuthorizations.length
   const stream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -309,7 +310,11 @@ try {
   })
   const streamText = await stream.text()
   assert.equal(stream.status, 200)
-  assert.equal(upstreamAuthorizations.at(-1), 'Bearer sk-generic-opaque-bad-a', `通用 SSE 必须由当前选中账号透明响应：${streamText}`)
+  assert.deepEqual(
+    upstreamAuthorizations.slice(streamHitOffset),
+    ['Bearer sk-generic-opaque-bad-b'],
+    `通用 SSE 必须由 round-robin 当前 Key 单次透明响应，不得隐式轮 Key 或切账号：${streamText}`
+  )
   assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 

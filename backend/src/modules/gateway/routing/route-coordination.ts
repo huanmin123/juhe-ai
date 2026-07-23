@@ -1,4 +1,5 @@
 import type { RouteStrategyMode } from '../../../domain/types.js'
+import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 
 export const defaultGatewayRequestWallBudgetMs = 270_000
 export const defaultGatewayFinalResponseReserveMs = 2_000
@@ -68,6 +69,31 @@ export type RouteCoordinationResult<TAccount> =
       serverRetryRemainingMs: number
     }
 
+/**
+ * Request orchestration boundary. Lower-level candidate/preparation code may
+ * ask for a route action through this owner instead of invoking a raw fallback
+ * callback or changing groups by itself.
+ */
+export interface GatewayRouteFallbackDecision<TContext = unknown> {
+  attempted: boolean
+  context?: TContext
+}
+
+export interface GatewayRouteFinalFailure {
+  statusCode: number
+  message: string
+  errorType: string
+  errorCode?: string
+  errorPhase: 'quota' | 'dispatch'
+  failureAttribution?: 'gateway_capacity'
+  retryAfterMs?: number
+}
+
+export interface GatewayRouteCoordinatorOwner<TContext = unknown> {
+  requestFallback(reason: string): Promise<GatewayRouteFallbackDecision<TContext>>
+  completeFailure(failure: GatewayRouteFinalFailure): Promise<void>
+}
+
 export interface GatewayRequestWallBudgetOptions {
   requestAcceptedAtMs: number
   budgetMs?: number
@@ -135,15 +161,20 @@ export class GatewayRequestWallBudget {
 
   clipFirstByteDeadlineMs(input: GatewayFirstByteDeadlineClipInput): number {
     const nowMs = normalizedTimestamp(input.nowMs ?? this.now())
+    const configuredFirstByteDeadlineMs = normalizedNonNegativeMs(input.firstByteDeadlineMs)
     const candidates = [
-      normalizedNonNegativeMs(input.firstByteDeadlineMs),
+      configuredFirstByteDeadlineMs,
       this.precommitRemainingMs({ ...input, nowMs })
     ]
     const uncommittedAttemptDeadlineAtMs = normalizedOptionalTimestamp(input.uncommittedAttemptDeadlineAtMs)
     if (uncommittedAttemptDeadlineAtMs !== undefined) {
       candidates.push(Math.max(0, uncommittedAttemptDeadlineAtMs - nowMs))
     }
-    return Math.max(0, Math.min(...candidates))
+    const clipped = Math.max(0, Math.min(...candidates))
+    if (clipped < configuredFirstByteDeadlineMs) {
+      observeGatewayRouting({ kind: 'budget', outcome: 'precommit_clipped' }, nowMs)
+    }
+    return clipped
   }
 }
 

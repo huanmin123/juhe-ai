@@ -1,4 +1,5 @@
 import type { Request } from 'express'
+import { randomUUID } from 'node:crypto'
 
 import {
   loadAccountCurrentConcurrencyByIdsAsync,
@@ -58,7 +59,10 @@ import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-la
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../request/validation-error.js'
 import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
-import { preserveGatewayAccountDispatchPriorityTiers } from '../runtime/account-dispatch-priority-order.js'
+import {
+  gatewayAccountDispatchPriorityTier,
+  preserveGatewayAccountDispatchPriorityTiers
+} from '../runtime/account-dispatch-priority-order.js'
 import {
   gatewayAccountConcurrencyAccountId,
   gatewayAccountConcurrencyAccountIds,
@@ -82,6 +86,17 @@ import {
   type GatewayAccountCircuitConfirmation,
   type GatewayAccountCircuitTransportFailure
 } from '../runtime/account-circuit.service.js'
+import {
+  createGatewayHotQualityAttemptLifecycle,
+  type GatewayHotQualityAttemptLifecycle
+} from '../runtime/hot-quality-attempt-lifecycle.js'
+import {
+  normalRouteAttemptFirstByteDeadline,
+  type NormalRouteAttemptFirstByteDeadline,
+  type NormalRouteFirstByteRuntimeConfig
+} from '../routing/normal-route-first-byte-deadline.js'
+import type { FirstByteDeadlineDecisionInput, FirstByteDeadlineAction, FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
+import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -97,6 +112,9 @@ export interface OpenAIUpstreamDispatchResult {
   confirmHalfOpenSuccess: () => Promise<boolean>
   releaseHalfOpenLease: () => Promise<boolean>
   accountCircuitAttempt?: GatewayAccountCircuitAttempt
+  hotQualityAttempt: GatewayHotQualityAttemptLifecycle
+  normalRouteFirstByteDeadline?: NormalRouteAttemptFirstByteDeadline
+  onFirstByteDeadline?: FirstByteDeadlineHandler
 }
 
 export interface GatewayUpstreamRequestCoordinationContext {
@@ -106,6 +124,13 @@ export interface GatewayUpstreamRequestCoordinationContext {
   gatewayRequestWallBudget: GatewayRequestWallBudget
   routeCoordinationBudget: RouteCoordinationBudget
   requestAttemptTracker: GatewayRequestAttemptTracker
+  normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
+  onNormalRouteFirstByteDeadline?: (input: FirstByteDeadlineDecisionInput & {
+    account: UpstreamAccount
+    deadline: NormalRouteAttemptFirstByteDeadline
+  }) => FirstByteDeadlineAction | Promise<FirstByteDeadlineAction>
+  /** Called once when an account attempt is about to invoke the upstream transport. */
+  onUpstreamAttemptStarted?: (account: UpstreamAccount) => void | Promise<void>
 }
 
 export class UpstreamAttemptError extends Error {
@@ -201,6 +226,11 @@ export async function fetchFirstAvailableUpstream(
     physicalCredentialKey: accountPhysicalCredentialKey(account),
     matchingConfirmation: accountCircuitConfirmation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
   }).allowed)
+  const dispatchTierOptions = { modelRankByAccountId: modelPriority?.rankByAccountId }
+  const primaryDispatchTier = dispatchAccounts[0]
+    ? gatewayAccountDispatchPriorityTier(dispatchAccounts[0], dispatchTierOptions)
+    : undefined
+  const observedEscapedTiers = new Set<string>()
 
   while (dispatchAccounts.length > 0) {
     const cycleRecoverableAccountIds = new Set<string>()
@@ -547,7 +577,10 @@ export async function fetchFirstAvailableUpstream(
             continue
           }
           for (const upstreamUrl of upstreamUrls) {
-            for (let attemptIndex = 0, attemptLimit = 2; attemptIndex < attemptLimit; attemptIndex += 1) {
+            // A request may switch credentials only through the outer
+            // coordinator. Never silently replay the same account inside one
+            // upstream attempt; confirmation is the sole same-account path.
+            for (let attemptIndex = 0, attemptLimit = 1; attemptIndex < attemptLimit; attemptIndex += 1) {
               const accountRuntimeKey = gatewayAccountRuntimeKey(account)
               const attemptRegistration = requestAttemptTracker.tryRecordDispatchAttempt({
                 accountRuntimeKey,
@@ -579,7 +612,36 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               }
+              const attemptTier = gatewayAccountDispatchPriorityTier(account, dispatchTierOptions)
+              if (primaryDispatchTier && attemptTier !== primaryDispatchTier && !observedEscapedTiers.has(attemptTier)) {
+                observedEscapedTiers.add(attemptTier)
+                observeGatewayRouting({ kind: 'tier_escape', outcome: 'applied' })
+              }
               const attemptStartedAt = Date.now()
+              const normalRouteFirstByteDeadline = requestCoordination.normalRouteFirstByteConfig
+                ? normalRouteAttemptFirstByteDeadline({
+                    config: requestCoordination.normalRouteFirstByteConfig,
+                    gatewayRequestWallBudget,
+                    attemptStartedAtMs: attemptStartedAt,
+                    laneFirstByteTimeoutMs: timeoutProfile.firstByteTimeoutMs,
+                    uncommittedAttemptMaxLifetimeMs: timeoutProfile.uncommittedAttemptMaxLifetimeMs
+                  })
+                : undefined
+              let firstByteDeadlineDecision: Promise<FirstByteDeadlineAction> | undefined
+              let firstByteDeadlineTriggered = false
+              const onFirstByteDeadline: FirstByteDeadlineHandler | undefined = normalRouteFirstByteDeadline
+                ? (deadlineInput) => {
+                    firstByteDeadlineTriggered = true
+                    firstByteDeadlineDecision ??= Promise.resolve(
+                      requestCoordination.onNormalRouteFirstByteDeadline?.({
+                        ...deadlineInput,
+                        account,
+                        deadline: normalRouteFirstByteDeadline
+                      }) ?? 'abort'
+                    )
+                    return firstByteDeadlineDecision
+                  }
+                : undefined
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
                 account,
@@ -590,6 +652,32 @@ export async function fetchFirstAvailableUpstream(
                 body,
                 requestForModelAccounting: req
               })
+              const hotQualityAttempt = createGatewayHotQualityAttemptLifecycle({
+                // Audit capture may be disabled and return an empty id. Keep the
+                // runtime attempt identity unique across every actual upstream
+                // attempt so terminal idempotency cannot collapse retries.
+                attemptId: `hotq:${usageContext.traceId}:${attemptIndex}:${auditAttemptIndex}:${randomUUID()}`,
+                account,
+                requestLane,
+                model: requestModel(req)
+              })
+              try {
+                // Settlement/observability must not add latency to the upstream
+                // request or turn a successful dispatch into a gateway failure.
+                void Promise.resolve(requestCoordination.onUpstreamAttemptStarted?.(account)).catch((error) => {
+                  getRequestLogger().warn({
+                    event: 'gateway_upstream_attempt_started_callback_failed',
+                    accountId: account.id,
+                    error
+                  }, '上游 attempt started 回调失败')
+                })
+              } catch (error) {
+                getRequestLogger().warn({
+                  event: 'gateway_upstream_attempt_started_callback_failed',
+                  accountId: account.id,
+                  error
+                }, '上游 attempt started 回调失败')
+              }
               try {
                 const response = await performUpstreamRequestAttempt({
                   req,
@@ -601,6 +689,8 @@ export async function fetchFirstAvailableUpstream(
                   body,
                   timeoutProfile,
                   attemptStartedAt,
+                  firstByteDeadlineMs: normalRouteFirstByteDeadline?.effectiveDeadlineMs,
+                  onFirstByteDeadline,
                   signal,
                   requestClientCompatibility
                 })
@@ -636,7 +726,10 @@ export async function fetchFirstAvailableUpstream(
                       ? completeHalfOpenLeaseSuccess(halfOpenLease)
                       : Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
-                    accountCircuitAttempt
+                    accountCircuitAttempt,
+                    hotQualityAttempt,
+                    normalRouteFirstByteDeadline,
+                    onFirstByteDeadline
                   }
                 }
 
@@ -661,6 +754,16 @@ export async function fetchFirstAvailableUpstream(
                   retrySameAccount: false
                 }
                 const failedResponseResult = await handleFailedUpstreamResponse(failedResponseInput)
+                const explicitPolicyFailure = failedResponseResult.action !== 'return_response'
+                if (explicitPolicyFailure) {
+                  await hotQualityAttempt.recordTerminal({
+                    outcomeClass: 'explicit_policy_failure',
+                    // A matched account error policy is an explicit user-authorized
+                    // account action; transport failures below remain protocol_model.
+                    failureScope: 'account',
+                    source: 'explicit_policy'
+                  })
+                }
                 if (failedResponseResult.action === 'return_response') {
                   keepConcurrencySlot = true
                   return {
@@ -676,16 +779,24 @@ export async function fetchFirstAvailableUpstream(
                     confirmSameAccountApiKeyFailures: () => Promise.resolve(),
                     confirmHalfOpenSuccess: () => Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
-                    accountCircuitAttempt
+                    accountCircuitAttempt,
+                    hotQualityAttempt,
+                    normalRouteFirstByteDeadline,
+                    onFirstByteDeadline
                   }
                 }
-                await accountCircuitAttempt?.reportFramingComplete()
+                // An explicit user policy is a failure action, not a transport
+                // success; do not close/recover a circuit from the same attempt.
+                if (!explicitPolicyFailure) {
+                  await accountCircuitAttempt?.reportFramingComplete()
+                }
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
                 recoverableFailedAccountIds.delete(account.id)
                 cycleRecoverableAccountIds.delete(account.id)
                 if (
-                  halfOpenLease?.generation === undefined
+                  !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
                   && (
                     failedResponseResult.tryNextApiKeyForRequest
                       ? shouldTryAnotherAccountApiKeyForRequest(account, accountApiKeyAttemptCount, auditCapture)
@@ -701,6 +812,7 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               } catch (error) {
+                await hotQualityAttempt.recordTerminal(hotQualityTerminalForDispatchError(error, signal))
                 if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
                   auditCapture.completeAttempt(auditAttemptId, {
                     success: false,
@@ -760,21 +872,17 @@ export async function fetchFirstAvailableUpstream(
                   ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
                   : undefined
                 if (circuitDecision?.outcome === 'confirmation_acquired' && accountCircuitService) {
-                  const confirmationPreparation = await accountCircuitService.prepareAttempt({
-                    account: originalAccount,
-                    requestLane,
-                    model: requestModel(req),
-                    confirmationLeaseDurationMs,
-                    confirmation: circuitDecision.confirmation
-                  })
-                  if (confirmationPreparation.outcome === 'dispatchable') {
-                    accountCircuitAttempt = confirmationPreparation.attempt
-                    continue
-                  }
+                  // The failing request establishes SUSPECT, but must not consume
+                  // its freshly-created confirmation lease by replaying the same
+                  // physical credential. Release it as unknown so a later request
+                  // can become the single-flight confirmer.
+                  await accountCircuitService.completeConfirmation(circuitDecision.confirmation, 'unknown')
                 }
                 if (
-                  halfOpenLease?.generation === undefined
-                  && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
+                  && requestErrorResult.keyScopedFailure === true
+                  && shouldRetryAnotherAccountApiKey(account, true, accountApiKeyAttemptCount, auditCapture)
                 ) {
                   retryAccountApiKey = true
                   break
@@ -989,6 +1097,35 @@ export async function fetchFirstAvailableUpstream(
     agentGuidanceResponse,
     [...recoverableFailedAccountIds]
   )
+}
+
+function isAbortLike(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true
+  if (error instanceof Error && (error.name === 'AbortError' || /aborted|cancelled|canceled/i.test(error.message))) return true
+  return false
+}
+
+function hotQualityTerminalForDispatchError(
+  error: unknown,
+  signal?: AbortSignal
+): Parameters<GatewayHotQualityAttemptLifecycle['recordTerminal']>[0] {
+  if (isAbortLike(error, signal)) {
+    return { outcomeClass: 'client_cancellation', source: 'request_lifecycle' }
+  }
+  if (
+    error instanceof GatewayAgentGuidanceResponse
+    || error instanceof GatewayLocalProtocolResponse
+    || error instanceof GatewayRequestValidationError
+    || error instanceof OpenAIOAuthCodexAdapterError
+  ) {
+    return { outcomeClass: 'unknown', source: 'request_lifecycle' }
+  }
+  const failure = accountCircuitTransportFailure(error)
+  return {
+    outcomeClass: failure.kind === 'timeout' ? 'timeout' : 'transport_failure',
+    failureScope: 'protocol_model',
+    source: 'gateway_transport'
+  }
 }
 
 function accountPhysicalCredentialKey(account: UpstreamAccount): string {

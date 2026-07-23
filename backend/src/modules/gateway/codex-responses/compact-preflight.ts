@@ -54,6 +54,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   requestCoordination: GatewayUpstreamRequestCoordinationContext
+  onDispatchedAccount?: (account: UpstreamAccount) => Promise<void>
   signal?: AbortSignal
 }): Promise<
   | { outcome: 'continued'; accounts: UpstreamAccount[] }
@@ -113,11 +114,19 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       input.requestCoordination,
       true
     )
+    await input.onDispatchedAccount?.(upstreamResult.account)
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,
       startedAt: input.startedAt,
       signal: input.signal,
       onFirstByte: upstreamResult.markFirstOutput
+    })
+    upstreamResult.hotQualityAttempt.markFirstByte(readResult.firstByteMs)
+    await upstreamResult.hotQualityAttempt.recordTerminal({
+      outcomeClass: readResult.truncated ? 'incomplete_response' : 'completed_response',
+      failureScope: readResult.truncated ? 'protocol_model' : 'none',
+      source: 'gateway_transport',
+      firstByteMs: readResult.firstByteMs
     })
     const summary = extractChatCompletionSummary(readResult.bodyText)
     if (!summary) {
@@ -170,6 +179,11 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
     })
     return { outcome: 'completed' }
   } catch (error) {
+    await upstreamResult?.hotQualityAttempt.recordTerminal({
+      outcomeClass: input.signal?.aborted ? 'client_cancellation' : 'read_interruption',
+      failureScope: input.signal?.aborted ? 'none' : 'protocol_model',
+      source: input.signal?.aborted ? 'request_lifecycle' : 'gateway_transport'
+    })
     const message = error instanceof Error ? error.message : String(error)
     await sendCompactFailure(input, {
       statusCode: 502,

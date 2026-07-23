@@ -350,7 +350,7 @@ async function readFirstNonStreamChunkWithDeadlines(
         transport: 'non_stream'
       }) ?? 'abort'
       if (action === 'abort') {
-        throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+        throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'configured_deadline')
       }
       continue
     }
@@ -382,7 +382,7 @@ async function readFirstNonStreamChunkWithDeadlines(
       transport: 'non_stream'
     }) ?? 'abort'
     if (action === 'abort') {
-      throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+      throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'configured_deadline')
     }
   }
 }

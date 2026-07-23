@@ -29,6 +29,8 @@ import {
 } from '../adapters/gpt-codex/client-headers.js'
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
+import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -44,6 +46,9 @@ interface UpstreamRequestOptions {
   proxyUrl?: string
   timeoutMs?: number
   requestTimeoutMs?: number
+  firstByteDeadlineMs?: number
+  firstByteDeadlineTransport?: 'stream' | 'non_stream'
+  onFirstByteDeadline?: FirstByteDeadlineHandler
   signal?: AbortSignal
   transport?: 'node' | 'fetch'
 }
@@ -151,11 +156,16 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
       lookup: safeRequest.lookup
     }
     let requestTimeout: NodeJS.Timeout | undefined
+    let firstByteDeadlineTimer: NodeJS.Timeout | undefined
     let upstreamRequestStarted = false
     const clearRequestTimeout = () => {
       if (requestTimeout) {
         clearTimeout(requestTimeout)
         requestTimeout = undefined
+      }
+      if (firstByteDeadlineTimer) {
+        clearTimeout(firstByteDeadlineTimer)
+        firstByteDeadlineTimer = undefined
       }
     }
     const request = transport.request(url, requestOptions, (message) => {
@@ -169,6 +179,25 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     if (options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
       requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`)), options.requestTimeoutMs)
+    }
+    if (options.firstByteDeadlineMs !== undefined) {
+      const deadlineMs = options.firstByteDeadlineMs
+      const deadlineStartedAtMs = Date.now()
+      firstByteDeadlineTimer = setTimeout(() => {
+        void Promise.resolve(options.onFirstByteDeadline?.({
+          elapsedMs: Date.now() - deadlineStartedAtMs,
+          timeoutMs: deadlineMs,
+          transport: options.firstByteDeadlineTransport ?? 'non_stream'
+        }) ?? 'abort').then((action) => {
+          if (action === 'abort') {
+            request.destroy(new GatewayFirstByteTimeoutError(
+              `上游请求 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个响应`,
+              deadlineMs,
+              'configured_deadline'
+            ))
+          }
+        }).catch((error: unknown) => request.destroy(error instanceof Error ? error : new Error(String(error))))
+      }, deadlineMs)
     }
     request.setTimeout(options.timeoutMs ?? 120000, abort)
     options.signal?.addEventListener('abort', abortBySignal, { once: true })
@@ -232,6 +261,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
   const headers = upstreamRequestHeaders(options.headers, options.body)
   const controller = new AbortController()
   let requestTimeout: NodeJS.Timeout | undefined
+  let firstByteDeadlineTimer: NodeJS.Timeout | undefined
   let socketTimeout: NodeJS.Timeout | undefined
   const abortBySignal = () => controller.abort(new UpstreamRequestAbortedError('请求已取消', true))
   if (options.signal?.aborted) {
@@ -244,6 +274,25 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
       requestTimeout = setTimeout(() => {
         controller.abort(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`))
       }, options.requestTimeoutMs)
+    }
+    if (options.firstByteDeadlineMs !== undefined) {
+      const deadlineMs = options.firstByteDeadlineMs
+      const deadlineStartedAtMs = Date.now()
+      firstByteDeadlineTimer = setTimeout(() => {
+        void Promise.resolve(options.onFirstByteDeadline?.({
+          elapsedMs: Date.now() - deadlineStartedAtMs,
+          timeoutMs: deadlineMs,
+          transport: options.firstByteDeadlineTransport ?? 'non_stream'
+        }) ?? 'abort').then((action) => {
+          if (action === 'abort') {
+            controller.abort(new GatewayFirstByteTimeoutError(
+              `上游请求 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个响应`,
+              deadlineMs,
+              'configured_deadline'
+            ))
+          }
+        }).catch((error: unknown) => controller.abort(error))
+      }, deadlineMs)
     }
     if (options.timeoutMs !== undefined) {
       socketTimeout = setTimeout(() => controller.abort(new Error('上游请求超时')), options.timeoutMs)
@@ -274,6 +323,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
     throw error
   } finally {
     if (requestTimeout) clearTimeout(requestTimeout)
+    if (firstByteDeadlineTimer) clearTimeout(firstByteDeadlineTimer)
     if (socketTimeout) clearTimeout(socketTimeout)
     options.signal?.removeEventListener('abort', abortBySignal)
   }

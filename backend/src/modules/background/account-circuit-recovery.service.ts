@@ -1,14 +1,30 @@
 import { randomUUID } from 'node:crypto'
 
+import type { AccountSummary } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import type { TransportProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { getGatewayAccountCircuitStore } from '../gateway/runtime/account-circuit.service.js'
+import type { AccessScope } from '../../storage/access-scope.js'
+import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import {
+  transportProbeOutcomeFromAccountTestResult,
+  type TransportProbeOutcome
+} from '../accounts/automatic-account-probe-outcome.js'
+import { observeGatewayRouting } from '../gateway/observability/routing-observability.service.js'
+import type { GatewayRoutingCircuitOperation } from '../gateway/observability/routing-observability-store.js'
+import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey } from '../gateway/runtime/account-runtime-keys.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import {
+  ensureGatewayAccountCircuitRuntimeStateReady,
+  getGatewayAccountCircuitStore
+} from '../gateway/runtime/account-circuit.service.js'
 import type {
   AccountCircuitMutationResult,
   AccountCircuitState,
   AccountCircuitStore
 } from '../gateway/runtime/account-circuit-store.js'
 import type { WorkerScheduledJobTaskResult } from './worker-scheduler.js'
+import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
 
 export interface AccountCircuitRecoveryProbeTarget {
   dispatchRevision: string
@@ -19,6 +35,26 @@ export type AccountCircuitRecoveryTargetResolver = (
   state: AccountCircuitState,
   signal: AbortSignal
 ) => Promise<AccountCircuitRecoveryProbeTarget | undefined>
+
+export interface AccountCircuitRecoveryResolverDependencies {
+  findAccountForTest(
+    accountId: string,
+    access?: AccessScope
+  ): Promise<AccountSummary | undefined>
+  findOpenAIAccountForGroup(
+    groupId: string,
+    accountId: string,
+    systemAccountId: string
+  ): Promise<OpenAIAccountSecret | undefined>
+  probe(input: {
+    account: AccountSummary
+    candidateAccount: OpenAIAccountSecret
+    groupId: string
+    systemAccountId: string
+    model?: string
+    signal: AbortSignal
+  }): Promise<TransportProbeOutcome>
+}
 
 export interface AccountCircuitRecoveryServiceOptions {
   batchSize?: number
@@ -113,6 +149,7 @@ export class AccountCircuitRecoveryService {
       leaseUntilMs: nowMs + this.leaseDurationMs,
       nowMs
     })
+    observeRecoveryCircuitMutation('acquire_canary', acquired, dueState.phase)
     if (acquired.status !== 'applied') {
       return isFencingResult(acquired) ? 'fenced' : 'skipped'
     }
@@ -144,6 +181,7 @@ export class AccountCircuitRecoveryService {
         transitionId: this.createId(),
         nowMs: this.now()
       })
+      observeRecoveryCircuitMutation('replace_revision', replaced, acquired.state.phase)
       return isAppliedOrIdempotent(replaced) ? 'fenced' : 'skipped'
     }
 
@@ -164,6 +202,7 @@ export class AccountCircuitRecoveryService {
       reason: circuitFailureReason(outcome),
       nowMs: this.now()
     })
+    observeRecoveryCircuitMutation('complete_canary', completed, acquired.state.phase)
     if (!isAppliedOrIdempotent(completed)) {
       return isFencingResult(completed) ? 'fenced' : 'skipped'
     }
@@ -187,10 +226,147 @@ export class AccountCircuitRecoveryService {
       outcome: 'unknown',
       nowMs: this.now()
     })
+    observeRecoveryCircuitMutation('complete_canary', released, leasedState.phase)
     if (!isAppliedOrIdempotent(released) && !isFencingResult(released)) {
       throw new Error(`账户电路未知探针结果释放失败：${released.status}`)
     }
   }
+}
+
+export function createScheduledAccountCircuitRecoveryResolver(
+  dependencies: AccountCircuitRecoveryResolverDependencies = defaultAccountCircuitRecoveryResolverDependencies()
+): AccountCircuitRecoveryTargetResolver {
+  return async (state, signal) => {
+    if (signal.aborted) return undefined
+    const identity = parseRecoveryRuntimeIdentity(state.scope.accountRuntimeKey)
+    if (!identity) return undefined
+    const access: AccessScope | undefined = identity.kind === 'authorized'
+      ? { systemAccountId: identity.systemAccountId, role: 'user' }
+      : undefined
+    const account = await dependencies.findAccountForTest(identity.accountId, access)
+    if (!account || signal.aborted) return undefined
+    const groupId = identity.kind === 'authorized' ? identity.groupId : account.boundGroupId
+    const systemAccountId = identity.kind === 'authorized' ? identity.systemAccountId : account.systemAccountId
+    if (!groupId || !systemAccountId) return undefined
+    const candidateAccount = await dependencies.findOpenAIAccountForGroup(groupId, identity.accountId, systemAccountId)
+    if (!candidateAccount || signal.aborted) return undefined
+    if (gatewayAccountRuntimeKey(candidateAccount) !== state.scope.accountRuntimeKey) return undefined
+    const dispatchRevision = currentDispatchRevision(candidateAccount)
+    if (!dispatchRevision) return undefined
+    return {
+      dispatchRevision,
+      probe: async (probeSignal) => {
+        if (probeSignal.aborted) return { kind: 'unknown', failureKind: 'canceled' }
+        return await dependencies.probe({
+          account,
+          candidateAccount,
+          groupId,
+          systemAccountId,
+          model: state.scope.kind === 'protocol_model' && state.scope.modelBucket !== 'unknown'
+            ? state.scope.modelBucket
+            : undefined,
+          signal: probeSignal
+        })
+      }
+    }
+  }
+}
+
+export function installDefaultScheduledAccountCircuitRecoveryResolver(): void {
+  installScheduledAccountCircuitRecoveryResolver(createScheduledAccountCircuitRecoveryResolver())
+}
+
+function defaultAccountCircuitRecoveryResolverDependencies(): AccountCircuitRecoveryResolverDependencies {
+  return {
+    findAccountForTest: async (accountId, access) => await requestBackgroundWorkerDbService({
+      type: 'find_account_for_test',
+      accountId,
+      access
+    }, backgroundProbeDbServiceTimeoutMs),
+    findOpenAIAccountForGroup: async (groupId, accountId, systemAccountId) => await requestBackgroundWorkerDbService({
+      type: 'find_openai_account_for_group',
+      groupId,
+      accountId,
+      systemAccountId,
+      includeUnavailable: true,
+      ignoreAvailability: true
+    }, backgroundProbeDbServiceTimeoutMs),
+    probe: runAccountCircuitRecoveryTransportProbe
+  }
+}
+
+async function runAccountCircuitRecoveryTransportProbe(input: {
+  account: AccountSummary
+  candidateAccount: OpenAIAccountSecret
+  groupId: string
+  systemAccountId: string
+  model?: string
+  signal: AbortSignal
+}): Promise<TransportProbeOutcome> {
+  let upstreamAttempt: UpstreamAttempt | undefined
+  try {
+    const result = await testOpenAIAccount(input.account, {
+      diagnostics: 'limited',
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      model: input.model,
+      signal: input.signal,
+      trafficSource: 'runtime_recovery_probe',
+      testEndpointMode: input.account.healthCheckEndpointMode,
+      candidateAccount: input.candidateAccount,
+      disableAccountStateMutation: true,
+      onUpstreamAttempt: (attempt) => {
+        upstreamAttempt = attempt
+      }
+    })
+    return transportProbeOutcomeFromAccountTestResult(result, {
+      upstreamAttempt,
+      canceled: input.signal.aborted
+    })
+  } catch (error) {
+    if (input.signal.aborted) return { kind: 'unknown', failureKind: 'canceled' }
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_circuit_recovery_probe_task_failed',
+      accountId: input.account.id,
+      groupId: input.groupId
+    }), '账户电路后台恢复探针任务未形成可判定传输结果')
+    return { kind: 'unknown', failureKind: 'task_failure' }
+  }
+}
+
+type RecoveryRuntimeIdentity =
+  | { kind: 'owner'; accountId: string }
+  | {
+      kind: 'authorized'
+      accountId: string
+      systemAccountId: string
+      groupId: string
+      authorizationId: string
+    }
+
+function parseRecoveryRuntimeIdentity(runtimeKey: string): RecoveryRuntimeIdentity | undefined {
+  const marker = ':authorized:'
+  const markerIndex = runtimeKey.indexOf(marker)
+  if (markerIndex < 0) {
+    const accountId = runtimeAccountIdFromKey(runtimeKey).trim()
+    return accountId ? { kind: 'owner', accountId } : undefined
+  }
+  const accountId = runtimeKey.slice(0, markerIndex).trim()
+  const parts = runtimeKey.slice(markerIndex + marker.length).split(':')
+  if (!accountId || parts.length !== 3 || parts.some((part) => !part.trim())) return undefined
+  return {
+    kind: 'authorized',
+    accountId,
+    systemAccountId: parts[0]!.trim(),
+    groupId: parts[1]!.trim(),
+    authorizationId: parts[2]!.trim()
+  }
+}
+
+function currentDispatchRevision(account: OpenAIAccountSecret): string | undefined {
+  return Number.isSafeInteger(account.dispatchRevision) && (account.dispatchRevision ?? 0) > 0
+    ? String(account.dispatchRevision)
+    : undefined
 }
 
 let scheduledRecoveryResolver: AccountCircuitRecoveryTargetResolver | undefined
@@ -204,6 +380,9 @@ export function installScheduledAccountCircuitRecoveryResolver(
 }
 
 export async function runScheduledAccountCircuitRecovery(): Promise<WorkerScheduledJobTaskResult | void> {
+  if (!await ensureGatewayAccountCircuitRuntimeStateReady()) {
+    return { outcome: 'partial', warning: '账户电路运行态重建失败，本轮恢复探针已保守跳过' }
+  }
   if (!scheduledRecoveryResolver) {
     if (!missingResolverWarningLogged) {
       missingResolverWarningLogged = true
@@ -242,6 +421,27 @@ async function runProbeWithinLease(
     return await Promise.race([target.probe(controller.signal), deadline])
   } finally {
     if (timer) clearTimeout(timer)
+  }
+}
+
+function observeRecoveryCircuitMutation(
+  operation: GatewayRoutingCircuitOperation,
+  result: AccountCircuitMutationResult,
+  previousPhase: AccountCircuitState['phase']
+): void {
+  observeGatewayRouting({
+    kind: 'circuit_mutation',
+    operation,
+    status: result.status,
+    ...(result.state.lease?.kind ? { leaseKind: result.state.lease.kind } : {})
+  })
+  if (result.status === 'applied' && previousPhase !== result.state.phase) {
+    observeGatewayRouting({
+      kind: 'circuit_transition',
+      from: previousPhase,
+      to: result.state.phase,
+      source: operation === 'replace_revision' ? 'configuration' : 'recovery'
+    })
   }
 }
 

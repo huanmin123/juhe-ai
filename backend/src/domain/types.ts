@@ -655,6 +655,7 @@ export interface AccountSummary {
   currentConcurrency: number
   currentConcurrencyAvailable?: boolean
   runtimeAvailability?: PublicAccountRuntimeAvailability
+  circuitSummary?: PublicAccountCircuitSummary
   effectiveAvailability: AccountEffectiveAvailability
   availabilityPresentation?: AccountAvailabilityPresentation
   priority: number
@@ -749,6 +750,13 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
+export interface PublicAccountCircuitSummary {
+  status: 'normal' | 'verifying' | 'avoided' | 'recovering'
+  reason?: 'connect_failed' | 'timeout_before_complete' | 'read_interrupted' | 'incomplete_response' | 'explicit_policy'
+  since?: string
+  nextCheckAt?: string
+}
+
 export type AccountListItem = Omit<AccountSummary,
   | 'credentials'
   | 'supportedModels'
@@ -799,6 +807,7 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'authorizationInstanceSourceAccountLastHealthCheckTraceId'
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
+  | 'circuitSummary'
   | 'effectiveAvailability'
   | 'availabilityPresentation'
   | 'lastUsedAt'
@@ -810,6 +819,7 @@ export interface AccountStatusSnapshotResult {
   runtimeSnapshot: {
     accountConcurrencyAvailable: boolean
     accountRuntimeAvailabilityAvailable: boolean
+    accountCircuitSummaryAvailable: boolean
   }
   items: AccountStatusSnapshotItem[]
 }

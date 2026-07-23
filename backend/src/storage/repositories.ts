@@ -140,6 +140,7 @@ export {
   listGroupsPageAsync
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { advanceAccountCircuitDispatchRevisionInSqliteTransaction, advanceAccountCircuitDispatchRevisionInTransaction } from './account-circuit-control-plane.repository.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import {
   findProviderDefaultHealthCheckModel,
@@ -1262,6 +1263,24 @@ function accountConnectionConfigurationChanged(input: {
   ))
 }
 
+function accountDispatchConfigurationChanged(current: AccountSummary, next: AccountSummary): boolean {
+  return !isDeepStrictEqual(current.credentials, next.credentials)
+    || current.proxyProfileId !== next.proxyProfileId
+    || current.status !== next.status
+    || current.concurrencyLimit !== next.concurrencyLimit
+    || current.priority !== next.priority
+    || current.superPriorityEnabled !== next.superPriorityEnabled
+    || current.fallbackEnabled !== next.fallbackEnabled
+    || current.clientCompatibility !== next.clientCompatibility
+    || current.schedulable !== next.schedulable
+    || !isDeepStrictEqual(current.availabilitySchedule, next.availabilitySchedule)
+    || current.accountExpiresAt !== next.accountExpiresAt
+    || current.cooldownUntil !== next.cooldownUntil
+    || current.temporaryUnavailableContinuousProbeEnabled !== next.temporaryUnavailableContinuousProbeEnabled
+    || !unorderedStringListEquals(current.supportedModels, next.supportedModels)
+    || !accountModelMappingsEqual(current.modelMappings, next.modelMappings)
+}
+
 export function updateAccountHealthCheckModel(
   accountId: string,
   model: string,
@@ -1897,6 +1916,12 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     replaceAccountModelMappings(account.id, providerCode, modelMappings)
     replaceAccountNameSearchTerms(database, account.id, systemAccountId, account.name, now)
     savedTags = replaceAccountTags(account.id, systemAccountId, tagNames, now, database)
+    advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+      accountId: account.id,
+      accountRuntimeKey: account.id,
+      transitionId: newId('dispatch'),
+      nowMs
+    })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -2150,6 +2175,12 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     await replaceAccountModelMappingsInClientAsync(client, account.id, providerCode, modelMappings)
     await replaceAccountNameSearchTermsAsync(client, account.id, systemAccountId, account.name, now)
     savedTags = await replaceAccountTagsAsync(client, account.id, systemAccountId, tagNames, now)
+    await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+      accountId: account.id,
+      accountRuntimeKey: account.id,
+      transitionId: newId('dispatch'),
+      nowMs
+    })
   } catch (error) {
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一用户下账户名称已存在：${account.name}`)
@@ -2449,6 +2480,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
+  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2573,6 +2605,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     }
     if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
       savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
+    }
+    if (Number(result.changes ?? 0) > 0 && dispatchConfigurationChanged) {
+      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: updateNowMs
+      })
     }
     if (Number(result.changes ?? 0) > 0 && (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput)) {
       database.prepare(`
@@ -2941,6 +2981,7 @@ export async function updateAccountAsync(
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
+  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -3078,6 +3119,14 @@ export async function updateAccountAsync(
       }
       if (hasTagsInput) {
         savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
+      }
+      if (dispatchConfigurationChanged) {
+        await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+          accountId: id,
+          accountRuntimeKey: id,
+          transitionId: newId('dispatch'),
+          nowMs: updateNowMs
+        })
       }
       if (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput) {
         await tx.execute(`

@@ -22,6 +22,10 @@ import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-la
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { areGatewayAccountsCapacityBusyForLaneAsync } from './capacity.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
+import {
+  advanceGatewayRoutePlanCursor,
+  type GatewayRoutePlanSnapshot
+} from '../routing/route-coordination.js'
 
 export interface ApiKeyGroupFallbackCandidateInput {
   req: Request
@@ -32,52 +36,58 @@ export interface ApiKeyGroupFallbackCandidateInput {
   requestLane: OpenAIGatewayRequestLane
   requestClientCompatibility?: ClientCompatibilityCapability
   excludedAccountIds?: Iterable<string>
-  allowCandidateWrap?: boolean
+  routePlanSnapshot?: GatewayRoutePlanSnapshot<string>
 }
 
 export interface ApiKeyGroupFallbackCandidate {
   groupId: string
   accounts: UpstreamAccount[]
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
+  routePlanSnapshot?: GatewayRoutePlanSnapshot<string>
 }
 
 export function canAttemptApiKeyGroupFallback(
   apiKeyRecord: GatewayApiKeyRow | undefined,
   groupId: string,
-  allowCandidateWrap: boolean
+  routePlanSnapshot?: GatewayRoutePlanSnapshot<string>
 ): boolean {
+  if (routePlanSnapshot) {
+    return routePlanSnapshot.cursor < routePlanSnapshot.orderedAllowedTargets.length - 1
+  }
   const bindings = apiKeyRecord?.group_bindings ?? []
   if (bindings.length <= 1) {
     return false
   }
   const currentIndex = bindings.findIndex((binding) => binding.group_id === groupId)
-  return currentIndex >= 0 && (allowCandidateWrap || currentIndex < bindings.length - 1)
+  return currentIndex >= 0 && currentIndex < bindings.length - 1
 }
 
 export async function resolveNextApiKeyGroupFallbackCandidate(
   input: ApiKeyGroupFallbackCandidateInput
 ): Promise<ApiKeyGroupFallbackCandidate | undefined> {
   const bindings = input.apiKeyRecord?.group_bindings ?? []
+  const routePlanSnapshot = input.routePlanSnapshot
   const currentIndex = bindings.findIndex((binding) => binding.group_id === input.groupId)
-  const candidateBindings = currentIndex >= 0
-    ? input.allowCandidateWrap
-      ? [...bindings.slice(currentIndex + 1), ...bindings.slice(0, currentIndex + 1)]
-      : bindings.slice(currentIndex + 1)
-    : bindings.filter((binding) => binding.group_id !== input.groupId)
+  const allowedBindingIds = new Set(bindings.filter((binding) => binding.status === 'active' && binding.group_enabled !== 0).map((binding) => binding.group_id))
+  const candidateGroupIds = routePlanSnapshot
+    ? routePlanSnapshot.orderedAllowedTargets.slice(routePlanSnapshot.cursor + 1).filter((groupId) => allowedBindingIds.has(groupId))
+    : (currentIndex >= 0
+      ? bindings.slice(currentIndex + 1).map((binding) => binding.group_id)
+      : bindings.filter((binding) => binding.group_id !== input.groupId).map((binding) => binding.group_id))
   const requestedModel = requestModel(input.req)
   const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
   const excludedAccountIds = new Set(input.excludedAccountIds ?? [])
   const seenGroupIds = new Set<string>()
-  for (const binding of candidateBindings) {
-    if (!binding.group_id || seenGroupIds.has(binding.group_id)) {
+  for (const candidateGroupId of candidateGroupIds) {
+    if (!candidateGroupId || seenGroupIds.has(candidateGroupId)) {
       continue
     }
-    seenGroupIds.add(binding.group_id)
-    const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(binding.group_id, input.systemAccountId)
+    seenGroupIds.add(candidateGroupId)
+    const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(candidateGroupId, input.systemAccountId)
     if (!groupAccess) {
       continue
     }
-    const accounts = (await listCachedOpenAIAccountsForGroupAsync(binding.group_id, input.systemAccountId, {
+    const accounts = (await listCachedOpenAIAccountsForGroupAsync(candidateGroupId, input.systemAccountId, {
       requestedModel,
       requestedEndpointFamily: sourceEndpointFamily
     }))
@@ -115,9 +125,12 @@ export async function resolveNextApiKeyGroupFallbackCandidate(
       continue
     }
     return {
-      groupId: binding.group_id,
+      groupId: candidateGroupId,
       accounts: orderedQuotaAllowedAccounts,
-      responseInspectionPolicies: []
+      responseInspectionPolicies: [],
+      routePlanSnapshot: routePlanSnapshot
+        ? advanceGatewayRoutePlanCursor(routePlanSnapshot, routePlanSnapshot.orderedAllowedTargets.indexOf(candidateGroupId))
+        : undefined
     }
   }
   return undefined

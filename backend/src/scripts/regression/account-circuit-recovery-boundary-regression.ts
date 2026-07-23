@@ -15,6 +15,9 @@ assert.match(recoverySource, /return 'unknown'/, '取消或任务未知必须保
 assert.match(recoverySource, /AggregateError/, 'Store/Redis 或探针异常必须显式上报 scheduler')
 assert.doesNotMatch(recoverySource, /MemoryAccountCircuitStore|catch[\s\S]{0,200}CLOSED/, '后台恢复不得静默回退本机状态或伪装 CLOSED')
 assert.match(jobsSource, /backgroundScheduledJobName\('account-circuit-recovery'\)[\s\S]*runScheduledAccountCircuitRecovery/, 'ops worker 必须挂载账户电路恢复任务')
+assert.match(jobsSource, /case 'ops-worker':[\s\S]*installDefaultScheduledAccountCircuitRecoveryResolver\(\)/, 'ops worker 必须在调度前安装默认恢复 resolver')
+assert.match(recoverySource, /findAccountForTest[\s\S]*findOpenAIAccountForGroup[\s\S]*testOpenAIAccount/, '默认 resolver 必须从 DB 重新解析账户并使用真实账户探针链路')
+assert.match(recoverySource, /gatewayAccountRuntimeKey\(candidateAccount\) !== state\.scope\.accountRuntimeKey/, '默认 resolver 必须校验授权实例 runtime key')
 assert.match(redisSource, /operation == 'acquire_canary'[\s\S]*phase.*OPEN[\s\S]*RECOVERING/, 'Redis Lua 必须为 OPEN/RECOVERING 共用原子 lease')
 assert.match(redisSource, /operation == 'complete_canary'[\s\S]*success_count >= 3[\s\S]*close\(entry\)/, 'Redis Lua 必须连续三次 canary 完整后关闭')
 

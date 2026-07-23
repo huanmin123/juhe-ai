@@ -58,6 +58,7 @@ import type {
 import type {
   AccountCircuitControlPlaneCleanupResult,
   AccountCircuitIncidentRebuildPage,
+  AccountCircuitIncidentRecord,
   AccountCircuitOutboxRecord,
   AccountCircuitProjectionGaps,
   AdvanceAccountCircuitDispatchRevisionInput,
@@ -909,6 +910,10 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'list_account_circuit_incidents_by_runtime_keys'
+    accountRuntimeKeys: string[]
+  }
+  | {
     type: 'list_account_circuit_projection_gaps'
     afterAccountId?: string
     afterUpdatedAtMs?: number
@@ -1096,6 +1101,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'ack_account_circuit_outbox' } ? { acknowledged: boolean } :
   T extends { type: 'release_account_circuit_outbox_for_replay' } ? { released: boolean } :
   T extends { type: 'list_account_circuit_incidents_for_rebuild' } ? AccountCircuitIncidentRebuildPage :
+  T extends { type: 'list_account_circuit_incidents_by_runtime_keys' } ? AccountCircuitIncidentRecord[] :
   T extends { type: 'list_account_circuit_projection_gaps' } ? AccountCircuitProjectionGaps :
   T extends { type: 'cleanup_account_circuit_control_plane' } ? AccountCircuitControlPlaneCleanupResult :
   T extends { type: 'cleanup_chat_retention' } ? import('../../storage/chat.repository.js').ChatRetentionCleanupResult :

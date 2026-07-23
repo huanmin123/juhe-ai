@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
@@ -16,6 +17,8 @@ import { MemoryHotQualityStore } from './hot-quality-memory-store.js'
 import { RedisHotQualityStore } from './hot-quality-redis-store.js'
 import {
   HOT_QUALITY_UNKNOWN_MODEL_FAMILY,
+  createHotQualityModelFamilyCatalog,
+  type HotQualityModelFamily,
   type HotQualityScope,
   type HotQualityStore
 } from './hot-quality-store.js'
@@ -28,6 +31,9 @@ import type {
 
 const gatewayHotQualityCapacity = 10_000
 const explorationReservationLeaseMs = 15_000
+const gatewayModelFamilyCatalog = createHotQualityModelFamilyCatalog(
+  Array.from({ length: 256 }, (_, index) => `model-bucket-${index.toString(16).padStart(2, '0')}`)
+)
 
 export interface GatewayHotQualityCandidateOrderInput {
   accounts: readonly UpstreamAccount[]
@@ -37,6 +43,7 @@ export interface GatewayHotQualityCandidateOrderInput {
   routeStrategyId?: string
   groupId: string
   requestLane: OpenAIGatewayRequestLane
+  model?: string | null
   requestId: string
   latencyDegradedAccountIds?: ReadonlySet<string>
   stableBindingOrderByRuntimeKey?: ReadonlyMap<string, number>
@@ -77,7 +84,7 @@ export function getGatewayHotQualityRuntime(): GatewayHotQualityRuntime {
         throw new Error('standalone 热质量要求 memory runtime state driver')
       }
       hotQualityStoreSingleton = new MemoryHotQualityStore({ keyCapacity: gatewayHotQualityCapacity })
-      explorationStoreSingleton = new MemorySameTierExplorationStore()
+      explorationStoreSingleton = new MemorySameTierExplorationStore({ poolCapacity: gatewayHotQualityCapacity })
     } else {
       if (runtimeConfig.runtimeStateDriver !== 'redis') {
         throw new Error('performance 热质量要求 redis runtime state driver')
@@ -86,7 +93,7 @@ export function getGatewayHotQualityRuntime(): GatewayHotQualityRuntime {
         throw new Error('performance 热质量缺少 JUHE_AI_REDIS_STATE_URL')
       }
       hotQualityStoreSingleton = new RedisHotQualityStore({ redisUrl, keyCapacity: gatewayHotQualityCapacity })
-      explorationStoreSingleton = new RedisSameTierExplorationStore({ redisUrl })
+      explorationStoreSingleton = new RedisSameTierExplorationStore({ redisUrl, poolCapacity: gatewayHotQualityCapacity })
     }
     runtimeIdentity = identity
   }
@@ -97,6 +104,16 @@ export function resetGatewayHotQualityRuntimeForTest(): void {
   hotQualityStoreSingleton = undefined
   explorationStoreSingleton = undefined
   runtimeIdentity = ''
+}
+
+export function onceGatewayHotQualityExplorationSettlement(
+  callback: (outcome: 'dispatched' | 'not_dispatched') => Promise<void>
+): (outcome: 'dispatched' | 'not_dispatched') => Promise<void> {
+  let result: Promise<void> | undefined
+  return (outcome) => {
+    result ??= callback(outcome)
+    return result
+  }
 }
 
 export async function orderGatewayAccountsByHotQualityAsync(
@@ -126,7 +143,7 @@ export async function orderGatewayAccountsByHotQualityAsync(
       protocolProfile,
       requestLane: input.requestLane
     })
-    const candidateScopes = accounts.map((account) => hotQualityScopeForAccount(account, input.requestLane))
+    const candidateScopes = accounts.map((account) => hotQualityScopeForAccount(account, input.requestLane, input.model))
     const snapshots = await Promise.all(candidateScopes.map((scope) => runtime.hotQualityStore.get(scope, nowMs)))
     const candidates: HotQualityCandidate[] = accounts.map((account, index) => {
       const runtimeKey = gatewayAccountRuntimeKey(account)
@@ -243,6 +260,7 @@ async function selectFirstProtocolGroup(input: {
     nowMs: input.nowMs
   })
   if (reservation.status !== 'reserved' || !reservation.reservation) {
+    observeGatewayRouting({ kind: 'exploration', outcome: 'contended' }, input.nowMs)
     return {
       accounts: decision.qualityOrderedCandidates,
       result: {
@@ -258,6 +276,7 @@ async function selectFirstProtocolGroup(input: {
     poolKey,
     ...reservation.reservation
   }
+  observeGatewayRouting({ kind: 'exploration', outcome: 'reserved' }, input.nowMs)
   return {
     accounts: decision.orderedCandidates,
     result: {
@@ -273,6 +292,10 @@ async function selectFirstProtocolGroup(input: {
           reservationId: selectedReservation.reservationId,
           accountRuntimeKey: selectedReservation.accountRuntimeKey,
           outcome
+        })
+        observeGatewayRouting({
+          kind: 'exploration',
+          outcome: outcome === 'dispatched' ? 'dispatched' : 'restored'
         })
       }
     }
@@ -325,13 +348,27 @@ function groupByProtocolProfile(accounts: readonly UpstreamAccount[]): Map<strin
   return groups
 }
 
-function hotQualityScopeForAccount(account: UpstreamAccount, requestLane: OpenAIGatewayRequestLane): HotQualityScope {
+function hotQualityScopeForAccount(
+  account: UpstreamAccount,
+  requestLane: OpenAIGatewayRequestLane,
+  model?: string | null
+): HotQualityScope {
   return {
     accountRuntimeKey: gatewayAccountRuntimeKey(account),
     protocolProfile: protocolProfileForAccount(account),
     requestLane,
-    modelFamily: HOT_QUALITY_UNKNOWN_MODEL_FAMILY
+    modelFamily: gatewayHotQualityModelFamily(model)
   }
+}
+
+export function gatewayHotQualityModelFamily(model: string | null | undefined): HotQualityModelFamily {
+  if (typeof model !== 'string') return HOT_QUALITY_UNKNOWN_MODEL_FAMILY
+  const normalized = model.trim().toLowerCase()
+  if (!normalized || normalized.length > 256 || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    return HOT_QUALITY_UNKNOWN_MODEL_FAMILY
+  }
+  const bucket = createHash('sha256').update(normalized).digest()[0]
+  return gatewayModelFamilyCatalog.resolve(`model-bucket-${bucket!.toString(16).padStart(2, '0')}`)
 }
 
 function protocolProfileForAccount(account: UpstreamAccount): string {

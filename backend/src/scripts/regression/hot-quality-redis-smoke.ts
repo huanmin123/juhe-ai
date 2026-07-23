@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { getRedisClient } from '../../shared/redis-client.js'
+import { closeRedisClients, getRedisClient } from '../../shared/redis-client.js'
 import { MemoryHotQualityStore } from '../../modules/gateway/runtime/hot-quality-memory-store.js'
 import {
   RedisHotQualityStore,
@@ -11,6 +11,19 @@ import {
   type HotQualityScope,
   type HotQualityStore
 } from '../../modules/gateway/runtime/hot-quality-store.js'
+
+const terminalOutcomeClasses = [
+  'completed_response',
+  'explicit_policy_failure',
+  'transport_failure',
+  'timeout',
+  'read_interruption',
+  'incomplete_response',
+  'unknown',
+  'client_cancellation'
+] as const
+
+const firstByteSamples = [800, 1_500, 5_000, 10_001, 30_000, 60_001]
 
 const redisUrl = process.env.JUHE_AI_TEST_REDIS_URL?.trim()
 if (!redisUrl) {
@@ -60,7 +73,11 @@ try {
 
   console.log('hot-quality-redis-smoke passed')
 } finally {
-  await clearStore(redis, keys.prefix)
+  try {
+    await clearStore(redis, keys.prefix)
+  } finally {
+    await closeRedisClients()
+  }
 }
 
 function terminalInput(attemptId: string, scope: HotQualityScope, nowMs: number, index: number) {
@@ -102,16 +119,3 @@ async function clearStore(client: Awaited<ReturnType<typeof getRedisClient>>, pr
 function normalized(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value)) as unknown
 }
-
-const terminalOutcomeClasses = [
-  'completed_response',
-  'explicit_policy_failure',
-  'transport_failure',
-  'timeout',
-  'read_interruption',
-  'incomplete_response',
-  'unknown',
-  'client_cancellation'
-] as const
-
-const firstByteSamples = [800, 1_500, 5_000, 10_001, 30_000, 60_001]

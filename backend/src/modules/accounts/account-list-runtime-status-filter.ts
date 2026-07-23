@@ -48,7 +48,8 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   let hasMore = false
   const outputRuntimeSnapshot: AccountRuntimeSnapshotStatus = {
     accountConcurrencyAvailable: true,
-    accountRuntimeAvailabilityAvailable: true
+    accountRuntimeAvailabilityAvailable: true,
+    accountCircuitSummaryAvailable: true
   }
 
   while (!hasMore && sourcePage <= maxSourcePages) {
@@ -61,6 +62,7 @@ export async function listAccountsPageWithRuntimeStatusFilter(
     const hydratedPage = await applyServerAccountConcurrencyToAccountList(candidatePage)
     outputRuntimeSnapshot.accountConcurrencyAvailable &&= hydratedPage.runtimeSnapshot.accountConcurrencyAvailable
     outputRuntimeSnapshot.accountRuntimeAvailabilityAvailable &&= hydratedPage.runtimeSnapshot.accountRuntimeAvailabilityAvailable
+    outputRuntimeSnapshot.accountCircuitSummaryAvailable &&= hydratedPage.runtimeSnapshot.accountCircuitSummaryAvailable
     for (const account of hydratedPage.items) {
       if (!accountMatchesStatusFilters(account, statusFilters)) continue
       if (matchedCount < skipTarget) {

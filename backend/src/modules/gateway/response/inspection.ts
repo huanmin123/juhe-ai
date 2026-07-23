@@ -99,6 +99,13 @@ export interface ResponseInspectionFailurePayload {
 }
 
 const textMatchSnippetChars = 160
+const systemDefaultStreamFailureCodes = new Set([
+  'server_is_overloaded',
+  'slow_down',
+  'cyber_policy',
+  'context_length_exceeded',
+  'internal_server_error'
+])
 
 export function resolveRuntimeResponseInspectionPolicies(input: {
   account: UpstreamAccount
@@ -171,6 +178,11 @@ export function matchRuntimeResponseInspectionPolicy(
 ): ResponseInspectionMatchResult | undefined {
   for (const policy of policies) {
     if (!policy.enabled) continue
+    if (
+      policy.source === 'system_default'
+      && frame.transport === 'sse'
+      && !systemDefaultStreamFailureCodes.has(frame.errorCode?.trim().toLowerCase() ?? '')
+    ) continue
     if (!policyMatchesRuntimeContext(policy, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
     if (!match) continue

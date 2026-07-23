@@ -223,9 +223,18 @@ function testLocalSuppressionStoreBoundary(): void {
   assert.match(storeSource, /export function filterLocalAccountSuppressions/)
   assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
   assert.match(storeSource, /getAccountCurrentConcurrency/)
-  assert.match(preparationSource, /attemptFallback\('local_account_suppressed'\)[\s\S]*precheckHalfOpenEligible/, '受控半开授权必须发生在后备分组尝试之后')
+  assert.match(preparationSource, /requestRouteFallback\(input, 'local_account_suppressed'\)[\s\S]*precheckHalfOpenEligible/, '受控半开授权必须发生在 route owner 拒绝后备分组之后')
   assert.match(upstreamDispatchSource, /allowPrecheckHalfOpen[\s\S]*acquirePrecheckHalfOpenLease/, 'precheck 租约只能由 upstream-dispatch 最后一跳取得')
-  assert.match(upstreamDispatchSource, /halfOpenLease\?\.generation === undefined\s*&&\s*await shouldRetrySameAccountAfterFailure/, 'precheck 半开只允许一次真实上游尝试，不得沿用普通同账户重试')
+  const halfOpenRetryGuards = upstreamDispatchSource.match(/halfOpenLease\?\.generation === undefined/g) ?? []
+  assert(
+    halfOpenRetryGuards.length >= 3,
+    'precheck 半开必须同时阻断请求异常、失败响应和 Key 级失败的同账户重试'
+  )
+  assert.match(
+    upstreamDispatchSource,
+    /halfOpenLease\?\.generation === undefined\s*&&\s*shouldRetryAnotherAccountApiKey/,
+    'precheck 半开只允许一次真实上游尝试，不得沿用请求异常后的 Key 重试'
+  )
   assert.match(routesSource, /finalizeHandledUpstreamResponse\([\s\S]*await confirmHalfOpenSuccess\(\)/, '只有完整响应最终化成功后才能确认半开恢复')
 }
 
@@ -369,9 +378,12 @@ async function testRuntimeDegradationDispatchPreparationFallback(): Promise<void
     clientIp: '127.0.0.1',
     clientStrategy: {} as OpenAIGatewayClientStrategyContext,
     requestLane: 'text',
-    attemptFallback: async (reason: string) => {
-      fallbackReasons.push(reason)
-      return { attempted: false }
+    routeCoordinator: {
+      requestFallback: async (reason: string) => {
+        fallbackReasons.push(reason)
+        return { attempted: false }
+      },
+      completeFailure: async () => undefined
     }
   } as unknown as Parameters<typeof dispatchPreparation.prepareOpenAIGatewayDispatchAccounts>[0])
 
@@ -406,9 +418,12 @@ async function testRuntimeDegradationDispatchPreparationFallback(): Promise<void
     clientIp: '127.0.0.1',
     clientStrategy: {} as OpenAIGatewayClientStrategyContext,
     requestLane: 'text',
-    attemptFallback: async (reason: string) => {
-      assert.equal(reason, 'runtime_degraded', '全降级后备切换原因应保持 runtime_degraded')
-      return { attempted: true }
+    routeCoordinator: {
+      requestFallback: async (reason: string) => {
+        assert.equal(reason, 'runtime_degraded', '全降级后备切换原因应保持 runtime_degraded')
+        return { attempted: true }
+      },
+      completeFailure: async () => undefined
     }
   } as unknown as Parameters<typeof dispatchPreparation.prepareOpenAIGatewayDispatchAccounts>[0])
   assert.equal(fallbackResult.outcome, 'fallback', '后备号池可用时，全降级当前组应切换到后备上下文')

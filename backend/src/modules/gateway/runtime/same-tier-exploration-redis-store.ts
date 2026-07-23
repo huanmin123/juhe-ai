@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { getRedisClient, type RedisCommandClient } from '../../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../../shared/redis-namespace.js'
 import {
+  SAME_TIER_EXPLORATION_IDENTITY_CAPACITY,
+  SAME_TIER_EXPLORATION_POOL_CAPACITY,
   SAME_TIER_EXPLORATION_STATE_TTL_MS,
   cloneSameTierExplorationState,
   emptySameTierExplorationState,
@@ -15,6 +17,7 @@ export interface RedisSameTierExplorationStoreOptions {
   redisUrl: string
   name?: string
   stateTtlMs?: number
+  poolCapacity?: number
   now?: () => number
 }
 
@@ -22,12 +25,14 @@ export class RedisSameTierExplorationStore implements SameTierExplorationStore {
   private readonly redisUrl: string
   private readonly prefix: string
   private readonly stateTtlMs: number
+  private readonly poolCapacity: number
   private readonly now: () => number
 
   constructor(options: RedisSameTierExplorationStoreOptions) {
     this.redisUrl = requiredKey(options.redisUrl, 'redisUrl')
-    this.prefix = redisNamespacedKey(`juhe-ai:same-tier-exploration:${safeName(options.name ?? 'gateway')}`)
+    this.prefix = redisSameTierExplorationStoreKeys(options.name ?? 'gateway').prefix
     this.stateTtlMs = positiveInteger(options.stateTtlMs ?? SAME_TIER_EXPLORATION_STATE_TTL_MS, 'stateTtlMs')
+    this.poolCapacity = positiveInteger(options.poolCapacity ?? SAME_TIER_EXPLORATION_POOL_CAPACITY, 'poolCapacity')
     this.now = options.now ?? Date.now
   }
 
@@ -54,19 +59,23 @@ export class RedisSameTierExplorationStore implements SameTierExplorationStore {
     leaseUntilMs: number
     nowMs?: number
   }): Promise<{
-    status: 'reserved' | 'credit_unavailable' | 'target_busy' | 'target_cooldown' | 'reservation_conflict'
+    status: 'reserved' | 'credit_unavailable' | 'pool_busy' | 'target_cooldown' | 'reservation_conflict'
     state: SameTierExplorationState
     reservation?: { reservationId: string; accountRuntimeKey: string; leaseUntilMs: number }
   }> {
+    const nowMs = normalizedNow(input.nowMs ?? this.now())
+    const leaseUntilMs = normalizedNow(input.leaseUntilMs)
+    if (leaseUntilMs <= nowMs) throw new RangeError('leaseUntilMs 必须晚于 nowMs')
+    if (leaseUntilMs > nowMs + this.stateTtlMs) throw new RangeError('leaseUntilMs 不得晚于 pool TTL')
     return this.mutate({
       operation: 'reserve',
       poolKey: input.poolKey,
       reservationId: requiredKey(input.reservationId, 'reservationId'),
       accountRuntimeKey: requiredKey(input.accountRuntimeKey, 'accountRuntimeKey'),
-      leaseUntilMs: normalizedNow(input.leaseUntilMs),
-      nowMs: normalizedNow(input.nowMs ?? this.now())
+      leaseUntilMs,
+      nowMs
     }) as Promise<{
-      status: 'reserved' | 'credit_unavailable' | 'target_busy' | 'target_cooldown' | 'reservation_conflict'
+      status: 'reserved' | 'credit_unavailable' | 'pool_busy' | 'target_cooldown' | 'reservation_conflict'
       state: SameTierExplorationState
       reservation?: { reservationId: string; accountRuntimeKey: string; leaseUntilMs: number }
     }>
@@ -96,8 +105,15 @@ export class RedisSameTierExplorationStore implements SameTierExplorationStore {
   }> {
     const poolKey = requiredKey(input.poolKey, 'poolKey')
     const raw = await (await this.client()).eval(sameTierExplorationMutationScript, {
-      keys: [this.stateKey(poolKey)],
-      arguments: [String(input.nowMs), String(this.stateTtlMs), input.operation, JSON.stringify(input)]
+      keys: [this.stateKey(poolKey), `${this.prefix}:registry`],
+      arguments: [
+        String(input.nowMs),
+        String(this.stateTtlMs),
+        String(this.poolCapacity),
+        String(SAME_TIER_EXPLORATION_IDENTITY_CAPACITY),
+        input.operation,
+        JSON.stringify(input)
+      ]
     })
     const encoded = redisString(raw)
     if (!encoded) throw new Error('Redis 同层探索状态返回值无效')
@@ -107,7 +123,15 @@ export class RedisSameTierExplorationStore implements SameTierExplorationStore {
       reservation?: { reservationId: string; accountRuntimeKey: string; leaseUntilMs: number }
     }
     if (!parsed.state) throw new Error('Redis 同层探索状态结构无效')
-    const state = normalizeSameTierExplorationState(parsed.state, input.nowMs)
+    const state = normalizeSameTierExplorationState({
+      ...parsed.state,
+      // Older Redis Lua cjson builds encode an empty table as `{}` rather than
+      // an array. Normalize that wire representation before applying the
+      // shared store invariants.
+      reservations: Array.isArray(parsed.state.reservations) ? parsed.state.reservations : [],
+      accruedTokens: Array.isArray(parsed.state.accruedTokens) ? parsed.state.accruedTokens : [],
+      settledReservationIds: Array.isArray(parsed.state.settledReservationIds) ? parsed.state.settledReservationIds : []
+    }, input.nowMs)
     return {
       status: parsed.status,
       state: cloneSameTierExplorationState(state),
@@ -124,54 +148,84 @@ export class RedisSameTierExplorationStore implements SameTierExplorationStore {
   }
 }
 
+export function redisSameTierExplorationStoreKeys(name = 'gateway'): {
+  prefix: string
+  registry: string
+} {
+  const prefix = redisNamespacedKey(`juhe-ai:same-tier-exploration:${safeName(name)}`)
+  return { prefix, registry: `${prefix}:registry` }
+}
+
 export const sameTierExplorationMutationScript = String.raw`
 local now_ms = tonumber(ARGV[1])
 local ttl_ms = tonumber(ARGV[2])
-local operation = ARGV[3]
-local input = cjson.decode(ARGV[4])
+local pool_capacity = tonumber(ARGV[3])
+local identity_capacity = tonumber(ARGV[4])
+local operation = ARGV[5]
+local input = cjson.decode(ARGV[6])
+local function empty_array()
+  return {}
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
 local raw = redis.call('GET', KEYS[1])
 local state
 if raw then
-  state = cjson.decode(raw)
-else
+  local decoded = cjson.decode(raw)
+  if tonumber(decoded['expiresAtMs'] or 0) > now_ms then state = decoded end
+end
+if not state then
+  redis.call('ZREM', KEYS[2], KEYS[1])
   state = {
     poolKey = input['poolKey'],
     credit = 0,
     cursor = 0,
-    reservations = cjson.empty_array,
+    reservations = empty_array(),
     cooldownUntilMsByRuntimeKey = {},
-    accruedTokens = cjson.empty_array,
-    settledReservationIds = cjson.empty_array,
+    accruedTokens = empty_array(),
+    settledReservationIds = empty_array(),
     expiresAtMs = now_ms + ttl_ms
   }
+  if tonumber(redis.call('ZCARD', KEYS[2])) >= pool_capacity then
+    local capacity_status = operation == 'reserve' and 'credit_unavailable'
+      or operation == 'settle' and 'reservation_not_found'
+      or 'capacity_exhausted'
+    return cjson.encode({ status = capacity_status, state = state })
+  end
 end
 state['poolKey'] = input['poolKey']
-local active_reservations = {}
-for _, reservation in ipairs(state['reservations'] or {}) do
-  if tonumber(reservation['leaseUntilMs'] or 0) > now_ms then
-    table.insert(active_reservations, reservation)
-  end
-end
-state['reservations'] = #active_reservations == 0 and cjson.empty_array or active_reservations
-for runtime_key, until_ms in pairs(state['cooldownUntilMsByRuntimeKey'] or {}) do
-  if tonumber(until_ms or 0) <= now_ms then
-    state['cooldownUntilMsByRuntimeKey'][runtime_key] = nil
-  end
-end
+state['reservations'] = state['reservations'] or empty_array()
+state['cooldownUntilMsByRuntimeKey'] = state['cooldownUntilMsByRuntimeKey'] or {}
+state['accruedTokens'] = state['accruedTokens'] or empty_array()
+state['settledReservationIds'] = state['settledReservationIds'] or empty_array()
 local function has_value(values, target)
   for _, value in ipairs(values or {}) do
     if value == target then return true end
   end
   return false
 end
+local active_reservations = {}
+for _, reservation in ipairs(state['reservations'] or {}) do
+  if tonumber(reservation['leaseUntilMs'] or 0) > now_ms then
+    table.insert(active_reservations, reservation)
+  elseif not has_value(state['settledReservationIds'], reservation['reservationId']) then
+    table.insert(state['settledReservationIds'], reservation['reservationId'])
+  end
+end
+state['reservations'] = #active_reservations == 0 and empty_array() or active_reservations
+while #state['settledReservationIds'] > identity_capacity do table.remove(state['settledReservationIds'], 1) end
+for runtime_key, until_ms in pairs(state['cooldownUntilMsByRuntimeKey'] or {}) do
+  if tonumber(until_ms or 0) <= now_ms then
+    state['cooldownUntilMsByRuntimeKey'][runtime_key] = nil
+  end
+end
 local status = nil
 local reservation = nil
 if operation == 'accrue' then
   local token = input['accrualToken']
-  if input['eligible'] and not has_value(state['accruedTokens'], token) then
+  if input['eligible'] and not has_value(state['accruedTokens'], token)
+      and #(state['accruedTokens'] or {}) < identity_capacity then
     state['credit'] = math.min(1, tonumber(state['credit'] or 0) + 0.05)
     table.insert(state['accruedTokens'], token)
-    while #state['accruedTokens'] > 2048 do table.remove(state['accruedTokens'], 1) end
   end
 elseif operation == 'reserve' then
   local reservation_id = input['reservationId']
@@ -182,15 +236,28 @@ elseif operation == 'reserve' then
       reservation = existing
     end
   end
+  if not status and has_value(state['settledReservationIds'], reservation_id) then
+    status = 'reservation_conflict'
+  end
   if not status then
     if tonumber(state['credit'] or 0) < 1 then
       status = 'credit_unavailable'
+    elseif #state['reservations'] > 0 then
+      status = 'pool_busy'
     else
-      for _, existing in ipairs(state['reservations']) do
-        if existing['accountRuntimeKey'] == runtime_key then status = 'target_busy' end
-      end
       if not status and tonumber(state['cooldownUntilMsByRuntimeKey'][runtime_key] or 0) > now_ms then
         status = 'target_cooldown'
+      end
+      if not status and state['cooldownUntilMsByRuntimeKey'][runtime_key] == nil then
+        local cooldown_count = 0
+        for _ in pairs(state['cooldownUntilMsByRuntimeKey'] or {}) do cooldown_count = cooldown_count + 1 end
+        if cooldown_count >= identity_capacity then status = 'target_cooldown' end
+      end
+      if not status and tonumber(input['leaseUntilMs'] or 0) <= now_ms then
+        status = 'reservation_conflict'
+      end
+      if not status and tonumber(input['leaseUntilMs'] or 0) > now_ms + ttl_ms then
+        status = 'reservation_conflict'
       end
       if not status then
         reservation = { reservationId = reservation_id, accountRuntimeKey = runtime_key, leaseUntilMs = tonumber(input['leaseUntilMs']) }
@@ -216,11 +283,11 @@ elseif operation == 'settle' then
     else
       table.remove(state['reservations'], found.index)
       table.insert(state['settledReservationIds'], reservation_id)
-      while #state['settledReservationIds'] > 2048 do table.remove(state['settledReservationIds'], 1) end
-      state['cooldownUntilMsByRuntimeKey'][runtime_key] = now_ms + 60000
+      while #state['settledReservationIds'] > identity_capacity do table.remove(state['settledReservationIds'], 1) end
       if input['outcome'] == 'dispatched' then
         state['credit'] = math.max(0, tonumber(state['credit'] or 0) - 1)
         state['cursor'] = tonumber(state['cursor'] or 0) >= 9007199254740991 and 0 or tonumber(state['cursor'] or 0) + 1
+        state['cooldownUntilMsByRuntimeKey'][runtime_key] = now_ms + 60000
       end
       status = 'applied'
     end
@@ -230,6 +297,7 @@ elseif operation == 'get' then
 end
 state['expiresAtMs'] = now_ms + ttl_ms
 redis.call('SET', KEYS[1], cjson.encode(state), 'PX', ttl_ms)
+redis.call('ZADD', KEYS[2], state['expiresAtMs'], KEYS[1])
 return cjson.encode({ status = status, state = state, reservation = reservation })
 `
 

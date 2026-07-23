@@ -74,6 +74,7 @@ export const dbServiceOperationAccessModeByType = {
   ack_account_circuit_outbox: 'write',
   release_account_circuit_outbox_for_replay: 'write',
   list_account_circuit_incidents_for_rebuild: 'read',
+  list_account_circuit_incidents_by_runtime_keys: 'read',
   list_account_circuit_projection_gaps: 'read',
   cleanup_account_circuit_control_plane: 'maintenance',
   cleanup_chat_retention: 'maintenance',

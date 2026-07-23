@@ -25,6 +25,7 @@ import { buildBackgroundQueueHealthSnapshot, type BackgroundQueueHealthItem } fr
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import type { DbServiceRuntimeQueueSnapshot, DbServiceServerRuntimeSnapshot } from '../db-service/db-service-types.js'
 import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.service.js'
+import { getGatewayRoutingObservabilitySnapshot } from '../gateway/observability/routing-observability.service.js'
 import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -610,6 +611,7 @@ statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next)
     const runtimeSnapshotAgeMs = runtimeSnapshotObservedAt
       ? Math.max(0, Date.now() - Date.parse(runtimeSnapshotObservedAt))
       : undefined
+    const gatewayRoutingObservability = await getGatewayRoutingObservabilitySnapshot().catch(() => undefined)
     res.json(ok({
       runtimeSnapshotAvailable: Boolean(runtime),
       runtimeSnapshotSource: runtime ? 'live' as const : undefined,
@@ -619,6 +621,8 @@ statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next)
       ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
       statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
       opsWorkerSnapshotAvailable: Boolean(opsWorkerSnapshot),
+      gatewayRoutingObservabilityAvailable: Boolean(gatewayRoutingObservability),
+      gatewayRoutingObservability: gatewayRoutingObservability ?? null,
       ingestWorker: runtime?.ingestWorker
         ? {
           pid: runtime.ingestWorker.pid ?? null,

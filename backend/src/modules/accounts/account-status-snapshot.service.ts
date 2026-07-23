@@ -1,9 +1,11 @@
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountStatusSnapshotResult } from '../../domain/types.js'
+import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
+import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-circuit-control-plane-bridge.js'
 
 const maxSnapshotAccountIds = 100
 const maxSnapshotQueryLength = 8192
@@ -22,15 +24,19 @@ export async function getAccountStatusSnapshot(
   accountIds: string[]
 ): Promise<AccountStatusSnapshotResult> {
   const projections = await listAccountStatusProjectionsAsync(access, accountIds)
-  const [runtime, concurrency] = await Promise.all([
+  const [runtime, concurrency, circuits] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
-    loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId))
+    loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
+    loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
+      .then((values) => ({ available: true, values }))
+      .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> }))
   ])
   return {
     generatedAt: new Date().toISOString(),
     runtimeSnapshot: {
       accountConcurrencyAvailable: concurrency.available,
-      accountRuntimeAvailabilityAvailable: runtime.available
+      accountRuntimeAvailabilityAvailable: runtime.available,
+      accountCircuitSummaryAvailable: circuits.available
     },
     items: projections.map(({ runtimeKey, concurrencyAccountId, permissions: _permissions, accessType: _accessType, boundGroupId: _boundGroupId, groupBindStatus: _groupBindStatus, ...projection }) => {
       const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
@@ -46,6 +52,7 @@ export async function getAccountStatusSnapshot(
         ...projection,
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
         runtimeAvailability: publicRuntimeAvailability,
+        circuitSummary: circuits.values[runtimeKey],
         availabilityPresentation: withAvailability.availabilityPresentation,
         effectiveAvailability: withAvailability.effectiveAvailability
       }

@@ -18,7 +18,7 @@ export type StreamServerRetryReason =
   | 'response_inspection'
   | 'upstream_protocol_failure'
   | 'pre_commit_stream_failure'
-  | 'speed_first_first_byte_timeout'
+  | 'normal_route_first_byte_timeout'
   | 'hybrid_quality'
 
 export function shouldRetryResponseInspectionOnServer(

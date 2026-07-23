@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { getRedisClient } from '../../shared/redis-client.js'
+import { closeRedisClients, getRedisClient } from '../../shared/redis-client.js'
 import {
   RedisAccountCircuitStore,
   redisAccountCircuitStoreKeys
@@ -19,7 +19,17 @@ const keys = redisAccountCircuitStoreKeys(name)
 const parityName = `${name}-parity`
 const parityKeys = redisAccountCircuitStoreKeys(parityName)
 const redis = await getRedisClient(redisUrl)
-await redis.sendCommand(['DEL', keys.states, keys.due, keys.closed, parityKeys.states, parityKeys.due, parityKeys.closed])
+await redis.sendCommand([
+  'DEL',
+  keys.states,
+  keys.due,
+  keys.closed,
+  keys.escalation,
+  parityKeys.states,
+  parityKeys.due,
+  parityKeys.closed,
+  parityKeys.escalation
+])
 
 try {
   let now = 100_000
@@ -61,6 +71,7 @@ try {
     redisParity.completeCanary({ scope: parityScope, generation: 1, dispatchRevision: 'p1', transitionId: 'p-canary-success', leaseId: 'p-canary', outcome: 'framing_complete', nowMs: now })
   ])
   assert.deepEqual(normalizedResult(redisRecovery), normalizedResult(memoryRecovery), 'Redis 与 memory recovery 推进必须一致')
+  assert.equal(memoryRecovery.state.recoverySuccessCount, 0, '首次 half-open 成功只进入 RECOVERING，不计入三次 canary')
 
   const first = new RedisAccountCircuitStore({ redisUrl, name, capacity: 4, closedRetentionMs: 100, now: () => now })
   const second = new RedisAccountCircuitStore({ redisUrl, name, capacity: 4, closedRetentionMs: 100, now: () => now })
@@ -108,7 +119,8 @@ try {
 
   now += 3_000
   assert.equal((await second.listDue(now, 10))[0]?.scopeKey, opened.state.scopeKey)
-  for (const index of [1, 2, 3]) {
+  for (const index of [1, 2, 3, 4]) {
+    now += 3_000
     const adapter = index % 2 === 0 ? second : first
     assert.equal((await adapter.acquireCanaryLease({
       ...identity,
@@ -124,7 +136,7 @@ try {
       outcome: 'framing_complete',
       nowMs: now
     })
-    assert.equal(completed.state.phase, index === 3 ? 'CLOSED' : 'RECOVERING')
+    assert.equal(completed.state.phase, index === 4 ? 'CLOSED' : 'RECOVERING')
     if (index === 1) {
       const replay = await second.completeCanary({
         ...identity,
@@ -134,7 +146,7 @@ try {
         nowMs: now
       })
       assert.equal(replay.status, 'idempotent')
-      assert.equal(replay.state.recoverySuccessCount, 1, '重复结果不得推进恢复计数')
+      assert.equal(replay.state.recoverySuccessCount, 0, '首次 half-open 成功只进入 RECOVERING，重复结果不得推进恢复计数')
     }
   }
 
@@ -157,7 +169,21 @@ try {
   assert.equal(await first.size(), 0, 'CLOSED tombstone 到期后必须从共享容量索引清理')
   console.log('account-circuit-redis-smoke passed')
 } finally {
-  await redis.sendCommand(['DEL', keys.states, keys.due, keys.closed, parityKeys.states, parityKeys.due, parityKeys.closed])
+  try {
+    await redis.sendCommand([
+      'DEL',
+      keys.states,
+      keys.due,
+      keys.closed,
+      keys.escalation,
+      parityKeys.states,
+      parityKeys.due,
+      parityKeys.closed,
+      parityKeys.escalation
+    ])
+  } finally {
+    await closeRedisClients()
+  }
 }
 
 function normalizedResult(value: unknown): unknown {

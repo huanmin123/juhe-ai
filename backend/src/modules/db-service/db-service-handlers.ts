@@ -237,6 +237,7 @@ import {
   cleanupAccountCircuitControlPlane,
   compareAndSetAccountCircuitIncident,
   listAccountCircuitIncidentsForRebuild,
+  listAccountCircuitIncidentsByRuntimeKeys,
   listAccountCircuitProjectionGaps,
   releaseAccountCircuitOutboxForReplay
 } from '../../storage/account-circuit-control-plane.repository.js'
@@ -1083,6 +1084,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
     case 'list_account_circuit_incidents_for_rebuild':
       return await listAccountCircuitIncidentsForRebuild(operation)
+    case 'list_account_circuit_incidents_by_runtime_keys':
+      return await listAccountCircuitIncidentsByRuntimeKeys(operation.accountRuntimeKeys)
     case 'list_account_circuit_projection_gaps':
       return await listAccountCircuitProjectionGaps(operation)
     case 'cleanup_account_circuit_control_plane':
@@ -1560,6 +1563,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'ack_account_circuit_outbox':
     case 'release_account_circuit_outbox_for_replay':
     case 'list_account_circuit_incidents_for_rebuild':
+    case 'list_account_circuit_incidents_by_runtime_keys':
     case 'list_account_circuit_projection_gaps':
     case 'cleanup_account_circuit_control_plane':
       throw new Error(`DB service 操作 ${operation.type} 必须通过异步 repository 执行`)

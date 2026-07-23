@@ -25,6 +25,8 @@ import {
 } from '../routing/route-coordination.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
+import { sendGatewayFailureResponse } from '../response/failure-response.js'
+import { gatewayErrorPayload } from '../response/responses.js'
 
 type HybridAuxiliaryTrafficSource = Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
 
@@ -176,7 +178,31 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
     routeCoordinationBudget,
     gatewayRequestWallBudget,
     signal: dispatchSignal,
-    attemptFallback: async () => ({ attempted: false })
+    routeCoordinator: {
+      requestFallback: async () => ({ attempted: false }),
+      completeFailure: async (failure) => {
+        if (failure.retryAfterMs !== undefined) {
+          response.asResponse().setHeader('Retry-After', String(Math.max(1, Math.ceil(failure.retryAfterMs / 1000))))
+        }
+        const responsePayload = gatewayErrorPayload(failure.message, failure.errorType, failure.errorCode)
+        await sendGatewayFailureResponse({
+          req: input.req,
+          res: response.asResponse(),
+          auditCapture,
+          usageContext,
+          startedAt,
+          statusCode: failure.statusCode,
+          responsePayload,
+          audit: {
+            outcome: 'gateway_failed',
+            errorPhase: failure.errorPhase,
+            errorCode: failure.errorCode,
+            errorMessage: failure.message
+          },
+          failureAttribution: failure.failureAttribution
+        })
+      }
+    }
   })
   if (preparation.outcome !== 'ready') {
     return {
@@ -227,6 +253,13 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
         signal: dispatchSignal,
         onFirstByte: dispatch.markFirstOutput
       })
+      dispatch.hotQualityAttempt.markFirstByte(body.firstByteMs)
+      await dispatch.hotQualityAttempt.recordTerminal({
+        outcomeClass: body.truncated ? 'incomplete_response' : 'completed_response',
+        failureScope: body.truncated ? 'protocol_model' : 'none',
+        source: 'gateway_transport',
+        firstByteMs: body.firstByteMs
+      })
       release()
       if (body.truncated) {
         const finish = createFinish({
@@ -276,6 +309,11 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       }
     } catch (error) {
       release()
+      await dispatch.hotQualityAttempt.recordTerminal({
+        outcomeClass: dispatchSignal.aborted ? 'client_cancellation' : 'read_interruption',
+        failureScope: dispatchSignal.aborted ? 'none' : 'protocol_model',
+        source: dispatchSignal.aborted ? 'request_lifecycle' : 'gateway_transport'
+      })
       await dispatch.releaseHalfOpenLease()
       const message = error instanceof Error ? error.message : String(error)
       auditCapture.completeAttempt(dispatch.auditAttemptId, {

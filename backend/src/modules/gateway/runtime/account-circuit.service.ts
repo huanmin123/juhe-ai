@@ -1,13 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { observeGatewayRouting } from '../observability/routing-observability.service.js'
+import type { GatewayRoutingCircuitOperation } from '../observability/routing-observability-store.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { gatewayAccountRuntimeKey } from './account-runtime-keys.js'
 import { MemoryAccountCircuitStore } from './account-circuit-memory-store.js'
 import { RedisAccountCircuitStore } from './account-circuit-redis-store.js'
+import { AccountCircuitControlPlaneBridge } from './account-circuit-control-plane-bridge.js'
 import {
   accountCircuitScopeKey,
+  closedAccountCircuitState,
   type AccountCircuitMutationResult,
   type AccountCircuitScope,
   type AccountCircuitState,
@@ -45,6 +49,15 @@ export type GatewayAccountCircuitPrepareResult =
 export interface GatewayAccountCircuitServiceOptions {
   now?: () => number
   createId?: () => string
+  onMutation?: (input: {
+    scope: AccountCircuitScope
+    state: AccountCircuitState
+    status: AccountCircuitMutationResult['status']
+    operation: GatewayRoutingCircuitOperation
+    previousPhase?: AccountCircuitState['phase']
+  }) => Promise<void> | void
+  isRuntimeStateReady?: () => boolean
+  ensureRuntimeStateReady?: () => Promise<boolean>
 }
 
 export interface PrepareGatewayAccountCircuitAttemptInput {
@@ -101,6 +114,9 @@ export class GatewayAccountCircuitAttempt {
 export class GatewayAccountCircuitService {
   private readonly now: () => number
   private readonly createId: () => string
+  private readonly onMutation?: GatewayAccountCircuitServiceOptions['onMutation']
+  private readonly isRuntimeStateReady: () => boolean
+  private readonly ensureRuntimeStateReady?: () => Promise<boolean>
 
   constructor(
     private readonly store: AccountCircuitStore,
@@ -108,6 +124,19 @@ export class GatewayAccountCircuitService {
   ) {
     this.now = options.now ?? Date.now
     this.createId = options.createId ?? randomUUID
+    this.onMutation = options.onMutation
+    this.isRuntimeStateReady = options.isRuntimeStateReady ?? (() => true)
+    this.ensureRuntimeStateReady = options.ensureRuntimeStateReady
+  }
+
+  private async notifyMutation(
+    operation: GatewayRoutingCircuitOperation,
+    scope: AccountCircuitScope,
+    result: AccountCircuitMutationResult,
+    previousPhase?: AccountCircuitState['phase']
+  ): Promise<void> {
+    if (!this.onMutation || result.status === 'not_found') return
+    await this.onMutation({ scope: { ...scope }, state: result.state, status: result.status, operation, previousPhase })
   }
 
   async prepareAttempt(input: PrepareGatewayAccountCircuitAttemptInput): Promise<GatewayAccountCircuitPrepareResult> {
@@ -116,6 +145,44 @@ export class GatewayAccountCircuitService {
     const leaseDurationMs = positiveDuration(input.confirmationLeaseDurationMs)
     const expectedScopeKey = accountCircuitScopeKey(scope)
 
+    const runtimeStateReady = this.isRuntimeStateReady()
+      || await this.ensureRuntimeStateReady?.()
+      || false
+    if (!runtimeStateReady) {
+      observeGatewayRouting({ kind: 'circuit_dispatch', outcome: 'rebuild_blocked', phase: 'SUSPECT' })
+      return {
+        outcome: 'blocked',
+        state: {
+          ...closedAccountCircuitState(scope, dispatchRevision, 0, 'runtime-state-rebuilding', this.now()),
+          phase: 'SUSPECT',
+          failureReason: 'runtime_state_rebuilding'
+        }
+      }
+    }
+
+    // A parent account incident shadows every protocol/model child. Read it
+    // before creating a child confirmation so escalation takes effect on the
+    // next request, including requests arriving on another process.
+    const accountScope: AccountCircuitScope = {
+      kind: 'account',
+      accountRuntimeKey: scope.accountRuntimeKey
+    }
+    let accountState = await this.store.get(accountScope, this.now())
+    if (accountState.dispatchRevision && accountState.dispatchRevision !== dispatchRevision) {
+      const replaced = await this.store.replaceDispatchRevision({
+        scope: accountScope,
+        dispatchRevision,
+        transitionId: this.createId(),
+        nowMs: this.now()
+      })
+      await this.notifyMutation('replace_revision', accountScope, replaced, accountState.phase)
+      accountState = replaced.state
+    }
+    if (accountState.phase !== 'CLOSED') {
+      observeBlockedCircuitDispatch(accountState)
+      return { outcome: 'blocked', state: accountState }
+    }
+
     if (input.confirmation) {
       if (
         input.confirmation.scopeKey !== expectedScopeKey
@@ -123,6 +190,7 @@ export class GatewayAccountCircuitService {
         || input.confirmation.dispatchRevision !== dispatchRevision
       ) {
         const state = await this.store.get(scope, this.now())
+        observeBlockedCircuitDispatch(state)
         return { outcome: 'blocked', state }
       }
       const state = await this.store.get(scope, this.now())
@@ -133,6 +201,7 @@ export class GatewayAccountCircuitService {
         || state.lease?.kind !== 'confirmation'
         || state.lease.leaseId !== input.confirmation.leaseId
       ) {
+        observeBlockedCircuitDispatch(state)
         return { outcome: 'blocked', state }
       }
       return {
@@ -155,6 +224,7 @@ export class GatewayAccountCircuitService {
         transitionId: this.createId(),
         nowMs: this.now()
       })
+      await this.notifyMutation('replace_revision', scope, replaced, state.phase)
       state = replaced.state
     }
     if (state.phase === 'CLOSED') {
@@ -179,6 +249,7 @@ export class GatewayAccountCircuitService {
       }
       return decision
     }
+    observeBlockedCircuitDispatch(state)
     return { outcome: 'blocked', state }
   }
 
@@ -196,6 +267,7 @@ export class GatewayAccountCircuitService {
       reason: requiredText(input.reason, 'reason'),
       nowMs
     })
+    await this.notifyMutation('suspect', input.scope, suspect, 'CLOSED')
     if (
       suspect.state.phase !== 'SUSPECT'
       || suspect.state.dispatchRevision !== input.dispatchRevision
@@ -209,12 +281,12 @@ export class GatewayAccountCircuitService {
     )
   }
 
-  completeConfirmation(
+  async completeConfirmation(
     confirmation: GatewayAccountCircuitConfirmation,
     outcome: 'framing_complete' | 'transport_failure' | 'unknown',
     reason?: string
   ): Promise<AccountCircuitMutationResult> {
-    return this.store.completeConfirmation({
+    const result = await this.completeAndNotify('complete_confirmation', confirmation.scope, 'SUSPECT', () => this.store.completeConfirmation({
       scope: confirmation.scope,
       generation: confirmation.generation,
       dispatchRevision: confirmation.dispatchRevision,
@@ -223,7 +295,43 @@ export class GatewayAccountCircuitService {
       outcome,
       reason,
       nowMs: this.now()
-    })
+    }))
+    if (outcome === 'transport_failure' && result.status === 'applied' && result.state.phase === 'OPEN') {
+      const escalation = await this.store.recordProtocolModelOpenEvidence({
+        scope: confirmation.scope,
+        generation: result.state.generation,
+        dispatchRevision: confirmation.dispatchRevision,
+        evidenceId: `${confirmation.scopeKey}:${confirmation.generation}:${confirmation.leaseId}`,
+        accountTransitionId: this.createId(),
+        reason: requiredText(reason ?? 'protocol_model_transport_failure', 'reason'),
+        confirmedFailureCount: 1,
+        windowMs: 10 * 60_000,
+        maxProtocolScopes: 8,
+        nowMs: this.now()
+      })
+      await this.onMutation?.({
+        scope: {
+          kind: 'account',
+          accountRuntimeKey: confirmation.accountRuntimeKey
+        },
+        state: escalation.accountState,
+        status: escalationMutationStatus(escalation.status),
+        operation: 'record_parent_evidence',
+        ...(escalation.status === 'escalated' ? { previousPhase: 'CLOSED' as const } : {})
+      })
+    }
+    return result
+  }
+
+  private async completeAndNotify(
+    operation: GatewayRoutingCircuitOperation,
+    scope: AccountCircuitScope,
+    previousPhase: AccountCircuitState['phase'],
+    mutation: () => Promise<AccountCircuitMutationResult>
+  ): Promise<AccountCircuitMutationResult> {
+    const result = await mutation()
+    await this.notifyMutation(operation, scope, result, previousPhase)
+    return result
   }
 
   private async acquireConfirmation(
@@ -241,6 +349,7 @@ export class GatewayAccountCircuitService {
       leaseUntilMs: this.now() + leaseDurationMs,
       nowMs: this.now()
     })
+    await this.notifyMutation('acquire_confirmation', scope, result, 'SUSPECT')
     if (result.status !== 'applied') {
       return { outcome: 'blocked', state: result.state }
     }
@@ -259,6 +368,7 @@ export class GatewayAccountCircuitService {
 let gatewayAccountCircuitStoreSingleton: AccountCircuitStore | undefined
 let gatewayAccountCircuitStoreIdentity = ''
 let gatewayAccountCircuitServiceSingleton: GatewayAccountCircuitService | undefined
+let gatewayAccountCircuitBridgeSingleton: AccountCircuitControlPlaneBridge | undefined
 
 export function getGatewayAccountCircuitStore(): AccountCircuitStore {
   if (runtimeConfig.runtimeMode === 'standalone') {
@@ -296,15 +406,60 @@ export function getGatewayAccountCircuitStore(): AccountCircuitStore {
 
 export function getGatewayAccountCircuitService(): GatewayAccountCircuitService {
   if (!gatewayAccountCircuitServiceSingleton) {
-    gatewayAccountCircuitServiceSingleton = new GatewayAccountCircuitService(getGatewayAccountCircuitStore())
+    const store = getGatewayAccountCircuitStore()
+    gatewayAccountCircuitBridgeSingleton = new AccountCircuitControlPlaneBridge({ store })
+    void gatewayAccountCircuitBridgeSingleton.rebuild()
+    gatewayAccountCircuitServiceSingleton = new GatewayAccountCircuitService(store, {
+      isRuntimeStateReady: () => gatewayAccountCircuitBridgeSingleton?.isReady() === true,
+      ensureRuntimeStateReady: async () => {
+        const result = await gatewayAccountCircuitBridgeSingleton?.rebuild()
+        return result?.blocked === false
+      },
+      onMutation: (input) => {
+        if (input.status === 'applied') gatewayAccountCircuitBridgeSingleton?.observe(input)
+        observeGatewayRouting({
+          kind: 'circuit_mutation',
+          operation: input.operation,
+          status: input.status,
+          ...(input.state.lease?.kind ? { leaseKind: input.state.lease.kind } : {})
+        })
+        if (input.status === 'applied' && input.previousPhase && input.previousPhase !== input.state.phase) {
+          observeGatewayRouting({
+            kind: 'circuit_transition',
+            from: input.previousPhase,
+            to: input.state.phase,
+            source: input.operation === 'replace_revision'
+              ? 'configuration'
+              : input.operation === 'complete_canary'
+                ? 'recovery'
+                : 'transport'
+          })
+        }
+      }
+    })
   }
   return gatewayAccountCircuitServiceSingleton
+}
+
+export async function runGatewayAccountCircuitControlPlaneMaintenance(limit = 100): Promise<number> {
+  if (!await ensureGatewayAccountCircuitRuntimeStateReady()) return 0
+  const projected = await gatewayAccountCircuitBridgeSingleton?.projectPending(limit) ?? 0
+  const reconciled = await gatewayAccountCircuitBridgeSingleton?.reconcileActive(limit) ?? 0
+  return projected + reconciled
+}
+
+export async function ensureGatewayAccountCircuitRuntimeStateReady(): Promise<boolean> {
+  if (!gatewayAccountCircuitBridgeSingleton) getGatewayAccountCircuitService()
+  if (gatewayAccountCircuitBridgeSingleton?.isReady()) return true
+  const rebuilt = await gatewayAccountCircuitBridgeSingleton?.rebuild()
+  return rebuilt?.blocked === false
 }
 
 export function resetGatewayAccountCircuitStoreForTest(): void {
   gatewayAccountCircuitStoreSingleton = undefined
   gatewayAccountCircuitStoreIdentity = ''
   gatewayAccountCircuitServiceSingleton = undefined
+  gatewayAccountCircuitBridgeSingleton = undefined
 }
 
 export function gatewayAccountProtocolModelScope(
@@ -325,6 +480,9 @@ export function gatewayAccountProtocolModelScope(
 }
 
 export function accountCircuitDispatchRevision(account: UpstreamAccount): string {
+  if (Number.isSafeInteger(account.dispatchRevision) && (account.dispatchRevision ?? 0) > 0) {
+    return String(account.dispatchRevision)
+  }
   const credentialMaterialDigest = sha256(stableSerialize({
     apiKey: account.apiKey,
     apiKeys: account.apiKeys,
@@ -384,6 +542,19 @@ function cloneConfirmation(value: GatewayAccountCircuitConfirmation): GatewayAcc
 function positiveDuration(value: number): number {
   if (!Number.isFinite(value) || value <= 0) throw new Error('confirmationLeaseDurationMs 必须是正有限数值')
   return Math.trunc(value)
+}
+
+function observeBlockedCircuitDispatch(state: AccountCircuitState): void {
+  if (state.phase === 'CLOSED') return
+  observeGatewayRouting({ kind: 'circuit_dispatch', outcome: 'blocked', phase: state.phase })
+}
+
+function escalationMutationStatus(
+  status: Awaited<ReturnType<AccountCircuitStore['recordProtocolModelOpenEvidence']>>['status']
+): AccountCircuitMutationResult['status'] {
+  if (status === 'escalated' || status === 'already_active') return 'applied'
+  if (status === 'recorded') return 'idempotent'
+  return status
 }
 
 function requiredText(value: string, name: string): string {

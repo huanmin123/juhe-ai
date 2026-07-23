@@ -145,9 +145,10 @@ export async function pipeUpstreamStream(
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
-  const interpretedProtocolFailure = (inspection: GatewayStreamInspection) => (
-    interpretProtocolFailures && inspection.failedReceived
-  )
+  // Protocol events only become control actions through an explicit runtime
+  // inspection policy. A precise client profile alone must not reinterpret an
+  // unknown vendor failure event.
+  const interpretedProtocolFailure = (_inspection: GatewayStreamInspection) => false
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
   const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : streamDiagnosticCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -229,6 +230,9 @@ export async function pipeUpstreamStream(
     for (const buffered of chunks) {
       await writeDownstreamChunk(buffered)
     }
+  }
+  const discardPreCommitChunks = () => {
+    if (preCommitBuffer.chunks.length > 0) takeStreamPreCommitChunks(preCommitBuffer)
   }
   const shouldFailBeforeDownstreamCommit = () => {
     return shouldFailBeforeStreamDownstreamCommit(preCommitBuffer, {
@@ -536,6 +540,7 @@ export async function pipeUpstreamStream(
           continue
         }
         if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
+          discardPreCommitChunks()
           const message = latestInspection.errorMessage ?? '上游流式响应失败'
           const errorCode = streamClientFailureCode(
             latestInspection.errorCode ?? gatewayStreamFailureCode(message),
@@ -746,6 +751,7 @@ export async function pipeUpstreamStream(
           continue
         }
         if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
+          discardPreCommitChunks()
           const message = latestInspection.errorMessage ?? '上游流式响应失败'
           const errorCode = streamClientFailureCode(
             latestInspection.errorCode ?? gatewayStreamFailureCode(message),
@@ -947,8 +953,11 @@ export async function pipeUpstreamStream(
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    if (isGatewayFirstByteTimeoutError(error) && error.source === 'speed_first_deadline') {
+    if (isGatewayFirstByteTimeoutError(error) && error.source === 'configured_deadline') {
       await closeAsyncIterator(iterator)
+    }
+    if (interpretedProtocolFailure(inspection) && shouldFailBeforeDownstreamCommit()) {
+      discardPreCommitChunks()
     }
     await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
     if (shouldFailBeforeDownstreamCommit()) {
@@ -1025,7 +1034,10 @@ export async function pipeUpstreamStream(
 
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-  if (!interpretProtocolFailures && completed) {
+  // Opaque forwarding may ignore the semantics of a terminal failure event,
+  // but EOF itself is not a protocol terminal. Preserve the pre-commit failure
+  // path when the upstream closes after only response.created/heartbeats.
+  if (!interpretProtocolFailures && completed && inspection.terminalReceived) {
     await flushPreCommitChunks()
     endResponse(res)
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
@@ -1260,7 +1272,7 @@ async function readNextStreamChunk(
         transport: 'stream'
       }) ?? 'abort'
       if (action === 'abort') {
-        throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个有效输出`, deadlineMs, 'speed_first_deadline')
+        throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个有效输出`, deadlineMs, 'configured_deadline')
       }
       continue
     }
@@ -1291,7 +1303,7 @@ async function readNextStreamChunk(
       transport: 'stream'
     }) ?? 'abort'
     if (action === 'abort') {
-      throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((options.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, options.firstByteDeadlineMs ?? 0, 'speed_first_deadline')
+      throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((options.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, options.firstByteDeadlineMs ?? 0, 'configured_deadline')
     }
   }
 }

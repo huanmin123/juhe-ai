@@ -6,16 +6,16 @@ import {
   type LocalAccountSuppressionFilterResult
 } from './account-side-effects.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
-import { sendGatewayFailureResponse } from '../response/failure-response.js'
-import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { waitForRecoverableUnavailableState } from './recoverable-unavailable-wait.js'
 import type { ServerRetryBudget } from './server-retry-budget.js'
 import type {
   GatewayRequestWallBudget,
-  RouteCoordinationBudget
+  RouteCoordinationBudget,
+  GatewayRouteCoordinatorOwner
 } from '../routing/route-coordination.js'
+import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
 
 export async function resolveLocalSuppressionFilter(input: {
   req: Request
@@ -30,6 +30,7 @@ export async function resolveLocalSuppressionFilter(input: {
   serverRetryBudget: ServerRetryBudget
   routeCoordinationBudget: RouteCoordinationBudget
   gatewayRequestWallBudget: GatewayRequestWallBudget
+  routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
   let filter = await filterGatewayAccountRuntimeSuppressionsAsync(input.accounts)
@@ -106,26 +107,14 @@ export async function resolveLocalSuppressionFilter(input: {
     return undefined
   }
 
-  const statusCode = 503
   const errorCode = waitSkippedReason ?? 'temporarily_blocked_local_account_suppression'
-  const responsePayload = gatewayErrorPayload('所有上游账户正在临时隔离，请稍后重试', 'service_unavailable', errorCode)
-  if (!input.res.headersSent && filter.nextRetryAfterMs !== undefined) {
-    input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(filter.nextRetryAfterMs / 1000))))
-  }
-  await sendGatewayFailureResponse({
-    req: input.req,
-    res: input.res,
-    auditCapture: input.auditCapture,
-    usageContext: input.usageContext,
-    startedAt: input.startedAt,
-    statusCode,
-    responsePayload,
-    audit: {
-      outcome: 'gateway_failed',
-      errorPhase: 'dispatch',
-      errorCode,
-      errorMessage: responsePayload.error.message
-    }
+  await input.routeCoordinator.completeFailure({
+    statusCode: 503,
+    message: '所有上游账户正在临时隔离，请稍后重试',
+    errorType: 'service_unavailable',
+    errorCode,
+    errorPhase: 'dispatch',
+    retryAfterMs: filter.nextRetryAfterMs
   })
   return undefined
 }

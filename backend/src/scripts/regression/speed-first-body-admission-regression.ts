@@ -117,8 +117,13 @@ try {
 
   const serverSource = readFileSync(resolve(process.cwd(), 'src/server.ts'), 'utf8')
   assert(
-    serverSource.indexOf('admitSpeedFirstRequestBody,') < serverSource.indexOf('express.raw({ type: () => true'),
+    serverSource.indexOf('admitSpeedFirstRequestBody,') < serverSource.indexOf('parseGatewayRawBody,'),
     '正文 admission middleware 必须位于 express.raw 完整读取之前'
+  )
+  assert.match(
+    serverSource,
+    /const parseGatewayRawBody = wrapGatewayRawBodyParser\([\s\S]*?express\.raw\(\{ type: \(\) => true/,
+    '正文解析器应继续由 express.raw 和统一错误分类包装构造'
   )
   assert(
     serverSource.indexOf('rejectGatewayRawBodyByContentLength,') < serverSource.indexOf('admitSpeedFirstRequestBody,'),
