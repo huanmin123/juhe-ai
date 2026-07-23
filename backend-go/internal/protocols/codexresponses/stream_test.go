@@ -1,6 +1,7 @@
 package codexresponses
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,86 @@ func TestStreamStateCompletedChecksResourceAndFinalIdentity(t *testing.T) {
 	}}, true)
 	if resource.Outcome != OutcomeBlocked || !issueCodes(resource.Issues)["response_resource_id_inconsistent"] {
 		t.Fatalf("resource mismatch = %#v", resource)
+	}
+}
+
+func TestStreamStateBindsUnscopedIdentityWhenResponseIDAppears(t *testing.T) {
+	state := NewStreamState(ProvenanceGatewayBridge, true, func(prefix, _ string, _, _ int) string { return prefix + "_client_stable" })
+	added := state.Consume(StreamInput{Event: streamItemEvent("added", 0, customToolItem(map[string]any{"id": "fc_wrong"}))}, true)
+	if len(added.Repairs) != 1 {
+		t.Fatalf("added repair = %#v", added)
+	}
+	delta := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: map[string]any{
+		"type": "response.custom_tool_call_input.delta", "output_index": 0, "item_id": "fc_wrong", "call_id": "call_stream_0",
+	}}, true)
+	if delta.Outcome != OutcomeRepairable || len(delta.Repairs) != 1 || delta.Repairs[0].ClientItemID != "ctc_client_stable" {
+		t.Fatalf("scoped delta = %#v", delta)
+	}
+	identity, ok := state.IdentityFor(streamResponseID, 0)
+	if !ok || identity.ClientItemID != "ctc_client_stable" {
+		t.Fatalf("scoped identity = %#v, %v", identity, ok)
+	}
+	if _, ok := state.IdentityFor("", 0); ok {
+		t.Fatal("unscoped identity was not migrated")
+	}
+}
+
+func TestStreamStateRetainsIdentityWhenDeltaOmitsOptionalIdentityFields(t *testing.T) {
+	state := streamStateWithAdded(t)
+	delta := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: map[string]any{
+		"type": "response.custom_tool_call_input.delta", "output_index": 0, "delta": "x",
+	}}, true)
+	if delta.Outcome != OutcomeClean {
+		t.Fatalf("identity-less delta = %#v", delta)
+	}
+	done := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: streamItemEvent("done", 0, customToolItem(map[string]any{"input": `{"path":"README.md"}`}))}, true)
+	if done.Outcome != OutcomeClean {
+		t.Fatalf("done after identity-less delta = %#v", done)
+	}
+}
+
+func TestStreamStateRejectsDeltaTypeMismatchAndUnsafeOutputIndex(t *testing.T) {
+	state := streamStateWithAdded(t)
+	mismatch := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: map[string]any{
+		"type": "response.output_text.delta", "output_index": 0, "item_type": "custom_tool_call", "item_id": "ctc_stream_0", "delta": "x",
+	}}, true)
+	if mismatch.Outcome != OutcomeBlocked || !issueCodes(mismatch.Issues)["event_delta_type_mismatch"] {
+		t.Fatalf("delta mismatch = %#v", mismatch)
+	}
+	unsafe := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: map[string]any{
+		"type": "response.custom_tool_call_input.delta", "output_index": json.Number("9007199254740992"), "item_id": "ctc_stream_0", "delta": "x",
+	}}, true)
+	if unsafe.Outcome != OutcomeBlocked || !issueCodes(unsafe.Issues)["event_output_index_invalid"] {
+		t.Fatalf("unsafe output index = %#v", unsafe)
+	}
+}
+
+func TestStreamStateRejectsUpstreamCollisionWithGeneratedClientID(t *testing.T) {
+	state := NewStreamState(ProvenanceGatewayBridge, true, func(prefix, _ string, _, _ int) string { return prefix + "_reserved" })
+	first := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: streamItemEvent("added", 0, customToolItem(map[string]any{"id": "fc_wrong"}))}, true)
+	if len(first.Repairs) != 1 || first.Repairs[0].ClientItemID != "ctc_reserved" {
+		t.Fatalf("first repair = %#v", first)
+	}
+	second := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: streamItemEvent("added", 1, customToolItem(map[string]any{
+		"id": "ctc_reserved", "call_id": "call_other",
+	}))}, true)
+	if second.Outcome != OutcomeBlocked || !issueCodes(second.Issues)["generated_item_identity_collision"] {
+		t.Fatalf("collision = %#v", second)
+	}
+}
+
+func TestStreamStateRejectsCompletedClientVisibleIDCollision(t *testing.T) {
+	state := NewStreamState(ProvenanceGatewayBridge, true, func(prefix, _ string, _, _ int) string { return prefix + "_reserved" })
+	first := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: streamItemEvent("added", 0, customToolItem(map[string]any{"id": "fc_wrong"}))}, true)
+	if len(first.Repairs) != 1 {
+		t.Fatalf("first repair = %#v", first)
+	}
+	completed := state.Consume(StreamInput{ResponseResourceID: streamResponseID, Event: completedEvent([]any{
+		customToolItem(map[string]any{"id": "fc_wrong"}),
+		customToolItem(map[string]any{"id": "ctc_reserved", "call_id": "call_other"}),
+	})}, true)
+	if completed.Outcome != OutcomeBlocked || (!issueCodes(completed.Issues)["generated_item_identity_collision"] && !issueCodes(completed.Issues)["client_visible_item_identity_collision"]) {
+		t.Fatalf("completed collision = %#v", completed)
 	}
 }
 

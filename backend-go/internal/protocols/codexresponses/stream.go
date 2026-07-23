@@ -1,6 +1,7 @@
 package codexresponses
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -142,18 +143,24 @@ func (s *StreamState) consumeItem(responseResourceID, eventType string, event ma
 	if _, present := event["output_index"]; present && !hasOutputIndex {
 		return s.result([]Issue{s.issue("event_output_index_invalid", "Responses item event 的 output_index 必须是非负整数", []any{"event", "output_index"}, -1, "", RepairR2)})
 	}
+	if !hasOutputIndex {
+		outputIndex = -1
+	}
 	item, hasItem := objectValue(event["item"])
 	if (stage == StreamStageAdded || stage == StreamStageDone) && !hasItem {
 		return s.result([]Issue{s.issue("event_item_missing", "output_item added/done 必须包含 item 对象", []any{"event", "item"}, outputIndex, "", RepairR2)})
 	}
 	expectedType := deltaItemType(eventType)
 	itemType := firstNonEmptyString(item["type"], event["item_type"], expectedType)
-	itemID := firstString(item["id"], event["item_id"])
-	callID := firstString(item["call_id"], event["call_id"])
+	itemID, itemIDPresent := firstStringPresent(item["id"], event["item_id"])
+	callID, callIDPresent := firstStringPresent(item["call_id"], event["call_id"])
 	scope := streamScope(responseResourceID)
 	ownerKey := ""
 	if itemID != "" {
 		ownerKey = s.itemIDOwners[streamIDKey(scope, itemID)]
+		if ownerKey == "" && responseResourceID != "" {
+			ownerKey = s.itemIDOwners[streamIDKey(streamScope(""), itemID)]
+		}
 	}
 	internalKey := ""
 	if hasOutputIndex {
@@ -164,9 +171,23 @@ func (s *StreamState) consumeItem(responseResourceID, eventType string, event ma
 		s.standaloneSeq++
 		internalKey = fmt.Sprintf("%d:%s:standalone:%d", len(scope), scope, s.standaloneSeq)
 	}
-	previous, hasPrevious := s.identities[internalKey]
+	previousKey := internalKey
+	previous, hasPrevious := s.identities[previousKey]
+	if !hasPrevious && responseResourceID != "" && hasOutputIndex {
+		fallbackKey := streamItemKey("", outputIndex)
+		if fallback, ok := s.identities[fallbackKey]; ok {
+			previous, hasPrevious, previousKey = fallback, true, fallbackKey
+		}
+	}
+	targetKey := internalKey
+	if hasPrevious && responseResourceID != "" && previous.OutputIndex >= 0 {
+		targetKey = streamItemKey(responseResourceID, previous.OutputIndex)
+	}
 	issues := make([]Issue, 0)
 	if hasPrevious {
+		if stage == StreamStageDelta && expectedType != "" && previous.ItemType != "" && previous.ItemType != identityToken(expectedType) {
+			issues = append(issues, s.issue("event_delta_type_mismatch", eventType+" 不能用于 "+previous.ItemType, []any{"event", "type"}, outputIndex, previous.ItemType, RepairR2))
+		}
 		if previous.Stage == StreamStageDone || (stage == StreamStageAdded && previous.Stage == StreamStageAdded) {
 			issues = append(issues, s.issue("event_stage_inconsistent", "同一 output identity 的事件阶段不一致", []any{"event", "type"}, outputIndex, itemType, RepairR2))
 		}
@@ -218,7 +239,14 @@ func (s *StreamState) consumeItem(responseResourceID, eventType string, event ma
 	if itemID != "" {
 		itemToken := identityToken(itemID)
 		s.observedItemIDs[itemToken] = struct{}{}
-		if previousOwner := s.itemIDOwners[streamIDKey(scope, itemID)]; previousOwner != "" && previousOwner != internalKey {
+		if _, reserved := s.clientItemIDs[itemToken]; reserved {
+			issues = append(issues, s.issue("generated_item_identity_collision", "上游 item ID 与已生成的 client item ID 冲突", streamItemPath(stage, "id"), outputIndex, effectiveType, RepairR2))
+		}
+		previousOwner := s.itemIDOwners[streamIDKey(scope, itemID)]
+		if previousOwner == "" && responseResourceID != "" {
+			previousOwner = s.itemIDOwners[streamIDKey(streamScope(""), itemID)]
+		}
+		if previousOwner != "" && previousOwner != internalKey && previousOwner != previousKey {
 			issues = append(issues, s.issue("duplicate_item_identity", "同一 Responses 流的多个 output index 使用了重复 item ID", streamItemPath(stage, "id"), outputIndex, effectiveType, RepairR2))
 		}
 	}
@@ -230,12 +258,32 @@ func (s *StreamState) consumeItem(responseResourceID, eventType string, event ma
 		clientItemID = s.newClientItemID(contract, effectiveType, outputIndex)
 	}
 	if !hasRepairLevel(issues, RepairR2) {
-		identity := StreamIdentity{ItemID: identityTokenOrEmpty(itemID), UpstreamItemID: identityTokenOrEmpty(itemID), ClientItemID: clientItemID, ItemType: identityTokenOrEmpty(effectiveType), CallID: identityTokenOrEmpty(callID), OutputIndex: outputIndex, Stage: stage}
-		s.identities[internalKey] = identity
+		identityItemID := identityTokenOrEmpty(itemID)
+		upstreamItemID := identityItemID
+		if !itemIDPresent && hasPrevious {
+			identityItemID = previous.ItemID
+			upstreamItemID = previous.UpstreamItemID
+		}
+		identityCallID := identityTokenOrEmpty(callID)
+		if !callIDPresent && hasPrevious {
+			identityCallID = previous.CallID
+		}
+		identity := StreamIdentity{ItemID: identityItemID, UpstreamItemID: upstreamItemID, ClientItemID: clientItemID, ItemType: identityTokenOrEmpty(effectiveType), CallID: identityCallID, OutputIndex: outputIndex, Stage: stage}
+		s.identities[targetKey] = identity
+		if previousKey != targetKey {
+			delete(s.identities, previousKey)
+		}
 		if identity.ItemID != "" {
-			key := streamIDKey(scope, itemID)
+			ownerItemID := itemID
+			if ownerItemID == "" {
+				ownerItemID = identityItemID
+			}
+			if previousKey != targetKey {
+				delete(s.itemIDOwners, streamIDKey(streamScope(""), ownerItemID))
+			}
+			key := streamIDKey(scope, ownerItemID)
 			if s.itemIDOwners[key] == "" {
-				s.itemIDOwners[key] = internalKey
+				s.itemIDOwners[key] = targetKey
 			}
 		}
 	}
@@ -269,7 +317,8 @@ func (s *StreamState) consumeCompleted(responseResourceID string, event map[stri
 		issues = append(issues, s.issue("response_item_collection_invalid", "response.completed.response.output 必须是数组", []any{"event", "response", "output"}, -1, "", RepairR2))
 		return s.result(issues)
 	}
-	seen := make(map[string]int)
+	rawSeen := make(map[string]int)
+	visibleSeen := make(map[string]int)
 	for index, rawItem := range items {
 		issueStart := len(issues)
 		item, ok := objectValue(rawItem)
@@ -283,6 +332,11 @@ func (s *StreamState) consumeCompleted(responseResourceID string, event map[stri
 			continue
 		}
 		previous, hasPrevious := s.identities[streamItemKey(responseResourceID, index)]
+		if !hasPrevious && responseResourceID != "" {
+			// Some providers omit response.created. Preserve an unscoped stream
+			// identity when response.completed finally supplies the resource ID.
+			previous, hasPrevious = s.identities[streamItemKey("", index)]
+		}
 		itemID, _ := stringValue(item["id"])
 		callID, _ := stringValue(item["call_id"])
 		if hasPrevious && itemID != "" && previous.ItemID != identityToken(itemID) {
@@ -317,27 +371,42 @@ func (s *StreamState) consumeCompleted(responseResourceID string, event map[stri
 		}
 		if itemID != "" {
 			token := identityToken(itemID)
-			if prior, exists := seen[token]; exists && prior != index {
+			if _, reserved := s.clientItemIDs[token]; reserved && (!hasPrevious || previous.ClientItemID != itemID) {
+				issues = append(issues, s.issue("generated_item_identity_collision", "completed output 的上游 ID 与已生成 client ID 冲突", []any{"event", "response", "output", index, "id"}, index, itemType, RepairR2))
+			}
+			if prior, exists := rawSeen[token]; exists && prior != index {
 				issues = append(issues, s.issue("duplicate_item_identity", "completed output 的多个 item 使用了重复 ID", []any{"event", "response", "output", index, "id"}, index, itemType, RepairR2))
 			} else {
-				seen[token] = index
+				rawSeen[token] = index
 			}
 		}
 		if hasPrevious && previous.CallID != "" && callID != "" && previous.CallID != identityToken(callID) {
 			issues = append(issues, s.issue("event_call_id_inconsistent", "completed output 的 call_id 与流式 identity 不一致", []any{"event", "response", "output", index, "call_id"}, index, itemType, RepairR2))
 		}
 		itemIssues := issues[issueStart:]
+		clientID := ""
 		if s.repairItemIDs && !hasRepairLevel(itemIssues, RepairR2) && hasRepairLevel(itemIssues, RepairR0) {
-			clientID := ""
 			if hasPrevious {
 				clientID = previous.ClientItemID
 			}
 			if clientID == "" && allowNewRepair {
 				clientID = s.newClientItemID(contract, itemType, index)
 			}
-			if clientID != "" {
-				repairs = append(repairs, StreamRepair{OutputIndex: index, ItemType: itemType, Field: "response.output.id", ClientItemID: clientID})
+		}
+		visibleID := itemID
+		if clientID != "" {
+			visibleID = clientID
+		}
+		if visibleID != "" {
+			token := identityToken(visibleID)
+			if prior, exists := visibleSeen[token]; exists && prior != index {
+				issues = append(issues, s.issue("client_visible_item_identity_collision", "completed output 重写后会产生重复 client item ID", []any{"event", "response", "output", index, "id"}, index, itemType, RepairR2))
+			} else {
+				visibleSeen[token] = index
 			}
+		}
+		if clientID != "" && !hasRepairLevel(issues[issueStart:], RepairR2) {
+			repairs = append(repairs, StreamRepair{OutputIndex: index, ItemType: itemType, Field: "response.output.id", ClientItemID: clientID})
 		}
 	}
 	result := s.result(issues)
@@ -353,9 +422,13 @@ func (s *StreamState) newClientItemID(contract ItemContract, itemType string, ou
 		if s.createItemID != nil {
 			candidate = s.createItemID(contract.Prefix, itemType, sequence, outputIndex)
 		} else {
-			candidate = fmt.Sprintf("%s_stream_repair_%d", contract.Prefix, sequence)
+			var token [16]byte
+			if _, err := rand.Read(token[:]); err != nil {
+				continue
+			}
+			candidate = fmt.Sprintf("%s_%x", contract.Prefix, token[:])
 		}
-		if isExpectedID(candidate, contract.Prefix) {
+		if len(candidate) <= 256 && isExpectedID(candidate, contract.Prefix) {
 			token := identityToken(candidate)
 			if _, exists := s.clientItemIDs[token]; !exists {
 				if _, observed := s.observedItemIDs[token]; !observed {
@@ -485,13 +558,13 @@ func objectValue(value any) (map[string]any, bool) {
 	return result, ok && result != nil
 }
 
-func firstString(values ...any) string {
+func firstStringPresent(values ...any) (string, bool) {
 	for _, value := range values {
 		if result, ok := stringValue(value); ok {
-			return result
+			return result, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 func firstNonEmptyString(values ...any) string {
@@ -506,12 +579,12 @@ func firstNonEmptyString(values ...any) string {
 func nonNegativeInteger(value any) (int, bool) {
 	switch candidate := value.(type) {
 	case int:
-		return candidate, candidate >= 0
+		return candidate, candidate >= 0 && int64(candidate) <= maxSafeJSONInteger
 	case int64:
-		return int(candidate), candidate >= 0 && int64(int(candidate)) == candidate
+		return int(candidate), candidate >= 0 && candidate <= maxSafeJSONInteger && int64(int(candidate)) == candidate
 	case json.Number:
 		parsed, err := strconv.ParseInt(string(candidate), 10, 64)
-		return int(parsed), err == nil && parsed >= 0 && int64(int(parsed)) == parsed
+		return int(parsed), err == nil && parsed >= 0 && parsed <= maxSafeJSONInteger && int64(int(parsed)) == parsed
 	case float64:
 		return int(candidate), candidate >= 0 && candidate <= float64(maxSafeJSONInteger) && candidate == float64(int(candidate))
 	default:

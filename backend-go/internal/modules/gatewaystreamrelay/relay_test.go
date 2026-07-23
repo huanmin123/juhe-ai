@@ -279,6 +279,59 @@ func TestRelayProcessesBytesReturnedWithEOF(t *testing.T) {
 	}
 }
 
+func TestRelayWritesTransformedBytesAndKeepsRawReadAccounting(t *testing.T) {
+	inspector := &transformingInspectorStub{
+		inspectorStub: &inspectorStub{inspection: Inspection{SemanticOutput: true}},
+		transform:     func(p []byte) ([]byte, error) { return bytes.ToUpper(p), nil },
+	}
+	sink := &recordingSink{}
+	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("hello")}}, sink, Options{Limits: testLimits(), Inspector: inspector, StartedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("Relay() error = %v", err)
+	}
+	if sink.String() != "HELLO" || result.BytesRead != 5 || result.BytesWritten != 5 {
+		t.Fatalf("sink/result = %q %#v", sink.String(), result)
+	}
+}
+
+func TestRelayFlushesTransformTailAtCleanEOF(t *testing.T) {
+	inspector := &transformingInspectorStub{
+		inspectorStub: &inspectorStub{inspection: Inspection{SemanticOutput: true}},
+		transform:     func([]byte) ([]byte, error) { return nil, nil },
+		tail:          []byte("tail"),
+	}
+	sink := &recordingSink{}
+	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("held")}}, sink, Options{Limits: testLimits(), Inspector: inspector, StartedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("Relay() error = %v", err)
+	}
+	if sink.String() != "tail" || result.BytesRead != 4 || result.BytesWritten != 4 || inspector.finishTransformCalls != 1 {
+		t.Fatalf("tail/result/inspector = %q %#v %#v", sink.String(), result, inspector)
+	}
+}
+
+func TestRelayRejectsTransformErrorAndExpansionBeforeCommit(t *testing.T) {
+	t.Run("error", func(t *testing.T) {
+		transformErr := errors.New("rewrite failed")
+		inspector := &transformingInspectorStub{inspectorStub: &inspectorStub{}, transform: func([]byte) ([]byte, error) { return nil, transformErr }}
+		result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("raw")}}, &recordingSink{}, Options{Limits: testLimits(), Inspector: inspector, StartedAt: time.Now()})
+		if !errors.Is(err, ErrInspector) || !errors.Is(err, transformErr) || result.FirstByteSent || !result.RetryAllowed {
+			t.Fatalf("result/error = %#v %v", result, err)
+		}
+	})
+
+	t.Run("expansion", func(t *testing.T) {
+		inspector := &transformingInspectorStub{inspectorStub: &inspectorStub{}, transform: func([]byte) ([]byte, error) { return []byte("123456"), nil }}
+		limits := testLimits()
+		limits.MaxBytes = 5
+		sink := &recordingSink{}
+		result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("x")}}, sink, Options{Limits: limits, Inspector: inspector, StartedAt: time.Now()})
+		if !errors.Is(err, ErrStreamTooLarge) || sink.Len() != 0 || result.FirstByteSent || !result.RetryAllowed {
+			t.Fatalf("sink/result/error = %q %#v %v", sink.String(), result, err)
+		}
+	})
+}
+
 func TestRelayRejectsLimitsAboveHardCap(t *testing.T) {
 	limits := testLimits()
 	limits.MaxBytes = MaxStreamBytes + 1
@@ -348,6 +401,29 @@ type inspectorStub struct {
 	transportCommitted bool
 	semanticCommitted  bool
 	downstreamBytes    int64
+}
+
+type transformingInspectorStub struct {
+	*inspectorStub
+	transform            func([]byte) ([]byte, error)
+	tail                 []byte
+	finishTransformErr   error
+	finishTransformCalls int
+}
+
+func (s *transformingInspectorStub) Transform(p []byte) ([]byte, error) {
+	if err := s.Observe(p); err != nil {
+		return nil, err
+	}
+	if s.transform == nil {
+		return append([]byte(nil), p...), nil
+	}
+	return s.transform(p)
+}
+
+func (s *transformingInspectorStub) FinishTransform() ([]byte, error) {
+	s.finishTransformCalls++
+	return append([]byte(nil), s.tail...), s.finishTransformErr
 }
 
 func (s *inspectorStub) Observe(p []byte) error {

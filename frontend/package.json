@@ -52,6 +52,7 @@
     "test:account-basic-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-basic-formatters-regression.ts",
     "test:account-import-protocol": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-import-protocol-regression.ts",
     "test:account-status-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-status-formatters-regression.ts",
+    "test:account-list-inline-dynamic": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-list-inline-dynamic-regression.ts",
     "test:account-status-snapshot-polling": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-status-snapshot-polling-regression.ts",
     "test:time-schedule": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/time-schedule-regression.ts",
     "test:stats-date-range-window": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/stats-date-range-window-regression.ts",

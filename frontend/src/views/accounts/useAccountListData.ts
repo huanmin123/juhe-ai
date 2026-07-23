@@ -31,6 +31,13 @@ interface UseAccountListDataOptions {
   onLoaded?: (selectableAccountIds: Set<string>) => void
 }
 
+interface AccountListLoadOptions extends Record<string, unknown> {
+  forceOptions?: boolean
+  forceData?: boolean
+  requestIdentity?: number
+  skipOptions?: boolean
+}
+
 const defaultAccountsPageState = (): AccountsPageState => ({
   filters: { keyword: '', providerCode: 'all', type: 'all', groupId: '', group: undefined, tagIds: [], status: [], systemAccountId: allSystemAccountsValue, systemAccount: undefined },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
@@ -85,7 +92,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
     resetPagination: resetAccountListPagination,
-  } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean; forceData?: boolean }>({
+  } = useResponsivePagedList<AccountSummary, AccountListLoadOptions>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
     showTotal: (total, range, context) => context?.hasMore
@@ -93,11 +100,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
-        console.error(error)
-        message.error('加载账户筛选选项失败')
-      })
-      const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
+      if (!_loadOptions.skipOptions && (!_loadOptions.forceData || _loadOptions.forceOptions)) {
+        void loadAccountOptions(systemAccountId, Boolean(_loadOptions.forceOptions)).catch((error) => {
+          console.error(error)
+          message.error('加载账户筛选选项失败')
+        })
+      }
+      const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
         items: accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot)),
         page: accountList.page,
@@ -110,6 +119,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       return [
         options.isManagementView.value ? 'management' : 'self',
+        _loadOptions.requestIdentity,
         accountListParams(systemAccountId, pageState)
       ]
     },
@@ -125,7 +135,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const filteredAccounts = computed(() => accounts.value)
   const mobileRefreshing = computed(() => loading.value)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-  function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, _force: boolean) {
+  function fetchAccountList(
+    systemAccountId: string | undefined,
+    pageState: { current: number; pageSize: number },
+  ): Promise<AccountListResult> {
     const params = accountListParams(systemAccountId, pageState)
     const loadNetwork = () => options.isManagementView.value
       ? api.accounts.list(params)
@@ -231,20 +244,27 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
-      const { data: providerList } = await loadProviderOptionsResource({
-        apply: (nextProviders) => {
-          if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-        },
-        force,
-        isManagementView: options.isManagementView.value,
-        systemAccountId
-      })
+      let providerApplied = false
+      const [, proxyList] = await Promise.all([
+        loadProviderOptionsResource({
+          apply: (nextProviders) => {
+            if (currentScopeKey() !== scopeKey) return
+            providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+            providerApplied = true
+          },
+          force,
+          includeDefinitions: true,
+          isManagementView: options.isManagementView.value,
+          systemAccountId
+        }),
+        api.proxies.options({ limit: 50 })
+      ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
       }
-      providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
-      accountOptionsLoaded.value = true
-      accountOptionsScopeKey.value = scopeKey
+      proxies.value = proxyList
+      accountOptionsLoaded.value = providerApplied
+      accountOptionsScopeKey.value = providerApplied ? scopeKey : ''
     })().finally(() => {
       if (accountOptionsInFlight.get(scopeKey) === requestRef.current) {
         accountOptionsInFlight.delete(scopeKey)

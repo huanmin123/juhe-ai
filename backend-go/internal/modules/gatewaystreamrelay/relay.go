@@ -66,6 +66,15 @@ type TerminalInspector interface {
 	Snapshot() Inspection
 }
 
+// TransformingInspector may replace or buffer bytes before downstream commit.
+// Returned slices must be detached from the input buffer. FinishTransform is
+// called only after clean upstream EOF and may flush one final bounded tail.
+type TransformingInspector interface {
+	TerminalInspector
+	Transform(p []byte) ([]byte, error)
+	FinishTransform() ([]byte, error)
+}
+
 // CommitObserver is optional. Inspectors that classify protocol violations at
 // the downstream commit boundary can receive this notification without making
 // transport relay depend on a protocol package.
@@ -208,8 +217,17 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 			}
 			chunk := buffer[:n]
 			result.BytesRead += int64(n)
+			outputChunk := chunk
+			var transformer TransformingInspector
 			if options.Inspector != nil {
-				if inspectErr := options.Inspector.Observe(chunk); inspectErr != nil {
+				var inspectErr error
+				if candidate, ok := options.Inspector.(TransformingInspector); ok {
+					transformer = candidate
+					outputChunk, inspectErr = transformer.Transform(chunk)
+				} else {
+					inspectErr = options.Inspector.Observe(chunk)
+				}
+				if inspectErr != nil {
 					return finalizeFailure(result, options, startedAt, now, failure{
 						err: fmt.Errorf("%w: %w", ErrInspector, inspectErr), code: "stream_inspection_failed",
 						message: "流式协议检查失败", phase: "stream",
@@ -220,14 +238,28 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 				if result.Inspection.Failed {
 					return finalizeProtocolFailure(result, options, startedAt, now)
 				}
+				if transformer != nil && result.Inspection.TerminalReceived {
+					tail, transformErr := transformer.FinishTransform()
+					if transformErr != nil {
+						return finalizeFailure(result, options, startedAt, now, inspectorFailure(transformErr, "stream_inspection_finish_failed", "流式协议终态检查失败"))
+					}
+					outputChunk = append(outputChunk, tail...)
+					result.Inspection = options.Inspector.Snapshot()
+					if result.Inspection.Failed {
+						return finalizeProtocolFailure(result, options, startedAt, now)
+					}
+				}
 			}
-			semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
-			writeFailure := writeChunk(totalCtx, sink, chunk, limits.IdleTimeout, semanticOutput, &result, now)
-			if observer, ok := options.Inspector.(CommitObserver); ok {
-				observer.ObserveCommit(result.TransportCommitted, result.SemanticCommitted, result.BytesWritten)
-			}
-			if writeFailure != nil {
-				return finalizeFailure(result, options, startedAt, now, *writeFailure)
+			if len(outputChunk) > 0 {
+				if int64(len(outputChunk)) > limits.MaxBytes-result.BytesWritten {
+					return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
+				}
+				semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
+				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now)
+				notifyCommit(options.Inspector, result)
+				if writeFailure != nil {
+					return finalizeFailure(result, options, startedAt, now, *writeFailure)
+				}
 			}
 			if result.Inspection.TerminalReceived {
 				return finalizeTerminal(result, options, startedAt, now)
@@ -237,6 +269,26 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 			if errors.Is(readErr, io.EOF) {
 				if cause := context.Cause(totalCtx); cause != nil {
 					return finalizeFailure(result, options, startedAt, now, classifyContextFailure(cause))
+				}
+				if transformer, ok := options.Inspector.(TransformingInspector); ok {
+					tail, transformErr := transformer.FinishTransform()
+					if transformErr != nil {
+						return finalizeFailure(result, options, startedAt, now, inspectorFailure(transformErr, "stream_inspection_finish_failed", "流式协议终态检查失败"))
+					}
+					result.Inspection = options.Inspector.Snapshot()
+					if result.Inspection.Failed {
+						return finalizeProtocolFailure(result, options, startedAt, now)
+					}
+					if int64(len(tail)) > limits.MaxBytes-result.BytesWritten {
+						return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
+					}
+					if len(tail) > 0 {
+						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now)
+						notifyCommit(options.Inspector, result)
+						if writeFailure != nil {
+							return finalizeFailure(result, options, startedAt, now, *writeFailure)
+						}
+					}
 				}
 				return finalizeEOF(result, options, startedAt, now)
 			}
@@ -253,6 +305,26 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 				attribution: gatewayusage.FailureAttributionAccountUpstream, audit: gatewayaudit.OutcomeStreamFailed,
 			})
 		}
+	}
+}
+
+func notifyCommit(inspector TerminalInspector, result Result) {
+	if observer, ok := inspector.(CommitObserver); ok {
+		observer.ObserveCommit(result.TransportCommitted, result.SemanticCommitted, result.BytesWritten)
+	}
+}
+
+func streamTooLargeFailure() failure {
+	return failure{
+		err: ErrStreamTooLarge, code: "stream_too_large", message: "网关流式响应超过 64 MiB 上限", phase: "relay",
+		attribution: gatewayusage.FailureAttributionGatewayCapacity, audit: gatewayaudit.OutcomeGatewayFailed,
+	}
+}
+
+func inspectorFailure(err error, code, message string) failure {
+	return failure{
+		err: fmt.Errorf("%w: %w", ErrInspector, err), code: code, message: message, phase: "stream",
+		attribution: gatewayusage.FailureAttributionAccountUpstream, audit: gatewayaudit.OutcomeStreamFailed,
 	}
 }
 
