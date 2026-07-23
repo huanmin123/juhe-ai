@@ -12,7 +12,10 @@ import { logger } from '../../shared/logger.js'
 import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
 import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
 import { seedDefaults } from '../../storage/schema.js'
-import { mergeProviderModelOptionRows } from '../../modules/providers/provider-model-options.service.js'
+import {
+  listProviderModelSelectionOptionsAsync,
+  mergeProviderModelOptionRows
+} from '../../modules/providers/provider-model-options.service.js'
 
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -544,6 +547,21 @@ try {
   assert(openAICompatibleCatalog.some((item) => item.providerCode === 'deepseek'), 'OpenAI 兼容模型目录应聚合 DeepSeek OpenAI 协议模型')
   assert(openAICompatibleCatalog.some((item) => item.providerCode === 'glm'), 'OpenAI 兼容模型目录应聚合 GLM OpenAI 协议模型')
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-personal'), '通用 OpenAI-compatible 自身模型不要求排在其他 OpenAI 协议供应商模型之前')
+
+  const gptModelOptions = await listProviderModelSelectionOptionsAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    limit: 50,
+    selectedIds: []
+  })
+  const gptReleaseDates = new Map(
+    catalogService.listProviderModelCatalog({ providerCode: 'gpt', systemAccountId: 'sys_admin' })
+      .map((item) => [item.model, item.releaseDate] as const)
+  )
+  assertCatalogReleaseDateDescending(
+    gptModelOptions.map((item) => ({ model: item.id, releaseDate: gptReleaseDates.get(item.id) })),
+    'AI 账户和人工测试共用的轻量模型选项'
+  )
 
   const dedupedProviderModelOptions = mergeProviderModelOptionRows([
     { id: 'gpt-built-in', providerCode: 'gpt', model: 'shared-model', scope: 'built_in' },

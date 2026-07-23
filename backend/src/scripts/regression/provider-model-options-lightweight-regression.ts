@@ -32,12 +32,14 @@ assert.throws(
 )
 
 const rows: ProviderModelOptionRow[] = [
-  optionRow('builtin-selected', 'openai', 'gpt-selected', 'built_in'),
-  optionRow('global-selected', 'openai', 'gpt-selected', 'global'),
-  optionRow('personal-selected', 'openai', 'gpt-selected', 'personal'),
-  optionRow('builtin-alpha', 'openai', 'gpt-alpha', 'built_in'),
-  optionRow('builtin-beta', 'openai', 'gpt-beta', 'built_in'),
-  optionRow('anthropic-alpha', 'anthropic', 'claude-alpha', 'built_in')
+  optionRow('builtin-selected', 'openai', 'gpt-selected', 'built_in', '2024-01-01'),
+  optionRow('global-selected', 'openai', 'gpt-selected', 'global', '2024-01-01'),
+  optionRow('personal-selected', 'openai', 'gpt-selected', 'personal', '2024-01-01'),
+  optionRow('builtin-alpha', 'openai', 'gpt-alpha', 'built_in', '2025-01-01'),
+  optionRow('builtin-beta', 'openai', 'gpt-beta', 'built_in', '2026-01-01'),
+  optionRow('builtin-unknown', 'openai', 'gpt-unknown', 'built_in'),
+  optionRow('builtin-invalid', 'openai', 'gpt-invalid-date', 'built_in', 'not-a-date'),
+  optionRow('anthropic-alpha', 'anthropic', 'claude-alpha', 'built_in', '2025-06-01')
 ]
 
 assert.deepEqual(
@@ -48,11 +50,11 @@ assert.deepEqual(
     selectedIds: ['gpt-selected']
   }),
   [
-    { id: 'gpt-selected', name: 'gpt-selected' },
+    { id: 'gpt-beta', name: 'gpt-beta' },
     { id: 'gpt-alpha', name: 'gpt-alpha' },
-    { id: 'gpt-beta', name: 'gpt-beta' }
+    { id: 'gpt-selected', name: 'gpt-selected' }
   ],
-  '单供应商选项必须优先补齐已选项，并只返回 id/name'
+  '单供应商选项必须补齐已选项，同时保持发布时间倒序并只返回 id/name'
 )
 
 assert.deepEqual(
@@ -68,13 +70,24 @@ assert.deepEqual(
   '跨供应商选项也必须按模型 ID 合并并只返回 id/name'
 )
 
-console.log('供应商模型轻量选项回归通过：查询窗口、已选补齐、供应商维度和精确 DTO 均符合预期')
+assert.deepEqual(
+  mergeProviderModelOptionRows(rows.filter((row) => row.providerCode === 'openai'), {
+    providerCode: 'openai',
+    limit: 10,
+    selectedIds: []
+  }).map((item) => item.id),
+  ['gpt-beta', 'gpt-alpha', 'gpt-selected', 'gpt-invalid-date', 'gpt-unknown'],
+  '无发布时间或发布时间非法的模型必须排在有发布时间的模型之后，并按模型 ID 稳定排序'
+)
+
+console.log('供应商模型轻量选项回归通过：发布时间倒序、未知日期兜底、已选补齐和精确 DTO 均符合预期')
 
 function optionRow(
   id: string,
   providerCode: string,
   model: string,
-  scope: ProviderModelOptionRow['scope']
+  scope: ProviderModelOptionRow['scope'],
+  releaseDate?: string
 ): ProviderModelOptionRow {
-  return { id, providerCode, model, scope }
+  return { id, providerCode, model, scope, releaseDate }
 }

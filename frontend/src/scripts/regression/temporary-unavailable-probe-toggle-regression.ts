@@ -7,6 +7,8 @@ import { buildAccountSavePayload, buildAccountUpdatePayload } from '../../views/
 
 const form = defaultAccountForm('gpt', 'api_key')
 assert.equal(form.temporaryUnavailableContinuousProbeEnabled, true, '新账户持续恢复探活必须默认开启')
+assert.equal(form.privilege, 'normal', '新账户特权必须默认正常')
+assert.equal(form.status, 'active', '新账户状态必须默认正常')
 form.name = '有界探活表单回归'
 form.groupId = 'grp-test'
 form.apiKey = 'sk-test'
@@ -15,6 +17,8 @@ form.baseUrl = 'https://api.openai.com/v1'
 form.supportedModels = ['gpt-5.4-mini']
 form.healthCheckModel = 'gpt-5.4-mini'
 form.temporaryUnavailableContinuousProbeEnabled = false
+form.privilege = 'super_priority'
+form.status = 'disabled'
 const savePayload = buildAccountSavePayload({
   accounts: [],
   form,
@@ -22,6 +26,9 @@ const savePayload = buildAccountSavePayload({
   responseInspectionRules: []
 })
 assert.equal(savePayload.temporaryUnavailableContinuousProbeEnabled, false, '创建 payload 必须保留关闭值')
+assert.equal(savePayload.superPriorityEnabled, true, '特权下拉选择超级优先时必须写入超级优先字段')
+assert.equal(savePayload.fallbackEnabled, false, '特权下拉选择超级优先时必须关闭降级备用字段')
+assert.equal(savePayload.status, 'disabled', '状态单选选择停用时必须写入停用状态')
 assert.equal(buildAccountUpdatePayload(savePayload).temporaryUnavailableContinuousProbeEnabled, false, '编辑 payload 必须保留关闭值')
 
 const modalSource = readFileSync(fileURLToPath(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url)), 'utf8')

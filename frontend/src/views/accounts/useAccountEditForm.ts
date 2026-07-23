@@ -440,6 +440,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       tags: form.tags,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
+      privilege: form.privilege,
+      status: form.status,
       accountExpiresAt: form.accountExpiresAt,
       availabilitySchedule: form.availabilitySchedule
     })
@@ -622,6 +624,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           group: form.group,
           concurrencyLimit: form.concurrencyLimit,
           priority: form.priority,
+          privilege: form.privilege,
+          status: form.status,
           tags: [...form.tags],
           notes: form.notes,
           baseUrl: form.baseUrl,

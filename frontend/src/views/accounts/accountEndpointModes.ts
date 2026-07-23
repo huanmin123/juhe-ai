@@ -153,6 +153,8 @@ export function accountEndpointModeOptionsForProfile(context?: AccountEndpointMo
 
 export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, context?: AccountEndpointModeLabelContext): string {
   switch (mode) {
+    case 'images_json':
+      return 'Images API'
     case 'chat_json':
       return `${chatCapabilityName(context)} (JSON)`
     case 'chat_sse':

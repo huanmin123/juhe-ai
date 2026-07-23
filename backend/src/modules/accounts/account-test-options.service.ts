@@ -46,7 +46,7 @@ export function normalizeAccountManualTestOptionsQuery(query: Record<string, unk
 
 type AccountManualTestCatalogContext = Pick<
   AccountSummary,
-  'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'
+  'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'
 > & {
   ownerSystemAccountId?: string
   systemAccountId?: string
@@ -126,6 +126,7 @@ async function accountManualTestEndpointModesForTargetModelAsync(
   model: ProviderModelTestCatalogItem,
   systemAccountId: string
 ): Promise<AccountSupportedEndpointMode[]> {
+  if (isImageGenerationManualTestModel(model, account)) return ['images_json']
   const accountEndpointModes = accountManualTestEndpointModes({
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
@@ -179,6 +180,7 @@ export function accountManualTestEndpointModesForModel(
   catalog: ProviderModelCatalogItem[],
   accountEndpointModes = accountManualTestEndpointModes(account)
 ): AccountSupportedEndpointMode[] {
+  if (isImageGenerationManualTestModel(model, account)) return ['images_json']
   return accountEndpointModes.filter((mode) => {
     if (mode === 'interactions_json' || mode === 'interactions_sse') {
       return modelSupportsProtocol(model, 'interactions')
@@ -193,6 +195,7 @@ export function accountManualTestEndpointModesForModel(
 }
 
 function endpointModeProtocol(mode: AccountSupportedEndpointMode): AccountModelMappingSourceEndpointFamily {
+  if (mode === 'images_json') throw new Error('图片生成测试不使用文本模型映射协议')
   if (mode === 'chat_json' || mode === 'chat_sse') return 'chat_completions'
   if (mode === 'responses_json' || mode === 'responses_sse') return 'responses'
   if (mode === 'messages_json' || mode === 'messages_sse') return 'messages'
@@ -209,8 +212,9 @@ function modelSupportsProtocol(
 
 function isAccountManualTestModel(
   item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
-  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
 ): boolean {
+  if (isImageGenerationManualTestModel(item, account)) return true
   if (item.mode === 'image' || item.mode === 'audio') return false
   const protocols = item.supportedApiProtocols ?? []
   if (!protocols.length) return true
@@ -233,4 +237,13 @@ function isAccountManualTestModel(
     return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content' || protocol === 'interactions')
   }
   return false
+}
+
+function isImageGenerationManualTestModel(
+  item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
+): boolean {
+  return account.type === 'api_key'
+    && isOpenAIProtocolProfile(account)
+    && (item.mode === 'image_generation' || item.supportedApiProtocols?.includes('images') === true)
 }

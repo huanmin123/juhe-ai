@@ -8,6 +8,7 @@ export type AccountClientCompatibility = typeof ACCOUNT_CLIENT_COMPATIBILITIES[n
 export const CLIENT_COMPATIBILITY_CAPABILITIES = ['openai_standard', 'codex_responses', 'anthropic_native', 'claude_code'] as const
 export type ClientCompatibilityCapability = typeof CLIENT_COMPATIBILITY_CAPABILITIES[number]
 export type AccountSupportedEndpointMode =
+  | 'images_json'
   | 'chat_json'
   | 'chat_sse'
   | 'responses_json'

@@ -28,14 +28,30 @@
           />
         </div>
       </a-form-item>
+    </div>
+    <div class="dispatch-config-grid">
       <a-form-item label="并发上限" tooltip="这个账号同一时间最多承接多少个请求。达到上限后，调度会等待或尝试其他可用账号。">
         <a-input-number v-model:value="form.concurrencyLimit" :disabled="authorizedEditing" :min="1" style="width: 100%" />
       </a-form-item>
       <a-form-item label="优先级" tooltip="分组内账号排序使用小值优先；0 会排在 1 前面。授权账号这里表示当前使用方本地分组内的调度优先级。">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
+      <a-form-item label="特权">
+        <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
+          <a-select-option value="normal">正常</a-select-option>
+          <a-select-option value="super_priority">超级优先</a-select-option>
+          <a-select-option value="fallback">降级备用</a-select-option>
+        </a-select>
+      </a-form-item>
+      <a-form-item label="状态">
+        <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
+          <a-radio value="active">正常</a-radio>
+          <a-radio value="disabled">停用</a-radio>
+        </a-radio-group>
+      </a-form-item>
+    </div>
+    <div v-if="showMetaFields" class="form-grid meta-fields-grid">
       <AccountMetaFields
-        v-if="showMetaFields"
         :deleting-tag-id="deletingTagId"
         :form="form"
         :readonly="authorizedEditing"
@@ -113,6 +129,16 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
   gap: 0 18px;
 }
 
+.dispatch-config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 18px;
+}
+
+.dispatch-config-grid > * {
+  min-width: 0;
+}
+
 .form-help {
   margin-top: 4px;
   color: #64748b;
@@ -121,6 +147,16 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
 
 @media (max-width: 992px) {
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dispatch-config-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .dispatch-config-grid {
     grid-template-columns: 1fr;
   }
 }

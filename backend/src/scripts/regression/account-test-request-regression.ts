@@ -4,10 +4,12 @@ import { resolve } from 'node:path'
 
 import {
   accountTestDefaultPrompt,
+  accountImageTestDefaultPrompt,
   accountTestModelsPath,
   createAnthropicTestRequest,
   createGeminiTestRequest,
   createOpenAIChatCompletionsTestPayload,
+  createOpenAIImageGenerationTestRequest,
   createOpenAIResponsesTestPayload,
   createOpenAITestRequest,
   testPathFromEndpointMode
@@ -19,6 +21,7 @@ import {
 } from '../../modules/accounts/account-test-response-diagnostics.js'
 import {
   hasAccountModelCatalogSuccessEvidence,
+  hasAccountImageGenerationSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from '../../modules/accounts/account-test-success-evidence.js'
 import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
@@ -26,17 +29,17 @@ import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, account
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
 const openAIProfile = { providerCode: 'gpt', protocolCode: 'openai', protocolVersion: 'v1', type: 'api_key' }
-assert.equal(accountTestProbeKind(openAIProfile, 'gpt-image-2'), 'models_catalog', 'OpenAI v1 纯图像模型探针必须使用模型目录，不得调用文本 Responses')
+assert.equal(accountTestProbeKind(openAIProfile, 'gpt-image-2'), 'image_generation', 'OpenAI v1 纯图像模型探针必须调用真实图片生成接口，不得调用文本 Responses')
 assert.equal(accountTestProbeKind(openAIProfile, 'gpt-5.5'), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
 assert.equal(
   accountTestProbeKind({ ...openAIProfile, type: 'oauth' }, 'gpt-image-2'),
   'generation',
-  'OAuth 账户没有 Images/模型目录探针能力，不得误判为可测试的 gpt-image-2 账户'
+  'OAuth 账户没有 Images API 探针能力，不得误判为可测试的 gpt-image-2 账户'
 )
 assert.equal(
   accountTestProbeKind({ ...openAIProfile, protocolCode: 'gemini', protocolVersion: 'v1beta' }, 'gpt-image-2'),
   'generation',
-  '非 OpenAI 协议不得猜测复用 OpenAI 模型目录探针'
+  '非 OpenAI 协议不得猜测复用 OpenAI 图片生成探针'
 )
 assert.equal(
   hasAccountModelCatalogSuccessEvidence('gpt-image-2', JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2' }] })),
@@ -48,6 +51,17 @@ assert.equal(
   false,
   '模型目录缺少目标模型时不得判定探针成功'
 )
+assert.equal(
+  hasAccountImageGenerationSuccessEvidence(JSON.stringify({ created: 1, data: [{ b64_json: 'aGVsbG8=' }] })),
+  true,
+  '图片生成探针必须接受包含 b64_json 的 Images API 响应'
+)
+assert.equal(
+  hasAccountImageGenerationSuccessEvidence(JSON.stringify({ created: 1, data: [{ revised_prompt: 'white square' }] })),
+  false,
+  '图片生成探针不能把缺少图片数据的 HTTP 2xx 响应判定为成功'
+)
+assert.equal(accountTestSchema.safeParse({ testEndpointMode: 'images_json' }).success, true, '账户测试契约必须接受 Images API 请求形态')
 
 for (const mode of ['interactions_json', 'interactions_sse'] as const) {
   assert.equal(accountCreateSchema.safeParse({
@@ -149,6 +163,7 @@ assert.equal(resolveAccountTestResponseDiagnostics({
 }).responseTruncated, true, '展示上游有界诊断时必须同步返回正文截断标记')
 
 assert.equal(testPathFromEndpointMode('chat_json'), '/v1/chat/completions', 'Chat JSON 测试应使用 Chat Completions 路径')
+assert.equal(testPathFromEndpointMode('images_json'), '/v1/images/generations', '图片生成测试应使用 Images generations 路径')
 assert.equal(testPathFromEndpointMode('chat_sse'), '/v1/chat/completions', 'Chat SSE 测试应使用 Chat Completions 路径')
 assert.equal(testPathFromEndpointMode('responses_json'), '/v1/responses', 'Responses JSON 测试应使用 Responses 路径')
 assert.equal(testPathFromEndpointMode('responses_sse'), '/v1/responses', 'Responses SSE 测试应使用 Responses 路径')
@@ -179,6 +194,21 @@ assert.deepEqual(chatRequest.body, {
   max_tokens: 1,
   stream: false
 }, 'Chat JSON 测试 payload 应保持非流式字段')
+
+const imageRequest = createOpenAIImageGenerationTestRequest({
+  explicitModel: ' gpt-image-2 ',
+  fallbackModel: 'fallback-image-model'
+})
+assert.equal(accountImageTestDefaultPrompt, 'A small solid white square on a plain background.', '图片测试提示词应保持轻量且稳定')
+assert.equal(imageRequest.path, '/v1/images/generations', '图片模型测试必须调用 Images generations')
+assert.deepEqual(imageRequest.body, {
+  model: 'gpt-image-2',
+  prompt: accountImageTestDefaultPrompt,
+  n: 1,
+  size: '1024x1024',
+  quality: 'low',
+  output_format: 'png'
+}, '图片测试必须使用单张、低质量的最小成本请求')
 
 const chatSseRequest = createOpenAITestRequest({
   fallbackModel: 'chat-only-model',

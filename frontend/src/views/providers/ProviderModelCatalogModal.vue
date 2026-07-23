@@ -89,12 +89,13 @@
           <template v-else-if="column.key === 'serviceTiers'">
             <div v-if="record.supportedServiceTiers?.length" class="tier-price-list">
               <div v-for="tier in record.supportedServiceTiers" :key="tier" class="tier-price-row">
-                <a-tag :color="tier === 'priority' ? 'blue' : 'cyan'">{{ formatModelServiceTier(tier) }}</a-tag>
-                <span>输入 {{ formatPrice(record.serviceTierPrices?.[tier]?.inputUsdPer1M) }}</span>
-                <span>输出 {{ formatPrice(record.serviceTierPrices?.[tier]?.outputUsdPer1M) }}</span>
-                <span>缓存读 {{ formatPrice(record.serviceTierPrices?.[tier]?.cachedInputUsdPer1M) }}</span>
-                <span>缓存写 {{ formatPrice(record.serviceTierPrices?.[tier]?.cacheWriteUsdPer1M) }}</span>
-                <span>1h 写入 {{ formatPrice(record.serviceTierPrices?.[tier]?.cacheWrite1hUsdPer1M) }}</span>
+                <a-tag class="tier-price-name" :color="tier === 'priority' ? 'blue' : 'cyan'">{{ formatModelServiceTier(tier) }}</a-tag>
+                <div v-if="tierPriceEntries(record, tier).length" class="tier-price-metrics">
+                  <span v-for="entry in tierPriceEntries(record, tier)" :key="entry.label">
+                    <b>{{ entry.label }}</b> {{ formatPrice(entry.value) }}
+                  </span>
+                </div>
+                <span v-else class="muted-text">暂无价格</span>
               </div>
             </div>
             <span v-else class="muted-text">仅标准</span>
@@ -281,11 +282,26 @@ function modelRowKey(record: ProviderModelPricing): string {
   return record.id || [record.providerCode, record.scope, record.systemAccountId ?? '', record.model].join(':')
 }
 
+type TierPriceEntry = { label: string; value: number }
+
+function tierPriceEntries(record: ProviderModelPricing, tier: string): TierPriceEntry[] {
+  const prices = record.serviceTierPrices?.[tier]
+  if (!prices) return []
+  const entries: Array<[string, number | undefined]> = [
+    ['入', prices.inputUsdPer1M],
+    ['出', prices.outputUsdPer1M],
+    ['读', prices.cachedInputUsdPer1M],
+    ['写', prices.cacheWriteUsdPer1M],
+    ['1h', prices.cacheWrite1hUsdPer1M]
+  ]
+  return entries.flatMap(([label, value]) => typeof value === 'number' ? [{ label, value }] : [])
+}
+
 function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
   if (!record.supportedServiceTiers?.length) return '仅标准'
   return record.supportedServiceTiers.map((tier) => {
-    const prices = record.serviceTierPrices?.[tier]
-    return `${formatModelServiceTier(tier)}：输入 ${formatPrice(prices?.inputUsdPer1M)} / 输出 ${formatPrice(prices?.outputUsdPer1M)} / 缓存读 ${formatPrice(prices?.cachedInputUsdPer1M)} / 缓存写 ${formatPrice(prices?.cacheWriteUsdPer1M)} / 1h 写入 ${formatPrice(prices?.cacheWrite1hUsdPer1M)}`
+    const entries = tierPriceEntries(record, tier)
+    return `${formatModelServiceTier(tier)}：${entries.length ? entries.map((entry) => `${entry.label} ${formatPrice(entry.value)}`).join(' / ') : '暂无价格'}`
   }).join('；')
 }
 </script>
@@ -385,8 +401,27 @@ function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
 
 .tier-price-row {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tier-price-name {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.tier-price-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.tier-price-metrics b {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .model-mobile-card {

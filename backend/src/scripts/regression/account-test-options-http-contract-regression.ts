@@ -101,8 +101,8 @@ try {
     scope: 'personal',
     systemAccountId: user.id,
     status: 'active',
-    mode: 'image',
-    supportedApiProtocols: ['responses'],
+    mode: 'image_generation',
+    supportedApiProtocols: ['images'],
     actorSystemAccountId: user.id
   })
   saveCustomProviderModel({
@@ -200,7 +200,7 @@ try {
       target.cookie,
       200
     )
-    assert.equal(protocolEligibleOptions.some((item) => item.id === imageModelId), false, `${target.label}模型候选不得包含图片模型`)
+    assert.equal(protocolEligibleOptions.some((item) => item.id === imageModelId), true, `${target.label}模型候选应包含可使用 Images API 测试的图片模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === messagesOnlyModelId), false, `${target.label}OpenAI 档案模型候选不得包含仅支持 Messages 的模型`)
 
     await requestEnvelope(
@@ -226,6 +226,14 @@ try {
     assert.equal(capabilities.id, encodedModelId, `${target.label}路由必须解码包含斜杠的模型 ID`)
     assert.deepEqual([...capabilities.testEndpointModes].sort(), ['responses_json', 'responses_sse'])
     assertCapabilitiesQueryBoundary(capturedSelectSql, target.label)
+
+    const imageCapabilities = await requestEnvelope<ModelCapabilities>(
+      baseUrl,
+      `${target.prefix}/${account.id}/test-options/models/${encodeURIComponent(imageModelId)}${target.query}`,
+      target.cookie,
+      200
+    )
+    assert.deepEqual(imageCapabilities.testEndpointModes, ['images_json'], `${target.label}图片模型必须返回 Images API 测试形态`)
 
     await requestEnvelope(
       baseUrl,

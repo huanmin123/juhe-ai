@@ -105,7 +105,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
     try {
       if (options.editingId.value) {
-        const updatePayload = buildAccountUpdatePayload(payload)
+        const updatePayload = buildAccountUpdatePayload(payload, options.editingAccountDetail.value?.status)
         if (options.isManagementView.value) {
           await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
         } else {
@@ -244,6 +244,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       name: options.form.name.trim(),
       concurrencyLimit: Math.trunc(concurrencyLimit),
       priority: Math.trunc(priority),
+      ...(options.form.status === 'disabled' || options.editingAccountDetail.value?.status === 'disabled' || options.editingAccountDetail.value?.status === 'active'
+        ? { status: options.form.status }
+        : {}),
+      superPriorityEnabled: options.form.privilege === 'super_priority',
+      fallbackEnabled: options.form.privilege === 'fallback',
       groupId: options.form.groupId,
       tags: normalizeFormTagNames(options.form.tags),
       notes: options.form.notes,
@@ -327,6 +332,9 @@ type AccountBasicEditPayload = {
   name: string
   concurrencyLimit: number
   priority: number
+  status?: 'active' | 'disabled'
+  superPriorityEnabled?: boolean
+  fallbackEnabled?: boolean
   groupId: string
   tags: string[]
   notes: string

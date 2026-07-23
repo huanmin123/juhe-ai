@@ -685,14 +685,14 @@ function compareProviderModelTestCatalogItems(
   right: ProviderModelTestCatalogItem
 ): number {
   const sameProvider = normalizeProviderToken(left.providerCode) === normalizeProviderToken(right.providerCode)
-  if (sameProvider && left.catalogOrder !== undefined && right.catalogOrder !== undefined && left.catalogOrder !== right.catalogOrder) {
-    return left.catalogOrder - right.catalogOrder
-  }
   if (left.releaseDate && right.releaseDate && left.releaseDate !== right.releaseDate) {
     return right.releaseDate.localeCompare(left.releaseDate)
   }
   if (left.releaseDate && !right.releaseDate) return -1
   if (!left.releaseDate && right.releaseDate) return 1
+  if (sameProvider && left.catalogOrder !== undefined && right.catalogOrder !== undefined && left.catalogOrder !== right.catalogOrder) {
+    return left.catalogOrder - right.catalogOrder
+  }
   const modelOrder = left.model.localeCompare(right.model, 'en')
   if (modelOrder !== 0) return modelOrder
   return left.id.localeCompare(right.id, 'en')
@@ -880,12 +880,6 @@ function catalogPriority(item: ProviderModelCatalogItem): number {
 }
 
 export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem, right: ProviderModelCatalogItem): number {
-  const sameProvider = normalizeProviderToken(left.providerCode) === normalizeProviderToken(right.providerCode)
-  if (sameProvider) {
-    const sameProviderCatalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
-    if (sameProviderCatalogOrder !== 0) return sameProviderCatalogOrder
-  }
-
   const leftReleaseDate = sortableCatalogReleaseDate(left)
   const rightReleaseDate = sortableCatalogReleaseDate(right)
   if (leftReleaseDate && rightReleaseDate && leftReleaseDate !== rightReleaseDate) {
@@ -894,10 +888,8 @@ export function compareProviderModelCatalogItems(left: ProviderModelCatalogItem,
   if (leftReleaseDate && !rightReleaseDate) return -1
   if (!leftReleaseDate && rightReleaseDate) return 1
 
-  if (!sameProvider) {
-    const crossProviderCatalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
-    if (crossProviderCatalogOrder !== 0) return crossProviderCatalogOrder
-  }
+  const catalogOrder = compareSharedCatalogOrder(left.catalogOrder, right.catalogOrder)
+  if (catalogOrder !== 0) return catalogOrder
 
   const modelOrder = left.model.localeCompare(right.model, 'en')
   if (modelOrder !== 0) return modelOrder

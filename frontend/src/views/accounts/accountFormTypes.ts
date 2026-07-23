@@ -36,6 +36,8 @@ export interface AccountFormModel {
   accountExpiresAt?: Dayjs | null
   concurrencyLimit: number
   priority: number
+  privilege: 'normal' | 'super_priority' | 'fallback'
+  status: 'active' | 'disabled'
   clientCompatibility: AccountClientCompatibility
   codexResponsesSafeRepairEnabled: boolean
   codexResponsesStrictInterceptEnabled: boolean

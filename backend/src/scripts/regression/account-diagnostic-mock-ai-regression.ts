@@ -90,7 +90,7 @@ try {
   const imageAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: '诊断 mock AI image catalog',
+    name: '诊断 mock AI image generation',
     type: 'api_key',
     groupId: group.id,
     status: 'active',
@@ -106,10 +106,10 @@ try {
   const imageResult = await testOpenAIAccountWithDiagnosticRetries(imageAccount)
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
-  assert.equal(imageResult.success, true, `图像模型目录探针应成功：${imageResult.message}`)
-  assert.equal(imageResult.requestUrl, '/v1/models', '图像生成模型不得再调用文本 Responses 探针')
-  assert.equal(imageResult.message, 'OpenAI 模型目录 测试通过', '图像模型探针结果不得误报为 Responses 测试')
-  assert.equal(hitCount('image-catalog'), 1, '模型目录探针成功后不得重复请求或触发生图')
+  assert.equal(imageResult.success, true, `图像模型真实生成探针应成功：${imageResult.message}`)
+  assert.equal(imageResult.requestUrl, '/v1/images/generations', '图像生成模型必须调用 Images generations 探针')
+  assert.equal(imageResult.testEndpointMode, 'images_json', '图像模型测试结果必须记录 Images API 请求形态')
+  assert.equal(hitCount('image-catalog'), 1, '图像生成探针成功后应只请求一次上游')
 
   const codexFailedAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-explicit-failure', access)
   const codexFailedCandidate = requiredRuntimeAccount(group.id, codexFailedAccount.id, admin.id)
@@ -247,9 +247,10 @@ function createMockAIUpstream(): http.Server {
   })
 }
 
-function mockResponseMode(pathname: string): 'responses' | 'chat' | undefined {
+function mockResponseMode(pathname: string): 'responses' | 'chat' | 'image' | undefined {
   if (pathname === '/v1/responses') return 'responses'
   if (pathname === '/v1/chat/completions') return 'chat'
+  if (pathname === '/v1/images/generations') return 'image'
   return undefined
 }
 
@@ -317,7 +318,12 @@ function sendChatCompleted(res: http.ServerResponse, outputText: string): void {
   res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
 }
 
-function sendMockCompleted(res: http.ServerResponse, mode: 'responses' | 'chat', outputText: string): void {
+function sendMockCompleted(res: http.ServerResponse, mode: 'responses' | 'chat' | 'image', outputText: string): void {
+  if (mode === 'image') {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ created: 1, data: [{ b64_json: 'aGVsbG8=' }] }))
+    return
+  }
   if (mode === 'chat') {
     sendChatCompleted(res, outputText)
     return

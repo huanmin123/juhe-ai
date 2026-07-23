@@ -329,14 +329,6 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   if (isPendingHealthCheckFailed(account) && canToggleAccountStatus(account)) {
     items.push({ key: 'recheck-health', label: '重新检查' })
   }
-  if (account.status === 'pending_test' && canToggleAccountStatus(account)) {
-    items.push({
-      key: 'restore-normal',
-      label: '恢复正常',
-      confirmTitle: `确认恢复账户「${account.name}」？确认后将跳过本次后台检查，但仍遵守账户时间计划；请仅在你确认上游当前可用时操作。`,
-      confirmOkText: '确认恢复'
-    })
-  }
   if (canUseAccountActions(account)) {
     if (canManageOAuthAccount(account)) {
       items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
@@ -385,7 +377,7 @@ export function accountMenuItemsWithClone(menuItems: AccountMenuItem[], canClone
 function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountSummary): void {
   const canEnableDispatchFlag = isAuthorizedAccount(account)
     ? canUseBoundAuthorizedAccount(account)
-    : account.status === 'active'
+    : account.status === 'active' || account.status === 'pending_test'
   if (canEnableDispatchFlag || account.superPriorityEnabled) {
     items.push({
       key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',

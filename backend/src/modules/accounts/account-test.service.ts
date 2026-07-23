@@ -35,6 +35,7 @@ import {
 } from './account-test-response-diagnostics.js'
 import {
   hasAccountModelCatalogSuccessEvidence,
+  hasAccountImageGenerationSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from './account-test-success-evidence.js'
 import { accountTestProbeKind, type AccountTestProbeKind } from './account-test-probe-policy.js'
@@ -76,6 +77,7 @@ import {
 } from './account-diagnostic-retry-policy.js'
 import {
   accountTestDefaultPrompt,
+  createOpenAIImageGenerationTestRequest,
   accountTestModelsPath,
   createAnthropicTestRequest,
   createGeminiTestRequest,
@@ -169,7 +171,7 @@ export async function testOpenAIAccount(
   const anthropicProtocol = isAnthropicProtocolProfile(account)
   const geminiProtocol = isGeminiProtocolProfile(account)
   let testEndpointMode: AccountSupportedEndpointMode | undefined
-  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
+  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | ReturnType<typeof createOpenAIImageGenerationTestRequest> | undefined
   let requestBody: Record<string, unknown> | undefined
   let requestUrl: string | undefined
   let modelMapping: ResolvedOpenAIModelMapping | undefined
@@ -190,8 +192,18 @@ export async function testOpenAIAccount(
   const traceId = createTraceId()
 
   try {
-    const supportedEndpointModes = accountManualTestEndpointModes(account)
-    testEndpointMode = resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
+    const model = await resolveAccountTestModelAsync(account, {
+      explicitModel,
+      systemAccountId: input.systemAccountId
+    })
+    testedModel = model
+    probeKind = accountTestProbeKind(account, model)
+    const supportedEndpointModes = probeKind === 'image_generation'
+      ? ['images_json' as const]
+      : accountManualTestEndpointModes(account)
+    testEndpointMode = probeKind === 'image_generation'
+      ? 'images_json'
+      : resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
     clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
     const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
@@ -200,16 +212,14 @@ export async function testOpenAIAccount(
       candidateAccount: input.candidateAccount,
       findOpenAIAccountForGroup: input.findOpenAIAccountForGroup
     })
-    const model = await resolveAccountTestModelAsync(account, {
-      explicitModel,
-      systemAccountId: input.systemAccountId,
-      sourceFamilies: [accountTestEndpointModeSourceFamily(testEndpointMode)]
-    })
-    testedModel = model
-    probeKind = accountTestProbeKind(account, model)
     const messagesTestMode = isMessagesTestEndpointMode(testEndpointMode)
     const geminiTestMode = isGeminiTestEndpointMode(testEndpointMode)
-    if (probeKind === 'generation') {
+    if (probeKind === 'image_generation') {
+      testRequest = createOpenAIImageGenerationTestRequest({
+        explicitModel,
+        fallbackModel: model
+      })
+    } else if (probeKind === 'generation') {
       testRequest = messagesTestMode
         ? createAnthropicTestRequest({
           explicitModel,
@@ -336,16 +346,22 @@ export async function testOpenAIAccount(
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
     const protocolSuccessEvidence = probeKind === 'models_catalog'
       ? hasAccountModelCatalogSuccessEvidence(model, responseText)
-      : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
+      : probeKind === 'image_generation'
+        ? hasAccountImageGenerationSuccessEvidence(responseText) || response.imageOutputReceived()
+        : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
         ? `上游模型目录未包含检查模型或响应格式无效：${model}`
-        : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
+        : probeKind === 'image_generation'
+          ? '上游返回 HTTP 2xx，但图片响应中缺少可用图片数据'
+          : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
       : undefined
     const protocolEvidenceErrorCode = probeKind === 'models_catalog'
       ? 'model_not_found'
-      : 'invalid_protocol_success_response'
+      : probeKind === 'image_generation'
+        ? 'invalid_image_generation_response'
+        : 'invalid_protocol_success_response'
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({

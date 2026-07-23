@@ -157,6 +157,8 @@ export class MemoryGatewayResponse extends EventEmitter {
   private readonly body = new BoundedBufferCollector(accountTestResponsePreviewBytes)
   private readonly streamInspector = new OpenAIStreamInspector()
   private firstOutputMs: number | undefined
+  private imageOutputObserved = false
+  private imageEvidenceTail = ''
 
   constructor(private readonly startedAt: number) {
     super()
@@ -190,10 +192,14 @@ export class MemoryGatewayResponse extends EventEmitter {
   send(value?: Buffer | string | object): this {
     if (Buffer.isBuffer(value)) {
       this.body.append(value)
+      this.observeImageOutput(value)
     } else if (typeof value === 'string') {
       this.body.append(value)
+      this.observeImageOutput(Buffer.from(value))
     } else if (value !== undefined) {
-      this.body.append(JSON.stringify(value))
+      const serialized = JSON.stringify(value)
+      this.body.append(serialized)
+      this.observeImageOutput(Buffer.from(serialized))
     }
     return this.end()
   }
@@ -201,6 +207,7 @@ export class MemoryGatewayResponse extends EventEmitter {
   write(value: Buffer | string | Uint8Array): boolean {
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
     this.body.append(buffer)
+    this.observeImageOutput(buffer)
     const inspection = this.streamInspector.pushChunk(buffer)
     if (this.firstOutputMs === undefined && inspection.outputReceived) {
       this.firstOutputMs = Date.now() - this.startedAt
@@ -239,6 +246,18 @@ export class MemoryGatewayResponse extends EventEmitter {
 
   firstTokenMs(): number | undefined {
     return this.firstOutputMs
+  }
+
+  imageOutputReceived(): boolean {
+    return this.imageOutputObserved || this.streamInspector.snapshot().imageOutputReceived
+  }
+
+  private observeImageOutput(buffer: Buffer): void {
+    if (this.imageOutputObserved) return
+    const prefix = buffer.subarray(0, Math.min(buffer.length, 4096)).toString('utf8')
+    const evidence = `${this.imageEvidenceTail}${prefix}`
+    this.imageOutputObserved = /"(?:b64_json|url)"\s*:\s*"[^"\s]/.test(evidence)
+    this.imageEvidenceTail = evidence.slice(-512)
   }
 
   asResponse(): Response {

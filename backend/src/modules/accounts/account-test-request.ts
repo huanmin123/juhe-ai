@@ -12,6 +12,7 @@ export const accountTestDefaultPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
+const gatewayImagesGenerationsPath = '/v1/images/generations'
 const gatewayAnthropicMessagesPath = '/v1/messages'
 const gatewayGeminiVersionPrefix = '/v1beta'
 const gatewayGeminiInteractionsPath = '/v1beta/interactions'
@@ -20,6 +21,7 @@ const claudeCodeVersion = '2.1.201'
 const claudeCodeBuildId = 'eb7'
 const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 export const accountTestModelsPath = '/v1/models'
+export const accountImageTestDefaultPrompt = 'A small solid white square on a plain background.'
 
 export type AccountTestRequestInput = {
   explicitModel?: string
@@ -47,6 +49,25 @@ export function createOpenAITestRequest(input: AccountTestRequestInput): Account
     body: path === gatewayChatCompletionsPath
       ? createOpenAIChatCompletionsTestPayload(model, input.prompt, stream)
       : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, stream),
+    model
+  }
+}
+
+export function createOpenAIImageGenerationTestRequest(input: {
+  explicitModel?: string
+  fallbackModel: string
+}): AccountTestRequest {
+  const model = stringValue(input.explicitModel) || input.fallbackModel
+  return {
+    path: gatewayImagesGenerationsPath,
+    body: {
+      model,
+      prompt: accountImageTestDefaultPrompt,
+      n: 1,
+      size: '1024x1024',
+      quality: 'low',
+      output_format: 'png'
+    },
     model
   }
 }
@@ -105,6 +126,7 @@ export function createGeminiTestRequest(input: {
 }
 
 export function testPathFromEndpointMode(mode: AccountSupportedEndpointMode, model = 'test-model'): string {
+  if (mode === 'images_json') return gatewayImagesGenerationsPath
   if (mode === 'chat_json' || mode === 'chat_sse') {
     return gatewayChatCompletionsPath
   }

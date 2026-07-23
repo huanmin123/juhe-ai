@@ -94,6 +94,7 @@ export interface CustomProviderModelOptionRow {
   providerCode: string
   model: string
   scope: CustomProviderModelScope
+  releaseDate?: string
 }
 
 export async function listCustomProviderModelOptionsAsync(input: {
@@ -137,7 +138,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
     : ''
   const sql = `
     WITH ranked_options AS (
-      SELECT id, provider_code, model, scope, mode, supported_api_protocols_json,
+      SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
         ROW_NUMBER() OVER (
           PARTITION BY model
           ORDER BY CASE scope WHEN 'personal' THEN 0 ELSE 1 END, provider_code ASC, id ASC
@@ -145,10 +146,12 @@ export async function listCustomProviderModelOptionsAsync(input: {
       FROM ${table}
       WHERE ${whereParts.join('\n        AND ')}
     )
-    SELECT id, provider_code, model, scope, mode, supported_api_protocols_json
+    SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json
     FROM ranked_options
     WHERE option_rank = 1
-    ORDER BY ${order} lower(model) ASC, provider_code ASC, scope ASC, id ASC
+    ORDER BY ${order}
+      CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
+      release_date DESC, lower(model) ASC, provider_code ASC, scope ASC, id ASC
     LIMIT ?
   `
   const params: unknown[] = client ? [providerCodes] : [...providerCodes]
@@ -170,6 +173,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
         model: string
         scope: CustomProviderModelScope
         mode?: string | null
+        release_date?: string | null
         supported_api_protocols_json?: string | null
       }>(sql, params)
     : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
@@ -178,6 +182,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
          model: string
          scope: CustomProviderModelScope
          mode?: string | null
+         release_date?: string | null
          supported_api_protocols_json?: string | null
        }>
   return rows.map((row) => ({
@@ -186,6 +191,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
     model: row.model,
     scope: row.scope,
     mode: testCatalogOptionalText(row.mode),
+    releaseDate: testCatalogOptionalText(row.release_date),
     supportedApiProtocols: testCatalogStringList(row.supported_api_protocols_json)
   }))
 }
