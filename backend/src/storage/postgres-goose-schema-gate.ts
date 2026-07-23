@@ -1,6 +1,6 @@
 import { runtimeConfig, type DatabaseDriver } from '../config/runtime.js'
 
-export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 75
+export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 74
 export const POSTGRES_GOOSE_CURRENT_VERSION_QUERY = `
   WITH latest_versions AS (
     SELECT DISTINCT ON (version_id) id, version_id, is_applied
