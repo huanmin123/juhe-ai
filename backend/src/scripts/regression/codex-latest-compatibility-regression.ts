@@ -17,15 +17,37 @@ const solHeaders = new Headers({
   'openai-beta': 'responses=experimental'
 })
 normalizeOpenAICodexClientHeaders(solHeaders, 'gpt-5.6-sol')
-assert.equal(solHeaders.get('user-agent'), 'codex_cli_rs/0.144.4')
-assert.equal(solHeaders.get('version'), null)
-assert.equal(solHeaders.get('openai-beta'), null)
-assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), 'true')
+assert.equal(solHeaders.get('user-agent'), 'codex_cli_rs/0.125.0')
+assert.equal(solHeaders.get('version'), '0.125.0')
+assert.equal(solHeaders.get('openai-beta'), 'responses=experimental')
+assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), null)
 
 const standardHeaders = new Headers({ originator: 'codex_vscode' })
 normalizeOpenAICodexClientHeaders(standardHeaders, 'gpt-5.5')
-assert.equal(standardHeaders.get('user-agent'), 'codex_vscode/0.144.4')
+assert.equal(standardHeaders.get('user-agent'), null)
 assert.equal(standardHeaders.get('x-openai-internal-codex-responses-lite'), null)
+
+const desktopHeaders = new Headers({
+  originator: 'Codex Desktop',
+  'user-agent': 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)',
+  'x-client-custom': 'preserved'
+})
+normalizeOpenAICodexClientHeaders(desktopHeaders, 'gpt-5.6-sol')
+assert.equal(desktopHeaders.get('x-client-custom'), 'preserved')
+assert.equal(desktopHeaders.get('x-openai-internal-codex-responses-lite'), null, '原生 Codex 请求头不得补写或覆盖')
+
+const syntheticHeaders = new Headers({
+  version: 'generic-client-version',
+  'openai-beta': 'generic-beta'
+})
+normalizeOpenAICodexClientHeaders(syntheticHeaders, 'gpt-5.6-sol')
+assert.equal(syntheticHeaders.get('originator'), 'Codex Desktop')
+assert.equal(syntheticHeaders.get('user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
+assert.equal(syntheticHeaders.get('version'), 'generic-client-version')
+assert.equal(syntheticHeaders.get('openai-beta'), 'generic-beta')
+assert.equal(syntheticHeaders.get('x-codex-beta-features'), 'remote_compaction_v2')
+assert.equal(syntheticHeaders.get('x-openai-internal-codex-responses-lite'), 'true')
+assert.doesNotThrow(() => JSON.parse(syntheticHeaders.get('x-codex-turn-metadata') ?? ''))
 
 const request = createRequest('/v1/responses', {
   model: 'gpt-5.6-sol',
@@ -39,7 +61,7 @@ const oauthParts = await buildOpenAIOAuthCodexRequestParts(request, request.head
   apiKeyId: 'key-a',
   groupId: 'group-a'
 })
-assert.equal(oauthParts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+assert.equal(oauthParts.headers.get('user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
 assert.equal(typeof oauthParts.headers.get('session-id'), 'string')
 assert.equal(typeof oauthParts.headers.get('thread-id'), 'string')
 assert.equal(oauthParts.headers.get('session_id'), null)

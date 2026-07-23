@@ -18,7 +18,7 @@ assert.match(viewSource, /rangeSignature\(result\.range\) !== rangeSignature\(cu
 assert.match(viewSource, /chartObserver\?\.unobserve\(entry\.target\)/, '图表首次进入视口后不得重复观察并发请求')
 assert.match(viewSource, /\.\.\.currentAuthSignature\(\)/, '请求签名必须包含 auth revision 与当前用户身份')
 assert.match(viewSource, /onDeactivate:\s*handlePageDeactivate/, 'KeepAlive 失活必须使在途统计请求失效')
-assert.match(viewSource, /v-if="summaryError"/, 'summary 必须有独立错误态和重试入口')
+assert.doesNotMatch(viewSource, /<a-alert[\s\S]*summaryError/, 'summary 加载失败不得显示页面横幅')
 
 for (const path of ['summary', 'hourly-trend', 'model-distribution', 'errors']) {
   assert(routesSource.includes(`'/usage-overview/${path}'`), `Node 必须注册 usage-overview/${path}`)

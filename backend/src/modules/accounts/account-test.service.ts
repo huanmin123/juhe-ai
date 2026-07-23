@@ -197,7 +197,9 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId
     })
     testedModel = model
-    probeKind = accountTestProbeKind(account, model)
+    probeKind = accountTestProbeKind(account, model, {
+      testEndpointMode: input.testEndpointMode
+    })
     const supportedEndpointModes = probeKind === 'image_generation'
       ? ['images_json' as const]
       : accountManualTestEndpointModes(account)
@@ -347,7 +349,7 @@ export async function testOpenAIAccount(
     const protocolSuccessEvidence = probeKind === 'models_catalog'
       ? hasAccountModelCatalogSuccessEvidence(model, responseText)
       : probeKind === 'image_generation'
-        ? hasAccountImageGenerationSuccessEvidence(responseText) || response.imageOutputReceived()
+        ? hasAccountImageGenerationSuccessEvidence(responseText)
         : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
@@ -872,6 +874,7 @@ function accountTestFailureMessage(account: AccountSummary, requestUrl?: string)
 
 function accountTestProtocolName(account: AccountSummary, requestUrl?: string): string {
   if (requestUrl === accountTestModelsPath) return 'OpenAI 模型目录'
+  if (requestUrl?.includes('/images/')) return 'OpenAI Images API'
   if (isAnthropicProtocolProfile(account)) return 'Anthropic Messages'
   if (isGeminiProtocolProfile(account)) return 'Gemini GenerateContent'
   return requestUrl?.includes('/chat/completions') ? 'OpenAI Chat Completions' : 'OpenAI Responses'

@@ -451,11 +451,11 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'truncation'), false)
   assert.equal(Object.prototype.hasOwnProperty.call(body, 'user'), false)
 
-  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('accept'), null)
   assert.equal(parts.headers.get('content-type'), 'application/json')
   assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
-  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
+  assert.equal(parts.headers.get('version'), '0.125.0')
   assert.equal(parts.headers.get('openai-beta'), null)
   assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), null)
   const solHeaders = new Headers(parts.headers)
@@ -463,7 +463,7 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
     requestClientCompatibility: 'codex_responses',
     modelOverride: 'gpt-5.6-sol'
   })
-  assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), 'true')
+  assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), null)
 
   const input = body.input
   assert.ok(Array.isArray(input))
@@ -522,12 +522,12 @@ async function testCodexResponsesCompatibilityKeepsExplicitToolSettings(): Promi
   assert.deepEqual(body.tools, [{ type: 'function', name: 'noop' }])
   assert.deepEqual(body.tool_choice, { type: 'function', name: 'noop' })
   assert.equal(body.parallel_tool_calls, false)
-  assert.equal(parts.headers.get('accept'), 'text/event-stream')
-  assert.equal(parts.headers.get('content-type'), 'application/json')
-  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('accept'), 'application/json')
+  assert.equal(parts.headers.get('content-type'), 'text/plain')
+  assert.equal(parts.headers.get('openai-beta'), 'responses=v1')
   assert.equal(parts.headers.get('originator'), 'codex_vscode')
-  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/0.144.4')
-  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/1.2.3')
+  assert.equal(parts.headers.get('version'), '1.2.3')
 }
 
 async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): Promise<void> {

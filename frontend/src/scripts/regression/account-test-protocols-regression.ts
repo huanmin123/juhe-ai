@@ -15,7 +15,7 @@ import {
   isGatewaySupportedTestSelection
 } from '../../views/accounts/accountDerivedState'
 import { canTestAccount } from '../../views/accounts/accountRules'
-import { validateAccountEndpointModes } from '../../views/accounts/accountEndpointModes'
+import { accountEndpointModeLabel, validateAccountEndpointModes } from '../../views/accounts/accountEndpointModes'
 
 const openAIAccount = accountFixture({
   id: 'acct_openai_protocol_test',
@@ -80,6 +80,7 @@ assertTrue(isGatewaySupportedProtocolProfile(anthropicAccount), 'Anthropic v1 �
 assertTrue(isGatewaySupportedProtocolProfile(geminiAccount), 'Gemini v1beta 账户应允许走前端账户测试入口')
 assertTrue(isGatewaySupportedProtocolProfile(geminiOpenAIChatAccount), 'Gemini OpenAI Chat 账户应允许走前端账户测试入口')
 assertFalse(isGatewaySupportedProtocolProfile(unsupportedAccount), '未接入网关测试的协议不应允许走前端账户测试入口')
+assertEqual(accountEndpointModeLabel('images_json'), 'Images API', '图片模型测试形态必须显示为 Images API')
 
 assertTrue(canTestAccount(openAIAccount), 'OpenAI v1 正常账户应可测试')
 assertTrue(canTestAccount(anthropicAccount), 'Anthropic API Key 正常账户应可测试')

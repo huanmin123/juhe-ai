@@ -59,6 +59,13 @@ interactionsSnapshot.testEndpointModes = ['interactions_sse', 'interactions_json
 writeAccountTestRunSession(interactionsSnapshot)
 assert.equal(readAccountTestRunSession(false, accountA.id)?.testEndpointMode, 'interactions_sse', '前端会话恢复必须保留 Gemini Interactions SSE mode')
 
+const imageSnapshot = readAccountTestRunSession(false, accountA.id)
+assert.ok(imageSnapshot)
+imageSnapshot.testEndpointMode = 'images_json'
+imageSnapshot.testEndpointModes = ['images_json']
+writeAccountTestRunSession(imageSnapshot)
+assert.equal(readAccountTestRunSession(false, accountA.id)?.testEndpointMode, 'images_json', '前端会话恢复必须保留 Images API 测试形态')
+
 const managementAccount = accountFixture('account_session_management', '管理账户')
 writeAccountTestRunSession({
   ...snapshotFixture(managementAccount, 'session_management', 'task_management'),

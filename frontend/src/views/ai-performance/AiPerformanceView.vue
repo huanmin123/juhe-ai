@@ -31,18 +31,6 @@
       @toggle-account="toggleAccountFilter"
     />
 
-    <a-alert v-if="baseError" :message="baseError" type="error" show-icon>
-      <template #action>
-        <a-button size="small" @click="retryBase">重试基础数据</a-button>
-      </template>
-    </a-alert>
-    <a-alert v-if="seriesError" :message="seriesError" type="warning" show-icon>
-      <template #action>
-        <a-button size="small" @click="retrySeries">重试追加账户</a-button>
-      </template>
-    </a-alert>
-    <a-alert v-else-if="seriesLoading" message="正在加载追加账户性能序列" type="info" show-icon />
-
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
     <a-row :gutter="[16, 16]" class="ai-performance-section">
