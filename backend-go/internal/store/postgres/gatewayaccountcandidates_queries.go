@@ -97,7 +97,8 @@ SELECT
   source_accounts.cooldown_until,
   source_accounts.account_expires_at,
   source_accounts.concurrency_limit,
-  source_accounts.client_compatibility
+  source_accounts.client_compatibility,
+  model_ranking.model_rank
 FROM juhe_business.group_accounts AS group_accounts
 INNER JOIN juhe_business.groups AS groups
   ON groups.id = group_accounts.group_id
@@ -112,6 +113,47 @@ LEFT JOIN juhe_business.resource_authorizations AS account_authorizations
   AND account_authorizations.grantee_system_account_id = $3::text
 LEFT JOIN juhe_business.accounts AS source_accounts
   ON source_accounts.id = accounts.authorization_instance_source_account_id
+CROSS JOIN LATERAL (
+  SELECT CASE
+    WHEN $9::text = '' THEN 0
+    WHEN EXISTS (
+      SELECT 1 FROM juhe_business.account_supported_models AS supported_models
+      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
+        AND supported_models.model = $9::text
+    ) THEN 0
+    WHEN EXISTS (
+      SELECT 1 FROM juhe_business.account_model_mappings AS model_mappings
+      WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
+        AND model_mappings.enabled = true
+        AND model_mappings.source_model = $9::text
+        AND $10::text <> ''
+        AND model_mappings.source_endpoint_family = $10::text
+        AND (
+          model_mappings.upstream_model <> model_mappings.source_model
+          OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
+        )
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
+            WHERE limited_models.account_id = model_mappings.account_id
+          )
+          OR EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+            WHERE mapped_models.account_id = model_mappings.account_id
+              AND mapped_models.provider_code = model_mappings.provider_code
+              AND mapped_models.model = model_mappings.upstream_model
+          )
+        )
+    ) THEN 1
+    WHEN NOT EXISTS (
+      SELECT 1 FROM juhe_business.account_supported_models AS limited_models
+      WHERE limited_models.account_id = COALESCE(source_accounts.id, accounts.id)
+    ) THEN 2
+    ELSE 3
+  END AS model_rank
+) AS model_ranking
 WHERE group_accounts.group_id = $1::text
   AND group_accounts.system_account_id = $2::text
   AND group_accounts.enabled = true
@@ -174,81 +216,8 @@ WHERE group_accounts.group_id = $1::text
       AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
     )
   )
-  AND (
-    $9::text = ''
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.account_supported_models AS supported_models
-      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
-        AND supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
-        AND supported_models.model = $9::text
-    )
-    OR NOT EXISTS (
-      SELECT 1 FROM juhe_business.account_supported_models AS supported_models
-      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
-    )
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.account_model_mappings AS model_mappings
-      WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
-        AND model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
-        AND model_mappings.enabled = true
-        AND model_mappings.source_model = $9::text
-        AND $10::text <> ''
-        AND model_mappings.source_endpoint_family = $10::text
-        AND (
-          model_mappings.upstream_model <> model_mappings.source_model
-          OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
-        )
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
-            WHERE limited_models.account_id = model_mappings.account_id
-          )
-          OR EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
-            WHERE mapped_models.account_id = model_mappings.account_id
-              AND mapped_models.provider_code = model_mappings.provider_code
-              AND mapped_models.model = model_mappings.upstream_model
-          )
-        )
-    )
-  )
-ORDER BY CASE
-    WHEN $9::text = '' THEN 0
-    WHEN EXISTS (
-      SELECT 1
-      FROM juhe_business.account_supported_models AS supported_models
-      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
-        AND supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
-        AND supported_models.model = $9::text
-    ) THEN 0
-    WHEN EXISTS (
-      SELECT 1
-      FROM juhe_business.account_model_mappings AS model_mappings
-      WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
-        AND model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
-        AND model_mappings.enabled = true
-        AND model_mappings.source_model = $9::text
-        AND $10::text <> ''
-        AND model_mappings.source_endpoint_family = $10::text
-        AND (
-          model_mappings.upstream_model <> model_mappings.source_model
-          OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
-        )
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
-            WHERE limited_models.account_id = model_mappings.account_id
-          )
-          OR EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
-            WHERE mapped_models.account_id = model_mappings.account_id
-              AND mapped_models.provider_code = model_mappings.provider_code
-              AND mapped_models.model = model_mappings.upstream_model
-          )
-        )
-    ) THEN 1
-    ELSE 2
-  END ASC,
+  AND model_ranking.model_rank < 3
+ORDER BY model_ranking.model_rank ASC,
   group_accounts.local_fallback_enabled ASC,
   group_accounts.local_super_priority_enabled DESC,
   group_accounts.local_priority ASC,

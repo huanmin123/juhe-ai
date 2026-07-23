@@ -100,6 +100,7 @@ type GatewayAccountCandidate struct {
 	ResourceAccountExpiresAt          *time.Time
 	ResourceConcurrencyLimit          int
 	ResourceClientCompatibility       string
+	ModelRank                         int
 }
 
 type GatewayAccountCandidateReader interface {

@@ -155,6 +155,7 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 		&resourceAccountExpiresAt,
 		&resourceConcurrencyLimit,
 		&resourceCompatibility,
+		&candidate.ModelRank,
 	); err != nil {
 		return port.GatewayAccountCandidate{}, fmt.Errorf("scan gateway account candidate: %w", err)
 	}

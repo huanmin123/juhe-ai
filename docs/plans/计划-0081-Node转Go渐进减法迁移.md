@@ -955,7 +955,20 @@
 - [x] 完成 256 批量 hydration 组合契约、失败候选补位、最终 256 上限和固定诊断字段。
 - [x] 完成模型匹配、fallback/super/priority 业务桶、同桶质量排序和 name/id 稳定排序。
 - [x] 完成 hydrator 返回重复/未知账户的 fail-closed 协议检查；公开候选结构不携带明文凭据。
-- [ ] 后续接入 PostgreSQL 批量凭据/模型/代理/API-key runtime/新鲜 quality hydrator，并接到账户策略、dispatch revision/circuit 和真实请求循环。
+- [x] 接入 PostgreSQL 批量凭据/模型/代理/API-key runtime/新鲜 quality hydrator；账户策略、dispatch revision/circuit 和真实请求循环继续后置。
 - [ ] 完成真实 PostgreSQL/Redis/upstream smoke、listener canary、owner manifest 切换和 Node gateway 删除门禁。
 
 本轮仍按第一波快速迁移规则执行：未在每个文件修改后单独编译或测试，全部代码与文档完成后统一验证；后续轮次再逐模块反复对照 Node 和真实依赖。
+
+## 2026-07-23 gatewaycandidatewindow PostgreSQL hydrator 结果
+
+- [x] 新增最多 256 账户的 typed hydration port 和 PostgreSQL bulk reader；模型/映射、代理与 24 小时新鲜质量均按集合读取，无 N+1。
+- [x] 候选 SQL 输出 `modelRank`；窗口为全部最多 512 行批量加载 view-account 新鲜质量，并在首个 256 hydration 批次前完成 model/business/quality 排序，后段高质量同桶候选可前移。
+- [x] 新增资源账户凭据解密、API-key pool HMAC fingerprint、既有 runtime states 批量复用和缺失 state 默认 active 的当前契约。
+- [x] API-key pool 保留原始数组 index、不对非法非空数组回退单 key；runtime handoff 补齐 `cooldownUntil/nextProbeAt`。
+- [x] 新增代理 host/port/user/password hydration，账户/代理明文使用 redacted `CredentialSet`，不进入 JSON diagnostics。
+- [x] 账户凭据损坏按固定 drop reason 隔离；代理故障保留候选并标记 unavailable；批量业务事实/runtime 失败保持 fail-closed；授权实例使用 source resource facts，质量使用 view account facts。
+- [ ] 下一批把 candidate window 接到 account policy + attempt loop，并加入 dispatch revision、Redis circuit/hot quality 和公共 deadline。
+- [ ] 真实 PostgreSQL schema/query plan、真实 Redis runtime、upstream smoke、listener/canary/rollback 和 Node 删除仍待后续统一验收。
+
+本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

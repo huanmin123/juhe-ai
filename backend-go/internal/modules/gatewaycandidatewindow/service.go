@@ -22,10 +22,21 @@ type Hydrator interface {
 	Hydrate(context.Context, HydrateInput) ([]HydrationResult, error)
 }
 
+type CandidatePreRanker interface {
+	PreRank(context.Context, []port.GatewayAccountCandidate) (map[string]CandidateRankFacts, error)
+}
+
+type CandidateRankFacts struct {
+	QualityScore            *int64
+	QualityState            string
+	QualityEWMAFirstTokenMS *float64
+}
+
 type HydrateInput struct {
 	Candidates     []port.GatewayAccountCandidate
 	RequestedModel string
 	EndpointFamily string
+	PreRanks       map[string]CandidateRankFacts
 }
 
 type ModelMapping struct {
@@ -34,30 +45,42 @@ type ModelMapping struct {
 	SourceEndpointFamily   string
 	UpstreamModel          string
 	UpstreamEndpointFamily string
+	Enabled                bool
 }
 
 type APIKeyRuntime struct {
-	KeyID         string
-	Status        string
-	CooldownUntil string
+	KeyFingerprint string
+	KeyIndex       int
+	Status         string
+	CooldownUntil  string
+	NextProbeAt    string
 }
 
 type ProxyRuntime struct {
-	ID      string
-	Type    string
-	Enabled bool
+	ID                string
+	Type              string
+	Host              string
+	Port              int
+	Username          string
+	Credentials       CredentialSet `json:"-"`
+	Enabled           bool
+	Available         bool
+	UnavailableReason string
 }
 
 // Candidate contains dispatch facts, but deliberately does not expose plaintext
 // credentials. A later request assembler receives those through the hydrator's
 // private runtime implementation rather than diagnostics or JSON DTOs.
 type Candidate struct {
-	Projection      port.GatewayAccountCandidate
-	SupportedModels []string
-	ModelMappings   []ModelMapping
-	APIKeyRuntime   []APIKeyRuntime
-	Proxy           *ProxyRuntime
-	QualityScore    *int64
+	Projection              port.GatewayAccountCandidate
+	Credentials             CredentialSet `json:"-"`
+	SupportedModels         []string
+	ModelMappings           []ModelMapping
+	APIKeyRuntime           []APIKeyRuntime
+	Proxy                   *ProxyRuntime
+	QualityScore            *int64
+	QualityState            string
+	QualityEWMAFirstTokenMS *float64
 }
 
 type HydrationResult struct {
@@ -125,21 +148,35 @@ func (s *Service) Load(ctx context.Context, input LoadInput) (Window, bool, erro
 		return Window{}, false, fmt.Errorf("candidate projector exceeded scan limit: %d", len(projection.Candidates))
 	}
 
+	candidates := append([]port.GatewayAccountCandidate(nil), projection.Candidates...)
+	preRanks := map[string]CandidateRankFacts{}
+	if ranker, ok := s.hydrator.(CandidatePreRanker); ok && len(candidates) > 0 {
+		ranks, rankErr := ranker.PreRank(ctx, candidates)
+		if rankErr != nil {
+			return Window{}, false, fmt.Errorf("pre-rank gateway candidates: %w", rankErr)
+		}
+		preRanks = ranks
+		slices.SortStableFunc(candidates, func(left, right port.GatewayAccountCandidate) int {
+			return compareProjections(left, right, ranks)
+		})
+	}
 	diagnostics := Diagnostics{
 		ScanLimit:         port.GatewayAccountCandidateScanLimit,
 		FinalLimit:        FinalLimit,
-		CandidateRowCount: len(projection.Candidates),
-		ScannedRowCount:   len(projection.Candidates),
+		CandidateRowCount: len(candidates),
+		ScannedRowCount:   len(candidates),
+		EligibleRowCount:  len(candidates),
 		ScanLimitReached:  projection.LimitReached,
 	}
-	final := make([]Candidate, 0, min(FinalLimit, len(projection.Candidates)))
-	for start := 0; start < len(projection.Candidates) && len(final) < FinalLimit; start += FinalLimit {
-		end := min(start+FinalLimit, len(projection.Candidates))
-		batch := projection.Candidates[start:end]
+	final := make([]Candidate, 0, min(FinalLimit, len(candidates)))
+	for start := 0; start < len(candidates) && len(final) < FinalLimit; start += FinalLimit {
+		end := min(start+FinalLimit, len(candidates))
+		batch := candidates[start:end]
 		results, hydrateErr := s.hydrator.Hydrate(ctx, HydrateInput{
 			Candidates:     batch,
 			RequestedModel: requestedModel,
 			EndpointFamily: endpointFamily,
+			PreRanks:       preRanks,
 		})
 		if hydrateErr != nil {
 			return Window{}, false, fmt.Errorf("hydrate gateway candidate batch: %w", hydrateErr)
@@ -156,11 +193,13 @@ func (s *Service) Load(ctx context.Context, input LoadInput) (Window, bool, erro
 				continue
 			}
 			result.Candidate.Projection = row
+			if result.Candidate.QualityScore == nil {
+				result.Candidate.QualityScore = preRanks[row.AccountID].QualityScore
+			}
 			if modelRank(result.Candidate, requestedModel, endpointFamily) >= 3 {
 				diagnostics.HydrationDroppedCount++
 				continue
 			}
-			diagnostics.EligibleRowCount++
 			final = append(final, result.Candidate)
 			diagnostics.HydratedAccountCount++
 			if len(final) == FinalLimit {
@@ -174,6 +213,28 @@ func (s *Service) Load(ctx context.Context, input LoadInput) (Window, bool, erro
 	})
 	diagnostics.FinalAccountCount = len(final)
 	return Window{Access: projection.Access, Candidates: final, Diagnostics: diagnostics}, true, nil
+}
+
+func compareProjections(left, right port.GatewayAccountCandidate, ranks map[string]CandidateRankFacts) int {
+	if comparison := compareInt(left.ModelRank, right.ModelRank); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareBool(left.LocalFallbackEnabled, right.LocalFallbackEnabled); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareBool(right.LocalSuperPriorityEnabled, left.LocalSuperPriorityEnabled); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareInt(left.LocalPriority, right.LocalPriority); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareQuality(ranks[left.AccountID].QualityScore, ranks[right.AccountID].QualityScore); comparison != 0 {
+		return comparison
+	}
+	if comparison := strings.Compare(left.Name, right.Name); comparison != 0 {
+		return comparison
+	}
+	return strings.Compare(left.AccountID, right.AccountID)
 }
 
 func indexHydrationResults(batch []port.GatewayAccountCandidate, results []HydrationResult) (map[string]HydrationResult, error) {
@@ -238,6 +299,9 @@ func modelRank(candidate Candidate, model, endpointFamily string) int {
 		}
 	}
 	for _, mapping := range candidate.ModelMappings {
+		if !mapping.Enabled {
+			continue
+		}
 		provider := candidate.Projection.ProviderCode
 		if candidate.Projection.ResourceProviderCode != "" {
 			provider = candidate.Projection.ResourceProviderCode

@@ -86,6 +86,7 @@ func TestLoadDropsRestrictedModelAndAcceptsVerifiedNonIdentityMapping(t *testing
 			Candidate: Candidate{
 				SupportedModels: []string{"gpt-5-upstream"},
 				ModelMappings: []ModelMapping{{
+					Enabled:              true,
 					SourceModel:          "gpt-5",
 					SourceEndpointFamily: "responses",
 					UpstreamModel:        "gpt-5-upstream",
@@ -100,8 +101,33 @@ func TestLoadDropsRestrictedModelAndAcceptsVerifiedNonIdentityMapping(t *testing
 	if len(window.Candidates) != 2 || window.Candidates[0].Projection.AccountID != "mapped" || window.Candidates[1].Projection.AccountID != "unrestricted" {
 		t.Fatalf("candidates = %+v", window.Candidates)
 	}
-	if window.Diagnostics.EligibleRowCount != 2 || window.Diagnostics.HydrationDroppedCount != 1 {
+	if window.Diagnostics.EligibleRowCount != 3 || window.Diagnostics.HydrationDroppedCount != 1 {
 		t.Fatalf("diagnostics = %+v", window.Diagnostics)
+	}
+}
+
+func TestLoadPreRanksAllScannedRowsBeforeFirstHydrationBatch(t *testing.T) {
+	rows := make([]port.GatewayAccountCandidate, 300)
+	for index := range rows {
+		rows[index] = port.GatewayAccountCandidate{AccountID: "account_" + itoa(index), Name: "candidate", ModelRank: 0}
+	}
+	lateID := rows[299].AccountID
+	hydrator := &rankingHydratorStub{
+		hydratorStub: hydratorStub{},
+		ranks: map[string]CandidateRankFacts{
+			rows[0].AccountID: {QualityScore: ptr(int64(100))},
+			lateID:            {QualityScore: ptr(int64(1))},
+		},
+	}
+	window, _, err := NewService(&projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows}}, hydrator).Load(context.Background(), LoadInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hydrator.calls != 1 || len(window.Candidates) != FinalLimit {
+		t.Fatalf("hydration calls/final = %d/%d", hydrator.calls, len(window.Candidates))
+	}
+	if window.Candidates[0].Projection.AccountID != lateID {
+		t.Fatalf("late quality candidate was not promoted: %s", window.Candidates[0].Projection.AccountID)
 	}
 }
 
@@ -139,6 +165,16 @@ type hydratorStub struct {
 	dropFirstBatch bool
 	custom         map[string]HydrationResult
 	results        []HydrationResult
+}
+
+type rankingHydratorStub struct {
+	hydratorStub
+	ranks map[string]CandidateRankFacts
+	err   error
+}
+
+func (s *rankingHydratorStub) PreRank(context.Context, []port.GatewayAccountCandidate) (map[string]CandidateRankFacts, error) {
+	return s.ranks, s.err
 }
 
 func (s *hydratorStub) Hydrate(_ context.Context, input HydrateInput) ([]HydrationResult, error) {
