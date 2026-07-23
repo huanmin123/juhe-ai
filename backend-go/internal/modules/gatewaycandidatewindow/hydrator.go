@@ -31,6 +31,14 @@ type CredentialSet struct {
 	values map[string]any
 }
 
+func NewCredentialSet(values map[string]any) CredentialSet {
+	copy := make(map[string]any, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return CredentialSet{values: copy}
+}
+
 func (CredentialSet) String() string   { return "[REDACTED]" }
 func (CredentialSet) GoString() string { return "[REDACTED]" }
 
@@ -264,7 +272,7 @@ func (h *BatchHydrator) prepare(row port.GatewayAccountCandidate) preparedCandid
 		prepared.dropReason = DropCredentialEmpty
 		return prepared
 	}
-	prepared.credentials = CredentialSet{values: credentials}
+	prepared.credentials = NewCredentialSet(credentials)
 	if strings.EqualFold(prepared.accountType, "api_key") {
 		keys := credentialAPIKeys(credentials)
 		if len(keys) == 0 {
@@ -303,7 +311,7 @@ func (h *BatchHydrator) hydrateProxy(facts port.GatewayCandidateProxyFacts) (Pro
 	if err != nil {
 		return ProxyRuntime{}, err
 	}
-	proxy.Credentials = CredentialSet{values: credentials}
+	proxy.Credentials = NewCredentialSet(credentials)
 	return proxy, nil
 }
 

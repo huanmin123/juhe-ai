@@ -72,6 +72,8 @@ type Handler struct {
 	Now        func() time.Time
 }
 
+type ResponseDispositionResolver func(statusCode int, body []byte) (gatewayretry.ResponseDisposition, error)
+
 type Input struct {
 	Context             context.Context
 	Dispatch            gatewaydispatch.Result
@@ -83,6 +85,7 @@ type Input struct {
 	InitialCommit       codexresponses.CommitState
 	RelayOptions        gatewaystreamrelay.Options
 	ResponseDisposition gatewayretry.ResponseDisposition
+	DispositionResolver ResponseDispositionResolver
 	ResponsePolicy      ResponsePolicyFacts
 }
 
@@ -183,6 +186,15 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 		return h.failure(input, StateFailedBeforeCommit, status, 0, nil, err, failure.signal, failure.attribution, failure.auditOutcome, failure.code, failure.message, failure.retryAllowed)
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		if input.DispositionResolver != nil {
+			input.ResponseDisposition, err = input.DispositionResolver(status, raw)
+			if err != nil {
+				return h.failure(input, StateFailedBeforeCommit, status, int64(len(raw)), raw, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "response_disposition_resolution_failed", "响应 disposition 解析失败", false)
+			}
+			if err := validateResponseDisposition(input.ResponseDisposition); err != nil {
+				return h.failure(input, StateFailedBeforeCommit, status, int64(len(raw)), raw, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "response_disposition_invalid", "响应 disposition 无效", false)
+			}
+		}
 		if input.ResponseDisposition != gatewayretry.ResponseDispositionExplicitPolicy {
 			return h.forwardUpstreamFailure(input, status, raw)
 		}
@@ -272,6 +284,15 @@ func (h Handler) handleStream(input Input) (Result, error) {
 		if err != nil {
 			failure := classifyBufferedReadFailure(err)
 			return h.failure(input, StateFailedBeforeCommit, status, 0, nil, err, failure.signal, failure.attribution, failure.auditOutcome, failure.code, failure.message, failure.retryAllowed)
+		}
+		if input.DispositionResolver != nil {
+			input.ResponseDisposition, err = input.DispositionResolver(status, raw)
+			if err != nil {
+				return h.failure(input, StateFailedBeforeCommit, status, int64(len(raw)), raw, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "response_disposition_resolution_failed", "响应 disposition 解析失败", false)
+			}
+			if err := validateResponseDisposition(input.ResponseDisposition); err != nil {
+				return h.failure(input, StateFailedBeforeCommit, status, int64(len(raw)), raw, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "response_disposition_invalid", "响应 disposition 无效", false)
+			}
 		}
 		if input.ResponseDisposition != gatewayretry.ResponseDispositionExplicitPolicy {
 			return h.forwardUpstreamFailure(input, status, raw)
