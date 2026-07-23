@@ -25,6 +25,7 @@
 - 本批已通过目标包 race、vet、协议依赖测试和 `git diff --check`。这只是网关传输核心，不包含 HTTP listener、上游 dial / proxy / SSRF policy、retry planner 接线、协议 inspector 实例化、usage/audit/operation queue 写入、真实 upstream smoke、owner allowlist 或生产切流；因此不计为 gateway production owner 接管，也不删除 Node gateway。
 - 本批完成标准：核心包可独立导入；凭据、URL、header、body、取消、背压、超时、终态和首字节后重试边界均有测试；最新 master 已合入开发分支；配套迁移记录已更新。下一批应把 `gatewayupstream` 与已有 protocol inspector / retry / candidate 组合为可测试的 Go HTTP dispatch seam，再补真实依赖 smoke，仍不提前切 owner。
 - dispatch seam 进展：新增 `internal/modules/gatewaydispatch`，将一次已选候选交给注入的 HTTP client，保留完整 gateway definition，提供有界 non-stream body 读取、可识别的 read/close error 和 response-body-to-relay 适配。该批补齐 transport error、非 2xx 透传、body 超限、close error、HTTP status handoff 和 body close 回归；仍未注册生产 listener、proxy/SSRF policy、retry/candidate/quota 组合或任何 gateway owner。
+- 最新 Node 漂移审计：远程 `master=f16aab65e` 已完成 Codex Responses firewall / history self-heal 的 Node 纵切面（contract registry、provenance、safe repair、strict intercept、account policy、历史 ID sanitizer、usage/audit/account explanation）。Go 现有 Responses parser 只覆盖终态/usage，尚无同等 contract registry；本轮不照搬 Node 账户字段或 SQLite sanitizer，已在 W10 记录为下一批 protocol contract blocker，Node firewall owner 和生产切流保持不变。
 
 ## 多轮批量迁移规则（2026-07-20）
 
