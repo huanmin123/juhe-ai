@@ -68,7 +68,7 @@ func TestHTTPExecutorTransparentForUnmatchedUpstreamFailure(t *testing.T) {
 		Dispatcher: dispatcher, Handler: gatewayresponse.Handler{Dispatcher: dispatcher},
 		Prepare: func(_ context.Context, attempt Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{
-				Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { written = string(body); return len(body), nil }), ResponseDisposition: gatewayretry.ResponseDispositionExplicitPolicy,
+				Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { written = string(body); return len(body), nil }),
 			}, nil
 		},
 	}
