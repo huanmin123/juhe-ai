@@ -51,12 +51,19 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"accounts.authorization_instance_owner_system_account_id = account_authorizations.resource_owner_system_account_id",
 		"source_accounts.deleted_at IS NULL",
 		"source_accounts.schedulable = true",
-		"ORDER BY group_accounts.local_fallback_enabled ASC",
+		"FROM juhe_business.account_supported_models AS supported_models",
+		"supported_models.account_id = COALESCE(source_accounts.id, accounts.id)",
+		"FROM juhe_business.account_model_mappings AS model_mappings",
+		"model_mappings.source_model = $9::text",
+		"model_mappings.source_endpoint_family = $10::text",
+		"model_mappings.upstream_model <> model_mappings.source_model",
+		"mapped_models.model = model_mappings.upstream_model",
+		"group_accounts.local_fallback_enabled ASC",
 		"group_accounts.local_super_priority_enabled DESC",
 		"group_accounts.local_priority ASC",
 		"group_accounts.created_at ASC",
 		"group_accounts.account_id ASC",
-		"LIMIT $9",
+		"LIMIT $11",
 	} {
 		if !strings.Contains(listGatewayAccountCandidatesSQL, fragment) {
 			t.Fatalf("candidate SQL missing %q", fragment)

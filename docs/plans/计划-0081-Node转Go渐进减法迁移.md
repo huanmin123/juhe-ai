@@ -948,3 +948,14 @@
 - 新增 `juhe-ai-maintenance stats-schema-contract-preflight`，只读目标 PostgreSQL `information_schema.columns`，按 account-usage/AI performance、stats overview、system metrics、table monitor 四个 feature 校验 Go reader 当前实际读取的 13 张唯一 `juhe_stats` 表、14 组 feature-relation 依赖及所需列。缺表、缺列或检查不可用均以稳定 JSON 和非零退出 fail-closed，底层数据库错误不写入结果。
 - 门禁固定输出 `contractVersion=2` 和 `writerOwner=node`。本批不实现生产 writer、不运行 schema reconcile、不创建 migration、不修改 owner manifest，也不复用或改写已发布的 `000070`；后续 migration 必须从真实 catalog 派生下一连续版本。这是为了避免请求进程变成第二 schema owner，并保留 Node `stats-worker` 在共存期的唯一写入职责。
 - 部署前必须先由统一 schema owner 合并 fresh Goose 所需表与索引，再启动 Node writer、执行本门禁和真实 writer-reader / EXPLAIN smoke。reader contract 通过只证明关系与列兼容，不证明数据 freshness、Node worker 活跃、Go worker 接管或 Node 可删除。
+
+## 2026-07-23 gatewaycandidatewindow 批量迁移计划结果
+
+- [x] 完成单次 512 候选扫描、模型/endpoint 感知排序和无 OFFSET 有界查询。
+- [x] 完成 256 批量 hydration 组合契约、失败候选补位、最终 256 上限和固定诊断字段。
+- [x] 完成模型匹配、fallback/super/priority 业务桶、同桶质量排序和 name/id 稳定排序。
+- [x] 完成 hydrator 返回重复/未知账户的 fail-closed 协议检查；公开候选结构不携带明文凭据。
+- [ ] 后续接入 PostgreSQL 批量凭据/模型/代理/API-key runtime/新鲜 quality hydrator，并接到账户策略、dispatch revision/circuit 和真实请求循环。
+- [ ] 完成真实 PostgreSQL/Redis/upstream smoke、listener canary、owner manifest 切换和 Node gateway 删除门禁。
+
+本轮仍按第一波快速迁移规则执行：未在每个文件修改后单独编译或测试，全部代码与文档完成后统一验证；后续轮次再逐模块反复对照 Node 和真实依赖。

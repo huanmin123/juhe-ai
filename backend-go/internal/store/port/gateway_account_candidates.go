@@ -39,6 +39,8 @@ type GatewayAccountCandidateListInput struct {
 	Access             GatewayGroupAccess
 	Now                time.Time
 	IncludeUnavailable bool
+	RequestedModel     string
+	EndpointFamily     string
 	Limit              int
 }
 

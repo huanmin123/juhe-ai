@@ -174,9 +174,58 @@ WHERE group_accounts.group_id = $1::text
       AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
     )
   )
-ORDER BY group_accounts.local_fallback_enabled ASC,
+  AND (
+    $9::text = ''
+    OR EXISTS (
+      SELECT 1 FROM juhe_business.account_supported_models AS supported_models
+      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND supported_models.model = $9::text
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM juhe_business.account_supported_models AS supported_models
+      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+    )
+    OR EXISTS (
+      SELECT 1 FROM juhe_business.account_model_mappings AS model_mappings
+      WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND model_mappings.enabled = true
+        AND model_mappings.source_model = $9::text
+        AND model_mappings.upstream_model <> model_mappings.source_model
+        AND ($10::text = '' OR model_mappings.source_endpoint_family = $10::text)
+        AND EXISTS (
+          SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+          WHERE mapped_models.account_id = model_mappings.account_id
+            AND mapped_models.model = model_mappings.upstream_model
+        )
+    )
+  )
+ORDER BY CASE
+    WHEN $9::text = '' THEN 0
+    WHEN EXISTS (
+      SELECT 1
+      FROM juhe_business.account_supported_models AS supported_models
+      WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND supported_models.model = $9::text
+    ) THEN 0
+    WHEN EXISTS (
+      SELECT 1
+      FROM juhe_business.account_model_mappings AS model_mappings
+      WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND model_mappings.enabled = true
+        AND model_mappings.source_model = $9::text
+        AND model_mappings.upstream_model <> model_mappings.source_model
+        AND ($10::text = '' OR model_mappings.source_endpoint_family = $10::text)
+        AND EXISTS (
+          SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+          WHERE mapped_models.account_id = model_mappings.account_id
+            AND mapped_models.model = model_mappings.upstream_model
+        )
+    ) THEN 1
+    ELSE 2
+  END ASC,
+  group_accounts.local_fallback_enabled ASC,
   group_accounts.local_super_priority_enabled DESC,
   group_accounts.local_priority ASC,
   group_accounts.created_at ASC,
   group_accounts.account_id ASC
-LIMIT $9`
+LIMIT $11`

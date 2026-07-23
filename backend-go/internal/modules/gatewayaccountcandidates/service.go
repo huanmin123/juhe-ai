@@ -23,6 +23,8 @@ type ProjectInput struct {
 	GroupID            string
 	SystemAccountID    string
 	IncludeUnavailable bool
+	RequestedModel     string
+	EndpointFamily     string
 }
 
 type Projection struct {
@@ -72,6 +74,8 @@ func (s *Service) Project(ctx context.Context, input ProjectInput) (Projection, 
 		Access:             access,
 		Now:                now,
 		IncludeUnavailable: input.IncludeUnavailable,
+		RequestedModel:     strings.TrimSpace(input.RequestedModel),
+		EndpointFamily:     strings.TrimSpace(input.EndpointFamily),
 		Limit:              port.GatewayAccountCandidateScanLimit,
 	})
 	if err != nil {
