@@ -17,10 +17,11 @@ const (
 )
 
 var (
-	ErrJSONBodyTooLarge    = errors.New("Codex Responses JSON body 超过限制")
-	ErrJSONInvalid         = errors.New("Codex Responses JSON 无效")
-	ErrJSONUnsupportedMode = errors.New("Codex Responses JSON guard mode 无效")
-	ErrJSONProvenance      = errors.New("Codex Responses JSON guard provenance 无效")
+	ErrJSONBodyTooLarge        = errors.New("Codex Responses JSON body 超过限制")
+	ErrJSONInvalid             = codexresponses.ErrInvalidJSON
+	ErrJSONUnsupportedMode     = errors.New("Codex Responses JSON guard mode 无效")
+	ErrJSONProvenance          = errors.New("Codex Responses JSON guard provenance 无效")
+	ErrJSONUnsupportedEnvelope = errors.New("Codex Responses JSON envelope 无效")
 )
 
 type JSONEnvelopeKind string
@@ -64,6 +65,9 @@ func InspectJSON(raw []byte, options JSONOptions) (JSONResult, error) {
 	}
 	if options.Provenance != codexresponses.ProvenanceRawUpstream && options.Provenance != codexresponses.ProvenanceGatewayBridge && options.Provenance != codexresponses.ProvenanceRequestHistory {
 		return JSONResult{}, fmt.Errorf("%w: %s", ErrJSONProvenance, options.Provenance)
+	}
+	if options.EnvelopeKind != JSONEnvelopeResponse && options.EnvelopeKind != JSONEnvelopeCompact {
+		return JSONResult{}, fmt.Errorf("%w: %s", ErrJSONUnsupportedEnvelope, options.EnvelopeKind)
 	}
 	if int64(len(raw)) > options.MaxBytes {
 		return JSONResult{}, fmt.Errorf("%w: limit=%d", ErrJSONBodyTooLarge, options.MaxBytes)

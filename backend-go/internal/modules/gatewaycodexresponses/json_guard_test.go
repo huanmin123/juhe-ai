@@ -173,4 +173,12 @@ func TestInspectJSONRejectsMalformedAndInvalidConfiguration(t *testing.T) {
 	if !errors.Is(err, ErrJSONProvenance) {
 		t.Fatalf("provenance error = %v", err)
 	}
+	_, err = InspectJSON([]byte(`{"object":"response","output":[]}`), JSONOptions{EnvelopeKind: "future", Provenance: codexresponses.ProvenanceRawUpstream})
+	if !errors.Is(err, ErrJSONUnsupportedEnvelope) {
+		t.Fatalf("envelope kind error = %v", err)
+	}
+	_, err = InspectJSON([]byte(`{"object":"response"`), JSONOptions{Provenance: codexresponses.ProvenanceRawUpstream})
+	if !errors.Is(err, codexresponses.ErrInvalidJSON) {
+		t.Fatalf("shared invalid JSON sentinel missing = %v", err)
+	}
 }
