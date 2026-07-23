@@ -427,7 +427,7 @@ func mapAPIKeyRuntime(keys []candidateAPIKey, states []port.ManagementAccountAPI
 			continue
 		}
 		result = append(result, APIKeyRuntime{
-			KeyFingerprint: key.fingerprint, KeyIndex: state.KeyIndex, Status: state.Status,
+			KeyFingerprint: key.fingerprint, KeyIndex: key.index, Status: state.Status,
 			CooldownUntil: state.CooldownUntil, NextProbeAt: state.NextProbeAt,
 		})
 	}

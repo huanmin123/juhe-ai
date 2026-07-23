@@ -24,8 +24,6 @@ type HTTPExecutor struct {
 	Dispatcher gatewaydispatch.Dispatcher
 	Handler    gatewayresponse.Handler
 	Prepare    PrepareHTTPAttempt
-	PolicySettings PolicySettings
-	Now            func() time.Time
 }
 
 func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResult, error) {
@@ -43,12 +41,15 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	responseInput.Context = ctx
 	responseInput.Dispatch = dispatchResult
+	responseInput.ResponsePolicy.HasAlternativeAPIKeys = responseInput.ResponsePolicy.HasAlternativeAPIKeys || attempt.HasAlternativeKeys
+	preparedResolver := responseInput.DispositionResolver
+	var policyDecision *PolicyDecision
 	responseInput.DispositionResolver = func(statusCode int, body []byte) (gatewayretry.ResponseDisposition, error) {
 		errorCode, errorType, message := extractErrorFacts(string(body))
 		rawRules, _ := attempt.Candidate.Credentials.Value("error_handling_rules")
-		now := time.Now()
-		if e.Now != nil {
-			now = e.Now()
+		now := attempt.PolicyNow
+		if now.IsZero() {
+			now = time.Now()
 		}
 		decision, err := DecidePolicy(rawRules, FailureFacts{
 			StatusCode: statusCode,
@@ -56,14 +57,19 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 			ErrorType:  errorType,
 			BodyText:   boundedText(string(body), 64<<10),
 			Message:    message,
-		}, e.PolicySettings, now)
+		}, attempt.PolicySettings, now)
 		if err != nil {
 			return gatewayretry.ResponseDispositionUnspecified, err
 		}
-		if decision.Action == PolicyActionNone {
-			return gatewayretry.ResponseDispositionCompleteTransparent, nil
+		if decision.Action != PolicyActionNone {
+			copy := decision
+			policyDecision = &copy
+			return gatewayretry.ResponseDispositionExplicitPolicy, nil
 		}
-		return gatewayretry.ResponseDispositionExplicitPolicy, nil
+		if preparedResolver != nil {
+			return preparedResolver(statusCode, body)
+		}
+		return gatewayretry.ResponseDispositionCompleteTransparent, nil
 	}
 	handled, handleErr := e.Handler.Handle(responseInput)
 	if handled.State == gatewayresponse.StateSucceeded {
@@ -88,26 +94,40 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		Failure:          FailureFacts{StatusCode: failure.StatusCode, ErrorCode: boundedText(errorCode, 256), ErrorType: boundedText(errorType, 256), BodyText: boundedText(bodyText, 64<<10), Message: boundedText(message, 1000)},
 		Usage:            handled.Handoff.Usage,
 		Audit:            handled.Handoff.Audit,
+		PolicyDecision:   policyDecision,
 	}, handleErr
 }
 
 func extractErrorFacts(body string) (string, string, string) {
+	body = boundedText(body, 64<<10)
 	var value map[string]any
 	if json.Unmarshal([]byte(body), &value) != nil {
 		return "", "", ""
 	}
 	find := func(key string) string {
-		if item, ok := value[key].(string); ok {
-			return strings.TrimSpace(item)
-		}
 		if nested, ok := value["error"].(map[string]any); ok {
-			if item, ok := nested[key].(string); ok {
-				return strings.TrimSpace(item)
+			if item := scalarText(nested[key]); item != "" {
+				return item
 			}
 		}
+		return scalarText(value[key])
+	}
+	code := find("code")
+	if code == "" {
+		code = find("status")
+	}
+	return code, find("type"), find("message")
+}
+
+func scalarText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		return fmt.Sprintf("%g", typed)
+	default:
 		return ""
 	}
-	return find("code"), find("type"), find("message")
 }
 
 var _ AttemptExecutor = HTTPExecutor{}

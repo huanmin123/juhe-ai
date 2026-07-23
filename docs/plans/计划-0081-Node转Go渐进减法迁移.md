@@ -975,7 +975,7 @@
 
 - [x] 新增 bounded typed policy normalize/decision：显式规则匹配才执行 retry-next/cooldown/disable，普通失败不隐式改账户状态。
 - [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、跨账户 retry、mutation applier、max attempts、wall/first-byte budget、commit/cancel fence 和 usage/audit handoff。
-- [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，并把 typed retry/commit/error/usage/audit 返回 attempt loop。
+- [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，nested protocol facts 与唯一 `PolicyDecision` handoff 一并返回；每次 attempt summary 保留 usage/audit，避免成功-after-retry 覆盖前次终态记录。
 - [x] 新增 policy 与 loop 定向测试，覆盖规则优先级、错误码/类型/关键字、reset、未命中透明转发、命中显式策略、单账户最多两个 API Key、key 顺序、策略切换、终态提交、预算和取消。
 - [ ] 接入跨请求 round-robin / weighted-round-robin 共享游标；本轮只完成请求级双 key 放大上限，避免把未迁移的 Redis runtime 假装成已完成。
 - [ ] 下一批接账户状态 PostgreSQL writer、dispatch revision、Redis circuit/hot quality、生产请求 preparation/listener 和 owner manifest。

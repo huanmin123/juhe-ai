@@ -96,10 +96,32 @@ func TestHTTPExecutorUsesExplicitPolicyOnlyWhenRuleMatches(t *testing.T) {
 	}
 }
 
+func TestHTTPExecutorMarksCredentialFailureAsKeyScopedWhenAlternativeExists(t *testing.T) {
+	client := doerStub{response: &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"code":"invalid_api_key","message":"bad key"}}`))}}
+	dispatcher := gatewaydispatch.Dispatcher{Client: client}
+	credential, _ := gatewayupstream.NewCredential("sk-test", gatewayupstream.CredentialOptions{})
+	candidate := gatewaycandidate("a")
+	candidate.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"status_codes": []any{float64(401)}, "error_codes": []any{"invalid_api_key"}})}})
+	executor := HTTPExecutor{
+		Dispatcher: dispatcher, Handler: gatewayresponse.Handler{Dispatcher: dispatcher},
+		Prepare: func(_ context.Context, attempt Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
+			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil })}, nil
+		},
+	}
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, HasAlternativeKeys: true})
+	if err == nil || !result.RetryAllowed || !result.KeyScopedFailure || result.Committed {
+		t.Fatalf("result = %+v err=%v", result, err)
+	}
+}
+
 func TestExtractErrorFactsSupportsNestedProtocolPayload(t *testing.T) {
 	code, errorType, message := extractErrorFacts(`{"type":"error","error":{"type":"overloaded_error","code":"rate_limit","message":"busy"}}`)
-	if code != "rate_limit" || errorType != "error" || message != "busy" {
+	if code != "rate_limit" || errorType != "overloaded_error" || message != "busy" {
 		t.Fatalf("facts = %q/%q/%q", code, errorType, message)
+	}
+	code, errorType, message = extractErrorFacts(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota"}}`)
+	if code != "429" || errorType != "" || message != "quota" {
+		t.Fatalf("gemini facts = %q/%q/%q", code, errorType, message)
 	}
 }
 

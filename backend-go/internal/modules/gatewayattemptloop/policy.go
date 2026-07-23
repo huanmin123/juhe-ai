@@ -34,7 +34,7 @@ type FailureFacts struct {
 	StatusCode int
 	ErrorCode  string
 	ErrorType  string
-	BodyText   string
+	BodyText   string `json:"-"`
 	Message    string
 }
 

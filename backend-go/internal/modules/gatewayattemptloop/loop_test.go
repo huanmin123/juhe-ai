@@ -13,7 +13,7 @@ import (
 func TestRunRetriesNextAPIKeyBeforeNextAccount(t *testing.T) {
 	executor := &executorStub{results: []AttemptResult{
 		{RetryAllowed: true, KeyScopedFailure: true, Failure: FailureFacts{StatusCode: 429}},
-		{Success: true},
+		{Success: true, Committed: true},
 	}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: 10 * time.Second})
 	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{1, 3}), apiKeyCandidate("b", []int{0})}})
@@ -29,7 +29,7 @@ func TestRunExplicitRetryNextSkipsRemainingKeys(t *testing.T) {
 	executor := &executorStub{results: []AttemptResult{{
 		RetryAllowed: true, KeyScopedFailure: true,
 		Failure: FailureFacts{StatusCode: 429, BodyText: "quota"},
-	}, {Success: true}}}
+	}, {Success: true, Committed: true}}}
 	first := apiKeyCandidate("a", []int{0, 1})
 	first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "retry_next"})}})
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
@@ -42,7 +42,7 @@ func TestRunExplicitRetryNextSkipsRemainingKeys(t *testing.T) {
 func TestRunAppliesCooldownThenAdvancesAccount(t *testing.T) {
 	executor := &executorStub{results: []AttemptResult{{
 		RetryAllowed: true, Failure: FailureFacts{StatusCode: 429, ErrorCode: "rate_limit"},
-	}, {Success: true}}}
+	}, {Success: true, Committed: true}}}
 	applier := &applierStub{}
 	first := oauthCandidate("a")
 	first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{
@@ -94,7 +94,7 @@ func TestRunCapsAPIKeyAttemptsPerCandidate(t *testing.T) {
 
 func TestRunPropagatesBudgetsAndContextTerminalStates(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
-	executor := &executorStub{results: []AttemptResult{{Success: true}}}
+	executor := &executorStub{results: []AttemptResult{{Success: true, Committed: true}}}
 	service := newTestService(t, executor, nil, Config{WallTimeout: 30 * time.Second, FirstByteTimeout: 7 * time.Second}).WithNow(func() time.Time { return now })
 	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}})
 	if err != nil || result.Outcome != OutcomeSucceeded || !executor.attempts[0].Budget.WallDeadline.Equal(now.Add(30*time.Second)) || executor.attempts[0].Budget.FirstByteTimeout != 7*time.Second {

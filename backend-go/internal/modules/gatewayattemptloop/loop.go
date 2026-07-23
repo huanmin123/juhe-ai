@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	DefaultMaxAttempts = 16
-	MaxAttempts        = 512
+	DefaultMaxAttempts            = 16
+	MaxAttempts                   = 512
 	MaxAPIKeyAttemptsPerCandidate = 2
 )
 
@@ -42,6 +42,8 @@ type Attempt struct {
 	APIKeyIndex        int
 	HasAlternativeKeys bool
 	Budget             AttemptBudget
+	PolicySettings     PolicySettings
+	PolicyNow          time.Time
 }
 
 type AttemptResult struct {
@@ -52,6 +54,7 @@ type AttemptResult struct {
 	Failure          FailureFacts
 	Usage            gatewayusage.TerminalFacts
 	Audit            gatewayaudit.TerminalInput
+	PolicyDecision   *PolicyDecision
 }
 
 type AttemptExecutor interface {
@@ -79,6 +82,8 @@ type AttemptSummary struct {
 	PolicyAction   PolicyAction
 	StatusCode     int
 	ErrorCode      string
+	Usage          gatewayusage.TerminalFacts
+	Audit          gatewayaudit.TerminalInput
 }
 
 type Config struct {
@@ -141,6 +146,9 @@ func (s *Service) Run(input Input) (Result, error) {
 	if input.Context == nil {
 		return Result{}, fmt.Errorf("gateway attempt context is required")
 	}
+	if len(input.Candidates) > gatewaycandidatewindow.FinalLimit {
+		return Result{}, fmt.Errorf("gateway attempt candidates exceed limit: %d", gatewaycandidatewindow.FinalLimit)
+	}
 	startedAt := s.now().UTC()
 	deadline := startedAt.Add(s.config.WallTimeout)
 	if current, ok := input.Context.Deadline(); ok && current.Before(deadline) {
@@ -169,7 +177,8 @@ func (s *Service) Run(input Input) (Result, error) {
 			attempt := Attempt{
 				Index: attemptIndex, CandidateIndex: candidateIndex, Candidate: candidate,
 				APIKeyIndex: keyIndex, HasAlternativeKeys: keyOffset+1 < len(keyIndices),
-				Budget: AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout},
+				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout},
+				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(),
 			}
 			attemptResult, attemptErr := s.executor.Execute(ctx, attempt)
 			if validationErr := validateAttemptResult(attemptResult, attemptErr); validationErr != nil {
@@ -180,6 +189,7 @@ func (s *Service) Run(input Input) (Result, error) {
 				APIKeyIndex: keyIndex, Success: attemptResult.Success, Committed: attemptResult.Committed,
 				RetryAllowed: attemptResult.RetryAllowed, StatusCode: attemptResult.Failure.StatusCode,
 				ErrorCode: boundedText(attemptResult.Failure.ErrorCode, 256),
+				Usage:     attemptResult.Usage, Audit: attemptResult.Audit,
 			}
 			attemptIndex++
 			result.Attempts = append(result.Attempts, summary)
@@ -198,7 +208,9 @@ func (s *Service) Run(input Input) (Result, error) {
 
 			decision := PolicyDecision{Action: PolicyActionNone}
 			var policyErr error
-			if attemptResult.Failure.StatusCode >= 100 {
+			if attemptResult.PolicyDecision != nil {
+				decision = *attemptResult.PolicyDecision
+			} else if attemptResult.Failure.StatusCode >= 100 {
 				decision, policyErr = s.decide(candidate, attemptResult.Failure, s.now())
 			}
 			if policyErr != nil {
@@ -209,7 +221,9 @@ func (s *Service) Run(input Input) (Result, error) {
 				if s.applier == nil {
 					return Result{}, fmt.Errorf("gateway account policy applier is required for %s", decision.Action)
 				}
-				if err := s.applier.Apply(ctx, PolicyMutation{Candidate: candidate, Decision: decision, Failure: attemptResult.Failure}); err != nil {
+				mutationFailure := attemptResult.Failure
+				mutationFailure.BodyText = ""
+				if err := s.applier.Apply(ctx, PolicyMutation{Candidate: candidate, Decision: decision, Failure: mutationFailure}); err != nil {
 					return Result{}, fmt.Errorf("apply gateway account policy: %w", err)
 				}
 			}
@@ -237,6 +251,9 @@ func validateAttemptResult(result AttemptResult, err error) error {
 	}
 	if result.Success && result.RetryAllowed {
 		return fmt.Errorf("successful gateway attempt cannot be retryable")
+	}
+	if result.Success && !result.Committed {
+		return fmt.Errorf("successful gateway attempt must be committed")
 	}
 	if result.Committed && result.RetryAllowed {
 		return fmt.Errorf("committed gateway attempt cannot be retryable")
@@ -326,6 +343,10 @@ func boundedText(value string, limit int) string {
 
 func cloneAttemptResult(value AttemptResult) *AttemptResult {
 	copy := value
+	if value.PolicyDecision != nil {
+		decision := *value.PolicyDecision
+		copy.PolicyDecision = &decision
+	}
 	copy.Failure.BodyText = boundedText(copy.Failure.BodyText, 64<<10)
 	copy.Failure.Message = boundedText(copy.Failure.Message, 1000)
 	return &copy

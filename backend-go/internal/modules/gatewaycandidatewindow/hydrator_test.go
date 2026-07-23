@@ -158,6 +158,10 @@ func TestAPIKeyPoolPreservesOriginalIndexAndDoesNotFallback(t *testing.T) {
 	if len(runtime) != 1 || runtime[0].KeyIndex != 1 {
 		t.Fatalf("runtime = %+v", runtime)
 	}
+	runtime = mapAPIKeyRuntime(keys, []port.ManagementAccountAPIKeyRuntimeState{{KeyFingerprint: keys[0].fingerprint, KeyIndex: 99, Status: "active"}})
+	if runtime[0].KeyIndex != 1 {
+		t.Fatalf("stale runtime index replaced credential index: %+v", runtime)
+	}
 }
 
 func TestHydrateProxyAllowsEmptyPasswordAndNormalizesSocks5(t *testing.T) {
