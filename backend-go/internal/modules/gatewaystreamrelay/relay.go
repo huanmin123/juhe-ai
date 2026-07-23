@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/gatewayaudit"
+	"juhe-ai/backend-go/internal/modules/gatewaydeadline"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
 )
 
@@ -116,6 +117,7 @@ type Options struct {
 	StatusCode       int
 	HadFailedAttempt bool
 	Now              func() time.Time
+	OnFirstByte      func()
 }
 
 type State string
@@ -185,7 +187,6 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 
 	totalCtx, cancelTotal := context.WithTimeoutCause(parent, limits.TotalTimeout, ErrTotalDeadline)
 	defer cancelTotal()
-
 	buffer := make([]byte, limits.BufferBytes)
 	result := Result{}
 	for {
@@ -255,7 +256,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 					return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 				}
 				semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
-				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now)
+				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now, options.OnFirstByte)
 				notifyCommit(options.Inspector, result)
 				if writeFailure != nil {
 					return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -283,7 +284,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 						return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 					}
 					if len(tail) > 0 {
-						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now)
+						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now, options.OnFirstByte)
 						notifyCommit(options.Inspector, result)
 						if writeFailure != nil {
 							return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -328,7 +329,7 @@ func inspectorFailure(err error, code, message string) failure {
 	}
 }
 
-func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time) *failure {
+func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time, onFirstByte func()) *failure {
 	for offset := 0; offset < len(chunk); {
 		writeCtx, cancelWrite := context.WithTimeoutCause(parent, idleTimeout, ErrIdleDeadline)
 		n, err := sink.Write(writeCtx, chunk[offset:])
@@ -342,6 +343,7 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 			}
 		}
 		if n > 0 {
+			firstByte := !result.TransportCommitted
 			var committedAt time.Time
 			if !result.TransportCommitted || (semanticOutput && !result.SemanticCommitted) {
 				committedAt = now()
@@ -350,6 +352,9 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 				result.TransportCommitted = true
 				result.FirstByteSent = true
 				result.FirstByteAt = committedAt
+			}
+			if firstByte && onFirstByte != nil {
+				onFirstByte()
 			}
 			if semanticOutput && !result.SemanticCommitted {
 				result.SemanticCommitted = true
@@ -510,6 +515,11 @@ func makeHandoff(result Result, options Options, startedAt time.Time, success bo
 
 func classifyContextFailure(cause error) failure {
 	switch {
+	case errors.Is(cause, gatewaydeadline.ErrFirstByteDeadline):
+		return failure{
+			err: gatewaydeadline.ErrFirstByteDeadline, code: "first_byte_timeout", message: gatewaydeadline.ErrFirstByteDeadline.Error(), phase: "upstream",
+			attribution: gatewayusage.FailureAttributionAccountUpstream, audit: gatewayaudit.OutcomeStreamFailed,
+		}
 	case errors.Is(cause, ErrIdleDeadline):
 		return failure{
 			err: ErrIdleDeadline, code: "stream_idle_timeout", message: "网关流式中转空闲超时", phase: "stream",

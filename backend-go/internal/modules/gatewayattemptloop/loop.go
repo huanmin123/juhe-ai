@@ -11,6 +11,7 @@ import (
 	"juhe-ai/backend-go/internal/gatewayaudit"
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 const (
@@ -32,8 +33,9 @@ const (
 )
 
 type AttemptBudget struct {
-	WallDeadline     time.Time
-	FirstByteTimeout time.Duration
+	WallDeadline      time.Time
+	FirstByteTimeout  time.Duration
+	FirstByteDeadline time.Time
 }
 
 type Attempt struct {
@@ -96,9 +98,10 @@ type Config struct {
 }
 
 type Input struct {
-	Context       context.Context
-	Candidates    []gatewaycandidatewindow.Candidate
-	ReplayAllowed bool
+	Context    context.Context
+	Candidates []gatewaycandidatewindow.Candidate
+	Request    protocolgateway.RequestShape
+	Profile    *protocolgateway.Profile
 }
 
 type Result struct {
@@ -152,12 +155,13 @@ func (s *Service) Run(input Input) (Result, error) {
 	if len(input.Candidates) > gatewaycandidatewindow.FinalLimit {
 		return Result{}, fmt.Errorf("gateway attempt candidates exceed limit: %d", gatewaycandidatewindow.FinalLimit)
 	}
+	replayPolicy := protocolgateway.ClassifyReplay(input.Request, input.Profile)
 	startedAt := s.now().UTC()
 	deadline := startedAt.Add(s.config.WallTimeout)
 	if current, ok := input.Context.Deadline(); ok && current.Before(deadline) {
 		deadline = current
 	}
-	ctx, cancel := context.WithTimeout(input.Context, s.config.WallTimeout)
+	ctx, cancel := context.WithDeadline(input.Context, deadline)
 	defer cancel()
 	result := Result{StartedAt: startedAt, WallDeadline: deadline, Attempts: make([]AttemptSummary, 0, min(s.config.MaxAttempts, len(input.Candidates)))}
 	if err := ctx.Err(); err != nil {
@@ -182,17 +186,22 @@ func (s *Service) Run(input Input) (Result, error) {
 			if err := ctx.Err(); err != nil {
 				return s.finish(result, contextOutcome(err), nil, err), nil
 			}
+			attemptStartedAt := s.now()
+			firstByteDeadline := attemptStartedAt.Add(s.config.FirstByteTimeout)
+			if deadline.Before(firstByteDeadline) {
+				firstByteDeadline = deadline
+			}
 			attempt := Attempt{
 				Index: attemptIndex, CandidateIndex: candidateIndex, Candidate: candidate,
 				APIKeyIndex: keyIndex, HasAlternativeKeys: keyOffset+1 < len(keyIndices),
-				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout},
-				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: input.ReplayAllowed,
+				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout, FirstByteDeadline: firstByteDeadline},
+				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: replayPolicy.Allowed,
 			}
 			attemptResult, attemptErr := s.executor.Execute(ctx, attempt)
 			if validationErr := validateAttemptResult(attemptResult, attemptErr); validationErr != nil {
 				return Result{}, validationErr
 			}
-			if !input.ReplayAllowed {
+			if !replayPolicy.Allowed {
 				attemptResult.RetryAllowed = false
 			}
 			summary := AttemptSummary{
@@ -239,6 +248,9 @@ func (s *Service) Run(input Input) (Result, error) {
 				}
 			}
 			if decision.Action == PolicyActionRetryNext || decision.Action == PolicyActionCooldown || decision.Action == PolicyActionDisable {
+				if !replayPolicy.Allowed {
+					return s.finish(result, OutcomeFailed, &attemptResult, attemptErr), nil
+				}
 				break
 			}
 			if attemptResult.KeyScopedFailure && attemptResult.RetryAllowed && keyOffset+1 < len(keyIndices) {

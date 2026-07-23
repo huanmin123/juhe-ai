@@ -98,9 +98,9 @@ func (d Dispatcher) ReadBody(result Result) ([]byte, error) {
 	}
 	if readErr != nil {
 		if closeErr != nil {
-			return nil, errors.Join(fmt.Errorf("%w: %v", ErrResponseBodyRead, readErr), closeFailure(closeErr))
+			return nil, errors.Join(fmt.Errorf("%w: %w", ErrResponseBodyRead, readErr), closeFailure(closeErr))
 		}
-		return nil, fmt.Errorf("%w: %v", ErrResponseBodyRead, readErr)
+		return nil, fmt.Errorf("%w: %w", ErrResponseBodyRead, readErr)
 	}
 	if closeErr != nil {
 		return nil, closeFailure(closeErr)

@@ -120,6 +120,10 @@ type RequestShape struct {
 	Stream              bool
 	Model               string
 	ImageGenerationHint bool
+	// StoreRequested is nil until bounded request metadata parsing proves the
+	// Responses/Chat store value. Nil and true are non-replayable for those
+	// endpoints; false permits the normal inference retry policy.
+	StoreRequested *bool
 }
 
 func (r RequestShape) Header(name string) string {

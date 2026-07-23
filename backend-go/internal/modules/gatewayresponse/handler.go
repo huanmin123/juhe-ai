@@ -16,6 +16,7 @@ import (
 
 	"juhe-ai/backend-go/internal/gatewayaudit"
 	"juhe-ai/backend-go/internal/modules/gatewaycodexresponses"
+	"juhe-ai/backend-go/internal/modules/gatewaydeadline"
 	"juhe-ai/backend-go/internal/modules/gatewaydispatch"
 	"juhe-ai/backend-go/internal/modules/gatewayretry"
 	"juhe-ai/backend-go/internal/modules/gatewaystreamrelay"
@@ -84,6 +85,7 @@ type Input struct {
 	Codex               *CodexGuard
 	InitialCommit       codexresponses.CommitState
 	RelayOptions        gatewaystreamrelay.Options
+	OnFirstByte         func()
 	ResponseDisposition gatewayretry.ResponseDisposition
 	DispositionResolver ResponseDispositionResolver
 	ResponsePolicy      ResponsePolicyFacts
@@ -244,7 +246,7 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 		result.Handoff.Usage.Usage = usage
 		return result, returnedErr
 	}
-	written, writeErr := writeAll(input.Context, input.Sink, body)
+	written, writeErr := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
 	if writeErr != nil {
 		result, returnedErr := h.failureWithGuard(input, stateForBytes(written), status, int64(len(body)), guardSummary, fmt.Errorf("%w: %v", ErrDestinationWrite, writeErr), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
 		result.BytesWritten = written
@@ -301,6 +303,7 @@ func (h Handler) handleStream(input Input) (Result, error) {
 		return h.failure(input, StateFailedBeforeCommit, status, int64(len(raw)), raw, fmt.Errorf("%w: %d", ErrUpstreamStatus, status), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionAccountUpstream, gatewayaudit.OutcomeUpstreamFailed, "upstream_http_status", "上游响应状态码表示失败", true)
 	}
 	options := input.RelayOptions
+	options.OnFirstByte = input.OnFirstByte
 	options.StatusCode = status
 	options.StartedAt = input.StartedAt
 	options.HadFailedAttempt = input.HadFailedAttempt
@@ -345,7 +348,7 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 		signal = gatewayretry.ResponseSignalProtocolContract
 		code = firstText(code, "upstream_protocol_contract")
 		message = firstText(message, "上游流式协议检查失败")
-	} else if errors.Is(err, gatewaystreamrelay.ErrMissingTerminal) || errors.Is(err, gatewaystreamrelay.ErrSourceRead) || errors.Is(err, gatewaystreamrelay.ErrIdleDeadline) || errors.Is(err, gatewaystreamrelay.ErrTotalDeadline) || errors.Is(err, gatewaydispatch.ErrResponseBodyClose) {
+	} else if errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || errors.Is(err, gatewaystreamrelay.ErrMissingTerminal) || errors.Is(err, gatewaystreamrelay.ErrSourceRead) || errors.Is(err, gatewaystreamrelay.ErrIdleDeadline) || errors.Is(err, gatewaystreamrelay.ErrTotalDeadline) || errors.Is(err, gatewaydispatch.ErrResponseBodyClose) {
 		closeOnlyCompleted := errors.Is(err, gatewaydispatch.ErrResponseBodyClose) && result.Stream != nil && result.Stream.State == gatewaystreamrelay.StateCompleted
 		if closeOnlyCompleted {
 			phase = gatewayretry.PhaseGatewayPolicy
@@ -426,7 +429,7 @@ func (h Handler) forwardUpstreamFailure(input Input, status int, body []byte) (R
 	if input.Sink == nil {
 		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, ErrSinkRequired, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_sink_missing", "响应下游 sink 缺失", false)
 	}
-	written, err := writeAll(input.Context, input.Sink, body)
+	written, err := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
 	if err != nil {
 		result, returnedErr := h.failure(input, stateForBytes(written), status, int64(len(body)), nil, fmt.Errorf("%w: %v", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
 		result.BytesWritten = written
@@ -687,7 +690,7 @@ func guardFailure(mode codexresponses.Mode) (string, string, error) {
 	return "codex_responses_protocol_blocked", "Codex Responses JSON 安全模式已阻断", ErrCodexProtocolBlocked
 }
 
-func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte) (int64, error) {
+func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte, onFirstByte func()) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -699,6 +702,9 @@ func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte) (i
 		n, err := sink.Write(ctx, body)
 		if n < 0 || n > len(body) {
 			return written, fmt.Errorf("invalid sink write count %d", n)
+		}
+		if n > 0 && written == 0 && onFirstByte != nil {
+			onFirstByte()
 		}
 		written += int64(n)
 		body = body[n:]

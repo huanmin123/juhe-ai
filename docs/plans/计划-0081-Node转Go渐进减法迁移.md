@@ -19,6 +19,13 @@
 - 进度口径：代码迁移约 `66%`，可独立验证的 Go 能力约 `61%~62%`；生产 owner 接管 `0%`（`management=node`、`public=node`、`gateway=node`、`worker=node`，Go allowlist 为空）；Node 通用减法约 `3%`，本轮 page-data 删除属于产品退场清理，不计作已开始通用 Node 删除。
 - 本轮完成标准：`origin/master` behind 为 `0`、变基冲突已裁决、工作树无未提交代码、候选提交已合入或有明确延期理由、page-data removal gate 通过、目标测试通过、计划与迁移清单同步、远端检查点推送成功。下一轮从 W9 网关准备层继续，优先把模型目录接入真实依赖和 owner 灰度证据，不扩大到 Chat 或最终 Node 删除。
 
+### 2026-07-23 attempt deadline 与 replay safety 批次
+
+- 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses/Chat 必须由请求元数据层明确证明 `store=false`，资源读取、资源 mutation、未知 GET/POST 和未解析 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
+- 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误和 client-lifecycle 重试。集中 normal/race/vet 与 diff check 通过。当前进度口径更新为：代码迁移约 `71%`，可独立验证 Go 能力约 `68%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 尚未完成：生产 request metadata -> `StoreRequested` 接线、downstream header staging/WriteHeader commit、PolicyApplier 的 target/source revision CAS 与 dispatch outbox、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；因此本批不改变 owner manifest，也不删除 Node gateway。
+
 ### 2026-07-23 网关传输核心批次
 
 - 开发分支先同步最新 `master=4d48a5d60`，再合入 `gatewayupstream` 与 `gatewaystreamrelay` 两个 Go-native 核心模块。上游构造器按候选实际资源协议生成 OpenAI / Anthropic / Gemini URL，隔离认证、hop-by-hop、代理和追踪头，复制并限制请求体，保留 context 取消与 `GetBody` 重试能力；流式 relay 使用同步读写形成背压边界，限制 64 MiB / idle / total timeout，记录首字节和语义首字节，终态检查失败或客户端取消时禁止错误重试，并产生有界 usage / audit handoff。
@@ -974,10 +981,10 @@
 ## 2026-07-23 account policy 与 candidate attempt loop 结果
 
 - [x] 新增 bounded typed policy normalize/decision：显式规则匹配才执行 retry-next/cooldown/disable，普通失败不隐式改账户状态。
-- [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、显式 replay-safe 跨账户 retry、单请求最多 4 账户、mutation applier、max attempts、wall deadline、first-byte budget 传播、commit/cancel fence 和逐次 usage/audit handoff；first-byte transport enforcement 仍待接入。
-- [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，nested protocol facts 与唯一 `PolicyDecision` handoff 一并返回；每次 attempt summary 保留 usage/audit，避免成功-after-retry 覆盖前次终态记录。
+- [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、基于 `RequestShape` 的显式 replay-safe 跨账户 retry、单请求最多 4 账户、unsafe mutation 不跨账户、mutation applier、max attempts、wall deadline、JSON/stream 共用 attempt 级 first-byte controller、commit/cancel fence 和逐次 usage/audit handoff；downstream header staging/WriteHeader owner 仍待接入。
+- [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，nested protocol facts 与唯一 `PolicyDecision` handoff 一并返回；每次 attempt summary 保留 usage/audit，避免成功-after-retry 覆盖前次终态记录；attempt 级 controller 从 dispatch 前接管真实 request context。
 - [x] 新增 policy 与 loop 定向测试，覆盖规则优先级、错误码/类型/关键字、reset、未命中透明转发、命中显式策略、单账户最多两个 API Key、key 顺序、策略切换、终态提交、预算和取消。
 - [ ] 接入跨请求 round-robin / weighted-round-robin 共享游标；本轮只完成请求级双 key 放大上限，避免把未迁移的 Redis runtime 假装成已完成。
-- [ ] 下一批接请求 replay 分类、first-byte transport enforcement、账户状态 PostgreSQL writer、dispatch revision、Redis circuit/hot quality、生产 request preparation/listener 和 owner manifest。
+- [ ] 下一批接 downstream header staging/WriteHeader owner、生产 request metadata 到 `StoreRequested` 的解析接线、账户状态 PostgreSQL writer（含 target/source revision CAS、dispatch outbox）、Redis circuit/hot quality、生产 request preparation/listener 和 owner manifest。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

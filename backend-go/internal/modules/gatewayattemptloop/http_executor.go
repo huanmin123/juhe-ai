@@ -3,14 +3,18 @@ package gatewayattemptloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"juhe-ai/backend-go/internal/gatewayaudit"
+	"juhe-ai/backend-go/internal/modules/gatewaydeadline"
 	"juhe-ai/backend-go/internal/modules/gatewaydispatch"
 	"juhe-ai/backend-go/internal/modules/gatewayresponse"
 	"juhe-ai/backend-go/internal/modules/gatewayretry"
 	"juhe-ai/backend-go/internal/modules/gatewayupstream"
+	"juhe-ai/backend-go/internal/modules/gatewayusage"
 )
 
 type PrepareHTTPAttempt func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error)
@@ -30,17 +34,33 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	if e.Prepare == nil {
 		return AttemptResult{}, fmt.Errorf("gateway http attempt prepare function is required")
 	}
-	upstreamInput, responseInput, err := e.Prepare(ctx, attempt)
+	deadline, err := gatewaydeadline.New(ctx, attempt.Budget.FirstByteDeadline)
+	if err != nil {
+		return AttemptResult{}, err
+	}
+	defer deadline.Close()
+	attemptCtx := deadline.Context()
+	upstreamInput, responseInput, err := e.Prepare(attemptCtx, attempt)
 	if err != nil {
 		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: err.Error()}}, err
 	}
-	upstreamInput.Context = ctx
+	upstreamInput.Context = attemptCtx
 	dispatchResult, dispatchErr := e.Dispatcher.Dispatch(upstreamInput)
 	if dispatchErr != nil {
+		if causedByFirstByteDeadline(attemptCtx, dispatchErr) {
+			return firstByteDeadlineResult(attempt, AttemptResult{}), gatewaydeadline.ErrFirstByteDeadline
+		}
 		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
 	}
-	responseInput.Context = ctx
+	responseInput.Context = attemptCtx
 	responseInput.Dispatch = dispatchResult
+	preparedOnFirstByte := responseInput.OnFirstByte
+	responseInput.OnFirstByte = func() {
+		deadline.MarkVisible()
+		if preparedOnFirstByte != nil {
+			preparedOnFirstByte()
+		}
+	}
 	responseInput.ResponsePolicy.HasAlternativeAPIKeys = responseInput.ResponsePolicy.HasAlternativeAPIKeys || attempt.HasAlternativeKeys
 	preparedResolver := responseInput.DispositionResolver
 	var policyDecision *PolicyDecision
@@ -75,6 +95,12 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		return gatewayretry.ResponseDispositionCompleteTransparent, nil
 	}
 	handled, handleErr := e.Handler.Handle(responseInput)
+	if causedByFirstByteDeadline(attemptCtx, handleErr) &&
+		handled.Handoff.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle &&
+		!handled.Handoff.Audit.ClientAborted &&
+		!handled.TransportCommitted && !handled.SemanticCommitted && handled.BytesWritten == 0 {
+		return firstByteDeadlineResult(attempt, AttemptResult{Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit}), gatewaydeadline.ErrFirstByteDeadline
+	}
 	if handled.State == gatewayresponse.StateSucceeded {
 		return AttemptResult{Success: true, Committed: true, Usage: handled.Handoff.Usage, Audit: handled.Handoff.Audit}, handleErr
 	}
@@ -99,6 +125,31 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		Audit:            handled.Handoff.Audit,
 		PolicyDecision:   policyDecision,
 	}, handleErr
+}
+
+func firstByteDeadlineResult(attempt Attempt, base AttemptResult) AttemptResult {
+	message := gatewaydeadline.ErrFirstByteDeadline.Error()
+	base.RetryAllowed = attempt.ReplayAllowed
+	base.Failure.ErrorCode = "first_byte_timeout"
+	base.Failure.Message = message
+	base.Usage = gatewayusage.TerminalFacts{
+		Outcome: gatewayusage.OutcomeFailed, CompletedAt: time.Now().UTC(),
+		FailureAttribution: gatewayusage.FailureAttributionAccountUpstream,
+		ErrorCode:          "first_byte_timeout", ErrorMessage: message,
+	}
+	base.Audit = gatewayaudit.TerminalInput{
+		RequestedOutcome: gatewayaudit.OutcomeUpstreamFailed, Stream: base.Audit.Stream,
+		HadFailedAttempt: base.Audit.HadFailedAttempt, ErrorPhase: "upstream_response",
+		ErrorCode: "first_byte_timeout", ErrorMessage: message,
+	}
+	return base
+}
+
+func causedByFirstByteDeadline(ctx context.Context, err error) bool {
+	if err == nil || !errors.Is(context.Cause(ctx), gatewaydeadline.ErrFirstByteDeadline) {
+		return false
+	}
+	return errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func extractErrorFacts(body string) (string, string, string) {

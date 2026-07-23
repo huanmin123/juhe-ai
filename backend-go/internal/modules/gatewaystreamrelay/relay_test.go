@@ -143,7 +143,8 @@ func TestRelayPartialDestinationWriteCommitsFirstByteAndDisablesRetry(t *testing
 	sinkErr := errors.New("client disconnected")
 	sink := SinkFunc(func(_ context.Context, p []byte) (int, error) { return 2, sinkErr })
 	inspector := &inspectorStub{inspection: Inspection{SemanticOutput: true}}
-	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("hello")}}, sink, Options{Limits: testLimits(), StartedAt: time.Now(), Inspector: inspector})
+	firstByteCalls := 0
+	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("hello")}}, sink, Options{Limits: testLimits(), StartedAt: time.Now(), Inspector: inspector, OnFirstByte: func() { firstByteCalls++ }})
 	if !errors.Is(err, sinkErr) || !errors.Is(err, ErrDestinationWrite) {
 		t.Fatalf("Relay() error = %v", err)
 	}
@@ -155,6 +156,9 @@ func TestRelayPartialDestinationWriteCommitsFirstByteAndDisablesRetry(t *testing
 	}
 	if inspector.commitCalls != 1 || !inspector.transportCommitted || !inspector.semanticCommitted || inspector.downstreamBytes != 2 {
 		t.Fatalf("commit observer = %#v", inspector)
+	}
+	if firstByteCalls != 1 {
+		t.Fatalf("first-byte callbacks = %d", firstByteCalls)
 	}
 }
 
@@ -301,12 +305,16 @@ func TestRelayFlushesTransformTailAtCleanEOF(t *testing.T) {
 		tail:          []byte("tail"),
 	}
 	sink := &recordingSink{}
-	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("held")}}, sink, Options{Limits: testLimits(), Inspector: inspector, StartedAt: time.Now()})
+	firstByteCalls := 0
+	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("held")}}, sink, Options{Limits: testLimits(), Inspector: inspector, StartedAt: time.Now(), OnFirstByte: func() { firstByteCalls++ }})
 	if err != nil {
 		t.Fatalf("Relay() error = %v", err)
 	}
 	if sink.String() != "tail" || result.BytesRead != 4 || result.BytesWritten != 4 || inspector.finishTransformCalls != 1 {
 		t.Fatalf("tail/result/inspector = %q %#v %#v", sink.String(), result, inspector)
+	}
+	if firstByteCalls != 1 {
+		t.Fatalf("first-byte callbacks = %d", firstByteCalls)
 	}
 }
 
