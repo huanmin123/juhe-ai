@@ -143,6 +143,125 @@ const recoveryState = await store.get(gatewayAccountProtocolModelScope(recoveryA
 assert.equal(recoveryState.phase, 'RECOVERING', '首次 confirmation 完整成功必须进入 RECOVERING')
 assert.equal(recoveryState.recoverySuccessCount, 0, 'confirmation 成功不得计入恢复 canary')
 
+const badSessionEvidence = 'a'.repeat(64)
+const healthySessionEvidence = 'b'.repeat(64)
+const evidenceStore = new MemoryAccountCircuitStore({ capacity: 32, now: () => now })
+const evidenceService = new GatewayAccountCircuitService(evidenceStore, {
+  now: () => now,
+  createId: () => `evidence-${++id}`
+})
+const evidenceAccount = accountFixture({ id: 'account-request-evidence' })
+const evidenceInitial = await evidenceService.prepareAttempt({
+  account: evidenceAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: badSessionEvidence
+})
+assert.equal(evidenceInitial.outcome, 'dispatchable')
+if (evidenceInitial.outcome !== 'dispatchable') throw new Error('坏会话首次 attempt 不可派发')
+const evidenceDecision = await evidenceInitial.attempt.reportTransportFailure({ kind: 'transport', reason: '坏会话断流' })
+assert.equal(evidenceDecision.outcome, 'confirmation_acquired')
+if (evidenceDecision.outcome !== 'confirmation_acquired') throw new Error('坏会话首次失败未取得 confirmation')
+const sameEvidenceExplicitConfirmation = await evidenceService.prepareAttempt({
+  account: evidenceAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  confirmation: evidenceDecision.confirmation,
+  failureEvidenceKey: badSessionEvidence
+})
+assert.equal(sameEvidenceExplicitConfirmation.outcome, 'blocked', '同一坏会话不得使用首错 confirmation 自证账户死亡')
+await evidenceService.completeConfirmation(evidenceDecision.confirmation, 'unknown')
+const sameEvidenceStorm = await Promise.all(Array.from({ length: 24 }, () => evidenceService.prepareAttempt({
+  account: evidenceAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: badSessionEvidence
+})))
+assert.equal(sameEvidenceStorm.filter((result) => result.outcome === 'dispatchable').length, 0, '同一坏会话并发不得取得 confirmation')
+assert.ok(sameEvidenceStorm.every((result) => result.outcome === 'blocked' && result.state.phase === 'SUSPECT'))
+const independentEvidenceAttempts = await Promise.all(Array.from({ length: 12 }, () => evidenceService.prepareAttempt({
+  account: evidenceAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: healthySessionEvidence
+})))
+const independentEvidenceWinners = independentEvidenceAttempts.filter((result) => result.outcome === 'dispatchable')
+assert.equal(independentEvidenceWinners.length, 1, '独立健康会话并发只允许一个 confirmation 赢家')
+const independentEvidenceWinner = independentEvidenceWinners[0]
+if (!independentEvidenceWinner || independentEvidenceWinner.outcome !== 'dispatchable') throw new Error('独立健康会话缺少 confirmation 赢家')
+assert.equal(independentEvidenceWinner.attempt.isConfirmation, true)
+await independentEvidenceWinner.attempt.reportFramingComplete()
+assert.equal((await evidenceStore.get(gatewayAccountProtocolModelScope(evidenceAccount, 'text', 'gpt-5.4'))).phase, 'RECOVERING')
+
+const confirmedDeadAccount = accountFixture({ id: 'account-independent-failures' })
+const confirmedDeadInitial = await evidenceService.prepareAttempt({
+  account: confirmedDeadAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: badSessionEvidence
+})
+assert.equal(confirmedDeadInitial.outcome, 'dispatchable')
+if (confirmedDeadInitial.outcome !== 'dispatchable') throw new Error('真实死亡账户首次 attempt 不可派发')
+const confirmedDeadDecision = await confirmedDeadInitial.attempt.reportTransportFailure({ kind: 'transport', reason: '第一会话断流' })
+assert.equal(confirmedDeadDecision.outcome, 'confirmation_acquired')
+if (confirmedDeadDecision.outcome !== 'confirmation_acquired') throw new Error('真实死亡账户首次失败未取得 confirmation')
+await evidenceService.completeConfirmation(confirmedDeadDecision.confirmation, 'unknown')
+const confirmedDeadConfirmation = await evidenceService.prepareAttempt({
+  account: confirmedDeadAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: healthySessionEvidence
+})
+assert.equal(confirmedDeadConfirmation.outcome, 'dispatchable')
+if (confirmedDeadConfirmation.outcome !== 'dispatchable') throw new Error('独立失败证据未取得 confirmation')
+await confirmedDeadConfirmation.attempt.reportTransportFailure({ kind: 'transport', reason: '第二会话也断流' })
+assert.equal((await evidenceStore.get(gatewayAccountProtocolModelScope(confirmedDeadAccount, 'text', 'gpt-5.4'))).phase, 'OPEN', '两个独立会话均传输失败应确认账户电路 OPEN')
+
+const stormAccounts = Array.from({ length: 3 }, (_, index) => accountFixture({ id: `account-bad-session-storm-${index + 1}` }))
+for (const stormAccount of stormAccounts) {
+  const initial = await evidenceService.prepareAttempt({
+    account: stormAccount,
+    requestLane: 'text',
+    model: 'gpt-5.4',
+    confirmationLeaseDurationMs: 30_000,
+    failureEvidenceKey: badSessionEvidence
+  })
+  assert.equal(initial.outcome, 'dispatchable')
+  if (initial.outcome !== 'dispatchable') throw new Error('风暴账户首次 attempt 不可派发')
+  const decision = await initial.attempt.reportTransportFailure({ kind: 'read_incomplete', reason: '同一坏会话缺少终态' })
+  assert.equal(decision.outcome, 'confirmation_acquired')
+  if (decision.outcome !== 'confirmation_acquired') throw new Error('风暴账户首次失败未取得 confirmation')
+  await evidenceService.completeConfirmation(decision.confirmation, 'unknown')
+}
+for (const stormAccount of stormAccounts) {
+  const repeated = await Promise.all(Array.from({ length: 20 }, () => evidenceService.prepareAttempt({
+    account: stormAccount,
+    requestLane: 'text',
+    model: 'gpt-5.4',
+    confirmationLeaseDurationMs: 30_000,
+    failureEvidenceKey: badSessionEvidence
+  })))
+  assert.equal(repeated.filter((result) => result.outcome === 'dispatchable').length, 0)
+  assert.equal((await evidenceStore.get(gatewayAccountProtocolModelScope(stormAccount, 'text', 'gpt-5.4'))).phase, 'SUSPECT', '同一坏会话风暴不得把账户确认成 OPEN')
+  const recovery = await evidenceService.prepareAttempt({
+    account: stormAccount,
+    requestLane: 'text',
+    model: 'gpt-5.4',
+    confirmationLeaseDurationMs: 30_000,
+    failureEvidenceKey: healthySessionEvidence
+  })
+  assert.equal(recovery.outcome, 'dispatchable')
+  if (recovery.outcome !== 'dispatchable') throw new Error('健康会话无法确认恢复风暴账户')
+  await recovery.attempt.reportFramingComplete()
+  assert.equal((await evidenceStore.get(gatewayAccountProtocolModelScope(stormAccount, 'text', 'gpt-5.4'))).phase, 'RECOVERING')
+}
+
 const escalationAccount = accountFixture({
   id: 'account-parent-escalation',
   supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano']

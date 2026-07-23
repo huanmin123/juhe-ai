@@ -188,13 +188,13 @@ try {
   const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
     recoveredAccountAuthorizations,
-    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
-    '通用未知失败不得持久化屏蔽坏 Key，后续请求仍可按请求级轮换继续完成'
+    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-good'],
+    '通用未知失败应短暂避让刚失败的 Key，后续请求由同账户好 Key 继续完成'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
-    2,
-    '通用未知失败只允许请求级排除，后续独立请求可以再次尝试该 Key'
+    1,
+    '通用未知失败的短暂避让窗口内不应立即重复撞击坏 Key'
   )
   failoverBadKeyRecovered = true
 
@@ -223,14 +223,11 @@ try {
       'Bearer sk-gateway-allbad-a',
       'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
-      'Bearer sk-gateway-allbad-a',
-      'Bearer sk-gateway-allbad-c',
+      'Bearer sk-gateway-allbad-b',
       'Bearer sk-gateway-allbad-rescue',
-      'Bearer sk-gateway-allbad-a',
-      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue'
     ],
-    '通用未知失败应在每次请求内最多尝试两个 Key 后切后备账户，跨请求不得持久屏蔽 Key'
+    '通用未知失败应逐步短暂避让已失败 Key，并在每次请求内最多尝试两个 Key 后切后备账户'
   )
   assert.equal(
     allBadAuthorizations.indexOf('Bearer sk-gateway-allbad-rescue'),
@@ -1058,13 +1055,17 @@ async function killWindowsProcessTree(pid: number): Promise<void> {
 
 async function removeTempRoot(path: string): Promise<void> {
   let lastError: unknown
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
       rmSync(path, { recursive: true, force: true })
       return
     } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined
+      if (code !== 'EBUSY' && code !== 'EPERM') throw error
       lastError = error
-      await sleep(200)
+      await sleep(250)
     }
   }
   throw lastError

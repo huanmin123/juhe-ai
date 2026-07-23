@@ -22,6 +22,7 @@ interface MockUpstreamHit {
 
 interface GatewayScenario {
   accountId: string
+  groupId: string
   apiKey: string
 }
 
@@ -33,6 +34,8 @@ runtimeConfig.secret = 'gateway-recoverable-unavailable-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.cacheDriver = 'memory'
+runtimeConfig.runtimeStateDriver = 'memory'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -65,6 +68,7 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: MockUpstreamHit[] = []
 const transportFailureCounts = new Map<string, number>()
 let rateLimitedCooldownClearTimer: ReturnType<typeof setTimeout> | undefined
+let rateLimitedCooldownClearResult: ReturnType<typeof repositories.clearAccountFailureState> | undefined
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -173,16 +177,33 @@ async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenar
     'rate_limited'
   )
   gatewayCache.clearGatewayRuntimeCache()
+  const recoverableBeforeWait = repositories.listRecoverableUnavailableOpenAIAccountsForGroup(
+    scenario.groupId,
+    access.systemAccountId,
+    { requestedModel: 'gpt-5.5', windowMs: 10_000 }
+  )
+  const recoverableDiagnostic = repositories.findAccountForTest(scenario.accountId, access)
+  assert.equal(
+    recoverableBeforeWait.some((account) => account.id === scenario.accountId),
+    true,
+    `限流冷却账户应进入恢复等待候选：status=${recoverableDiagnostic?.status} schedulable=${recoverableDiagnostic?.schedulable} cooldown=${recoverableDiagnostic?.cooldownUntil} group=${scenario.groupId} candidates=${recoverableBeforeWait.length}`
+  )
   rateLimitedCooldownClearTimer = setTimeout(() => {
     rateLimitedCooldownClearTimer = undefined
-    repositories.clearAccountFailureState(scenario.accountId, access)
+    rateLimitedCooldownClearResult = repositories.clearAccountFailureState(scenario.accountId, access)
     gatewayCache.clearGatewayRuntimeCache()
   }, 500)
-  rateLimitedCooldownClearTimer.unref()
   const startedAt = Date.now()
   const response = await postChat(baseUrl, scenario.apiKey, 'rate limited cooldown should wait and recover')
   const elapsedMs = Date.now() - startedAt
-  assert.equal(response.status, 200, `限流冷却恢复后应恢复调度，实际 HTTP ${response.status}: ${response.text}`)
+  const finalAccount = repositories.findAccountForTest(scenario.accountId, access)
+  const clearDiagnostic = rateLimitedCooldownClearResult
+    ? { status: rateLimitedCooldownClearResult.status, schedulable: rateLimitedCooldownClearResult.schedulable, cooldownUntil: rateLimitedCooldownClearResult.cooldownUntil }
+    : undefined
+  const finalDiagnostic = finalAccount
+    ? { status: finalAccount.status, schedulable: finalAccount.schedulable, cooldownUntil: finalAccount.cooldownUntil }
+    : undefined
+  assert.equal(response.status, 200, `限流冷却恢复后应恢复调度，实际 HTTP ${response.status}，耗时 ${elapsedMs}ms，clear=${JSON.stringify(clearDiagnostic)}，final=${JSON.stringify(finalDiagnostic)}: ${response.text}`)
   assert.match(response.text, /mock ai ok from sk-recoverable-rate-limited/)
   assert(elapsedMs >= 900, `限流冷却恢复等待不应在 cooldown_until 前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `限流冷却恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
@@ -223,7 +244,7 @@ async function assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl: string,
   const response = await postChat(baseUrl, scenario.apiKey, 'disabled account should fail without recoverable wait')
   const elapsedMs = Date.now() - startedAt
   assert.equal(response.status, 503, `硬不可用账号不应恢复等待，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /没有可用的上游账户/)
+  assert.match(response.text, /upstream_retryable_error/, '硬不可用账号耗尽后应返回稳定可重试错误码')
   assert(elapsedMs < 800, `硬不可用账号不应进入本地恢复等待，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-disabled'), [])
 }
@@ -281,6 +302,7 @@ function createSingleAccountScenario(label: string, upstreamApiKey: string, upst
   assert(apiKey.key, `${label}网关 Key 未返回明文密钥`)
   return {
     accountId: account.id,
+    groupId: group.id,
     apiKey: apiKey.key
   }
 }

@@ -1,5 +1,5 @@
 import type { Request } from 'express'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 import {
   loadAccountCurrentConcurrencyByIdsAsync,
@@ -192,6 +192,7 @@ export async function fetchFirstAvailableUpstream(
     requestAttemptTracker
   } = requestCoordination
   const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
+  const accountCircuitFailureEvidenceKey = gatewayRequestFailureEvidenceKey(req, sessionAffinityKey)
   // Explicit user policies remain available for gateway clients. Automatic
   // suppression and health state transitions are reserved for background probes.
   const automaticAccountStateMutationAllowed = accountStateMutationEnabled
@@ -245,7 +246,8 @@ export async function fetchFirstAvailableUpstream(
           requestLane,
           model: requestModel(req),
           confirmationLeaseDurationMs,
-          confirmation: accountCircuitConfirmation
+          confirmation: accountCircuitConfirmation,
+          failureEvidenceKey: accountCircuitFailureEvidenceKey
         })
         if (circuitPreparation.outcome === 'blocked') {
           lastAttempt = accountCircuitBlockedAttempt(originalAccount, circuitPreparation.state.phase)
@@ -868,7 +870,7 @@ export async function fetchFirstAvailableUpstream(
                   recoverableFailedAccountIds.add(account.id)
                   cycleRecoverableAccountIds.add(account.id)
                 }
-                const circuitDecision = accountCircuitAttempt
+                const circuitDecision = accountCircuitAttempt && !signal?.aborted
                   ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
                   : undefined
                 if (circuitDecision?.outcome === 'confirmation_acquired' && accountCircuitService) {
@@ -1496,6 +1498,16 @@ async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSig
   throwIfRequestAborted(signal)
   await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
+}
+
+function gatewayRequestFailureEvidenceKey(req: Request, sessionAffinityKey: string | undefined): string | undefined {
+  const normalizedSessionKey = sessionAffinityKey?.trim()
+  if (normalizedSessionKey) {
+    return createHash('sha256').update('session\0').update(normalizedSessionKey).digest('hex')
+  }
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody
+  if (!rawBody?.length) return undefined
+  return createHash('sha256').update('body\0').update(rawBody).digest('hex')
 }
 
 function stringValue(value: unknown): string {

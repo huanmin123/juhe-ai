@@ -1011,6 +1011,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     requestFallback: interactionResourceAffinity
       ? async () => ({ attempted: false })
       : async (reason) => {
+          const hasAnotherBoundGroup = apiKeyRecord?.group_bindings?.some((binding) => (
+            binding.status === 'active' && binding.group_id !== groupId
+          )) ?? false
+          if (!hasAnotherBoundGroup) {
+            return { attempted: false }
+          }
           pendingRouteReason = reason
           return { attempted: true }
         },

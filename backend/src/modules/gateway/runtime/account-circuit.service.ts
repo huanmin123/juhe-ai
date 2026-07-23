@@ -21,6 +21,7 @@ import {
 const gatewayAccountCircuitCapacity = 10_000
 const gatewayAccountCircuitKnownModelLimit = 256
 const gatewayAccountCircuitUnknownModelBucket = 'unknown'
+const gatewayAccountCircuitFailureEvidenceMarker = '|request_evidence_sha256='
 
 export type GatewayAccountCircuitTransportFailureKind = 'transport' | 'timeout' | 'read_incomplete'
 
@@ -66,6 +67,7 @@ export interface PrepareGatewayAccountCircuitAttemptInput {
   model: string | undefined
   confirmationLeaseDurationMs: number
   confirmation?: GatewayAccountCircuitConfirmation
+  failureEvidenceKey?: string
 }
 
 export class GatewayAccountCircuitAttempt {
@@ -76,7 +78,8 @@ export class GatewayAccountCircuitAttempt {
     readonly scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>,
     readonly dispatchRevision: string,
     readonly confirmationLeaseDurationMs: number,
-    private readonly confirmation?: GatewayAccountCircuitConfirmation
+    private readonly confirmation?: GatewayAccountCircuitConfirmation,
+    private readonly failureEvidenceKey?: string
   ) {
     this.isConfirmation = confirmation !== undefined
   }
@@ -101,7 +104,8 @@ export class GatewayAccountCircuitAttempt {
       scope: this.scope,
       dispatchRevision: this.dispatchRevision,
       confirmationLeaseDurationMs: this.confirmationLeaseDurationMs,
-      reason: `${failure.kind}:${requiredText(failure.reason, 'failure.reason')}`
+      reason: `${failure.kind}:${requiredText(failure.reason, 'failure.reason')}`,
+      failureEvidenceKey: this.failureEvidenceKey
     })
   }
 
@@ -194,6 +198,10 @@ export class GatewayAccountCircuitService {
         return { outcome: 'blocked', state }
       }
       const state = await this.store.get(scope, this.now())
+      if (sameRequestFailureEvidence(state.failureReason, input.failureEvidenceKey)) {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
       if (
         state.phase !== 'SUSPECT'
         || state.generation !== input.confirmation.generation
@@ -211,7 +219,8 @@ export class GatewayAccountCircuitService {
           scope,
           dispatchRevision,
           leaseDurationMs,
-          cloneConfirmation(input.confirmation)
+          cloneConfirmation(input.confirmation),
+          normalizedFailureEvidenceKey(input.failureEvidenceKey)
         )
       }
     }
@@ -230,10 +239,21 @@ export class GatewayAccountCircuitService {
     if (state.phase === 'CLOSED') {
       return {
         outcome: 'dispatchable',
-        attempt: new GatewayAccountCircuitAttempt(this, scope, dispatchRevision, leaseDurationMs)
+        attempt: new GatewayAccountCircuitAttempt(
+          this,
+          scope,
+          dispatchRevision,
+          leaseDurationMs,
+          undefined,
+          normalizedFailureEvidenceKey(input.failureEvidenceKey)
+        )
       }
     }
     if (state.phase === 'SUSPECT' && state.dispatchRevision === dispatchRevision) {
+      if (sameRequestFailureEvidence(state.failureReason, input.failureEvidenceKey)) {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
       const decision = await this.acquireConfirmation(scope, state, leaseDurationMs)
       if (decision.outcome === 'confirmation_acquired') {
         return {
@@ -243,7 +263,8 @@ export class GatewayAccountCircuitService {
             scope,
             dispatchRevision,
             leaseDurationMs,
-            decision.confirmation
+            decision.confirmation,
+            normalizedFailureEvidenceKey(input.failureEvidenceKey)
           )
         }
       }
@@ -258,13 +279,14 @@ export class GatewayAccountCircuitService {
     dispatchRevision: string
     confirmationLeaseDurationMs: number
     reason: string
+    failureEvidenceKey?: string
   }): Promise<GatewayAccountCircuitFailureDecision> {
     const nowMs = this.now()
     const suspect = await this.store.suspect({
       scope: input.scope,
       dispatchRevision: requiredText(input.dispatchRevision, 'dispatchRevision'),
       transitionId: this.createId(),
-      reason: requiredText(input.reason, 'reason'),
+      reason: failureReasonWithEvidence(input.reason, input.failureEvidenceKey),
       nowMs
     })
     await this.notifyMutation('suspect', input.scope, suspect, 'CLOSED')
@@ -561,6 +583,27 @@ function requiredText(value: string, name: string): string {
   const normalized = value.trim()
   if (!normalized) throw new Error(`账户电路缺少 ${name}`)
   return normalized
+}
+
+function failureReasonWithEvidence(reason: string, evidenceKey: string | undefined): string {
+  const normalizedReason = requiredText(reason, 'reason')
+  const normalizedEvidence = normalizedFailureEvidenceKey(evidenceKey)
+  return normalizedEvidence
+    ? `${normalizedReason}${gatewayAccountCircuitFailureEvidenceMarker}${normalizedEvidence}`
+    : normalizedReason
+}
+
+function sameRequestFailureEvidence(failureReason: string | undefined, evidenceKey: string | undefined): boolean {
+  const normalizedEvidence = normalizedFailureEvidenceKey(evidenceKey)
+  if (!normalizedEvidence || !failureReason) return false
+  const markerIndex = failureReason.lastIndexOf(gatewayAccountCircuitFailureEvidenceMarker)
+  if (markerIndex < 0) return false
+  return failureReason.slice(markerIndex + gatewayAccountCircuitFailureEvidenceMarker.length) === normalizedEvidence
+}
+
+function normalizedFailureEvidenceKey(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase()
+  return normalized && /^[a-f0-9]{64}$/.test(normalized) ? normalized : undefined
 }
 
 function sha256(value: string): string {

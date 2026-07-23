@@ -125,8 +125,9 @@ try {
     for (let index = 0; index < 5; index += 1) {
       const hitsBeforeRequest = upstreamState.hits
       const response = await requestChatCompletion(baseUrl, apiKey.key, `mock upstream 504 ${index}`)
-      assert.equal(response.status, 504, `通用 POST 完整收到上游 504 后应保持不透明响应，实际 HTTP ${response.status}: ${response.text}`)
-      assert.match(response.text, /mock_upstream_504/, `通用 POST 应保留完整上游错误契约：${response.text}`)
+      assert.equal(response.status, 503, `通用推理 POST 候选耗尽后应返回稳定可重试状态，实际 HTTP ${response.status}: ${response.text}`)
+      assert.match(response.text, /upstream_retryable_error/, `通用推理 POST 应返回统一脱敏可重试错误：${response.text}`)
+      assert.doesNotMatch(response.text, /mock_upstream_504/, `通用推理 POST 不应泄露上游原始错误码：${response.text}`)
       assert.equal(upstreamState.hits, hitsBeforeRequest + 1, `第 ${index + 1} 次质量失败请求必须真实命中 mock 上游：${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
@@ -304,7 +305,8 @@ try {
     const failureHitsBefore = upstreamState.hits
     for (let index = 0; index < 5; index += 1) {
       const response = await requestChatCompletion(baseUrl, failureApiKey.key, `mock precheck failure ${index}`)
-      assert.equal(response.status, 504, `频繁失败确认前置请求应保留完整上游 504，实际 HTTP ${response.status}: ${response.text}`)
+      assert.equal(response.status, 503, `频繁失败确认前置请求应返回统一可重试错误，实际 HTTP ${response.status}: ${response.text}`)
+      assert.match(response.text, /upstream_retryable_error/, `频繁失败确认前置请求不应泄露上游原始 504：${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
     assert.equal(upstreamState.hits - failureHitsBefore, 5, '频繁失败确认账号应收到 5 次真实 mock 上游失败请求')

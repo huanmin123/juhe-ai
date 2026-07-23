@@ -1079,7 +1079,9 @@ export async function handleOpenAIGatewayRequest(
               accountStateMutationEnabled: false
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
-            const circuitDecision = gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy) && accountCircuitAttempt
+            const circuitDecision = !requestExecutionSignal.aborted
+              && gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy)
+              && accountCircuitAttempt
               ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error))
               : undefined
             if (circuitDecision?.outcome === 'confirmation_acquired') {
@@ -1098,6 +1100,8 @@ export async function handleOpenAIGatewayRequest(
           ? handledResponse.transportFailure
           : undefined
         const circuitDecision = transportFailure
+          && !requestExecutionSignal.aborted
+          && responseErrorCode !== 'client_aborted'
           && gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy)
           && accountCircuitAttempt
           ? await accountCircuitAttempt.reportTransportFailure({
@@ -1145,6 +1149,9 @@ export async function handleOpenAIGatewayRequest(
             // request that observed the failure may rotate to another account,
             // but it must never replay the same physical credential implicitly.
             await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
+          }
+          if (requestExecutionSignal.aborted || res.destroyed) {
+            return
           }
           if (
             handledResponse.retryReason === 'normal_route_first_byte_timeout'

@@ -153,6 +153,9 @@ export async function handleFailedUpstreamResponse(
   } = input
 
   if (!accountErrorPolicyCouldMatchStatus(account, response.status)) {
+    if (isOpaqueUpstreamFailoverAllowed(req)) {
+      return handleOpaqueFailedUpstreamResponse(input)
+    }
     return { action: 'return_response', response }
   }
 
@@ -381,6 +384,13 @@ export async function handleOpaqueFailedUpstreamResponse(
   }
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+  const keyScopedFailure = hasAlternativeAccountApiKeys(account)
+  if (keyScopedFailure) {
+    await recordGatewayAccountApiKeyLocalFailure(account, {
+      status: 'temporary_unavailable',
+      errorMessage: responseBodyRead.diagnosticBodyText
+    })
+  }
   const explicitPolicyDecision = input.accountStateMutationEnabled !== false && usageContext.trafficSource === 'gateway'
     ? decideAccountErrorPolicy(account, response.status, response.headers, responseBodyRead.body, settings)
     : undefined
@@ -408,7 +418,9 @@ export async function handleOpaqueFailedUpstreamResponse(
   }
   return {
     action: 'skip_account',
-    lastAttempt
+    lastAttempt,
+    keyScopedFailure,
+    tryNextApiKeyForRequest: keyScopedFailure
   }
 }
 

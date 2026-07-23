@@ -22,6 +22,7 @@ runtimeConfig.secret = 'codex-turn-switch-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.cacheDriver = 'memory'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -43,6 +44,7 @@ const [
   auditLogQueue,
   codexTurnRetry,
   sessionAffinity,
+  accountCircuit,
   proxyHealth,
   readWorkerPool
 ] = await Promise.all([
@@ -58,6 +60,7 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/client-profiles/codex-turn-retry.service.js'),
   import('../../modules/gateway/runtime/session-affinity.service.js'),
+  import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/proxy-health.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
@@ -128,6 +131,7 @@ async function main(): Promise<void> {
     const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
     const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
     const clientAbortAffinity = seedTwoAccountGateway(upstreamBaseUrl, 'client-abort-affinity', { freshPriority: 0 })
+    const clientAbortBeforeHeadersAffinity = seedTwoAccountGateway(upstreamBaseUrl, 'client-abort-before-headers-affinity', { freshPriority: 0 })
 
     gatewayServer = createGatewayServer()
     await listen(gatewayServer)
@@ -138,15 +142,15 @@ async function main(): Promise<void> {
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
     await assertCodexTurnAvoidanceUsesFormalRequestWithoutProbe(baseUrl, turnProbeFailCodexSwitch, upstreamState)
     await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
-    await assertGenericHttpNon2xxPassesThroughWithoutReplay(baseUrl, nonCodexHttpAllFail, upstreamState)
+    await assertGenericHttpNon2xxRetriesCandidates(baseUrl, nonCodexHttpAllFail, upstreamState)
     await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
-    await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
+    await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, clientAbortBeforeHeadersAffinity, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertUsageRecords(codexSwitch)
-    assertAccountsStillActive([codexSwitch, latentCodexSwitch, contextWindow, cyberPolicy, clientAbortAffinity, {
+    assertAccountsStillActive([codexSwitch, latentCodexSwitch, contextWindow, cyberPolicy, clientAbortAffinity, clientAbortBeforeHeadersAffinity, {
       ...probeFailCodexSwitch,
       freshAccountId: probeFailCodexSwitch.probeFailedAccountId,
       freshUpstreamKey: probeFailCodexSwitch.probeFailedUpstreamKey
@@ -164,7 +168,7 @@ async function main(): Promise<void> {
       freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后 Codex 返回协议可重试 SSE、通用客户端原样返回首个完整 HTTP 非 2xx，client_aborted 会释放会话亲和')
+    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后返回稳定可重试错误，client_aborted 会释放会话亲和且不继续切号')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -318,7 +322,7 @@ async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
 }
 
-async function assertGenericHttpNon2xxPassesThroughWithoutReplay(
+async function assertGenericHttpNon2xxRetriesCandidates(
   baseUrl: string,
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
@@ -332,14 +336,14 @@ async function assertGenericHttpNon2xxPassesThroughWithoutReplay(
     codex: false,
     retryTag: 'server-retry-exhausted'
   })
-  assert.equal(result.status, 503, `普通客户端完整 HTTP 非 2xx 应原样返回上游状态：${result.status} ${result.text}`)
-  assert(result.contentType.includes('application/json'), `普通客户端完整 HTTP 非 2xx 应保留上游 JSON 类型：${result.contentType}`)
-  assert(result.text.includes('server_is_overloaded'), `普通客户端完整 HTTP 非 2xx 应保留不透明上游错误体：${result.text}`)
+  assert.equal(result.status, 503, `普通客户端完整 HTTP 非 2xx 全部耗尽后应返回可重试状态：${result.status} ${result.text}`)
+  assert(result.contentType.includes('application/json'), `普通客户端完整 HTTP 非 2xx 全部耗尽后应返回 JSON：${result.contentType}`)
+  assert(!result.text.includes('server_is_overloaded'), `普通客户端不应看到上游原始致命错误码：${result.text}`)
   assert(!result.text.includes('response.failed'), `普通客户端完整 HTTP 非 2xx 不应伪造 SSE：${result.text}`)
-  assert(!result.text.includes('upstream_retryable_error'), `普通客户端完整 HTTP 非 2xx 不应被改写成专用客户端错误码：${result.text}`)
+  assert(result.text.includes('upstream_retryable_error'), `普通客户端全部候选耗尽后应收到稳定可重试错误码：${result.text}`)
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端完整 HTTP 非 2xx 应只命中首选账号一次')
-  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 0, '普通客户端 POST 可能已被上游接受，完整 HTTP 非 2xx 后不得重放到备用账号')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端完整 HTTP 非 2xx 应先命中首选账号一次')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通推理请求完整 HTTP 非 2xx 后应继续尝试唯一备用号')
 }
 
 async function assertCodexContextWindowSingleRequestSwitchesAccountOnServer(
@@ -396,6 +400,7 @@ async function assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(
 async function assertClientAbortClearsSessionAffinity(
   baseUrl: string,
   seeded: SeededGateway,
+  headerSeeded: SeededGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
   const sessionId = `session-client-abort-affinity-${Date.now()}`
@@ -420,8 +425,22 @@ async function assertClientAbortClearsSessionAffinity(
     codex: true,
     sessionId
   })
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits, 0, 'client_aborted 请求不应先走正常顺序主账号')
+  assert.equal(
+    hitCount(upstreamState, seeded.failedUpstreamKey) - beforePrimaryHits,
+    0,
+    `client_aborted 请求不应先走正常顺序主账号：${JSON.stringify(upstreamState.requests.slice(-4))}`
+  )
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeStickyHits, 1, 'client_aborted 请求应命中已绑定的备用账号')
+
+  const postAbortCandidates = repositories.listOpenAIAccountsForGroup(seeded.groupId, seeded.systemAccountId)
+  const postAbortFreshAccount = postAbortCandidates.find((account) => account.id === seeded.freshAccountId)
+  assert(postAbortFreshAccount, '客户端中断后应仍能读取亲和账户候选')
+  const postAbortCircuitState = await accountCircuit.getGatewayAccountCircuitStore().get(
+    accountCircuit.gatewayAccountProtocolModelScope(postAbortFreshAccount, 'text', codexSwitchTestModel)
+  )
+  assert.equal(postAbortCircuitState.phase, 'CLOSED', 'client_aborted 不得把账户电路推进到 SUSPECT/OPEN')
+  const postAbortRuntimeFilter = await accountSideEffects.filterGatewayAccountRuntimeSuppressionsAsync(postAbortCandidates)
+  assert(postAbortRuntimeFilter.accounts.some((account) => account.id === seeded.freshAccountId), 'client_aborted 不得把账户加入运行时抑制')
 
   const beforeRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
@@ -437,43 +456,53 @@ async function assertClientAbortClearsSessionAffinity(
 
   const headerDelaySessionId = `session-client-abort-before-headers-${Date.now()}`
   const headerDelaySessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(headerDelaySessionId), {
-    systemAccountId: seeded.systemAccountId,
-    apiKeyId: seeded.apiKeyId,
-    groupId: seeded.groupId
+    systemAccountId: headerSeeded.systemAccountId,
+    apiKeyId: headerSeeded.apiKeyId,
+    groupId: headerSeeded.groupId
   })
   assert(headerDelaySessionKey, '测试应能生成响应头前断开场景的会话亲和 key')
-  sessionAffinity.rememberOpenAIAccountForSession(headerDelaySessionKey, seeded.freshAccountId, {
-    systemAccountId: seeded.systemAccountId,
-    apiKeyId: seeded.apiKeyId,
-    groupId: seeded.groupId
+  sessionAffinity.rememberOpenAIAccountForSession(headerDelaySessionKey, headerSeeded.freshAccountId, {
+    systemAccountId: headerSeeded.systemAccountId,
+    apiKeyId: headerSeeded.apiKeyId,
+    groupId: headerSeeded.groupId
   })
-  const beforeHeaderAbortPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
-  const beforeHeaderAbortStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
-  await requestResponsesStreamAndAbortAfterUpstreamRequestStarted(baseUrl, seeded.apiKey, {
+  const headerCandidates = repositories.listOpenAIAccountsForGroup(headerSeeded.groupId, headerSeeded.systemAccountId)
+  const headerDelayAffinityOrder = sessionAffinity.orderOpenAIAccountsBySessionAffinity(headerCandidates, headerDelaySessionKey)
+  assert.equal(headerDelayAffinityOrder[0]?.id, headerSeeded.freshAccountId, '新会话亲和应在同优先级候选中重新选择已绑定账户')
+  const beforeHeaderAbortPrimaryHits = hitCount(upstreamState, headerSeeded.failedUpstreamKey)
+  const beforeHeaderAbortStickyHits = hitCount(upstreamState, headerSeeded.freshUpstreamKey)
+  await requestResponsesStreamAndAbortAfterUpstreamRequestStarted(baseUrl, headerSeeded.apiKey, {
     scenario: 'client-abort-before-upstream-headers',
     turnId: 'turn-client-abort-before-headers',
     codex: true,
     sessionId: headerDelaySessionId
-  }, () => hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortStickyHits >= 1)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits, 0, '响应头前 client_aborted 请求不应先走正常顺序主账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortStickyHits, 1, '响应头前 client_aborted 请求应命中已绑定的备用账号')
+  }, () => (
+    hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortStickyHits >= 1
+    || hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits >= 1
+  ))
+  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortPrimaryHits, 0, '响应头前 client_aborted 请求不应先走正常顺序主账号')
+  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortStickyHits, 1, '响应头前 client_aborted 请求应命中已绑定的备用账号')
 
-  const beforeHeaderAbortRetryPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
-  const beforeHeaderAbortRetryStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
-  const headerAbortRetryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const beforeHeaderAbortRetryPrimaryHits = hitCount(upstreamState, headerSeeded.failedUpstreamKey)
+  const beforeHeaderAbortRetryStickyHits = hitCount(upstreamState, headerSeeded.freshUpstreamKey)
+  const headerAbortRetryText = await requestResponsesStream(baseUrl, headerSeeded.apiKey, {
     scenario: 'after-client-abort',
     turnId: 'turn-client-abort-before-headers',
     codex: true,
     sessionId: headerDelaySessionId
   })
   assert(headerAbortRetryText.includes('response.completed'), `响应头前 client_aborted 后下一次请求应完成：${headerAbortRetryText}`)
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeHeaderAbortRetryPrimaryHits, 1, '响应头前 client_aborted 后应释放会话亲和并回到正常账号顺序')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前 client_aborted 后不应继续粘住已断开的备用账号')
+  assert.equal(hitCount(upstreamState, headerSeeded.failedUpstreamKey) - beforeHeaderAbortRetryPrimaryHits, 1, '响应头前 client_aborted 后应释放会话亲和并回到正常账号顺序')
+  assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前 client_aborted 后不应继续粘住已断开的备用账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 200 }).items
   assert(
-    records.some((record) => record.accountId === seeded.freshAccountId && record.errorCode === 'client_aborted' && record.errorMessage === '下游连接提前关闭'),
+    records.some((record) => (
+      (record.accountId === seeded.freshAccountId || record.accountId === headerSeeded.freshAccountId)
+      && record.errorCode === 'client_aborted'
+      && record.errorMessage === '下游连接提前关闭'
+    )),
     'client_aborted 使用记录应使用“下游连接提前关闭”文案，避免误导为用户手动取消'
   )
 }
@@ -988,11 +1017,17 @@ async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
   },
   upstreamRequestStarted: () => boolean
 ): Promise<void> {
-  const controller = new AbortController()
+  const url = new URL('/v1/responses', baseUrl)
+  const body = JSON.stringify({
+    model: codexSwitchTestModel,
+    input: input.scenario,
+    stream: true
+  })
   const headers: Record<string, string> = {
     authorization: `Bearer ${apiKey}`,
     'content-type': 'application/json',
-    accept: 'text/event-stream'
+    accept: 'text/event-stream',
+    'content-length': String(Buffer.byteLength(body))
   }
   if (input.codex) {
     headers['x-codex-turn-metadata'] = JSON.stringify({
@@ -1004,25 +1039,36 @@ async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
   if (input.sessionId) {
     headers['x-session-id'] = input.sessionId
   }
-  const request = fetch(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: codexSwitchTestModel,
-      input: input.scenario,
-      stream: true
-    }),
-    signal: controller.signal
-  }).then(async (response) => {
-    await response.arrayBuffer()
-  }).catch((error) => {
-    if (!controller.signal.aborted) {
-      throw error
-    }
+  let destroyedByTest = false
+  let unexpectedRequestError: unknown
+  let clientRequest: http.ClientRequest | undefined
+  const requestFinished = new Promise<void>((resolvePromise) => {
+    clientRequest = http.request(url, { method: 'POST', headers, agent: false }, (response) => {
+      response.resume()
+      response.once('end', resolvePromise)
+      response.once('aborted', resolvePromise)
+      response.once('error', (error) => {
+        if (!destroyedByTest) unexpectedRequestError = error
+        resolvePromise()
+      })
+    })
+    clientRequest.once('error', (error) => {
+      if (!destroyedByTest) unexpectedRequestError = error
+      resolvePromise()
+    })
+    clientRequest.write(body)
+    clientRequest.end()
   })
-  await waitUntil(upstreamRequestStarted, 1000, '响应头前断开测试应先命中上游账号')
-  controller.abort()
-  await request
+  await waitUntil(
+    () => upstreamRequestStarted() || unexpectedRequestError !== undefined,
+    3000,
+    '响应头前断开测试应先命中上游账号'
+  )
+  if (unexpectedRequestError) throw unexpectedRequestError
+  destroyedByTest = true
+  clientRequest?.destroy()
+  await requestFinished
+  if (unexpectedRequestError) throw unexpectedRequestError
   await sleep(500)
 }
 
@@ -1036,16 +1082,16 @@ function sendCompletedStream(res: http.ServerResponse): void {
 
 function sendOpenStreamWithoutTerminal(res: http.ServerResponse): void {
   res.write('event: response.created\n')
-  res.write('data: {"type":"response.created","response":{"id":"resp_open","status":"in_progress"}}\n\n')
+  res.write('data: {"type":"response.created","response":{"id":"resp_open","object":"response","status":"in_progress","output":[]}}\n\n')
   res.write('event: response.output_item.added\n')
-  res.write('data: {"type":"response.output_item.added","item":{"id":"item_open","type":"custom_tool_call","status":"in_progress"}}\n\n')
+  res.write('data: {"type":"response.output_item.added","output_index":0,"item":{"id":"ctc_open","type":"custom_tool_call","status":"in_progress","name":"apply_patch","call_id":"call_open","input":""}}\n\n')
   const interval = setInterval(() => {
     if (res.destroyed || res.writableEnded) {
       clearInterval(interval)
       return
     }
     res.write('event: response.custom_tool_call_input.delta\n')
-    res.write('data: {"type":"response.custom_tool_call_input.delta","delta":"{}"}\n\n')
+    res.write('data: {"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_open","call_id":"call_open","delta":"{}"}\n\n')
   }, 25)
   res.once('close', () => clearInterval(interval))
 }
