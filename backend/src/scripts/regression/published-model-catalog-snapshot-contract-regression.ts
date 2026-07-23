@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const sourceFiles = [
-  'src/server.ts',
-  'src/modules/chat/chat.routes.ts',
-  'src/modules/model-pricing/client-model-catalog.service.ts',
-  'src/modules/providers/providers.routes.ts',
-  'src/modules/system-accounts/system-accounts.routes.ts'
+  'server.ts',
+  'modules/chat/chat.routes.ts',
+  'modules/model-pricing/client-model-catalog.service.ts',
+  'modules/providers/providers.routes.ts',
+  'modules/system-accounts/system-accounts.routes.ts'
 ]
 for (const file of sourceFiles) {
   const source = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')

@@ -24,6 +24,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
 
@@ -260,7 +261,7 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
 		t.Fatalf("parse server.go: %v", err)
 	}
 
-	function := findFunction(t, file, "newManagementAPIHandlerWithOperationLogSubmitter")
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
 	found := false
 	ast.Inspect(function.Body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -282,7 +283,7 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
 		return true
 	})
 	if !found {
-		t.Fatal("newManagementAPIHandlerWithOperationLogSubmitter missing runtime log handler assembly")
+		t.Fatal("newManagementAPIHandlerWithCatalogSnapshotRebuilder missing runtime log handler assembly")
 	}
 }
 
@@ -293,7 +294,7 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogGrepConfiguration(t *testing.T)
 		t.Fatalf("parse server.go: %v", err)
 	}
 
-	function := findFunction(t, file, "newManagementAPIHandlerWithOperationLogSubmitter")
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
 	foundService := false
 	foundHandler := false
 	ast.Inspect(function.Body, func(node ast.Node) bool {
@@ -697,6 +698,142 @@ func TestNewPublicAccountHealthCheckDispatcherPrefersExplicitInjection(t *testin
 	if dispatcher != injected {
 		t.Fatalf("dispatcher = %T, want injected recorder", dispatcher)
 	}
+}
+
+func TestNewManagementCatalogSnapshotRebuilderRequiresSafeNodeBridge(t *testing.T) {
+	rebuilder, err := newManagementCatalogSnapshotRebuilder(config.Config{})
+	if err != nil || rebuilder != nil {
+		t.Fatalf("disabled rebuilder = %T, err = %v", rebuilder, err)
+	}
+	if _, err := newManagementCatalogSnapshotRebuilder(config.Config{ManagementAPIEnabled: true, Secret: "secret"}); err == nil {
+		t.Fatal("enabled rebuilder without Node URL error = nil")
+	}
+	rebuilder, err = newManagementCatalogSnapshotRebuilder(config.Config{
+		ManagementAPIEnabled:       true,
+		NodeInternalBaseURL:        "http://127.0.0.1:3001",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		Secret:                     "secret",
+	})
+	if err != nil || rebuilder == nil {
+		t.Fatalf("enabled rebuilder = %T, err = %v", rebuilder, err)
+	}
+}
+
+func TestProbeManagementCatalogSnapshotBridge(t *testing.T) {
+	if err := probeManagementCatalogSnapshotBridge(t.Context(), config.Config{}, nil); err != nil {
+		t.Fatalf("disabled probe error = %v", err)
+	}
+
+	success := &managementCatalogSnapshotBridgeStub{}
+	if err := probeManagementCatalogSnapshotBridge(t.Context(), config.Config{
+		NodeInternalRequestTimeout: time.Second,
+	}, success); err != nil {
+		t.Fatalf("success probe error = %v", err)
+	}
+	if success.probeCalls != 1 {
+		t.Fatalf("success probe calls = %d, want 1", success.probeCalls)
+	}
+
+	typedFailure := &managementCatalogSnapshotBridgeStub{
+		probeError: &modelcatalogsnapshotrebuild.ProbeError{Kind: modelcatalogsnapshotrebuild.ProbeFailureUnauthorized},
+	}
+	err := probeManagementCatalogSnapshotBridge(t.Context(), config.Config{
+		NodeInternalRequestTimeout: time.Second,
+	}, typedFailure)
+	if err == nil || !strings.Contains(err.Error(), string(modelcatalogsnapshotrebuild.ProbeFailureUnauthorized)) {
+		t.Fatalf("typed failure error = %v", err)
+	}
+
+	genericFailure := &managementCatalogSnapshotBridgeStub{
+		probeError: errors.New("http://127.0.0.1:3001 private response body"),
+	}
+	err = probeManagementCatalogSnapshotBridge(t.Context(), config.Config{
+		NodeInternalRequestTimeout: time.Second,
+	}, genericFailure)
+	if err == nil || strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "private response body") {
+		t.Fatalf("generic failure leaked details: %v", err)
+	}
+}
+
+func TestProbeManagementCatalogSnapshotBridgeUsesRequestTimeout(t *testing.T) {
+	bridge := &managementCatalogSnapshotBridgeStub{waitForContext: true}
+	started := time.Now()
+	err := probeManagementCatalogSnapshotBridge(t.Context(), config.Config{
+		NodeInternalRequestTimeout: 100 * time.Millisecond,
+	}, bridge)
+	if err == nil {
+		t.Fatal("timeout probe error = nil")
+	}
+	if elapsed := time.Since(started); elapsed < 80*time.Millisecond || elapsed > time.Second {
+		t.Fatalf("timeout elapsed = %s", elapsed)
+	}
+	if bridge.probeCalls != 1 {
+		t.Fatalf("timeout probe calls = %d, want 1", bridge.probeCalls)
+	}
+}
+
+func TestRunServerProbesManagementCatalogBridgeBeforeRouterAndListen(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+	runServer := findFunction(t, file, "RunServer")
+	positions := map[string]token.Pos{
+		"newManagementCatalogSnapshotRebuilder":               token.NoPos,
+		"probeManagementCatalogSnapshotBridge":                token.NoPos,
+		"newManagementAPIHandlerWithCatalogSnapshotRebuilder": token.NoPos,
+		"httpapi.NewRouter":                                   token.NoPos,
+		"server.ListenAndServe":                               token.NoPos,
+	}
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call.Fun)
+		if _, tracked := positions[name]; tracked && positions[name] == token.NoPos {
+			positions[name] = call.Pos()
+		}
+		return true
+	})
+	for name, position := range positions {
+		if position == token.NoPos {
+			t.Fatalf("RunServer missing call %s", name)
+		}
+	}
+	probe := positions["probeManagementCatalogSnapshotBridge"]
+	if positions["newManagementCatalogSnapshotRebuilder"] >= probe {
+		t.Fatal("bridge construction must precede startup probe")
+	}
+	for _, name := range []string{
+		"newManagementAPIHandlerWithCatalogSnapshotRebuilder",
+		"httpapi.NewRouter",
+		"server.ListenAndServe",
+	} {
+		if positions[name] <= probe {
+			t.Fatalf("%s must follow startup probe", name)
+		}
+	}
+}
+
+type managementCatalogSnapshotBridgeStub struct {
+	probeCalls     int
+	probeError     error
+	waitForContext bool
+}
+
+func (s *managementCatalogSnapshotBridgeStub) Rebuild(context.Context, string, string) error {
+	return nil
+}
+
+func (s *managementCatalogSnapshotBridgeStub) Probe(ctx context.Context) error {
+	s.probeCalls++
+	if s.waitForContext {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return s.probeError
 }
 
 func TestNewPublicAccountHealthCheckDispatcherFailsFastOnMissingOrInvalidURL(t *testing.T) {

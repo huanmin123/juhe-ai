@@ -1157,7 +1157,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  database.exec('DROP TABLE IF EXISTS gateway_model_catalog_snapshots')
+  database.exec(`
+    DROP TABLE IF EXISTS model_catalog_snapshot_rebuild_requests;
+    DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
+  `)
   ensureApiKeyPurposeSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)

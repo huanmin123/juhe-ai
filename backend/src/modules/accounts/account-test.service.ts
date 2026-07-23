@@ -311,9 +311,10 @@ export async function testOpenAIAccount(
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const diagnosticAttemptResponseText = diagnosticLastAttempt?.responseBodyText ?? ''
     const diagnosticAttemptText = diagnosticAttemptResponseText.trim()
-    const { responseText, responseHeaders } = resolveAccountTestResponseDiagnostics({
+    const { responseText, responseHeaders, responseTruncated } = resolveAccountTestResponseDiagnostics({
       downstreamResponseText: response.bodyText(),
       downstreamResponseHeaders: response.headersObject(),
+      downstreamResponseTruncated: response.bodyTruncated(),
       upstreamAttempt: diagnosticLastAttempt
     })
     const upstreamMessage = messagesTestMode
@@ -346,7 +347,6 @@ export async function testOpenAIAccount(
       ? 'model_not_found'
       : 'invalid_protocol_success_response'
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
-    const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,

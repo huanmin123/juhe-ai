@@ -329,7 +329,7 @@ async function loadOptions() {
     const nextOptions = await modelChecksApi.options(modelCheckScopeParams.value)
     options.value = nextOptions
     form.model = nextOptions.defaultModel
-    form.profile = nextOptions.defaultProfile
+    form.profile = 'quick'
     ensureRunModelMatchesTarget()
   } catch (error) {
     console.error(error)
@@ -490,7 +490,7 @@ function resetModelCheckScopedState() {
 function resetRunForm() {
   resetRunAccountSelection()
   form.model = options.value.defaultModel
-  form.profile = options.value.defaultProfile
+  form.profile = 'quick'
   ensureRunModelMatchesTarget()
 }
 

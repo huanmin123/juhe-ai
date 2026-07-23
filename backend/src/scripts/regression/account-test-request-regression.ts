@@ -106,6 +106,7 @@ assert.equal(parseAccountTestUpstreamErrorCode(upstreamFailureResponse), 'server
 assert.deepEqual(resolveAccountTestResponseDiagnostics({
   downstreamResponseText: 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"upstream_retryable_error","message":"上游流式响应在输出前失败，请重试"}}}\n\n',
   downstreamResponseHeaders: { 'content-type': 'text/event-stream; charset=utf-8' },
+  downstreamResponseTruncated: false,
   upstreamAttempt: {
     accountId: 'account-upstream-failure',
     accountName: '上游失败账户',
@@ -116,11 +117,13 @@ assert.deepEqual(resolveAccountTestResponseDiagnostics({
   }
 }), {
   responseText: upstreamFailureResponse,
-  responseHeaders: { 'content-type': 'application/json', 'x-upstream-diagnostic': 'original' }
+  responseHeaders: { 'content-type': 'application/json', 'x-upstream-diagnostic': 'original' },
+  responseTruncated: false
 }, '人工账号测试失败时必须展示上游原始响应正文和 header，不能展示网关生成的客户端重试错误')
 assert.deepEqual(resolveAccountTestResponseDiagnostics({
   downstreamResponseText: 'downstream fallback',
   downstreamResponseHeaders: { 'content-type': 'application/json' },
+  downstreamResponseTruncated: true,
   upstreamAttempt: {
     accountId: 'account-empty-upstream-body',
     accountName: '空上游正文账户',
@@ -130,8 +133,20 @@ assert.deepEqual(resolveAccountTestResponseDiagnostics({
   }
 }), {
   responseText: 'downstream fallback',
-  responseHeaders: { 'content-type': 'application/json' }
+  responseHeaders: { 'content-type': 'application/json' },
+  responseTruncated: true
 }, '上游诊断未捕获正文时必须保留下游兜底响应，避免返回空控制台')
+assert.equal(resolveAccountTestResponseDiagnostics({
+  downstreamResponseText: 'downstream',
+  downstreamResponseHeaders: {},
+  downstreamResponseTruncated: false,
+  upstreamAttempt: {
+    accountId: 'account-truncated-upstream-body',
+    accountName: '截断上游正文账户',
+    upstreamUrl: 'https://upstream.example/v1/responses',
+    responseBodyText: `${upstreamFailureResponse}\n[truncated]`
+  }
+}).responseTruncated, true, '展示上游有界诊断时必须同步返回正文截断标记')
 
 assert.equal(testPathFromEndpointMode('chat_json'), '/v1/chat/completions', 'Chat JSON 测试应使用 Chat Completions 路径')
 assert.equal(testPathFromEndpointMode('chat_sse'), '/v1/chat/completions', 'Chat SSE 测试应使用 Chat Completions 路径')

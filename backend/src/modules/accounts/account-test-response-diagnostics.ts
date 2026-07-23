@@ -4,21 +4,25 @@ import { parseOpenAISseEvents } from '../gateway/protocols/openai-v1/response-pa
 export function resolveAccountTestResponseDiagnostics(input: {
   downstreamResponseText: string
   downstreamResponseHeaders: Record<string, string | string[]>
+  downstreamResponseTruncated: boolean
   upstreamAttempt?: UpstreamAttempt
 }): {
   responseText: string
   responseHeaders: Record<string, string | string[]>
+  responseTruncated: boolean
 } {
   const upstreamResponseText = input.upstreamAttempt?.responseBodyText ?? ''
   if (!upstreamResponseText.trim()) {
     return {
       responseText: input.downstreamResponseText,
-      responseHeaders: input.downstreamResponseHeaders
+      responseHeaders: input.downstreamResponseHeaders,
+      responseTruncated: input.downstreamResponseTruncated
     }
   }
   return {
     responseText: upstreamResponseText,
-    responseHeaders: input.upstreamAttempt?.responseHeaders ?? input.downstreamResponseHeaders
+    responseHeaders: input.upstreamAttempt?.responseHeaders ?? input.downstreamResponseHeaders,
+    responseTruncated: upstreamResponseText.endsWith('\n[truncated]')
   }
 }
 

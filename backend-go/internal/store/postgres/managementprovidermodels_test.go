@@ -94,6 +94,22 @@ func TestMarshalManagementProviderModelPriceMapNormalizesNilToObject(t *testing.
 	}
 }
 
+func TestMarkManagementModelCatalogSnapshotDirtyMapsScope(t *testing.T) {
+	q := &managementCustomProviderModelUpdateQueriesStub{}
+	if err := markManagementModelCatalogSnapshotDirty(t.Context(), q, "personal", " sys_user "); err != nil {
+		t.Fatalf("mark personal dirty: %v", err)
+	}
+	if q.dirtyInput.Scope != "personal" || q.dirtyInput.SystemAccountID != "sys_user" {
+		t.Fatalf("personal dirty input = %+v", q.dirtyInput)
+	}
+	if err := markManagementModelCatalogSnapshotDirty(t.Context(), q, "global", "sys_user"); err != nil {
+		t.Fatalf("mark global dirty: %v", err)
+	}
+	if q.dirtyInput.Scope != "all" || q.dirtyInput.SystemAccountID != "" {
+		t.Fatalf("global dirty input = %+v", q.dirtyInput)
+	}
+}
+
 func TestUpdateManagementCustomProviderModelMergesLockedSnapshotAndValidatesBeforeUpdate(t *testing.T) {
 	price := 1.0
 	newPrice := 2.0
@@ -115,6 +131,9 @@ func TestUpdateManagementCustomProviderModelMergesLockedSnapshotAndValidatesBefo
 	}
 	if q.updateInput.InputUsdPer1m.Float64 != newPrice || !q.updateInput.InputUsdPer1m.Valid || q.updateInput.SupportedApiProtocolsJson != "[]" {
 		t.Fatalf("update input = %+v", q.updateInput)
+	}
+	if q.dirtyInput.Scope != "personal" || q.dirtyInput.SystemAccountID != "sys_user" || !q.dirtyInput.UpdatedAt.Valid {
+		t.Fatalf("dirty input = %+v", q.dirtyInput)
 	}
 }
 
@@ -155,7 +174,7 @@ func TestUpdateManagementCustomProviderModelTransactionPropagatesErrorsAndRollsB
 		wantCalls []string
 	}{
 		{name: "update", updateErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "rollback"}},
-		{name: "commit", commitErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "commit", "rollback"}},
+		{name: "commit", commitErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "mark-dirty", "commit", "rollback"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -175,6 +194,8 @@ type managementCustomProviderModelUpdateQueriesStub struct {
 	updateErr   error
 	updateCalls int
 	updateInput postgresqueries.UpdateManagementCustomProviderModelParams
+	dirtyInput  postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams
+	dirtyErr    error
 }
 
 func (s *managementCustomProviderModelUpdateQueriesStub) LockManagementCustomProviderModel(context.Context, postgresqueries.LockManagementCustomProviderModelParams) (postgresqueries.LockManagementCustomProviderModelRow, error) {
@@ -185,6 +206,11 @@ func (s *managementCustomProviderModelUpdateQueriesStub) UpdateManagementCustomP
 	s.updateInput = input
 	return s.updated, s.updateErr
 }
+func (s *managementCustomProviderModelUpdateQueriesStub) MarkManagementModelCatalogSnapshotRebuildDirty(_ context.Context, input postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error {
+	s.dirtyInput = input
+	return s.dirtyErr
+}
+
 type managementCustomProviderModelUpdateTxStub struct {
 	pgx.Tx
 	locked               postgresqueries.LockManagementCustomProviderModelRow
@@ -206,6 +232,13 @@ func (s *managementCustomProviderModelUpdateTxStub) QueryRow(_ context.Context, 
 		return managementProviderModelStaticRow{values: customProviderModelValues(s.updated)}
 	}
 	return managementProviderModelStaticRow{err: fmt.Errorf("unexpected SQL: %s", sql)}
+}
+func (s *managementCustomProviderModelUpdateTxStub) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "model_catalog_snapshot_rebuild_requests") {
+		s.calls = append(s.calls, "mark-dirty")
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	}
+	return pgconn.CommandTag{}, fmt.Errorf("unexpected SQL: %s", sql)
 }
 func (s *managementCustomProviderModelUpdateTxStub) Commit(context.Context) error {
 	s.calls = append(s.calls, "commit")

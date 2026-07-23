@@ -17,6 +17,8 @@ assert(runPanel.includes('深度检测'), '模型检测面板必须提供深度�
 assert(runPanel.includes(':disabled="comparisonSelectDisabled"'), '可信对比账户选择必须受提交状态控制')
 assert(runPanel.includes(':disabled="accountSelectDisabled"'), '目标 AI 账户选择不能被快速检测开关禁用')
 assert(view.includes("profile: 'quick'"), '前端默认 profile 必须为 quick')
+assert.equal((view.match(/form\.profile = 'quick'/g) ?? []).length, 2, '加载选项和重置表单都必须固定恢复快速检测')
+assert(!view.includes('form.profile = nextOptions.defaultProfile'), '后端旧版 defaultProfile 不得把页面默认切回深度检测')
 assert(view.includes('profile: form.profile'), '提交必须透传实际检测 profile')
 assert(view.includes('const comparisonSelectDisabled = computed(() => submitting.value)'), '快速检测时必须允许选择可信对比账户')
 assert(view.includes('trustedComparison: Boolean(trustedComparisonAccountId)'), '快速检测和深度检测都必须透传可信对比选择')

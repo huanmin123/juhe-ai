@@ -70,6 +70,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/recorddispatch"
 	"juhe-ai/backend-go/internal/secretcrypto"
@@ -236,6 +237,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			recordType:      "management operation log",
 		})
 	}
+	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
+	if err != nil {
+		return err
+	}
+	if err := probeManagementCatalogSnapshotBridge(ctx, cfg, catalogSnapshotBridge); err != nil {
+		return err
+	}
+
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
 	if cfg.ManagementAPIEnabled {
@@ -244,7 +253,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
 	}
-	managementHandlers := newManagementAPIHandlerWithOperationLogSubmitter(
+	managementHandlers := newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		cfg,
 		store,
 		stateRedis,
@@ -254,6 +263,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAccountInvalidator,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
+		catalogSnapshotBridge,
 	)
 	var gatewayModelsHandler http.Handler
 	if cfg.GatewayModelsEnabled {
@@ -832,7 +842,7 @@ func newManagementAPIHandler(
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
-	return newManagementAPIHandlerWithOperationLogSubmitter(
+	return newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		cfg,
 		store,
 		stateRedis,
@@ -842,10 +852,11 @@ func newManagementAPIHandler(
 		systemAccountInvalidator,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
+		nil,
 	)
 }
 
-func newManagementAPIHandlerWithOperationLogSubmitter(
+func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
@@ -855,6 +866,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 	systemAccountInvalidator managementAPIInvalidator,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
+	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
@@ -874,9 +886,10 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
+		Store:            store,
+		Invalidator:      systemAccountInvalidator,
+		CatalogRebuilder: catalogSnapshotRebuilder,
+		Logger:           logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
@@ -1298,6 +1311,47 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		StatsUsageOverviewHandler:               httpapi.NewManagementStatsUsageOverviewHandler(statsOverviewService),
 		MyStatsUsageOverviewHandler:             httpapi.NewManagementMyStatsUsageOverviewHandler(statsOverviewService),
 	}
+}
+
+type managementCatalogSnapshotBridge interface {
+	managementprovidermodels.CatalogSnapshotRebuilder
+	httpapi.ReadinessProber
+}
+
+func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementCatalogSnapshotBridge, error) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	timeout := cfg.NodeInternalSnapshotRebuildTimeout
+	if timeout == 0 {
+		timeout = time.Minute
+	}
+	return modelcatalogsnapshotrebuild.NewClientWithTimeouts(
+		cfg.NodeInternalBaseURL,
+		cfg.Secret,
+		timeout,
+		cfg.NodeInternalRequestTimeout,
+	)
+}
+
+func probeManagementCatalogSnapshotBridge(
+	ctx context.Context,
+	cfg config.Config,
+	bridge managementCatalogSnapshotBridge,
+) error {
+	if bridge == nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, cfg.NodeInternalRequestTimeout)
+	defer cancel()
+	if err := bridge.Probe(probeCtx); err != nil {
+		var probeError *modelcatalogsnapshotrebuild.ProbeError
+		if errors.As(err, &probeError) {
+			return fmt.Errorf("Node 模型目录快照 bridge readiness 启动门禁失败: %s", probeError.Kind)
+		}
+		return errors.New("Node 模型目录快照 bridge readiness 启动门禁失败")
+	}
+	return nil
 }
 
 type operationLogEnqueueClient interface {
