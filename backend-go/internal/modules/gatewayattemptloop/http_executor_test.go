@@ -53,7 +53,7 @@ func TestHTTPExecutorReturnsRetryableTransportFailure(t *testing.T) {
 	executor := HTTPExecutor{Prepare: func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
 		return gatewayupstream.Input{}, gatewayresponse.Input{}, nil
 	}}
-	result, err := executor.Execute(context.Background(), Attempt{})
+	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true})
 	if err == nil || !result.RetryAllowed || result.Committed || result.Failure.Message == "" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -90,7 +90,7 @@ func TestHTTPExecutorUsesExplicitPolicyOnlyWhenRuleMatches(t *testing.T) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil }), ResponseDisposition: gatewayretry.ResponseDispositionCompleteTransparent}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate})
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, ReplayAllowed: true})
 	if err == nil || !result.RetryAllowed || result.Committed || result.Failure.ErrorCode != "rate_limit" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -108,7 +108,7 @@ func TestHTTPExecutorMarksCredentialFailureAsKeyScopedWhenAlternativeExists(t *t
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil })}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, HasAlternativeKeys: true})
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, HasAlternativeKeys: true, ReplayAllowed: true})
 	if err == nil || !result.RetryAllowed || !result.KeyScopedFailure || result.Committed {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}

@@ -16,7 +16,7 @@ func TestRunRetriesNextAPIKeyBeforeNextAccount(t *testing.T) {
 		{Success: true, Committed: true},
 	}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: 10 * time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{1, 3}), apiKeyCandidate("b", []int{0})}})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{1, 3}), apiKeyCandidate("b", []int{0})}, ReplayAllowed: true})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -33,7 +33,7 @@ func TestRunExplicitRetryNextSkipsRemainingKeys(t *testing.T) {
 	first := apiKeyCandidate("a", []int{0, 1})
 	first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "retry_next"})}})
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, ReplayAllowed: true})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 || executor.attempts[1].CandidateIndex != 1 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -49,7 +49,7 @@ func TestRunAppliesCooldownThenAdvancesAccount(t *testing.T) {
 		"action": "rate_limited", "error_codes": []any{"rate_limit"}, "reset_strategy": "duration", "duration_hours": float64(1),
 	})}})
 	service := newTestService(t, executor, applier, Config{MaxAttempts: 3, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, ReplayAllowed: true})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(applier.mutations) != 1 || applier.mutations[0].Decision.Action != PolicyActionCooldown {
 		t.Fatalf("result = %+v err=%v mutations=%+v", result, err, applier.mutations)
 	}
@@ -62,7 +62,7 @@ func TestRunStopsAfterCommitAndOnNonRetryableFailure(t *testing.T) {
 	} {
 		executor := &executorStub{results: []AttemptResult{attemptResult}}
 		service := newTestService(t, executor, nil, Config{MaxAttempts: 3, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-		result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}})
+		result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, ReplayAllowed: true})
 		if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 {
 			t.Fatalf("result = %+v err=%v attempts=%d", result, err, len(executor.attempts))
 		}
@@ -74,7 +74,7 @@ func TestRunHonorsMaxAttemptsAndSkipsUnavailableKeys(t *testing.T) {
 	candidate := apiKeyCandidate("a", []int{0, 1, 2})
 	candidate.APIKeyRuntime[0].Status = "disabled"
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 1, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{candidate}})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{candidate}, ReplayAllowed: true})
 	if err != nil || result.Outcome != OutcomeMaxAttempts || len(executor.attempts) != 1 || executor.attempts[0].APIKeyIndex != 1 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -83,12 +83,31 @@ func TestRunHonorsMaxAttemptsAndSkipsUnavailableKeys(t *testing.T) {
 func TestRunCapsAPIKeyAttemptsPerCandidate(t *testing.T) {
 	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true, KeyScopedFailure: true}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 8, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{0, 1, 2, 3}), oauthCandidate("b")}})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{0, 1, 2, 3}), oauthCandidate("b")}, ReplayAllowed: true})
 	if err != nil || result.Outcome != OutcomeCandidatesExhausted || len(executor.attempts) != 3 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
 	if executor.attempts[2].CandidateIndex != 1 {
 		t.Fatalf("third attempt should advance account: %+v", executor.attempts)
+	}
+}
+
+func TestRunCapsDistinctCandidateAttempts(t *testing.T) {
+	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true}}
+	candidates := []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b"), oauthCandidate("c"), oauthCandidate("d"), oauthCandidate("e")}
+	service := newTestService(t, executor, nil, Config{MaxAttempts: 16, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: candidates, ReplayAllowed: true})
+	if err != nil || result.Outcome != OutcomeMaxAttempts || len(executor.attempts) != MaxCandidateAttemptsPerRequest {
+		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
+	}
+}
+
+func TestRunDoesNotReplayUnlessRequestIsClassifiedSafe(t *testing.T) {
+	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true}}
+	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}})
+	if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || result.LastAttempt == nil || result.LastAttempt.RetryAllowed {
+		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
 }
 

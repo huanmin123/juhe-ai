@@ -32,12 +32,12 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	upstreamInput, responseInput, err := e.Prepare(ctx, attempt)
 	if err != nil {
-		return AttemptResult{RetryAllowed: true, Failure: FailureFacts{Message: err.Error()}}, err
+		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: err.Error()}}, err
 	}
 	upstreamInput.Context = ctx
 	dispatchResult, dispatchErr := e.Dispatcher.Dispatch(upstreamInput)
 	if dispatchErr != nil {
-		return AttemptResult{RetryAllowed: true, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
+		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
 	}
 	responseInput.Context = ctx
 	responseInput.Dispatch = dispatchResult
@@ -92,7 +92,7 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	return AttemptResult{
 		Committed:        handled.TransportCommitted || handled.SemanticCommitted || handled.BytesWritten > 0,
-		RetryAllowed:     handled.RetryAllowed,
+		RetryAllowed:     handled.RetryAllowed && attempt.ReplayAllowed,
 		KeyScopedFailure: handled.Handoff.Retry.Classification.WouldAvoidAPIKey,
 		Failure:          FailureFacts{StatusCode: failure.StatusCode, ErrorCode: boundedText(errorCode, 256), ErrorType: boundedText(errorType, 256), BodyText: boundedText(bodyText, 64<<10), Message: boundedText(message, 1000)},
 		Usage:            handled.Handoff.Usage,

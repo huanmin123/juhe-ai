@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	DefaultMaxAttempts            = 16
-	MaxAttempts                   = 512
-	MaxAPIKeyAttemptsPerCandidate = 2
+	DefaultMaxAttempts             = 16
+	MaxAttempts                    = 512
+	MaxAPIKeyAttemptsPerCandidate  = 2
+	MaxCandidateAttemptsPerRequest = 4
 )
 
 type Outcome string
@@ -44,6 +45,7 @@ type Attempt struct {
 	Budget             AttemptBudget
 	PolicySettings     PolicySettings
 	PolicyNow          time.Time
+	ReplayAllowed      bool
 }
 
 type AttemptResult struct {
@@ -94,8 +96,9 @@ type Config struct {
 }
 
 type Input struct {
-	Context    context.Context
-	Candidates []gatewaycandidatewindow.Candidate
+	Context       context.Context
+	Candidates    []gatewaycandidatewindow.Candidate
+	ReplayAllowed bool
 }
 
 type Result struct {
@@ -162,11 +165,16 @@ func (s *Service) Run(input Input) (Result, error) {
 	}
 
 	attemptIndex := 0
+	candidateAttempts := 0
 	for candidateIndex, candidate := range input.Candidates {
 		keyIndices := eligibleKeyIndices(candidate, startedAt)
 		if len(keyIndices) == 0 {
 			continue
 		}
+		if candidateAttempts >= MaxCandidateAttemptsPerRequest {
+			return s.finish(result, OutcomeMaxAttempts, result.LastAttempt, nil), nil
+		}
+		candidateAttempts++
 		for keyOffset, keyIndex := range keyIndices {
 			if attemptIndex >= s.config.MaxAttempts {
 				return s.finish(result, OutcomeMaxAttempts, nil, nil), nil
@@ -178,11 +186,14 @@ func (s *Service) Run(input Input) (Result, error) {
 				Index: attemptIndex, CandidateIndex: candidateIndex, Candidate: candidate,
 				APIKeyIndex: keyIndex, HasAlternativeKeys: keyOffset+1 < len(keyIndices),
 				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout},
-				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(),
+				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: input.ReplayAllowed,
 			}
 			attemptResult, attemptErr := s.executor.Execute(ctx, attempt)
 			if validationErr := validateAttemptResult(attemptResult, attemptErr); validationErr != nil {
 				return Result{}, validationErr
+			}
+			if !input.ReplayAllowed {
+				attemptResult.RetryAllowed = false
 			}
 			summary := AttemptSummary{
 				Index: attemptIndex, CandidateIndex: candidateIndex, AccountID: candidate.Projection.AccountID,
