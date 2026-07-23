@@ -18,6 +18,7 @@ import { accountTestSchema } from './account-request.schemas.js'
 import { savedAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import {
+  accountManualTestCapabilitiesContextFromDraft,
   accountManualTestModelCapabilitiesAsync,
   accountManualTestOptionsAsync,
   normalizeAccountManualTestOptionsQuery,
@@ -111,10 +112,11 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
         ? await savedAccountDraftTestSnapshotAsync(account, accountSnapshot, requestAccess)
         : undefined
       const selection = draftAccount
-        ? {
-            model: draftAccount.healthCheckModel,
-            testEndpointMode: testOptions.testEndpointMode ?? draftAccount.healthCheckEndpointMode
-          }
+        ? await resolveAccountManualTestSelectionAsync(
+            accountManualTestCapabilitiesContextFromDraft(draftAccount),
+            draftAccount.healthCheckModel,
+            testOptions.testEndpointMode ?? draftAccount.healthCheckEndpointMode
+          )
         : await resolveAccountManualTestSelectionAsync(account, testOptions.model, testOptions.testEndpointMode)
       const task = await createAccountTestTaskAsync({
         account,

@@ -208,6 +208,25 @@ export function accountTestEndpointModesForAccount(
   )
 }
 
+export function accountTestEndpointModesForModel(
+  account: AccountTestEndpointModeSource,
+  model: string,
+  draftAccount?: AccountTestEndpointModeDraftSource,
+  capabilities?: { supportedApiProtocols?: readonly string[] }
+): AccountSupportedEndpointMode[] {
+  const source = { ...account, ...(draftAccount ?? {}) }
+  const imageOnlyModel = capabilities?.supportedApiProtocols?.includes('images') === true
+    || /^(?:gpt-image|dall-e)(?:-|$)/iu.test(model.trim())
+  if (
+    imageOnlyModel
+    && normalizedAccountType(source.type) === 'api_key'
+    && accountProviderProtocolKind(source) === 'openai_v1'
+  ) {
+    return ['images_json']
+  }
+  return accountTestEndpointModesForAccount(account, draftAccount)
+}
+
 export function prioritizeAccountTestEndpointModes(
   modes: readonly AccountSupportedEndpointMode[],
   healthCheckMode?: AccountHealthCheckEndpointMode
