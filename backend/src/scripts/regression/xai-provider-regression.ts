@@ -54,7 +54,7 @@ assert.equal(XAI_PROVIDER_CODE, 'xai')
 assert.equal(XAI_OPENAI_V1_PROFILE_ID, 'profile_xai_openai_v1')
 assert(DEFAULT_PROVIDER_SEEDS.some((seed) => seed.code === XAI_PROVIDER_CODE), '默认供应商种子应包含 xAI')
 assert(DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS.some((seed) => seed.id === XAI_OPENAI_V1_PROFILE_ID), '默认协议档案种子应包含 xAI OpenAI v1')
-assert.deepEqual(XAI_PROVIDER_SEED.defaultSupportedModels, ['grok-4.3'], 'xAI 默认模型应使用当前官方文本模型')
+assert.deepEqual(XAI_PROVIDER_SEED.defaultSupportedModels, ['grok-4.5'], 'xAI 默认模型应使用资料完整的当前官方文本模型')
 assert.deepEqual(XAI_OPENAI_V1_PROFILE_SEED.accountTypes, ['api_key'], 'xAI 官方 API 档案只允许 API Key')
 assert.deepEqual(
   XAI_OPENAI_V1_PROFILE_SEED.endpointFamilies,
@@ -94,7 +94,7 @@ assert.equal(providerDriverForAccount(account)?.id, 'xai', 'xAI 档案应由独�
 assert.equal(usageSemanticForProfile(account), 'openai', 'xAI 文本 usage 应复用 OpenAI 语义')
 
 const chatRequest = openAIRequest('/v1/chat/completions?trace=xai-chat', {
-  model: 'grok-4.3',
+  model: 'grok-4.5',
   messages: [{ role: 'user', content: 'hello xAI' }],
   stream: false
 })
@@ -105,7 +105,7 @@ assert.deepEqual(
 assert.equal(accountSupportsGatewayRequest(chatRequest, account), true)
 
 const responsesRequest = openAIRequest('/v1/responses?trace=xai-responses', {
-  model: 'grok-4.3',
+  model: 'grok-4.5',
   input: 'hello xAI responses',
   stream: true
 })
@@ -121,10 +121,10 @@ const requestParts = await buildGatewayUpstreamRequestParts(responsesRequest, ac
 })
 assert.equal(requestParts.headers.get('authorization'), 'Bearer xai-upstream-key', 'xAI API Key 应使用 Bearer Authorization')
 assert.equal(requestParts.headers.get('x-api-key'), null, 'xAI 上游不应收到 Anthropic x-api-key')
-assert.equal(JSON.parse(String(requestParts.body)).model, 'grok-4.3', 'xAI Responses 请求体应保留模型')
+assert.equal(JSON.parse(String(requestParts.body)).model, 'grok-4.5', 'xAI Responses 请求体应保留模型')
 
 const anthropicRequest = openAIRequest('/v1/messages', {
-  model: 'grok-4.3',
+  model: 'grok-4.5',
   messages: [{ role: 'user', content: 'not supported' }]
 })
 assert.deepEqual(buildGatewayUpstreamUrlsForAccount(account, anthropicRequest), [], 'xAI 档案不应承接 Anthropic Messages 原生请求')
@@ -173,8 +173,8 @@ assert.throws(() => repositories.createAccount({
 }, access), /账户支持模型不在供应商模型目录中：grok-imagine-image/, 'xAI 图片专用模型不得写入 Chat/Responses 文本账户')
 const savedXaiAccount = repositories.createAccount({
   ...xaiCreateInput,
-  supportedModels: ['grok-4.3'],
-  healthCheckModel: 'grok-4.3'
+  supportedModels: ['grok-4.5'],
+  healthCheckModel: 'grok-4.5'
 }, access)
 assert.throws(() => repositories.updateAccount(savedXaiAccount.id, {
   supportedModels: ['grok-imagine-image'],
@@ -212,8 +212,8 @@ function xaiAccount(): DispatchAccountSecret {
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
     supportedEndpointModes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-    supportedModels: ['grok-4.3'],
-    healthCheckModel: 'grok-4.3',
+    supportedModels: ['grok-4.5'],
+    healthCheckModel: 'grok-4.5',
     healthCheckEndpointMode: 'responses_json',
     baseUrl: 'https://api.x.ai/v1',
     apiKey: 'xai-upstream-key',

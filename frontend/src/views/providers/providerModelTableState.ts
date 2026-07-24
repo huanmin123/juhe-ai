@@ -24,11 +24,11 @@ export const baseModelColumns = [
   { title: '服务等级', key: 'serviceTiers', width: 280 },
   { title: '思考级别', key: 'reasoningEfforts', width: 360 },
   { title: '计费', key: 'prices', width: 230 },
-  { title: '缓存写入', key: 'cacheWrite', width: 180 },
+  { title: '缓存附加费', key: 'cacheWrite', width: 180 },
   { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
   { title: '音频 token 价格', key: 'audioTokenPrice', width: 180 },
   { title: '每张价格', key: 'imageUnitPrice', width: 130 },
-  { title: '上下文 / 输入 / 输出', key: 'context', width: 210 },
+  { title: '容量', key: 'context', width: 210 },
   { title: '操作', key: 'actions', width: 116, fixed: 'right' }
 ]
 

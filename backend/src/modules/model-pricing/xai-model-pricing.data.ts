@@ -8,11 +8,6 @@ export const xAIModelPricingData = [
     supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultReasoningEffort: 'high'
   }),
-  textModel('grok-4.3', 1_000_000, 1.25, 0.2, 2.5, {
-    catalogVisible: false,
-    supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'],
-    defaultReasoningEffort: 'low'
-  }),
   textModel('grok-4.20-0309-reasoning', 1_000_000, 1.25, 0.2, 2.5, {
     releaseDate: '2026-03-10'
   }),

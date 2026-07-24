@@ -103,7 +103,7 @@ export function seedDefaults(database: DatabaseSync): void {
       AND json_type(default_supported_models_json) = 'array'
   `).run(now, GPT_VENDOR_CODE)
 
-  const currentBuiltInModelIds = new Set<string>()
+  const currentBuiltInModelKeys = new Set<string>()
   const modelStatement = database.prepare(`
     INSERT INTO provider_model_catalog (
       id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
@@ -111,15 +111,25 @@ export function seedDefaults(database: DatabaseSync): void {
       default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
       codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
       input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
-      cache_write_1h_usd_per_1m, service_tier_prices_json,
+      cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
       long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
       long_context_input_cost_multiplier, long_context_output_cost_multiplier,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
       output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
     ) VALUES (
-      ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, 'active',
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?, ?, ?
     )
     ON CONFLICT(provider_code, model) DO UPDATE SET
+      status = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.status ELSE excluded.status END,
       mode = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.mode ELSE excluded.mode END,
       catalog_order = excluded.catalog_order,
       release_date = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.release_date ELSE excluded.release_date END,
@@ -140,6 +150,11 @@ export function seedDefaults(database: DatabaseSync): void {
       cached_input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cached_input_usd_per_1m ELSE excluded.cached_input_usd_per_1m END,
       cache_write_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_usd_per_1m ELSE excluded.cache_write_usd_per_1m END,
       cache_write_1h_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.cache_write_1h_usd_per_1m ELSE excluded.cache_write_1h_usd_per_1m END,
+      cache_storage_usd_per_1m_per_hour = CASE
+        WHEN provider_model_catalog.source = 'manual-override'
+        THEN coalesce(provider_model_catalog.cache_storage_usd_per_1m_per_hour, excluded.cache_storage_usd_per_1m_per_hour)
+        ELSE excluded.cache_storage_usd_per_1m_per_hour
+      END,
       service_tier_prices_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.service_tier_prices_json ELSE excluded.service_tier_prices_json END,
       long_context_input_token_threshold = excluded.long_context_input_token_threshold,
       long_context_input_token_threshold_inclusive = excluded.long_context_input_token_threshold_inclusive,
@@ -151,15 +166,19 @@ export function seedDefaults(database: DatabaseSync): void {
       audio_output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.audio_output_usd_per_1m ELSE excluded.audio_output_usd_per_1m END,
       output_usd_per_image = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_image ELSE excluded.output_usd_per_image END,
       supports_prompt_caching = excluded.supports_prompt_caching,
-      catalog_visible = min(provider_model_catalog.catalog_visible, excluded.catalog_visible),
-      source = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.source ELSE excluded.source END,
+      catalog_visible = CASE
+        WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override')
+        THEN min(provider_model_catalog.catalog_visible, excluded.catalog_visible)
+        ELSE excluded.catalog_visible
+      END,
+      source = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override') THEN provider_model_catalog.source ELSE excluded.source END,
       updated_at = excluded.updated_at
   `)
   for (const provider of DEFAULT_PROVIDER_SEEDS) {
     if (provider.code === 'hybrid' || provider.code === 'openai') continue
     for (const model of listProviderModelPricing(provider.code)) {
       const modelId = providerModelCatalogId(provider.code, model.model)
-      currentBuiltInModelIds.add(modelId)
+      currentBuiltInModelKeys.add(`${provider.code}\u0000${model.model}`)
       modelStatement.run(
         modelId,
         provider.code,
@@ -184,6 +203,7 @@ export function seedDefaults(database: DatabaseSync): void {
         model.cachedInputUsdPer1M ?? null,
         model.cacheWriteUsdPer1M ?? null,
         model.cacheWrite1hUsdPer1M ?? null,
+        model.cacheStorageUsdPer1MPerHour ?? null,
         JSON.stringify(model.serviceTierPrices ?? {}),
         model.longContextInputTokenThreshold ?? null,
         model.longContextInputTokenThresholdInclusive ? 1 : 0,
@@ -203,16 +223,16 @@ export function seedDefaults(database: DatabaseSync): void {
     }
   }
   const generatedModelRows = database.prepare(`
-    SELECT id FROM provider_model_catalog
+    SELECT id, provider_code, model FROM provider_model_catalog
     WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm', 'xai')
-  `).all() as unknown as Array<{ id: string }>
+  `).all() as unknown as Array<{ id: string; provider_code: string; model: string }>
   const disableStaleGeneratedModel = database.prepare(`
     UPDATE provider_model_catalog
     SET status = 'disabled', catalog_visible = 0, updated_at = ?
     WHERE id = ?
   `)
   for (const row of generatedModelRows) {
-    if (!currentBuiltInModelIds.has(row.id)) disableStaleGeneratedModel.run(now, row.id)
+    if (!currentBuiltInModelKeys.has(`${row.provider_code}\u0000${row.model}`)) disableStaleGeneratedModel.run(now, row.id)
   }
 
   const protocolStatement = database.prepare(`

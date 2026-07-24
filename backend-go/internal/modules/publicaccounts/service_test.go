@@ -985,24 +985,24 @@ func TestServiceAddPassesTargetOwnerAndProviderToModelCatalog(t *testing.T) {
 	}
 }
 
-func TestServiceAddAndUpdateAcceptActiveUnpricedCodexAutoReview(t *testing.T) {
+func TestServiceAddAndUpdateAcceptActiveUnpricedCatalogModel(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	reader := providerModelReaderWithItems(
 		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: defaultGPTHealthCheckModel, Scope: "built_in", Status: "active"},
-		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "codex-auto-review", Scope: "built_in", Status: "active"},
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "gpt-unpriced-test", Scope: "built_in", Status: "active"},
 	)
 	service := newPublicAccountServiceForTest(store, reader)
 
 	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"Codex 自动审查创建账号",
+		"未计价模型创建账号",
 		defaultGPTHealthCheckModel,
-		"codex-auto-review",
+		"gpt-unpriced-test",
 	))
 	if err != nil {
-		t.Fatalf("add Codex auto review account: %v", err)
+		t.Fatalf("add unpriced catalog model account: %v", err)
 	}
-	if created.Account == nil || !slices.Contains(created.Account.SupportedModels, "codex-auto-review") {
-		t.Fatalf("created account = %+v, want codex-auto-review", created.Account)
+	if created.Account == nil || !slices.Contains(created.Account.SupportedModels, "gpt-unpriced-test") {
+		t.Fatalf("created account = %+v, want gpt-unpriced-test", created.Account)
 	}
 	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
 		t.Fatalf("create catalog query = %+v, want active unpriced-inclusive catalog", reader.inputs)
@@ -1016,9 +1016,9 @@ func TestServiceAddAndUpdateAcceptActiveUnpricedCodexAutoReview(t *testing.T) {
 		}, true),
 	})
 	if err != nil {
-		t.Fatalf("remove Codex auto review model: %v", err)
+		t.Fatalf("remove unpriced catalog model: %v", err)
 	}
-	if updated.Account == nil || slices.Contains(updated.Account.SupportedModels, "codex-auto-review") {
+	if updated.Account == nil || slices.Contains(updated.Account.SupportedModels, "gpt-unpriced-test") {
 		t.Fatalf("updated account = %+v, want model removed", updated.Account)
 	}
 	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
@@ -1030,14 +1030,14 @@ func TestServiceAddAndUpdateAcceptActiveUnpricedCodexAutoReview(t *testing.T) {
 		AccountID: created.Account.ID,
 		SupportedModels: NewStringListValue([]string{
 			defaultGPTHealthCheckModel,
-			"codex-auto-review",
+			"gpt-unpriced-test",
 		}, true),
 	})
 	if err != nil {
-		t.Fatalf("restore Codex auto review model: %v", err)
+		t.Fatalf("restore unpriced catalog model: %v", err)
 	}
-	if updated.Account == nil || !slices.Contains(updated.Account.SupportedModels, "codex-auto-review") {
-		t.Fatalf("updated account = %+v, want codex-auto-review restored", updated.Account)
+	if updated.Account == nil || !slices.Contains(updated.Account.SupportedModels, "gpt-unpriced-test") {
+		t.Fatalf("updated account = %+v, want gpt-unpriced-test restored", updated.Account)
 	}
 	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
 		t.Fatalf("restore catalog query = %+v, want active unpriced-inclusive catalog", reader.inputs)

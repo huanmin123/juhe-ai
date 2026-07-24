@@ -120,7 +120,7 @@ export const DEFAULT_GLOBAL_SETTINGS = [
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2'] as const
 export const DEFAULT_GPT_SUPPORTED_MODELS = [...DEFAULT_OPENAI_SUPPORTED_MODELS] as const
-export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.3'] as const
+export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.5'] as const
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'] as const
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro'] as const
@@ -395,7 +395,7 @@ export const XAI_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.x.ai/v1',
-  defaultHealthCheckModel: 'grok-4.3',
+  defaultHealthCheckModel: 'grok-4.5',
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]

@@ -158,7 +158,6 @@ function buildOpenAIModelCandidates(model: string): string[] {
   if (model.startsWith('gpt-5.6-terra-')) candidates.add('gpt-5.6-terra')
   if (model.startsWith('gpt-5.6-luna-')) candidates.add('gpt-5.6-luna')
   if (model.startsWith('gpt-5.5-')) candidates.add('gpt-5.5')
-  if (model.startsWith('gpt-5-search-api-')) candidates.add('gpt-5-search-api')
   if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
   if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
   if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
@@ -229,7 +228,6 @@ function buildXAIModelCandidates(model: string): string[] {
 const modelDateSuffixPattern = /-(?:\d{4}-\d{2}-\d{2}|\d{8})$/
 
 const glmModelCandidateBases = [
-  'glm-5.2-free',
   'glm-5.2',
   'glm-5.1',
   'glm-5-turbo',
@@ -244,8 +242,6 @@ const glmModelCandidateBases = [
   'glm-4.5-x',
   'glm-4.5',
   'glm-4-32b-0414-128k',
-  'glm-4-long',
-  'glm-4-flashx-250414',
   'glm-4-flash-250414'
 ]
 const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
@@ -366,7 +362,6 @@ const openAIModelReleaseDates = new Map<string, string>([
   ['gpt-realtime', '2025-08-28'],
   ['gpt-5', '2025-08-07'],
   ['gpt-5-chat-latest', '2025-08-07'],
-  ['gpt-5-search-api', '2025-08-07'],
   ['gpt-5-mini', '2025-08-07'],
   ['gpt-5-nano', '2025-08-07'],
   ['o3-pro', '2025-06-10'],

@@ -194,13 +194,10 @@ function assertGlmModelCatalog(): void {
     'glm-4.5-airx',
     'glm-4.5-flash',
     'glm-4-32b-0414-128k',
-    'glm-4-long',
-    'glm-4-flashx-250414',
     'glm-4-flash-250414'
   ]) {
     assert(pricing.some((item) => item.model === id), `GLM 价格目录应包含官方文本模型 ${id}`)
   }
-  assert(pricing.some((item) => item.model === 'glm-5.2-free'), 'GLM 价格目录应保留历史 glm-5.2-free 估算项')
 
   const catalog = listProviderModelCatalog({
     providerCode: GLM_PROVIDER_CODE,
@@ -208,7 +205,6 @@ function assertGlmModelCatalog(): void {
     includeUnpriced: true
   })
   assert(catalog.some((item) => item.model === 'glm-4.7-flash'), 'GLM 模型目录应包含官方免费 glm-4.7-flash')
-  assert.equal(catalog.some((item) => item.model === 'glm-5.2-free'), false, '非官方 glm-5.2-free 不应进入 GLM 可见模型目录')
   assert(catalog.every((item) => item.providerCode === GLM_PROVIDER_CODE), 'GLM 模型目录不应混入其他供应商模型')
 }
 

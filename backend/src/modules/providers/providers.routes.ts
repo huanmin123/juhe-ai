@@ -245,6 +245,7 @@ const modelPriceSetSchema = z.object({
   cachedInputUsdPer1M: nullableNumberSchema,
   cacheWriteUsdPer1M: nullableNumberSchema,
   cacheWrite1hUsdPer1M: nullableNumberSchema,
+  cacheStorageUsdPer1MPerHour: nullableNumberSchema,
   imageInputUsdPer1M: nullableNumberSchema,
   imageOutputUsdPer1M: nullableNumberSchema,
   audioInputUsdPer1M: nullableNumberSchema,
@@ -418,6 +419,11 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
       if (capabilityMessage) {
         res.status(400).json(badRequest(capabilityMessage))
+        return
+      }
+      const completenessMessage = validateBuiltInModelCompleteness(next)
+      if (completenessMessage) {
+        res.status(400).json(badRequest(completenessMessage))
         return
       }
       const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, configurationPatch)
@@ -798,6 +804,21 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   }
   if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
     return '默认思考级别必须属于支持的思考级别'
+  }
+  return undefined
+}
+
+function validateBuiltInModelCompleteness(input: CustomModelPricingInput & {
+  releaseDate?: string | null
+  contextWindowTokens?: number | null
+  maxInputTokens?: number | null
+}): string | undefined {
+  if (!input.releaseDate) return '内置模型必须配置发布时间'
+  if (!input.supportedApiProtocols?.length) return '内置模型必须配置接口协议'
+  if (!customInputHasDirectPrice(input)) return '内置模型必须配置当前价格'
+  const isTextModel = !input.mode?.startsWith('image') && !input.mode?.startsWith('audio') && input.mode !== 'embedding'
+  if (isTextModel && !input.contextWindowTokens && !input.maxInputTokens) {
+    return '内置文本模型必须配置上下文或最大输入容量'
   }
   return undefined
 }

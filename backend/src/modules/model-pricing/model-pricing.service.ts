@@ -34,6 +34,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices?: ServiceTierPrices
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
@@ -66,6 +67,7 @@ export interface ModelPriceSet {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -547,6 +549,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
+    cacheStorageUsdPer1MPerHour: perMillion(item.cache_storage_input_token_cost_per_hour),
     serviceTierPrices: rawServiceTierPrices(item),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
@@ -590,6 +593,7 @@ function rawServiceTierPrices(item: RawModelPricing): ServiceTierPrices | undefi
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority),
+    cacheStorageUsdPer1MPerHour: perMillion(item.cache_storage_input_token_cost_per_hour_priority),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token_priority),
     audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token)
   })
@@ -599,6 +603,7 @@ function rawServiceTierPrices(item: RawModelPricing): ServiceTierPrices | undefi
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex),
+    cacheStorageUsdPer1MPerHour: perMillion(item.cache_storage_input_token_cost_per_hour_flex),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token_flex),
     audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token)
   })

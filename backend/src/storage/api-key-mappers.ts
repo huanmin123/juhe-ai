@@ -56,13 +56,6 @@ export function apiKeySummariesFromRows(
   }))
 }
 
-export function apiKeyListItemsFromRows(
-  rows: ApiKeyRow[],
-  access?: AccessScope
-): Array<Omit<ApiKeySummary, 'usage'>> {
-  return apiKeySummariesFromRows(rows, access, { includeUsage: false }).map(({ usage: _usage, ...item }) => item)
-}
-
 export async function apiKeySummariesFromRowsAsync(
   rows: ApiKeyRow[],
   access?: AccessScope,
@@ -86,13 +79,6 @@ export async function apiKeySummariesFromRowsAsync(
     accountNames,
     usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
-}
-
-export async function apiKeyListItemsFromRowsAsync(
-  rows: ApiKeyRow[],
-  access?: AccessScope
-): Promise<Array<Omit<ApiKeySummary, 'usage'>>> {
-  return (await apiKeySummariesFromRowsAsync(rows, access, { includeUsage: false })).map(({ usage: _usage, ...item }) => item)
 }
 
 function apiKeySummaryFromRow(

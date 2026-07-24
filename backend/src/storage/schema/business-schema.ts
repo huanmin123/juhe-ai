@@ -137,6 +137,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cached_input_usd_per_1m REAL,
       cache_write_usd_per_1m REAL,
       cache_write_1h_usd_per_1m REAL,
+      cache_storage_usd_per_1m_per_hour REAL,
       service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       long_context_input_token_threshold INTEGER,
       long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
@@ -1162,9 +1163,17 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
   `)
   ensureApiKeyPurposeSchema(database)
+  ensureProviderModelCacheStorageSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureProviderModelCacheStorageSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(provider_model_catalog)').all() as Array<{ name?: string }>
+  if (!columns.some((column) => column.name === 'cache_storage_usd_per_1m_per_hour')) {
+    database.exec('ALTER TABLE provider_model_catalog ADD COLUMN cache_storage_usd_per_1m_per_hour REAL')
+  }
 }
 
 function ensureApiKeyPurposeSchema(database: DatabaseSync): void {

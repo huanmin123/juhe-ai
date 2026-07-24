@@ -45,6 +45,9 @@ export interface RawModelPricing {
   cache_creation_input_token_cost_above_1hr?: number
   cache_creation_input_token_cost_above_1hr_priority?: number
   cache_creation_input_token_cost_above_1hr_flex?: number
+  cache_storage_input_token_cost_per_hour?: number
+  cache_storage_input_token_cost_per_hour_priority?: number
+  cache_storage_input_token_cost_per_hour_flex?: number
   cache_read_input_token_cost?: number
   cache_read_input_token_cost_priority?: number
   cache_read_input_token_cost_flex?: number

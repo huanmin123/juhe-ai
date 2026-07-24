@@ -32,6 +32,7 @@ interface ProviderModelCatalogRow {
   cached_input_usd_per_1m?: number | null
   cache_write_usd_per_1m?: number | null
   cache_write_1h_usd_per_1m?: number | null
+  cache_storage_usd_per_1m_per_hour?: number | null
   service_tier_prices_json: string
   long_context_input_token_threshold?: number | null
   long_context_input_token_threshold_inclusive: number | boolean
@@ -327,8 +328,12 @@ export async function updateBuiltInProviderModelPricesAsync(id: string, patch: P
 export async function updateBuiltInProviderModelConfigurationAsync(id: string, patch: ProviderModelConfigurationPatch): Promise<BuiltInProviderModelRecord | undefined> {
   const { assignments, params } = configurationPatchAssignments(patch)
   if (!assignments.length) return findBuiltInProviderModelByIdAsync(id)
-  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}, source = ?, updated_at = ? WHERE id = ?`
-  const writeParams = [...params, 'manual-override', nowIso(), id]
+  const marksManualOverride = Object.keys(patch).some((field) => field !== 'status' && field !== 'catalogVisible')
+  const sourceAssignment = marksManualOverride
+    ? ', source = ?'
+    : ", source = CASE WHEN source = 'manual-override' THEN source ELSE ? END"
+  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ?`
+  const writeParams = [...params, marksManualOverride ? 'manual-override' : 'manual-visibility-override', nowIso(), id]
   if (runtimeConfig.databaseDriver !== 'postgres') {
     getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[])
   } else {
@@ -416,7 +421,7 @@ export function normalizeServiceTierPrices(value: unknown): Record<string, Provi
 }
 
 const priceKeys = [
-  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour',
   'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M', 'outputUsdPerImage'
 ] as const
 
@@ -426,7 +431,7 @@ function columns(): string {
     default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
     codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
     input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
-    cache_write_1h_usd_per_1m, service_tier_prices_json, long_context_input_token_threshold,
+    cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json, long_context_input_token_threshold,
     long_context_input_token_threshold_inclusive,
     long_context_input_cost_multiplier, long_context_output_cost_multiplier, image_input_usd_per_1m,
     image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m, output_usd_per_image,
@@ -447,7 +452,9 @@ function fromRow(row: ProviderModelCatalogRow): BuiltInProviderModelRecord {
     codexMultiAgentVersion: text(row.codex_multi_agent_version) as 'v2' | undefined,
     inputUsdPer1M: number(row.input_usd_per_1m), outputUsdPer1M: number(row.output_usd_per_1m),
     cachedInputUsdPer1M: number(row.cached_input_usd_per_1m), cacheWriteUsdPer1M: number(row.cache_write_usd_per_1m),
-    cacheWrite1hUsdPer1M: number(row.cache_write_1h_usd_per_1m), serviceTierPrices: normalizeServiceTierPrices(json(row.service_tier_prices_json)),
+    cacheWrite1hUsdPer1M: number(row.cache_write_1h_usd_per_1m),
+    cacheStorageUsdPer1MPerHour: number(row.cache_storage_usd_per_1m_per_hour),
+    serviceTierPrices: normalizeServiceTierPrices(json(row.service_tier_prices_json)),
     imageInputUsdPer1M: number(row.image_input_usd_per_1m), imageOutputUsdPer1M: number(row.image_output_usd_per_1m),
     audioInputUsdPer1M: number(row.audio_input_usd_per_1m), audioOutputUsdPer1M: number(row.audio_output_usd_per_1m),
     outputUsdPerImage: number(row.output_usd_per_image), contextWindowTokens: integer(row.context_window_tokens),

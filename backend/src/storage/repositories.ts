@@ -100,7 +100,7 @@ import {
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot, upsertAccountUsageSnapshotsAsync } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, getApiKeyUsageByIdsAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
+import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
@@ -485,7 +485,6 @@ export {
   findApiKeySecretAsync,
   findApiKeySummary,
   findApiKeySummaryAsync,
-  getApiKeyUsageByIdsAsync,
   ensureDefaultApiKeysForSystemAccount,
   ensureDefaultApiKeysForSystemAccountAsync,
   ensureChatApiKeyForSystemAccount,

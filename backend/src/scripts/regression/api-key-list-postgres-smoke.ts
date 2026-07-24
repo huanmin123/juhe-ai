@@ -8,7 +8,6 @@ import {
   createApiKeyRecordAsync,
   createGroupAsync,
   createRouteStrategyAsync,
-  getApiKeyUsageByIdsAsync,
   listApiKeysPageAsync
 } from '../../storage/repositories.js'
 
@@ -95,9 +94,7 @@ try {
   assert(keywordIds.includes(matchedByNamePrefix.id), `PG API Key 列表 keyword 应命中名称前缀值：${keywordDiagnostics()}`)
   assert(!keywordIds.includes(middleNameOnly.id), 'PG API Key 列表 keyword 不应命中名称中间包含值')
   assert.equal(Object.prototype.hasOwnProperty.call(keywordResult.items.find((item) => item.id === matchedByName.id) ?? {}, 'key'), false, 'PG API Key 列表不应返回完整密钥字段')
-  assert.equal(Object.prototype.hasOwnProperty.call(keywordResult.items.find((item) => item.id === matchedByName.id) ?? {}, 'usage'), false, 'PG API Key 列表不应同步返回累计用量')
-  const usageResult = await getApiKeyUsageByIdsAsync([matchedByName.id], access)
-  assert.equal(usageResult.items[0]?.usage.requestCount, 12, 'PG API Key 用量接口应按当前页 ID 返回累计用量')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 12, 'PG API Key 列表应同步返回当前页累计用量')
 
   const wildcardResult = await listApiKeysPageAsync(access, { keyword: `percent%literal ${marker}`, page: 1, pageSize: 20 })
   const wildcardIds = wildcardResult.items.map((item) => item.id)

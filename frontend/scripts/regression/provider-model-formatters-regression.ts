@@ -8,9 +8,12 @@ import {
   defaultProtocolsForModelCategory,
   defaultProtocolsForProviderModelCategory,
   formatModelCategory,
+  formatModelCacheCostSummary,
+  formatModelCapacitySummary,
   formatModelReasoningCapabilities,
   formatModelServiceTierCapabilities,
   formatPrice,
+  formatTokens,
   getModelCategory
 } from '../../src/views/providers/providerModelFormatters'
 import type { ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
@@ -49,7 +52,26 @@ assert.equal(
   'Low / High',
   '模型目录不能把上游元数据标成客户端默认思考级别'
 )
-assert.equal(formatPrice(undefined), '官方未公布', '缺失价格不能显示成含义不明的短横线')
+assert.equal(formatPrice(undefined), '—', '缺失价格应使用紧凑占位，不重复渲染未公布文案')
+assert.equal(formatTokens(1_048_576), '1M（1,048,576）', '二进制 1M Token 容量应兼顾易读单位和精确值')
+assert.equal(formatTokens(65_536), '64K（65,536）', '二进制 64K Token 容量应保留精确值')
+assert.equal(formatTokens(131_072), '128K（131,072）', '二进制 128K Token 容量应保留精确值')
+assert.equal(formatTokens(128_000), '128K', '十进制 128K Token 容量应保持官方单位')
+assert.equal(
+  formatModelCapacitySummary(providerModel({ contextWindowTokens: 200_000, maxOutputTokens: 128_000 })),
+  '上下文 200K · 最大输出 128K',
+  '厂商未公布最大输入时只展示已有容量事实，不得按上下文推导'
+)
+assert.equal(
+  formatModelCacheCostSummary(providerModel({ cachedInputUsdPer1M: 0.2, supportsPromptCaching: true })),
+  '无独立费用',
+  '自动缓存只有命中价格时不应显示缺失写入费'
+)
+assert.equal(
+  formatModelCacheCostSummary(providerModel({ cacheStorageUsdPer1MPerHour: 4.5, supportsPromptCaching: true })),
+  '存储/小时 $4.5',
+  '按时长计费的缓存存储必须与一次性写入价格分开展示'
+)
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('audio'), ['audio'], '音频模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('text'), ['responses', 'chat_completions'], '文本模型默认协议不应变化')
@@ -104,7 +126,8 @@ assert.match(catalogModalSource, /tier-price-metrics/, '服务等级价格必须
 assert.match(catalogModalSource, /暂无价格/, '缺失服务等级价格应合并为简洁空态')
 assert.match(catalogModalSource, /prices\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
 assert.match(catalogModalSource, /prices\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
-assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')
+assert.match(catalogModalSource, /缓存附加费/, '桌面与移动端必须使用统一的缓存附加费语义')
+assert.doesNotMatch(formatterSource, /按上下文推导|官方未单独公布|官方未公布/, '容量与计费格式化不能伪造推导值或堆叠缺失文案')
 assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 
 console.log('供应商模型 formatter 回归通过：模型类别规则已拆分，现有分类和默认协议行为保持不变')

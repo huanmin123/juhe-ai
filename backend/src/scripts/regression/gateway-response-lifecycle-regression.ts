@@ -113,6 +113,11 @@ const auditStageLogger = {
     if (fields.event === 'gateway.request.stage' && fields.stage === 'audit.finalize') {
       auditStageEvents.push(fields)
     }
+  },
+  debug(fields: Record<string, unknown>) {
+    if (fields.event === 'gateway.request.stage' && fields.stage === 'audit.finalize') {
+      auditStageEvents.push(fields)
+    }
   }
 } as unknown as Logger
 const auditResponse = new MockResponse() as unknown as Response
