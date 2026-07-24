@@ -185,6 +185,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cached_input_usd_per_1m REAL,
       cache_write_usd_per_1m REAL,
       cache_write_1h_usd_per_1m REAL,
+      cache_storage_usd_per_1m_per_hour REAL,
       service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       image_input_usd_per_1m REAL,
       image_output_usd_per_1m REAL,
@@ -1164,6 +1165,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   `)
   ensureApiKeyPurposeSchema(database)
   ensureProviderModelCacheStorageSchema(database)
+  ensureCustomProviderModelCacheStorageSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
@@ -1173,6 +1175,13 @@ function ensureProviderModelCacheStorageSchema(database: DatabaseSync): void {
   const columns = database.prepare('PRAGMA table_info(provider_model_catalog)').all() as Array<{ name?: string }>
   if (!columns.some((column) => column.name === 'cache_storage_usd_per_1m_per_hour')) {
     database.exec('ALTER TABLE provider_model_catalog ADD COLUMN cache_storage_usd_per_1m_per_hour REAL')
+  }
+}
+
+function ensureCustomProviderModelCacheStorageSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(custom_provider_models)').all() as Array<{ name?: string }>
+  if (!columns.some((column) => column.name === 'cache_storage_usd_per_1m_per_hour')) {
+    database.exec('ALTER TABLE custom_provider_models ADD COLUMN cache_storage_usd_per_1m_per_hour REAL')
   }
 }
 

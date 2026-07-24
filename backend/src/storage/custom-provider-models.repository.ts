@@ -60,6 +60,7 @@ export interface CustomProviderModelRecord {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices?: Record<string, import('../domain/types.js').ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
@@ -239,6 +240,7 @@ export interface UpsertCustomProviderModelInput {
   cachedInputUsdPer1M?: number | null
   cacheWriteUsdPer1M?: number | null
   cacheWrite1hUsdPer1M?: number | null
+  cacheStorageUsdPer1MPerHour?: number | null
   serviceTierPrices?: unknown
   imageInputUsdPer1M?: number | null
   imageOutputUsdPer1M?: number | null
@@ -274,6 +276,7 @@ interface CustomProviderModelRow {
   cached_input_usd_per_1m?: number | null
   cache_write_usd_per_1m?: number | null
   cache_write_1h_usd_per_1m?: number | null
+  cache_storage_usd_per_1m_per_hour?: number | null
   service_tier_prices_json?: string | null
   image_input_usd_per_1m?: number | null
   image_output_usd_per_1m?: number | null
@@ -471,12 +474,12 @@ export function upsertCustomProviderModel(
         mode, supported_api_protocols_json, supported_service_tiers_json,
         supported_reasoning_efforts_json, default_reasoning_effort,
         release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
-        input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+        input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
         image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
         output_usd_per_image, currency, pricing_notes, capability_notes, notes,
         created_by, updated_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider_code = excluded.provider_code,
         model = excluded.model,
@@ -499,6 +502,7 @@ export function upsertCustomProviderModel(
         cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
         cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
         cache_write_1h_usd_per_1m = excluded.cache_write_1h_usd_per_1m,
+        cache_storage_usd_per_1m_per_hour = excluded.cache_storage_usd_per_1m_per_hour,
         service_tier_prices_json = excluded.service_tier_prices_json,
         image_input_usd_per_1m = excluded.image_input_usd_per_1m,
         image_output_usd_per_1m = excluded.image_output_usd_per_1m,
@@ -534,6 +538,7 @@ export function upsertCustomProviderModel(
       optionalNumber(input.cachedInputUsdPer1M) ?? null,
       optionalNumber(input.cacheWriteUsdPer1M) ?? null,
       optionalNumber(input.cacheWrite1hUsdPer1M) ?? null,
+      optionalNumber(input.cacheStorageUsdPer1MPerHour) ?? null,
       JSON.stringify(normalizeServiceTierPrices(input.serviceTierPrices)),
       optionalNumber(input.imageInputUsdPer1M) ?? null,
       optionalNumber(input.imageOutputUsdPer1M) ?? null,
@@ -590,12 +595,12 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       mode, supported_api_protocols_json, supported_service_tiers_json,
       supported_reasoning_efforts_json, default_reasoning_effort,
       release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
-      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
       output_usd_per_image, currency, pricing_notes, capability_notes, notes,
       created_by, updated_by, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       provider_code = excluded.provider_code,
       model = excluded.model,
@@ -618,6 +623,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
       cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
       cache_write_1h_usd_per_1m = excluded.cache_write_1h_usd_per_1m,
+      cache_storage_usd_per_1m_per_hour = excluded.cache_storage_usd_per_1m_per_hour,
       service_tier_prices_json = excluded.service_tier_prices_json,
       image_input_usd_per_1m = excluded.image_input_usd_per_1m,
       image_output_usd_per_1m = excluded.image_output_usd_per_1m,
@@ -652,6 +658,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
     optionalNumber(input.cachedInputUsdPer1M) ?? null,
     optionalNumber(input.cacheWriteUsdPer1M) ?? null,
     optionalNumber(input.cacheWrite1hUsdPer1M) ?? null,
+    optionalNumber(input.cacheStorageUsdPer1MPerHour) ?? null,
     JSON.stringify(normalizeServiceTierPrices(input.serviceTierPrices)),
     optionalNumber(input.imageInputUsdPer1M) ?? null,
     optionalNumber(input.imageOutputUsdPer1M) ?? null,
@@ -909,7 +916,7 @@ function customProviderModelColumns(): string {
     mode, supported_api_protocols_json, supported_service_tiers_json,
     supported_reasoning_efforts_json, default_reasoning_effort,
     release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
-    input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+    input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, cache_storage_usd_per_1m_per_hour, service_tier_prices_json,
     image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
     output_usd_per_image, currency, pricing_notes, capability_notes, notes,
     created_by, updated_by, created_at, updated_at
@@ -1001,6 +1008,7 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     cachedInputUsdPer1M: optionalNumber(row.cached_input_usd_per_1m),
     cacheWriteUsdPer1M: optionalNumber(row.cache_write_usd_per_1m),
     cacheWrite1hUsdPer1M: optionalNumber(row.cache_write_1h_usd_per_1m),
+    cacheStorageUsdPer1MPerHour: optionalNumber(row.cache_storage_usd_per_1m_per_hour),
     serviceTierPrices: normalizeServiceTierPrices(parseJsonObject(row.service_tier_prices_json)),
     imageInputUsdPer1M: optionalNumber(row.image_input_usd_per_1m),
     imageOutputUsdPer1M: optionalNumber(row.image_output_usd_per_1m),

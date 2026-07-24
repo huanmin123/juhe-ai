@@ -76,6 +76,18 @@ export function usageRecordCostAmountRows(record: UsageRecordSummary): UsageReco
   const costBreakdown = record.costBreakdown
   if (!costBreakdown) return []
 
+  if (costBreakdown.lineItems?.length) {
+    const rows = costBreakdown.lineItems.map((line) => ({
+      key: `line:${line.key}:cost`,
+      label: `${line.label}成本`,
+      value: formatCost(line.costUsd)
+    }))
+    if (isFiniteNumber(costBreakdown.accountChargeUsd)) {
+      rows.push({ key: 'accountChargeUsd', label: '合计成本', value: formatCost(costBreakdown.accountChargeUsd) })
+    }
+    return rows
+  }
+
   const family = usageRecordCostProviderFamily(record)
   const rows: UsageRecordCostDetailRow[] = []
   const cacheWriteStandardTokens = standardCacheWriteTokens(record)
@@ -102,6 +114,14 @@ export function usageRecordCostPriceRows(record: UsageRecordSummary): UsageRecor
   const costBreakdown = record.costBreakdown
   if (!costBreakdown) return []
 
+  if (costBreakdown.lineItems?.length) {
+    return costBreakdown.lineItems.map((line) => ({
+      key: `line:${line.key}:price`,
+      label: `${line.label}单价`,
+      value: formatLineUnitPrice(line.unitPriceUsd, line.unit, line.unitSize)
+    }))
+  }
+
   const family = usageRecordCostProviderFamily(record)
   const rows: UsageRecordCostDetailRow[] = []
   const cacheWriteStandardTokens = standardCacheWriteTokens(record)
@@ -127,6 +147,17 @@ export function usageRecordCostPriceRows(record: UsageRecordSummary): UsageRecor
     rows.push({ key: 'outputUsdPerImage', label: '每张图片单价', value: formatCost(costBreakdown.outputUsdPerImage) })
   }
   return rows
+}
+
+function formatLineUnitPrice(price: number, unit: string, unitSize: number): string {
+  if (unit === 'token' && unitSize === 1_000_000) return formatUnitPrice(price)
+  const suffix = unit === 'image' ? ' / 张'
+    : unit === 'request' ? ' / 次'
+      : unit === 'second' ? ' / 秒'
+        : unit === 'minute' ? ' / 分钟'
+          : unit === 'token_hour' ? ' / Token·小时'
+            : ''
+  return `${formatCost(price)}${suffix}`
 }
 
 export function usageRecordCostProviderFamily(record: UsageRecordSummary): UsageRecordCostProviderFamily {

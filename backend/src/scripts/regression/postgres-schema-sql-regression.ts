@@ -136,7 +136,7 @@ assert.match(
   /long_context_input_token_threshold, long_context_input_token_threshold_inclusive, long_context_input_cost_multiplier/,
   'Node PG 模型目录 INSERT 必须包含长上下文阈值 inclusive 列'
 )
-assert.match(postgresSeedDefaultsSource, /Array\.from\(\{ length: 38 \}/, 'Node PG 模型目录 seed 必须为 38 个参数生成占位符')
+assert.match(postgresSeedDefaultsSource, /Array\.from\(\{ length: 39 \}/, 'Node PG 模型目录 seed 必须为 39 个参数生成占位符')
 assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,\s*model\.catalogVisible !== false,/, 'Node PG 模型目录 seed 必须向 boolean 字段传递 boolean，不能传 0/1')
 assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
 assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigration}`, /health_check_endpoint_mode text NOT NULL[\s\S]+?'interactions_json', 'interactions_sse'/, 'Go/PG baseline 与追赶迁移组合后必须允许 Gemini Interactions 健康检查模式')
@@ -308,7 +308,12 @@ assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXIST
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS client_profile text NOT NULL DEFAULT 'auto'/, 'PostgreSQL schema 不应再补 client_profile')
 assert.doesNotMatch(sql, /ALTER TABLE IF EXISTS api_keys ADD COLUMN IF NOT EXISTS explicit_hybrid_route_rules_json text/, 'PostgreSQL schema 不应再补 explicit_hybrid_route_rules_json')
 assert.doesNotMatch(sql, /ALTER TABLE openai_compatible_files ADD COLUMN container_id\b/, 'PostgreSQL schema 不应重复为 openai_compatible_files.container_id 补列')
-assert.doesNotMatch(sql, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含运行时补列语句')
+assert.match(sql, /ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/, '既有 PostgreSQL 内置模型目录必须补缓存存储价格列')
+assert.match(sql, /ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision/, '既有 PostgreSQL 自定义模型目录必须补缓存存储价格列')
+const schemaWithoutApprovedProviderModelUpgrades = sql
+  .replace(/ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision;/g, '')
+  .replace(/ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision;/g, '')
+assert.doesNotMatch(schemaWithoutApprovedProviderModelUpgrades, /\bALTER TABLE\b[\s\S]+\bADD COLUMN\b/i, 'PostgreSQL schema 不应包含未批准的运行时补列语句')
 assert.match(sql, /DROP INDEX IF EXISTS idx_usage_record_shard_entries_trace_c_created_sort/, 'PostgreSQL schema 应清理旧 usage catalog trace 索引')
 
 assert.doesNotMatch(sql, /\bPRAGMA\b/i, 'PostgreSQL SQL 不应残留 SQLite PRAGMA')
