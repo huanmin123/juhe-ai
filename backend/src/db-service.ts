@@ -16,6 +16,7 @@ import { shutdownChatGenerationRegistry } from './modules/chat/chat-generation-r
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
 import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { dbServiceSuccessLogLevel } from './shared/logging/runtime-log-policy.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
 const systemApiPrefix = '/__aisys__/api'
@@ -439,7 +440,7 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       : undefined)
   const jobId = message.jobId ?? message.requestId
   const operationId = message.operationId ?? jobId
-  logger.info({
+  logger.debug({
     event: 'db_service.request.start',
     service: 'juhe-ai',
     role: 'db-service',
@@ -453,7 +454,8 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
   }, 'DB service 请求开始')
   try {
     const result = await handleDbServiceOperation(message.operation)
-    logger.info({
+    const durationMs = Date.now() - startedAt
+    const completeFields = {
       event: 'db_service.request.complete',
       service: 'juhe-ai',
       role: 'db-service',
@@ -464,8 +466,14 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       parentId: message.parentId,
       operation: operationType,
       outcome: 'success',
-      durationMs: Date.now() - startedAt
-    }, 'DB service 请求完成')
+      durationMs
+    }
+    const completeMessage = `DB service 请求完成：${operationType}，${durationMs}ms`
+    if (dbServiceSuccessLogLevel(durationMs) === 'info') {
+      logger.info(completeFields, completeMessage)
+    } else {
+      logger.debug(completeFields, completeMessage)
+    }
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,
@@ -474,6 +482,7 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       result
     })
   } catch (error) {
+    const durationMs = Date.now() - startedAt
     logger.error(errorLogFields(error, {
       event: 'db_service.request.failed',
       service: 'juhe-ai',
@@ -485,8 +494,8 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       parentId: message.parentId,
       operation: operationType,
       outcome: 'unexpected_failure',
-      durationMs: Date.now() - startedAt
-    }), 'DB service 请求失败')
+      durationMs
+    }), `DB service 请求失败：${operationType}，${durationMs}ms`)
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,

@@ -1,6 +1,6 @@
 import type { Response } from 'express'
 
-import { getRequestLogger } from '../../../shared/request-context.js'
+import { getRequestLogger, markRequestProtocolTerminalOutcome } from '../../../shared/request-context.js'
 import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
@@ -309,6 +309,11 @@ export async function pipeUpstreamStream(
     pendingProtocolEvent = inspection.pendingEvent
     streamParserSkipped = inspection.skipped
     responseResourceId ??= inspection.responseResourceId
+    if (inspection.failedReceived) {
+      markRequestProtocolTerminalOutcome('failure')
+    } else if (inspection.terminalReceived) {
+      markRequestProtocolTerminalOutcome('success')
+    }
   }
   const closeIterator = () => {
     clientClosed = true

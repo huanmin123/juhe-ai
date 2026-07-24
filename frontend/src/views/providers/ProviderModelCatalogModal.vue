@@ -112,17 +112,20 @@
             </div>
           </template>
           <template v-else-if="column.key === 'prices'">
-            <div class="price-cell">
-              <span>输入 {{ formatPrice(record.inputUsdPer1M) }}</span>
-              <span>输出 {{ formatPrice(record.outputUsdPer1M) }}</span>
-              <span>缓存读 {{ formatPrice(record.cachedInputUsdPer1M) }}</span>
+            <div v-if="modelPriceEntries(record).length" class="price-cell">
+              <span v-for="entry in modelPriceEntries(record)" :key="entry.label">
+                {{ entry.label }} {{ entry.value }}
+              </span>
             </div>
+            <span v-else class="muted-text">—</span>
           </template>
           <template v-else-if="column.key === 'cacheWrite'">
-            <div class="price-cell">
-              <span>写入 {{ formatPrice(record.cacheWriteUsdPer1M) }}</span>
-              <span>1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</span>
+            <div v-if="modelCacheCostEntries(record).length" class="price-cell">
+              <span v-for="entry in modelCacheCostEntries(record)" :key="entry.label">
+                {{ entry.label }} {{ entry.value }}
+              </span>
             </div>
+            <span v-else class="muted-text">{{ formatModelCacheCostSummary(record) }}</span>
           </template>
           <template v-else-if="column.key === 'imageTokenPrice'">
             <div class="price-cell">
@@ -140,11 +143,12 @@
             <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
           </template>
           <template v-else-if="column.key === 'context'">
-            <div class="price-cell">
-              <span>总上下文 {{ formatModelContextTokens(record) }}</span>
-              <span>最大输入 {{ formatModelInputTokens(record) }}</span>
-              <span>最大输出 {{ formatModelOutputTokens(record) }}</span>
+            <div v-if="modelCapacityEntries(record).length" class="price-cell">
+              <span v-for="entry in modelCapacityEntries(record)" :key="entry.label">
+                {{ entry.label }} {{ entry.value }}
+              </span>
             </div>
+            <span v-else class="muted-text">—</span>
           </template>
           <template v-else-if="column.key === 'actions'">
             <RowActions :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
@@ -178,18 +182,14 @@
               <strong>{{ formatModelServiceTierCapabilities(record) }}</strong>
               <span>思考级别</span>
               <strong>{{ formatModelReasoningCapabilities(record) }}</strong>
-              <span>价格</span>
+              <span>计费</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
-              <span>缓存写入</span>
-              <strong>标准 {{ formatPrice(record.cacheWriteUsdPer1M) }} / 1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</strong>
+              <span>缓存附加费</span>
+              <strong>{{ formatModelCacheCostSummary(record) }}</strong>
               <span>服务等级价格</span>
               <strong>{{ formatServiceTierPriceSummary(record) }}</strong>
-              <span>总上下文</span>
-              <strong>{{ formatModelContextTokens(record) }}</strong>
-              <span>最大输入</span>
-              <strong>{{ formatModelInputTokens(record) }}</strong>
-              <span>最大输出</span>
-              <strong>{{ formatModelOutputTokens(record) }}</strong>
+              <span>容量</span>
+              <strong>{{ formatModelCapacitySummary(record) }}</strong>
             </div>
             <RowActions v-if="rowActions(record).length" variant="button" :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
           </article>
@@ -210,10 +210,9 @@ import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/type
 import {
   formatApiProtocol,
   formatModelCategory,
-  formatModelContextTokens,
-  formatModelInputTokens,
+  formatModelCacheCostSummary,
+  formatModelCapacitySummary,
   formatModelModalities,
-  formatModelOutputTokens,
   formatModelTools,
   formatModelPriceSummary,
   formatModelReasoningCapabilities,
@@ -225,6 +224,9 @@ import {
   formatPrice,
   formatUnitPrice,
   getApiProtocolTagColor,
+  modelCacheCostEntries,
+  modelCapacityEntries,
+  modelPriceEntries,
   modelScopeColor,
   modelStatusColor,
   type ModelCategoryKey
@@ -292,7 +294,8 @@ function tierPriceEntries(record: ProviderModelPricing, tier: string): TierPrice
     ['出', prices.outputUsdPer1M],
     ['读', prices.cachedInputUsdPer1M],
     ['写', prices.cacheWriteUsdPer1M],
-    ['1h', prices.cacheWrite1hUsdPer1M]
+    ['1h', prices.cacheWrite1hUsdPer1M],
+    ['存/h', prices.cacheStorageUsdPer1MPerHour]
   ]
   return entries.flatMap(([label, value]) => typeof value === 'number' ? [{ label, value }] : [])
 }

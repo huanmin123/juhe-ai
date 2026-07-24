@@ -242,7 +242,6 @@ const glmModelCandidateBases = [
   'glm-4.5-x',
   'glm-4.5',
   'glm-4-32b-0414-128k',
-  'glm-4-flashx-250414',
   'glm-4-flash-250414'
 ]
 const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]

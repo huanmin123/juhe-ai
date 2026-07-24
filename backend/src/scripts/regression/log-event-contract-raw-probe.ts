@@ -6,12 +6,17 @@ import {
   bindRequestContextFields,
   getRequestLogger,
   logRequestStage,
+  markRequestProtocolTerminalOutcome,
   requestContextMiddleware
 } from '../../shared/request-context.js'
+import { GATEWAY_SLOW_STAGE_THRESHOLD_MS } from '../../shared/logging/runtime-log-policy.js'
 
 class ProbeResponse extends EventEmitter {
   statusCode = 200
-  writableEnded = true
+
+  constructor(public writableEnded: boolean) {
+    super()
+  }
 
   setHeader(): this {
     return this
@@ -29,7 +34,7 @@ const req = {
     return undefined
   }
 } as unknown as Request
-const res = new ProbeResponse() as unknown as Response
+const res = new ProbeResponse(true) as unknown as Response
 
 requestContextMiddleware(req, res, () => {
   bindRequestContextFields({
@@ -47,10 +52,56 @@ requestContextMiddleware(req, res, () => {
       groupId: 'group-raw-probe',
       trafficSource: 'openai_compatible',
       probeIndex: index
-    })
+    }, 'success', index === 69
+      ? performance.now() - GATEWAY_SLOW_STAGE_THRESHOLD_MS - 1
+      : performance.now())
   }
   getRequestLogger().info({ event: 'request_logger_context_probe' }, 'probe')
   res.emit('finish')
+})
+
+const terminalCloseReq = {
+  ...req,
+  header(name: string): string | undefined {
+    if (name.toLowerCase() === 'x-trace-id') return 'trace-terminal-close-probe'
+    if (name.toLowerCase() === 'user-agent') return 'terminal-close-probe'
+    return undefined
+  }
+} as unknown as Request
+const terminalCloseRes = new ProbeResponse(false) as unknown as Response
+requestContextMiddleware(terminalCloseReq, terminalCloseRes, () => {
+  logRequestStage('downstream.finish')
+  markRequestProtocolTerminalOutcome('success')
+  terminalCloseRes.emit('close')
+})
+
+const abortedReq = {
+  ...req,
+  header(name: string): string | undefined {
+    if (name.toLowerCase() === 'x-trace-id') return 'trace-aborted-close-probe'
+    if (name.toLowerCase() === 'user-agent') return 'aborted-close-probe'
+    return undefined
+  }
+} as unknown as Request
+const abortedRes = new ProbeResponse(false) as unknown as Response
+requestContextMiddleware(abortedReq, abortedRes, () => {
+  logRequestStage('downstream.finish')
+  abortedRes.emit('close')
+})
+
+const failedTerminalReq = {
+  ...req,
+  header(name: string): string | undefined {
+    if (name.toLowerCase() === 'x-trace-id') return 'trace-failed-terminal-close-probe'
+    if (name.toLowerCase() === 'user-agent') return 'failed-terminal-close-probe'
+    return undefined
+  }
+} as unknown as Request
+const failedTerminalRes = new ProbeResponse(false) as unknown as Response
+requestContextMiddleware(failedTerminalReq, failedTerminalRes, () => {
+  logRequestStage('downstream.finish', { failureReason: 'protocol_failed' }, 'expected_failure')
+  markRequestProtocolTerminalOutcome('failure')
+  failedTerminalRes.emit('close')
 })
 
 await new Promise((resolve) => setImmediate(resolve))

@@ -9,6 +9,7 @@ interface GeminiTierPrices {
   inputUsdPer1M: number
   outputUsdPer1M: number
   cachedInputUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour?: number
   audioInputUsdPer1M?: number
 }
 
@@ -20,9 +21,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 1.5,
     outputUsdPer1M: 7.5,
     cachedInputUsdPer1M: 0.15,
+    cacheStorageUsdPer1MPerHour: 1,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: 0.075 },
-      priority: { inputUsdPer1M: 2.7, outputUsdPer1M: 13.5, cachedInputUsdPer1M: 0.27 }
+      flex: { inputUsdPer1M: 0.75, outputUsdPer1M: 3.75, cachedInputUsdPer1M: 0.075, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 2.7, outputUsdPer1M: 13.5, cachedInputUsdPer1M: 0.27, cacheStorageUsdPer1MPerHour: 1.8 }
     },
     supported_api_protocols: ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens', 'interactions'],
     input_modalities: ['text', 'image', 'video', 'audio', 'file'],
@@ -38,9 +40,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 0.3,
     outputUsdPer1M: 2.5,
     cachedInputUsdPer1M: 0.03,
+    cacheStorageUsdPer1MPerHour: 1,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.02 },
-      priority: { inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.05 }
+      flex: { inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.02, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.05, cacheStorageUsdPer1MPerHour: 1.8 }
     },
     supported_api_protocols: ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens', 'interactions'],
     input_modalities: ['text', 'image', 'video', 'audio', 'file'],
@@ -56,9 +59,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 1.5,
     outputUsdPer1M: 9,
     cachedInputUsdPer1M: 0.15,
+    cacheStorageUsdPer1MPerHour: 1,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.75, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.08 },
-      priority: { inputUsdPer1M: 2.7, outputUsdPer1M: 16.2, cachedInputUsdPer1M: 0.27 }
+      flex: { inputUsdPer1M: 0.75, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.08, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 2.7, outputUsdPer1M: 16.2, cachedInputUsdPer1M: 0.27, cacheStorageUsdPer1MPerHour: 1.8 }
     }
   ,
     supported_api_protocols: ["chat_completions","generate_content","stream_generate_content","count_tokens","interactions"],
@@ -75,9 +79,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 2,
     outputUsdPer1M: 12,
     cachedInputUsdPer1M: 0.2,
+    cacheStorageUsdPer1MPerHour: 4.5,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 1, outputUsdPer1M: 6, cachedInputUsdPer1M: 0.2 },
-      priority: { inputUsdPer1M: 3.6, outputUsdPer1M: 21.6, cachedInputUsdPer1M: 0.36 }
+      flex: { inputUsdPer1M: 1, outputUsdPer1M: 6, cachedInputUsdPer1M: 0.2, cacheStorageUsdPer1MPerHour: 4.5 },
+      priority: { inputUsdPer1M: 3.6, outputUsdPer1M: 21.6, cachedInputUsdPer1M: 0.36, cacheStorageUsdPer1MPerHour: 8.1 }
     },
     longContextInputTokenThreshold: 200_000,
     longContextInputCostMultiplier: 2,
@@ -97,9 +102,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 2,
     outputUsdPer1M: 12,
     cachedInputUsdPer1M: 0.2,
+    cacheStorageUsdPer1MPerHour: 4.5,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 1, outputUsdPer1M: 6, cachedInputUsdPer1M: 0.2 },
-      priority: { inputUsdPer1M: 3.6, outputUsdPer1M: 21.6, cachedInputUsdPer1M: 0.36 }
+      flex: { inputUsdPer1M: 1, outputUsdPer1M: 6, cachedInputUsdPer1M: 0.2, cacheStorageUsdPer1MPerHour: 4.5 },
+      priority: { inputUsdPer1M: 3.6, outputUsdPer1M: 21.6, cachedInputUsdPer1M: 0.36, cacheStorageUsdPer1MPerHour: 8.1 }
     },
     longContextInputTokenThreshold: 200_000,
     longContextInputCostMultiplier: 2,
@@ -119,10 +125,11 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 0.5,
     outputUsdPer1M: 3,
     cachedInputUsdPer1M: 0.05,
+    cacheStorageUsdPer1MPerHour: 1,
     audioInputUsdPer1M: 1,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.25, outputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.05, audioInputUsdPer1M: 0.5 },
-      priority: { inputUsdPer1M: 0.9, outputUsdPer1M: 5.4, cachedInputUsdPer1M: 0.09, audioInputUsdPer1M: 1.8 }
+      flex: { inputUsdPer1M: 0.25, outputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.05, audioInputUsdPer1M: 0.5, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 0.9, outputUsdPer1M: 5.4, cachedInputUsdPer1M: 0.09, audioInputUsdPer1M: 1.8, cacheStorageUsdPer1MPerHour: 1.8 }
     }
   ,
     supported_api_protocols: ["chat_completions","generate_content","stream_generate_content","count_tokens","interactions"],
@@ -140,10 +147,11 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 0.25,
     outputUsdPer1M: 1.5,
     cachedInputUsdPer1M: 0.025,
+    cacheStorageUsdPer1MPerHour: 1,
     audioInputUsdPer1M: 0.5,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.125, outputUsdPer1M: 0.75, cachedInputUsdPer1M: 0.0125, audioInputUsdPer1M: 0.25 },
-      priority: { inputUsdPer1M: 0.45, outputUsdPer1M: 2.7, cachedInputUsdPer1M: 0.045, audioInputUsdPer1M: 0.9 }
+      flex: { inputUsdPer1M: 0.125, outputUsdPer1M: 0.75, cachedInputUsdPer1M: 0.0125, audioInputUsdPer1M: 0.25, cacheStorageUsdPer1MPerHour: 0.5 },
+      priority: { inputUsdPer1M: 0.45, outputUsdPer1M: 2.7, cachedInputUsdPer1M: 0.045, audioInputUsdPer1M: 0.9, cacheStorageUsdPer1MPerHour: 1.8 }
     }
   ,
     supported_api_protocols: ["chat_completions","generate_content","stream_generate_content","count_tokens","interactions"],
@@ -160,9 +168,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 1.25,
     outputUsdPer1M: 10,
     cachedInputUsdPer1M: 0.125,
+    cacheStorageUsdPer1MPerHour: 4.5,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.625, outputUsdPer1M: 5, cachedInputUsdPer1M: 0.125 },
-      priority: { inputUsdPer1M: 2.25, outputUsdPer1M: 18, cachedInputUsdPer1M: 0.225 }
+      flex: { inputUsdPer1M: 0.625, outputUsdPer1M: 5, cachedInputUsdPer1M: 0.125, cacheStorageUsdPer1MPerHour: 4.5 },
+      priority: { inputUsdPer1M: 2.25, outputUsdPer1M: 18, cachedInputUsdPer1M: 0.225, cacheStorageUsdPer1MPerHour: 8.1 }
     },
     longContextInputTokenThreshold: 200_000,
     longContextInputCostMultiplier: 2,
@@ -182,10 +191,11 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 0.3,
     outputUsdPer1M: 2.5,
     cachedInputUsdPer1M: 0.03,
+    cacheStorageUsdPer1MPerHour: 1,
     audioInputUsdPer1M: 1,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.03, audioInputUsdPer1M: 0.5 },
-      priority: { inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.054, audioInputUsdPer1M: 1.8 }
+      flex: { inputUsdPer1M: 0.15, outputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.03, audioInputUsdPer1M: 0.5, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 0.54, outputUsdPer1M: 4.5, cachedInputUsdPer1M: 0.054, audioInputUsdPer1M: 1.8, cacheStorageUsdPer1MPerHour: 1.8 }
     }
   ,
     supported_api_protocols: ["chat_completions","generate_content","stream_generate_content","count_tokens","interactions"],
@@ -202,10 +212,11 @@ export const geminiModelPricingData: RawModelPricing[] = [
     inputUsdPer1M: 0.1,
     outputUsdPer1M: 0.4,
     cachedInputUsdPer1M: 0.01,
+    cacheStorageUsdPer1MPerHour: 1,
     audioInputUsdPer1M: 0.3,
     serviceTierPrices: {
-      flex: { inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: 0.01, audioInputUsdPer1M: 0.15 },
-      priority: { inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: 0.018, audioInputUsdPer1M: 0.54 }
+      flex: { inputUsdPer1M: 0.05, outputUsdPer1M: 0.2, cachedInputUsdPer1M: 0.01, audioInputUsdPer1M: 0.15, cacheStorageUsdPer1MPerHour: 1 },
+      priority: { inputUsdPer1M: 0.18, outputUsdPer1M: 0.72, cachedInputUsdPer1M: 0.018, audioInputUsdPer1M: 0.54, cacheStorageUsdPer1MPerHour: 1.8 }
     }
   ,
     supported_api_protocols: ["chat_completions","generate_content","stream_generate_content","count_tokens","interactions"],
@@ -247,6 +258,7 @@ function textModel(input: {
   inputUsdPer1M: number
   outputUsdPer1M: number
   cachedInputUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour: number
   audioInputUsdPer1M?: number
   serviceTierPrices?: { flex: GeminiTierPrices; priority: GeminiTierPrices }
   longContextInputTokenThreshold?: number
@@ -267,14 +279,17 @@ function textModel(input: {
     input_cost_per_token: usdPerToken(input.inputUsdPer1M),
     output_cost_per_token: usdPerToken(input.outputUsdPer1M),
     cache_read_input_token_cost: input.cachedInputUsdPer1M === undefined ? undefined : usdPerToken(input.cachedInputUsdPer1M),
+    cache_storage_input_token_cost_per_hour: usdPerToken(input.cacheStorageUsdPer1MPerHour),
     input_cost_per_audio_token: input.audioInputUsdPer1M === undefined ? undefined : usdPerToken(input.audioInputUsdPer1M),
     input_cost_per_token_flex: usdPerToken(input.serviceTierPrices?.flex.inputUsdPer1M),
     output_cost_per_token_flex: usdPerToken(input.serviceTierPrices?.flex.outputUsdPer1M),
     cache_read_input_token_cost_flex: usdPerToken(input.serviceTierPrices?.flex.cachedInputUsdPer1M),
+    cache_storage_input_token_cost_per_hour_flex: usdPerToken(input.serviceTierPrices?.flex.cacheStorageUsdPer1MPerHour),
     input_cost_per_audio_token_flex: usdPerToken(input.serviceTierPrices?.flex.audioInputUsdPer1M),
     input_cost_per_token_priority: usdPerToken(input.serviceTierPrices?.priority.inputUsdPer1M),
     output_cost_per_token_priority: usdPerToken(input.serviceTierPrices?.priority.outputUsdPer1M),
     cache_read_input_token_cost_priority: usdPerToken(input.serviceTierPrices?.priority.cachedInputUsdPer1M),
+    cache_storage_input_token_cost_per_hour_priority: usdPerToken(input.serviceTierPrices?.priority.cacheStorageUsdPer1MPerHour),
     input_cost_per_audio_token_priority: usdPerToken(input.serviceTierPrices?.priority.audioInputUsdPer1M),
     long_context_input_token_threshold: input.longContextInputTokenThreshold,
     long_context_input_cost_multiplier: input.longContextInputCostMultiplier,

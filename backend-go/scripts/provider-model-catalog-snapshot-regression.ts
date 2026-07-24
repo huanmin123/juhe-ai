@@ -62,6 +62,8 @@ assert.equal(geminiModels.has('gemini-embedding-001'), false, 'Gemini embedding 
 assert.equal(modelAtSnapshot('gemini', 'gemini-embedding-2').inputUsdPer1M, 0.2, 'Gemini Embedding 2 text price must match official pricing')
 assert(modelAtSnapshot('gemini', 'gemini-3.5-flash').supportedApiProtocols.includes('interactions'), 'Gemini 3.5 Flash must expose the official Interactions protocol')
 assert(modelAtSnapshot('gemini', 'gemini-2.5-pro').supportedApiProtocols.includes('interactions'), 'Gemini 2.5 Pro must expose the official Interactions protocol')
+assert.equal(modelAtSnapshot('gemini', 'gemini-3.1-pro-preview').cacheStorageUsdPer1MPerHour, 4.5, 'Gemini Pro cache storage must use the official per-hour price')
+assert.equal(modelAtSnapshot('gemini', 'gemini-3.5-flash').cacheStorageUsdPer1MPerHour, 1, 'Gemini Flash cache storage must use the official per-hour price')
 
 const grok420 = modelAtSnapshot('xai', 'grok-4.20-0309-reasoning')
 assert.equal(grok420.contextWindowTokens, 1_000_000, 'Grok 4.20 context window must match official xAI models')
@@ -104,13 +106,15 @@ for (const [model, context, output] of [
   ['glm-5.1', 200_000, 128_000],
   ['glm-5', 200_000, 128_000],
   ['glm-5-turbo', 200_000, 128_000],
-  ['glm-4-flashx-250414', 128_000, 16_000],
   ['glm-4-flash-250414', 128_000, 16_000]
 ] as const) {
   const item = modelAtSnapshot('glm', model)
   assert.equal(item.contextWindowTokens, context, `${model} total context must match the official GLM overview`)
   assert.equal(item.maxOutputTokens, output, `${model} max output must match the official GLM overview`)
 }
+assert.equal(listProviderModelPricingAsOf('glm', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).some((item) => item.model === 'glm-4-flashx-250414'), false, 'GLM model without an official USD price must stay out of the built-in snapshot')
+assert.equal(modelAtSnapshot('glm', 'glm-4.7-flash').cachedInputUsdPer1M, 0, 'GLM 4.7 Flash cached input must retain its official free price')
+assert.equal(modelAtSnapshot('glm', 'glm-4.7-flash').supportsPromptCaching, true, 'GLM 4.7 Flash must declare automatic prompt caching')
 
 for (const [model, context] of [
   ['glm-4.7', 200_000],
@@ -185,7 +189,7 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000075_w2_sync_provider_model_catalog_20260723.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000076_w2_sync_provider_model_catalog_cache_display_20260724.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'

@@ -116,6 +116,7 @@
     "test:audit-log-detail-layout": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/audit-log-detail-layout-regression.ts",
     "test:audit-payload-window-merge": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/audit-payload-window-merge-regression.ts",
     "test:log-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/log-progressive-loading-regression.ts",
+    "test:runtime-log-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/runtime-log-formatters-regression.ts",
     "test:runtime-display-contract": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/runtime-display-contract-regression.ts",
     "test:authorization-search-scheduler": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-search-scheduler-regression.ts",
     "test:authorization-user-usage-route-filters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-user-usage-route-filters-regression.ts",

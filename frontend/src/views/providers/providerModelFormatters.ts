@@ -324,56 +324,93 @@ function isProviderModelApiProtocol(value: string): value is ProviderModelApiPro
 }
 
 export function formatPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '—'
 }
 
 export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '—'
+}
+
+export interface ModelDisplayMetric {
+  label: string
+  value: string
+}
+
+export function modelPriceEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
+  const category = getModelCategory(item)
+  if (category === 'image') {
+    return definedMetrics([
+      ['图片输入', item.imageInputUsdPer1M, formatPrice],
+      ['图片输出', item.imageOutputUsdPer1M, formatPrice],
+      ['每张', item.outputUsdPerImage, formatUnitPrice]
+    ])
+  }
+  if (category === 'audio') {
+    return definedMetrics([
+      ['音频输入', item.audioInputUsdPer1M, formatPrice],
+      ['音频输出', item.audioOutputUsdPer1M, formatPrice]
+    ])
+  }
+  return definedMetrics([
+    ['输入', item.inputUsdPer1M, formatPrice],
+    ['输出', item.outputUsdPer1M, formatPrice],
+    ['缓存读', item.cachedInputUsdPer1M, formatPrice]
+  ])
 }
 
 export function formatModelPriceSummary(item: ProviderModelPricing): string {
-  const category = getModelCategory(item)
-  if (category === 'image') {
-    return [
-      `图片输入 ${formatPrice(item.imageInputUsdPer1M)}`,
-      `图片输出 ${formatPrice(item.imageOutputUsdPer1M)}`,
-      `每张 ${formatUnitPrice(item.outputUsdPerImage)}`
-    ].join(' / ')
-  }
-  if (category === 'audio') {
-    return [
-      `音频输入 ${formatPrice(item.audioInputUsdPer1M)}`,
-      `音频输出 ${formatPrice(item.audioOutputUsdPer1M)}`
-    ].join(' / ')
-  }
-  return [
-    `输入 ${formatPrice(item.inputUsdPer1M)}`,
-    `输出 ${formatPrice(item.outputUsdPer1M)}`,
-    `缓存读 ${formatPrice(item.cachedInputUsdPer1M)}`
-  ].join(' / ')
+  return formatMetricSummary(modelPriceEntries(item))
+}
+
+export function modelCacheCostEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
+  return definedMetrics([
+    ['写入', item.cacheWriteUsdPer1M, formatPrice],
+    ['1h 写入', item.cacheWrite1hUsdPer1M, formatPrice],
+    ['存储/小时', item.cacheStorageUsdPer1MPerHour, formatPrice]
+  ])
+}
+
+export function formatModelCacheCostSummary(item: ProviderModelPricing): string {
+  const entries = modelCacheCostEntries(item)
+  if (entries.length) return formatMetricSummary(entries)
+  return item.cachedInputUsdPer1M !== undefined || item.supportsPromptCaching ? '无独立费用' : '不适用'
 }
 
 export function formatTokens(value?: number): string {
   if (typeof value !== 'number') return '-'
+  if (value >= 1_048_576 && value % 1_048_576 === 0) {
+    return `${trimNumber(value / 1_048_576)}M（${value.toLocaleString('en-US')}）`
+  }
   if (value >= 1_000_000) return `${trimNumber(value / 1_000_000)}M`
+  if ((value < 100_000 && value % 1_024 === 0) || value % 16_384 === 0) {
+    return `${trimNumber(value / 1_024)}K（${value.toLocaleString('en-US')}）`
+  }
   if (value >= 1_000) return `${trimNumber(value / 1_000)}K`
   return String(value)
 }
 
-export function formatModelInputTokens(item: ProviderModelPricing): string {
-  if (item.maxInputTokens !== undefined) return formatTokens(item.maxInputTokens)
-  if (item.contextWindowTokens !== undefined && item.maxOutputTokens !== undefined) {
-    return `${formatTokens(Math.max(0, item.contextWindowTokens - item.maxOutputTokens))}（按上下文推导）`
-  }
-  return '官方未单独公布'
+export function modelCapacityEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
+  return definedMetrics([
+    ['上下文', item.contextWindowTokens, formatTokens],
+    ['最大输入', item.maxInputTokens, formatTokens],
+    ['最大输出', item.maxOutputTokens, formatTokens]
+  ])
 }
 
-export function formatModelContextTokens(item: ProviderModelPricing): string {
-  return item.contextWindowTokens === undefined ? '官方未单独公布' : formatTokens(item.contextWindowTokens)
+export function formatModelCapacitySummary(item: ProviderModelPricing): string {
+  return formatMetricSummary(modelCapacityEntries(item))
 }
 
-export function formatModelOutputTokens(item: ProviderModelPricing): string {
-  return item.maxOutputTokens === undefined ? '官方未单独公布' : formatTokens(item.maxOutputTokens)
+function definedMetrics(
+  entries: Array<[string, number | undefined, (value?: number) => string]>
+): ModelDisplayMetric[] {
+  return entries.flatMap(([label, value, formatter]) => (
+    typeof value === 'number' ? [{ label, value: formatter(value) }] : []
+  ))
+}
+
+function formatMetricSummary(entries: ModelDisplayMetric[]): string {
+  return entries.length ? entries.map((entry) => `${entry.label} ${entry.value}`).join(' · ') : '—'
 }
 
 export function formatModelModalities(values?: readonly string[]): string {

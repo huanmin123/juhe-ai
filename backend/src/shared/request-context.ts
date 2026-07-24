@@ -8,6 +8,7 @@ import type { SystemAccountRole } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import { captureExpectedFailureContext, captureUnexpectedFailureContext } from './logging/log-failure-context.js'
+import { gatewayRequestStageLogLevel } from './logging/runtime-log-policy.js'
 import { logger, logPublisherStats } from './logger.js'
 
 interface RequestStageSummary {
@@ -51,6 +52,7 @@ export interface RequestContext {
   timingSummaryLogged?: boolean
   gatewayRoutingDispatchSummary?: GatewayRoutingDispatchSummary
   terminalExpectedFailure?: boolean
+  protocolTerminalOutcome?: 'success' | 'failure'
   method: string
   path: string
   originalUrl: string
@@ -217,7 +219,6 @@ export function logRequestStage(
   )
   const requestLogger = context?.logger ?? logger
   const timingDropCountBefore = context ? logPublisherStats().dropCount : 0
-  requestLogger.info(stageFields, '请求阶段完成')
   if (context) {
     context.stageSummaries ??= []
     if (context.stageSummaries.length < 64) {
@@ -237,12 +238,46 @@ export function logRequestStage(
     }
     captureRequestTimingFields(context, fields)
   }
-  if (outcome === 'unexpected_failure') {
-    requestLogger.error({ ...stageFields, event: 'gateway.request.failure' }, '请求阶段发生未预期异常')
-  }
+  writeRequestStageLog(requestLogger, stageFields, stage, outcome)
   if (context) {
     recordRequestTimingLogDrops(context, timingDropCountBefore, logPublisherStats().dropCount)
     captureTimingLogQueueSnapshot(context)
+  }
+}
+
+function writeRequestStageLog(
+  requestLogger: Logger,
+  stageFields: Record<string, unknown>,
+  stage: GatewayRequestStage,
+  outcome: GatewayRequestStageOutcome
+): void {
+  const durationMs = Number(stageFields.durationMs ?? 0)
+  const durationText = `${Math.round(durationMs * 10) / 10}ms`
+  const level = gatewayRequestStageLogLevel(outcome, durationMs)
+  if (level === 'error') {
+    requestLogger.error(
+      { ...stageFields, event: 'gateway.request.failure' },
+      `请求阶段未预期失败：${stage}，${durationText}`
+    )
+    return
+  }
+  const message = outcome === 'expected_failure'
+    ? `请求阶段预期失败：${stage}，${durationText}`
+    : outcome === 'aborted'
+      ? `请求阶段中断：${stage}，${durationText}`
+      : outcome === 'skipped'
+        ? level === 'info'
+          ? `请求慢阶段跳过：${stage}，${durationText}`
+          : `请求阶段跳过：${stage}，${durationText}`
+      : level === 'info'
+        ? `请求慢阶段完成：${stage}，${durationText}`
+        : `请求阶段完成：${stage}，${durationText}`
+  if (level === 'warn') {
+    requestLogger.warn(stageFields, message)
+  } else if (level === 'info') {
+    requestLogger.info(stageFields, message)
+  } else {
+    requestLogger.debug(stageFields, message)
   }
 }
 
@@ -393,6 +428,29 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
 }
 
 function logRequestClosed(req: Request, res: Response, context: RequestContext): void {
+  if (context.protocolTerminalOutcome) {
+    setImmediate(() => {
+      const resolvedOutcome = resolveRequestSummaryOutcome(context, res.statusCode)
+      const summaryOutcome = context.protocolTerminalOutcome === 'success'
+        ? 'success'
+        : resolvedOutcome === 'success'
+          ? 'expected_failure'
+          : resolvedOutcome
+      logRequestTimingSummary(context, res.statusCode, summaryOutcome)
+    })
+    context.logger.debug({
+      event: 'http_request_closed_after_protocol_terminal',
+      protocolTerminalOutcome: context.protocolTerminalOutcome,
+      method: req.method,
+      path: req.path,
+      originalUrl: sanitizeUrlForLog(req.originalUrl),
+      statusCode: res.statusCode,
+      durationMs: Date.now() - context.startedAt,
+      clientIp: context.clientIp,
+      userAgent: req.header('user-agent')
+    }, 'HTTP 连接在协议终止后关闭')
+    return
+  }
   setImmediate(() => logRequestTimingSummary(context, res.statusCode, 'aborted'))
   context.logger.warn({
     event: 'http_request_closed',
@@ -406,6 +464,12 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
   }, 'HTTP 请求在完成前关闭')
 }
 
+export function markRequestProtocolTerminalOutcome(outcome: 'success' | 'failure'): void {
+  const context = getRequestContext()
+  if (!context || context.protocolTerminalOutcome === 'failure') return
+  context.protocolTerminalOutcome = outcome
+}
+
 function logRequestTimingSummary(context: RequestContext, statusCode: number, outcome: GatewayRequestStageOutcome): void {
   if (context.timingSummaryLogged || (!context.stageSummaries?.length && !context.gatewayRoutingDispatchSummary)) return
   context.timingSummaryLogged = true
@@ -413,7 +477,8 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
   const totalDurationMs = Math.max(0, performance.now() - (context.monotonicStartedAt ?? performance.now()))
   const auditStage = firstStage(context, 'audit.finalize')
   const preUpstreamStage = firstStage(context, 'upstream.fetch_headers')
-  logger.info({
+  const attemptCount = context.attemptCount ?? 0
+  const summaryFields = {
     ...requestContextLogBindings(context),
     event: 'gateway.request.timing_summary',
     version: LOG_EVENT_VERSION,
@@ -429,7 +494,7 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
     statusCode,
     accountId: context.accountId ?? null,
     groupId: context.groupId ?? null,
-    attemptCount: context.attemptCount ?? 0,
+    attemptCount,
     totalDurationMs,
     durationMs: totalDurationMs,
     preAuditDurationMs: auditStage?.startedOffsetMs ?? totalDurationMs,
@@ -447,7 +512,11 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
       ? { ...context.gatewayRoutingDispatchSummary }
       : null,
     stages: context.stageSummaries ?? []
-  }, '网关请求阶段耗时汇总')
+  }
+  logger.info(
+    summaryFields,
+    `网关请求耗时汇总：${Math.round(totalDurationMs * 10) / 10}ms，${attemptCount} 次上游尝试，${outcome}`
+  )
 }
 
 function captureRequestTimingFields(context: RequestContext, fields: Record<string, unknown>): void {

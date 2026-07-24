@@ -194,7 +194,6 @@ function assertGlmModelCatalog(): void {
     'glm-4.5-airx',
     'glm-4.5-flash',
     'glm-4-32b-0414-128k',
-    'glm-4-flashx-250414',
     'glm-4-flash-250414'
   ]) {
     assert(pricing.some((item) => item.model === id), `GLM 价格目录应包含官方文本模型 ${id}`)

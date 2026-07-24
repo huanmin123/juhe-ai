@@ -181,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 122, '当前 Node 权威模型目录应包含 122 个完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 121, '当前 Node 权威模型目录应包含 121 个完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -655,12 +655,12 @@ try {
     'glm-4.5-airx',
     'glm-4.5-flash',
     'glm-4-32b-0414-128k',
-    'glm-4-flashx-250414',
     'glm-4-flash-250414'
   ]) {
     assert(glmModels.has(id), `GLM 模型目录应包含官方文本模型 ${id}`)
   }
   assert.equal(glmModels.has('glm-5.2-free'), false, 'GLM 可见模型目录不应包含非官方 glm-5.2-free')
+  assert.equal(glmModels.has('glm-4-flashx-250414'), false, '缺少官方 USD 价格的 GLM 型号不得进入内置目录')
   assert.deepEqual(
     glmCatalog.map((item) => item.model),
     [
@@ -678,7 +678,6 @@ try {
       'glm-4.5-airx',
       'glm-4.5-flash',
       'glm-4-32b-0414-128k',
-      'glm-4-flashx-250414',
       'glm-4-flash-250414'
     ],
     'GLM 模型目录应按官方当前模型从新到旧排序'

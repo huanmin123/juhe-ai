@@ -245,6 +245,7 @@ const modelPriceSetSchema = z.object({
   cachedInputUsdPer1M: nullableNumberSchema,
   cacheWriteUsdPer1M: nullableNumberSchema,
   cacheWrite1hUsdPer1M: nullableNumberSchema,
+  cacheStorageUsdPer1MPerHour: nullableNumberSchema,
   imageInputUsdPer1M: nullableNumberSchema,
   imageOutputUsdPer1M: nullableNumberSchema,
   audioInputUsdPer1M: nullableNumberSchema,
