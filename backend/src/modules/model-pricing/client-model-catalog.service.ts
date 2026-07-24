@@ -91,6 +91,7 @@ function hasClientVisiblePrice(item: ProviderModelCatalogItem): boolean {
     || item.cachedInputUsdPer1M !== undefined
     || item.cacheWriteUsdPer1M !== undefined
     || item.cacheWrite1hUsdPer1M !== undefined
+    || item.cacheStorageUsdPer1MPerHour !== undefined
     || item.imageInputUsdPer1M !== undefined
     || item.imageOutputUsdPer1M !== undefined
     || item.audioInputUsdPer1M !== undefined

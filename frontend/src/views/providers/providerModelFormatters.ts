@@ -1,6 +1,8 @@
 import type {
   ProviderDefinition,
   ProviderModelApiProtocol,
+  ProviderModelCatalogDisplayItem,
+  ProviderModelCatalogDisplaySection,
   ProviderModelMode,
   ProviderModelPricing,
   ProviderModelReasoningEffort,
@@ -21,6 +23,7 @@ export type DirectPriceFieldKey =
   | 'cachedInputUsdPer1M'
   | 'cacheWriteUsdPer1M'
   | 'cacheWrite1hUsdPer1M'
+  | 'cacheStorageUsdPer1MPerHour'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
@@ -72,6 +75,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
   'cachedInputUsdPer1M',
   'cacheWriteUsdPer1M',
   'cacheWrite1hUsdPer1M',
+  'cacheStorageUsdPer1MPerHour',
   'imageInputUsdPer1M',
   'imageOutputUsdPer1M',
   'audioInputUsdPer1M',
@@ -80,7 +84,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
 ]
 
 export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
-  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M'],
+  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour'],
   image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
   audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
 }
@@ -108,6 +112,7 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
     item.cachedInputUsdPer1M,
     item.cacheWriteUsdPer1M,
     item.cacheWrite1hUsdPer1M,
+    item.cacheStorageUsdPer1MPerHour,
     item.imageInputUsdPer1M,
     item.imageOutputUsdPer1M,
     item.audioInputUsdPer1M,
@@ -323,57 +328,28 @@ function isProviderModelApiProtocol(value: string): value is ProviderModelApiPro
   return Object.prototype.hasOwnProperty.call(apiProtocolLabels, value)
 }
 
-export function formatPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '—'
+export function modelCatalogDisplaySections(item: ProviderModelPricing): ProviderModelCatalogDisplaySection[] {
+  return (item.catalogDisplay ?? []).filter((section) => section.items.length > 0)
 }
 
-export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '—'
+export function modelCatalogDisplaySection(
+  item: ProviderModelPricing,
+  sectionKey: string
+): ProviderModelCatalogDisplaySection | undefined {
+  return modelCatalogDisplaySections(item).find((section) => section.key === sectionKey)
 }
 
-export interface ModelDisplayMetric {
-  label: string
-  value: string
-}
+export function formatModelCatalogDisplayValue(item: ProviderModelCatalogDisplayItem): string {
+  if (item.format === 'text') return String(item.value)
 
-export function modelPriceEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
-  const category = getModelCategory(item)
-  if (category === 'image') {
-    return definedMetrics([
-      ['图片输入', item.imageInputUsdPer1M, formatPrice],
-      ['图片输出', item.imageOutputUsdPer1M, formatPrice],
-      ['每张', item.outputUsdPerImage, formatUnitPrice]
-    ])
-  }
-  if (category === 'audio') {
-    return definedMetrics([
-      ['音频输入', item.audioInputUsdPer1M, formatPrice],
-      ['音频输出', item.audioOutputUsdPer1M, formatPrice]
-    ])
-  }
-  return definedMetrics([
-    ['输入', item.inputUsdPer1M, formatPrice],
-    ['输出', item.outputUsdPer1M, formatPrice],
-    ['缓存读', item.cachedInputUsdPer1M, formatPrice]
-  ])
-}
+  const numericValue = typeof item.value === 'number' ? item.value : Number(item.value)
+  if (!Number.isFinite(numericValue)) return String(item.value)
 
-export function formatModelPriceSummary(item: ProviderModelPricing): string {
-  return formatMetricSummary(modelPriceEntries(item))
-}
-
-export function modelCacheCostEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
-  return definedMetrics([
-    ['写入', item.cacheWriteUsdPer1M, formatPrice],
-    ['1h 写入', item.cacheWrite1hUsdPer1M, formatPrice],
-    ['存储/小时', item.cacheStorageUsdPer1MPerHour, formatPrice]
-  ])
-}
-
-export function formatModelCacheCostSummary(item: ProviderModelPricing): string {
-  const entries = modelCacheCostEntries(item)
-  if (entries.length) return formatMetricSummary(entries)
-  return item.cachedInputUsdPer1M !== undefined || item.supportsPromptCaching ? '无独立费用' : '不适用'
+  if (item.format === 'tokens') return formatTokens(numericValue)
+  if (item.format === 'multiplier') return `${trimNumber(numericValue)}x`
+  if (item.format === 'usd_per_image') return `$${trimNumber(numericValue)} / 张`
+  if (item.format === 'usd_per_1m_token_hour') return `$${trimNumber(numericValue)} / 1M tokens·小时`
+  return `$${trimNumber(numericValue)} / 1M tokens`
 }
 
 export function formatTokens(value?: number): string {
@@ -387,30 +363,6 @@ export function formatTokens(value?: number): string {
   }
   if (value >= 1_000) return `${trimNumber(value / 1_000)}K`
   return String(value)
-}
-
-export function modelCapacityEntries(item: ProviderModelPricing): ModelDisplayMetric[] {
-  return definedMetrics([
-    ['上下文', item.contextWindowTokens, formatTokens],
-    ['最大输入', item.maxInputTokens, formatTokens],
-    ['最大输出', item.maxOutputTokens, formatTokens]
-  ])
-}
-
-export function formatModelCapacitySummary(item: ProviderModelPricing): string {
-  return formatMetricSummary(modelCapacityEntries(item))
-}
-
-function definedMetrics(
-  entries: Array<[string, number | undefined, (value?: number) => string]>
-): ModelDisplayMetric[] {
-  return entries.flatMap(([label, value, formatter]) => (
-    typeof value === 'number' ? [{ label, value: formatter(value) }] : []
-  ))
-}
-
-function formatMetricSummary(entries: ModelDisplayMetric[]): string {
-  return entries.length ? entries.map((entry) => `${entry.label} ${entry.value}`).join(' · ') : '—'
 }
 
 export function formatModelModalities(values?: readonly string[]): string {

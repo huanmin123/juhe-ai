@@ -20,6 +20,28 @@ export interface ProviderModelPriceSet {
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
 }
+
+export type ProviderModelCatalogDisplayFormat =
+  | 'usd_per_1m_tokens'
+  | 'usd_per_image'
+  | 'usd_per_1m_token_hour'
+  | 'tokens'
+  | 'multiplier'
+  | 'text'
+
+export interface ProviderModelCatalogDisplayItem {
+  key: string
+  label: string
+  format: ProviderModelCatalogDisplayFormat
+  value: number | string
+}
+
+export interface ProviderModelCatalogDisplaySection {
+  key: string
+  label: string
+  items: ProviderModelCatalogDisplayItem[]
+}
+
 export type ProviderModelApiProtocol =
   | 'chat_completions'
   | 'responses'
@@ -143,6 +165,7 @@ export interface ProviderModelPricing {
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
+  catalogDisplay?: ProviderModelCatalogDisplaySection[]
   createdAt?: string
   updatedAt?: string
   source: string
@@ -196,6 +219,7 @@ export interface ProviderModelUpsertPayload {
   cachedInputUsdPer1M?: number | null
   cacheWriteUsdPer1M?: number | null
   cacheWrite1hUsdPer1M?: number | null
+  cacheStorageUsdPer1MPerHour?: number | null
   serviceTierPrices?: Record<string, ProviderModelPriceSet> | null
   imageInputUsdPer1M?: number | null
   imageOutputUsdPer1M?: number | null

@@ -1,3 +1,5 @@
+import type { ProviderBillingPolicy } from './provider-billing.types.js'
+
 export type ProviderModelApiProtocol =
   | 'chat_completions'
   | 'responses'
@@ -36,9 +38,11 @@ export interface RawModelPricing {
   input_cost_per_token?: number
   input_cost_per_token_priority?: number
   input_cost_per_token_flex?: number
+  input_cost_per_token_batch?: number
   output_cost_per_token?: number
   output_cost_per_token_priority?: number
   output_cost_per_token_flex?: number
+  output_cost_per_token_batch?: number
   cache_creation_input_token_cost?: number
   cache_creation_input_token_cost_priority?: number
   cache_creation_input_token_cost_flex?: number
@@ -79,6 +83,10 @@ export interface RawModelPricing {
   codex_default_reasoning_level?: CodexReasoningLevel
   codex_multi_agent_version?: 'v2'
   catalog_visible?: boolean
+  source_pricing_currency?: string
+  source_exchange_rate_to_usd?: number
+  source_exchange_rate_date?: string
+  source_pricing_note?: string
 }
 
 export interface ModelPricingProviderDriverHelpers {
@@ -90,7 +98,7 @@ export interface ModelPricingProviderDriver {
   id: string
   pricingSource: string
   rawModels: readonly RawModelPricing[]
-  usesIncludedCacheReadUsage: boolean
+  billingPolicy: ProviderBillingPolicy
   supportsProvider(providerCode: string): boolean
   isUnavailableModel?(normalizedModel: string): boolean
   buildModelCandidates(normalizedModel: string): string[]

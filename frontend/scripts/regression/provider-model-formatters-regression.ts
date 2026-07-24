@@ -7,15 +7,15 @@ import {
   categoryFromModeOrModel,
   defaultProtocolsForModelCategory,
   defaultProtocolsForProviderModelCategory,
+  formatModelCatalogDisplayValue,
   formatModelCategory,
-  formatModelCacheCostSummary,
-  formatModelCapacitySummary,
   formatModelReasoningCapabilities,
   formatModelServiceTierCapabilities,
-  formatPrice,
   formatTokens,
-  getModelCategory
+  getModelCategory,
+  modelCatalogDisplaySections
 } from '../../src/views/providers/providerModelFormatters'
+import { buildProviderModelColumns } from '../../src/views/providers/providerModelTableState'
 import type { ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -52,25 +52,39 @@ assert.equal(
   'Low / High',
   '模型目录不能把上游元数据标成客户端默认思考级别'
 )
-assert.equal(formatPrice(undefined), '—', '缺失价格应使用紧凑占位，不重复渲染未公布文案')
 assert.equal(formatTokens(1_048_576), '1M（1,048,576）', '二进制 1M Token 容量应兼顾易读单位和精确值')
 assert.equal(formatTokens(65_536), '64K（65,536）', '二进制 64K Token 容量应保留精确值')
 assert.equal(formatTokens(131_072), '128K（131,072）', '二进制 128K Token 容量应保留精确值')
 assert.equal(formatTokens(128_000), '128K', '十进制 128K Token 容量应保持官方单位')
 assert.equal(
-  formatModelCapacitySummary(providerModel({ contextWindowTokens: 200_000, maxOutputTokens: 128_000 })),
-  '上下文 200K · 最大输出 128K',
-  '厂商未公布最大输入时只展示已有容量事实，不得按上下文推导'
+  formatModelCatalogDisplayValue({ key: 'input', label: '输入', format: 'usd_per_1m_tokens', value: 1.5 }),
+  '$1.5 / 1M tokens',
+  'Token 价格 descriptor 必须自带明确计价单位'
 )
 assert.equal(
-  formatModelCacheCostSummary(providerModel({ cachedInputUsdPer1M: 0.2, supportsPromptCaching: true })),
-  '无独立费用',
-  '自动缓存只有命中价格时不应显示缺失写入费'
+  formatModelCatalogDisplayValue({ key: 'storage', label: '存储', format: 'usd_per_1m_token_hour', value: 4.5 }),
+  '$4.5 / 1M tokens·小时',
+  'Gemini token-hour 价格必须保留时间维度'
 )
 assert.equal(
-  formatModelCacheCostSummary(providerModel({ cacheStorageUsdPer1MPerHour: 4.5, supportsPromptCaching: true })),
-  '存储/小时 $4.5',
-  '按时长计费的缓存存储必须与一次性写入价格分开展示'
+  formatModelCatalogDisplayValue({ key: 'multiplier', label: '输入倍率', format: 'multiplier', value: 2 }),
+  '2x',
+  '长上下文倍率必须按倍率展示，不能伪装成金额'
+)
+const descriptorModel = providerModel({
+  catalogDisplay: [
+    { key: 'standard', label: '标准计费', items: [{ key: 'input', label: '输入', format: 'usd_per_1m_tokens', value: 1.5 }] },
+    { key: 'empty', label: '空 section', items: [] },
+    { key: 'capacity', label: '容量', items: [{ key: 'context', label: '上下文', format: 'tokens', value: 1_048_576 }] }
+  ]
+})
+assert.deepEqual(modelCatalogDisplaySections(descriptorModel).map((section) => section.key), ['standard', 'capacity'], '目录 presenter 必须忽略空 section')
+assert.deepEqual(
+  buildProviderModelColumns('text', [providerModel(), descriptorModel])
+    .filter((column) => 'catalogDisplaySectionKey' in column)
+    .map((column) => column.key),
+  ['catalogDisplay:standard', 'catalogDisplay:capacity'],
+  '桌面目录列必须取当前模型 descriptor section 的有序并集'
 )
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('audio'), ['audio'], '音频模型默认协议不应变化')
@@ -120,13 +134,10 @@ assert.match(providersViewSource, /label="思考级别"[\s\S]*mode="multiple"/, 
 assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
 assert.doesNotMatch(providersViewSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
 assert.doesNotMatch(providersViewSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
-assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
-assert.doesNotMatch(catalogModalSource, /默认由上游决定|（默认）/, '模型目录思考级别只展示客户端可选能力，不展示默认语义')
-assert.match(catalogModalSource, /tier-price-metrics/, '服务等级价格必须使用紧凑指标布局')
-assert.match(catalogModalSource, /暂无价格/, '缺失服务等级价格应合并为简洁空态')
-assert.match(catalogModalSource, /prices\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
-assert.match(catalogModalSource, /prices\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
-assert.match(catalogModalSource, /缓存附加费/, '桌面与移动端必须使用统一的缓存附加费语义')
+assert.match(catalogModalSource, /column\.catalogDisplaySectionKey/, '桌面模型目录必须渲染动态 descriptor 列')
+assert.match(catalogModalSource, /v-for="section in modelCatalogDisplaySections\(record\)"/, '移动端模型目录必须只循环当前模型的非空 section')
+assert.doesNotMatch(catalogModalSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|imageTokenPrice|audioTokenPrice|imageUnitPrice|context)'/, '模型目录不能保留按模型类别硬编码的计费、能力和容量列')
+assert.doesNotMatch(catalogModalSource, />仅标准<|>不支持<|>不适用<|>暂无价格</, '动态目录不能用无意义负面占位填充缺失 section')
 assert.doesNotMatch(formatterSource, /按上下文推导|官方未单独公布|官方未公布/, '容量与计费格式化不能伪造推导值或堆叠缺失文案')
 assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 

@@ -37,16 +37,23 @@ import type {
 import type { AccountFormModel } from '../../views/accounts/accountFormTypes'
 import type { AccountModelSelectOption } from '../../views/accounts/accountEditFormPayload'
 
-const textColumnKeys = buildProviderModelColumns('text', []).map((column) => column.key)
-assert(textColumnKeys.includes('serviceTiers'), '模型目录必须独立展示服务等级列')
-assert(textColumnKeys.includes('reasoningEfforts'), '模型目录必须独立展示思考级别列')
-assert.equal(textColumnKeys.includes('capabilities'), false, '模型目录不能继续合并请求能力列')
+const emptyTextColumnKeys = buildProviderModelColumns('text', []).map((column) => column.key)
+assert.equal(emptyTextColumnKeys.some((key) => String(key).startsWith('catalogDisplay:')), false, '空目录不能生成无事实依据的动态列')
+const declaredTextColumnKeys = buildProviderModelColumns('text', [providerModel({
+  catalogDisplay: [
+    { key: 'tier_priority', label: 'Priority', items: [{ key: 'input', label: '输入', format: 'usd_per_1m_tokens', value: 2 }] },
+    { key: 'reasoning', label: 'Reasoning', items: [{ key: 'levels', label: '级别', format: 'text', value: 'high / max' }] }
+  ]
+})]).map((column) => column.key)
+assert(declaredTextColumnKeys.includes('catalogDisplay:tier_priority'), '模型目录必须按后端 descriptor 展示服务档位')
+assert(declaredTextColumnKeys.includes('catalogDisplay:reasoning'), '模型目录必须按后端 descriptor 展示思考能力')
+assert.equal(declaredTextColumnKeys.includes('serviceTiers'), false, '模型目录不能保留固定服务等级列')
+assert.equal(declaredTextColumnKeys.includes('reasoningEfforts'), false, '模型目录不能保留固定思考级别列')
 const modelCatalogModalSource = readFileSync(new URL('../../views/providers/ProviderModelCatalogModal.vue', import.meta.url), 'utf8')
-assert.match(modelCatalogModalSource, /class="capability-tag-list"/, '思考级别标签必须使用独立可换行容器')
-assert.doesNotMatch(modelCatalogModalSource, /class="capability-prefix"/, '模型目录思考列不能混排 API 或 Codex 前缀')
+assert.match(modelCatalogModalSource, /modelCatalogDisplaySections\(record\)/, '移动端模型目录必须循环当前模型的动态 section')
+assert.doesNotMatch(modelCatalogModalSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|context)'/, '模型目录不能继续渲染固定计费或能力列')
 assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
 assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
-assert.doesNotMatch(modelCatalogModalSource, /默认由上游决定|（默认）/, '模型目录思考列只展示客户端可选能力，不展示默认语义')
 const requestOverridesSectionSource = readFileSync(new URL('../../views/accounts/AccountGptRequestOverridesSection.vue', import.meta.url), 'utf8')
 const batchEditModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
 assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, '支持账户覆盖的供应商必须保留配置区')
