@@ -5,7 +5,7 @@ WITH candidates AS (
   SELECT event_id, available_at_ms, created_at_ms
   FROM juhe_business.account_circuit_outbox
   WHERE projection_key = $1::text
-    AND event_type = 'dispatch_revision_changed'
+    AND event_type IN ('dispatch_revision_changed', 'incident_changed')
     AND (
       (status = 'pending' AND available_at_ms <= $2::bigint)
       OR (status = 'processing' AND claim_until_ms <= $2::bigint)
@@ -26,22 +26,29 @@ WITH candidates AS (
   RETURNING
     outbox.event_id,
     outbox.projection_key,
+	  outbox.event_type,
     outbox.account_id,
     outbox.account_runtime_key,
+	  outbox.circuit_scope_key,
+	  outbox.incident_id,
     outbox.transition_id,
     outbox.dispatch_revision,
+	  outbox.generation,
+	  outbox.ledger_revision,
     outbox.claim_token,
     outbox.attempt_count,
     outbox.created_at_ms,
     candidates.available_at_ms
 )
-SELECT event_id, projection_key, account_id, account_runtime_key, transition_id,
-       dispatch_revision, claim_token, attempt_count, created_at_ms
+SELECT event_id, projection_key, event_type, account_id, account_runtime_key,
+       circuit_scope_key, incident_id, transition_id, dispatch_revision,
+       generation, ledger_revision, claim_token, attempt_count, created_at_ms
 FROM claimed
 ORDER BY available_at_ms ASC, created_at_ms ASC, event_id ASC`
 
 const lockGatewayAccountCircuitOutboxForAcknowledgeSQL = `
-SELECT projection_key, event_type, account_id, dispatch_revision, status, claim_token
+SELECT projection_key, event_type, account_id, dispatch_revision, circuit_scope_key,
+       incident_id, ledger_revision, status, claim_token
 FROM juhe_business.account_circuit_outbox
 WHERE event_id = $1::text
 FOR UPDATE`
@@ -65,6 +72,13 @@ UPDATE juhe_business.accounts
 SET circuit_projection_revision = GREATEST(circuit_projection_revision, $2::bigint)
 WHERE id = $1::text
   AND dispatch_revision >= $2::bigint`
+
+const advanceGatewayAccountCircuitIncidentProjectionRevisionSQL = `
+UPDATE juhe_business.account_circuit_incidents
+SET projected_ledger_revision = GREATEST(projected_ledger_revision, $3::bigint)
+WHERE circuit_scope_key = $1::text
+  AND incident_id = $2::text
+  AND ledger_revision >= $3::bigint`
 
 const releaseGatewayAccountCircuitOutboxSQL = `
 UPDATE juhe_business.account_circuit_outbox

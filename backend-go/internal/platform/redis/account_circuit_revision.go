@@ -33,6 +33,16 @@ local incoming_revision = tonumber(ARGV[2])
 local transition_id = ARGV[3]
 local now_ms = tonumber(ARGV[4])
 local retention_ms = tonumber(ARGV[5])
+local function require_type(key, expected)
+  local actual = redis.call('TYPE', key)['ok']
+  if actual ~= 'none' and actual ~= expected then return false end
+  return true
+end
+if not require_type(states_key, 'hash') or not require_type(due_key, 'zset')
+  or not require_type(closed_key, 'zset') or not require_type(escalation_key, 'hash')
+  or not require_type(revisions_key, 'hash') then
+  return redis.error_reply('invalid account circuit Redis key type')
+end
 if not incoming_revision or incoming_revision < 1 or incoming_revision ~= math.floor(incoming_revision) then
   return redis.error_reply('invalid dispatch revision')
 end
@@ -66,7 +76,8 @@ for index = 1, #values, 2 do
   local state_runtime_key = scope and scope['accountRuntimeKey'] or nil
   if state_runtime_key and matches_runtime_key(state_runtime_key) then
     local state_revision = tonumber(state['dispatchRevision'])
-    if not state_revision then
+    local state_generation = tonumber(state['generation'])
+    if not state_revision or not state_generation or state_generation < 0 or state_generation ~= math.floor(state_generation) then
       return redis.error_reply('invalid state dispatch revision')
     end
     if state_revision > max_seen_revision then
@@ -107,7 +118,8 @@ for _, change in ipairs(state_changes) do
   local entry = change['entry']
   state['phase'] = 'CLOSED'
   state['generation'] = tonumber(state['generation'] or 0) + 1
-  state['dispatchRevision'] = tostring(incoming_revision)
+	state['dispatchRevision'] = tostring(incoming_revision)
+	state['ledgerRevision'] = nil
   state['transitionId'] = transition_id
   state['backoffAttempt'] = 0
   state['recoverySuccessCount'] = 0
@@ -143,11 +155,17 @@ return cjson.encode({ status = result_status, currentRevision = incoming_revisio
 var projectAccountCircuitRevisionScript = goredis.NewScript(projectAccountCircuitRevisionLua)
 
 type accountCircuitRevisionKeys struct {
-	states     string
-	due        string
-	closed     string
-	escalation string
-	revisions  string
+	states          string
+	due             string
+	closed          string
+	escalation      string
+	revisions       string
+	scopeRuntime    string
+	runtimeScopes   string
+	accountRuntimes string
+	runtimeAccounts string
+	ledgerRevisions string
+	indexMeta       string
 }
 
 type AccountCircuitRevisionProjector struct {
@@ -241,11 +259,15 @@ func accountCircuitRevisionRedisKeys(namespace, name string) (accountCircuitRevi
 	return accountCircuitRevisionKeys{
 		states: prefix + ":states", due: prefix + ":due", closed: prefix + ":closed",
 		escalation: prefix + ":escalation", revisions: prefix + ":dispatch-revisions",
+		scopeRuntime: prefix + ":scope-runtime", runtimeScopes: prefix + ":runtime-scopes",
+		accountRuntimes: prefix + ":account-runtimes", indexMeta: prefix + ":runtime-index-meta",
+		runtimeAccounts: prefix + ":runtime-accounts",
+		ledgerRevisions: prefix + ":ledger-revisions",
 	}, nil
 }
 
 func validateAccountCircuitRevisionEvent(event port.GatewayAccountCircuitOutboxEvent) error {
-	if event.ProjectionKey != port.GatewayAccountCircuitProjectionKey || event.AccountRuntimeKey != event.AccountID || !validAccountCircuitRevisionText(event.AccountID, 1024) || !validAccountCircuitRevisionText(event.TransitionID, 256) || event.DispatchRevision < 1 {
+	if event.EventType != port.GatewayAccountCircuitDispatchRevisionChanged || event.ProjectionKey != port.GatewayAccountCircuitProjectionKey || event.AccountRuntimeKey != event.AccountID || !validAccountCircuitRevisionText(event.AccountID, 1024) || !validAccountCircuitRevisionText(event.TransitionID, 256) || event.DispatchRevision < 1 {
 		return fmt.Errorf("account circuit revision event is invalid")
 	}
 	return nil

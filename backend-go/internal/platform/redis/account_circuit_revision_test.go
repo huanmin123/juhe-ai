@@ -27,6 +27,11 @@ func TestAccountCircuitRevisionScriptValidatesBeforeWritingTombstone(t *testing.
 	if readIndex < 0 || decodeIndex < readIndex || writeIndex < decodeIndex {
 		t.Fatal("revision script must validate all runtime state before publishing the tombstone")
 	}
+	generationIndex := strings.Index(projectAccountCircuitRevisionLua, "local state_generation = tonumber")
+	stateWriteIndex := strings.Index(projectAccountCircuitRevisionLua, "state['phase'] = 'CLOSED'")
+	if generationIndex < 0 || stateWriteIndex < generationIndex {
+		t.Fatal("revision script must validate every generation before closing any state")
+	}
 	for _, fragment := range []string{"current_revision > incoming_revision", "status = 'stale'", "already_projected and 'idempotent'", "state['phase'] = 'CLOSED'", "redis.call('ZREM', due_key", "redis.call('HDEL', escalation_key"} {
 		if !strings.Contains(projectAccountCircuitRevisionLua, fragment) {
 			t.Fatalf("revision script missing %q", fragment)
@@ -55,7 +60,7 @@ func TestAccountCircuitRevisionProjectorValidatesTypedResult(t *testing.T) {
 		},
 	}
 	event := port.GatewayAccountCircuitOutboxEvent{
-		EventID: "event-1", ProjectionKey: port.GatewayAccountCircuitProjectionKey,
+		EventID: "event-1", ProjectionKey: port.GatewayAccountCircuitProjectionKey, EventType: port.GatewayAccountCircuitDispatchRevisionChanged,
 		AccountID: "account-1", AccountRuntimeKey: "account-1", TransitionID: "transition-1", DispatchRevision: 3,
 	}
 	result, err := projector.ProjectGatewayAccountCircuitRevision(context.Background(), event)
@@ -69,8 +74,8 @@ func TestAccountCircuitRevisionProjectorValidatesTypedResult(t *testing.T) {
 
 func TestAccountCircuitRevisionProjectorRejectsAuthorizedFormattedRuntimeKey(t *testing.T) {
 	event := port.GatewayAccountCircuitOutboxEvent{
-		ProjectionKey: port.GatewayAccountCircuitProjectionKey,
-		AccountID:     "instance-1", AccountRuntimeKey: "instance-1:authorized:user:group:authorization",
+		ProjectionKey: port.GatewayAccountCircuitProjectionKey, EventType: port.GatewayAccountCircuitDispatchRevisionChanged,
+		AccountID: "instance-1", AccountRuntimeKey: "instance-1:authorized:user:group:authorization",
 		TransitionID: "transition", DispatchRevision: 2,
 	}
 	if err := validateAccountCircuitRevisionEvent(event); err == nil {

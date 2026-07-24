@@ -8,10 +8,10 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestGatewayAccountCircuitOutboxSQLClaimsOnlySupportedRevisionEvents(t *testing.T) {
+func TestGatewayAccountCircuitOutboxSQLClaimsOnlySupportedProjectionEvents(t *testing.T) {
 	for _, fragment := range []string{
 		"projection_key = $1::text",
-		"event_type = 'dispatch_revision_changed'",
+		"event_type IN ('dispatch_revision_changed', 'incident_changed')",
 		"status = 'pending'",
 		"status = 'processing'",
 		"claim_until_ms <=",
@@ -21,9 +21,6 @@ func TestGatewayAccountCircuitOutboxSQLClaimsOnlySupportedRevisionEvents(t *test
 		if !strings.Contains(claimGatewayAccountCircuitOutboxSQL, fragment) {
 			t.Fatalf("claim SQL missing %q", fragment)
 		}
-	}
-	if strings.Contains(claimGatewayAccountCircuitOutboxSQL, "incident_changed") {
-		t.Fatal("Go revision projector must not claim Node incident events")
 	}
 	for _, fragment := range []string{"WITH candidates AS", "claimed AS", "md5($4::text || ':' || candidates.event_id)", "attempt_count = outbox.attempt_count + 1", "RETURNING"} {
 		if !strings.Contains(claimGatewayAccountCircuitOutboxSQL, fragment) {
@@ -40,6 +37,9 @@ func TestGatewayAccountCircuitOutboxSQLUsesClaimCASAndMonotonicAck(t *testing.T)
 	}
 	if !strings.Contains(advanceGatewayAccountCircuitProjectionRevisionSQL, "GREATEST(circuit_projection_revision") || !strings.Contains(advanceGatewayAccountCircuitProjectionRevisionSQL, "dispatch_revision >=") {
 		t.Fatal("projection revision SQL must be monotonic and fenced by durable dispatch revision")
+	}
+	if !strings.Contains(advanceGatewayAccountCircuitIncidentProjectionRevisionSQL, "GREATEST(projected_ledger_revision") || !strings.Contains(advanceGatewayAccountCircuitIncidentProjectionRevisionSQL, "ledger_revision >=") {
+		t.Fatal("incident projection revision SQL must be monotonic and fenced by durable ledger revision")
 	}
 	for _, fragment := range []string{"status = 'pending'", "available_at_ms = $4::bigint", "last_error_class = $3::text", "status = 'processing'", "claim_token = $2::text"} {
 		if !strings.Contains(releaseGatewayAccountCircuitOutboxSQL, fragment) {

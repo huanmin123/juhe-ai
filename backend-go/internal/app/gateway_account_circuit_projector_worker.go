@@ -10,7 +10,9 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/gatewaycircuitoutbox"
+	"juhe-ai/backend-go/internal/modules/gatewaycircuitprojection"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -26,6 +28,9 @@ type GatewayAccountCircuitProjectorWorkerOptions struct {
 	Interval                   time.Duration
 	InitialDelay               time.Duration
 	ClosedRetention            time.Duration
+	RuntimeCapacity            int
+	RebuildPageSize            int
+	RebuildMaxPages            int
 	RunOnce                    bool
 }
 
@@ -84,10 +89,30 @@ func RunGatewayAccountCircuitProjectorWorker(
 	if err != nil {
 		return err
 	}
+	incidentRestorer, err := redisplatform.NewAccountCircuitIncidentRestorer(redisClient, opts.ClosedRetention, opts.RuntimeCapacity)
+	if err != nil {
+		return err
+	}
+	incidentProjector, err := gatewaycircuitprojection.NewIncidentProjector(store, incidentRestorer)
+	if err != nil {
+		return err
+	}
+	rebuild, err := incidentProjector.Rebuild(ctx, gatewaycircuitprojection.RebuildInput{
+		PageSize: opts.RebuildPageSize,
+		MaxPages: opts.RebuildMaxPages,
+	})
+	if err != nil {
+		return fmt.Errorf("rebuild gateway account circuit incidents: %w", err)
+	}
+	logger.Info("Go account circuit incident rebuild completed",
+		slog.Int("loaded", rebuild.Loaded),
+		slog.Int("pages", rebuild.Pages),
+	)
 	service, err := gatewaycircuitoutbox.NewService(store, projector)
 	if err != nil {
 		return err
 	}
+	service.WithIncidentProjector(incidentProjector)
 	run := func() error {
 		result, err := service.RunOnce(ctx, input)
 		if err != nil {
@@ -131,6 +156,15 @@ func normalizeGatewayAccountCircuitProjectorWorkerOptions(opts GatewayAccountCir
 	}
 	if opts.ClosedRetention < 0 || opts.ClosedRetention > 24*time.Hour {
 		return gatewaycircuitoutbox.RunOnceInput{}, 0, fmt.Errorf("account circuit closed retention is invalid")
+	}
+	if opts.RuntimeCapacity < 0 || opts.RuntimeCapacity > 1000000 {
+		return gatewaycircuitoutbox.RunOnceInput{}, 0, fmt.Errorf("account circuit runtime capacity is invalid")
+	}
+	if opts.RebuildPageSize < 0 || opts.RebuildPageSize > port.GatewayAccountCircuitIncidentMaxPage {
+		return gatewaycircuitoutbox.RunOnceInput{}, 0, fmt.Errorf("account circuit rebuild page size is invalid")
+	}
+	if opts.RebuildMaxPages < 0 || opts.RebuildMaxPages > gatewaycircuitprojection.DefaultRebuildMaxPages {
+		return gatewaycircuitoutbox.RunOnceInput{}, 0, fmt.Errorf("account circuit rebuild max pages is invalid")
 	}
 	return input, interval, nil
 }

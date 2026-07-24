@@ -48,6 +48,9 @@ func TestGatewayAccountCircuitProjectorWorkerRejectsInvalidRuntimeOptionsBeforeO
 		{name: "lease", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.Lease = time.Hour + 1 }, want: "lease"},
 		{name: "retry", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.RetryDelay = 24*time.Hour + 1 }, want: "retry"},
 		{name: "retention", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.ClosedRetention = 24*time.Hour + 1 }, want: "retention"},
+		{name: "capacity", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.RuntimeCapacity = 1000001 }, want: "capacity"},
+		{name: "rebuild page", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.RebuildPageSize = 501 }, want: "page size"},
+		{name: "rebuild pages", edit: func(value *GatewayAccountCircuitProjectorWorkerOptions) { value.RebuildMaxPages = 10001 }, want: "max pages"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := base

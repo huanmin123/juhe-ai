@@ -23,8 +23,8 @@
 
 - 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
-- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family 局部高 revision 误推 tombstone、失败退避起点和 worker 配置 fail-fast。downstream commit、typed store metadata、account policy writer 与 dispatch-revision projector 集中 normal/race/vet/diff check 通过。当前进度口径更新为：代码迁移约 `75%`，可独立验证 Go 能力约 `72%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
-- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、Redis state writer revision fence/runtime-key 索引、incident/gap/rebuild/cleanup、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；PolicyApplier producer 与 dispatch-revision compatibility projector 已完成，但不据此改变 owner manifest 或删除 Node gateway。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family tombstone、失败退避、worker fail-fast、incident ledger/generation fence、idempotent due/closed 修复、capacity 顺序和 ACK watermark。downstream commit、typed store metadata、account policy writer、dispatch-revision 与 incident projector 集中 normal/race/vet/diff check 通过。当前进度口径更新为：代码迁移约 `77%`，可独立验证 Go 能力约 `74%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、完整 Redis transition/escalation/listDue writer 与 index ready/backfill、incident CAS writer/durable receipt、gap/reconcile/cleanup/quarantine、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；现有 projector/rebuild 仍默认关闭，不据此改变 owner manifest 或删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
 
@@ -1016,5 +1016,15 @@
 - 共存边界：Redis key 与 Node 一致，持久 revision tombstone 只由对应 outbox 事件推进；重复 revision 仍修复 family 遗留旧 state，不能从局部 runtime state 猜测 tombstone。临时 `HGETALL` 与尚未接 tombstone CAS 的在途 Node state writer 都是接管前硬门禁，不把兼容实现当成最终架构。
 - 所有权边界：app worker 默认 disabled，必须显式 exclusive 才初始化依赖，未接 CLI/supervisor/manifest；gateway 和 worker 生产 owner 仍为 Node。
 - 验证边界：整模块完成后一次性执行定向 test/race/vet/diff 与独立复查；真实 PostgreSQL/Redis、incident/rebuild/cleanup、canary/rollback 后置，不能据此删除 Node。
+
+## 2026-07-24 account circuit incident 精确投影大批次
+
+- [x] outbox typed event、CTE claim 与 service 显式支持 `dispatch_revision_changed/incident_changed`，unsupported event fail-closed；incident ACK 与 ledger watermark 同事务。
+- [x] incident event 按 scope 精确读取 current durable snapshot，旧 dispatch event obsolete ACK，不再使用 Node 的全 ledger rebuild/find，也不让 retention/stale dispatch 事件永久 poison。
+- [x] Redis restore 按 dispatch revision、per-scope ledger、generation、updatedAt 单调比较；ledger tombstone绑定 dispatch/transition incarnation，读取 dispatch tombstone、执行容量限制、修复 idempotent due/closed orphan、保留 durable CLOSED deadline，并原子维护 scope/runtime/account building 索引。
+- [x] app worker 首次 claim 前执行有界 keyset startup rebuild；读取、cursor、容量或 restore 失败保持 fail-closed，默认 disabled/exclusive 门禁不变。
+- [ ] 完整 Go runtime transition/escalation/listDue writer、legacy HSCAN index backfill/ready gate、indexed revision projector、Node writer drain/CAS 共存、incident CAS generation 单调、durable transition receipt、gap/cleanup/quarantine 仍未完成。
+
+本批不照搬的 Node 问题：每事件全 ledger 扫描；stale/expired incident 无限重放；restore 无 capacity/revision fence；同 revision durable 落后 runtime 却仍 ACK；outbox cleanup 删除长期幂等 receipt。生产 owner 在这些剩余门禁和真实 PG/Redis 互操作证据完成前保持 `0%`。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

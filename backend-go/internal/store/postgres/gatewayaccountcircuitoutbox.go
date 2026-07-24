@@ -44,19 +44,39 @@ func (s *Store) ClaimGatewayAccountCircuitOutbox(ctx context.Context, input port
 	for rows.Next() {
 		var event port.GatewayAccountCircuitOutboxEvent
 		var createdAtMS int64
+		var circuitScopeKey, incidentID pgtype.Text
+		var generation pgtype.Int4
+		var ledgerRevision pgtype.Int8
 		if err := rows.Scan(
 			&event.EventID,
 			&event.ProjectionKey,
+			&event.EventType,
 			&event.AccountID,
 			&event.AccountRuntimeKey,
+			&circuitScopeKey,
+			&incidentID,
 			&event.TransitionID,
 			&event.DispatchRevision,
+			&generation,
+			&ledgerRevision,
 			&event.ClaimToken,
 			&event.AttemptCount,
 			&createdAtMS,
 		); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan gateway account circuit outbox claim: %w", err)
+		}
+		if circuitScopeKey.Valid {
+			event.CircuitScopeKey = circuitScopeKey.String
+		}
+		if incidentID.Valid {
+			event.IncidentID = incidentID.String
+		}
+		if generation.Valid {
+			event.Generation = int(generation.Int32)
+		}
+		if ledgerRevision.Valid {
+			event.LedgerRevision = ledgerRevision.Int64
 		}
 		event.CreatedAt = time.UnixMilli(createdAtMS).UTC()
 		claimed = append(claimed, event)
@@ -87,9 +107,11 @@ func (s *Store) AcknowledgeGatewayAccountCircuitOutbox(ctx context.Context, inpu
 
 	var projectionKey, eventType, accountID, status string
 	var dispatchRevision int64
-	var claimToken pgtype.Text
+	var circuitScopeKey, incidentID, claimToken pgtype.Text
+	var ledgerRevision pgtype.Int8
 	err = tx.QueryRow(ctx, lockGatewayAccountCircuitOutboxForAcknowledgeSQL, input.EventID).Scan(
-		&projectionKey, &eventType, &accountID, &dispatchRevision, &status, &claimToken,
+		&projectionKey, &eventType, &accountID, &dispatchRevision, &circuitScopeKey,
+		&incidentID, &ledgerRevision, &status, &claimToken,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -97,7 +119,7 @@ func (s *Store) AcknowledgeGatewayAccountCircuitOutbox(ctx context.Context, inpu
 	if err != nil {
 		return false, fmt.Errorf("lock gateway account circuit outbox acknowledge: %w", err)
 	}
-	if projectionKey != input.ProjectionKey || eventType != "dispatch_revision_changed" {
+	if projectionKey != input.ProjectionKey || (eventType != port.GatewayAccountCircuitDispatchRevisionChanged && eventType != port.GatewayAccountCircuitIncidentChanged) {
 		return false, nil
 	}
 	if status == "dispatched" {
@@ -118,8 +140,25 @@ func (s *Store) AcknowledgeGatewayAccountCircuitOutbox(ctx context.Context, inpu
 	if command.RowsAffected() != 1 {
 		return false, nil
 	}
-	if _, err := tx.Exec(ctx, advanceGatewayAccountCircuitProjectionRevisionSQL, accountID, dispatchRevision); err != nil {
-		return false, fmt.Errorf("advance gateway account circuit projection revision: %w", err)
+	if eventType == port.GatewayAccountCircuitDispatchRevisionChanged {
+		if _, err := tx.Exec(ctx, advanceGatewayAccountCircuitProjectionRevisionSQL, accountID, dispatchRevision); err != nil {
+			return false, fmt.Errorf("advance gateway account circuit projection revision: %w", err)
+		}
+	} else {
+		if !circuitScopeKey.Valid || !incidentID.Valid || !ledgerRevision.Valid {
+			return false, fmt.Errorf("gateway account circuit incident outbox identity is incomplete")
+		}
+		if input.Obsolete {
+			if input.ProjectedIncidentID != "" || input.ProjectedLedgerRevision != 0 {
+				return false, fmt.Errorf("obsolete gateway account circuit incident acknowledge has projection target")
+			}
+		} else if !validGatewayAccountCircuitOutboxText(input.ProjectedIncidentID, 256) || input.ProjectedLedgerRevision < ledgerRevision.Int64 {
+			return false, fmt.Errorf("gateway account circuit incident acknowledge projection target is invalid")
+		} else if command, err := tx.Exec(ctx, advanceGatewayAccountCircuitIncidentProjectionRevisionSQL, circuitScopeKey.String, input.ProjectedIncidentID, input.ProjectedLedgerRevision); err != nil {
+			return false, fmt.Errorf("advance gateway account circuit incident projection revision: %w", err)
+		} else if command.RowsAffected() != 1 {
+			return false, fmt.Errorf("gateway account circuit incident projection watermark was not advanced")
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("commit gateway account circuit outbox acknowledge: %w", err)

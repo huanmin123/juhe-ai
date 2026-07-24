@@ -38,9 +38,15 @@ type RunOnceResult struct {
 }
 
 type Service struct {
-	store     port.GatewayAccountCircuitOutboxStore
-	projector port.GatewayAccountCircuitRevisionProjector
-	now       func() time.Time
+	store             port.GatewayAccountCircuitOutboxStore
+	projector         port.GatewayAccountCircuitRevisionProjector
+	incidentProjector port.GatewayAccountCircuitIncidentProjector
+	now               func() time.Time
+}
+
+func (s *Service) WithIncidentProjector(projector port.GatewayAccountCircuitIncidentProjector) *Service {
+	s.incidentProjector = projector
+	return s
 }
 
 func NewService(store port.GatewayAccountCircuitOutboxStore, projector port.GatewayAccountCircuitRevisionProjector) (*Service, error) {
@@ -81,13 +87,26 @@ func (s *Service) RunOnce(ctx context.Context, input RunOnceInput) (RunOnceResul
 			batchErr = errors.Join(batchErr, releaseAfterFailure(ctx, s.store, event, s.now().UTC(), input.RetryDelay, "invalid_event", &result, err))
 			continue
 		}
-		projection, projectErr := s.projector.ProjectGatewayAccountCircuitRevision(ctx, event)
+		var projection port.GatewayAccountCircuitRevisionProjection
+		var projectErr error
+		switch event.EventType {
+		case port.GatewayAccountCircuitDispatchRevisionChanged:
+			projection, projectErr = s.projector.ProjectGatewayAccountCircuitRevision(ctx, event)
+		case port.GatewayAccountCircuitIncidentChanged:
+			if s.incidentProjector == nil {
+				projectErr = fmt.Errorf("gateway account circuit incident projector is required")
+			} else {
+				projection, projectErr = s.incidentProjector.ProjectGatewayAccountCircuitIncident(ctx, event)
+			}
+		default:
+			projectErr = fmt.Errorf("gateway account circuit event type is unsupported")
+		}
 		if projectErr != nil {
 			result.Failed++
 			batchErr = errors.Join(batchErr, releaseAfterFailure(ctx, s.store, event, s.now().UTC(), input.RetryDelay, "projection_failed", &result, projectErr))
 			continue
 		}
-		if err := validateProjection(projection); err != nil {
+		if err := validateProjection(event, projection); err != nil {
 			result.Failed++
 			batchErr = errors.Join(batchErr, releaseAfterFailure(ctx, s.store, event, s.now().UTC(), input.RetryDelay, "invalid_projection", &result, err))
 			continue
@@ -103,6 +122,7 @@ func (s *Service) RunOnce(ctx context.Context, input RunOnceInput) (RunOnceResul
 		}
 		acknowledged, ackErr := s.store.AcknowledgeGatewayAccountCircuitOutbox(ctx, port.GatewayAccountCircuitOutboxAcknowledgeInput{
 			EventID: event.EventID, ProjectionKey: event.ProjectionKey, ClaimToken: event.ClaimToken, AcknowledgedAt: s.now().UTC(),
+			Obsolete: projection.Obsolete, ProjectedIncidentID: projection.IncidentID, ProjectedLedgerRevision: projection.LedgerRevision,
 		})
 		if ackErr != nil {
 			result.Failed++
@@ -175,20 +195,50 @@ func normalizeRunOnceInput(input *RunOnceInput, now func() time.Time) error {
 }
 
 func validateClaimedEvent(event port.GatewayAccountCircuitOutboxEvent) error {
-	if strings.TrimSpace(event.EventID) == "" || event.ProjectionKey != port.GatewayAccountCircuitProjectionKey || strings.TrimSpace(event.AccountID) == "" || event.AccountRuntimeKey != event.AccountID || strings.TrimSpace(event.TransitionID) == "" || strings.TrimSpace(event.ClaimToken) == "" || event.DispatchRevision < 1 || event.AttemptCount < 1 {
+	if strings.TrimSpace(event.EventID) == "" || event.ProjectionKey != port.GatewayAccountCircuitProjectionKey || strings.TrimSpace(event.AccountID) == "" || strings.TrimSpace(event.AccountRuntimeKey) == "" || strings.TrimSpace(event.TransitionID) == "" || strings.TrimSpace(event.ClaimToken) == "" || event.DispatchRevision < 1 || event.AttemptCount < 1 {
 		return fmt.Errorf("claimed gateway account circuit outbox event is invalid")
+	}
+	switch event.EventType {
+	case port.GatewayAccountCircuitDispatchRevisionChanged:
+		if event.AccountRuntimeKey != event.AccountID || event.CircuitScopeKey != "" || event.IncidentID != "" || event.Generation != 0 || event.LedgerRevision != 0 {
+			return fmt.Errorf("claimed gateway account circuit dispatch event is invalid")
+		}
+	case port.GatewayAccountCircuitIncidentChanged:
+		if strings.TrimSpace(event.CircuitScopeKey) == "" || strings.TrimSpace(event.IncidentID) == "" || event.Generation < 0 || event.LedgerRevision < 1 {
+			return fmt.Errorf("claimed gateway account circuit incident event is invalid")
+		}
+	default:
+		return fmt.Errorf("claimed gateway account circuit event type is unsupported")
 	}
 	return nil
 }
 
-func validateProjection(value port.GatewayAccountCircuitRevisionProjection) error {
+func validateProjection(event port.GatewayAccountCircuitOutboxEvent, value port.GatewayAccountCircuitRevisionProjection) error {
 	if value.CurrentRevision < 1 || value.ClosedStates < 0 {
 		return fmt.Errorf("gateway account circuit revision projection is invalid")
 	}
 	switch value.Status {
 	case port.GatewayAccountCircuitRevisionApplied, port.GatewayAccountCircuitRevisionIdempotent, port.GatewayAccountCircuitRevisionStale:
-		return nil
 	default:
 		return fmt.Errorf("gateway account circuit revision projection status is invalid")
 	}
+	if event.EventType == port.GatewayAccountCircuitDispatchRevisionChanged {
+		if value.Obsolete || value.IncidentID != "" || value.LedgerRevision != 0 {
+			return fmt.Errorf("gateway account circuit dispatch projection metadata is invalid")
+		}
+		return nil
+	}
+	if event.EventType == port.GatewayAccountCircuitIncidentChanged {
+		if value.Obsolete {
+			if value.Status != port.GatewayAccountCircuitRevisionStale || value.IncidentID != "" || value.LedgerRevision != 0 {
+				return fmt.Errorf("gateway account circuit obsolete incident projection is invalid")
+			}
+			return nil
+		}
+		if value.Status == port.GatewayAccountCircuitRevisionStale || strings.TrimSpace(value.IncidentID) == "" || value.LedgerRevision < event.LedgerRevision {
+			return fmt.Errorf("gateway account circuit incident projection metadata is invalid")
+		}
+		return nil
+	}
+	return fmt.Errorf("gateway account circuit projection event type is invalid")
 }

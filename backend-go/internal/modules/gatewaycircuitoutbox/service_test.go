@@ -67,9 +67,31 @@ func TestRunOnceRejectsUnsafeBoundsBeforeClaim(t *testing.T) {
 
 func event(id, claim string, revision int64) port.GatewayAccountCircuitOutboxEvent {
 	return port.GatewayAccountCircuitOutboxEvent{
-		EventID: id, ProjectionKey: port.GatewayAccountCircuitProjectionKey,
+		EventID: id, ProjectionKey: port.GatewayAccountCircuitProjectionKey, EventType: port.GatewayAccountCircuitDispatchRevisionChanged,
 		AccountID: "account-1", AccountRuntimeKey: "account-1", TransitionID: "transition-1",
 		DispatchRevision: revision, ClaimToken: claim, AttemptCount: 1,
+	}
+}
+
+func TestRunOnceRoutesIncidentEventsToIncidentProjector(t *testing.T) {
+	incident := event("event-incident", "claim-incident", 4)
+	incident.EventType = port.GatewayAccountCircuitIncidentChanged
+	incident.CircuitScopeKey = "scope-1"
+	incident.IncidentID = "incident-1"
+	incident.Generation = 2
+	incident.LedgerRevision = 7
+	store := &outboxStoreStub{events: []port.GatewayAccountCircuitOutboxEvent{incident}}
+	service, _ := NewService(store, &revisionProjectorStub{})
+	incidentProjector := &incidentProjectorStub{result: port.GatewayAccountCircuitRevisionProjection{
+		Status: port.GatewayAccountCircuitRevisionApplied, CurrentRevision: 4, IncidentID: "incident-1", LedgerRevision: 7,
+	}}
+	service.WithIncidentProjector(incidentProjector)
+	result, err := service.RunOnce(context.Background(), RunOnceInput{OwnerID: "worker-1"})
+	if err != nil || result.Applied != 1 || result.Acknowledged != 1 || incidentProjector.calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, incidentProjector.calls, err)
+	}
+	if len(store.acks) != 1 || store.acks[0].ProjectedIncidentID != "incident-1" || store.acks[0].ProjectedLedgerRevision != 7 || store.acks[0].Obsolete {
+		t.Fatalf("incident ack=%+v", store.acks)
 	}
 }
 
@@ -99,6 +121,17 @@ func (s *outboxStoreStub) ReleaseGatewayAccountCircuitOutbox(_ context.Context, 
 type revisionProjectorStub struct {
 	results map[string]port.GatewayAccountCircuitRevisionProjection
 	errByID map[string]error
+}
+
+type incidentProjectorStub struct {
+	result port.GatewayAccountCircuitRevisionProjection
+	err    error
+	calls  int
+}
+
+func (s *incidentProjectorStub) ProjectGatewayAccountCircuitIncident(context.Context, port.GatewayAccountCircuitOutboxEvent) (port.GatewayAccountCircuitRevisionProjection, error) {
+	s.calls++
+	return s.result, s.err
 }
 
 func (s *revisionProjectorStub) ProjectGatewayAccountCircuitRevision(_ context.Context, event port.GatewayAccountCircuitOutboxEvent) (port.GatewayAccountCircuitRevisionProjection, error) {
