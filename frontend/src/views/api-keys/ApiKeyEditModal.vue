@@ -9,8 +9,8 @@
   >
     <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
     <a-form layout="vertical" class="modal-form">
-      <a-form-item label="名称" required>
-        <a-input v-model:value="form.name" placeholder="请输入 API Key 名称" />
+      <a-form-item label="名称" required :tooltip="editingNameLocked ? '默认 API Key 和 AI 对话 API Key 的名称不可修改。' : undefined">
+        <a-input v-model:value="form.name" :disabled="editingNameLocked" placeholder="请输入 API Key 名称" />
       </a-form-item>
       <a-form-item label="策略路由" required tooltip="API Key 只绑定策略路由；分组、模型和供应商调度规则在策略路由中维护。">
         <RouteStrategySelect
@@ -103,6 +103,7 @@ const emit = defineEmits<{
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingIsDefault = ref(false)
+const editingNameLocked = ref(false)
 const editingSystemAccountId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
@@ -138,6 +139,7 @@ async function openCreate() {
   }
   editingId.value = undefined
   editingIsDefault.value = false
+  editingNameLocked.value = false
   editingSystemAccountId.value = undefined
   Object.assign(form, {
     name: '',
@@ -185,6 +187,7 @@ async function openEdit(apiKey: ApiKeySummary) {
   }
   editingId.value = apiKey.id
   editingIsDefault.value = apiKey.isDefault === true && apiKey.purpose !== 'chat'
+  editingNameLocked.value = apiKey.isDefault === true || apiKey.purpose === 'chat'
   editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,

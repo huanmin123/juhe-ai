@@ -19,7 +19,7 @@ export interface AccountTestOutputLine {
 }
 
 const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
-const diagnosticMaxWaitMs = diagnosticAttemptTimeoutsMs.reduce((sum, value) => sum + value, 0)
+const imageDiagnosticAttemptTimeoutsMs = [10_000, 20_000]
 
 interface SingleAccountTestOutputOptions {
   account?: AccountSummary
@@ -37,6 +37,9 @@ export function accountTestSelectedEndpointModeText(input: {
   testEndpointMode: AccountTestEndpointMode
   selectedEndpointModeText: string
 }): string {
+  if (input.testEndpointMode === 'images_json') {
+    return '图像模型可用性（Models API）'
+  }
   if (input.testEndpointMode !== 'account_default') {
     return accountEndpointModeLabel(input.testEndpointMode, input.account)
   }
@@ -52,12 +55,13 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     testEndpointMode: options.testEndpointMode,
     selectedEndpointModeText: options.selectedEndpointModeText
   })
+  const imageTest = isImageTestMode(options.result?.testEndpointMode ?? options.testEndpointMode)
   const lines: AccountTestOutputLine[] = [
     { text: `开始测试账号：${account.name}`, tone: 'info' },
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
     {
-      text: `测试请求形态：${selectedEndpointModeText}`,
+      text: `${imageTest ? '检查方式' : '测试请求形态'}：${selectedEndpointModeText}`,
       tone: 'muted'
     }
   ]
@@ -66,13 +70,17 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     lines.push(...accountTestSingleRunningOutputLines({
       account,
       activeTask: options.activeTask,
-      model: options.model
+      model: options.model,
+      testEndpointMode: options.activeTask?.testEndpointMode ?? options.testEndpointMode
     }))
     return lines
   }
 
   if (!options.result) {
-    lines.push({ text: '点击「开始测试」后会显示完整返回结果。', tone: 'muted' })
+    lines.push({
+      text: imageTest ? '点击「开始测试」后会通过模型目录检查图像模型是否可用，不生成图片。' : '点击「开始测试」后会显示完整返回结果。',
+      tone: 'muted'
+    })
     return lines
   }
 
@@ -93,15 +101,22 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
   }
   lines.push(accountTestActualProtocolLine(account, options.result))
   lines.push(...accountTestApiKeyPoolOutputLines(options.result))
-  lines.push({ text: '响应：', tone: 'label' })
-  const outputText = formatTestTerminalResult(options.result)
-  if (outputText) {
-    lines.push({ text: outputText, tone: options.result.success ? 'success' : 'error' })
-  } else {
+  if (imageTest) {
     lines.push({
-      text: diagnosticParts.message || options.result.message,
+      text: options.result.success ? '图像模型可用，测试通过。' : diagnosticParts.message || options.result.message,
       tone: options.result.success ? 'success' : 'error'
     })
+  } else {
+    lines.push({ text: '响应：', tone: 'label' })
+    const outputText = formatTestTerminalResult(options.result)
+    if (outputText) {
+      lines.push({ text: outputText, tone: options.result.success ? 'success' : 'error' })
+    } else {
+      lines.push({
+        text: diagnosticParts.message || options.result.message,
+        tone: options.result.success ? 'success' : 'error'
+      })
+    }
   }
   if (options.result.errorPolicyAction && options.result.errorPolicyAction !== 'none') {
     const reason = options.result.errorPolicyReason ? `，原因：${options.result.errorPolicyReason}` : ''
@@ -153,14 +168,19 @@ export function accountTestSingleRunningOutputLines(input: {
   account: AccountSummary
   activeTask?: AccountTestTask
   model: string
+  testEndpointMode?: AccountTestEndpointMode
 }): AccountTestOutputLine[] {
   const task = input.activeTask
   const elapsedMs = accountTestTaskElapsedMs(task)
+  const timeoutSchedule = diagnosticAttemptTimeoutsForMode(task?.testEndpointMode ?? input.testEndpointMode)
+  const diagnosticMaxWaitMs = timeoutSchedule.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
   const lines: AccountTestOutputLine[] = [
-    { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
+    { text: isImageTestMode(task?.testEndpointMode ?? input.testEndpointMode)
+      ? '正在检查上游模型目录...'
+      : '正在走账户配置的真实请求流程...', tone: 'warning' },
     { text: `使用模型：${input.model}`, tone: 'success' },
     {
-      text: `等待策略：后台接收后按 10s + 20s + 30s 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`,
+      text: `等待策略：后台接收后按 ${timeoutSchedule.map(formatAccountTestDuration).join(' + ')} 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`,
       tone: 'muted'
     }
   ]
@@ -181,7 +201,7 @@ export function accountTestSingleRunningOutputLines(input: {
       tone: elapsedMs > diagnosticMaxWaitMs ? 'warning' : 'muted'
     })
     lines.push({
-      text: `当前窗口估计：${accountTestDiagnosticAttemptWindowText(elapsedMs)}`,
+      text: `当前窗口估计：${accountTestDiagnosticAttemptWindowText(elapsedMs, task?.testEndpointMode ?? input.testEndpointMode)}`,
       tone: 'info'
     })
   }
@@ -212,23 +232,38 @@ export function accountTestTaskElapsedMs(task?: AccountTestTask): number | undef
   return Math.max(0, Date.now() - startedAt)
 }
 
-export function accountTestDiagnosticAttemptWindowText(elapsedMs: number): string {
+export function accountTestDiagnosticAttemptWindowText(elapsedMs: number, testEndpointMode?: AccountTestEndpointMode): string {
+  const timeoutSchedule = diagnosticAttemptTimeoutsForMode(testEndpointMode)
+  const diagnosticMaxWaitMs = timeoutSchedule.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
   let cursor = 0
-  for (let index = 0; index < diagnosticAttemptTimeoutsMs.length; index += 1) {
-    const timeoutMs = diagnosticAttemptTimeoutsMs[index]
-      ?? diagnosticAttemptTimeoutsMs[diagnosticAttemptTimeoutsMs.length - 1]
+  for (let index = 0; index < timeoutSchedule.length; index += 1) {
+    const timeoutMs = timeoutSchedule[index]
+      ?? timeoutSchedule[timeoutSchedule.length - 1]
     cursor += timeoutMs
     if (elapsedMs <= cursor) {
-      return `第 ${index + 1}/${diagnosticAttemptTimeoutsMs.length} 次，单次最多 ${formatAccountTestDuration(timeoutMs)}`
+      return `第 ${index + 1}/${timeoutSchedule.length} 次，单次最多 ${formatAccountTestDuration(timeoutMs)}`
     }
   }
   return `已超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)}，将自动停止并返回运行超时错误`
+}
+
+function diagnosticAttemptTimeoutsForMode(testEndpointMode?: AccountTestEndpointMode): readonly number[] {
+  return isImageTestMode(testEndpointMode)
+    ? imageDiagnosticAttemptTimeoutsMs
+    : diagnosticAttemptTimeoutsMs
+}
+
+function isImageTestMode(testEndpointMode?: AccountTestEndpointMode): boolean {
+  return testEndpointMode === 'images_json'
 }
 
 function accountTestActualProtocolLine(
   account: AccountSummary,
   result: AccountTestResult
 ): AccountTestOutputLine {
+  if (isImageTestMode(result.testEndpointMode)) {
+    return { text: '实际检查方式：Models API（模型目录）', tone: 'muted' }
+  }
   const endpointMode = result.testEndpointMode ?? accountTestEndpointModesForAccount(account)[0]
   return {
     text: `实际请求形态：${endpointMode ? accountEndpointModeLabel(endpointMode, account) : fallbackProtocolText(account)}`,

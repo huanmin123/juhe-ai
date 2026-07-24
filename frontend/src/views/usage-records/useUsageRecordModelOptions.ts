@@ -116,7 +116,7 @@ export function useUsageRecordModelOptions(options: UseUsageRecordModelOptionsOp
       const id = item.id.trim()
       const name = item.name.trim()
       if (!id || !name || byId.has(id)) continue
-      byId.set(id, { id, name })
+      byId.set(id, { ...item, id, name })
     }
     return [...byId.values()]
   })

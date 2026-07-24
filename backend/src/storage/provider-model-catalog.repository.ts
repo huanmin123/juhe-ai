@@ -84,6 +84,10 @@ export interface ProviderModelOptionRow {
   model: string
   scope: 'built_in'
   releaseDate?: string
+  supportedApiProtocols: string[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
 }
 
 export async function listBuiltInProviderModelOptionsAsync(input: {
@@ -120,11 +124,13 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
   const sql = `
     WITH ranked_options AS (
       SELECT provider_code, model, id, mode, release_date, supported_api_protocols_json,
+        supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort,
         ROW_NUMBER() OVER (PARTITION BY model ORDER BY provider_code ASC, id ASC) AS option_rank
       FROM ${table}
       WHERE ${whereParts.join('\n        AND ')}
     )
-    SELECT provider_code, model, mode, release_date, supported_api_protocols_json
+    SELECT provider_code, model, mode, release_date, supported_api_protocols_json,
+      supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort
     FROM ranked_options
     WHERE option_rank = 1
     ORDER BY ${order}
@@ -144,14 +150,26 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
   }
   params.push(resultLimit)
   const rows = client
-    ? await client.query<{ provider_code: string; model: string; mode?: string | null; release_date?: string | null; supported_api_protocols_json?: string | null }>(sql, params)
-    : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
+    ? await client.query<{
         provider_code: string
         model: string
         mode?: string | null
         release_date?: string | null
         supported_api_protocols_json?: string | null
-      }>
+        supported_service_tiers_json?: string | null
+        supported_reasoning_efforts_json?: string | null
+        default_reasoning_effort?: string | null
+      }>(sql, params)
+    : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
+        provider_code: string
+        model: string
+        mode?: string | null
+         release_date?: string | null
+         supported_api_protocols_json?: string | null
+         supported_service_tiers_json?: string | null
+         supported_reasoning_efforts_json?: string | null
+         default_reasoning_effort?: string | null
+       }>
   return rows.map((row) => ({
     id: row.model,
     providerCode: row.provider_code,
@@ -159,7 +177,10 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
     scope: 'built_in' as const,
     mode: text(row.mode),
     releaseDate: text(row.release_date),
-    supportedApiProtocols: parseProviderModelOptionProtocols(row.supported_api_protocols_json)
+    supportedApiProtocols: parseProviderModelOptionStringList(row.supported_api_protocols_json),
+    supportedServiceTiers: parseProviderModelOptionStringList(row.supported_service_tiers_json),
+    supportedReasoningEfforts: parseProviderModelOptionStringList(row.supported_reasoning_efforts_json),
+    defaultReasoningEffort: text(row.default_reasoning_effort)
   }))
 }
 
@@ -483,7 +504,7 @@ function providerModelTestCatalogRecordFromRow(row: ProviderModelTestCatalogRow)
   }
 }
 
-function parseProviderModelOptionProtocols(value: unknown): string[] {
+function parseProviderModelOptionStringList(value: unknown): string[] {
   if (typeof value !== 'string') return []
   const parsed = json(value)
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []

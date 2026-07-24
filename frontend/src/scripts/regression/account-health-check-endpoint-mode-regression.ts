@@ -5,7 +5,8 @@ import {
   accountHealthCheckEndpointModeOptions,
   defaultAccountHealthCheckEndpointMode
 } from '../../views/accounts/accountHealthCheckEndpointMode'
-import { accountTestEndpointModesForAccount } from '../../views/accounts/accountEndpointModes'
+import { accountTestEndpointModesForAccount, accountTestEndpointModesForModel } from '../../views/accounts/accountEndpointModes'
+import { providerModelsForProtocolProfile } from '../../views/accounts/accountEditFormPayload'
 
 assert.equal(defaultAccountHealthCheckEndpointMode('gpt', 'profile_gpt_openai_v1', ['chat_json', 'responses_sse']), 'responses_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('openai', 'profile_openai_openai_v1', ['responses_json', 'chat_json']), 'chat_json')
@@ -32,6 +33,8 @@ assert.deepEqual(accountHealthCheckEndpointModeOptions([
 const draftEndpointModes = accountTestEndpointModesForAccount({
   providerCode: 'gpt',
   providerProtocolProfileId: 'profile_gpt_openai_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
   protocolCode: 'openai',
   protocolVersion: 'v1',
   type: 'api_key',
@@ -61,29 +64,58 @@ const accountTestModelsSource = readFileSync(
 )
 assert.match(
   accountTestModelsSource,
-  /api\.accounts\.testModelCapabilities\(/,
-  '管理端人工测试切换模型时必须直接请求账户模型能力'
+  /testEndpointModes\.value = normalizeEndpointModes\(option\.testEndpointModes\)/,
+  '模型请求形态必须直接使用选项响应携带的能力交集'
 )
-assert.match(
+assert.doesNotMatch(
   accountTestModelsSource,
-  /api\.myAccounts\.testModelCapabilities\(/,
-  '个人端人工测试切换模型时必须直接请求账户模型能力'
-)
-assert.match(
-  accountTestModelsSource,
-  /testEndpointModes\.value = normalizeEndpointModes\(response\.testEndpointModes\)/,
-  '模型请求形态必须以后端返回的模型能力为准'
-)
-assert.match(
-  accountTestModelsSource,
-  /modelAbortController = controller\s+testEndpointModes\.value = \[\]\s+input\.testForm\.testEndpointMode = 'account_default'/,
-  '模型切换后必须先清理前一个模型的请求形态'
+  /testModelCapabilities\(/,
+  '模型切换不得再发起额外能力请求'
 )
 assert.doesNotMatch(
   accountTestModelsSource,
   /accountTestEndpointModesForModelOption/,
   '模型列表不得再承载已拆分的模型能力逻辑'
 )
+
+const imageEndpointModes = accountTestEndpointModesForModel({
+  providerCode: 'gpt',
+  providerProtocolProfileId: 'profile_gpt_openai_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  type: 'api_key',
+  credentials: { supported_endpoint_modes: ['responses_json', 'responses_sse'] }
+}, undefined, { supportedApiProtocols: ['images'] })
+assert.deepEqual(imageEndpointModes, ['images_json'], '纯图片模型必须直接收口到 Images API')
+assert.deepEqual(providerModelsForProtocolProfile([
+  { label: 'gpt-image-2', value: 'gpt-image-2', supportedApiProtocols: ['images'] }
+], {
+  id: 'profile_gpt_openai_v1',
+  providerCode: 'gpt',
+  name: 'GPT / OpenAI v1',
+  enabled: true,
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  baseUrl: 'https://api.openai.com/v1',
+  defaultHealthCheckModel: '',
+  accountTypes: ['oauth', 'api_key'],
+  capabilities: ['responses', 'chat'],
+  endpointFamilies: [{ code: 'responses', name: 'Responses' }]
+}, 'api_key').map((option) => option.value), ['gpt-image-2'], 'GPT API Key 模型选项必须保留 image-only 模型及其协议')
+
+const healthCheckFieldSource = readFileSync(
+  new URL('../../views/accounts/AccountHealthCheckModelField.vue', import.meta.url),
+  'utf8'
+)
+assert.match(healthCheckFieldSource, /accountTestEndpointModesForModel/, '账户编辑检查协议必须联合模型目录能力计算')
+assert.match(healthCheckFieldSource, /v-if="imageOnlyModel"[\s\S]*value="images_json"/, '纯图片模型必须显示只读 Images API')
+
+const providerModelOptionsSource = readFileSync(
+  new URL('../../views/accounts/useAccountProviderModelOptions.ts', import.meta.url),
+  'utf8'
+)
+assert.match(providerModelOptionsSource, /supportedApiProtocols: item\.supportedApiProtocols/, '账户模型选项必须直接保留后端返回的目录协议')
+assert.doesNotMatch(providerModelOptionsSource, /modelCapabilities\(/, '账户模型加载不得再逐模型请求能力接口')
 
 for (const relativePath of [
   '../../views/accounts/accountBatchEditForm.ts',

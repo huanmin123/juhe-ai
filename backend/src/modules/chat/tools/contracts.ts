@@ -110,6 +110,7 @@ export interface ChatToolExecutionEvent {
   executionOwner: ChatToolExecutionOwner
   publicResult?: Record<string, unknown>
   errorCode?: string
+  errorMessage?: string
   reused?: boolean
 }
 

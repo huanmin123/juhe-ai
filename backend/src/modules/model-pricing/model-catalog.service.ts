@@ -335,6 +335,7 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
   const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
+    .filter(isSupportedCatalogModel)
     .filter((item) => options.includeInactive || item.status === 'active')
     .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
     .sort(compareProviderModelCatalogItems)
@@ -354,6 +355,7 @@ async function buildProviderModelCatalogAsync(options: ModelCatalogListOptions):
   const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
+    .filter(isSupportedCatalogModel)
     .filter((item) => options.includeInactive || item.status === 'active')
     .filter((item) => options.includeUnpriced || hasResolvablePrice(item, merged))
     .sort(compareProviderModelCatalogItems)
@@ -630,6 +632,16 @@ function hasResolvablePrice(item: ProviderModelCatalogItem, _allItems: ProviderM
   return hasDirectPrice(item)
 }
 
+function isSupportedCatalogModel(item: ProviderModelCatalogItem): boolean {
+  const mode = item.mode?.trim().toLowerCase()
+  if (mode === 'audio' || mode === 'audio_speech' || mode === 'audio_transcription') return false
+  const protocols = item.supportedApiProtocols ?? []
+  if (protocols.includes('realtime')) return false
+  if (protocols.length === 1 && protocols[0] === 'audio') return false
+  const model = item.model.trim().toLowerCase()
+  return !/(?:^|[-_.])(audio|realtime|transcribe|tts|whisper)(?:$|[-_.])/.test(model)
+}
+
 function hasDirectPrice(item: Omit<ProviderModelPricing, 'defaultReasoningEffort'>): boolean {
   return item.inputUsdPer1M !== undefined
     || item.outputUsdPer1M !== undefined
@@ -665,6 +677,7 @@ function toBuiltInCatalogItem(item: BuiltInProviderModelRecord): ProviderModelCa
     supportedReasoningEfforts: [...(item.supportedReasoningEfforts ?? [])],
     codexSupportedReasoningLevels: [...(item.codexSupportedReasoningLevels ?? [])],
     supportsServiceTier: (item.supportedServiceTiers?.length ?? 0) > 0,
+    cachedImageInputUsdPer1M: keepStaticPricingSource ? staticCapabilities?.cachedImageInputUsdPer1M : undefined,
     sourcePricingCurrency: keepStaticPricingSource ? staticCapabilities?.sourcePricingCurrency : undefined,
     sourceExchangeRateToUsd: keepStaticPricingSource ? staticCapabilities?.sourceExchangeRateToUsd : undefined,
     sourceExchangeRateDate: keepStaticPricingSource ? staticCapabilities?.sourceExchangeRateDate : undefined,

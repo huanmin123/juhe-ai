@@ -3,7 +3,7 @@ import type { AccountType, ProviderCode } from './base'
 export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
-export type ProviderModelMode = 'text' | 'image' | 'audio'
+export type ProviderModelMode = 'text' | 'image'
 export type ProviderModelServiceTier = string
 export type ProviderModelReasoningEffort = string
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
@@ -143,6 +143,7 @@ export interface ProviderModelPricing {
   cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices?: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
+  cachedImageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
@@ -175,6 +176,10 @@ export interface ProviderModelOption {
   id: string
   name: string
   providerCode?: ProviderCode
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  supportedServiceTiers: ProviderModelServiceTier[]
+  supportedReasoningEfforts: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
 export interface ProviderModelCapabilities {

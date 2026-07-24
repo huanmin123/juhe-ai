@@ -346,6 +346,7 @@ await failChatTurn(client, {
   turnId: failedTurn.turnId,
   assistantContent: '',
   errorCode: 'mock_failed',
+  errorMessage: 'Mock 上下文压缩失败',
   now: '2099-07-13T02:01:30.000Z'
 })
 const successfulTurn = await acceptChatTurn(client, {

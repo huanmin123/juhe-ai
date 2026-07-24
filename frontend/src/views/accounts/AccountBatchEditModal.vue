@@ -637,11 +637,10 @@ async function loadModelOptions(token: number): Promise<void> {
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
       scopeParams: scope,
-      selectedIds: effectiveBatchModels.value,
-      includeCapabilities: requestOverridesSupported.value
+      selectedIds: effectiveBatchModels.value
     })
     if (token !== loadToken || !open.value) return
-    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
+    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, account.type)
   } finally {
     if (token === loadToken) modelsLoading.value = false
   }

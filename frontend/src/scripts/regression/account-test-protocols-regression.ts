@@ -159,9 +159,8 @@ assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccoun
 assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 'Anthropic 与 Gemini 混合选择不应加载单一供应商默认模型')
 assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAccount]), 'Gemini 原生与 Gemini OpenAI Chat 混合选择不应被视为同一协议档案')
 
-assertIncludes(accountTestModelsSource, 'response.testEndpointModes', '保存账户测试应保留后端返回的账户级请求形态作为兼容回退')
-assertIncludes(accountTestModelsSource, 'account.healthCheckEndpointMode', '保存账户测试应把账户保存的精确健康检查请求形态排到首位')
-assertIncludes(updateSelectableTestModelSource, 'normalizeEndpointModes(response.testEndpointModes)', '切换模型必须改用后端返回的模型与账户能力协议交集')
+assertIncludes(accountTestModelsSource, 'option.testEndpointModes', '保存账户测试应从同一次模型选项响应读取请求形态')
+assertIncludes(updateSelectableTestModelSource, 'normalizeEndpointModes(option.testEndpointModes)', '切换模型必须使用模型选项携带的模型与账户能力协议交集')
 assertIncludes(updateSelectableTestModelSource, "input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'", '切换模型后必须清除前一模型遗留的无效检查协议')
 assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '前端不能自行按模型协议标签二次推导检查协议')
 

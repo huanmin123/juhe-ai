@@ -46,6 +46,10 @@ try {
   `).run(defaultGroup.id)
   const defaultStrategy = repositories.listRouteStrategyOptions(access, { limit: 20 }).find((strategy) => strategy.isDefault)
   assert(defaultStrategy, '手工标记的默认策略路由应能正常读取')
+  assert.equal(repositories.updateRouteStrategy(defaultStrategy.id, { name: defaultStrategy.name }, access)?.name, defaultStrategy.name, '默认策略路由携带原名称更新时不应被误拦截')
+  assert.throws(() => {
+    repositories.updateRouteStrategy(defaultStrategy.id, { name: `${defaultStrategy.name}改` }, access)
+  }, /默认策略路由不允许修改名称/, '默认策略路由不能修改名称')
   assert.throws(() => {
     repositories.deleteRouteStrategy(defaultStrategy.id, access)
   }, /默认策略路由不允许删除/, '默认策略路由不能删除')

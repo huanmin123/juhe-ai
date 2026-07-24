@@ -17,7 +17,6 @@ interface ProviderAccountModelResourceOptions {
   providerCode: string
   scopeParams?: AccountScopeParams
   selectedIds?: string[]
-  includeCapabilities?: boolean
 }
 
 export async function loadAccountProviderModelOptionsResource(
@@ -32,8 +31,7 @@ export async function loadAccountProviderModelOptionsResource(
       code,
       scopeParams,
       selectedIds,
-      undefined,
-      options.includeCapabilities === true
+      undefined
     )
   }
 }
@@ -75,7 +73,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading.value = true
     const promise = (async () => {
       try {
-        const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword, false)
+        const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword)
         if (isCurrentRequest(requestId, code)) {
           providerModelOptions.value = modelOptions
         }
@@ -117,86 +115,35 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     return dedupeAccountModelOptions(options)
   }
 
-  async function loadSelectedModelCapabilities(providerCode: string, modelIds: string[]): Promise<void> {
-    const code = providerCode.trim()
-    const selectedIds = normalizedSelectedModelIds(modelIds)
-    if (!code || !selectedIds.length) return
-    const scopeParams = options.modelScopeParams.value ? { ...options.modelScopeParams.value } : undefined
-    const capabilities = await mapWithConcurrency(selectedIds, 4, (modelId) => (
-      api.providers.modelCapabilities(code, modelId, scopeParams)
-    ))
-    const capabilitiesById = new Map(capabilities.map((item) => [item.id, item]))
-    const existingById = new Map(providerModelOptions.value.map((item) => [item.value, item]))
-    for (const modelId of selectedIds) {
-      const capability = capabilitiesById.get(modelId)
-      if (!capability) continue
-      existingById.set(modelId, {
-        label: capability.name,
-        value: capability.id,
-        supportedApiProtocols: capability.supportedApiProtocols,
-        supportedServiceTiers: capability.supportedServiceTiers,
-        supportedReasoningEfforts: capability.supportedReasoningEfforts,
-        defaultReasoningEffort: capability.defaultReasoningEffort
-      })
-    }
-    providerModelOptions.value = [...existingById.values()]
-  }
-
   return {
     loadProviderModelOptions,
-    loadSelectedModelCapabilities,
     providerModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
   }
 }
 
-async function mapWithConcurrency<TInput, TOutput>(
-  input: TInput[],
-  concurrency: number,
-  mapper: (item: TInput) => Promise<TOutput>
-): Promise<TOutput[]> {
-  const output = new Array<TOutput>(input.length)
-  let nextIndex = 0
-  await Promise.all(Array.from({ length: Math.min(concurrency, input.length) }, async () => {
-    while (nextIndex < input.length) {
-      const index = nextIndex
-      nextIndex += 1
-      output[index] = await mapper(input[index])
-    }
-  }))
-  return output
-}
-
 async function loadAccountModelOptions(
   providerCode: string,
   scopeParams: AccountScopeParams | undefined,
   selectedIds: string[],
-  keyword?: string,
-  includeCapabilities = false
+  keyword?: string
 ): Promise<AccountModelSelectOption[]> {
-  const [models, capabilities] = await Promise.all([
-    api.providers.modelOptions({
-      ...scopeParams,
-      providerCode,
-      limit: 50,
-      ...(keyword ? { keyword } : {}),
-      ...(selectedIds.length ? { selectedIds } : {})
-    }),
-    includeCapabilities
-      ? mapWithConcurrency(selectedIds, 4, (modelId) => api.providers.modelCapabilities(providerCode, modelId, scopeParams))
-      : Promise.resolve([])
-  ])
-  const capabilitiesById = new Map(capabilities.map((item) => [item.id, item]))
+  const models = await api.providers.modelOptions({
+    ...scopeParams,
+    providerCode,
+    limit: 50,
+    ...(keyword ? { keyword } : {}),
+    ...(selectedIds.length ? { selectedIds } : {})
+  })
   return dedupeAccountModelOptions(models.map((item) => {
-    const capability = capabilitiesById.get(item.id)
     return {
       label: item.name,
       value: item.id,
-      supportedApiProtocols: capability?.supportedApiProtocols,
-      supportedServiceTiers: capability?.supportedServiceTiers,
-      supportedReasoningEfforts: capability?.supportedReasoningEfforts,
-      defaultReasoningEffort: capability?.defaultReasoningEffort
+      supportedApiProtocols: item.supportedApiProtocols,
+      supportedServiceTiers: item.supportedServiceTiers,
+      supportedReasoningEfforts: item.supportedReasoningEfforts,
+      defaultReasoningEffort: item.defaultReasoningEffort
     }
   }))
 }

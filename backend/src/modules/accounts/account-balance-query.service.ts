@@ -19,13 +19,21 @@ import { resolveProxyUrlForProfileAsync } from '../../storage/proxy.repository.j
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requestUpstream, UpstreamRequestAbortedError, UpstreamRequestTimeoutError } from '../gateway/upstream/request.js'
-import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2ApiBalance, parseUserBalance } from './account-balance-adapters.js'
+import {
+  parseCustomBalance,
+  parseLiteLlmBalance,
+  parseNewApiBalance,
+  parseOpenAiCompatibleBillingBalance,
+  parseOpenAiCompatibleBillingStatus,
+  parseSub2ApiBalance,
+  parseUserBalance
+} from './account-balance-adapters.js'
 import { effectiveAccountApiKeys, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE } from './account-balance-config.js'
 
 const responseMaxBytes = 256 * 1024
 const requestTimeoutMs = 15_000
 const balanceRefreshLeaseMs = 30_000
-const builtinAdapterOrder: AccountBalanceBuiltinAdapter[] = ['sub2api', 'newapi', 'litellm', 'user_balance']
+const builtinAdapterOrder: AccountBalanceBuiltinAdapter[] = ['sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance']
 
 type AccountBalanceQueryCandidate = Pick<AccountBalanceRefreshCandidate, 'id' | 'credentials' | 'config' | 'proxyProfileId'>
 
@@ -315,6 +323,13 @@ async function queryBuiltinAdapter(context: AccountBalanceRequestContext, adapte
     const status = objectValue(await requestJson(new URL('/api/status', baseUrl.origin), context))
     const statusData = objectValue(status.data)
     return parseNewApiBalance(usage, { quotaPerUnit: statusData.quota_per_unit })
+  }
+  if (adapter === 'openai_billing') {
+    const billingOptions = parseOpenAiCompatibleBillingStatus(await requestJson(new URL('/api/status', baseUrl.origin), context))
+    if ('snapshot' in billingOptions) return billingOptions.snapshot
+    const subscription = await requestJson(new URL('/dashboard/billing/subscription', baseUrl.origin), context)
+    const usage = await requestJson(new URL('/dashboard/billing/usage', baseUrl.origin), context)
+    return parseOpenAiCompatibleBillingBalance(subscription, usage, billingOptions)
   }
   if (adapter === 'litellm') {
     return parseLiteLlmBalance(await requestJson(new URL('/key/info', baseUrl.origin), context))

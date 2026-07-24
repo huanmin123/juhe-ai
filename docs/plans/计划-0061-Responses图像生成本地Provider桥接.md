@@ -1,5 +1,7 @@
 # PLAN-0061 Responses 图像生成本地 Provider 桥接
 
+> 历史状态：本计划记录的 `JUHE_AI_IMAGE_GENERATION_PROVIDER_*` 外接方案已于 2026-07-24 退出运行时。当前实现携带当前 API Key 回到本机 `/v1/images/generations`，由策略路由、分组和 `gpt-image-2` API Key 账户决定可用性；本文下文仅保留当时决策与验证记录，不代表当前配置入口。
+
 ## 基本信息
 
 - 编号：PLAN-0061

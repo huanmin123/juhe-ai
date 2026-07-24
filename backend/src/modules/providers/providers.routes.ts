@@ -253,7 +253,7 @@ const modelPriceSetSchema = z.object({
   outputUsdPerImage: nullableNumberSchema
 }).strict()
 const serviceTierPricesSchema = z.record(z.string().trim().min(1).max(64), modelPriceSetSchema).nullable().optional()
-const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().optional()
+const nullableModelModeSchema = z.enum(['text', 'image']).nullable().optional()
 const customModelCapabilityTokenSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i)
 
 const customModelSchema = z.object({
@@ -274,9 +274,7 @@ const customModelSchema = z.object({
     'embed_content',
     'interactions',
     'completions',
-    'images',
-    'audio',
-    'realtime'
+    'images'
   ])).optional(),
   supportedServiceTiers: z.array(customModelCapabilityTokenSchema).max(16).optional(),
   supportedReasoningEfforts: z.array(customModelCapabilityTokenSchema).max(16).optional(),
@@ -724,7 +722,9 @@ function customModelBoundToAccountMessage(input: {
 function customModelInputFromConfigurationTemplate(template: ProviderModelCatalogItem) {
   return {
     mode: customModelModeFromCatalog(template),
-    supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
+    supportedApiProtocols: (template.supportedApiProtocols ?? []).filter(
+      (protocol) => protocol !== 'audio' && protocol !== 'realtime'
+    ),
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
     defaultReasoningEffort: null,
@@ -751,10 +751,9 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
   }
 }
 
-function customModelModeFromCatalog(template: ProviderModelCatalogItem): 'text' | 'image' | 'audio' {
-  if (template.mode === 'image' || template.mode === 'audio') return template.mode
+function customModelModeFromCatalog(template: ProviderModelCatalogItem): 'text' | 'image' {
+  if (template.mode === 'image') return 'image'
   if (template.supportedApiProtocols.includes('images')) return 'image'
-  if (template.supportedApiProtocols.includes('audio')) return 'audio'
   return 'text'
 }
 

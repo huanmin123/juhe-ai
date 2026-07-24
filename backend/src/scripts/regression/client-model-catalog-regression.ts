@@ -32,7 +32,8 @@ const selected = selectClientModelCatalog([
   model('current-model', { releaseDate: '2026-07-22' }),
   model('old-model', { releaseDate: '2020-01-01' }),
   model('missing-release-date'),
-  model('hidden-current', { releaseDate: '2026-01-01', catalogVisible: false }),
+  model('hidden-built-in', { releaseDate: '2026-01-01', catalogVisible: false }),
+  model('legacy-hidden-custom', { scope: 'personal', source: 'custom-personal', releaseDate: '2026-01-01', catalogVisible: false }),
   model('disabled-current', { releaseDate: '2026-01-01', status: 'disabled' }),
   model('unpriced-current', { releaseDate: '2026-01-01', inputUsdPer1M: undefined }),
   model('old-custom', { scope: 'global', source: 'custom-global', releaseDate: '2020-01-01' }),
@@ -45,7 +46,8 @@ const selectedIds = selected.map((item) => item.model)
 assert(selectedIds.includes('current-model'), '当前模型必须保留')
 assert(selectedIds.includes('old-model'), '旧模型也必须按最终需求保留')
 assert(selectedIds.includes('missing-release-date'), '缺少发布时间的可用模型不得被误删')
-assert.equal(selectedIds.includes('hidden-current'), false, '隐藏模型不得发布')
+assert.equal(selectedIds.includes('hidden-built-in'), false, '隐藏内置模型不得发布')
+assert(selectedIds.includes('legacy-hidden-custom'), '旧自定义模型不再受发布开关过滤')
 assert.equal(selectedIds.includes('disabled-current'), false, '停用模型不得发布')
 assert.equal(selectedIds.includes('unpriced-current'), false, '无价模型不得发布')
 assert(selectedIds.includes('old-custom'), '旧的自定义模型也必须保留')

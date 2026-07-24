@@ -34,16 +34,19 @@ const gatewayPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway
 const codexCompactPreflightSource = readFileSync(resolve(sourceRoot, 'modules/gateway/codex-responses/compact-preflight.ts'), 'utf8')
 const imageGenerationExecutorSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-images/image-generation-executor.ts'), 'utf8')
 const computerAdapterSource = readFileSync(resolve(sourceRoot, 'modules/openai-compatible-computer/computer-adapter.ts'), 'utf8')
+const chatRoutesSource = readFileSync(resolve(sourceRoot, 'modules/chat/chat.routes.ts'), 'utf8')
 const accountDispatchEntrypointPattern =
   /\b(?:listCachedOpenAIAccountsForGroupAsync|prepareOpenAIGatewayDispatchContext|prepareOpenAIGatewayDispatchAccounts|fetchFirstAvailableUpstream|requestUpstream)\b/
 
 assertOnlyAllowedCallSites({
-  rule: '上游真实请求只能由公共 dispatch attempt 层触发',
+  rule: '模型上游真实请求只能由公共 dispatch attempt 层触发；余额查询和 token exchange 是非模型协议例外',
   files: productionSourceFiles,
   pattern: /\brequestUpstream\s*\(/g,
   allowedFiles: [
     'backend/src/modules/gateway/upstream/request.ts',
-    'backend/src/modules/gateway/dispatch/upstream-attempts.ts'
+    'backend/src/modules/gateway/dispatch/upstream-attempts.ts',
+    'backend/src/modules/accounts/account-balance-query.service.ts',
+    'backend/src/modules/providers/drivers/_shared/token-exchange-transport.ts'
   ]
 })
 
@@ -89,7 +92,8 @@ assertOnlyAllowedCallSites({
     'backend/src/modules/gateway/runtime/runtime-cache.service.ts',
     'backend/src/modules/gateway/request/preflight.ts',
     'backend/src/modules/gateway/dispatch/api-key-group-fallback-candidate.ts',
-    'backend/src/modules/gateway/routing/model-target-group-selector.ts'
+    'backend/src/modules/gateway/routing/model-target-group-selector.ts',
+    'backend/src/modules/chat/chat.routes.ts'
   ]
 })
 
@@ -112,23 +116,33 @@ assert.doesNotMatch(
 )
 
 assertNoMatches({
-  rule: '生产后端不允许直接 fetch 模型上游；配置型图像工具 provider 和 hosted tool runtime adapter 是非账号调度例外',
+  rule: '生产后端不允许直接 fetch 模型上游；图片工具本地网关回路和 hosted tool runtime adapter 是非上游例外',
   files: productionSourceFiles,
   pattern: /\bfetch\s*\(/g,
   allowedFiles: [
     'backend/src/modules/openai-compatible-images/image-generation-executor.ts',
-    'backend/src/modules/openai-compatible-computer/computer-adapter.ts'
+    'backend/src/modules/openai-compatible-computer/computer-adapter.ts',
+    'backend/src/modules/gateway/upstream/request.ts',
+    'backend/src/modules/chat/chat.routes.ts',
+    'backend/src/modules/chat/chat-context-compaction.ts',
+    'backend/src/modules/chat/chat-image-observation.ts',
+    'backend/src/modules/db-service/db-service-supervisor.ts'
   ]
 })
 assert.doesNotMatch(
   imageGenerationExecutorSource,
   accountDispatchEntrypointPattern,
-  '配置型图像工具 provider 不能引入账号调度或上游传输入口'
+  '图片工具本地网关回路不能绕过网关自行引入账号调度或上游传输入口'
 )
 assert.doesNotMatch(
   computerAdapterSource,
   accountDispatchEntrypointPattern,
   'Computer hosted tool adapter 不能引入模型账号调度或上游传输入口'
+)
+assert.doesNotMatch(
+  chatRoutesSource,
+  /\b(?:prepareOpenAIGatewayDispatchContext|prepareOpenAIGatewayDispatchAccounts|fetchFirstAvailableUpstream|requestUpstream)\b/,
+  'AI 问答只能读取运行时候选能力并调用本机网关，不能直接准备调度或请求真实模型上游'
 )
 
 assertNoMatches({

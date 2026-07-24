@@ -93,6 +93,11 @@ const preflightSource = readFileSync(new URL('../../modules/gateway/request/pref
 const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
 const upstreamRequestSource = readFileSync(new URL('../../modules/gateway/upstream/request.ts', import.meta.url), 'utf8')
 assert.match(preflightSource, /normalRouteFirstByteConfig = options\.normalRouteFirstByteConfig/, '公共配置必须在请求重入时复用首次快照')
+assert.match(
+  dispatchSource,
+  /requestLane === 'text' && requestCoordination\.normalRouteFirstByteConfig/,
+  '图像 lane 必须退出普通路由文本首字截止，改用 image timeout profile，避免合法生图被 10 秒阈值提前切号'
+)
 assert.match(dispatchSource, /normalRouteAttemptFirstByteDeadline\(/, '每次真实 attempt 必须在 HTTP 派发前计算有效首字截止')
 assert.match(dispatchSource, /firstByteDeadlineDecision \?\?=/, '响应头与响应体必须共享同一次截止判定，不能把一个 attempt 重复累计为两次慢样本')
 assert.match(routesSource, /deadline\.schedulingPreference === 'cost_first'/, '成本优先必须启用公共截止并走 transport 切号')
@@ -100,4 +105,4 @@ assert.match(routesSource, /deadline\.limitingFactor !== 'configured'/, '墙钟�
 assert.match(routesSource, /firstByteDeadlineMs: effectiveFirstByteDeadlineMs/g, '流式和非流式读取必须共用同一个有效截止')
 assert.match(upstreamRequestSource, /firstByteDeadlineTimer = setTimeout/g, '响应头到达前也必须受公共首字截止约束')
 
-console.log('普通路由公共首字截止回归通过：成本/速度共用、墙钟/attempt/lane 裁剪、配置快照与慢样本边界均正确')
+console.log('普通路由公共首字截止回归通过：仅文本 lane 启用，成本/速度共用，墙钟/attempt/lane 裁剪、配置快照与慢样本边界均正确')

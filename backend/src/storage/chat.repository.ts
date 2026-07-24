@@ -45,6 +45,7 @@ export interface ChatMessage {
   traceId?: string
   finishReason?: string
   errorCode?: string
+  errorMessage?: string
   createdAt: string
   completedAt?: string
   expiresAt: string
@@ -77,6 +78,7 @@ export interface ChatTurnSubmissionFact {
   assistantMessageId: string
   assistantStatus: ChatMessageStatus
   errorCode?: string
+  errorMessage?: string
   completedAt?: string
   traceId?: string
 }
@@ -302,11 +304,12 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
     assistant_message_id?: unknown
     assistant_status?: unknown
     error_code?: unknown
+    error_message?: unknown
     completed_at?: unknown
     trace_id?: unknown
   }>(`
     SELECT submission.turn_id, assistant.id AS assistant_message_id,
-           assistant.status AS assistant_status, assistant.error_code,
+           assistant.status AS assistant_status, assistant.error_code, assistant.error_message,
            assistant.completed_at, assistant.trace_id
     FROM ${idempotencyTable} AS submission
     JOIN ${messagesTable} AS assistant
@@ -321,6 +324,7 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
   `, [input.conversationId, input.clientMessageId, input.systemAccountId])
   if (!row) return undefined
   const errorCode = nullable(row.error_code)
+  const errorMessage = nullable(row.error_message)
   const completedAt = nullable(row.completed_at)
   const traceId = nullable(row.trace_id)
   return {
@@ -328,6 +332,7 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
     assistantMessageId: String(row.assistant_message_id),
     assistantStatus: String(row.assistant_status) as ChatMessageStatus,
     ...(errorCode ? { errorCode } : {}),
+    ...(errorMessage ? { errorMessage } : {}),
     ...(completedAt ? { completedAt } : {}),
     ...(traceId ? { traceId } : {})
   }
@@ -745,6 +750,7 @@ export async function failChatTurn(client: DatabaseClient, input: {
   turnId: string
   assistantContent: string
   errorCode: string
+  errorMessage: string
   traceId?: string
   contentBlocks?: ChatMessageContentBlock[]
   now: string
@@ -799,7 +805,7 @@ export async function cancelActiveChatTurnIfMatches(client: DatabaseClient, inpu
     const messageResult = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_messages')}
       SET status = 'canceled', storage_reserved_bytes = 0,
-          finish_reason = NULL, error_code = NULL, completed_at = ?
+          finish_reason = NULL, error_code = NULL, error_message = NULL, completed_at = ?
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
     `, [input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
@@ -855,7 +861,8 @@ export async function failInterruptedChatTurnIfMatches(client: DatabaseClient, i
     const messageResult = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_messages')}
       SET status = 'failed', storage_reserved_bytes = 0,
-          finish_reason = NULL, error_code = 'stream_interrupted', completed_at = ?
+          finish_reason = NULL, error_code = 'stream_interrupted',
+          error_message = '生成进程异常中断，未取得原始异常详情', completed_at = ?
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
     `, [input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
@@ -880,6 +887,7 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
   status: 'completed' | 'failed' | 'canceled'
   finishReason?: string
   errorCode?: string
+  errorMessage?: string
   traceId?: string
   contentBlocks?: ChatMessageContentBlock[]
   now: string
@@ -911,13 +919,14 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
     const status = storageLimitExceeded ? 'failed' : input.status
     const finishReason = storageLimitExceeded ? undefined : input.finishReason
     const errorCode = storageLimitExceeded ? 'chat_assistant_storage_limit_exceeded' : input.errorCode
+    const errorMessage = storageLimitExceeded ? 'AI 回答超过聊天存储上限' : input.errorMessage
     const result = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_messages')}
       SET status = ?, content_text = ?, content_blocks_json = ?, content_bytes = ?, trace_id = ?,
-          storage_reserved_bytes = 0, finish_reason = ?, error_code = ?, completed_at = ?
+          storage_reserved_bytes = 0, finish_reason = ?, error_code = ?, error_message = ?, completed_at = ?
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
-    `, [status, contentText, contentBlocksJson, bytes, input.traceId ?? null, finishReason ?? null, errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
+    `, [status, contentText, contentBlocksJson, bytes, input.traceId ?? null, finishReason ?? null, errorCode ?? null, errorMessage ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
     if (result.changes !== 1) throw new Error('活动回答不存在')
     await settleStorageWindowReservationStrict(tx, input.systemAccountId, String(current.created_at), reservationBytes, bytes, input.now)
     const conversationResult = await tx.execute(`
@@ -1081,7 +1090,8 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
       const updated = await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_messages')}
         SET status = 'failed', storage_reserved_bytes = 0,
-            error_code = 'stream_interrupted', completed_at = ?
+            error_code = 'stream_interrupted',
+            error_message = '生成进程异常中断，未取得原始异常详情', completed_at = ?
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
           AND role = 'assistant' AND status = 'streaming'
       `, [now, String(stale.id), String(stale.system_account_id), String(stale.active_turn_id)])
@@ -1612,12 +1622,13 @@ function normalizedChatImageModel(value: unknown): ChatImageModel {
 }
 
 function mapMessage(row: ChatMessageRow): ChatMessage {
+  const errorMessage = nullable(row.error_message)
   return {
     id: String(row.id), conversationId: String(row.conversation_id), turnId: String(row.turn_id),
     sequenceNo: Number(row.sequence_no), clientMessageId: nullable(row.client_message_id),
     role: String(row.role) as ChatMessageRole, status: String(row.status) as ChatMessageStatus,
     contentText: String(row.content_text ?? ''), contentBlocks: parseContentBlocks(row.content_blocks_json), model: String(row.model), traceId: nullable(row.trace_id),
-    finishReason: nullable(row.finish_reason), errorCode: nullable(row.error_code), createdAt: String(row.created_at),
+    finishReason: nullable(row.finish_reason), errorCode: nullable(row.error_code), ...(errorMessage ? { errorMessage } : {}), createdAt: String(row.created_at),
     completedAt: nullable(row.completed_at), expiresAt: String(row.expires_at)
   }
 }

@@ -140,12 +140,12 @@ try {
   const fullAccountForManualTest = repositories.findAccountForTest(account.id, access)
   assert.equal(fullAccountForManualTest?.credentials.api_key, 'sk-account-test-responses-contract', '人工测试受控读取应取得完整保存凭据')
   const manualTestOptions = await accountManualTestOptionsAsync(fullAccountForManualTest!)
-  assert(Array.isArray(manualTestOptions), '人工测试选项响应数据必须直接是轻量模型数组')
+  assert(Array.isArray(manualTestOptions), '人工测试选项响应数据必须直接是模型数组')
   for (const option of manualTestOptions) {
     assert.deepEqual(
       Object.keys(option).sort(),
-      ['id', 'name'],
-      '人工测试模型下拉只允许返回 id/name，不得携带模型能力或请求形态数组'
+      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
+      '人工测试模型下拉必须随模型返回协议与可用请求形态'
     )
     assert(option.id.trim(), '模型下拉 ID 不得为空')
     assert(option.name.trim(), `模型 ${option.id} 的下拉展示名称不得为空`)
@@ -157,8 +157,8 @@ try {
   )
   assert.deepEqual(
     Object.keys(manualTestModelCapabilities).sort(),
-    ['id', 'name', 'testEndpointModes'],
-    '单模型能力接口只返回模型标识、展示名称和可用请求形态'
+    ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
+    '单模型能力接口返回模型标识、目录协议和可用请求形态'
   )
   assert.equal(manualTestModelCapabilities.id, 'gpt-5.5', '单模型能力应保留请求的模型 ID')
   assert.equal(manualTestModelCapabilities.name, 'gpt-5.5', '单模型能力展示名称应与模型 ID 保持稳定映射')
@@ -194,8 +194,8 @@ try {
   const chatOnlyManualTestOptions = await accountManualTestOptionsAsync(chatOnlyManualTestAccount)
   assert.equal(
     chatOnlyManualTestOptions.some((item) => item.id === responsesOnlyManualTestModel),
-    true,
-    '人工测试模型列表只按供应商协议档案做基础过滤，不应逐模型计算账户请求形态'
+    false,
+    '人工测试模型列表必须排除与账户接口能力没有交集的模型'
   )
   const missingDefaultManualTestAccount: AccountSummary = {
     ...chatOnlyManualTestAccount,

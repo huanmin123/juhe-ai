@@ -27,9 +27,7 @@ const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>(
   'embed_content',
   'interactions',
   'completions',
-  'images',
-  'audio',
-  'realtime'
+  'images'
 ])
 const customProviderModelCapabilityTokens = {
   has(value: string): boolean {
@@ -95,7 +93,12 @@ export interface CustomProviderModelOptionRow {
   providerCode: string
   model: string
   scope: CustomProviderModelScope
+  mode?: string
   releaseDate?: string
+  supportedApiProtocols: CustomProviderModelApiProtocol[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
 }
 
 export async function listCustomProviderModelOptionsAsync(input: {
@@ -125,7 +128,6 @@ export async function listCustomProviderModelOptionsAsync(input: {
   const whereParts = [
     providerFilter,
     "status = 'active'",
-    client ? 'catalog_visible = TRUE' : 'catalog_visible = 1',
     client
       ? "(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)"
       : "(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))",
@@ -140,6 +142,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
   const sql = `
     WITH ranked_options AS (
       SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
+        supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort,
         ROW_NUMBER() OVER (
           PARTITION BY model
           ORDER BY CASE scope WHEN 'personal' THEN 0 ELSE 1 END, provider_code ASC, id ASC
@@ -147,7 +150,8 @@ export async function listCustomProviderModelOptionsAsync(input: {
       FROM ${table}
       WHERE ${whereParts.join('\n        AND ')}
     )
-    SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json
+    SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
+      supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort
     FROM ranked_options
     WHERE option_rank = 1
     ORDER BY ${order}
@@ -176,6 +180,9 @@ export async function listCustomProviderModelOptionsAsync(input: {
         mode?: string | null
         release_date?: string | null
         supported_api_protocols_json?: string | null
+        supported_service_tiers_json?: string | null
+        supported_reasoning_efforts_json?: string | null
+        default_reasoning_effort?: string | null
       }>(sql, params)
     : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
         id: string
@@ -185,6 +192,9 @@ export async function listCustomProviderModelOptionsAsync(input: {
          mode?: string | null
          release_date?: string | null
          supported_api_protocols_json?: string | null
+         supported_service_tiers_json?: string | null
+         supported_reasoning_efforts_json?: string | null
+         default_reasoning_effort?: string | null
        }>
   return rows.map((row) => ({
     id: row.id,
@@ -193,7 +203,10 @@ export async function listCustomProviderModelOptionsAsync(input: {
     scope: row.scope,
     mode: testCatalogOptionalText(row.mode),
     releaseDate: testCatalogOptionalText(row.release_date),
-    supportedApiProtocols: testCatalogStringList(row.supported_api_protocols_json)
+    supportedApiProtocols: testCatalogStringList(row.supported_api_protocols_json) as CustomProviderModelApiProtocol[],
+    supportedServiceTiers: testCatalogStringList(row.supported_service_tiers_json),
+    supportedReasoningEfforts: testCatalogStringList(row.supported_reasoning_efforts_json),
+    defaultReasoningEffort: testCatalogOptionalText(row.default_reasoning_effort)
   }))
 }
 
@@ -460,7 +473,7 @@ export function upsertCustomProviderModel(
   const existing = input.id
     ? findCustomProviderModelById(input.id)
     : findCustomProviderModelByScope(providerCode, scope, systemAccountId, model)
-  const catalogVisible = input.catalogVisible ?? existing?.catalogVisible ?? true
+  const catalogVisible = true
   if (existing && existing.model.trim() !== model) {
     throw new Error('模型 ID 创建后不能修改')
   }
@@ -581,7 +594,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   const existing = input.id
     ? await findCustomProviderModelByIdAsync(input.id)
     : await findCustomProviderModelByScopeAsync(providerCode, scope, systemAccountId, model)
-  const catalogVisible = input.catalogVisible ?? existing?.catalogVisible ?? true
+  const catalogVisible = true
   if (existing && existing.model.trim() !== model) {
     throw new Error('模型 ID 创建后不能修改')
   }
@@ -1059,6 +1072,10 @@ function normalizeCustomProviderModelCapabilities(
   supportedReasoningEfforts: CustomProviderModelReasoningEffort[]
   defaultReasoningEffort?: CustomProviderModelReasoningEffort
 } {
+  const mode = optionalText(input.mode) ?? 'text'
+  if (mode !== 'text' && mode !== 'image') {
+    throw new Error('当前只支持文本和图像自定义模型')
+  }
   const supportedServiceTiers = normalizeEnumArray(
     input.supportedServiceTiers,
     customProviderModelCapabilityTokens,
@@ -1079,7 +1096,7 @@ function normalizeCustomProviderModelCapabilities(
       throw new Error('自定义模型参数无效')
     }
   }
-  const isTextModel = (optionalText(input.mode) ?? 'text') === 'text'
+  const isTextModel = mode === 'text'
   const serviceTierPriceKeys = Object.keys(normalizeServiceTierPrices(input.serviceTierPrices))
   if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length)) {
     throw new Error('只有文本自定义模型支持服务等级和思考能力配置')

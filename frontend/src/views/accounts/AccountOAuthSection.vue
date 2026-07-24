@@ -90,13 +90,14 @@
         show-search
         @dropdown-visible-change="$emit('model-options-open', $event)"
         @search="$emit('model-options-search', $event)"
-        @change="$emit('model-capabilities-load', form.supportedModels)"
       />
     </a-form-item>
     <AccountHealthCheckModelField
       :form="form"
       :model-options="modelOptions"
       :models-loading="modelsLoading"
+      :protocol-code="protocolCode"
+      :protocol-version="protocolVersion"
     />
   </section>
 </template>
@@ -106,6 +107,7 @@ import type { OpenAIAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 
 defineProps<{
   authLoading: boolean
@@ -115,8 +117,10 @@ defineProps<{
   isAnthropicOAuth: boolean
   isOpenAI: boolean
   isGoogleOAuth: boolean
-  modelOptions: Array<{ label: string; value: string }>
+  modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  protocolCode?: string
+  protocolVersion?: string
   title: string
 }>()
 
@@ -126,7 +130,6 @@ defineEmits<{
   (event: 'open-auth-url'): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
-  (event: 'model-capabilities-load', modelIds: string[]): void
 }>()
 </script>
 

@@ -88,10 +88,18 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
     return
   }
   if (event.type === 'reasoning.delta') { message.reasoningText = `${message.reasoningText ?? ''}${event.data.delta}`; appendReasoningBlock(message, event.data.delta); return }
-  if (event.type === 'tool.started' || event.type === 'tool.updated' || event.type === 'tool.completed') {
+  if (event.type === 'tool.started' || event.type === 'tool.updated' || event.type === 'tool.completed' || event.type === 'tool.failed' || event.type === 'tool.canceled') {
     const item = event.data.item
     const id = String(item.id ?? `${event.type}-${message.toolEvents?.length ?? 0}`)
-    const status = event.type === 'tool.started' ? 'started' : event.type === 'tool.updated' ? 'updated' : 'completed'
+    const status = event.type === 'tool.started'
+      ? 'started'
+      : event.type === 'tool.updated'
+        ? 'updated'
+        : event.type === 'tool.failed'
+          ? 'failed'
+          : event.type === 'tool.canceled'
+            ? 'canceled'
+            : 'completed'
     const existing = message.toolEvents?.find((tool) => tool.id === id)
     if (existing) { existing.status = status; existing.item = item }
     else (message.toolEvents ??= []).push({ id, type: String(item.type ?? 'tool'), status, item })
@@ -111,6 +119,8 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
   if (event.type !== 'message.failed') return
   message.status = 'failed'
   message.errorCode = event.data.code
+  message.errorMessage = event.data.message
+  message.traceId = event.data.traceId
 }
 
 function acceptEventVersion(message: ChatMessage, next: number, allowSnapshot = false): boolean {
@@ -169,12 +179,12 @@ function isValidChatStreamData(eventType: string, data: unknown): boolean {
   if (!hasSafeEventVersion(data)) return false
   if (eventType === 'message.snapshot') return nonEmptyString(data.turnId) && isAssistantSnapshot(data.assistant)
   if (eventType === 'message.delta' || eventType === 'reasoning.delta') return nonEmptyString(data.messageId) && typeof data.delta === 'string'
-  if (eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed') return nonEmptyString(data.messageId) && isRecord(data.item)
+  if (eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed' || eventType === 'tool.failed' || eventType === 'tool.canceled') return nonEmptyString(data.messageId) && isRecord(data.item)
   if (eventType === 'content_block.started' || eventType === 'content_block.completed') return nonEmptyString(data.messageId) && isContentBlock(data.block)
   if (eventType === 'content_block.delta') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && typeof data.delta === 'string'
   if (eventType === 'content_block.updated') return nonEmptyString(data.messageId) && nonEmptyString(data.blockId) && isSafeContentBlockPatch(data.patch)
   if (eventType === 'message.completed') return nonEmptyString(data.messageId) && optionalString(data.finishReason) && optionalString(data.traceId)
-  if (eventType === 'message.failed') return nonEmptyString(data.messageId) && nonEmptyString(data.code) && typeof data.message === 'string'
+  if (eventType === 'message.failed') return nonEmptyString(data.messageId) && nonEmptyString(data.code) && typeof data.message === 'string' && optionalString(data.traceId)
   if (eventType === 'message.canceled') return nonEmptyString(data.messageId) && optionalString(data.traceId)
   return false
 }

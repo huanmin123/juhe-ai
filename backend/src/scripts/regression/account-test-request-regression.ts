@@ -33,26 +33,26 @@ import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, account
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
 assert.deepEqual(accountDiagnosticRetryTimeouts('generation'), [10_000, 20_000, 30_000], '文本测试必须保留三档重试窗口')
-assert.deepEqual(accountDiagnosticRetryTimeouts('image_generation'), [60_000], '图片测试必须只生成一次，避免重试产生多张计费图片')
+assert.deepEqual(accountDiagnosticRetryTimeouts('models_catalog'), [10_000, 20_000], '图像模型目录探针必须在 30 秒内完成')
 assert.deepEqual(
-  accountDiagnosticAttemptProgress(0, 60_000, Date.now() + 1_000, accountDiagnosticRetryTimeouts('image_generation')),
+  accountDiagnosticAttemptProgress(0, 10_000, Date.now() + 1_000, accountDiagnosticRetryTimeouts('models_catalog')),
   {
     attemptIndex: 0,
     attemptNumber: 1,
-    totalAttempts: 1,
-    timeoutMs: 60_000,
-    maxTotalTimeoutMs: 60_000,
+    totalAttempts: 2,
+    timeoutMs: 10_000,
+    maxTotalTimeoutMs: 30_000,
     elapsedMs: 0
   },
-  '图片测试进度必须显示单次 60 秒窗口'
+  '图像模型目录探针进度必须显示 30 秒窗口'
 )
 const openAIProfile = { providerCode: 'gpt', protocolCode: 'openai', protocolVersion: 'v1', type: 'api_key' }
-assert.equal(accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['images'] }), 'image_generation', '只声明 Images 的模型必须调用真实图片生成接口')
+assert.equal(accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['images'] }), 'models_catalog', '只声明 Images 的模型必须使用模型目录探针')
 assert.equal(accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['responses'] }), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
 assert.equal(
   accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['images'] }),
-  'image_generation',
-  '自定义图片模型必须按模型目录能力识别，不能依赖 gpt-image 命名'
+  'models_catalog',
+  '自定义图片模型必须按模型目录能力识别，并使用目录探针'
 )
 assert.equal(
   accountTestProbeKind(openAIProfile, { testEndpointMode: 'responses_sse', supportedApiProtocols: ['responses', 'images'] }),
@@ -61,8 +61,8 @@ assert.equal(
 )
 assert.equal(
   accountTestProbeKind(openAIProfile, { testEndpointMode: 'images_json', supportedApiProtocols: ['responses', 'images'] }),
-  'image_generation',
-  '同时支持 Responses 与 Images 的模型选择 Images 时必须执行图片生成探针'
+  'models_catalog',
+  '同时支持 Responses 与 Images 的模型选择 Images 时必须执行模型目录探针'
 )
 assert.equal(
   accountTestProbeKind(openAIProfile, { testEndpointMode: 'images_json', supportedApiProtocols: ['responses'] }),
@@ -407,6 +407,8 @@ assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupported
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
+assert.match(serviceSource, /const responseDiagnostics = probeKind === 'models_catalog'\s*\?\s*\{\}\s*:/, '图像模型目录探针不得保留原始响应正文或 Header')
+assert.match(serviceSource, /probeKind === 'models_catalog'\s*\? proxyFailureMessage \|\| protocolEvidenceError \|\| accountTestHttpFailureMessage/, '图像模型目录探针失败信息不得回显上游响应正文')
 assert.match(serviceSource, /accountManualTestEndpointModes/, '测试服务必须复用共享解析器读取账号可测试形态')
 assert.match(optionsServiceSource, /accountManualTestEndpointModes/, '测试选项必须复用共享解析器读取账号可测试形态')
 assert.match(endpointModesSource, /supported_endpoint_modes/, '共享解析器必须从账号上游接口能力读取可测试形态')

@@ -35,7 +35,6 @@ import {
 } from './account-test-response-diagnostics.js'
 import {
   hasAccountModelCatalogSuccessEvidence,
-  hasAccountImageGenerationSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from './account-test-success-evidence.js'
 import { accountTestProbeKind, type AccountTestProbeKind } from './account-test-probe-policy.js'
@@ -78,7 +77,6 @@ import {
 } from './account-diagnostic-retry-policy.js'
 import {
   accountTestDefaultPrompt,
-  createOpenAIImageGenerationTestRequest,
   accountTestModelsPath,
   createAnthropicTestRequest,
   createGeminiTestRequest,
@@ -177,7 +175,7 @@ export async function testOpenAIAccount(
   const anthropicProtocol = isAnthropicProtocolProfile(account)
   const geminiProtocol = isGeminiProtocolProfile(account)
   let testEndpointMode: AccountSupportedEndpointMode | undefined
-  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | ReturnType<typeof createOpenAIImageGenerationTestRequest> | undefined
+  let testRequest: ReturnType<typeof createAnthropicTestRequest> | ReturnType<typeof createGeminiTestRequest> | ReturnType<typeof createOpenAITestRequest> | undefined
   let requestBody: Record<string, unknown> | undefined
   let requestUrl: string | undefined
   let modelMapping: ResolvedOpenAIModelMapping | undefined
@@ -207,10 +205,11 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId,
       testEndpointMode: input.testEndpointMode
     })
-    const supportedEndpointModes = probeKind === 'image_generation'
+    const modelCatalogProbe = probeKind === 'models_catalog'
+    const supportedEndpointModes = modelCatalogProbe
       ? ['images_json' as const]
       : accountManualTestEndpointModes(account)
-    testEndpointMode = probeKind === 'image_generation'
+    testEndpointMode = modelCatalogProbe
       ? 'images_json'
       : resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
     clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
@@ -223,12 +222,7 @@ export async function testOpenAIAccount(
     })
     const messagesTestMode = isMessagesTestEndpointMode(testEndpointMode)
     const geminiTestMode = isGeminiTestEndpointMode(testEndpointMode)
-    if (probeKind === 'image_generation') {
-      testRequest = createOpenAIImageGenerationTestRequest({
-        explicitModel,
-        fallbackModel: model
-      })
-    } else if (probeKind === 'generation') {
+    if (probeKind === 'generation') {
       testRequest = messagesTestMode
         ? createAnthropicTestRequest({
           explicitModel,
@@ -355,24 +349,27 @@ export async function testOpenAIAccount(
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
     const protocolSuccessEvidence = probeKind === 'models_catalog'
       ? hasAccountModelCatalogSuccessEvidence(model, responseText)
-      : probeKind === 'image_generation'
-        ? hasAccountImageGenerationSuccessEvidence(responseText)
-        : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
+      : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
         ? `上游模型目录未包含检查模型或响应格式无效：${model}`
-        : probeKind === 'image_generation'
-          ? '上游返回 HTTP 2xx，但图片响应中缺少可用图片数据'
-          : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
+        : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
       : undefined
     const protocolEvidenceErrorCode = probeKind === 'models_catalog'
       ? 'model_not_found'
-      : probeKind === 'image_generation'
-        ? 'invalid_image_generation_response'
-        : 'invalid_protocol_success_response'
+      : 'invalid_protocol_success_response'
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
+    const responseDiagnostics = probeKind === 'models_catalog'
+      ? {}
+      : {
+          responseHeaders,
+          responseBody: parseOpenAIJsonBody(responseText),
+          responseText,
+          responseTruncated,
+          outputText
+        }
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
       accountName: account.name,
@@ -387,17 +384,15 @@ export async function testOpenAIAccount(
       errorCode: success ? undefined : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
-        : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
+        : probeKind === 'models_catalog'
+          ? proxyFailureMessage || protocolEvidenceError || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode)
+          : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
       requestUrl,
       requestBody,
-      responseHeaders,
-      responseBody: parseOpenAIJsonBody(responseText),
-      responseText,
-      responseTruncated,
-      outputText,
+      ...responseDiagnostics,
       modelsUrl,
       proxyUrl: accountTestProxyMarker(account, finalAccount),
       tokenRefreshed: didRefreshToken(account, finalAccount),
@@ -415,7 +410,10 @@ export async function testOpenAIAccount(
     }), limitedDiagnostics)
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
-    const message = normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(account, requestUrl)
+    const suppressDiagnostics = probeKind === 'models_catalog'
+    const message = suppressDiagnostics
+      ? accountTestFailureMessage(account, requestUrl)
+      : normalizedError instanceof Error ? normalizedError.message : accountTestFailureMessage(account, requestUrl)
     const accountFailureEligible = accountTestFailureEligible(normalizedError)
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
@@ -433,7 +431,7 @@ export async function testOpenAIAccount(
       testEndpointMode,
       requestUrl,
       requestBody,
-      responseText: message,
+      ...(suppressDiagnostics ? {} : { responseText: message }),
       modelsUrl,
       proxyUrl: account.proxyProfileId ? '[configured]' : undefined,
       durationMs: Date.now() - startedAt,

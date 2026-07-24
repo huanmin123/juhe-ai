@@ -124,14 +124,6 @@ export interface RuntimeConfig {
     maxResults: number
     maxBodyBytes: number
   }
-  imageGenerationProvider: {
-    endpoint?: string
-    apiKey?: string
-    api: ImageGenerationProviderApi
-    model: string
-    timeoutMs: number
-    maxBodyBytes: number
-  }
   codeInterpreter: {
     pythonCommand: string
     timeoutMs: number
@@ -191,7 +183,6 @@ export type WorkerRuntimeRole =
   | 'temporary-maintenance-worker'
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export type HostedToolRuntimeMode = 'guidance' | 'reject' | 'mock' | 'local_runtime'
-export type ImageGenerationProviderApi = 'images' | 'responses'
 export type CodexProtocolGuardGlobalMode = 'off' | 'shadow' | 'safe_repair' | 'strict_intercept'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
@@ -374,14 +365,6 @@ export const runtimeConfig: RuntimeConfig = {
     timeoutMs: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_TIMEOUT_MS', 10000, 1000, 120000),
     maxResults: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_RESULTS', 5, 1, 10),
     maxBodyBytes: numberConfig('JUHE_AI_CODEX_WEB_SEARCH_MAX_BODY_KB', 512, 16, 4096) * 1024
-  },
-  imageGenerationProvider: {
-    endpoint: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT'),
-    apiKey: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY'),
-    api: imageGenerationProviderApiConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API', 'images'),
-    model: stringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL', 'gpt-image-2'),
-    timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 600000, 1000, 900000),
-    maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
   },
   codeInterpreter: {
     pythonCommand: stringConfig('JUHE_AI_CODE_INTERPRETER_PYTHON_COMMAND', 'python'),
@@ -881,13 +864,6 @@ function codexProtocolGuardModeConfig(
   if (!value) return fallback
   if (value === 'off' || value === 'shadow' || value === 'safe_repair' || value === 'strict_intercept') return value
   throw new Error(`${name} 只能配置为 off、shadow、safe_repair 或 strict_intercept`)
-}
-
-function imageGenerationProviderApiConfig(name: string, fallback: ImageGenerationProviderApi): ImageGenerationProviderApi {
-  const value = rawStringConfig(name)?.toLowerCase()
-  if (!value) return fallback
-  if (value === 'images' || value === 'responses') return value
-  throw new Error(`${name} 只能配置为 images 或 responses`)
 }
 
 function computerAdapterConfig(): RuntimeConfig['computerAdapter'] {

@@ -152,7 +152,9 @@ export async function handleFailedUpstreamResponse(
     clientIpAccountAvoidanceTracker
   } = input
 
-  if (!accountErrorPolicyCouldMatchStatus(account, response.status)) {
+  const explicitPolicyCouldMatch = accountErrorPolicyCouldMatchStatus(account, response.status)
+  const builtInImagePermissionCouldMatch = couldBeBuiltInImageAccountPermissionFailure(req, response.status)
+  if (!explicitPolicyCouldMatch && !builtInImagePermissionCouldMatch) {
     return { action: 'return_response', response }
   }
 
@@ -167,10 +169,19 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
   }
-  const explicitPolicyDecision = input.accountStateMutationEnabled !== false && usageContext.trafficSource === 'gateway'
+  const explicitPolicyDecision = explicitPolicyCouldMatch
+    && input.accountStateMutationEnabled !== false
+    && usageContext.trafficSource === 'gateway'
     ? decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
     : undefined
-  if (!explicitPolicyDecision) {
+  const parsedErrorMessage = stringValue(parsedError.message)
+  const builtInImagePermissionFailure = isBuiltInImageAccountPermissionFailure({
+    req,
+    statusCode: response.status,
+    errorType: stringValue(parsedError.type),
+    errorMessage: parsedErrorMessage
+  })
+  if (!explicitPolicyDecision && !builtInImagePermissionFailure) {
     return {
       action: 'return_response',
       response: {
@@ -265,7 +276,6 @@ export async function handleFailedUpstreamResponse(
     settings,
     trafficSource: usageContext.trafficSource
   }
-  const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
@@ -286,12 +296,42 @@ export async function handleFailedUpstreamResponse(
         policyDecision: explicitPolicyDecision
       })
     }
+  } else if (builtInImagePermissionFailure) {
+    auditCapture.addGatewayMetadata({
+      label: 'image_account_permission_unavailable',
+      metadata: {
+        accountId: account.id,
+        statusCode: response.status,
+        errorType: stringValue(parsedError.type),
+        errorMessage: parsedErrorMessage
+      }
+    })
   }
 
   return {
     action: 'skip_account',
     lastAttempt
   }
+}
+
+export function isBuiltInImageAccountPermissionFailure(input: {
+  req: Pick<Request, 'method' | 'originalUrl' | 'path'>
+  statusCode: number
+  errorType?: string
+  errorMessage?: string
+}): boolean {
+  if (!couldBeBuiltInImageAccountPermissionFailure(input.req, input.statusCode)) return false
+  if (input.errorType?.trim().toLowerCase() !== 'permission_error') return false
+  return /\bimage generation is not enabled for (?:this|the) group\b/i.test(input.errorMessage?.trim() ?? '')
+}
+
+function couldBeBuiltInImageAccountPermissionFailure(
+  req: Pick<Request, 'method' | 'originalUrl' | 'path'>,
+  statusCode: number
+): boolean {
+  if (statusCode !== 403 || req.method.toUpperCase() !== 'POST') return false
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
+  return /\/images\/(?:generations|edits)$/i.test(path)
 }
 
 export async function handleOpaqueFailedUpstreamResponse(

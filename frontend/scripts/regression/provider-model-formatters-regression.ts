@@ -29,14 +29,16 @@ const providerTableConfigSource = readFileSync(resolve(frontendRoot, 'src/views/
 assert.equal(categoryFromModeOrModel('image_generation', 'custom-model'), 'image', '图片 mode 应识别为图像模型')
 assert.equal(categoryFromModeOrModel(undefined, 'gpt-image-2'), 'image', 'gpt-image 模型名应识别为图像模型')
 assert.equal(categoryFromModeOrModel(undefined, 'dall-e-3'), 'image', 'dall-e 模型名应识别为图像模型')
-assert.equal(categoryFromModeOrModel('audio_speech', 'custom-model'), 'audio', '音频 mode 应识别为音频模型')
-assert.equal(categoryFromModeOrModel(undefined, 'whisper-large-v3'), 'audio', 'whisper 模型名应识别为音频模型')
-assert.equal(categoryFromModeOrModel(undefined, 'tts-1-hd'), 'audio', 'tts 模型名应识别为音频模型')
+assert.equal(categoryFromModeOrModel('audio_speech', 'custom-model'), 'text', '已下线音频分类不应生成独立音频 Tab')
+assert.equal(categoryFromModeOrModel(undefined, 'whisper-large-v3'), 'text', '已下线音频模型名不应生成独立音频 Tab')
+assert.equal(categoryFromModeOrModel(undefined, 'tts-1-hd'), 'text', '已下线音频模型名不应生成独立音频 Tab')
 assert.equal(categoryFromModeOrModel(undefined, 'claude-opus-4-5'), 'text', 'Claude 模型名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'deepseek-v4-flash'), 'text', 'DeepSeek 官方模型名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'deepseek-ai-v4-pro'), 'text', 'DeepSeek 上游别名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'gpt-5.5'), 'text', 'GPT 模型名应识别为文本模型')
 assert.equal(categoryFromModeOrModel(undefined, 'o3-pro'), 'text', 'o 系列模型名应识别为文本模型')
+assert.doesNotMatch(categoryRulesSource, /audio:\s*'音频'/, '模型目录不能保留音频 Tab')
+assert.doesNotMatch(formatterSource, /label:\s*'音频',\s*value:\s*'audio'/, '新增自定义模型不能保留音频用途入口')
 
 assert.equal(getModelCategory(providerModel({ model: 'gpt-image-2' })), 'image', 'getModelCategory 应继续使用拆分后的分类规则')
 assert.equal(formatModelCategory(providerModel({ model: 'claude-haiku-4-5' })), '对话 / 编码', 'formatModelCategory 文案不应变化')
@@ -52,9 +54,9 @@ assert.equal(
   'Low / High',
   '模型目录不能把上游元数据标成客户端默认思考级别'
 )
-assert.equal(formatTokens(1_048_576), '1M（1,048,576）', '二进制 1M Token 容量应兼顾易读单位和精确值')
-assert.equal(formatTokens(65_536), '64K（65,536）', '二进制 64K Token 容量应保留精确值')
-assert.equal(formatTokens(131_072), '128K（131,072）', '二进制 128K Token 容量应保留精确值')
+assert.equal(formatTokens(1_048_576), '1M', '二进制 1M Token 容量应使用简洁单位')
+assert.equal(formatTokens(65_536), '64K', '二进制 64K Token 容量应使用简洁单位')
+assert.equal(formatTokens(131_072), '128K', '二进制 128K Token 容量应使用简洁单位')
 assert.equal(formatTokens(128_000), '128K', '十进制 128K Token 容量应保持官方单位')
 assert.equal(
   formatModelCatalogDisplayValue({ key: 'input', label: '输入', format: 'usd_per_1m_tokens', value: 1.5 }),
@@ -87,7 +89,6 @@ assert.deepEqual(
   '桌面目录列必须取当前模型 descriptor section 的有序并集'
 )
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
-assert.deepEqual(defaultProtocolsForModelCategory('audio'), ['audio'], '音频模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('text'), ['responses', 'chat_completions'], '文本模型默认协议不应变化')
 assert.deepEqual(
   defaultProtocolsForProviderModelCategory(providerFixture({
@@ -124,13 +125,14 @@ assert.doesNotMatch(formatterSource, /gpt-image|dall-e|whisper|startsWith\('gpt-
 assert.match(categoryRulesSource, /modelNameCategoryRules/, '模型名前缀分类规则应集中在 providerModelCategoryRules')
 assert.match(catalogModalSource, /isDefaultHealthCheckModel\(record\).*默认检查/s, '个人模型目录应在当前默认模型名称旁保留默认检查标签')
 assert.doesNotMatch(catalogModalSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
-assert.match(providersViewSource, /force:\s*force\s*\|\|\s*!isManagementView\.value/, '普通用户每次打开模型目录时应强制重新读取个人 provider 默认值')
+assert.match(providersViewSource, /api\.providers\.detail\(provider\.code,\s*\{\s*\.\.\.modelQuery,\s*viewScope:/, '每次打开模型目录时必须重新读取当前作用域的 provider 默认值')
+assert.match(providersViewSource, /activeProvider\.value = detail/, '模型目录必须应用最新 provider 详情')
 assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
 assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
 assert.match(providersViewSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(isManagementView\.value, authState\.isAdmin\.value\)\)/, '新增和编辑必须使用统一的价格维护判定')
 assert.match(providersViewSource, /availableCustomModelModeOptions/, '新增模型用途必须按当前供应商能力生成')
-assert.match(providersViewSource, /label="服务等级"[\s\S]*mode="multiple"/, '服务等级必须限制为当前供应商已知选项')
-assert.match(providersViewSource, /label="思考级别"[\s\S]*mode="multiple"/, '思考级别必须限制为当前供应商已知选项')
+assert.match(providersViewSource, /label="服务等级"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelServiceTierOptions"/, '服务等级必须使用当前供应商的选择模式和已知选项')
+assert.match(providersViewSource, /label="思考能力"[\s\S]*:mode="customModelCapabilitySelectMode"[\s\S]*:options="customModelReasoningEffortOptions"/, '思考能力必须使用当前供应商的选择模式和已知选项')
 assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
 assert.doesNotMatch(providersViewSource, /:disabled="editingBuiltInModel"/, '管理员编辑内置模型时状态、用途、协议、服务等级、思考和 token 上限不能被锁死')
 assert.doesNotMatch(providersViewSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')

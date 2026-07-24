@@ -38,13 +38,14 @@
       </a-form-item>
       <a-form-item label="特权">
         <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
-          <a-select-option value="normal">可调度</a-select-option>
+          <a-select-option value="normal">无</a-select-option>
           <a-select-option value="super_priority">超级优先</a-select-option>
           <a-select-option value="fallback">降级备用</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="状态">
-        <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
+      <a-form-item class="dispatch-status-field" label="状态">
+        <a-radio-group v-model:value="form.status" :disabled="authorizedEditing || (editing && form.status === 'pending_test')">
+          <a-radio v-if="!editing || form.status === 'pending_test'" value="pending_test">待检查</a-radio>
           <a-radio value="active">可调度</a-radio>
           <a-radio value="disabled">停用</a-radio>
         </a-radio-group>
@@ -131,12 +132,23 @@ function handleGroupDropdownVisibleChange(open: boolean): void {
 
 .dispatch-config-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(112px, 150px)) minmax(210px, 1fr);
   gap: 0 18px;
 }
 
 .dispatch-config-grid > * {
   min-width: 0;
+}
+
+.dispatch-status-field :deep(.ant-radio-group) {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.dispatch-status-field :deep(.ant-radio-wrapper) {
+  margin-inline-end: 0;
+  white-space: nowrap;
 }
 
 .form-help {

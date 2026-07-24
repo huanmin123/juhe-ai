@@ -49,6 +49,7 @@ let mockOpenAIServer: http.Server | undefined
 
 try {
   const accountsRouteSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const openAIOAuthRouteSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.routes.ts'), 'utf8')
   const forceActivateRouteSource = readFileSync(resolve('src/modules/accounts/account-force-activate.routes.ts'), 'utf8')
   const accountRuntimeMutationSource = readFileSync(resolve('src/storage/account-runtime-mutation.repository.ts'), 'utf8')
   assert.match(
@@ -99,6 +100,9 @@ try {
     '普通恢复入口不应激活待检查账户'
   )
   assert.match(forceActivateRouteSource, /acknowledgedAccountAvailable !== true/, '人工恢复必须要求用户明确确认账户当前可用')
+  assert.match(accountsRouteSource, /status: parsed\.data\.status === 'disabled' \? 'disabled' : parsed\.data\.status === 'active' \? 'active' : 'pending_test',[\s\S]+skipInitialHealthCheck: parsed\.data\.status === 'active'/, '普通账户创建仅在显式选择可调度时跳过初始检查')
+  assert.match(openAIOAuthRouteSource, /status: z\.enum\(\['active', 'pending_test', 'disabled'\]\)\.optional\(\)/, 'OpenAI OAuth 创建应接受待检查状态')
+  assert.match(openAIOAuthRouteSource, /skipInitialHealthCheck: parsed\.data\.status === 'active',[\s\S]+schedulable: parsed\.data\.status === 'active'/, 'OpenAI OAuth 创建仅在显式选择可调度时跳过初始检查')
   assert.match(forceActivateRouteSource, /accounts\.force_activate_pending/, '人工恢复必须写入独立操作审计键')
   assert.match(accountRuntimeMutationSource, /forceActivatePendingAccountAsync[\s\S]+client\.transaction[\s\S]+config_revision = \?/, 'PostgreSQL 人工放行必须在事务内按配置版本 CAS')
   assert.match(accountRuntimeMutationSource, /forceActivatePendingAccount[\s\S]+account_expires_at IS NULL OR account_expires_at > \?/, '人工放行写入时必须再次校验套餐未过期')
@@ -296,6 +300,19 @@ try {
   }, access)
   assert.equal(requestedActive.status, 'pending_test', '新账户请求正常状态仍应由后台检查激活')
   assert.equal(requestedActive.schedulable, false, '新账户后台检查成功前不得调度')
+
+  const explicitlyActivated = repositories.createAccount({
+    ...accountPayload({
+      name: '显式跳过检查的新账户',
+      apiKey: 'sk-explicitly-active',
+      groupId: group.id,
+      baseUrl: mockBaseUrl
+    }),
+    status: 'active',
+    skipInitialHealthCheck: true
+  }, access)
+  assert.equal(explicitlyActivated.status, 'active', '显式跳过检查的新账户应直接可调度')
+  assert.equal(explicitlyActivated.schedulable, true, '显式跳过检查的新账户应参与调度')
 
   const importResult = accountImport.executeAccountImport({
     type: accountImport.accountImportProtocolType,

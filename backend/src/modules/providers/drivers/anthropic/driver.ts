@@ -178,7 +178,7 @@ export const anthropicProviderDriver: ProviderDriver = {
           fileSearchExecutor: openAICompatibleFileSearchExecutorForGatewayRequest(req),
           codeInterpreterExecutor: openAICompatibleCodeInterpreterExecutorForGatewayRequest(req),
           computerExecutor: openAICompatibleComputerExecutorForGatewayRequest(req),
-          imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
+          imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest(req)
         }, signal), openAIToAnthropicBridgeUpstreamModel(req, account), signal)
       }
     }

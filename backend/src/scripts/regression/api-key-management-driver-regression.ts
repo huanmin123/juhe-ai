@@ -91,6 +91,22 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const defaultApiKeys = defaultApiKeyPage.items.filter((item) => item.isDefault)
   assert.equal(defaultApiKeys.length, defaultRouteResourceCount, 'API Key 列表应包含非混合默认路由对应的默认 API Key')
   assert.equal(defaultApiKeys.every((item) => item.routeStrategyMode === 'normal'), true, '默认 API Key 必须绑定默认普通路由')
+  const defaultApiKey = defaultApiKeys[0]
+  assert(defaultApiKey, '默认 API Key 名称保护回归需要至少一个默认 Key')
+  assert.equal((await repositories.updateApiKeyAsync(defaultApiKey.id, { name: defaultApiKey.name }, adminAccess))?.name, defaultApiKey.name, '默认 API Key 携带原名称更新其他字段时不应被误拦截')
+  await assert.rejects(
+    repositories.updateApiKeyAsync(defaultApiKey.id, { name: `${defaultApiKey.name}改` }, adminAccess),
+    /默认 API Key 不允许修改名称/,
+    '默认 API Key 必须拒绝修改名称'
+  )
+  const defaultRouteStrategy = await repositories.findRouteStrategySummaryAsync(defaultApiKey.routeStrategyId, adminAccess)
+  assert(defaultRouteStrategy, '默认策略路由名称保护回归需要默认 Key 绑定的策略路由')
+  assert.equal((await repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, { name: defaultRouteStrategy.name }, adminAccess))?.name, defaultRouteStrategy.name, '默认策略路由携带原名称更新其他字段时不应被误拦截')
+  await assert.rejects(
+    repositories.updateRouteStrategyAsync(defaultRouteStrategy.id, { name: `${defaultRouteStrategy.name}改` }, adminAccess),
+    /默认策略路由不允许修改名称/,
+    '默认策略路由必须拒绝修改名称'
+  )
   const chatApiKeyId = await repositories.ensureChatApiKeyForSystemAccountAsync(adminAccess.systemAccountId)
   assert.equal(await repositories.ensureChatApiKeyForSystemAccountAsync(adminAccess.systemAccountId), chatApiKeyId, 'AI 对话专用 Key 补齐必须幂等')
   const chatApiKey = await repositories.findChatApiKeySecretByPurposeAsync(adminAccess.systemAccountId)
@@ -103,6 +119,13 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const chatSummary = (await repositories.listApiKeysPageAsync({ ...adminAccess, systemAccountFilterId: adminAccess.systemAccountId }, { page: 1, pageSize: 50 })).items.find((item) => item.id === chatApiKeyId)
   assert.equal(chatSummary?.purpose, 'chat', 'API Key 列表必须暴露 AI 对话用途')
   assert.equal(chatSummary?.isDefault, false, 'AI 对话专用 Key 不能占用不可换路由的默认 Key 身份')
+  assert(chatSummary, 'AI 对话 API Key 名称保护回归需要列表摘要')
+  assert.equal((await repositories.updateApiKeyAsync(chatApiKeyId, { name: chatSummary.name }, adminAccess))?.name, chatSummary.name, 'AI 对话 API Key 携带原名称更新其他字段时不应被误拦截')
+  await assert.rejects(
+    repositories.updateApiKeyAsync(chatApiKeyId, { name: `${chatSummary.name}改` }, adminAccess),
+    /AI 对话 API Key 不允许修改名称/,
+    'AI 对话 API Key 必须拒绝修改名称'
+  )
   await assert.rejects(
     repositories.deleteApiKeyWithRelatedCleanupAsync(chatApiKeyId, adminAccess),
     /AI 对话 API Key 不允许删除/,

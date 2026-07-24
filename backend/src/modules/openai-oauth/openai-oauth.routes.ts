@@ -55,7 +55,7 @@ const createFromCodeSchema = z.object({
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
-  status: z.enum(['active', 'disabled']).optional(),
+  status: z.enum(['active', 'pending_test', 'disabled']).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
@@ -78,7 +78,7 @@ const createFromRefreshTokenSchema = z.object({
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
-  status: z.enum(['active', 'disabled']).optional(),
+  status: z.enum(['active', 'pending_test', 'disabled']).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
@@ -181,7 +181,8 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
-        status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test',
+        status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
+        skipInitialHealthCheck: parsed.data.status === 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -195,7 +196,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
+        schedulable: parsed.data.status === 'active',
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -227,7 +228,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
-    status: 'pending_test'
+    status: normalizedText(bodyField(req, 'status')) || 'pending_test'
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -275,7 +276,8 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test',
+        status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
+        skipInitialHealthCheck: parsed.data.status === 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -289,7 +291,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: false,
+        schedulable: parsed.data.status === 'active',
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)

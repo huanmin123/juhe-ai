@@ -20,15 +20,11 @@ export const baseModelColumns = [
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
-  { title: '模态与工具', key: 'modalities', width: 280 },
   { title: '操作', key: 'actions', width: 116, fixed: 'right' }
 ]
 
 export function buildProviderModelColumns(_category: ModelCategoryKey, rows: ProviderModelPricing[]) {
   const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'actions'])
-  if (rows.some((item) => item.inputModalities?.length || item.outputModalities?.length || item.supportedTools?.length)) {
-    visibleKeys.add('modalities')
-  }
 
   const commonColumns = baseModelColumns.filter((column) => column.key !== 'actions' && visibleKeys.has(column.key))
   const displayColumns = new Map<string, { title: string; key: string; width: number; catalogDisplaySectionKey: string }>()
@@ -38,7 +34,7 @@ export function buildProviderModelColumns(_category: ModelCategoryKey, rows: Pro
       displayColumns.set(section.key, {
         title: section.label,
         key: `catalogDisplay:${section.key}`,
-        width: 240,
+        width: 320,
         catalogDisplaySectionKey: section.key
       })
     }

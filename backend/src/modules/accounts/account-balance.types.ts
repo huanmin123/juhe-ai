@@ -1,4 +1,4 @@
-export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
+export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'openai_billing' | 'litellm' | 'user_balance'
 export type AccountBalanceAdapter = 'builtin' | 'custom'
 
 export type AccountBalanceStatus =
@@ -28,7 +28,7 @@ export interface AccountBalanceSnapshot {
   status: AccountBalanceStatus
   remainingUsd?: string
   rawRemaining?: string
-  rawUnit?: 'usd' | 'quota'
+  rawUnit?: 'usd' | 'cny' | 'quota'
   basis?: 'api_key_quota' | 'budget' | 'subscription' | 'wallet' | 'custom'
   errorMessage?: string
   lastAttemptAt?: string

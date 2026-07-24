@@ -5,6 +5,7 @@ import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientProfile
 } from '../../modules/gateway/client-profiles/strategy.js'
+import { isBuiltInImageAccountPermissionFailure } from '../../modules/gateway/response/failure-dispatch.js'
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
 const explicitProfiles: OpenAIGatewayClientProfile[] = ['codex', 'claude_code', 'gemini_cli']
@@ -28,13 +29,43 @@ assert.match(
 assert.match(
   dispatchSource,
   /const failedResponseResult = await handleFailedUpstreamResponse/,
-  'HTTP 失败只能由用户显式账户错误策略决定是否切号，不得按客户端画像分流默认动作'
+  'HTTP 失败必须由统一失败派发决定是否切号，不得按客户端画像分流默认动作'
 )
 assert.doesNotMatch(
   dispatchSource,
   /isOpaqueUpstreamFailoverAllowed/,
   '完整 HTTP 非成功响应不得按端点建立默认接管白名单'
 )
+
+const imagePermissionRequest = {
+  method: 'POST',
+  originalUrl: '/v1/images/generations',
+  path: '/images/generations'
+}
+assert.equal(isBuiltInImageAccountPermissionFailure({
+  req: imagePermissionRequest,
+  statusCode: 403,
+  errorType: 'permission_error',
+  errorMessage: 'Image generation is not enabled for this group'
+}), true, '图片上游组未开启生图应视为当前账户能力不可用并续试候选账户')
+assert.equal(isBuiltInImageAccountPermissionFailure({
+  req: { ...imagePermissionRequest, originalUrl: '/v1/responses', path: '/responses' },
+  statusCode: 403,
+  errorType: 'permission_error',
+  errorMessage: 'Image generation is not enabled for this group'
+}), false, '文本 / Responses 路径不得应用图片账户权限续试规则')
+assert.equal(isBuiltInImageAccountPermissionFailure({
+  req: imagePermissionRequest,
+  statusCode: 403,
+  errorType: 'permission_error',
+  errorMessage: 'Access denied by organization policy'
+}), false, '非明确的图片组权限错误必须原样返回')
+assert.equal(isBuiltInImageAccountPermissionFailure({
+  req: imagePermissionRequest,
+  statusCode: 400,
+  errorType: 'invalid_request_error',
+  errorMessage: 'Image generation is not enabled for this group'
+}), false, '非 403 错误不得套用账户权限续试规则')
 assert.doesNotMatch(
   finalizationSource,
   /!interpretUpstreamResponseSemantics \|\| upstreamResponse\.ok/,

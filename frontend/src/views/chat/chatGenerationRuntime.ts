@@ -625,6 +625,7 @@ export class ChatGenerationRuntime {
       }
       turn.turnId = status.turnId
       turn.assistantMessageId = status.assistantMessageId
+      if (status.traceId) turn.projection.traceId = status.traceId
       turn.accepted = true
       if (status.assistantStatus !== 'streaming' || status.runnerState === 'terminal') {
         this.requestReconciliation(key, turn, 'runner_terminal', {

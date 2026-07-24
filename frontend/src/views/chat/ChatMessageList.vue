@@ -24,6 +24,14 @@
             <div v-if="showStatusText(messages[item.index])" class="message-status-text" role="status">
               {{ statusLabel(messages[item.index]) }}
             </div>
+            <div v-if="hasDiagnosticFailure(messages[item.index])" class="message-diagnostic-reference">
+              <span>会话 ID：{{ messages[item.index].conversationId }}<template v-if="messages[item.index].traceId"> · Trace ID：{{ messages[item.index].traceId }}</template></span>
+              <a-tooltip title="复制诊断信息">
+                <a-button type="text" class="message-diagnostic-copy" aria-label="复制错误和会话定位信息" @click="copyDiagnostic(messages[item.index])">
+                  <template #icon><CopyOutlined /></template>
+                </a-button>
+              </a-tooltip>
+            </div>
           </div>
           <div v-if="messages[item.index].role === 'user'" class="message-actions">
             <div class="message-actions-controls">
@@ -151,6 +159,31 @@ async function restoreScrollAnchor(anchor: { offset: number; totalSize: number }
 function statusLabel(message: ChatMessage): string {
   return message.status === 'failed' ? message.errorMessage || chatErrorMessage(message.errorCode) : ({ streaming: '正在生成', canceled: '已停止', completed: '' })[message.status]
 }
+function hasDiagnosticFailure(message: ChatMessage): boolean {
+  return message.role === 'assistant' && (
+    message.status === 'failed'
+    || message.toolEvents?.some((event) => event.status === 'failed') === true
+    || message.contentBlocks?.some((block) => block.type === 'tool_call' && block.status === 'failed') === true
+  )
+}
+function diagnosticFailureMessages(message: ChatMessage): string[] {
+  const toolMessages = [
+    ...(message.toolEvents ?? []).map((event) => event.item?.errorMessage),
+    ...(message.contentBlocks ?? []).flatMap((block) => block.type === 'tool_call' ? [block.item?.errorMessage] : [])
+  ].filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+  const generationMessage = message.status === 'failed'
+    ? message.errorMessage || chatErrorMessage(message.errorCode)
+    : undefined
+  return [...new Set([generationMessage, ...toolMessages].filter((value): value is string => Boolean(value)))]
+}
+async function copyDiagnostic(message: ChatMessage): Promise<void> {
+  const content = [
+    ...diagnosticFailureMessages(message).map((error) => `错误：${error}`),
+    `会话 ID：${message.conversationId}`,
+    ...(message.traceId ? [`Trace ID：${message.traceId}`] : [])
+  ].join('\n')
+  try { await writeTextToClipboard(content); antdMessage.success('诊断信息已复制') } catch { antdMessage.error('复制失败，请稍后重试') }
+}
 function showStatusText(message: ChatMessage): boolean { return message.status !== 'completed' && !(message.role === 'assistant' && message.status === 'streaming') }
 function runtimeFor(message: ChatMessage): RunningTurn | undefined {
   const runtime = props.runtimeTurn
@@ -209,6 +242,8 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 .message-bubble-user { width: fit-content; max-width: 100%; padding: 9px 13px; background: #f5f5f5; border-radius: 10px 10px 3px 10px; }
 .message-bubble-assistant { padding: 4px 0; background: transparent; border: 0; box-shadow: none; }
 .message-status-text { margin-top: 6px; color: #98a2b3; font-size: 12px; }
+.message-diagnostic-reference { display: flex; max-width: 100%; align-items: center; gap: 4px; margin-top: 5px; color: #8a6470; font-size: 11px; overflow-wrap: anywhere; }
+.message-diagnostic-copy { flex: 0 0 28px; width: 28px; height: 28px; padding: 0; color: #8a6470; }
 .message-actions { min-height: 32px; display: flex; justify-content: flex-end; }
 .message-actions-assistant { justify-content: flex-start; }
 .message-actions-controls { min-height: 32px; display: flex; align-items: center; gap: 2px; color: #98a2b3; font-size: 11px; opacity: 0; pointer-events: none; transition: opacity .12s ease; }

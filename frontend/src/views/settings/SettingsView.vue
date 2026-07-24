@@ -276,6 +276,11 @@
               </a-form-item>
             </div>
             <div class="setting-item">
+              <a-form-item label="AI 对话生图总超时（秒）" tooltip="一次 generate_image 工具调用的整体时限，包含网关选号、账户切换、上游生成、结果读取和资产保存；默认 900 秒。">
+                <a-input-number v-model:value="systemForm.chatImageGenerationTotalTimeoutSeconds" :min="60" :max="86400" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
               <a-form-item label="无可用账号等待（秒）" tooltip="只在没有可立即派发账号时累计；当前账号仍在执行或存在可派发候选时不会因为该时间到达而停止服务端接管。">
                 <a-input-number v-model:value="systemForm.noAvailableAccountWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
@@ -363,7 +368,7 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'account-test': ['accountTestTaskConcurrency'],

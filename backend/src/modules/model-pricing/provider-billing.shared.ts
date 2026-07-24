@@ -34,7 +34,7 @@ export interface TokenBillingOptions {
 export const defaultTokenBillingLabels: TokenBillingLabels = {
   input: '输入 Token',
   output: '输出 Token',
-  cacheRead: '缓存命中 Token',
+  cacheRead: '缓存读 Token',
   cacheWrite: '缓存写入 Token',
   cacheWrite1h: '1h 缓存写入 Token',
   imageInput: '图片输入 Token',
@@ -192,7 +192,7 @@ export function capacitySection(pricing: ProviderBillingPricing): ProviderCatalo
 }
 
 export function reasoningSection(pricing: ProviderBillingPricing): ProviderCatalogDisplaySection | undefined {
-  const efforts = pricing.supportedReasoningEfforts?.filter(Boolean) ?? []
+  const efforts = pricing.supportedReasoningEfforts?.filter((effort) => Boolean(effort) && effort !== 'none') ?? []
   if (!efforts.length) return undefined
   const value = efforts.join(' / ')
   return textSection('reasoning', '思考能力', [['levels', '级别', value, 'text']])
@@ -213,11 +213,11 @@ export function serviceTierSections(pricing: ProviderBillingPricing): ProviderCa
     if (!rates) return []
     const section = priceSection(`tier_${tier}`, tierLabel(tier), [
       ['input', '输入', rates.inputUsdPer1M, 'usd_per_1m_tokens'],
-      ['output', '输出', rates.outputUsdPer1M, 'usd_per_1m_tokens'],
-      ['cache_read', '缓存命中', rates.cachedInputUsdPer1M, 'usd_per_1m_tokens'],
+      ['cache_read', '缓存读', rates.cachedInputUsdPer1M, 'usd_per_1m_tokens'],
       ['cache_write', '缓存写入', rates.cacheWriteUsdPer1M, 'usd_per_1m_tokens'],
       ['cache_write_1h', '1h 缓存写入', rates.cacheWrite1hUsdPer1M, 'usd_per_1m_tokens'],
       ['cache_storage', '缓存存储', rates.cacheStorageUsdPer1MPerHour, 'usd_per_1m_token_hour'],
+      ['output', '输出', rates.outputUsdPer1M, 'usd_per_1m_tokens'],
       ['audio_input', '音频输入', rates.audioInputUsdPer1M, 'usd_per_1m_tokens']
     ])
     return section ? [section] : []

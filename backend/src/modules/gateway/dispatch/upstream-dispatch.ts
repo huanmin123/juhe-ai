@@ -618,7 +618,10 @@ export async function fetchFirstAvailableUpstream(
                 observeGatewayRouting({ kind: 'tier_escape', outcome: 'applied' })
               }
               const attemptStartedAt = Date.now()
-              const normalRouteFirstByteDeadline = requestCoordination.normalRouteFirstByteConfig
+              // Image generation legitimately waits much longer for its first byte.
+              // It uses the image timeout profile instead of the text-oriented
+              // normal-route deadline, which would otherwise abort at 10 seconds.
+              const normalRouteFirstByteDeadline = requestLane === 'text' && requestCoordination.normalRouteFirstByteConfig
                 ? normalRouteAttemptFirstByteDeadline({
                     config: requestCoordination.normalRouteFirstByteConfig,
                     gatewayRequestWallBudget,
@@ -754,12 +757,12 @@ export async function fetchFirstAvailableUpstream(
                   retrySameAccount: false
                 }
                 const failedResponseResult = await handleFailedUpstreamResponse(failedResponseInput)
-                const explicitPolicyFailure = failedResponseResult.action !== 'return_response'
-                if (explicitPolicyFailure) {
+                const accountScopedFailure = failedResponseResult.action !== 'return_response'
+                if (accountScopedFailure) {
                   await hotQualityAttempt.recordTerminal({
                     outcomeClass: 'explicit_policy_failure',
-                    // A matched account error policy is an explicit user-authorized
-                    // account action; transport failures below remain protocol_model.
+                    // Configured policies and narrow built-in account capability rules
+                    // are account-scoped; transport failures below remain protocol_model.
                     failureScope: 'account',
                     source: 'explicit_policy'
                   })
@@ -787,7 +790,7 @@ export async function fetchFirstAvailableUpstream(
                 }
                 // An explicit user policy is a failure action, not a transport
                 // success; do not close/recover a circuit from the same attempt.
-                if (!explicitPolicyFailure) {
+                if (!accountScopedFailure) {
                   await accountCircuitAttempt?.reportFramingComplete()
                 }
                 lastAttempt = failedResponseResult.lastAttempt

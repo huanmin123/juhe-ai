@@ -60,7 +60,7 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     privilege: 'normal',
-    status: 'active',
+    status: 'pending_test',
     clientCompatibility,
     codexResponsesSafeRepairEnabled: true,
     codexResponsesStrictInterceptEnabled: false,

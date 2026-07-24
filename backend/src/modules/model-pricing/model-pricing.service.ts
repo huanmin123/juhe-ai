@@ -43,6 +43,7 @@ export interface ProviderModelPricing {
   cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices?: ServiceTierPrices
   imageInputUsdPer1M?: number
+  cachedImageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
@@ -222,6 +223,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     cacheStorageUsdPer1MPerHour: perMillion(item.cache_storage_input_token_cost_per_hour),
     serviceTierPrices: rawServiceTierPrices(item),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
+    cachedImageInputUsdPer1M: perMillion(item.cache_read_input_image_token_cost),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
     audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token),

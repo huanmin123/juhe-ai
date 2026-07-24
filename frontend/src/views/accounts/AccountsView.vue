@@ -223,7 +223,6 @@
       @group-options-search="handleGroupOptionsSearch"
       @model-options-open="handleAccountModelOptionsOpen"
       @model-options-search="handleAccountModelOptionsSearch"
-      @model-capabilities-load="loadCurrentProviderModelCapabilities"
       @mapping-model-options-open="handleMappingModelOptionsOpen"
       @mapping-model-options-search="handleMappingModelOptionsSearch"
       @advanced-open="loadAdvancedAccountDetail"
@@ -638,7 +637,6 @@ const {
   ensureAccountEditDetailLoaded,
   loadAdvancedAccountDetail,
   loadCurrentProviderModelOptions,
-  loadCurrentProviderModelCapabilities,
   loadMappingSourceModelOptions,
   providerName,
   providerModelOptions,

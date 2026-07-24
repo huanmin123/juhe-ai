@@ -16,6 +16,7 @@ export interface ProviderBillingPricing extends ProviderBillingPriceSet {
   providerCode: string
   model: string
   mode?: string
+  cachedImageInputUsdPer1M?: number
   serviceTierPrices?: Record<string, ProviderBillingPriceSet>
   supportedServiceTiers?: readonly string[]
   supportedReasoningEfforts?: readonly string[]

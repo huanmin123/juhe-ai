@@ -1,6 +1,6 @@
 # AI 账户上游余额查询设计
 
-> 状态：既有核心实现完成；2026-07-16 完成余额查询身份比较、缺失快照自愈和列表最终状态收敛，待生产发布验证。
+> 状态：既有核心实现完成；2026-07-16 完成余额查询身份比较、缺失快照自愈和列表最终状态收敛；2026-07-24 完成 MetaAPI 与 One API 系源码审计，并实现 API Key 专属 OpenAI 兼容账单自动适配，待真实上游验证。
 >
 > 需求来源：Codex 会话 `019f50a8-4d4a-73c1-8506-0dca19b9a684`。
 
@@ -42,6 +42,8 @@
 | `unsupported` | `余额查询失败` | 按用户周期继续查询，悬浮显示原因 |
 | `failed` | `余额查询失败` | 当前查询失败，悬浮显示本次错误 |
 
+`fresh` 金额允许为零或负数。零表示额度或钱包恰好耗尽；负数表示上游已允许透支，展示为 `-$0.25`，不得归零、截断或误报为查询失败。只有 Sub2API 明确的订阅哨兵值 `-1` 才表示 `unlimited`，钱包、预算和配额的其他负值仍是实际余额。
+
 第 3 次连续临时失败后不展示最后一次成功金额，只保留失败状态与错误摘要；前两次临时失败保留已有成功结果。确定性不支持只进入 `unsupported` 诊断状态，不取消用户配置的周期。下一次成功后恢复金额并清零失败序列。
 
 完整账户表单提交余额字段时，后台必须比较规范化后的余额查询身份，不能按字段是否出现判断变更。身份仅包含启用状态、规范化余额配置、供应商、账户类型、有效 API Key 指纹、规范化 Base URL 和代理 ID。Base URL 比较忽略 query、hash 和尾斜杠，但保留路径。名称、状态、并发、备注和模型等无关字段不重置刷新代次，也不清理余额快照。
@@ -73,6 +75,7 @@ AI 账户新增/编辑弹窗增加“余额查询”开关，交互与时间计�
 type AccountBalanceBuiltinAdapter =
   | 'sub2api'
   | 'newapi'
+  | 'openai_billing'
   | 'litellm'
   | 'user_balance'
 
@@ -117,7 +120,7 @@ interface RelayBalanceSnapshot {
   status: 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
   remainingUsd?: string
   rawRemaining?: string
-  rawUnit?: 'usd' | 'quota' | 'budget'
+  rawUnit?: 'usd' | 'cny' | 'quota'
   basis?: 'api_key_quota' | 'subscription' | 'wallet' | 'key_budget'
 }
 ```
@@ -183,13 +186,32 @@ interface AccountBalanceAdapterDriver {
 | --- | --- | --- |
 | `sub2api` | `GET /v1/usage` | Key 独立额度优先，其次订阅最紧窗口，最后钱包；上游 USD 直接使用 |
 | `newapi` | `GET /api/usage/token/`，必要时 `GET /api/status` | `total_available / quota_per_unit` 转 USD；`unlimited_quota=true` 只表示令牌层不限额，不代表账户无限余额，按 `unsupported` 继续回退 |
+| `openai_billing` | `GET /api/status`、`GET /dashboard/billing/subscription`、`GET /dashboard/billing/usage` | 严格匹配 `billing_subscription` 和 `list`；余额为 `hard_limit_usd - total_usage / 100`。用于 One API、New API、OneHub、DoneHub、Veloera 的 API Key 账单路由；仅限上游允许耗尽 Key 进入该路由的部署。|
 | `litellm` | `GET /key/info` | 有 `max_budget` 时返回 `max_budget - spend`，否则 `unsupported` |
 | `user_balance` | `GET /user/balance` | 读取顶层 `balance`，按 USD 钱包余额归一化；与 CC Switch 通用模板一致 |
 | `custom` | 用户配置的同源相对路径 | JSON Pointer 取余额，或总额减已用，再除以 divisor |
 
-所有余额只能来自上述明确查询接口的响应，不允许根据站点类型、本地 usage、账户额度配置或兼容特征推算。解析器必须以真实响应 fixture 做回归，不根据字段名猜测币种；New API 的旧 billing 字段可能实际承载 CNY、Token 或内部 quota，因此不作为余额来源。其他中转统一使用受限自定义接口。
+所有余额只能来自上述明确查询接口的响应，不允许根据站点类型、本地 usage、账户额度配置或兼容特征推算。解析器必须以真实响应 fixture 做回归，不根据字段名猜测币种。`openai_billing` 必须先读取 `/api/status`：`quota_display_type=USD` 直接使用，`CNY` 只在存在正数 `usd_exchange_rate` 时换算，旧版 `display_in_currency=false` 才按 `quota_per_unit` 换算；`TOKENS`、`CUSTOM` 或未知单位返回 `unsupported`。其他中转统一使用受限自定义接口。
 
-内置适配查询顺序固定为：先尝试 `preferredBuiltinAdapter`，再按 `sub2api -> newapi -> litellm -> user_balance` 补齐尚未尝试的规则。任一规则得到 `fresh` 或真正的账户级 `unlimited` 即成功并条件更新偏好；原偏好失败而其他规则成功时，用新规则替换偏好。全部规则都形成确定性不匹配或只返回 `unsupported` 时返回能力不支持，但仍按账户刷新周期等待下一轮；只要本轮存在临时错误，就进入连续失败并使用同一周期。账户 Base URL、API Key、代理或上游实现变化后，下一次查询会自动完成回退和偏好修正。
+### 4.1 MetaAPI 适配审计
+
+2026-07-24 按 [cita-777/metapi `41767a6`](https://github.com/cita-777/metapi/tree/41767a65ec8e5470a9a70f4615b47dc24949afff/src/server/services/platforms) 审计其平台适配器。该项目的“账号余额”与本项目的“单 API Key 上游余额”不是同一凭据模型：MetaAPI 的 `balanceService` 在 `credentialMode=apikey` 或没有 `accessToken` 时直接返回缓存并标记 `proxy_only`，不调用任何平台 `getBalance`；有站点 `session/access token` 时才使用管理端接口。因此不能把以下路径加入本项目的内置 API Key 自动探测。
+
+| MetaAPI 平台 | MetaAPI 余额路径 / 凭据 | 结论 |
+| --- | --- | --- |
+| New API、AnyRouter | `GET /api/user/self`，站点 access token；失败时还会尝试 Cookie、用户 ID 头 | 不接入。当前 `newapi` 已用 API Key 专属 `/api/usage/token/` 与 `/api/status`，管理端登录态不可互换。 |
+| One API | MetaAPI 使用 `GET /api/user/self` 的站点 access token；官方源码 `8df4a267` 的 dashboard billing 路由使用 `TokenAuth` | 通过 `openai_billing` 自动适配；不得改用 `/api/user/self`。 |
+| New API | MetaAPI 的管理端规则是 `GET /api/user/self`；官方源码 `84a79b680` 另有 API Key dashboard billing 路由 | 保留旧 `newapi` 规则，并可回退到 `openai_billing`。CNY 有明确汇率时换算；Token / Custom 单位不误报美元。 |
+| OneHub、DoneHub | MetaAPI 使用站点 access token；源码 `387f8bf16`、`1efabd804` 的 dashboard billing 路由使用 `OpenaiAuth`，最终校验模型 API Key | 通过 `openai_billing` 自动适配；不调用 `/api/user/self`。 |
+| Veloera | MetaAPI 使用站点 access token 和用户 ID 头；源码 `6525dfce` 的 dashboard billing 路由使用 `TokenAuth` | 通过 `openai_billing` 自动适配；不调用 `/api/user/self`。 |
+| Sub2API | `GET /api/v1/auth/me`，JWT/session | 不接入该规则。本项目已支持 API Key 的 `GET /v1/usage`；钱包返回 `balance` 和负数已兼容。 |
+| OpenAI、Claude、Gemini、Gemini CLI、Antigravity、CLIProxyAPI | MetaAPI 实现固定返回零或不查询真实货币余额 | 不接入。不能把占位零写成真实余额。 |
+
+One API、New API、OneHub、DoneHub 和 Veloera 的当前源码将 API Key 不限额编码为固定 `100000000` 占位；适配器把它视作 `unsupported`，不能伪装为真实美元余额或通用不限额。自动探测始终在第一次 `401/403` 停止，防止把同一 API Key 发送给多个不匹配的管理端路径。需要接入仍依赖登录态的规则时，必须另建显式的“上游 session 凭据”账户能力：凭据类型、加密与脱敏、过期/撤销、Cookie 禁止默认回退、用户 ID 头来源、手动选择适配器和独立安全审计都要先设计；不得复用或伪装为 API Key 账户。
+
+上述项目的当前主线源码还有一项上游限制：`TokenAuth` / `OpenaiAuth` 最终调用 `ValidateUserToken`，普通 Key 的 `RemainQuota <= 0` 会在进入 dashboard billing handler 前被拒绝。因此，自动适配只能在上游实际返回 subscription/usage JSON 时展示零或负数；上游只返回 `401/403` 时不能凭状态码猜成 `$0.00`，否则会把负余额、已撤销 Key、IP 限制和代理拦截混为同一结果。若要让耗尽 Key 也可查询，必须由上游把这两个只读账单路由改为专用的 read-only token 验证，或另行提供明确返回余额的 API Key 接口。
+
+内置适配查询顺序固定为：先尝试 `preferredBuiltinAdapter`，再按 `sub2api -> newapi -> openai_billing -> litellm -> user_balance` 补齐尚未尝试的规则。任一规则得到 `fresh` 或真正的账户级 `unlimited` 即成功并条件更新偏好；原偏好失败而其他规则成功时，用新规则替换偏好。全部规则都形成确定性不匹配或只返回 `unsupported` 时返回能力不支持，但仍按账户刷新周期等待下一轮；只要本轮存在临时错误，就进入连续失败并使用同一周期。账户 Base URL、API Key、代理或上游实现变化后，下一次查询会自动完成回退和偏好修正。
 
 ## 5. 后台刷新
 
@@ -280,6 +302,7 @@ SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：
 - JSON Pointer 只读取已解析、受大小限制的 JSON，不支持表达式、模板、JavaScript 或动态代码。
 - 错误摘要区分超时、HTTP 状态、鉴权失败、JSON 非法和字段不可解析，不包含完整响应正文。
 - 余额查询不能改变账户可调度性，也不能作为自动停用、切号或告警依据。
+- 禁止把 API Key 当作管理端 session/access token，也禁止为适配器自动构造 Cookie、猜测用户 ID 或执行网页登录；这些都是另一种凭据能力，必须显式建模并单独授权。
 
 ## 10. 状态与删除
 

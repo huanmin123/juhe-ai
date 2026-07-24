@@ -45,7 +45,7 @@ export function selectClientModelCatalog(
 ): ProviderModelCatalogItem[] {
   const candidates = items
     .filter((item) => item.status === 'active')
-    .filter((item) => item.catalogVisible !== false)
+    .filter((item) => item.scope !== 'built_in' || item.catalogVisible !== false)
     .filter(hasClientVisiblePrice)
     .sort(compareClientCatalogCandidates)
 

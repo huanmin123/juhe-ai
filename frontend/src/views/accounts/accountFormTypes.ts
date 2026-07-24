@@ -37,7 +37,7 @@ export interface AccountFormModel {
   concurrencyLimit: number
   priority: number
   privilege: 'normal' | 'super_priority' | 'fallback'
-  status: 'active' | 'disabled'
+  status: 'active' | 'pending_test' | 'disabled'
   clientCompatibility: AccountClientCompatibility
   codexResponsesSafeRepairEnabled: boolean
   codexResponsesStrictInterceptEnabled: boolean

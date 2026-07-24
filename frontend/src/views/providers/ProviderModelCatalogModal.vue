@@ -46,7 +46,7 @@
         :row-key="modelRowKey"
         :loading="loading"
         :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-        :scroll-x="1500"
+        :scroll-x="tableScrollX"
         :lock-body-scroll="false"
       >
         <template #emptyText>
@@ -78,13 +78,6 @@
               <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
-          </template>
-          <template v-else-if="column.key === 'modalities'">
-            <div class="price-cell">
-              <span v-if="record.inputModalities?.length">输入 {{ formatModelModalities(record.inputModalities) }}</span>
-              <span v-if="record.outputModalities?.length">输出 {{ formatModelModalities(record.outputModalities) }}</span>
-              <span v-if="record.supportedTools?.length">工具 {{ formatModelTools(record.supportedTools) }}</span>
-            </div>
           </template>
           <template v-else-if="column.catalogDisplaySectionKey">
             <div
@@ -125,14 +118,6 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
-              <template v-if="record.inputModalities?.length || record.outputModalities?.length">
-                <span>输入 / 输出模态</span>
-                <strong>{{ formatModelModalities(record.inputModalities) }} / {{ formatModelModalities(record.outputModalities) }}</strong>
-              </template>
-              <template v-if="record.supportedTools?.length">
-                <span>工具</span>
-                <strong>{{ formatModelTools(record.supportedTools) }}</strong>
-              </template>
               <template v-for="section in modelCatalogDisplaySections(record)" :key="section.key">
                 <span>{{ section.label }}</span>
                 <strong class="model-mobile-catalog-value">
@@ -158,13 +143,12 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/types/domain'
+import { computed } from 'vue'
 
 import {
   formatApiProtocol,
   formatModelCatalogDisplayValue,
   formatModelCategory,
-  formatModelModalities,
-  formatModelTools,
   formatModelScope,
   formatModelStatus,
   getApiProtocolTagColor,
@@ -213,6 +197,10 @@ const emit = defineEmits<{
   'system-account-dropdown': [open: boolean]
   'system-account-search': [value: string]
 }>()
+
+const tableScrollX = computed(() => Math.max(1500, props.columns.reduce((total, column) => (
+  total + (typeof column.width === 'number' ? column.width : 180)
+), 0)))
 
 function isDefaultHealthCheckModel(record: ProviderModelPricing): boolean {
   const defaultModel = props.defaultHealthCheckModel?.trim()
@@ -297,24 +285,18 @@ function modelRowKey(record: ProviderModelPricing): string {
   flex: 1 1 auto;
 }
 
-.price-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  line-height: 1.5;
-}
-
 .catalog-display-cell {
   display: grid;
   gap: 4px;
 }
 
 .catalog-display-item {
-  display: flex;
+  display: grid;
   align-items: flex-start;
-  justify-content: space-between;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
   line-height: 1.5;
+  white-space: normal;
 }
 
 .catalog-display-item > span,
@@ -322,9 +304,12 @@ function modelRowKey(record: ProviderModelPricing): string {
   color: #94a3b8;
   font-size: 11px;
   font-weight: 500;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .catalog-display-item strong {
+  min-width: 0;
   color: #0f172a;
   font-weight: 600;
   overflow-wrap: anywhere;

@@ -171,12 +171,9 @@ function buildOpenAIModelCandidates(model: string): string[] {
   if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
   if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
   if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
-  if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
   if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
   if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
   if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
-  if (model.startsWith('gpt-4o-mini-transcribe-')) candidates.add('gpt-4o-mini-transcribe')
-  if (model.startsWith('gpt-4o-mini-tts-')) candidates.add('gpt-4o-mini-tts')
 
   return Array.from(candidates)
 }
@@ -289,24 +286,6 @@ function inferOpenAIModelApiProtocols(
     return ['images']
   }
 
-  if (model.includes('realtime')) {
-    return ['realtime']
-  }
-
-  if (
-    mode === 'audio_speech'
-    || mode === 'audio_transcription'
-    || model.includes('transcribe')
-    || model.includes('tts')
-    || model.includes('whisper')
-  ) {
-    return ['audio']
-  }
-
-  if (model.includes('audio')) {
-    return ['chat_completions']
-  }
-
   if (mode === 'completion') {
     return ['completions']
   }
@@ -347,8 +326,6 @@ const openAIModelReleaseDates = new Map<string, string>([
   ['gpt-5.4-pro', '2026-03-05'],
   ['gpt-5.3-chat-latest', '2026-03-03'],
   ['gpt-5.3-codex', '2026-02-24'],
-  ['gpt-audio-1.5', '2026-02-23'],
-  ['gpt-realtime-1.5', '2026-02-23'],
   ['gpt-5.2-codex', '2026-01-14'],
   ['gpt-image-1.5', '2025-12-16'],
   ['gpt-5.2', '2025-12-11'],
@@ -360,12 +337,8 @@ const openAIModelReleaseDates = new Map<string, string>([
   ['gpt-5.1-codex-max', '2025-12-04'],
   ['gpt-5.1-codex-mini', '2025-11-13'],
   ['gpt-5-pro', '2025-10-06'],
-  ['gpt-audio-mini', '2025-10-06'],
   ['gpt-image-1-mini', '2025-10-06'],
-  ['gpt-realtime-mini', '2025-10-06'],
   ['gpt-5-codex', '2025-09-23'],
-  ['gpt-audio', '2025-08-28'],
-  ['gpt-realtime', '2025-08-28'],
   ['gpt-5', '2025-08-07'],
   ['gpt-5-chat-latest', '2025-08-07'],
   ['gpt-5-mini', '2025-08-07'],
@@ -377,9 +350,6 @@ const openAIModelReleaseDates = new Map<string, string>([
   ['gpt-4.1', '2025-04-14'],
   ['gpt-4.1-mini', '2025-04-14'],
   ['gpt-4.1-nano', '2025-04-14'],
-  ['gpt-4o-mini-tts', '2025-03-20'],
-  ['gpt-4o-mini-transcribe', '2025-03-20'],
-  ['gpt-4o-transcribe', '2025-03-20'],
   ['o1-pro', '2025-03-19'],
   ['o3-mini', '2025-01-31'],
   ['o1', '2024-12-17'],

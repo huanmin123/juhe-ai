@@ -100,13 +100,14 @@
         show-search
         @dropdown-visible-change="$emit('model-options-open', $event)"
         @search="$emit('model-options-search', $event)"
-        @change="$emit('model-capabilities-load', form.supportedModels)"
       />
     </a-form-item>
     <AccountHealthCheckModelField
       :form="form"
       :model-options="modelOptions"
       :models-loading="modelsLoading"
+      :protocol-code="protocolCode"
+      :protocol-version="protocolVersion"
     />
   </section>
 </template>
@@ -120,6 +121,7 @@ import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
 import { accountNameFromBaseUrl } from './accountNameSuggestion'
 import type { AccountFormModel } from './accountFormTypes'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { normalizedAccountApiKeys } from './accountCredentials'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
@@ -131,8 +133,10 @@ const props = defineProps<{
   deletingTagId?: string
   editing: boolean
   form: AccountFormModel
-  modelOptions: Array<{ label: string; value: string }>
+  modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  protocolCode?: string
+  protocolVersion?: string
   tagOptions: AccountTagSummary[]
   tagOptionsLoading: boolean
   title: string
@@ -142,7 +146,6 @@ defineEmits<{
   (event: 'delete-tag', tagId: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
-  (event: 'model-capabilities-load', modelIds: string[]): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)

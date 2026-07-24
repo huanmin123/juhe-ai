@@ -35,7 +35,7 @@ const process = computed(() => projectChatMessageProcess(props.message))
 const manuallyToggled = ref(new Map<string, boolean>())
 
 function isActiveToolGroup(tool: ChatToolProcessGroup): boolean {
-  return tool.status === 'started' || tool.status === 'updated'
+  return tool.status === 'started' || tool.status === 'updated' || tool.status === 'failed'
 }
 function isExpanded(tool: ChatToolProcessGroup): boolean {
   const manual = manuallyToggled.value.get(tool.key)
