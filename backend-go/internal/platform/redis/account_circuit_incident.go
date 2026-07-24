@@ -52,6 +52,10 @@ if not require_type(states_key, 'hash') or not require_type(due_key, 'zset')
   or not require_type(ledger_revisions_key, 'hash') then
   return redis.error_reply('invalid account circuit Redis key type')
 end
+local index_status = redis.call('HGET', index_meta_key, 'status')
+if index_status and index_status ~= 'building' then
+  return redis.error_reply('account circuit runtime index is not available for legacy restore')
+end
 
 local function decode_array(raw)
   if not raw then return {} end
@@ -319,6 +323,7 @@ type accountCircuitIncidentRuntimeState struct {
 	OpenedAtMS           *int64                              `json:"openedAtMs,omitempty"`
 	RetryAtMS            *int64                              `json:"retryAtMs,omitempty"`
 	Lease                *accountCircuitIncidentRuntimeLease `json:"lease,omitempty"`
+	HalfOpenOrigin       string                              `json:"halfOpenOrigin,omitempty"`
 	UpdatedAtMS          int64                               `json:"updatedAtMs"`
 }
 
@@ -340,6 +345,7 @@ type accountCircuitIncidentRuntimeLease struct {
 type AccountCircuitIncidentRestorer struct {
 	client    *Client
 	keys      accountCircuitRevisionKeys
+	runtime   *AccountCircuitRuntimeStore
 	retention time.Duration
 	capacity  int
 	now       func() time.Time
@@ -371,6 +377,17 @@ func NewAccountCircuitIncidentRestorer(client *Client, retention time.Duration, 
 	return restorer, nil
 }
 
+// NewAccountCircuitRuntimeOwnerIncidentRestorer restores durable incidents
+// through the ready-index runtime owner. The legacy constructor remains only
+// for the building-index compatibility projector and refuses ready metadata.
+func NewAccountCircuitRuntimeOwnerIncidentRestorer(client *Client, retention time.Duration, capacity int) (*AccountCircuitIncidentRestorer, error) {
+	runtime, err := NewAccountCircuitRuntimeStore(client, retention, capacity)
+	if err != nil {
+		return nil, err
+	}
+	return &AccountCircuitIncidentRestorer{client: client, keys: runtime.keys, runtime: runtime, retention: runtime.retention, capacity: runtime.capacity, now: runtime.now}, nil
+}
+
 func (r *AccountCircuitIncidentRestorer) WithNow(now func() time.Time) *AccountCircuitIncidentRestorer {
 	if now != nil {
 		r.now = now
@@ -380,7 +397,10 @@ func (r *AccountCircuitIncidentRestorer) WithNow(now func() time.Time) *AccountC
 
 func (r *AccountCircuitIncidentRestorer) RestoreGatewayAccountCircuitIncident(ctx context.Context, incident port.GatewayAccountCircuitIncident) (port.GatewayAccountCircuitRevisionProjection, error) {
 	if r == nil || r.restore == nil {
-		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit incident restorer is required")
+		if r == nil || r.runtime == nil {
+			return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit incident restorer is required")
+		}
+		return r.restoreWithRuntimeOwner(ctx, incident)
 	}
 	state, err := accountCircuitIncidentRuntimeStateFromIncident(incident)
 	if err != nil {
@@ -408,6 +428,48 @@ func (r *AccountCircuitIncidentRestorer) RestoreGatewayAccountCircuitIncident(ct
 		return port.GatewayAccountCircuitRevisionProjection{}, err
 	}
 	return result, nil
+}
+
+func (r *AccountCircuitIncidentRestorer) restoreWithRuntimeOwner(ctx context.Context, incident port.GatewayAccountCircuitIncident) (port.GatewayAccountCircuitRevisionProjection, error) {
+	if r.runtime == nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit runtime owner restorer is required")
+	}
+	compatibilityState, err := accountCircuitIncidentRuntimeStateFromIncident(incident)
+	if err != nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, err
+	}
+	raw, err := json.Marshal(compatibilityState)
+	if err != nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("encode account circuit runtime owner incident: %w", err)
+	}
+	var wire accountCircuitRuntimeStateWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("decode account circuit runtime owner incident: %w", err)
+	}
+	state, err := runtimeStateFromWire(wire)
+	if err != nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, err
+	}
+	result, err := r.runtime.RestoreGatewayAccountCircuit(ctx, port.GatewayAccountCircuitRestoreInput{
+		AccountID: incident.AccountID, State: state, RetainedUntil: incident.RetainedUntil, Now: r.now().UTC(),
+	})
+	if err != nil {
+		return port.GatewayAccountCircuitRevisionProjection{}, err
+	}
+	switch result.Status {
+	case port.GatewayAccountCircuitMutationApplied:
+		return port.GatewayAccountCircuitRevisionProjection{Status: port.GatewayAccountCircuitRevisionApplied, CurrentRevision: incident.DispatchRevision}, nil
+	case port.GatewayAccountCircuitMutationIdempotent:
+		return port.GatewayAccountCircuitRevisionProjection{Status: port.GatewayAccountCircuitRevisionIdempotent, CurrentRevision: result.State.DispatchRevision}, nil
+	case port.GatewayAccountCircuitMutationStaleDispatchRevision:
+		return port.GatewayAccountCircuitRevisionProjection{Status: port.GatewayAccountCircuitRevisionStale, CurrentRevision: result.State.DispatchRevision}, nil
+	case port.GatewayAccountCircuitMutationStaleGeneration:
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit runtime generation is ahead of durable ledger")
+	case port.GatewayAccountCircuitMutationCapacityExhausted:
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit runtime capacity exhausted")
+	default:
+		return port.GatewayAccountCircuitRevisionProjection{}, fmt.Errorf("account circuit runtime owner restore result is invalid")
+	}
 }
 
 func (r *AccountCircuitIncidentRestorer) runRestore(ctx context.Context, keys accountCircuitRevisionKeys, incident port.GatewayAccountCircuitIncident, state []byte, now time.Time, retention time.Duration, capacity int) ([]byte, error) {
@@ -492,6 +554,13 @@ func accountCircuitIncidentRuntimeStateFromIncident(incident port.GatewayAccount
 		}
 		if kind != "" {
 			state.Lease = &accountCircuitIncidentRuntimeLease{Kind: kind, LeaseID: incident.LeaseID, LeaseUntilMS: incident.LeaseUntil.UTC().UnixMilli()}
+			if phase == "HALF_OPEN" {
+				if kind == "recovery" {
+					state.HalfOpenOrigin = "RECOVERING"
+				} else {
+					state.HalfOpenOrigin = "OPEN"
+				}
+			}
 		}
 	}
 	return state, nil

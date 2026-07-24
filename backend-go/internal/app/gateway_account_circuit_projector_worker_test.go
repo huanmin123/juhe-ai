@@ -23,8 +23,21 @@ func TestGatewayAccountCircuitProjectorWorkerRequiresExclusiveOwnership(t *testi
 	}
 }
 
-func TestGatewayAccountCircuitProjectorWorkerValidatesDependenciesBeforeOpeningThem(t *testing.T) {
+func TestGatewayAccountCircuitProjectorWorkerRequiresRuntimeWriterDrain(t *testing.T) {
 	opts := GatewayAccountCircuitProjectorWorkerOptions{Enabled: true, GoExclusiveProjectionOwner: true}
+	err := RunGatewayAccountCircuitProjectorWorker(t.Context(), config.Config{}, nil, opts)
+	if err == nil || !strings.Contains(err.Error(), "runtime-state") {
+		t.Fatalf("worker error = %v, want runtime-state ownership error", err)
+	}
+	opts.GoExclusiveRuntimeStateOwner = true
+	err = RunGatewayAccountCircuitProjectorWorker(t.Context(), config.Config{}, nil, opts)
+	if err == nil || !strings.Contains(err.Error(), "drained") {
+		t.Fatalf("worker error = %v, want legacy writer drain error", err)
+	}
+}
+
+func TestGatewayAccountCircuitProjectorWorkerValidatesDependenciesBeforeOpeningThem(t *testing.T) {
+	opts := GatewayAccountCircuitProjectorWorkerOptions{Enabled: true, GoExclusiveProjectionOwner: true, GoExclusiveRuntimeStateOwner: true, LegacyRuntimeWritersDrained: true}
 	err := RunGatewayAccountCircuitProjectorWorker(t.Context(), config.Config{}, nil, opts)
 	if err == nil || !strings.Contains(err.Error(), "POSTGRES") {
 		t.Fatalf("worker error = %v, want PostgreSQL configuration error", err)
@@ -37,7 +50,7 @@ func TestGatewayAccountCircuitProjectorWorkerValidatesDependenciesBeforeOpeningT
 
 func TestGatewayAccountCircuitProjectorWorkerRejectsInvalidRuntimeOptionsBeforeOpeningDependencies(t *testing.T) {
 	cfg := config.Config{PostgresURL: "://must-not-open", RedisStateURL: "://must-not-open"}
-	base := GatewayAccountCircuitProjectorWorkerOptions{Enabled: true, GoExclusiveProjectionOwner: true}
+	base := GatewayAccountCircuitProjectorWorkerOptions{Enabled: true, GoExclusiveProjectionOwner: true, GoExclusiveRuntimeStateOwner: true, LegacyRuntimeWritersDrained: true}
 	for _, test := range []struct {
 		name string
 		edit func(*GatewayAccountCircuitProjectorWorkerOptions)

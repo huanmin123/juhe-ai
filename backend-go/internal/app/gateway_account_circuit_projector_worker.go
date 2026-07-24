@@ -19,19 +19,21 @@ import (
 const defaultGatewayAccountCircuitProjectorInterval = time.Second
 
 type GatewayAccountCircuitProjectorWorkerOptions struct {
-	Enabled                    bool
-	GoExclusiveProjectionOwner bool
-	OwnerID                    string
-	BatchSize                  int
-	Lease                      time.Duration
-	RetryDelay                 time.Duration
-	Interval                   time.Duration
-	InitialDelay               time.Duration
-	ClosedRetention            time.Duration
-	RuntimeCapacity            int
-	RebuildPageSize            int
-	RebuildMaxPages            int
-	RunOnce                    bool
+	Enabled                      bool
+	GoExclusiveProjectionOwner   bool
+	GoExclusiveRuntimeStateOwner bool
+	LegacyRuntimeWritersDrained  bool
+	OwnerID                      string
+	BatchSize                    int
+	Lease                        time.Duration
+	RetryDelay                   time.Duration
+	Interval                     time.Duration
+	InitialDelay                 time.Duration
+	ClosedRetention              time.Duration
+	RuntimeCapacity              int
+	RebuildPageSize              int
+	RebuildMaxPages              int
+	RunOnce                      bool
 }
 
 func RunGatewayAccountCircuitProjectorWorker(
@@ -45,6 +47,12 @@ func RunGatewayAccountCircuitProjectorWorker(
 	}
 	if !opts.GoExclusiveProjectionOwner {
 		return fmt.Errorf("Go account circuit projector requires exclusive projection ownership")
+	}
+	if !opts.GoExclusiveRuntimeStateOwner {
+		return fmt.Errorf("Go account circuit projector requires exclusive runtime-state ownership")
+	}
+	if !opts.LegacyRuntimeWritersDrained {
+		return fmt.Errorf("Go account circuit projector requires drained legacy runtime writers")
 	}
 	if strings.TrimSpace(cfg.PostgresURL) == "" {
 		return fmt.Errorf("JUHE_AI_POSTGRES_URL is required")
@@ -89,7 +97,12 @@ func RunGatewayAccountCircuitProjectorWorker(
 	if err != nil {
 		return err
 	}
-	incidentRestorer, err := redisplatform.NewAccountCircuitIncidentRestorer(redisClient, opts.ClosedRetention, opts.RuntimeCapacity)
+	maxIndexMembers := opts.RuntimeCapacity
+	if maxIndexMembers == 0 {
+		maxIndexMembers = redisplatform.DefaultAccountCircuitRuntimeIndexMaxScopeMembers
+	}
+	projector.WithMaxIndexMembers(maxIndexMembers)
+	incidentRestorer, err := redisplatform.NewAccountCircuitRuntimeOwnerIncidentRestorer(redisClient, opts.ClosedRetention, opts.RuntimeCapacity)
 	if err != nil {
 		return err
 	}

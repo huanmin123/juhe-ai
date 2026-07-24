@@ -23,8 +23,8 @@
 
 - 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
-- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family tombstone、失败退避、worker fail-fast、incident ledger/generation fence、idempotent due/closed 修复、capacity 顺序和 ACK watermark。downstream commit、typed store metadata、account policy writer、dispatch-revision 与 incident projector 集中 normal/race/vet/diff check 通过。当前进度口径更新为：代码迁移约 `77%`，可独立验证 Go 能力约 `74%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
-- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、完整 Redis transition/escalation/listDue writer 与 index ready/backfill、incident CAS writer/durable receipt、gap/reconcile/cleanup/quarantine、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；现有 projector/rebuild 仍默认关闭，不据此改变 owner manifest 或删除 Node gateway。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family tombstone、失败退避、worker fail-fast、incident ledger/generation fence、idempotent due/closed 修复、capacity 顺序和 ACK watermark。downstream commit、typed store metadata、account policy writer、dispatch-revision/incident projector，以及 runtime transition/escalation/listDue/ready-index 集中 normal/race/vet/diff check 通过。当前进度口径更新为：代码迁移约 `79%`，可独立验证 Go 能力约 `76%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、parent-child durable transition receipt、incident CAS writer、gap/reconcile/cleanup/quarantine、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；现有 runtime/index/projector worker 仍默认关闭且未挂 CLI/supervisor，不据此改变 owner manifest 或删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
 
@@ -1023,8 +1023,21 @@
 - [x] incident event 按 scope 精确读取 current durable snapshot，旧 dispatch event obsolete ACK，不再使用 Node 的全 ledger rebuild/find，也不让 retention/stale dispatch 事件永久 poison。
 - [x] Redis restore 按 dispatch revision、per-scope ledger、generation、updatedAt 单调比较；ledger tombstone绑定 dispatch/transition incarnation，读取 dispatch tombstone、执行容量限制、修复 idempotent due/closed orphan、保留 durable CLOSED deadline，并原子维护 scope/runtime/account building 索引。
 - [x] app worker 首次 claim 前执行有界 keyset startup rebuild；读取、cursor、容量或 restore 失败保持 fail-closed，默认 disabled/exclusive 门禁不变。
-- [ ] 完整 Go runtime transition/escalation/listDue writer、legacy HSCAN index backfill/ready gate、indexed revision projector、Node writer drain/CAS 共存、incident CAS generation 单调、durable transition receipt、gap/cleanup/quarantine 仍未完成。
+- [x] 后续 runtime owner 批次已完成 Go transition/escalation/restore/listDue writer、legacy HSCAN index backfill/ready gate、PostgreSQL current revision seed 和 indexed revision projector；详见下一节。
+- [ ] 实际 Node/Go writer drain、incident CAS generation 单调、durable parent-child transition receipt、gap/cleanup/quarantine 仍未完成。
 
 本批不照搬的 Node 问题：每事件全 ledger 扫描；stale/expired incident 无限重放；restore 无 capacity/revision fence；同 revision durable 落后 runtime 却仍 ACK；outbox cleanup 删除长期幂等 receipt。生产 owner 在这些剩余门禁和真实 PG/Redis 互操作证据完成前保持 `0%`。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。
+
+## 2026-07-24 account circuit runtime state owner 与 ready index 批次
+
+- [x] 新增 typed runtime store port，覆盖 account/key/protocol-model scope、SUSPECT/OPEN/HALF_OPEN/RECOVERING/CLOSED、confirmation/canary lease、escalation、restore、family revision 和 `listDue`；scope key 保持 Node UTF-8 byte-length 兼容，revision 改为 Go `int64`。
+- [x] 新 Redis runtime writer 统一维护 Node 四个兼容源键、dispatch/ledger tombstone 和 scope/runtime/account 四向索引；所有运行态入口要求 ready + Go owner metadata，revision fence 要求 exact，只有新账户 initial revision 1 可原子初始化。
+- [x] 修复 Node stale SUSPECT due 饥饿：无 lease SUSPECT 不进入 canary due，expired HALF_OPEN/recovery lease 原子恢复；`listDue` 只返回 OPEN/RECOVERING，并验证四向索引和 durable revision。
+- [x] family revision projector 删除 HGETALL，改为 `account-runtimes -> runtime-scopes` 有界精确遍历；evidence-only runtime 删除同步清理反向索引。
+- [x] one-shot backfill 默认关闭且未挂 CLI/supervisor/manifest；要求 exclusive runtime owner、legacy writer drained、Go runtime writes paused、control-plane writes paused。每轮随机 lock token，states/evidence HSCAN 后从 PostgreSQL accounts keyset seed current dispatch tombstone，双向 audit 要求 source revision 与 durable snapshot 精确相等后才发布 ready。
+- [x] 不照搬并记录的 Node 问题：scoped revision 回退、fallback revision 不可比较、restore 无 capacity/revision/ledger fence、clear evidence 忽略 evidenceId、SUSPECT due starvation、全局 HGETALL 和无 state tombstone 缺失。
+- [ ] parent/child required/recovered coverage 尚无 durable transition receipt/schema round-trip；真实 Redis Lua、多进程 lease、Node drain/backfill、PostgreSQL/Redis interoperability、gap/cleanup/quarantine、生产 listener/owner/canary/rollback 均继续后置，因此 production owner 仍为 `0%`，不删除 Node。
+
+集中验证通过：`store/port`、`platform/redis`、`store/postgres`、`app`、`gatewaycircuitprojection`、`gatewaycircuitoutbox` 的普通 `go test`、`go test -race` 和 `go vet`。两路独立复查修复 default bound、lock token、audit 续租、Lua partial write、durable revision seed/exact audit、expired CLOSED capacity、HALF_OPEN origin、clear-evidence、escalation capacity 和 due fence 后，未发现剩余确认的 P1/P2；真实 Redis/PG smoke 不计通过。
