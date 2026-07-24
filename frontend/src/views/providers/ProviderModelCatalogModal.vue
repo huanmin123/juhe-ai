@@ -31,7 +31,7 @@
         <a-space wrap>
           <a-button type="primary" @click="emit('create')">新增模型</a-button>
           <a-tag color="blue">{{ models.length }} / {{ currentCategoryCount }} 个模型</a-tag>
-          <a-tag color="purple">Token：USD / 1M；图片：USD / 张</a-tag>
+          <a-tag>USD 结算</a-tag>
         </a-space>
       </div>
       <a-tabs v-model:activeKey="selectedCategory" class="model-tabs" size="small">
@@ -81,74 +81,25 @@
           </template>
           <template v-else-if="column.key === 'modalities'">
             <div class="price-cell">
-              <span>输入 {{ formatModelModalities(record.inputModalities) }}</span>
-              <span>输出 {{ formatModelModalities(record.outputModalities) }}</span>
+              <span v-if="record.inputModalities?.length">输入 {{ formatModelModalities(record.inputModalities) }}</span>
+              <span v-if="record.outputModalities?.length">输出 {{ formatModelModalities(record.outputModalities) }}</span>
               <span v-if="record.supportedTools?.length">工具 {{ formatModelTools(record.supportedTools) }}</span>
             </div>
           </template>
-          <template v-else-if="column.key === 'serviceTiers'">
-            <div v-if="record.supportedServiceTiers?.length" class="tier-price-list">
-              <div v-for="tier in record.supportedServiceTiers" :key="tier" class="tier-price-row">
-                <a-tag class="tier-price-name" :color="tier === 'priority' ? 'blue' : 'cyan'">{{ formatModelServiceTier(tier) }}</a-tag>
-                <div v-if="tierPriceEntries(record, tier).length" class="tier-price-metrics">
-                  <span v-for="entry in tierPriceEntries(record, tier)" :key="entry.label">
-                    <b>{{ entry.label }}</b> {{ formatPrice(entry.value) }}
-                  </span>
-                </div>
-                <span v-else class="muted-text">暂无价格</span>
+          <template v-else-if="column.catalogDisplaySectionKey">
+            <div
+              v-if="modelCatalogDisplaySection(record, column.catalogDisplaySectionKey)"
+              class="catalog-display-cell"
+            >
+              <div
+                v-for="item in modelCatalogDisplaySection(record, column.catalogDisplaySectionKey)?.items"
+                :key="item.key"
+                class="catalog-display-item"
+              >
+                <span>{{ item.label }}</span>
+                <strong>{{ formatModelCatalogDisplayValue(item) }}</strong>
               </div>
             </div>
-            <span v-else class="muted-text">仅标准</span>
-          </template>
-          <template v-else-if="column.key === 'reasoningEfforts'">
-            <div class="capability-tag-list">
-              <a-tag
-                v-for="effort in record.supportedReasoningEfforts"
-                :key="effort"
-              >
-                {{ formatModelReasoningEffort(effort) }}
-              </a-tag>
-              <span v-if="!record.supportedReasoningEfforts?.length" class="muted-text">不支持</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'prices'">
-            <div v-if="modelPriceEntries(record).length" class="price-cell">
-              <span v-for="entry in modelPriceEntries(record)" :key="entry.label">
-                {{ entry.label }} {{ entry.value }}
-              </span>
-            </div>
-            <span v-else class="muted-text">—</span>
-          </template>
-          <template v-else-if="column.key === 'cacheWrite'">
-            <div v-if="modelCacheCostEntries(record).length" class="price-cell">
-              <span v-for="entry in modelCacheCostEntries(record)" :key="entry.label">
-                {{ entry.label }} {{ entry.value }}
-              </span>
-            </div>
-            <span v-else class="muted-text">{{ formatModelCacheCostSummary(record) }}</span>
-          </template>
-          <template v-else-if="column.key === 'imageTokenPrice'">
-            <div class="price-cell">
-              <span>输入 {{ formatPrice(record.imageInputUsdPer1M) }}</span>
-              <span>输出 {{ formatPrice(record.imageOutputUsdPer1M) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'audioTokenPrice'">
-            <div class="price-cell">
-              <span>输入 {{ formatPrice(record.audioInputUsdPer1M) }}</span>
-              <span>输出 {{ formatPrice(record.audioOutputUsdPer1M) }}</span>
-            </div>
-          </template>
-          <template v-else-if="column.key === 'imageUnitPrice'">
-            <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
-          </template>
-          <template v-else-if="column.key === 'context'">
-            <div v-if="modelCapacityEntries(record).length" class="price-cell">
-              <span v-for="entry in modelCapacityEntries(record)" :key="entry.label">
-                {{ entry.label }} {{ entry.value }}
-              </span>
-            </div>
-            <span v-else class="muted-text">—</span>
           </template>
           <template v-else-if="column.key === 'actions'">
             <RowActions :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
@@ -174,22 +125,23 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
-              <span>输入 / 输出模态</span>
-              <strong>{{ formatModelModalities(record.inputModalities) }} / {{ formatModelModalities(record.outputModalities) }}</strong>
-              <span>工具</span>
-              <strong>{{ formatModelTools(record.supportedTools) }}</strong>
-              <span>服务等级</span>
-              <strong>{{ formatModelServiceTierCapabilities(record) }}</strong>
-              <span>思考级别</span>
-              <strong>{{ formatModelReasoningCapabilities(record) }}</strong>
-              <span>计费</span>
-              <strong>{{ formatModelPriceSummary(record) }}</strong>
-              <span>缓存附加费</span>
-              <strong>{{ formatModelCacheCostSummary(record) }}</strong>
-              <span>服务等级价格</span>
-              <strong>{{ formatServiceTierPriceSummary(record) }}</strong>
-              <span>容量</span>
-              <strong>{{ formatModelCapacitySummary(record) }}</strong>
+              <template v-if="record.inputModalities?.length || record.outputModalities?.length">
+                <span>输入 / 输出模态</span>
+                <strong>{{ formatModelModalities(record.inputModalities) }} / {{ formatModelModalities(record.outputModalities) }}</strong>
+              </template>
+              <template v-if="record.supportedTools?.length">
+                <span>工具</span>
+                <strong>{{ formatModelTools(record.supportedTools) }}</strong>
+              </template>
+              <template v-for="section in modelCatalogDisplaySections(record)" :key="section.key">
+                <span>{{ section.label }}</span>
+                <strong class="model-mobile-catalog-value">
+                  <span v-for="item in section.items" :key="item.key">
+                    <span>{{ item.label }}</span>
+                    {{ formatModelCatalogDisplayValue(item) }}
+                  </span>
+                </strong>
+              </template>
             </div>
             <RowActions v-if="rowActions(record).length" variant="button" :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
           </article>
@@ -209,24 +161,15 @@ import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/type
 
 import {
   formatApiProtocol,
+  formatModelCatalogDisplayValue,
   formatModelCategory,
-  formatModelCacheCostSummary,
-  formatModelCapacitySummary,
   formatModelModalities,
   formatModelTools,
-  formatModelPriceSummary,
-  formatModelReasoningCapabilities,
-  formatModelReasoningEffort,
-  formatModelServiceTier,
-  formatModelServiceTierCapabilities,
   formatModelScope,
   formatModelStatus,
-  formatPrice,
-  formatUnitPrice,
   getApiProtocolTagColor,
-  modelCacheCostEntries,
-  modelCapacityEntries,
-  modelPriceEntries,
+  modelCatalogDisplaySection,
+  modelCatalogDisplaySections,
   modelScopeColor,
   modelStatusColor,
   type ModelCategoryKey
@@ -282,30 +225,6 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
 
 function modelRowKey(record: ProviderModelPricing): string {
   return record.id || [record.providerCode, record.scope, record.systemAccountId ?? '', record.model].join(':')
-}
-
-type TierPriceEntry = { label: string; value: number }
-
-function tierPriceEntries(record: ProviderModelPricing, tier: string): TierPriceEntry[] {
-  const prices = record.serviceTierPrices?.[tier]
-  if (!prices) return []
-  const entries: Array<[string, number | undefined]> = [
-    ['入', prices.inputUsdPer1M],
-    ['出', prices.outputUsdPer1M],
-    ['读', prices.cachedInputUsdPer1M],
-    ['写', prices.cacheWriteUsdPer1M],
-    ['1h', prices.cacheWrite1hUsdPer1M],
-    ['存/h', prices.cacheStorageUsdPer1MPerHour]
-  ]
-  return entries.flatMap(([label, value]) => typeof value === 'number' ? [{ label, value }] : [])
-}
-
-function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
-  if (!record.supportedServiceTiers?.length) return '仅标准'
-  return record.supportedServiceTiers.map((tier) => {
-    const entries = tierPriceEntries(record, tier)
-    return `${formatModelServiceTier(tier)}：${entries.length ? entries.map((entry) => `${entry.label} ${formatPrice(entry.value)}`).join(' / ') : '暂无价格'}`
-  }).join('；')
 }
 </script>
 
@@ -385,46 +304,32 @@ function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
   line-height: 1.5;
 }
 
-.capability-tag-list {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 4px 2px;
-}
-
-.capability-tag-list :deep(.ant-tag) {
-  margin-inline-end: 0;
-  white-space: nowrap;
-}
-
-.tier-price-list {
+.catalog-display-cell {
   display: grid;
   gap: 4px;
 }
 
-.tier-price-row {
+.catalog-display-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-}
-
-.tier-price-name {
-  flex: 0 0 auto;
-  margin-inline-end: 0;
-}
-
-.tier-price-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 10px;
-  color: #475569;
+  justify-content: space-between;
+  gap: 12px;
   line-height: 1.5;
 }
 
-.tier-price-metrics b {
+.catalog-display-item > span,
+.model-mobile-catalog-value > span > span {
   color: #94a3b8;
   font-size: 11px;
   font-weight: 500;
+}
+
+.catalog-display-item strong {
+  color: #0f172a;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: right;
+  white-space: normal;
 }
 
 .model-mobile-card {
@@ -456,6 +361,21 @@ function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
   overflow: hidden;
   color: #0f172a;
   text-overflow: ellipsis;
+}
+
+.model-mobile-card-grid .model-mobile-catalog-value {
+  display: grid;
+  gap: 2px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.model-mobile-catalog-value > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .muted-text {

@@ -181,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 121, '当前 Node 权威模型目录应包含 121 个完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 117, '当前 Node 权威模型目录应包含 117 个可用完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -653,14 +653,15 @@ try {
     'glm-4.5-x',
     'glm-4.5-air',
     'glm-4.5-airx',
-    'glm-4.5-flash',
-    'glm-4-32b-0414-128k',
-    'glm-4-flash-250414'
+    'glm-4.5-flash'
   ]) {
     assert(glmModels.has(id), `GLM 模型目录应包含官方文本模型 ${id}`)
   }
   assert.equal(glmModels.has('glm-5.2-free'), false, 'GLM 可见模型目录不应包含非官方 glm-5.2-free')
-  assert.equal(glmModels.has('glm-4-flashx-250414'), false, '缺少官方 USD 价格的 GLM 型号不得进入内置目录')
+  for (const removedModel of ['glm-4-32b-0414-128k', 'glm-4-flashx-250414', 'glm-4-flash-250414']) {
+    assert.equal(glmModels.has(removedModel), false, `GLM 4.5 之前的模型 ${removedModel} 应从权威目录删除`)
+  }
+  assert.equal(glmCatalog.some((item) => item.catalogDisplay?.some((section) => section.key === 'batch' || section.key === 'currency_conversion')), false, 'GLM 目录不应生成批量处理或美元换算列')
   assert.deepEqual(
     glmCatalog.map((item) => item.model),
     [
@@ -676,9 +677,7 @@ try {
       'glm-4.5-x',
       'glm-4.5-air',
       'glm-4.5-airx',
-      'glm-4.5-flash',
-      'glm-4-32b-0414-128k',
-      'glm-4-flash-250414'
+      'glm-4.5-flash'
     ],
     'GLM 模型目录应按官方当前模型从新到旧排序'
   )
@@ -997,10 +996,10 @@ try {
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-audio',
-    inputTokens: 1_000_000,
-    outputTokens: 2_000_000
+    inputAudioTokens: 1_000_000,
+    outputAudioTokens: 2_000_000
   })
-  assert.equal(audioCost, 28, '只有音频价格的自定义模型应按音频 token 成本计费')
+  assert.equal(audioCost, 28, '只有音频价格的自定义模型必须使用协议解析出的音频 token 成本计费')
   const audioBreakdown = catalogService.buildCatalogCostBreakdown({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',

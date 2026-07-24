@@ -322,9 +322,27 @@ export interface ProviderModelPricing {
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
+  sourcePricingCurrency?: string
+  sourceExchangeRateToUsd?: number
+  sourceExchangeRateDate?: string
+  sourcePricingNote?: string
+  catalogDisplay?: ProviderModelCatalogDisplaySection[]
   createdAt?: string
   updatedAt?: string
   source: string
+}
+
+export interface ProviderModelCatalogDisplaySection {
+  key: string
+  label: string
+  items: ProviderModelCatalogDisplayItem[]
+}
+
+export interface ProviderModelCatalogDisplayItem {
+  key: string
+  label: string
+  format: 'usd_per_1m_tokens' | 'usd_per_image' | 'usd_per_1m_token_hour' | 'tokens' | 'multiplier' | 'text'
+  value: number | string
 }
 
 export interface ProviderModelPriceSet {

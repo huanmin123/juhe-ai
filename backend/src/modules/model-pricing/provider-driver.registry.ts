@@ -13,6 +13,14 @@ import { geminiModelPricingData } from './gemini-model-pricing.data.js'
 import { glmModelPricingData } from './glm-model-pricing.data.js'
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
 import { xAIModelPricingData } from './xai-model-pricing.data.js'
+import {
+  anthropicProviderBillingPolicy,
+  deepSeekProviderBillingPolicy,
+  geminiProviderBillingPolicy,
+  glmProviderBillingPolicy,
+  openAIProviderBillingPolicy,
+  xAIProviderBillingPolicy
+} from './provider-billing.policies.js'
 import type {
   ModelPricingProviderDriver,
   ModelPricingProviderDriverHelpers,
@@ -31,7 +39,7 @@ const openAIModelPricingDriver: ModelPricingProviderDriver = {
   id: 'openai-compatible',
   pricingSource: 'openai-pricing-snapshot',
   rawModels: openAIModels,
-  usesIncludedCacheReadUsage: true,
+  billingPolicy: openAIProviderBillingPolicy,
   supportsProvider(providerCode) {
     return isOpenAICompatibleProviderCode(providerCode)
   },
@@ -49,7 +57,7 @@ const anthropicModelPricingDriver: ModelPricingProviderDriver = {
   id: 'anthropic',
   pricingSource: 'anthropic-pricing-snapshot',
   rawModels: anthropicModels,
-  usesIncludedCacheReadUsage: false,
+  billingPolicy: anthropicProviderBillingPolicy,
   supportsProvider(providerCode) {
     return normalizeProviderToken(providerCode) === ANTHROPIC_PROVIDER_CODE
   },
@@ -66,7 +74,7 @@ const deepSeekModelPricingDriver: ModelPricingProviderDriver = {
   id: 'deepseek',
   pricingSource: 'deepseek-pricing-snapshot',
   rawModels: deepSeekModels,
-  usesIncludedCacheReadUsage: true,
+  billingPolicy: deepSeekProviderBillingPolicy,
   supportsProvider(providerCode) {
     return normalizeProviderToken(providerCode) === DEEPSEEK_PROVIDER_CODE
   },
@@ -83,7 +91,7 @@ const glmModelPricingDriver: ModelPricingProviderDriver = {
   id: 'glm',
   pricingSource: 'glm-pricing-snapshot',
   rawModels: glmModels,
-  usesIncludedCacheReadUsage: true,
+  billingPolicy: glmProviderBillingPolicy,
   supportsProvider(providerCode) {
     return normalizeProviderToken(providerCode) === GLM_PROVIDER_CODE
   },
@@ -100,7 +108,7 @@ const geminiModelPricingDriver: ModelPricingProviderDriver = {
   id: 'gemini',
   pricingSource: 'gemini-pricing-snapshot',
   rawModels: geminiModels,
-  usesIncludedCacheReadUsage: true,
+  billingPolicy: geminiProviderBillingPolicy,
   supportsProvider(providerCode) {
     return normalizeProviderToken(providerCode) === GEMINI_PROVIDER_CODE
   },
@@ -117,7 +125,7 @@ const xAIModelPricingDriver: ModelPricingProviderDriver = {
   id: 'xai',
   pricingSource: 'xai-official-pricing-2026-07-18',
   rawModels: xAIModels,
-  usesIncludedCacheReadUsage: true,
+  billingPolicy: xAIProviderBillingPolicy,
   supportsProvider(providerCode) {
     return normalizeProviderToken(providerCode) === XAI_PROVIDER_CODE
   },
@@ -240,9 +248,7 @@ const glmModelCandidateBases = [
   'glm-4.5-air',
   'glm-4.5-flash',
   'glm-4.5-x',
-  'glm-4.5',
-  'glm-4-32b-0414-128k',
-  'glm-4-flash-250414'
+  'glm-4.5'
 ]
 const glmModelCandidateBasesBySpecificity = [...glmModelCandidateBases]
   .sort((left, right) => right.length - left.length)

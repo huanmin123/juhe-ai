@@ -43,6 +43,7 @@ export interface CustomModelForm {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
@@ -88,6 +89,7 @@ export function createCustomModelFormFromPricing(
     cachedInputUsdPer1M: record.cachedInputUsdPer1M,
     cacheWriteUsdPer1M: record.cacheWriteUsdPer1M,
     cacheWrite1hUsdPer1M: record.cacheWrite1hUsdPer1M,
+    cacheStorageUsdPer1MPerHour: record.cacheStorageUsdPer1MPerHour,
     serviceTierPrices: cloneServiceTierPrices(record.serviceTierPrices),
     imageInputUsdPer1M: record.imageInputUsdPer1M,
     imageOutputUsdPer1M: record.imageOutputUsdPer1M,

@@ -291,6 +291,7 @@ const customModelSchema = z.object({
   cachedInputUsdPer1M: nullableNumberSchema,
   cacheWriteUsdPer1M: nullableNumberSchema,
   cacheWrite1hUsdPer1M: nullableNumberSchema,
+  cacheStorageUsdPer1MPerHour: nullableNumberSchema,
   serviceTierPrices: serviceTierPricesSchema,
   imageInputUsdPer1M: nullableNumberSchema,
   imageOutputUsdPer1M: nullableNumberSchema,
@@ -737,6 +738,7 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     cachedInputUsdPer1M: template.cachedInputUsdPer1M ?? null,
     cacheWriteUsdPer1M: template.cacheWriteUsdPer1M ?? null,
     cacheWrite1hUsdPer1M: template.cacheWrite1hUsdPer1M ?? null,
+    cacheStorageUsdPer1MPerHour: template.cacheStorageUsdPer1MPerHour ?? null,
     serviceTierPrices: structuredClone(template.serviceTierPrices ?? {}),
     imageInputUsdPer1M: template.imageInputUsdPer1M ?? null,
     imageOutputUsdPer1M: template.imageOutputUsdPer1M ?? null,
@@ -836,6 +838,7 @@ function customInputHasDirectPrice(input: CustomModelPriceFields): boolean {
     || typeof input.cachedInputUsdPer1M === 'number'
     || typeof input.cacheWriteUsdPer1M === 'number'
     || typeof input.cacheWrite1hUsdPer1M === 'number'
+    || typeof input.cacheStorageUsdPer1MPerHour === 'number'
     || serviceTierPriceKeys(input.serviceTierPrices).length > 0
 }
 
@@ -845,6 +848,7 @@ type CustomModelPriceFields = Partial<Record<
   | 'cachedInputUsdPer1M'
   | 'cacheWriteUsdPer1M'
   | 'cacheWrite1hUsdPer1M'
+  | 'cacheStorageUsdPer1MPerHour'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
@@ -878,7 +882,8 @@ function providerModelConfigurationSnapshot(value: ProviderModelPricing): Record
     contextWindowTokens: value.contextWindowTokens, maxInputTokens: value.maxInputTokens, maxOutputTokens: value.maxOutputTokens,
     inputUsdPer1M: value.inputUsdPer1M, outputUsdPer1M: value.outputUsdPer1M,
     cachedInputUsdPer1M: value.cachedInputUsdPer1M, cacheWriteUsdPer1M: value.cacheWriteUsdPer1M,
-    cacheWrite1hUsdPer1M: value.cacheWrite1hUsdPer1M, serviceTierPrices: value.serviceTierPrices,
+    cacheWrite1hUsdPer1M: value.cacheWrite1hUsdPer1M, cacheStorageUsdPer1MPerHour: value.cacheStorageUsdPer1MPerHour,
+    serviceTierPrices: value.serviceTierPrices,
     imageInputUsdPer1M: value.imageInputUsdPer1M, imageOutputUsdPer1M: value.imageOutputUsdPer1M,
     audioInputUsdPer1M: value.audioInputUsdPer1M, audioOutputUsdPer1M: value.audioOutputUsdPer1M,
     outputUsdPerImage: value.outputUsdPerImage

@@ -446,9 +446,7 @@ assert.deepEqual(glmModelPricingList.map((item) => item.model), [
   'glm-4.5-x',
   'glm-4.5-air',
   'glm-4.5-airx',
-  'glm-4.5-flash',
-  'glm-4-32b-0414-128k',
-  'glm-4-flash-250414'
+  'glm-4.5-flash'
 ], 'GLM 价格目录应按官方当前模型从新到旧排序')
 const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
 for (const id of [
@@ -464,9 +462,7 @@ for (const id of [
   'glm-4.5-x',
   'glm-4.5-air',
   'glm-4.5-airx',
-  'glm-4.5-flash',
-  'glm-4-32b-0414-128k',
-  'glm-4-flash-250414'
+  'glm-4.5-flash'
 ]) {
   assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
   assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
@@ -506,12 +502,13 @@ assert.equal(glmPricingById.get('glm-4.5-flash')?.inputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4.5-flash')?.cachedInputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4.5-flash')?.outputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4.5-flash')?.supportsPromptCaching, true)
-assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.inputUsdPer1M, 0.1)
-assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.outputUsdPer1M, 0.1)
+for (const removedModel of ['glm-4-32b-0414-128k', 'glm-4-flashx-250414', 'glm-4-flash-250414']) {
+  assert.equal(glmPricingById.has(removedModel), false, `GLM 4.5 之前的模型 ${removedModel} 应从价格目录删除`)
+}
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.model, 'glm-5.2')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4.7-flashx-20260620')?.model, 'glm-4.7-flashx')
-assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4-flashx-250414-20260620'), undefined)
+assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4-flashx-250414-20260620'), undefined, '已删除的 GLM 4.5 之前模型不得通过日期后缀回退')
 
 const gemini35FlashCost = estimateProviderCostUsd({
   providerCode: GEMINI_PROVIDER_CODE,

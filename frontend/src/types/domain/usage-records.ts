@@ -3,6 +3,9 @@ export interface UsageRecordLogSnapshot {
 }
 
 export interface UsageRecordCostBreakdown {
+  currency?: 'USD'
+  billingPolicy?: string
+  lineItems?: UsageRecordCostLineItem[]
   inputCostUsd?: number
   outputCostUsd?: number
   inputUsdPer1M?: number
@@ -28,6 +31,17 @@ export interface UsageRecordCostBreakdown {
   multiplier: 1
   serviceTierPricingSource: 'default' | 'tier_specific' | 'multiplier' | 'mixed' | 'unknown'
   serviceTierMultiplier?: number
+}
+
+export interface UsageRecordCostLineItem {
+  key: string
+  kind: 'input' | 'output' | 'cache_read' | 'cache_write' | 'cache_write_1h' | 'image_input' | 'image_output' | 'audio_input' | 'audio_output' | 'image_output_unit' | 'other'
+  label: string
+  quantity: number
+  unit: 'token' | 'image' | 'request' | 'second' | 'minute' | 'token_hour'
+  unitSize: number
+  unitPriceUsd: number
+  costUsd: number
 }
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'

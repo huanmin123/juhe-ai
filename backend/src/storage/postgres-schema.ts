@@ -31,6 +31,16 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
+    source: 'provider-model-cache-storage-pg-columns',
+    sql: 'ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'provider-model-cache-storage-pg-columns',
+    sql: 'ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },
@@ -362,6 +372,9 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
     return undefined
   }
   if (/^PRAGMA\b/i.test(trimmed)) {
+    return undefined
+  }
+  if (/^ALTER\s+TABLE\b/i.test(trimmed)) {
     return undefined
   }
 

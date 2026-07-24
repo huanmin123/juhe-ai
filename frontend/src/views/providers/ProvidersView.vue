@@ -219,6 +219,9 @@
             <a-form-item label="1h 缓存写入价格">
               <a-input-number v-model:value="customModelForm.cacheWrite1hUsdPer1M" :min="0" :precision="8" style="width: 100%" />
             </a-form-item>
+            <a-form-item label="缓存存储价格 / 小时">
+              <a-input-number v-model:value="customModelForm.cacheStorageUsdPer1MPerHour" :min="0" :precision="8" style="width: 100%" />
+            </a-form-item>
             <template v-for="tier in customModelForm.supportedServiceTiers" :key="tier">
               <a-divider class="custom-model-grid-wide" orientation="left">{{ formatModelServiceTier(tier) }} 档位价格</a-divider>
               <a-form-item :label="`${formatModelServiceTier(tier)} 输入价格`">
@@ -235,6 +238,9 @@
               </a-form-item>
               <a-form-item :label="`${formatModelServiceTier(tier)} 1h 缓存写入价格`">
                 <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheWrite1hUsdPer1M" :min="0" :precision="8" style="width: 100%" />
+              </a-form-item>
+              <a-form-item :label="`${formatModelServiceTier(tier)} 缓存存储价格 / 小时`">
+                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheStorageUsdPer1MPerHour" :min="0" :precision="8" style="width: 100%" />
               </a-form-item>
             </template>
           </template>

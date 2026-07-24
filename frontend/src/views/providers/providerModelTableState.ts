@@ -7,7 +7,7 @@ import {
   formatModelScope,
   formatModelTools,
   getModelCategory,
-  hasAnyNumber,
+  modelCatalogDisplaySections,
   modelCategoryLabels,
   modelCategoryOrder,
   type ModelCategoryKey
@@ -21,41 +21,34 @@ export const baseModelColumns = [
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
   { title: '模态与工具', key: 'modalities', width: 280 },
-  { title: '服务等级', key: 'serviceTiers', width: 280 },
-  { title: '思考级别', key: 'reasoningEfforts', width: 360 },
-  { title: '计费', key: 'prices', width: 230 },
-  { title: '缓存附加费', key: 'cacheWrite', width: 180 },
-  { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
-  { title: '音频 token 价格', key: 'audioTokenPrice', width: 180 },
-  { title: '每张价格', key: 'imageUnitPrice', width: 130 },
-  { title: '容量', key: 'context', width: 210 },
   { title: '操作', key: 'actions', width: 116, fixed: 'right' }
 ]
 
-export function buildProviderModelColumns(category: ModelCategoryKey, rows: ProviderModelPricing[]) {
+export function buildProviderModelColumns(_category: ModelCategoryKey, rows: ProviderModelPricing[]) {
   const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'actions'])
-
-  if (category === 'text') {
-    visibleKeys.add('serviceTiers')
-    visibleKeys.add('reasoningEfforts')
-    visibleKeys.add('prices')
-    visibleKeys.add('cacheWrite')
-  }
-  if (category === 'image') {
-    visibleKeys.add('imageTokenPrice')
-    visibleKeys.add('imageUnitPrice')
-  }
-  if (category === 'audio') {
-    visibleKeys.add('audioTokenPrice')
-  }
-  if (rows.some((item) => hasAnyNumber(item.maxInputTokens, item.contextWindowTokens, item.maxOutputTokens))) {
-    visibleKeys.add('context')
-  }
   if (rows.some((item) => item.inputModalities?.length || item.outputModalities?.length || item.supportedTools?.length)) {
     visibleKeys.add('modalities')
   }
 
-  return baseModelColumns.filter((column) => visibleKeys.has(column.key))
+  const commonColumns = baseModelColumns.filter((column) => column.key !== 'actions' && visibleKeys.has(column.key))
+  const displayColumns = new Map<string, { title: string; key: string; width: number; catalogDisplaySectionKey: string }>()
+  for (const row of rows) {
+    for (const section of modelCatalogDisplaySections(row)) {
+      if (displayColumns.has(section.key)) continue
+      displayColumns.set(section.key, {
+        title: section.label,
+        key: `catalogDisplay:${section.key}`,
+        width: 240,
+        catalogDisplaySectionKey: section.key
+      })
+    }
+  }
+
+  return [
+    ...commonColumns,
+    ...displayColumns.values(),
+    ...baseModelColumns.filter((column) => column.key === 'actions')
+  ]
 }
 
 export function buildModelCategoryTabs(models: ProviderModelPricing[]) {
