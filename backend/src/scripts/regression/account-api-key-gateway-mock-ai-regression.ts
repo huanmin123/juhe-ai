@@ -1149,7 +1149,16 @@ function createActiveAccount(
   input: Parameters<typeof repositories.createAccount>[0],
   accountAccess: Parameters<typeof repositories.createAccount>[1]
 ) {
-  const account = repositories.createAccount(input, accountAccess)
+  const configuredSupportedModels = Array.isArray(input.supportedModels)
+    ? input.supportedModels.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
+    : []
+  const supportedModels = configuredSupportedModels.length > 0
+    ? configuredSupportedModels
+    : ['gpt-5.5']
+  const account = repositories.createAccount({
+    ...input,
+    supportedModels
+  }, accountAccess)
   assert(repositories.recordAccountHealthCheckSuccess(account.id, {
     intervalHours: 24,
     jitterMinutes: 0,

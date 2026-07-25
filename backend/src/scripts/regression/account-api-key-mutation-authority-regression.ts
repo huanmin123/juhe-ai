@@ -149,7 +149,8 @@ try {
       api_keys: ['sk-authority-a', 'sk-authority-b'],
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const gatewayAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, access.systemAccountId, { ignoreAvailability: true })
   assert(gatewayAccount)

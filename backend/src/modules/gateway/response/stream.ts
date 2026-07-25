@@ -29,6 +29,7 @@ import {
 import { buildStreamReadPlan } from './stream-read-plan.js'
 import {
   closeAsyncIterator,
+  destroyResponseForUpstreamBodyError,
   endResponse,
   LimitedBufferCapture,
   bufferFromUint8Array,
@@ -1195,10 +1196,13 @@ export async function pipeUpstreamStream(
 
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-  // Generic clients keep opaque upstream SSE semantics: a clean transport EOF
-  // is sufficient even when the protocol driver does not recognize a terminal.
+  // Generic clients keep opaque upstream SSE semantics: once at least one real
+  // SSE data event was observed, a clean transport EOF is sufficient even when
+  // the protocol driver does not recognize a provider-specific terminal.
+  // Comments/heartbeats are transport-only and must remain pre-commit so an
+  // empty or keep-alive-only stream can still be retried by the server.
   // Precise clients use interpretProtocolFailures and still require framing.
-  if (!interpretProtocolFailures && completed) {
+  if (!interpretProtocolFailures && completed && inspection.eventCount > 0) {
     await flushPreCommitChunks()
     endResponse(res)
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
@@ -1734,10 +1738,7 @@ function mergeResponseInspectionSseResults(
 }
 
 function interruptResponse(res: Response): void {
-  if (res.writableEnded || res.destroyed) {
-    return
-  }
-  res.destroy()
+  destroyResponseForUpstreamBodyError(res)
 }
 
 async function writeGatewayStreamFailureEventWithBackpressure(

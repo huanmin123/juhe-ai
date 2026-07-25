@@ -37,6 +37,7 @@ const [
   gatewayHotQuality,
   accountCircuit,
   accountRuntimeKeys,
+  gatewayBody,
   storageCrypto,
   usageRecordQueue,
   auditLogQueue
@@ -52,6 +53,7 @@ const [
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/account-runtime-keys.js'),
+  import('../../modules/gateway/upstream/body.js'),
   import('../../storage/crypto.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -64,6 +66,23 @@ assert.equal(
   '空错误消息应回退到错误码，避免最后一次尝试文案只剩空白'
 )
 assert.equal(typeof gatewayFailureDispatch.handleUpstreamRequestError, 'function', '传输失败必须由统一请求错误处理器接管')
+assert.equal(
+  gatewayBody.isProvenUpstreamBodyTransportError(new Error('本地响应转换失败')),
+  false,
+  '没有正文读取来源证据的本地 post-header/transform 异常不得伪装成上游 transport'
+)
+try {
+  await gatewayBody.readUpstreamBodyLimited((async function* () {
+    throw new Error('mock upstream body reset')
+  })())
+  assert.fail('正文读取中断夹具必须抛错')
+} catch (error) {
+  assert.equal(
+    gatewayBody.isProvenUpstreamBodyTransportError(error),
+    true,
+    '正文读取边界包装后的 incomplete error 必须保留已开始上游 body transport 证据'
+  )
+}
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -89,6 +108,14 @@ async function main(): Promise<void> {
     const upstreamAuthorizations: string[] = []
     upstreamServer = http.createServer((req, res) => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      if (req.url?.includes('mock_unsupported_content_encoding=1')) {
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-encoding': 'x-juhe-local-unsupported'
+        })
+        res.end('{"choices":[{"message":{"role":"assistant","content":"must not be decoded"}}]}')
+        return
+      }
       if (req.url?.includes('mock_side_effect_transport_drop=1')) {
         req.socket.destroy()
         return
@@ -144,6 +171,13 @@ async function main(): Promise<void> {
       api_keys: ['sk-local-dispatch-first-a', 'sk-local-dispatch-first-b'],
       base_url: 'file:///gateway-local-dispatch-must-not-be-transport'
     }), localDispatchFailurePrimary.id)
+
+    const localPostHeaderFailureGroup = repositories.createGroup({ name: '响应头后本地异常不得切号分组', providerCode: 'gpt', enabled: true }, access)
+    const localPostHeaderFailureAccounts = [
+      createAccount(localPostHeaderFailureGroup.id, '01-响应头后本地异常账户', 'sk-local-post-header-first', upstreamBaseUrl, false, 0),
+      createAccount(localPostHeaderFailureGroup.id, '02-响应头后本地异常后备账户', 'sk-local-post-header-fallback', upstreamBaseUrl, false, 100)
+    ]
+    const localPostHeaderFailureApiKey = createRegressionApiKey(localPostHeaderFailureGroup.id, 'sk-local-post-header-failure-regression')
 
     gatewayCache.clearGatewayRuntimeCache()
     appServer = http.createServer(app)
@@ -271,10 +305,46 @@ async function main(): Promise<void> {
       modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
     }), undefined, '本地异常不得启动后备账户热质量 attempt')
 
+    const localPostHeaderCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
+    const localPostHeaderOffset = upstreamAuthorizations.length
+    const localPostHeaderResponse = await fetch(`${baseUrl}/v1/chat/completions?mock_unsupported_content_encoding=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${localPostHeaderFailureApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'local post-header decoder failure must remain local' }],
+        stream: false
+      })
+    })
+    const localPostHeaderText = await localPostHeaderResponse.text()
+    assert.equal(localPostHeaderResponse.status, 503, `响应头后的本地解码异常应返回稳定网关错误：${localPostHeaderText}`)
+    assert.deepEqual(
+      upstreamAuthorizations.slice(localPostHeaderOffset),
+      ['Bearer sk-local-post-header-first'],
+      '响应头后的本地解码/转换异常不得换 Key 或切到后备账户'
+    )
+    assert.equal(
+      await accountCircuit.getGatewayAccountCircuitStore().size(),
+      localPostHeaderCircuitSizeBefore,
+      '响应头后的本地解码/转换异常不得创建账户 transport circuit incident'
+    )
+    assertAccountsRemainAvailable(localPostHeaderFailureAccounts, '响应头后本地异常')
+    const localPostHeaderPrimary = localPostHeaderFailureAccounts[0]!
+    const localPostHeaderQuality = await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
+      accountRuntimeKey: accountRuntimeKeys.gatewayAccountRuntimeKey(localPostHeaderPrimary),
+      protocolProfile: localPostHeaderPrimary.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+      requestLane: 'text',
+      modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
+    })
+    assert.ok(localPostHeaderQuality, '响应头后本地异常必须中性结束当前热质量 attempt')
+    assert.equal(localPostHeaderQuality.window5m.unknownOutcomes, 1)
+    assert.equal(localPostHeaderQuality.window5m.localTransportFailures, 0)
+    assert.equal(localPostHeaderQuality.window5m.timeouts, 0)
+
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：副作用 POST 不重放，真实传输失败保持请求级切号，本地 URL/派发异常不轮换 Key/账户且不污染共享状态')
+    console.log('上游请求失败回归通过：副作用 POST 不重放，真实传输失败保持请求级切号，本地 URL/派发/响应头后转换异常不轮换 Key/账户且不污染共享状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()

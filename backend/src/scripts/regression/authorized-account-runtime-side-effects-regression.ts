@@ -263,7 +263,8 @@ function createAuthorizedAccount(
       base_url: 'https://example.invalid/v1',
       error_handling_rules: errorHandlingRules
     },
-    groupId: ownerSourceGroup.id
+    groupId: ownerSourceGroup.id,
+    supportedModels: ['gpt-5.5']
   }, ownerAccess)
   repositories.recordAccountHealthCheckSuccess(account.id, {
     intervalHours: 12,

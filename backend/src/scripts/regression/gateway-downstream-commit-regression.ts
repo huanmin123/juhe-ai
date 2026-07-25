@@ -6,8 +6,17 @@ import type { Response } from 'express'
 import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
 import { createGatewaySseWaitHeartbeatObserver } from '../../modules/gateway/response/sse-wait-heartbeat.js'
 import { shouldRetryPreCommitStreamFailureOnServer } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
+import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import type { StreamPipeResult } from '../../modules/gateway/response/stream-result.js'
 import { pipeNonStreamUpstreamResponse } from '../../modules/gateway/upstream/body.js'
+
+const streamTimeoutProfile = {
+  firstResponseTimeoutMs: 5_000,
+  firstByteTimeoutMs: 5_000,
+  idleTimeoutMs: 5_000,
+  uncommittedAttemptMaxLifetimeMs: 30_000,
+  noAvailableAccountWaitMs: 5_000
+}
 
 const state = new GatewayDownstreamCommitState()
 assert.equal(state.transportCommitted, false)
@@ -88,6 +97,76 @@ assert(heartbeatObserver)
 assert.doesNotThrow(() => heartbeatObserver.onWaitStarted?.(), '客户端断连竞争导致心跳写失败时不应把异常抛回请求链')
 assert.equal(heartbeatState.transportCommitted, false, '失败的心跳写入不得标记传输层已提交')
 
+const keepAliveOnlyState = new GatewayDownstreamCommitState()
+const keepAliveOnlyResponse = fakeResponse()
+const keepAliveOnlyResult = await pipeUpstreamStream(
+  singleChunkBody(': keep-alive\n\n'),
+  keepAliveOnlyResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true,
+    downstreamCommitState: keepAliveOnlyState
+  }
+)
+assert.equal(keepAliveOnlyResult.completed, false, '只有 SSE keep-alive 的干净 EOF 不得伪装成协议完成')
+assert.equal(keepAliveOnlyResult.transportCommitted, false, '上游 keep-alive 必须留在预提交缓冲，不得提交下游传输')
+assert.equal(keepAliveOnlyResult.semanticCommitted, false)
+assert.equal(keepAliveOnlyResult.downstreamBytesWritten, 0)
+assert.equal(keepAliveOnlyResult.upstreamResponseBytesWritten, 0)
+assert.equal(keepAliveOnlyResponse.headersSent, false, '上游 keep-alive 不得提前写出下游响应头')
+assert.equal(keepAliveOnlyResponse.writableEnded, false, '建流前失败必须交回上层接管 HTTP 错误或切号')
+assert.equal(keepAliveOnlyResult.uncommittedResponseBody?.toString('utf8'), ': keep-alive\n\n')
+assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), true)
+
+const opaqueDataState = new GatewayDownstreamCommitState()
+const opaqueDataResponse = fakeResponse()
+const opaqueDataResult = await pipeUpstreamStream(
+  singleChunkBody('event: vendor.progress\ndata: not-json-but-client-visible\n\n'),
+  opaqueDataResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true,
+    downstreamCommitState: opaqueDataState
+  }
+)
+assert.equal(opaqueDataResult.completed, true, 'generic 客户端的普通不透明 data 事件仍应在干净 EOF 后成功透传')
+assert.equal(opaqueDataResult.transportCommitted, true)
+assert.equal(opaqueDataResponse.writableEnded, true)
+
+const visibleOutputState = new GatewayDownstreamCommitState()
+const visibleOutputResponse = fakeResponse()
+const visibleOutputResult = await pipeUpstreamStream(
+  visibleOutputThenFailureBody(),
+  visibleOutputResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true,
+    downstreamCommitState: visibleOutputState
+  }
+)
+assert.equal(visibleOutputResult.completed, false)
+assert.equal(visibleOutputResult.semanticCommitted, true, '真实 Chat delta 写出后必须进入不可重放语义提交态')
+assert.equal(visibleOutputState.canRetryUpstream(), false, '已可见语义后不得切号拼接第二条流')
+assert.equal(shouldRetryPreCommitStreamFailureOnServer(visibleOutputResult, visibleOutputResponse), false)
+
 console.log('gateway downstream commit regression passed')
 
 async function* singleChunkBody(value: string): AsyncGenerator<Uint8Array> {
@@ -96,6 +175,12 @@ async function* singleChunkBody(value: string): AsyncGenerator<Uint8Array> {
 
 async function* emptyBody(): AsyncGenerator<Uint8Array> {
   return
+}
+
+async function* visibleOutputThenFailureBody(): AsyncGenerator<Uint8Array> {
+  yield Buffer.from(': keep-alive\n\n')
+  yield Buffer.from('data: {"choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}\n\n')
+  throw new Error('semantic stream interrupted')
 }
 
 function fakeResponse(input: { throwOnWrite?: boolean } = {}): Response {

@@ -88,7 +88,10 @@ import {
 import {
   type GatewayFailureUsageContext
 } from './usage/records.js'
-import { isGatewayForcedDownstreamClose } from './upstream/body.js'
+import {
+  isGatewayForcedDownstreamClose,
+  isProvenUpstreamBodyTransportError
+} from './upstream/body.js'
 import {
   isAccountDiagnosticTrafficSource,
   isAccountProbeTrafficSource,
@@ -1212,12 +1215,36 @@ export async function handleOpenAIGatewayRequest(
               await hotQualityAttempt.recordTerminal({ outcomeClass: 'unknown', source: 'request_lifecycle' })
               throw error
             }
+            const provenBodyTransportFailure = isProvenUpstreamBodyTransportError(error)
             if (res.headersSent || res.writableEnded || res.destroyed) {
+              const accountTransportFailure = provenBodyTransportFailure && !requestExecutionSignal.aborted
               await hotQualityAttempt.recordTerminal({
-                outcomeClass: requestExecutionSignal.aborted ? 'client_cancellation' : 'read_interruption',
-                failureScope: requestExecutionSignal.aborted ? 'none' : 'protocol_model',
-                source: requestExecutionSignal.aborted ? 'request_lifecycle' : 'gateway_transport'
+                outcomeClass: requestExecutionSignal.aborted
+                  ? 'client_cancellation'
+                  : accountTransportFailure
+                    ? 'read_interruption'
+                    : 'unknown',
+                failureScope: accountTransportFailure ? 'protocol_model' : 'none',
+                source: accountTransportFailure ? 'gateway_transport' : 'request_lifecycle'
               })
+              if (!accountTransportFailure) await accountCircuitAttempt?.reportUnknown()
+              throw error
+            }
+            if (!provenBodyTransportFailure) {
+              await hotQualityAttempt.recordTerminal({
+                outcomeClass: 'unknown',
+                failureScope: 'none',
+                source: 'request_lifecycle'
+              })
+              auditCapture.addGatewayMetadata({
+                label: 'gateway_unproven_upstream_body_transport_failure',
+                metadata: {
+                  accountId: account.id,
+                  endpoint: gatewayUsageContext.endpoint,
+                  errorName: error instanceof Error ? error.name : undefined
+                }
+              })
+              await accountCircuitAttempt?.reportUnknown()
               throw error
             }
             const bodyFailure = accountCircuitTransportFailure(error)
@@ -1260,9 +1287,15 @@ export async function handleOpenAIGatewayRequest(
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
             const circuitDecision = !requestExecutionSignal.aborted
-              && accountCircuitAttempt
+              && accountCircuitAttempt?.isConfirmation === true
               ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error))
               : undefined
+            if (!requestExecutionSignal.aborted && accountCircuitAttempt && accountCircuitAttempt.isConfirmation !== true) {
+              // Body framing can be damaged by one request/session. It is valid
+              // request-local failover evidence, but shared circuit evidence must
+              // come from the independent confirmation path.
+              await accountCircuitAttempt.reportUnknown()
+            }
             if (circuitDecision?.outcome === 'confirmation_acquired') {
               await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
             }

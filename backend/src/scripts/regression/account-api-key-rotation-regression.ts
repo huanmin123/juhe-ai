@@ -43,7 +43,8 @@ try {
       api_key_strategy: 'round_robin',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
 
   assert.equal(roundRobinAccount.credentials.api_key, 'sk-rotation-a', '多 Key 账户应保留首个 Key 作为主凭据')
@@ -115,7 +116,8 @@ try {
       api_key_weights: [3, 1],
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
 
   const weightedSequence = Array.from({ length: 8 }, () => rotation.selectAccountRuntimeApiKey({ accountId: weightedAccount.id, credentials: weightedAccount.credentials }))

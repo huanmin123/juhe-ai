@@ -104,7 +104,7 @@ try {
   const create = (name: string, type = 'api_key', credentials: Record<string, unknown> = { api_key: `sk-${name}`, base_url: 'https://relay.example/v1' }) =>
     repositories.createAccount({
       providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name, type, credentials, groupId: group.id
+      name, type, credentials, supportedModels: ['gpt-5.5'], groupId: group.id
     }, access)
   const dueA = create('due-a')
   const dueB = create('due-b')
@@ -123,7 +123,7 @@ try {
   const lifecycle = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'lifecycle', type: 'api_key', credentials: { api_key: 'sk-lifecycle', base_url: 'https://relay.example/v1' },
-    groupId: group.id, balanceQueryEnabled: true,
+    supportedModels: ['gpt-5.5'], groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
   }, access)
   const recoverMissing = create('recover-missing')
@@ -132,13 +132,13 @@ try {
   const configured = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'configured', type: 'api_key', credentials: { api_key: 'sk-configured', base_url: 'https://relay.example/v1' },
-    groupId: group.id, balanceQueryEnabled: true,
+    supportedModels: ['gpt-5.5'], groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' }
   }, access)
   const persistenceFailure = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'persistence-failure', type: 'api_key', credentials: { api_key: 'sk-persistence-failure', base_url: 'https://relay.example/v1' },
-    groupId: group.id, balanceQueryEnabled: true,
+    supportedModels: ['gpt-5.5'], groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
   }, access)
   const database = databaseModule.getBusinessDatabase()
@@ -414,7 +414,7 @@ try {
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'multi-key-requested-balance', type: 'api_key',
     credentials: { api_keys: ['sk-multi-a', 'sk-multi-b'], base_url: 'https://relay.example/v1' },
-    groupId: group.id, balanceQueryEnabled: true,
+    supportedModels: ['gpt-5.5'], groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 7, preferredBuiltinAdapter: 'user_balance' }
   }, access)
   assert.equal(multiKeyRequestedBalance.balanceQueryEnabled, false, '新建多 Key 即使请求开启余额也必须保存成功并自动关闭')
@@ -431,7 +431,7 @@ try {
   const singleToMulti = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'single-to-multi', type: 'api_key', credentials: { api_key: 'sk-single', base_url: 'https://relay.example/v1' },
-    groupId: group.id, balanceQueryEnabled: true,
+    supportedModels: ['gpt-5.5'], groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' } }
   }, access)
   const singleToMultiOldGeneration = '2000-01-01T00:00:00.000Z'
@@ -696,7 +696,7 @@ try {
     }),
     /上游鉴权失败/
   )
-  assert.equal(opaqueStatusAttempts, 4, '上游自称的鉴权状态不可信，必须继续尝试其他余额适配器')
+  assert.equal(opaqueStatusAttempts, 5, '上游自称的鉴权状态不可信，必须继续尝试全部余额适配器')
 
   const untrustedStatuses = [
     300, 301, 302, 307, 308,
@@ -725,8 +725,8 @@ try {
     const statusResult = await balanceQueryService.refreshAccountBalanceCandidate(statusCandidate)
     assert.equal(
       mockState.requestCount - requestCountBefore,
-      4,
-      `HTTP ${upstreamStatus} 不得被解读为鉴权或能力结论，应试完四个内置适配器`
+      5,
+      `HTTP ${upstreamStatus} 不得被解读为鉴权或能力结论，应试完五个内置适配器`
     )
     assert.equal(statusResult.status, 'fresh', `HTTP ${upstreamStatus} 首次失败应保留最后成功余额`)
     assert.equal(statusResult.remainingUsd, '6.250000')
@@ -749,7 +749,7 @@ try {
   const invalidJsonRequestCountBefore = mockState.requestCount
   const invalidJsonResult = await balanceQueryService.queryBuiltinAccountBalance(invalidJsonCandidate)
   assert.equal(invalidJsonResult.snapshot.status, 'unsupported', '完整 2xx 中的非法 JSON 属于本地可验证结构约束')
-  assert.equal(mockState.requestCount - invalidJsonRequestCountBefore, 4, '结构不匹配仍应尝试全部内置适配器')
+  assert.equal(mockState.requestCount - invalidJsonRequestCountBefore, 5, '结构不匹配仍应尝试全部内置适配器')
 
   mockState.status = 401
   mockState.invalidJson = false

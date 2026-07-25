@@ -76,13 +76,24 @@ export class UpstreamRequestAbortedError extends Error {
 }
 
 const startedUpstreamTransportErrors = new WeakSet<object>()
+const startedUpstreamBodyTransportErrors = new WeakSet<object>()
 
 export function isStartedUpstreamTransportError(error: unknown): boolean {
   return isWeakSetValue(error) && startedUpstreamTransportErrors.has(error)
 }
 
+export function isStartedUpstreamBodyTransportError(error: unknown): boolean {
+  return isWeakSetValue(error) && startedUpstreamBodyTransportErrors.has(error)
+}
+
 function markStartedUpstreamTransportError(error: unknown): void {
   if (isWeakSetValue(error)) startedUpstreamTransportErrors.add(error)
+}
+
+function markStartedUpstreamBodyTransportError(error: unknown): void {
+  if (isWeakSetValue(error) && !(error instanceof UnsupportedUpstreamResponseEncodingError)) {
+    startedUpstreamBodyTransportErrors.add(error)
+  }
 }
 
 function isWeakSetValue(value: unknown): value is object {
@@ -292,6 +303,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
   let firstByteDeadlineTimer: NodeJS.Timeout | undefined
   let socketTimeout: NodeJS.Timeout | undefined
   let responseReceived = false
+  let upstreamRequestStarted = false
   const abortBySignal = () => controller.abort(new UpstreamRequestAbortedError('请求已取消', true))
   if (options.signal?.aborted) {
     throw new UpstreamRequestAbortedError('请求已取消')
@@ -334,13 +346,15 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
     const fetchBody = typeof options.body === 'string' || options.body === undefined
       ? options.body
       : bufferToArrayBuffer(options.body)
-    const response = await fetch(url, {
+    const responsePromise = fetch(url, {
       method: options.method,
       headers,
       body: fetchBody,
       signal: controller.signal,
       redirect: 'manual'
     })
+    upstreamRequestStarted = true
+    const response = await responsePromise
     responseReceived = true
     if (requestTimeout) {
       clearTimeout(requestTimeout)
@@ -353,7 +367,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
   } catch (error) {
     const reason = controller.signal.reason
     const failure = reason instanceof Error ? reason : error
-    if (!responseReceived) markStartedUpstreamTransportError(failure)
+    if (upstreamRequestStarted && !responseReceived) markStartedUpstreamTransportError(failure)
     throw failure
   } finally {
     if (requestTimeout) clearTimeout(requestTimeout)
@@ -442,6 +456,7 @@ function fetchReadableStreamBody(
             return { done: false, value: result.value ?? new Uint8Array(0) }
           } catch (error) {
             await cancel(error)
+            markStartedUpstreamBodyTransportError(error)
             throw error
           }
         },
@@ -730,6 +745,7 @@ function cancellableNodeUpstreamResponseBody(
           } catch (error) {
             closed = true
             destroyNodeUpstreamResponseBody(body, message)
+            markStartedUpstreamBodyTransportError(error)
             throw error
           }
         },
@@ -783,9 +799,16 @@ async function* unsupportedUpstreamResponseEncoding(
   message: IncomingMessage,
   encoding: string
 ): AsyncIterable<Uint8Array> {
-  const error = new Error(`不支持的上游响应压缩编码: ${encoding}`)
+  const error = new UnsupportedUpstreamResponseEncodingError(`不支持的上游响应压缩编码: ${encoding}`)
   message.destroy(error)
   throw error
+}
+
+class UnsupportedUpstreamResponseEncodingError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnsupportedUpstreamResponseEncodingError'
+  }
 }
 
 export async function readStreamChunkWithTimeout(
