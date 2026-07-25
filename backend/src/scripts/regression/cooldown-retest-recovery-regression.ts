@@ -242,6 +242,7 @@ try {
     throw new Error('冷却复测恢复 mock 上游地址不可用')
   }
   const mockBaseUrl = `http://127.0.0.1:${mockAddress.port}`
+  const gptSupportedModels = ['gpt-5.4']
 
   const group = repositories.createGroup({
     name: '冷却复测回归分组',
@@ -265,7 +266,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(account.id)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
@@ -390,7 +392,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(freshAccount.id)
   assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
@@ -495,7 +498,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(disabledCleanupAccount.id)
   repositories.markAccountTemporaryUnavailable(disabledCleanupAccount.id, '过期冷却错误')
@@ -515,7 +519,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(rateLimitedAccount.id)
   assert(repositories.setAccountGroup(rateLimitedAccount.id, group.id, access), '限流复测账号应能绑定分组')
@@ -545,6 +550,7 @@ try {
     credentials: { api_key: 'sk-cooldown-bounded', base_url: 'https://api.openai.com/v1' },
     status: 'active',
     groupId: group.id,
+    supportedModels: gptSupportedModels,
     temporaryUnavailableContinuousProbeEnabled: false
   }, access)
   assert.equal(repositories.findAccountSummary(boundedAccount.id, access)?.temporaryUnavailableContinuousProbeEnabled, false, 'SQLite 账户读取必须保留持续恢复探活关闭值')
@@ -579,7 +585,7 @@ try {
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '有界开关不影响限流回归', type: 'api_key',
     credentials: { api_key: 'sk-cooldown-bounded-rate', base_url: 'https://api.openai.com/v1' },
-    status: 'active', groupId: group.id, temporaryUnavailableContinuousProbeEnabled: false
+    status: 'active', groupId: group.id, supportedModels: gptSupportedModels, temporaryUnavailableContinuousProbeEnabled: false
   }, access)
   activateTestAccount(boundedRateLimited.id)
   repositories.markAccountCooldown(boundedRateLimited.id, new Date(Date.now() - 1000).toISOString(), '有界开关下的限流', 'rate_limited')
@@ -596,7 +602,7 @@ try {
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '有界探针旧结果守卫回归', type: 'api_key',
     credentials: { api_key: 'sk-cooldown-guarded', base_url: 'https://api.openai.com/v1' },
-    status: 'active', groupId: group.id
+    status: 'active', groupId: group.id, supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(guardedRestore.id)
   const guardedCooling = repositories.markAccountTemporaryUnavailable(guardedRestore.id, '旧探针守卫')
@@ -718,7 +724,8 @@ try {
       },
       status: 'active',
       healthCheckEndpointMode: 'chat_json',
-      groupId: group.id
+      groupId: group.id,
+      supportedModels: gptSupportedModels
     }, access)
     activateTestAccount(whitespaceAccount.id)
     assert(repositories.setAccountGroup(whitespaceAccount.id, group.id, access), `${whitespaceCase.label} generation 测试账户应能绑定分组`)
@@ -838,7 +845,8 @@ try {
       base_url: mockBaseUrl
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(ineligibleFailureAccount.id)
   repositories.markAccountTemporaryUnavailable(ineligibleFailureAccount.id, '模拟后台探针配置失败前冷却态')
@@ -867,7 +875,8 @@ try {
     },
     status: 'active',
     healthCheckEndpointMode: 'chat_json',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(probeAccount.id)
   repositories.markAccountTemporaryUnavailable(probeAccount.id, '模拟后台探针恢复前失败态')
@@ -899,7 +908,8 @@ try {
     },
     status: 'active',
     healthCheckEndpointMode: 'chat_json',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(generationFollowUpAccount.id)
   assert(repositories.setAccountGroup(generationFollowUpAccount.id, group.id, access), '新代际队列接续账户应能绑定分组')
@@ -988,7 +998,8 @@ try {
     },
     status: 'active',
     healthCheckEndpointMode: 'chat_json',
-    groupId: ownerGroup.id
+    groupId: ownerGroup.id,
+    supportedModels: gptSupportedModels
   }, ownerAccess)
   activateTestAccount(sourceAccount.id)
   repositories.createResourceAuthorization({
@@ -1266,7 +1277,8 @@ try {
       base_url: mockBaseUrl
     },
     status: 'active',
-    groupId: quotaOwnerGroup.id
+    groupId: quotaOwnerGroup.id,
+    supportedModels: gptSupportedModels
   }, quotaOwnerAccess)
   activateTestAccount(quotaSourceAccount.id)
   repositories.createResourceAuthorization({
@@ -1308,7 +1320,8 @@ try {
       base_url: mockBaseUrl
     },
     status: 'active',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: gptSupportedModels
   }, access)
   activateTestAccount(scanWindowOwnerAccount.id)
   repositories.markAccountTemporaryUnavailable(scanWindowOwnerAccount.id, '模拟扫描窗口普通账户临时不可调用')
@@ -1499,7 +1512,8 @@ function createActiveCoolingAccount(name: string, apiKey: string, groupId: strin
       base_url: 'https://api.openai.com/v1'
     },
     status: 'active',
-    groupId
+    groupId,
+    supportedModels: ['gpt-5.4']
   }, access)
   activateTestAccount(account.id)
   assert(repositories.setAccountGroup(account.id, groupId, access), `测试账号 ${account.id} 应能绑定分组`)
