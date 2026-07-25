@@ -1,6 +1,6 @@
 # BUG-0049 Go 管理 API 缺少 Redis cache 仍启动
 
-> 历史说明：本文涉及的 session-only 登录会话管理开关已于 2026-07-18 随 PLAN-0150-20260722T022751000Z 删除，不得恢复或作为当前配置依据。完整管理 API 的 Redis cache/state/queue fail-fast 结论继续有效。
+> 历史说明：本文涉及的 session-only 登录会话管理开关已于 2026-07-18 随 PLAN-20260722T022751000Z 删除，不得恢复或作为当前配置依据。完整管理 API 的 Redis cache/state/queue fail-fast 结论继续有效。
 
 ## 基本信息
 
@@ -10,7 +10,7 @@
 - 发现时间：2026-07-11
 - 发现方式：PLAN-0081 生产切流门禁审计
 - 模块：后端 / Go / 管理接口 / Redis cache / 网关缓存失效 / 部署
-- 关联计划：[PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md)
+- 关联计划：[PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md)
 - 关联 bug：[BUG-0040](问题-0040-Go公开APIKey写入未触发网关缓存失效.md)
 - 责任人：主 agent / 维护者
 

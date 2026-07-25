@@ -2,7 +2,7 @@
 
 > 本文定义站内 AI 问答的渲染历史、模型上下文、附件资产、主动压缩和请求体预算。本文是 [AI 问答设计](AI问答设计.md) 的第二阶段专题设计；网关级 Responses compact 继续以 [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md) 为准。
 >
-> 当前状态：multipart 图片资产、服务端缩放、隐藏图片说明、checkpoint + recent suffix、结构化主动压缩、真实流式 usage、本地 tokenizer 兜底、请求体字节预检、只读圆环和上游 Prompt Cache 稳定前缀均已在隔离分支实现，并通过 Mock、真实模型、真实 PostgreSQL/Redis 和浏览器验收。真实连续轮次第二轮缓存读取占输入 token 约 `90.0%`；见 [BUG-0111](../bug/问题-0111-AI问答破坏上游前缀缓存.md)。实施追踪见 [PLAN-0104](../plans/计划-0104-AI问答上下文与多模态降负.md)。
+> 当前状态：multipart 图片资产、服务端缩放、隐藏图片说明、checkpoint + recent suffix、结构化主动压缩、真实流式 usage、本地 tokenizer 兜底、请求体字节预检、只读圆环和上游 Prompt Cache 稳定前缀均已在隔离分支实现，并通过 Mock、真实模型、真实 PostgreSQL/Redis 和浏览器验收。真实连续轮次第二轮缓存读取占输入 token 约 `90.0%`；见 [BUG-0111](../bug/问题-0111-AI问答破坏上游前缀缓存.md)。实施追踪见 [PLAN-20260713T150309000Z](../plans/计划-20260713T150309000Z-AI问答上下文与多模态降负.md)。
 
 ## 1. 目标与边界
 

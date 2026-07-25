@@ -666,4 +666,4 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - [Codex Responses 转 Chat 协议转换设计](Codex%20Responses转Chat协议转换设计.md)
 - [AI 账户导入协议](AI账户导入协议.md)
 - [SQLite 存储说明](SQLite存储说明.md)
-- [PLAN-0083 GPT 服务等级与思考级别覆盖](../plans/计划-0083-GPT服务等级与思考级别覆盖.md)
+- [PLAN-20260710T235421000Z GPT 服务等级与思考级别覆盖](../plans/计划-20260710T235421000Z-GPT服务等级与思考级别覆盖.md)

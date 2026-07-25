@@ -8,7 +8,7 @@
 - 发现时间：2026-07-10
 - 发现方式：Node 转 Go 契约对照 / 子 agent 审计
 - 模块：后端 / Go / 公开接口 / API Key / Redis cache / Redis runtime state / 网关额度
-- 关联计划：[PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md)
+- 关联计划：[PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md)
 - 关联 bug：[BUG-0019 授权配额快照跨进程失效缺失](问题-0019-授权配额快照跨进程失效缺失.md)
 - 责任人：主 agent / 维护者
 

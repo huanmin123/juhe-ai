@@ -14,7 +14,10 @@ import {
   GPT_VENDOR_CODE
 } from '../../domain/provider-protocol.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
-import { protocolValidatedNonStreamResponse } from '../../modules/gateway/response/finalization.js'
+import {
+  nonStreamJsonProtocolValidationAllowed,
+  protocolValidatedNonStreamResponse
+} from '../../modules/gateway/response/finalization.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { gatewayAccountRuntimeKey } from '../../modules/gateway/runtime/account-runtime-keys.js'
 import { gatewayHotQualityModelFamily } from '../../modules/gateway/runtime/hot-quality-runtime.service.js'
@@ -42,6 +45,7 @@ for (const responseBodyText of [
   '[]',
   '{}',
   JSON.stringify({ error: { message: 'invalid key but HTTP 200' } }),
+  JSON.stringify({ choices: null }),
   JSON.stringify({ choices: [] }),
   JSON.stringify({ choices: 'not-an-array' }),
   JSON.stringify({ choices: [{}] }),
@@ -101,6 +105,56 @@ const geminiAccount = {
   protocolCode: 'gemini',
   protocolVersion: 'v1beta'
 } as unknown as UpstreamAccount
+
+assert.equal(nonStreamJsonProtocolValidationAllowed({
+  req: requestWithBody('/v1/chat/completions', {
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'safe text replay' }]
+  }),
+  account,
+  upstreamResponse: { ok: true }
+}), true, '普通 Chat 文本请求允许在下游提交前进行协议结构验证和请求内切号')
+assert.equal(nonStreamJsonProtocolValidationAllowed({
+  req: requestWithBody('/v1/chat/completions', {
+    model: 'gpt-image-1',
+    messages: [{ role: 'user', content: 'generate image' }]
+  }),
+  account,
+  upstreamResponse: { ok: true }
+}), false, 'Chat 入口中的图片模型请求也必须保持 at-most-once')
+assert.equal(nonStreamJsonProtocolValidationAllowed({
+  req: requestWithBody('/v1/messages', {
+    model: 'claude-sonnet-4-5',
+    messages: [{ role: 'user', content: 'safe anthropic text' }]
+  }),
+  account: anthropicAccount,
+  upstreamResponse: { ok: true }
+}), true, '不含服务端工具的 Anthropic Messages 文本请求允许请求内协议切号')
+assert.equal(nonStreamJsonProtocolValidationAllowed({
+  req: requestWithBody('/v1/messages', {
+    model: 'claude-sonnet-4-5',
+    messages: [{ role: 'user', content: 'hosted tool' }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search' }]
+  }),
+  account: anthropicAccount,
+  upstreamResponse: { ok: true }
+}), false, 'Anthropic 服务端工具可能已执行，不得因响应结构异常自动重放')
+for (const sideEffectPath of ['/v1/images/generations', '/v1/audio/speech', '/v1/files']) {
+  assert.equal(nonStreamJsonProtocolValidationAllowed({
+    req: requestWithBody(sideEffectPath, { model: 'gpt-5.5', input: 'side effect' }),
+    account,
+    upstreamResponse: { ok: true }
+  }), false, `${sideEffectPath} 不得启用可触发自动切号的协议结构验证`)
+}
+assert.equal(nonStreamJsonProtocolValidationAllowed({
+  req: requestWithBody('/v1/chat/completions', {
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'non-2xx' }]
+  }),
+  account,
+  upstreamResponse: { ok: false }
+}), false, '非 2xx 响应不得走 2xx 协议结构验证分支')
+
 const endpointMatrix: Array<{ label: string; req: Request; account: UpstreamAccount; body: unknown }> = [
   { label: 'chat/completions', req: chatRequest, account, body: { choices: [{ message: { content: 'ok' } }] } },
   { label: 'responses', req: responsesRequest, account, body: { id: 'resp-ok', object: 'response', status: 'completed', output: [] } },
@@ -137,6 +191,13 @@ console.log('网关协议成功来源回归通过：HTTP 200 垃圾体不增加�
 
 function request(path: string): Request {
   return requestWithHeaders(path, {})
+}
+
+function requestWithBody(path: string, body: Record<string, unknown>, method = 'POST'): Request {
+  return {
+    ...requestWithHeaders(path, {}, method),
+    body
+  } as Request
 }
 
 function requestWithHeaders(path: string, headers: Record<string, string>, method = 'POST'): Request {

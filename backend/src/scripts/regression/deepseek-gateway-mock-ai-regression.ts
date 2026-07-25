@@ -84,6 +84,7 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: DeepSeekUpstreamHit[] = []
 const privateDeepSeekModel = 'deepseek-private-models-key-only'
+const protocolShapeOnly = process.argv.includes('--protocol-shape-only')
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -155,7 +156,7 @@ try {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       enabled: true
     }, access)
-    const retryPrimaryAccount = repositories.createAccount({
+    repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI JSON 正文中断主账户',
@@ -171,7 +172,7 @@ try {
       healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json'
     }, access)
-    const retryFallbackAccount = repositories.createAccount({
+    repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI JSON 正文中断备用账户',
@@ -194,7 +195,7 @@ try {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const retryPrimaryAccount = repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI 协议失败主账户',
@@ -219,7 +220,7 @@ try {
         }
       ]
     }, access)
-    repositories.createAccount({
+    const retryFallbackAccount = repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI 协议失败备用账户',
@@ -251,11 +252,12 @@ try {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       enabled: true
     }, access)
+    const allBadAccounts: string[] = []
     for (const item of [
       { name: 'DeepSeek Mock AI 协议失败耗尽账户 A', apiKey: 'sk-deepseek-allbad-a', priority: 0 },
       { name: 'DeepSeek Mock AI 协议失败耗尽账户 B', apiKey: 'sk-deepseek-allbad-b', priority: 10 }
     ]) {
-      repositories.createAccount({
+      const allBadAccount = repositories.createAccount({
         providerCode: DEEPSEEK_PROVIDER_CODE,
         providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
         name: item.name,
@@ -272,6 +274,7 @@ try {
         healthCheckModel: 'deepseek-v4-flash',
         healthCheckEndpointMode: 'chat_json'
       }, access)
+      allBadAccounts.push(allBadAccount.id)
     }
 
     const codexBridgeGroup = repositories.createGroup({
@@ -365,25 +368,29 @@ try {
       primaryAccountId: retryPrimaryAccount.id,
       fallbackAccountId: retryFallbackAccount.id
     })
-    await assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl, allBadApiKey.key)
-    await assertDeepSeekChatSse(baseUrl, apiKey.key)
-    await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
-    await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
-    await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeTreatsInsufficientResourceFinishReasonAsOpaque(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
-    assertDeepSeekSemanticParsing()
+    await assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl, allBadApiKey.key, allBadAccounts)
+    if (!protocolShapeOnly) {
+      await assertDeepSeekChatSse(baseUrl, apiKey.key)
+      await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
+      await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
+      await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeRestoresPreviousResponseId(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseId(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeStringUsage(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekCodexResponsesBridgeTreatsInsufficientResourceFinishReasonAsOpaque(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
+      await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
+      assertDeepSeekSemanticParsing()
+    }
 
-    console.log('deepseek gateway mock ai regression passed')
+    console.log(protocolShapeOnly
+      ? 'deepseek protocol-shape request-local failover regression passed'
+      : 'deepseek gateway mock ai regression passed')
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -519,7 +526,11 @@ async function assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(
   assert.equal(upstreamHits[1]?.authorization, 'Bearer sk-deepseek-interrupt-rescue-upstream')
 }
 
-async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(
+  baseUrl: string,
+  localApiKey: string,
+  accounts: { primaryAccountId: string; fallbackAccountId: string }
+): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -539,6 +550,7 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl: s
   assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 场景应先命中坏账号，再命中备用账号')
   assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-upstream')
   assert.equal(upstreamHits[1]?.authorization, 'Bearer sk-deepseek-rescue-upstream')
+  await assertProtocolShapeFailureSharedStateNeutral(accounts, 1)
 
   upstreamHits.length = 0
   const secondResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -554,13 +566,65 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl: s
     })
   })
   const secondText = await secondResponse.text()
-  assert.equal(secondResponse.status, 200, `DeepSeek Chat JSON 协议失败账号进入短避让后应直接命中备用账号，实际 HTTP ${secondResponse.status}: ${secondText}`)
+  assert.equal(secondResponse.status, 200, `DeepSeek Chat JSON 协议失败二次请求仍应在请求内完成切号，实际 HTTP ${secondResponse.status}: ${secondText}`)
   assert.equal(JSON.parse(secondText).choices?.[0]?.message?.content, 'deepseek json ok')
-  assert.equal(upstreamHits.length, 1, 'DeepSeek invalid choices 二次请求应避开已短暂屏蔽的坏账号')
-  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-rescue-upstream')
+  assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 不得形成跨请求共享屏蔽，二次请求仍应重新评估主账户后在请求内切号')
+  assert.equal(upstreamHits[0]?.authorization, 'Bearer sk-deepseek-upstream')
+  assert.equal(upstreamHits[1]?.authorization, 'Bearer sk-deepseek-rescue-upstream')
+  await assertProtocolShapeFailureSharedStateNeutral(accounts, 2)
 }
 
-async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertProtocolShapeFailureSharedStateNeutral(
+  accounts: { primaryAccountId: string; fallbackAccountId: string },
+  expectedNeutralObservationCount: number
+): Promise<void> {
+  const primary = repositories.findAccountForTest(accounts.primaryAccountId, access)
+  const fallback = repositories.findAccountForTest(accounts.fallbackAccountId, access)
+  assert(primary, 'DeepSeek 协议结构失败主账户应仍可读取')
+  assert(fallback, 'DeepSeek 协议结构失败备用账户应仍可读取')
+  assert.equal(primary.status, 'active', '可解析协议结构异常不得修改主账户业务状态')
+  assert.equal(primary.schedulable, true, '可解析协议结构异常不得取消主账户调度资格')
+  assert.equal(fallback.status, 'active', '请求内切号不得修改备用账户业务状态')
+  assert.equal(fallback.schedulable, true, '请求内切号不得取消备用账户调度资格')
+
+  const suppression = accountSideEffects.filterLocallySuppressedGatewayAccounts([primary, fallback])
+  assert.equal(suppression.suppressedCount, 0, '可解析协议结构异常不得写入共享/本地账户屏蔽')
+  assert.deepEqual(suppression.suppressedAccountIds, [], '协议结构失败不得留下账户屏蔽 ID')
+  assert.equal(
+    accountApiKeyFailureGuard.localAccountApiKeyRuntimeStatesForDispatch(primary.id).length,
+    0,
+    '可解析协议结构异常不得写入主账户 Key 失败态'
+  )
+  assert.equal(
+    accountApiKeyFailureGuard.localAccountApiKeyRuntimeStatesForDispatch(fallback.id).length,
+    0,
+    '请求内成功备用账户不得留下 Key 失败态'
+  )
+
+  const scope = {
+    accountRuntimeKey: gatewayAccountRuntimeKey(primary),
+    protocolProfile: primary.providerProtocolProfileId ?? `${primary.protocolCode}:${primary.protocolVersion}`,
+    requestLane: 'text' as const,
+    modelFamily: hotQuality.gatewayHotQualityModelFamily('deepseek-v4-flash')
+  }
+  const quality = await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get(scope)
+  assert(quality, '协议结构失败请求应保留中性 attempt 可观测性')
+  assert.equal(quality.window5m.qualityAttempts, 0, '请求局部协议异常不得进入共享质量分母')
+  assert.equal(quality.window5m.upstreamResponseFailures, 0, '请求局部协议异常不得写成共享上游质量失败')
+  assert.equal(quality.window5m.localTransportFailures, 0, '完整 2xx 协议异常不得写成传输失败')
+  assert.equal(quality.window5m.explicitPolicyFailures, 0, '内部协议验证不得伪造成用户显式策略失败')
+  assert.equal(
+    quality.window5m.unknownOutcomes,
+    expectedNeutralObservationCount,
+    '协议结构异常只允许形成不影响调度的中性请求观测'
+  )
+}
+
+async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(
+  baseUrl: string,
+  localApiKey: string,
+  accountIds: string[]
+): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -575,10 +639,33 @@ async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl: 
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 502, `DeepSeek Chat JSON 协议失败账号耗尽后应转成网关错误，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /upstream_protocol_error/, '网关错误应带通用协议结构错误码')
+  assert.equal(response.status, 503, `DeepSeek Chat JSON 协议失败账号耗尽后应转成可重试网关错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_retryable_error/, '账号耗尽后应返回稳定的客户端重试错误码')
   assert.doesNotMatch(text, /"choices"\s*:\s*null/, '网关不应把上游 choices:null 原样暴露给下游客户端')
   assert.equal(upstreamHits.length, 2, 'DeepSeek invalid choices 耗尽场景应尝试同组全部候选账号')
+  const accounts = accountIds.map((accountId) => repositories.findAccountForTest(accountId, access))
+  assert(accounts[0] && accounts[1], '协议失败耗尽账户都应仍可读取')
+  const availableAccounts = [accounts[0], accounts[1]]
+  assert(availableAccounts.every((account) => account.status === 'active' && account.schedulable), '请求局部协议异常耗尽不得写死任一账户')
+  const suppression = accountSideEffects.filterLocallySuppressedGatewayAccounts(availableAccounts)
+  assert.equal(suppression.suppressedCount, 0, '请求局部协议异常耗尽不得形成共享/本地账户屏蔽')
+  for (const account of availableAccounts) {
+    assert.equal(
+      accountApiKeyFailureGuard.localAccountApiKeyRuntimeStatesForDispatch(account.id).length,
+      0,
+      '请求局部协议异常耗尽不得形成 Key 失败态'
+    )
+    const quality = await hotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
+      accountRuntimeKey: gatewayAccountRuntimeKey(account),
+      protocolProfile: account.providerProtocolProfileId ?? `${account.protocolCode}:${account.protocolVersion}`,
+      requestLane: 'text',
+      modelFamily: hotQuality.gatewayHotQualityModelFamily('deepseek-v4-flash')
+    })
+    assert(quality, '每个协议异常账户都应保留中性 attempt 可观测性')
+    assert.equal(quality.window5m.qualityAttempts, 0, '协议异常耗尽不得进入共享质量分母')
+    assert.equal(quality.window5m.upstreamResponseFailures, 0, '协议异常耗尽不得写成共享上游质量失败')
+    assert.equal(quality.window5m.unknownOutcomes, 1, '每个协议异常账户只应记录一次中性请求结果')
+  }
 }
 
 async function assertDeepSeekChatSse(baseUrl: string, localApiKey: string): Promise<void> {

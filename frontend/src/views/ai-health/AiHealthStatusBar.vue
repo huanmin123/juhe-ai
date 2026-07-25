@@ -68,6 +68,13 @@ function handlePointerLeave(): void {
   if (canvasRef.value) canvasRef.value.title = ariaLabel.value
 }
 
+function scrollToLatest(): void {
+  window.requestAnimationFrame(() => {
+    const container = containerRef.value
+    if (container) container.scrollLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+  })
+}
+
 function statusColor(status: AiHealthHourPoint['status']): string {
   if (status === 'success') return '#10b981'
   if (status === 'failure') return '#ef4444'
@@ -80,7 +87,10 @@ function statusLabel(status: AiHealthHourPoint['status']): string {
   return '无检查记录'
 }
 
-watch(() => props.hours, () => void nextTick(draw), { deep: false })
+watch(() => props.hours, () => void nextTick(() => {
+  draw()
+  scrollToLatest()
+}), { deep: false })
 
 onMounted(() => {
   const container = containerRef.value
@@ -92,6 +102,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(updateWidth)
   resizeObserver.observe(container)
   updateWidth()
+  scrollToLatest()
   handlePointerLeave()
 })
 

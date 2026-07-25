@@ -1,11 +1,11 @@
 # PostgreSQL 与 Redis 高性能模式设计
 
-> 本文定义当前 Node 过渡阶段从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
+> 本文定义当前 Node 过渡阶段从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的边界。执行计划见 [PLAN-20260626T000630000Z PostgreSQL 与 Redis 高性能模式](../plans/计划-20260626T000630000Z-PostgreSQL与Redis高性能模式.md)。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
 > 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
 
-> 迁移方向更新：自 [PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md) 起，Go 后端目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。本文中 `standalone`、SQLite 和 performance 模式的内容只描述当前 Node 过渡事实；迁移完成后的长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准，PostgreSQL + Redis 将成为唯一正式存储模式。
+> 迁移方向更新：自 [PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md) 起，Go 后端目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。本文中 `standalone`、SQLite 和 performance 模式的内容只描述当前 Node 过渡事实；迁移完成后的长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准，PostgreSQL + Redis 将成为唯一正式存储模式。
 
 ## 背景
 

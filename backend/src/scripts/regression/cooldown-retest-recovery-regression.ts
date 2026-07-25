@@ -1294,12 +1294,13 @@ try {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
     .get(quotaSourceAccount.id, quotaGrantee.id) as { id?: string } | undefined
   assert(quotaLimitedAuthorization?.id, '额度授权应写入运行时授权记录')
+  const quotaLimitedAuthorizationId = quotaLimitedAuthorization.id
   databaseModule.getStatsDatabase()
     .prepare(`
       INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, total_cost_usd, updated_at)
       VALUES (?, 'account_authorization', ?, 1, 1, ?)
     `)
-    .run(quotaGrantee.id, quotaLimitedAuthorization.id, new Date().toISOString())
+    .run(quotaGrantee.id, quotaLimitedAuthorizationId, new Date().toISOString())
   const quotaLimitedInstance = repositories.listAccounts(quotaGranteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === quotaSourceAccount.id)
   assert(quotaLimitedInstance, '额度授权实例应创建本地账号实例')
@@ -1363,7 +1364,7 @@ try {
         created_at: timestamp,
         updated_at: timestamp
       })
-      cloneBusinessDatabaseRow('resource_authorizations', 'id = ?', [quotaLimitedAuthorization.id], {
+      cloneBusinessDatabaseRow('resource_authorizations', 'id = ?', [quotaLimitedAuthorizationId], {
         id: authorizationId,
         resource_id: sourceId,
         created_at: timestamp,
@@ -1439,6 +1440,14 @@ try {
 function createMockOpenAIServer(): http.Server {
   return http.createServer((req, res) => {
     const requestPath = req.url?.split('?', 1)[0]
+    if (req.method === 'GET' && requestPath === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [{ id: 'gpt-5.4', object: 'model', owned_by: 'mock' }]
+      }))
+      return
+    }
     if (req.method !== 'POST' || (requestPath !== '/v1/responses' && requestPath !== '/v1/chat/completions')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'not found' } }))

@@ -745,7 +745,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     } else if (upstreamResponse.body) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const protocolValidationEnabled = isOpenAIJsonResponseContentType(contentType)
-        && shouldValidateNonStreamJsonProtocolResponse(input)
+        && nonStreamJsonProtocolValidationAllowed(input)
       const inspectJsonResponse = isCodexResponsesGuardEligible(input)
         || (
           isOpenAIJsonResponseContentType(contentType)
@@ -1194,7 +1194,11 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
   )
 }
 
-function shouldValidateNonStreamJsonProtocolResponse(input: HandleUpstreamResponseInput): boolean {
+export function nonStreamJsonProtocolValidationAllowed(input: {
+  req: Request
+  account: UpstreamAccount
+  upstreamResponse: Pick<GatewayUpstreamResponse, 'ok'>
+}): boolean {
   if (!input.upstreamResponse.ok) return false
   const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
   if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages') return false

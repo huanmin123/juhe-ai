@@ -1,7 +1,7 @@
 # AI 问答设计
 
 > 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：AI 问答 MVP、Tiptap 输入、Responses/Chat Completions 双协议、有序助手时间线、版本化系统提示、Markdown/代码高亮/LaTeX/Mermaid/SVG、multipart 图片资产、按需会话加载、统一内部工具 Registry/Orchestrator、development/test Demo、`generate_image` 生成/编辑、图像谱系和 WebP 原图/预览双资产均已在隔离工作树实现；本地专项与真实浏览器验收由 [PLAN-0150-20260722T022751000Z](../plans/计划-0150-20260722T022751000Z-AI问答有序过程生图与按需加载.md) 追踪。真实账户与 Codex 浏览器验收只在本地进行，禁止未经用户批准上线。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 和 PLAN-0104。
+> 当前状态：AI 问答 MVP、Tiptap 输入、Responses/Chat Completions 双协议、有序助手时间线、版本化系统提示、Markdown/代码高亮/LaTeX/Mermaid/SVG、multipart 图片资产、按需会话加载、统一内部工具 Registry/Orchestrator、development/test Demo、`generate_image` 生成/编辑、图像谱系和 WebP 原图/预览双资产均已在隔离工作树实现；本地专项与真实浏览器验收由 [PLAN-20260722T022751000Z](../plans/计划-20260722T022751000Z-AI问答有序过程生图与按需加载.md) 追踪。真实账户与 Codex 浏览器验收只在本地进行，禁止未经用户批准上线。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 和 PLAN-0104。
 
 ## 1. 功能定位
 
@@ -54,7 +54,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 ### 3.2 本次不包含
 
 - 文件附件、知识库、本站自建联网搜索和语音输入；Responses 可使用上游实际支持的 Hosted Web Search。
-- MCP、Skill、第三方工具热加载和完整工具审批平台；PLAN-0150-20260722T022751000Z 只包含受控的本站 function tool 首段、开发 Demo、图片执行器和 worker 可迁移边界。
+- MCP、Skill、第三方工具热加载和完整工具审批平台；PLAN-20260722T022751000Z 只包含受控的本站 function tool 首段、开发 Demo、图片执行器和 worker 可迁移边界。
 - system prompt 不开放给用户编辑；生成参数仅开放温度、Top P、频率惩罚、存在惩罚、最大输出 Tokens 与随机种子，且必须由当前模型、协议和候选路由共同明确支持。
 - 跨会话长期记忆和超过当前配置保留期的聊天保留；当前结构化摘要只服务当前会话的 当前配置保留边界。
 - 任意历史消息编辑、消息分支、指定旧回答重新生成、会话分享、多人协作。

@@ -78,7 +78,7 @@ const inventoryPatterns: InventoryPattern[] = [
 
 const requiredFiles = [
   'docs/functions/存储适配接口设计.md',
-  'docs/plans/计划-0071-存储适配接口收敛.md',
+  'docs/plans/计划-20260629T035152001Z-存储适配接口收敛.md',
   'backend/src/storage/runtime/storage-runtime.ts',
   'backend/src/storage/runtime/sqlite-memory-runtime.ts',
   'backend/src/storage/runtime/postgres-redis-runtime.ts',

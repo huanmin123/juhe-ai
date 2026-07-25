@@ -1,7 +1,7 @@
 # 后台 Worker 多角色拆分设计
 
 > 面向后端实现、部署和 AI 维护者。
-> 本文记录当前 worker 拓扑决策：从旧的多常驻角色收敛为 `ingest-worker`、`stats-worker`、`ops-worker` 三类常驻 worker。使用规则见 [后台任务使用说明](后台任务使用说明.md)，执行计划见 [PLAN-0055 后台 Worker 三角色收敛](../../plans/计划-0055-后台Worker三角色收敛.md) 与 [PLAN-0056 ops-worker 外部 I/O 并发控制](../../plans/计划-0056-opsWorker外部IO并发控制.md)，单写者边界见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
+> 本文记录当前 worker 拓扑决策：从旧的多常驻角色收敛为 `ingest-worker`、`stats-worker`、`ops-worker` 三类常驻 worker。使用规则见 [后台任务使用说明](后台任务使用说明.md)，执行计划见 [PLAN-20260623T122020000Z 后台 Worker 三角色收敛](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md) 与 [PLAN-20260623T122020001Z ops-worker 外部 I/O 并发控制](../../plans/计划-20260623T122020001Z-opsWorker外部IO并发控制.md)，单写者边界见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
 
 ## 背景
 

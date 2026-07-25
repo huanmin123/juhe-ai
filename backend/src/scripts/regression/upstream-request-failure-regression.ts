@@ -35,7 +35,9 @@ const [
   accountSideEffects,
   gatewayFailureDispatch,
   gatewayHotQuality,
+  accountCircuit,
   accountRuntimeKeys,
+  storageCrypto,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -48,7 +50,9 @@ const [
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/response/failure-dispatch.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
+  import('../../modules/gateway/runtime/account-circuit.service.js'),
   import('../../modules/gateway/runtime/account-runtime-keys.js'),
+  import('../../storage/crypto.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
@@ -124,6 +128,23 @@ async function main(): Promise<void> {
     ]
     const transportApiKey = createRegressionApiKey(transportGroup.id, 'sk-opaque-transport-failure-regression')
 
+    const localDispatchFailureGroup = repositories.createGroup({ name: '本地派发异常不得切号分组', providerCode: 'gpt', enabled: true }, access)
+    const localDispatchFailureAccounts = [
+      createAccount(localDispatchFailureGroup.id, '01-本地派发异常账户', 'sk-local-dispatch-first', upstreamBaseUrl, false, 0),
+      createAccount(localDispatchFailureGroup.id, '02-本地派发异常后备账户', 'sk-local-dispatch-fallback', upstreamBaseUrl, false, 100)
+    ]
+    const localDispatchFailureApiKey = createRegressionApiKey(localDispatchFailureGroup.id, 'sk-local-dispatch-failure-regression')
+    const localDispatchFailurePrimary = localDispatchFailureAccounts[0]!
+    databaseModule.getBusinessDatabase().prepare(`
+      UPDATE accounts
+      SET credentials_encrypted = ?,
+          config_revision = config_revision + 1
+      WHERE id = ?
+    `).run(storageCrypto.encryptJson({
+      api_keys: ['sk-local-dispatch-first-a', 'sk-local-dispatch-first-b'],
+      base_url: 'file:///gateway-local-dispatch-must-not-be-transport'
+    }), localDispatchFailurePrimary.id)
+
     gatewayCache.clearGatewayRuntimeCache()
     appServer = http.createServer(app)
     await listen(appServer)
@@ -188,6 +209,7 @@ async function main(): Promise<void> {
     )
     assertAccountsRemainAvailable(sideEffectTransportAccounts, '副作用 transport 失败')
 
+    const transportCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
     const transportResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${transportApiKey.key}`, 'content-type': 'application/json' },
@@ -200,12 +222,59 @@ async function main(): Promise<void> {
     const transportResponseText = await transportResponse.text()
     assert.equal(transportResponse.status, 503, `未收到上游响应头的传输失败应返回统一网关错误：${transportResponseText}`)
     assert.match(transportResponseText, /upstream_retryable_error/)
+    assert.ok(
+      await accountCircuit.getGatewayAccountCircuitStore().size() > transportCircuitSizeBefore,
+      '真实已经派发的连接失败仍必须进入账户传输电路'
+    )
     assertAccountsRemainAvailable(transportAccounts, '不透明传输失败')
+
+    const localDispatchFailureCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
+    const localDispatchFailureOffset = upstreamAuthorizations.length
+    const localDispatchFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${localDispatchFailureApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'local URL validation must not rotate any key or account' }],
+        stream: false
+      })
+    })
+    const localDispatchFailureText = await localDispatchFailureResponse.text()
+    assert.equal(localDispatchFailureResponse.status, 503, `本地派发异常应返回稳定网关错误：${localDispatchFailureText}`)
+    assert.deepEqual(
+      upstreamAuthorizations.slice(localDispatchFailureOffset),
+      [],
+      '上游 URL 本地校验失败时不得尝试同账户兄弟 Key 或后备账户'
+    )
+    assert.equal(
+      await accountCircuit.getGatewayAccountCircuitStore().size(),
+      localDispatchFailureCircuitSizeBefore,
+      '未真正发往上游的本地异常不得创建账户传输电路 incident'
+    )
+    assertAccountsRemainAvailable(localDispatchFailureAccounts, '本地派发异常')
+    const localDispatchPrimaryQuality = await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
+      accountRuntimeKey: accountRuntimeKeys.gatewayAccountRuntimeKey(localDispatchFailurePrimary),
+      protocolProfile: localDispatchFailurePrimary.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+      requestLane: 'text',
+      modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
+    })
+    assert.ok(localDispatchPrimaryQuality, '本地派发异常也必须中性结束本次热质量 attempt')
+    assert.equal(localDispatchPrimaryQuality.window5m.attempts, 1)
+    assert.equal(localDispatchPrimaryQuality.window5m.unknownOutcomes, 1)
+    assert.equal(localDispatchPrimaryQuality.window5m.localTransportFailures, 0, '本地派发异常不得伪装成 transport failure')
+    assert.equal(localDispatchPrimaryQuality.window5m.timeouts, 0, '本地派发异常不得伪装成 timeout')
+    const localDispatchBackup = localDispatchFailureAccounts[1]!
+    assert.equal(await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
+      accountRuntimeKey: accountRuntimeKeys.gatewayAccountRuntimeKey(localDispatchBackup),
+      protocolProfile: localDispatchBackup.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+      requestLane: 'text',
+      modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
+    }), undefined, '本地异常不得启动后备账户热质量 attempt')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：副作用 POST 的完整非 2xx/transport 均不重放且不泄漏，安全推理传输失败保持请求级切号，失败不改业务账户状态')
+    console.log('上游请求失败回归通过：副作用 POST 不重放，真实传输失败保持请求级切号，本地 URL/派发异常不轮换 Key/账户且不污染共享状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -223,7 +292,14 @@ async function main(): Promise<void> {
   }
 }
 
-function createAccount(groupId: string, name: string, apiKey: string, baseUrl: string, withBodyConstrainedRule = false) {
+function createAccount(
+  groupId: string,
+  name: string,
+  apiKey: string,
+  baseUrl: string,
+  withBodyConstrainedRule = false,
+  priority = 0
+) {
   const account = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -246,7 +322,8 @@ function createAccount(groupId: string, name: string, apiKey: string, baseUrl: s
     groupId,
     supportedModels: ['gpt-4o-mini'],
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    priority
   }, access)
   repositories.recordAccountHealthCheckSuccess(account.id, {
     intervalHours: 12,

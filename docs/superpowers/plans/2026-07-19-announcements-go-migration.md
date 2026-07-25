@@ -77,7 +77,7 @@
 **Files:**
 - Create: `backend-go/internal/testkit/integration/w8_management_announcements_smoke_test.go`
 - Create or modify: `backend/src/scripts/regression/announcement-go-listener-regression.ts` only if existing frontend smoke patterns require it
-- Modify: `docs/plans/计划-0081-Node转Go渐进减法迁移.md`
+- Modify: `docs/plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md`
 - Modify: `backend-go/README.md`
 
 - [x] Add isolated PostgreSQL/Redis/Asynq smoke covering admin create/publish, public list/read, update/unpublish/delete, operation log ingest and page-data event.

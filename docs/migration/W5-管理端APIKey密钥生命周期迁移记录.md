@@ -10,7 +10,7 @@
 - 当前 Node owner：`backend/src/modules/api-keys/api-keys.routes.ts`、`backend/src/storage/api-key.repository.ts`
 - 目标 Go owner：`backend-go/internal/modules/managementapikeys/`、`backend-go/internal/httpapi/management_api_key_create.go`、`backend-go/internal/httpapi/management_api_key_secret.go`、`backend-go/internal/store/postgres/managementapikeycreate.go`、`backend-go/internal/store/postgres/managementapikeysecret.go`、`backend-go/internal/store/postgres/queries/w5_management_api_key_create.sql`、`backend-go/internal/store/postgres/queries/w5_management_api_key_secret.sql`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/app/server.go`
 - 关联 integration：`backend-go/internal/testkit/integration/w5_management_api_key_list_smoke_test.go`、`backend-go/internal/testkit/integration/w5_management_api_key_create_smoke_test.go`、`backend-go/internal/testkit/integration/w5_management_api_key_secret_smoke_test.go`
-- 关联计划：`../plans/计划-0081-Node转Go渐进减法迁移.md`
+- 关联计划：`../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md`
 - 相邻记录：[W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)
 
 ## 当前切片

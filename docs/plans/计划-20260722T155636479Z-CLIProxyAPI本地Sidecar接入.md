@@ -1,0 +1,61 @@
+# PLAN-20260722T155636479Z CLIProxyAPI 本地 Sidecar 接入
+
+## 基本信息
+
+- 计划 ID：PLAN-20260722T155636479Z
+- 创建时间戳（UTC）：20260722T155636479Z
+- 状态：已完成
+- 创建时间：2026-07-22
+- 更新时间：2026-07-22
+- 需求来源：用户对话
+- 执行者：AI
+- 关联模块：前端、后端、运行配置、文档
+
+## 需求目标
+
+在不把 CLIProxyAPI OAuth 内核直接复制进 juhe-ai 的前提下，使 juhe-ai 可以通过本地 CLIProxyAPI sidecar 复用其已支持的认证能力，并把本地联调路径固化为项目内正式文档与最小代码提示。
+
+## 范围边界
+
+### 本次包含
+
+- [x] 固化 CLIProxyAPI sidecar 作为 juhe-ai 上游的本地联调方案。
+- [x] 补充 loopback / 私网上游错误提示，明确放行环境变量。
+- [x] 补充前端 Base URL 联调提示。
+- [x] 更新功能文档、运行说明和安装说明。
+
+### 本次不包含
+
+- 在 juhe-ai 内直接实现 Claude / Codex / Gemini / Kimi / xAI / Antigravity 的订阅 OAuth 生命周期。
+- 复制 CLIProxyAPI 使用的固定第三方 client identity、TLS 伪装或 bot detection 绕行逻辑。
+- 把 sidecar 内部每条真实 OAuth 账户展开成 juhe-ai 可见的独立本地账户。
+
+## 方案概述
+
+- 认证归属：CLIProxyAPI 继续负责 OAuth、刷新、账号池和供应商特定兼容。
+- juhe-ai 接入方式：复用现有 `api_key` 账户模型，把 Base URL 指向 sidecar 的 `/v1` 或 `/v1beta`。
+- 本地放行：通过 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 精确放行 loopback origin；仅临时回归时才使用 `JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true`。
+
+## 执行拆解
+
+- [x] 新增 CLIProxyAPI sidecar 接入功能文档。
+- [x] 更新运行 / 安装文档，写明 loopback 放行与 Base URL 映射。
+- [x] 更新前端 Base URL 提示。
+- [x] 更新后端私网上游拒绝提示与回归断言。
+
+## 验收标准
+
+- [x] 用户可以按项目文档把本地 CLIProxyAPI sidecar 挂到 juhe-ai。
+- [x] 当 Base URL 指向 loopback 且未放行时，错误提示能明确指出应配置的环境变量。
+- [x] 现有账户模型不新增 sidecar 专用凭据结构。
+
+## 进度记录
+
+| 日期 | 状态 | 记录人 | 进展 / 决策 / 阻塞 |
+| --- | --- | --- | --- |
+| 2026-07-22 | 已完成 | AI | 采用 “CLIProxyAPI sidecar 作为本地上游” 路线，不在 juhe-ai 内复制订阅 OAuth 内核；已补代码提示与项目文档。 |
+
+## 关联文档
+
+- [CLIProxyAPI 本地 Sidecar 接入](../functions/CLIProxyAPI本地Sidecar接入.md)
+- [供应商订阅认证接入安全设计](../functions/供应商订阅认证接入安全设计.md)

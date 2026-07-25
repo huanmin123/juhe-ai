@@ -139,5 +139,5 @@ Anthropic 这里的 “OAuth” 指官方 OAuth / Claude Code 体系产出的 Be
 - [OpenAI 账号接入](OpenAI账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)
-- [PLAN-0157-20260722T145435019Z 供应商订阅认证安全扩展](../plans/计划-0157-20260722T145435019Z-供应商订阅认证安全扩展.md)
-- [PLAN-0158-20260722T155636479Z CLIProxyAPI 本地 Sidecar 接入](../plans/计划-0158-20260722T155636479Z-CLIProxyAPI本地Sidecar接入.md)
+- [PLAN-20260722T145435019Z 供应商订阅认证安全扩展](../plans/计划-20260722T145435019Z-供应商订阅认证安全扩展.md)
+- [PLAN-20260722T155636479Z CLIProxyAPI 本地 Sidecar 接入](../plans/计划-20260722T155636479Z-CLIProxyAPI本地Sidecar接入.md)

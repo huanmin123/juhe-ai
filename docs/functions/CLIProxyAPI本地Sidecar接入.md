@@ -59,4 +59,4 @@ CLIProxyAPI 自身入口统一校验 `Authorization: Bearer <key>`。因此 juhe
 - [Anthropic 账号接入](Anthropic账号接入.md)
 - [OpenAI 账号接入](OpenAI账号接入.md)
 - [Gemini 账号接入](Gemini账号接入.md)
-- [CLIProxyAPI 本地 sidecar 接入计划](../plans/计划-0158-20260722T155636479Z-CLIProxyAPI本地Sidecar接入.md)
+- [CLIProxyAPI 本地 sidecar 接入计划](../plans/计划-20260722T155636479Z-CLIProxyAPI本地Sidecar接入.md)

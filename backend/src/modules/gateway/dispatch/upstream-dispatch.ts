@@ -1034,9 +1034,11 @@ export async function fetchFirstAvailableUpstream(
                   || error instanceof GatewayLocalProtocolResponse
                   || error instanceof GatewayRequestValidationError
                   || error instanceof OpenAIOAuthCodexAdapterError
+                const primaryStartedTransportFailure = isPrimaryStartedGatewayTransportError(error)
                 const pendingKeyTransportFailure = accountStateMutationEnabled
                   && usageContext.trafficSource === 'gateway'
                   && !localRequestFailure
+                  && primaryStartedTransportFailure
                   && !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
                   && !isGatewayFirstByteTimeoutError(error)
@@ -1054,6 +1056,7 @@ export async function fetchFirstAvailableUpstream(
                   : undefined
                 const automaticReplayAllowed = automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
                 const retryAnotherAccountApiKey = !localRequestFailure
+                  && primaryStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !signal?.aborted
                   && automaticReplayAllowed
@@ -1077,7 +1080,7 @@ export async function fetchFirstAvailableUpstream(
                   && automaticReplayAllowed
                   && !signal?.aborted
                   && !localRequestFailure
-                  && isPrimaryStartedGatewayTransportError(error)
+                  && primaryStartedTransportFailure
                   && normalRouteFirstByteDeadline === undefined
                   && !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
@@ -1103,6 +1106,7 @@ export async function fetchFirstAvailableUpstream(
                   && accountCircuitAttempt?.deferConfirmationTransportFailureForKeyRotation() === true
                 const confirmedTransportQuality = accountCircuitAttempt?.isConfirmation === true
                   && !localRequestFailure
+                  && primaryStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !deferredConfirmationFailure
                 if (sameAccountRetryReservation?.reserved !== true) {
@@ -1193,6 +1197,26 @@ export async function fetchFirstAvailableUpstream(
                     message,
                     cutoverReservation
                   )
+                }
+                if (!primaryStartedTransportFailure) {
+                  const message = error instanceof Error ? error.message : String(error)
+                  auditCapture.completeAttempt(auditAttemptId, {
+                    success: false,
+                    errorPhase: 'gateway_local_dispatch',
+                    errorCode: 'unproven_upstream_transport_failure',
+                    errorMessage: message
+                  })
+                  auditCapture.addGatewayMetadata({
+                    label: 'gateway_unproven_upstream_transport_failure',
+                    metadata: {
+                      accountId: account.id,
+                      keyFingerprint: account.selectedApiKeyFingerprint,
+                      requestLane,
+                      endpoint: usageContext.endpoint
+                    }
+                  })
+                  await accountCircuitAttempt?.reportUnknown()
+                  throw error
                 }
                 if (sameAccountRetryReservation?.reserved === true) {
                   const requestErrorResult = await handleUpstreamRequestError({

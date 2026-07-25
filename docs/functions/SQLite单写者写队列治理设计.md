@@ -1,8 +1,8 @@
 # SQLite 单写者写队列治理设计
 
 > 面向后端实现、后台 worker 和数据库维护者。
-> 本文定义当前 Node standalone 模式下 SQLite 多进程写入治理的过渡边界。执行计划见 [PLAN-0048 SQLite 单写者写队列治理](../plans/计划-0048-SQLite单写者写队列治理.md)。PostgreSQL performance 模式的并发写入边界见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
-> 迁移方向更新：自 [PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md) 起，Go 后端不保留 SQLite writer owner、SQLite read worker、usage shard 文件写入或 standalone / performance 双模式；长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准。
+> 本文定义当前 Node standalone 模式下 SQLite 多进程写入治理的过渡边界。执行计划见 [PLAN-20260618T024133000Z SQLite 单写者写队列治理](../plans/计划-20260618T024133000Z-SQLite单写者写队列治理.md)。PostgreSQL performance 模式的并发写入边界见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
+> 迁移方向更新：自 [PLAN-20260706T071505000Z Node 转 Go 渐进减法迁移](../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md) 起，Go 后端不保留 SQLite writer owner、SQLite read worker、usage shard 文件写入或 standalone / performance 双模式；长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准。
 
 ## 背景
 

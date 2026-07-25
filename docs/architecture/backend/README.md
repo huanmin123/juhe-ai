@@ -44,7 +44,7 @@
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
-- 页面数据：通用 `PageDataChangeStore`、confirm/revision、Redis publisher 和 dirty-domain recovery 已由 PLAN-0156-20260722T123439000Z 删除。页面直接调用业务接口；repository/shared cache 与独立业务快照按各自功能维护。
+- 页面数据：通用 `PageDataChangeStore`、confirm/revision、Redis publisher 和 dirty-domain recovery 已由 PLAN-20260722T123439000Z 删除。页面直接调用业务接口；repository/shared cache 与独立业务快照按各自功能维护。
 - 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。performance 模式下不受 SQLite 文件级写锁限制，但仍必须受 PostgreSQL 连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
@@ -325,4 +325,4 @@ erDiagram
 
 ## 11. 网关账户运行态专题入口
 
-普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、单页/总时限和 cursor fence 的冷启动重建、按账户权威查询渐进服务、容量耗尽共享阻塞哨兵、长期退避 jitter、并发 recovery、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证；全量重建失败只阻塞尚未按账户确认的对象，不能留下永久 `rebuilding` 或无限全局 fail-closed。
+普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-20260722T160050118Z](../../plans/计划-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、单页/总时限和 cursor fence 的冷启动重建、按账户权威查询渐进服务、容量耗尽共享阻塞哨兵、长期退避 jitter、并发 recovery、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证；全量重建失败只阻塞尚未按账户确认的对象，不能留下永久 `rebuilding` 或无限全局 fail-closed。

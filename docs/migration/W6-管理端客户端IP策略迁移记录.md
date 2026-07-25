@@ -16,7 +16,7 @@
 - 目标 Go 列表 / 详情 owner：`backend-go/internal/modules/managementclientipstats/`、`backend-go/internal/httpapi/management_client_ip_stats.go`、`backend-go/internal/httpapi/management_client_ip_stats_detail.go`、`backend-go/internal/store/postgres/managementclientipstats.go`、`backend-go/internal/store/postgres/managementclientipstatsdetail.go`
 - 目标 Go 策略 owner：`backend-go/internal/modules/managementclientippolicies/`、`backend-go/internal/httpapi/management_client_ip_policies.go`、`backend-go/internal/store/postgres/managementclientippolicies.go`
 - 当前状态：Go opt-in 已实现，部分真实依赖已通过，未生产接管
-- 关联计划：`../plans/计划-0081-Node转Go渐进减法迁移.md`
+- 关联计划：`../plans/计划-20260706T071505000Z-Node转Go渐进减法迁移.md`
 
 ## 只读接口与存储 owner
 

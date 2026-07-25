@@ -48,7 +48,7 @@ try {
   const currentFailureAt = new Date(currentHour.getTime() + 10 * 60_000).toISOString()
 
   repositories.createUsageRecordsBatch([
-    healthRecord('ai_health_previous_success', previousHourAt, true, 200),
+    healthRecord('ai_health_previous_success', previousHourAt, true),
     healthRecord('ai_health_current_success', currentSuccessAt, true, 200),
     healthRecord('ai_health_current_failure', currentFailureAt, false, 503, 'upstream_unavailable', '上游暂时不可用')
   ])
@@ -59,9 +59,10 @@ try {
     FROM account_health_hourly
     WHERE account_id = ?
     ORDER BY stat_hour ASC
-  `).all(account.id) as unknown as Array<{ status: string; last_record_id: string; status_code: number; error_code: string | null }>
+  `).all(account.id) as unknown as Array<{ status: string; last_record_id: string; status_code: number | null; error_code: string | null }>
   assert.equal(rows.length, 2, '同账户同小时只保留最后结果')
   assert.equal(rows[0]?.status, 'success')
+  assert.equal(rows[0]?.status_code, null)
   assert.equal(rows[1]?.status, 'failure')
   assert.equal(rows[1]?.last_record_id, 'ai_health_current_failure')
   assert.equal(rows[1]?.status_code, 503)
@@ -75,13 +76,14 @@ try {
   assert.equal(result.items[0]?.unknownHours, 1)
   assert.equal(result.items[0]?.latestStatus, 'failure')
   assert.equal(result.items[0]?.healthRate, 50)
+  assert.equal(result.items[0]?.hours.find((hour) => hour.status === 'success')?.statusCode, undefined, '空状态码不应转换为 0')
 
   const bounded = healthMonitorRepository.getAiHealthList(access, { hours: 9999, pageSize: 20 })
   assert.equal(bounded.rangeHours, 31 * 24, '最大范围必须限制为 31 天')
   assert.equal(bounded.items.find((item) => item.id === account.id)?.hours.length, 31 * 24)
   console.log('AI 健康监控回归通过')
 
-  function healthRecord(id: string, createdAt: string, success: boolean, statusCode: number, errorCode?: string, errorMessage?: string) {
+  function healthRecord(id: string, createdAt: string, success: boolean, statusCode?: number, errorCode?: string, errorMessage?: string) {
     return {
       id,
       traceId: `trace-${id}`,
