@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
@@ -76,6 +76,7 @@ export async function streamChatMessage(input: {
   model: string
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
+  generationParameters?: ChatGenerationParameters
   signal?: AbortSignal
   onActivity?: () => void
   onEvent: (event: ChatStreamEvent) => void
@@ -85,7 +86,7 @@ export async function streamChatMessage(input: {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier }),
+    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, generationParameters: input.generationParameters }),
     signal: input.signal
   })
   await consumeChatSseResponse(response, path, input.onEvent, input.onActivity)

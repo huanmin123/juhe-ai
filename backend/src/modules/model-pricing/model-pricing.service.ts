@@ -15,6 +15,10 @@ import type {
   ProviderModelModality,
   RawModelPricing
 } from './provider-driver.types.js'
+import {
+  generationParameterCapabilitiesForModel,
+  type ChatGenerationParameterCapabilities
+} from '../chat/chat-generation-parameters.js'
 
 export type {
   CodexReasoningLevel,
@@ -35,6 +39,7 @@ export interface ProviderModelPricing {
   inputModalities: ProviderModelModality[]
   outputModalities: ProviderModelModality[]
   supportedTools: string[]
+  generationParameterCapabilities?: ChatGenerationParameterCapabilities
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -215,6 +220,11 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     inputModalities: item.input_modalities ? [...item.input_modalities] : [],
     outputModalities: item.output_modalities ? [...item.output_modalities] : [],
     supportedTools: item.supported_tools ? [...item.supported_tools] : [],
+    generationParameterCapabilities: generationParameterCapabilitiesForModel({
+      providerCode,
+      model: item.model,
+      maxOutputTokens: item.max_output_tokens
+    }),
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),

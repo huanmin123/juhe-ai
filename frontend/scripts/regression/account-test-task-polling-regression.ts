@@ -6,9 +6,11 @@ const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 
 const accountTestModalPath = resolve(frontendRoot, 'src/views/accounts/useAccountTestModal.ts')
+const accountTestDialogPath = resolve(frontendRoot, 'src/views/accounts/AccountTestModal.vue')
 const accountTestTaskPollingPath = resolve(frontendRoot, 'src/views/accounts/accountTestTaskPolling.ts')
 
 const accountTestModalSource = readFileSync(accountTestModalPath, 'utf8')
+const accountTestDialogSource = readFileSync(accountTestDialogPath, 'utf8')
 const accountTestTaskPollingSource = readFileSync(accountTestTaskPollingPath, 'utf8')
 const waitForSubmittedAccountTestResultSource = accountTestModalSource.slice(
   accountTestModalSource.indexOf('function waitForSubmittedAccountTestResult'),
@@ -41,6 +43,9 @@ assertIncludes(accountTestTaskHelpersSource, 'export const accountTestPollInterv
 assertNotIncludes(accountTestTaskHelpersSource, 'export const accountTestPollIntervalMs = 1000', '任务轮询间隔不得回退为 1000ms')
 assertIncludes(accountTestTaskHelpersSource, 'accountImageDiagnosticAttemptTimeoutsMs = [120_000]', '图片测试轮询窗口必须保留单次 120 秒')
 assertIncludes(accountTestTaskHelpersSource, "testEndpointMode === 'images_json'", '图片测试必须按 Images API 请求形态选择独立轮询窗口')
+assertIncludes(accountTestDialogSource, '<div v-if="result" class="test-result-meta">', '图片测试完成后必须保留完整结果 JSON 区域')
+assertNotIncludes(accountTestDialogSource, '<div v-if="result && !imageTest" class="test-result-meta">', '图片测试不得隐藏完整结果 JSON 区域')
+assertIncludes(accountTestDialogSource, '<a-button :disabled="!result" @click="$emit(\'copy-result\', resultJson)">复制完整结果</a-button>', '图片测试必须允许复制已脱敏的完整结果')
 
 console.log('账户测试任务轮询回归通过：轮询循环、超时结果和任务结束清理边界保持分离，间隔 3s')
 

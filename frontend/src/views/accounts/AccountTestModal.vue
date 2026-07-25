@@ -75,7 +75,7 @@
         </div>
       </div>
 
-      <div v-if="result && !imageTest" class="test-result-meta">
+      <div v-if="result" class="test-result-meta">
         <a-collapse class="test-result-collapse" ghost>
           <a-collapse-panel key="result" header="完整测试结果 JSON">
             <a-textarea :value="resultJson" :rows="8" readonly />
@@ -88,7 +88,7 @@
           <span>{{ modelReadonly ? '当前表单检查模型' : '本次人工测试配置' }}</span>
         </div>
         <a-space>
-          <a-button v-if="!imageTest" :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
+          <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
           <a-button v-if="running" danger @click="$emit('stop')">停止测试</a-button>
           <a-button @click="close">关闭</a-button>
           <a-button

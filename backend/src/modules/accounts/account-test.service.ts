@@ -28,12 +28,16 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
+import { accountCredentialFingerprint } from './account-credential-update.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
   parseAccountTestUpstreamErrorCode,
+  redactAccountTestImageResponse,
   resolveAccountTestResponseDiagnostics
 } from './account-test-response-diagnostics.js'
 import {
+  accountModelCatalogIds,
+  hasAccountModelCatalogResponseEvidence,
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from './account-test-success-evidence.js'
@@ -78,13 +82,14 @@ import {
 import {
   accountTestDefaultPrompt,
   createOpenAIImageGenerationTestRequest,
-  accountTestModelsPath,
+  accountTestModelsPathForProtocol,
+  isAccountTestModelsPath,
   createAnthropicTestRequest,
   createGeminiTestRequest,
   createOpenAITestRequest
 } from './account-test-request.js'
 
-type AccountTestInput = {
+export type AccountTestInput = {
   model?: string
   prompt?: string
   signal?: AbortSignal
@@ -99,15 +104,35 @@ type AccountTestInput = {
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
   onUpstreamAttempt?: (attempt: UpstreamAttempt) => void
   retryAllFailures?: boolean
+  forceProbeKind?: AccountTestProbeKind
+  requireCatalogModelEvidence?: boolean
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
   findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
+
+export type AccountUpstreamModelCatalogResult = {
+  modelIds: string[]
+  requestUrl: string
+  durationMs?: number
+}
+
+const accountModelCatalogPreflightTtlMs = 2 * 60 * 1000
+const accountModelCatalogPreflightCache = new Map<string, number>()
+const accountModelCatalogPreflightCacheMaxEntries = 512
 
 export async function testOpenAIAccountWithDiagnosticRetries(
   account: AccountSummary,
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const startedAt = Date.now()
+  const preflightSignal = diagnosticAttemptSignal(input.signal, accountDiagnosticRetryTimeouts('models_catalog')[0] ?? accountModelCatalogPreflightTtlMs)
+  const preflightFailure = await preflightAccountModelCatalog(account, {
+    ...input,
+    signal: preflightSignal
+  })
+  if (preflightFailure) {
+    return accountTestResultWithTotalDuration(preflightFailure, startedAt)
+  }
   const model = await resolveAccountTestModelAsync(account, {
     explicitModel: input.model,
     systemAccountId: input.systemAccountId,
@@ -148,6 +173,72 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     }
   }
   return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, { ...input, model }), startedAt)
+}
+
+export async function discoverAccountUpstreamModels(
+  account: AccountSummary,
+  input: AccountTestInput = {}
+): Promise<AccountUpstreamModelCatalogResult> {
+  const result = await testOpenAIAccount(account, {
+    ...input,
+    forceProbeKind: 'models_catalog',
+    requireCatalogModelEvidence: false,
+    disableAccountStateMutation: true
+  })
+  const modelIds = accountModelCatalogIds(result.responseText ?? '')
+  if (!result.success) {
+    throw new Error(result.message || '获取上游模型目录失败')
+  }
+  return {
+    modelIds,
+    requestUrl: result.requestUrl ?? accountTestModelsPathForProtocol(account.protocolCode),
+    durationMs: result.durationMs
+  }
+}
+
+export async function preflightAccountModelCatalog(account: AccountSummary, input: AccountTestInput): Promise<AccountTestResult | undefined> {
+  const cacheKey = accountModelCatalogPreflightCacheKey(account)
+  const now = Date.now()
+  if (cacheKey && (accountModelCatalogPreflightCache.get(cacheKey) ?? 0) > now) return undefined
+
+  const result = await testOpenAIAccount(account, {
+    ...input,
+    forceProbeKind: 'models_catalog',
+    requireCatalogModelEvidence: false,
+    disableAccountStateMutation: true
+  })
+  if (result.success) {
+    if (cacheKey) setAccountModelCatalogPreflightCache(cacheKey, now + accountModelCatalogPreflightTtlMs)
+    return undefined
+  }
+  logger.debug({
+    event: 'account_model_catalog_preflight_failed',
+    accountId: account.id,
+    providerCode: account.providerCode,
+    statusCode: result.statusCode,
+    errorCode: result.errorCode
+  }, '账户模型目录预检未通过，终止真实模型测试')
+  return result
+}
+
+function accountModelCatalogPreflightCacheKey(account: AccountSummary): string | undefined {
+  const credentials = account.credentials ?? {}
+  const apiKeys = Array.isArray(credentials.api_keys)
+    ? credentials.api_keys.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : []
+  if (apiKeys.length > 1) return undefined
+  const credentialFingerprint = accountCredentialFingerprint(credentials)
+  if (!credentialFingerprint) return undefined
+  const baseUrl = stringValue(credentials.base_url)
+  return `${account.id}:${account.providerProtocolProfileId ?? ''}:${baseUrl}:${credentialFingerprint}`
+}
+
+function setAccountModelCatalogPreflightCache(key: string, expiresAt: number): void {
+  if (accountModelCatalogPreflightCache.size >= accountModelCatalogPreflightCacheMaxEntries) {
+    const firstKey = accountModelCatalogPreflightCache.keys().next().value
+    if (typeof firstKey === 'string') accountModelCatalogPreflightCache.delete(firstKey)
+  }
+  accountModelCatalogPreflightCache.set(key, expiresAt)
 }
 
 function notifyDiagnosticAttemptProgress(
@@ -193,26 +284,31 @@ export async function testOpenAIAccount(
         account
       )
   let clientCompatibility = accountClientCompatibility
-  const modelsUrl = accountTestModelsPath
+  const modelsUrl = accountTestModelsPathForProtocol(account.protocolCode)
   const traceId = createTraceId()
 
   try {
-    const model = await resolveAccountTestModelAsync(account, {
-      explicitModel,
-      systemAccountId: input.systemAccountId
-    })
-    testedModel = model
-    probeKind = await accountTestProbeKindAsync(account, model, {
-      systemAccountId: input.systemAccountId,
-      testEndpointMode: input.testEndpointMode
-    })
-    const supportedEndpointModes = probeKind === 'image_generation'
-      ? ['images_json' as const]
-      : accountManualTestEndpointModes(account)
-    testEndpointMode = probeKind === 'image_generation'
-      ? 'images_json'
-      : resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
-    clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
+    probeKind = input.forceProbeKind ?? 'generation'
+    let model: string | undefined
+    let supportedEndpointModes: AccountSupportedEndpointMode[] = []
+    if (probeKind !== 'models_catalog') {
+      model = await resolveAccountTestModelAsync(account, {
+        explicitModel,
+        systemAccountId: input.systemAccountId
+      })
+      testedModel = model
+      probeKind = input.forceProbeKind ?? await accountTestProbeKindAsync(account, model, {
+        systemAccountId: input.systemAccountId,
+        testEndpointMode: input.testEndpointMode
+      })
+      supportedEndpointModes = probeKind === 'image_generation'
+        ? ['images_json' as const]
+        : accountManualTestEndpointModes(account)
+      testEndpointMode = probeKind === 'image_generation'
+        ? 'images_json'
+        : resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
+      clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
+    }
     const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
       systemAccountId: stringValue(input.systemAccountId),
@@ -225,35 +321,36 @@ export async function testOpenAIAccount(
     if (probeKind === 'image_generation') {
       testRequest = createOpenAIImageGenerationTestRequest({
         explicitModel,
-        fallbackModel: model
+        fallbackModel: model ?? ''
       })
     } else if (probeKind === 'generation') {
+      const generationEndpointMode = testEndpointMode!
       testRequest = messagesTestMode
         ? createAnthropicTestRequest({
           explicitModel,
-          fallbackModel: model,
+          fallbackModel: model ?? '',
           prompt,
           supportedEndpointModes,
-          testEndpointMode
+          testEndpointMode: generationEndpointMode
         })
         : geminiTestMode
           ? createGeminiTestRequest({
             explicitModel,
-            fallbackModel: model,
+            fallbackModel: model ?? '',
             prompt,
-            testEndpointMode
+            testEndpointMode: generationEndpointMode
           })
           : createOpenAITestRequest({
             explicitModel,
-            fallbackModel: model,
+            fallbackModel: model ?? '',
             prompt,
             isOAuth: account.type === 'oauth',
             clientCompatibility,
-            testEndpointMode
+            testEndpointMode: generationEndpointMode
           })
     }
     requestBody = testRequest?.body
-    requestUrl = probeKind === 'models_catalog' ? accountTestModelsPath : testRequest!.path
+    requestUrl = probeKind === 'models_catalog' ? modelsUrl : testRequest!.path
     const request = probeKind === 'models_catalog'
       ? markGatewayUpstreamModelsProbe(
           createMemoryGatewayRequest({ method: 'GET', path: requestUrl, signal: input.signal })
@@ -352,16 +449,20 @@ export async function testOpenAIAccount(
         ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
-    // Image tests intentionally verify the request outcome only. Do not inspect or expose image payloads.
+    // Image tests intentionally verify the request outcome only. Image payloads are redacted before diagnostics leave the server.
     const protocolSuccessEvidence = probeKind === 'image_generation'
       ? true
       : probeKind === 'models_catalog'
-        ? hasAccountModelCatalogSuccessEvidence(model, responseText)
+        ? input.requireCatalogModelEvidence === false
+          ? hasAccountModelCatalogResponseEvidence(responseText)
+          : hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseText)
         : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
-        ? `上游模型目录未包含检查模型或响应格式无效：${model}`
+        ? input.requireCatalogModelEvidence === false
+          ? '上游模型目录响应格式无效'
+          : `上游模型目录响应格式无效`
         : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
       : undefined
     const protocolEvidenceErrorCode = probeKind === 'models_catalog'
@@ -369,8 +470,15 @@ export async function testOpenAIAccount(
       : 'invalid_protocol_success_response'
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
+    const imageResponseBody = probeKind === 'image_generation'
+      ? redactAccountTestImageResponse(responseText)
+      : undefined
     const responseDiagnostics = probeKind === 'image_generation'
-      ? {}
+      ? {
+          responseBody: imageResponseBody,
+          responseText: JSON.stringify(imageResponseBody),
+          responseTruncated
+        }
       : {
           responseHeaders,
           responseBody: parseOpenAIJsonBody(responseText),
@@ -624,7 +732,10 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     sourceEndpointFamily: result.sourceEndpointFamily,
     upstreamEndpointFamily: result.upstreamEndpointFamily,
     testEndpointMode: result.testEndpointMode,
-    responseText: result.success ? undefined : message,
+    responseBody: result.success && result.testEndpointMode === 'images_json' ? result.responseBody : undefined,
+    responseText: result.success && result.testEndpointMode === 'images_json'
+      ? result.responseText
+      : result.success ? undefined : message,
     responseTruncated: result.success ? result.responseTruncated : undefined,
     outputText: result.success ? result.outputText : undefined,
     durationMs: result.durationMs,
@@ -908,7 +1019,7 @@ function accountTestFailureMessage(account: AccountSummary, requestUrl?: string)
 }
 
 function accountTestProtocolName(account: AccountSummary, requestUrl?: string): string {
-  if (requestUrl === accountTestModelsPath) return 'OpenAI 模型目录'
+  if (isAccountTestModelsPath(requestUrl)) return '上游模型目录'
   if (requestUrl?.includes('/images/')) return 'OpenAI Images API'
   if (isAnthropicProtocolProfile(account)) return 'Anthropic Messages'
   if (isGeminiProtocolProfile(account)) return 'Gemini GenerateContent'

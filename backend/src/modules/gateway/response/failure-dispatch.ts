@@ -54,6 +54,9 @@ import {
   parseGatewayProtocolErrorPayload
 } from '../protocols/registry.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
+import {
+  shouldAdmitFailedResponseToUnifiedFailover
+} from './failed-response-failover-admission.js'
 
 /** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
 export function isOpaqueUpstreamFailoverAllowed(req: Request): boolean {
@@ -120,8 +123,15 @@ interface HandleUpstreamRequestErrorInput {
 }
 
 type HandleFailedUpstreamResponseResult =
-  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure; tryNextApiKeyForRequest?: boolean }
-  | { action: 'return_response'; response: GatewayUpstreamResponse }
+  | {
+      action: 'retry' | 'skip_account'
+      lastAttempt: UpstreamAttempt
+      failureSource?: 'account_error_policy'
+      keyScopedFailure?: boolean
+      pendingApiKeyFailure?: PendingAccountApiKeyFailure
+      tryNextApiKeyForRequest?: boolean
+    }
+  | { action: 'return_response'; response: GatewayUpstreamResponse; failureSource?: undefined }
 
 export interface PendingAccountApiKeyFailure {
   account: UpstreamAccount
@@ -152,6 +162,15 @@ export async function handleFailedUpstreamResponse(
     clientIpAccountAvoidanceTracker
   } = input
 
+  const earlyImageFailureEligibleForUnifiedFailover = usageContext.trafficSource === 'gateway'
+    && shouldAdmitFailedResponseToUnifiedFailover({ req, attemptStartedAt })
+  // An eligible early image failure is not given a separate account-switching
+  // path. It enters the same opaque failed-response handler used by the
+  // dispatch core, which owns attempt recording, affinity cleanup, candidate
+  // exclusion, fallback groups, concurrency, and circuit handling.
+  if (earlyImageFailureEligibleForUnifiedFailover) {
+    return await handleOpaqueFailedUpstreamResponse(input)
+  }
   const explicitPolicyCouldMatch = accountErrorPolicyCouldMatchStatus(account, response.status)
   if (!explicitPolicyCouldMatch) {
     return { action: 'return_response', response }
@@ -291,7 +310,8 @@ export async function handleFailedUpstreamResponse(
 
   return {
     action: 'skip_account',
-    lastAttempt
+    lastAttempt,
+    failureSource: 'account_error_policy'
   }
 }
 
@@ -409,7 +429,8 @@ export async function handleOpaqueFailedUpstreamResponse(
   }
   return {
     action: 'skip_account',
-    lastAttempt
+    lastAttempt,
+    failureSource: explicitPolicyDecision ? 'account_error_policy' : undefined
   }
 }
 

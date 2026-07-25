@@ -78,7 +78,21 @@
 
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 GPT OAuth。" />
 
-    <a-form-item label="支持模型" required tooltip="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+    <a-form-item required>
+      <template #label>
+        <div class="supported-models-label">
+          <span>支持模型</span>
+          <a-tooltip title="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+            <QuestionCircleOutlined class="supported-models-help" />
+          </a-tooltip>
+          <span class="supported-models-label-spacer"></span>
+          <a-tooltip title="从上游同步可新增模型">
+            <a-button size="small" type="text" :loading="modelSyncing" @click="$emit('refresh-models')">
+              <template #icon><ReloadOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+      </template>
       <a-select
         v-model:value="form.supportedModels"
         allow-clear
@@ -103,6 +117,7 @@
 </template>
 
 <script setup lang="ts">
+import { QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { OpenAIAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
@@ -118,6 +133,7 @@ defineProps<{
   isOpenAI: boolean
   isGoogleOAuth: boolean
   modelOptions: AccountModelSelectOption[]
+  modelSyncing?: boolean
   modelsLoading: boolean
   protocolCode?: string
   protocolVersion?: string
@@ -130,6 +146,7 @@ defineEmits<{
   (event: 'open-auth-url'): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
+  (event: 'refresh-models'): void
 }>()
 </script>
 
@@ -138,6 +155,29 @@ defineEmits<{
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.supported-models-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.supported-models-label-spacer {
+  flex: 1;
+}
+
+.supported-models-label :deep(.ant-btn) {
+  flex: none;
+}
+
+.supported-models-help {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
+}
+
+:deep(.ant-form-item-label > label:has(.supported-models-label)) {
+  width: 100%;
 }
 
 .oauth-actions {

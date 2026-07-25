@@ -204,6 +204,7 @@
       :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
       :models-loading="strategyModelsLoading"
+      :model-syncing="modelCatalogSyncing"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
@@ -223,6 +224,7 @@
       @group-options-search="handleGroupOptionsSearch"
       @model-options-open="handleAccountModelOptionsOpen"
       @model-options-search="handleAccountModelOptionsSearch"
+      @refresh-models="refreshAccountModelCatalog"
       @mapping-model-options-open="handleMappingModelOptionsOpen"
       @mapping-model-options-search="handleMappingModelOptionsSearch"
       @advanced-open="loadAdvancedAccountDetail"
@@ -265,12 +267,12 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountDraftTestAccountPayload } from '@/api/client'
+import type { AccountDraftTestAccountPayload, AccountModelCatalogDiscoveryAccountPayload } from '@/api/client'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
@@ -329,6 +331,7 @@ import { useAccountTestModal } from './useAccountTestModal'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 import { accountTestEndpointModesForModel } from './accountEndpointModes'
+import { accountFormApiKeyRuntimeChanged, buildAccountCredentials, currentAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
 
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountBatchEditModal = defineAsyncComponent(() => import('./AccountBatchEditModal.vue'))
@@ -340,6 +343,7 @@ const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
+const modelCatalogSyncing = ref(false)
 const batchDisableConfirmOpen = ref(false)
 const batchDisableConfirmLoading = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -668,6 +672,103 @@ const {
 function handleAccountModelOptionsOpen(open: boolean): void {
   if (open) void loadCurrentProviderModelOptions()
 }
+
+let modelCatalogSyncController: AbortController | undefined
+let modelCatalogSyncRequestId = 0
+let accountModelCatalogAutoSyncTimer: ReturnType<typeof setTimeout> | undefined
+
+function cancelAccountModelCatalogSync(): void {
+  if (accountModelCatalogAutoSyncTimer) {
+    clearTimeout(accountModelCatalogAutoSyncTimer)
+    accountModelCatalogAutoSyncTimer = undefined
+  }
+  modelCatalogSyncRequestId += 1
+  modelCatalogSyncController?.abort()
+  modelCatalogSyncController = undefined
+  modelCatalogSyncing.value = false
+}
+
+function currentModelCatalogDiscoveryPayload(): { account: AccountModelCatalogDiscoveryAccountPayload } | undefined {
+  if (!form.providerCode || !form.providerProtocolProfileId || !form.type) return undefined
+  if (form.type === 'api_key' && (!form.baseUrl.trim() || !normalizedAccountApiKeys(form).length)) return undefined
+  const credentials = buildAccountCredentials({
+    form,
+    currentCredentials: currentAccountCredentials(accounts.value, editingId.value),
+    errorPolicyRules: accountErrorPolicyRules.value,
+    responseInspectionRules: accountResponseInspectionRules.value
+  })
+  return {
+    account: {
+      providerCode: form.providerCode,
+      providerProtocolProfileId: form.providerProtocolProfileId,
+      type: form.type,
+      credentials,
+      name: form.name.trim() || undefined,
+      groupId: form.groupId,
+      proxyProfileId: form.proxyProfileId,
+      supportedModels: form.supportedModels.map((model) => model.trim()).filter(Boolean),
+      healthCheckModel: form.healthCheckModel.trim() || undefined,
+      healthCheckEndpointMode: form.healthCheckEndpointMode
+    }
+  }
+}
+
+async function refreshAccountModelCatalog(options: { automatic?: boolean } = {}): Promise<void> {
+  const payload = currentModelCatalogDiscoveryPayload()
+  if (!payload) {
+    if (!options.automatic) message.error('请先填写 Base URL 和 API Key 后再同步')
+    return
+  }
+  const requestId = ++modelCatalogSyncRequestId
+  modelCatalogSyncController?.abort()
+  const controller = new AbortController()
+  modelCatalogSyncController = controller
+  modelCatalogSyncing.value = true
+  try {
+    const result = isManagementView.value
+      ? await api.accounts.refreshModelCatalog(payload, accountScopeParams.value, { signal: controller.signal })
+      : await api.myAccounts.refreshModelCatalog(payload, { signal: controller.signal })
+    if (requestId !== modelCatalogSyncRequestId) return
+    form.supportedModels = [...new Set([
+      ...form.supportedModels.map((model) => model.trim()).filter(Boolean),
+      ...result.addedModels
+    ])]
+    if (result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
+    if (!options.automatic) {
+      message.success(result.addedModels.length
+        ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
+        : '上游目录已同步，手动选择已保留')
+    }
+  } catch (error) {
+    if (requestId === modelCatalogSyncRequestId && !options.automatic && !controller.signal.aborted) {
+      message.error(extractApiErrorMessage(error, '同步上游模型失败'))
+    }
+  } finally {
+    if (requestId === modelCatalogSyncRequestId) modelCatalogSyncing.value = false
+  }
+}
+
+watch(
+  [
+    () => modalOpen.value,
+    () => form.providerCode,
+    () => form.providerProtocolProfileId,
+    () => form.type,
+    () => form.baseUrl,
+    () => form.apiKeys.join('\n')
+  ],
+  () => {
+    cancelAccountModelCatalogSync()
+    if (!modalOpen.value || !currentModelCatalogDiscoveryPayload()) return
+    if (editingId.value && !accountFormApiKeyRuntimeChanged(form, editingAccountDetail.value)) return
+    accountModelCatalogAutoSyncTimer = setTimeout(() => {
+      accountModelCatalogAutoSyncTimer = undefined
+      void refreshAccountModelCatalog({ automatic: true })
+    }, 700)
+  }
+)
+
+onBeforeUnmount(cancelAccountModelCatalogSync)
 
 let accountModelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
 function handleAccountModelOptionsSearch(value: string): void {

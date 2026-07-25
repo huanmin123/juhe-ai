@@ -57,12 +57,14 @@
           :form="form"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
+          :model-syncing="modelSyncing"
           :protocol-code="selectedProtocolProfile?.protocolCode"
           :protocol-version="selectedProtocolProfile?.protocolVersion"
           :tag-options="tagOptions"
           :tag-options-loading="tagOptionsLoading"
           :title="credentialTitle"
           @delete-tag="$emit('delete-tag', $event)"
+          @refresh-models="$emit('refresh-models')"
         />
 
         <AccountOAuthSection
@@ -76,12 +78,14 @@
           :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
+          :model-syncing="modelSyncing"
           :protocol-code="selectedProtocolProfile?.protocolCode"
           :protocol-version="selectedProtocolProfile?.protocolVersion"
           :title="credentialTitle"
           @copy-auth-url="$emit('copy-auth-url', $event)"
           @generate-auth-url="$emit('generate-auth-url')"
           @open-auth-url="$emit('open-auth-url')"
+          @refresh-models="$emit('refresh-models')"
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
         />
@@ -336,6 +340,7 @@ const props = withDefaults(defineProps<{
   mappingSourceModelOptions: SelectOption[]
   modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  modelSyncing?: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
@@ -455,6 +460,7 @@ const emit = defineEmits<{
   (event: 'group-options-search', value: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
+  (event: 'refresh-models'): void
   (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
   (event: 'proxyOptionsDropdown', open: boolean): void

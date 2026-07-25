@@ -177,6 +177,19 @@ export interface AccountDraftTestAccountPayload {
   notes?: string
 }
 
+export interface AccountModelCatalogDiscoveryAccountPayload {
+  providerCode: string
+  providerProtocolProfileId: string
+  type: string
+  credentials: Record<string, unknown>
+  name?: string
+  groupId?: string
+  proxyProfileId?: string | null
+  supportedModels?: string[]
+  healthCheckModel?: string
+  healthCheckEndpointMode?: import('@/types/domain').AccountHealthCheckEndpointMode
+}
+
 export interface AccountDraftTestPayload {
   account: AccountDraftTestAccountPayload
   testEndpointMode?: AccountSupportedEndpointMode

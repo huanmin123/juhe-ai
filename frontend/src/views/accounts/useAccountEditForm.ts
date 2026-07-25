@@ -382,13 +382,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     () => {
       const supportedModels = [...new Set(form.supportedModels.map((model) => model.trim()).filter(Boolean))]
       const current = form.healthCheckModel.trim()
-      if (current && supportedModels.includes(current)) return
-      const preferred = [
-        selectedProvider.value?.defaultHealthCheckModel,
-        selectedProtocolProfile.value?.defaultHealthCheckModel,
-        ...supportedModels
-      ].map((model) => model?.trim() ?? '').find((model) => model && supportedModels.includes(model))
-      form.healthCheckModel = preferred ?? ''
+      if (current && !supportedModels.includes(current)) form.healthCheckModel = ''
     },
     { immediate: true }
   )

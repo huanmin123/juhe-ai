@@ -1,4 +1,5 @@
 import type { ChatReasoningEffort, ChatServiceTier } from './chat-model-options.js'
+import type { ChatGenerationParameters, ChatGenerationRouteAccount } from './chat-generation-parameters.js'
 import { mapChatHostedToolsToResponses, type ChatHostedTool } from './chat-tools.js'
 import type { ChatInternalToolDefinition } from './tools/contracts.js'
 import { compileChatInternalTools } from './tools/protocol.js'
@@ -10,16 +11,9 @@ export interface ChatTransportMessage {
   content: string | ChatTransportInputBlock[]
 }
 export interface ChatTransportInputBlock { type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }
-interface ChatTransportAccount {
+export interface ChatTransportAccount extends ChatGenerationRouteAccount {
   supportedEndpointModes?: readonly string[]
   supportedModels?: readonly string[]
-  modelMappings?: ReadonlyArray<{
-    enabled?: boolean
-    sourceModel: string
-    sourceEndpointFamily: string
-    upstreamModel: string
-    upstreamEndpointFamily: string
-  }>
 }
 
 export function resolveChatBudgetContent(input: {
@@ -64,7 +58,7 @@ export async function resolveChatSupportedProtocols(input: {
   return protocolOrder.filter((protocol) => supported.has(protocol))
 }
 
-function chatTransportAccountSupportsProtocol(
+export function chatTransportAccountSupportsProtocol(
   account: ChatTransportAccount,
   model: string,
   protocol: ChatTransportProtocol
@@ -101,6 +95,7 @@ export function buildChatTransportRequest(input: {
   toolContinuation?: readonly unknown[]
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
+  generationParameters?: ChatGenerationParameters
   promptCacheKey?: string
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
   const messages = [
@@ -128,6 +123,7 @@ export function buildChatTransportRequest(input: {
         stream: true,
         ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort, summary: 'auto' } } : {}),
         ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
+        ...transportGenerationParameters('responses', input.generationParameters),
         ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {}),
         ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
         ...(internalTools.length > 0 ? { parallel_tool_calls: false } : {})
@@ -144,9 +140,32 @@ export function buildChatTransportRequest(input: {
       stream_options: { include_usage: true },
       ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
       ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
+      ...transportGenerationParameters('chat_completions', input.generationParameters),
       ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {}),
       ...(internalTools.length > 0 ? { tools: internalTools, tool_choice: 'auto', parallel_tool_calls: false } : {})
     }
+  }
+}
+
+function transportGenerationParameters(
+  protocol: ChatTransportProtocol,
+  input: ChatGenerationParameters | undefined
+): Record<string, number> {
+  if (!input) return {}
+  if (protocol === 'responses') {
+    return {
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(input.topP !== undefined ? { top_p: input.topP } : {}),
+      ...(input.maxOutputTokens !== undefined ? { max_output_tokens: input.maxOutputTokens } : {})
+    }
+  }
+  return {
+    ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+    ...(input.topP !== undefined ? { top_p: input.topP } : {}),
+    ...(input.frequencyPenalty !== undefined ? { frequency_penalty: input.frequencyPenalty } : {}),
+    ...(input.presencePenalty !== undefined ? { presence_penalty: input.presencePenalty } : {}),
+    ...(input.maxOutputTokens !== undefined ? { max_completion_tokens: input.maxOutputTokens } : {}),
+    ...(input.seed !== undefined ? { seed: input.seed } : {})
   }
 }
 

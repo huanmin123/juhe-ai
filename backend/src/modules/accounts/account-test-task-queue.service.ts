@@ -19,7 +19,7 @@ import {
 import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
+import { preflightAccountModelCatalog, resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
@@ -489,6 +489,33 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation'
   )
   let candidateAccount: OpenAIAccountSecret | undefined
+  try {
+    const preflightSignal = diagnosticAttemptSignal(input.signal, timeoutSchedule[0] ?? 10_000)
+    candidateAccount = await openAIDraftAccountSecret(draft, preflightSignal)
+    const preflightFailure = await preflightAccountModelCatalog(account, {
+      model,
+      groupId: draft.groupId,
+      systemAccountId: draft.ownerSystemAccountId,
+      testEndpointMode: input.testEndpointMode,
+      diagnostics: input.diagnostics,
+      signal: preflightSignal,
+      candidateAccount,
+      disableAccountStateMutation: true,
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutSchedule[0] ?? 10_000)
+    })
+    if (preflightFailure) return accountTestResultWithTotalDuration(preflightFailure, startedAt)
+  } catch (error) {
+    logger.debug(errorLogFields(error, {
+      event: 'account_draft_model_catalog_preflight_setup_failed',
+      accountId: account.id
+    }), '账户草稿模型目录预检准备失败，终止真实模型测试')
+    return failedAccountTestResult(
+      account,
+      error instanceof Error ? error.message : '账户模型目录预检失败',
+      model,
+      { accountFailureEligible: false, durationMs: Date.now() - startedAt }
+    )
+  }
   let lastResult: AccountTestResult | undefined
   for (let attemptIndex = 0; attemptIndex < timeoutSchedule.length; attemptIndex += 1) {
     const timeoutMs = timeoutSchedule[attemptIndex] ?? timeoutSchedule[timeoutSchedule.length - 1]
@@ -709,10 +736,23 @@ async function runAccountApiKeyPoolEntryTest(
 ): Promise<AccountApiKeyPoolEntryTestResult> {
   const timeoutSchedule = accountDiagnosticRetryTimeouts(input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation')
   const timeoutMs = timeoutSchedule[0] ?? 10_000
-  const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
   const startedAt = Date.now()
   const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })
   try {
+    const preflightSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
+    const preflightFailure = await preflightAccountModelCatalog(account, {
+      model: input.model,
+      groupId: input.groupId,
+      systemAccountId: input.systemAccountId,
+      testEndpointMode: input.testEndpointMode,
+      diagnostics: input.diagnostics,
+      signal: preflightSignal,
+      candidateAccount: fixedCandidate,
+      disableAccountStateMutation: true,
+      gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
+    })
+    if (preflightFailure) return accountApiKeyPoolEntryTestResult(entry, preflightFailure)
+    const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
     const result = await testOpenAIAccount(account, {
       model: input.model,
       groupId: input.groupId,
@@ -845,7 +885,7 @@ function keySuffixForDisplay(key: string): string | undefined {
   return text ? text.slice(-4) : undefined
 }
 
-async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
+export async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
   const proxy = await draftProxyProfile(draft.proxyProfileId)
   let credentials = { ...draft.credentials }
   if (draft.type === 'oauth' && isOpenAIProtocolProfile(draft) && shouldRefreshOpenAIOAuthCredentials(credentials)) {

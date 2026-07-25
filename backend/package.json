@@ -377,6 +377,7 @@
     "test:gateway-storage-cache-invalidation": "tsx src/scripts/regression/gateway-storage-cache-invalidation-regression.ts",
     "test:gateway-models-pre-auth": "tsx src/scripts/regression/gateway-models-pre-auth-regression.ts",
     "test:authenticated-models-protection": "tsx src/scripts/regression/authenticated-models-protection-regression.ts",
+    "test:account-model-catalog-refresh": "tsx src/scripts/regression/account-model-catalog-refresh-regression.ts",
     "test:authenticated-models-rate-limit-redis": "tsx src/scripts/regression/authenticated-models-rate-limit-redis-regression.ts",
     "test:normal-route-single-scan": "tsx src/scripts/regression/normal-route-single-scan-regression.ts",
     "test:published-model-catalog-snapshot-contract": "tsx src/scripts/regression/published-model-catalog-snapshot-contract-regression.ts",

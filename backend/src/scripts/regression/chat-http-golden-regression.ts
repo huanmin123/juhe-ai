@@ -119,7 +119,7 @@ const expectedRoutes: ExpectedRoute[] = [
   route('delete-asset', 'DELETE', '/conversations/:conversationId/assets/:assetId', 'chatApi.deleteAsset', ['conversationId', 'assetId'], [], 'none', [], ['204:empty:-'], ['chat_conversation_not_found', 'chat_asset_not_deletable']),
   route('list-models', 'GET', '/conversations/:conversationId/models', 'chatApi.listModels', ['conversationId'], [], 'none', [], ['200:json-data:ChatModelListOption[]'], ['chat_conversation_not_found']),
   route('get-model-capabilities', 'GET', '/conversations/:conversationId/models/:modelId', 'chatApi.getModelCapabilities', ['conversationId', 'modelId'], [], 'none', [], ['200:json-data:ChatModelCapabilities'], ['chat_conversation_not_found', 'chat_model_not_found']),
-  route('stream-message', 'POST', '/conversations/:conversationId/stream', 'streamChatMessage', ['conversationId'], [], 'json-strict', ['clientMessageId', 'replaceTurnId', 'content', 'contentBlocks', 'model', 'reasoningEffort', 'serviceTier'], ['200:sse:-'], ['request_body_invalid', 'request_body_too_large', 'chat_invalid_request', 'chat_message_too_large', 'chat_conversation_not_found', 'chat_message_already_exists', 'chat_turn_limit_exceeded', 'chat_message_in_progress', 'chat_replace_conflict', 'chat_context_compacting', 'chat_conversation_clearing', 'chat_storage_quota_exceeded', 'chat_image_not_supported', 'chat_request_body_too_large', 'chat_input_exceeds_context', 'chat_asset_unavailable', 'chat_model_capability_mismatch', 'chat_context_unavailable', 'chat_preparation_canceled']),
+  route('stream-message', 'POST', '/conversations/:conversationId/stream', 'streamChatMessage', ['conversationId'], [], 'json-strict', ['clientMessageId', 'replaceTurnId', 'content', 'contentBlocks', 'model', 'reasoningEffort', 'serviceTier', 'generationParameters'], ['200:sse:-'], ['request_body_invalid', 'request_body_too_large', 'chat_invalid_request', 'chat_message_too_large', 'chat_conversation_not_found', 'chat_message_already_exists', 'chat_turn_limit_exceeded', 'chat_message_in_progress', 'chat_replace_conflict', 'chat_context_compacting', 'chat_conversation_clearing', 'chat_storage_quota_exceeded', 'chat_image_not_supported', 'chat_request_body_too_large', 'chat_input_exceeds_context', 'chat_asset_unavailable', 'chat_model_capability_mismatch', 'chat_context_unavailable', 'chat_preparation_canceled']),
   route('stop-message', 'POST', '/conversations/:conversationId/stop', 'chatApi.stop', ['conversationId'], [], 'json-strict-at-least-one', ['turnId', 'clientMessageId'], ['202:json-data:ChatStopResult', '202:json-data:ChatStopResult', '202:json-data:ChatStopResult'], ['request_body_invalid', 'request_body_too_large', 'chat_invalid_request', 'chat_conversation_not_found', 'chat_generation_not_found', 'chat_turn_mismatch']),
   route('attach-stream', 'GET', '/conversations/:conversationId/streams/:turnId', 'attachChatStream', ['conversationId', 'turnId'], [], 'none', [], ['200:sse:-'], ['chat_conversation_not_found', 'chat_stream_terminal', 'chat_stream_runner_missing']),
   route('delete-conversation', 'DELETE', '/conversations/:conversationId', 'chatApi.deleteConversation', ['conversationId'], [], 'none', [], ['204:empty:-'], ['conversation_not_found_uncoded'])
@@ -129,8 +129,9 @@ const expectedDtoFields: Record<string, { required: string[]; optional: string[]
   ChatImageOptimizationPolicy: fields(['mimeType', 'maxEdge', 'quality', 'maxBytes']),
   ChatImagePolicy: fields(['input']),
   ChatModelListOption: fields(['id', 'name']),
-  ChatModelCapabilities: fields(['id', 'name', 'supportsPromptCaching', 'supportedReasoningEfforts', 'supportedServiceTiers', 'supportedApiProtocols', 'inputModalities', 'outputModalities', 'supportedTools'], ['defaultReasoningEffort', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens']),
-  ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'userTurnLimit', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'defaultModel', 'lastModel', 'activeTurnId']),
+  ChatModelCapabilities: fields(['id', 'name', 'supportsPromptCaching', 'supportedReasoningEfforts', 'supportedServiceTiers', 'supportedApiProtocols', 'inputModalities', 'outputModalities', 'supportedTools', 'generationParameters'], ['defaultReasoningEffort', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens']),
+  ChatGenerationParameters: fields([], ['temperature', 'topP', 'frequencyPenalty', 'presencePenalty', 'maxOutputTokens', 'seed']),
+  ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'userTurnLimit', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'defaultModel', 'lastModel', 'toolCapabilities', 'activeTurnId']),
   ChatToolEvent: fields(['id', 'type', 'status'], ['item']),
   ChatMessage: fields(['id', 'conversationId', 'turnId', 'sequenceNo', 'role', 'status', 'contentText', 'contentBlocks', 'model', 'createdAt', 'expiresAt'], ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt', 'reasoningText', 'toolEvents', 'eventVersion', 'renderRevision']),
   ChatAsset: fields(['id', 'fileName', 'mimeType', 'width', 'height', 'byteSize']),
@@ -209,6 +210,7 @@ assert.deepEqual(golden.enums.ChatProcessStatus, ['started', 'completed', 'faile
 assert.deepEqual(golden.enums.ChatToolStatus, ['started', 'updated', 'completed', 'failed', 'canceled'])
 assert.deepEqual(golden.enums.ChatReasoningEffort, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 assert.deepEqual(golden.enums.ChatServiceTier, ['default', 'priority', 'flex'])
+assert.deepEqual(golden.enums.ChatGenerationParameter, ['temperature', 'topP', 'frequencyPenalty', 'presencePenalty', 'maxOutputTokens', 'seed'])
 
 for (const errorName of new Set([...golden.commonErrors, ...golden.routes.flatMap((item) => item.errors)])) {
   const error = golden.errorCatalog[errorName]
@@ -289,6 +291,7 @@ assert.deepEqual(
 )
 assert.deepEqual(extractStringUnion(frontendTypesSource, 'ChatReasoningEffort'), golden.enums.ChatReasoningEffort)
 assert.deepEqual(extractStringUnion(frontendTypesSource, 'ChatServiceTier'), golden.enums.ChatServiceTier)
+assert.deepEqual(extractStringUnion(frontendTypesSource, 'ChatGenerationParameter'), golden.enums.ChatGenerationParameter)
 
 for (const [label, pattern] of sourceGuards) assert.match(routesSource, pattern, label)
 assert.match(repositorySource, /export type ChatMessageRole = 'user' \| 'assistant'/)
@@ -442,7 +445,7 @@ function extractInterfaceFields(source: string, interfaceName: string): { requir
 
 function extractInterfaceMemberTypes(source: string, interfaceName: string): Record<string, string> {
   const marker = `export interface ${interfaceName}`
-  const markerIndex = source.indexOf(marker)
+  const markerIndex = source.search(new RegExp(`${marker}(?=\\s*\\{)`, 'm'))
   assert(markerIndex >= 0, `interface ${interfaceName} not found`)
   const openIndex = source.indexOf('{', markerIndex + marker.length)
   assert(openIndex >= 0)
@@ -499,7 +502,7 @@ function extractStringUnion(source: string, typeName: string): string[] {
 }
 
 const frontendInterfaceFields: Record<string, { required: string[]; optional: string[] }> = {
-  ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'userTurnLimit', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'defaultModel', 'lastModel', 'activeTurnId']),
+  ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'userTurnLimit', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'defaultModel', 'lastModel', 'toolCapabilities', 'activeTurnId']),
   ChatMessage: fields(['id', 'conversationId', 'turnId', 'sequenceNo', 'role', 'status', 'contentText', 'model', 'createdAt', 'expiresAt'], ['clientMessageId', 'contentBlocks', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt', 'reasoningText', 'toolEvents', 'eventVersion', 'renderRevision']),
   ChatToolEvent: fields(['id', 'type', 'status'], ['item']),
   ChatAsset: fields(['id', 'fileName', 'mimeType', 'width', 'height', 'byteSize']),
@@ -510,22 +513,22 @@ const frontendInterfaceFields: Record<string, { required: string[]; optional: st
   ChatConversationActiveTurn: fields(['turnId', 'assistantMessageId', 'startedAt']),
   ChatConversationSyncHead: fields(['serverTime', 'unchanged', 'conversationId', 'messageRevision', 'lastSequenceNo', 'tail'], ['activeTurn']),
   ChatModelListOption: fields(['id', 'name']),
-  ChatModelCapabilities: fields(['id', 'name', 'supportsPromptCaching', 'supportedReasoningEfforts', 'supportedServiceTiers', 'supportedApiProtocols', 'inputModalities', 'outputModalities', 'supportedTools'], ['defaultReasoningEffort', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens'])
+  ChatModelCapabilities: fields(['id', 'name', 'supportsPromptCaching', 'supportedReasoningEfforts', 'supportedServiceTiers', 'supportedApiProtocols', 'inputModalities', 'outputModalities', 'supportedTools', 'generationParameters'], ['defaultReasoningEffort', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens'])
 }
 
 const backendInterfaceFields: Record<string, { required: string[]; optional: string[] }> = {
   ChatConversation: fields(['id', 'systemAccountId', 'apiKeyNameSnapshot', 'title', 'isPinned', 'defaultImageModel', 'userTurnCount', 'messageRevision', 'lastMessageAt', 'createdAt', 'updatedAt'], ['apiKeyId', 'lastModel', 'activeTurnId']),
-  ChatMessage: fields(['id', 'conversationId', 'turnId', 'sequenceNo', 'role', 'status', 'contentText', 'contentBlocks', 'model', 'createdAt', 'expiresAt'], ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'completedAt']),
+  ChatMessage: fields(['id', 'conversationId', 'turnId', 'sequenceNo', 'role', 'status', 'contentText', 'contentBlocks', 'model', 'createdAt', 'expiresAt'], ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt']),
   ChatConversationSyncMessage: fields(['id', 'turnId', 'sequenceNo', 'role', 'status', 'expiresAt'], ['completedAt']),
   ChatConversationSyncHead: fields(['conversationId', 'messageRevision', 'lastSequenceNo', 'tail'], ['activeTurn']),
-  ChatTurnSubmissionFact: fields(['turnId', 'assistantMessageId', 'assistantStatus'], ['errorCode', 'completedAt', 'traceId']),
+  ChatTurnSubmissionFact: fields(['turnId', 'assistantMessageId', 'assistantStatus'], ['errorCode', 'errorMessage', 'completedAt', 'traceId']),
   ChatAssetApiMetadata: fields(['id', 'fileName', 'mimeType', 'width', 'height', 'byteSize'])
 }
 
 const frontendInterfaceTypes: Record<string, Record<string, string>> = {
   ChatConversation: {
     id: 'string', systemAccountId: 'string', apiKeyId: '?string', apiKeyNameSnapshot: 'string', defaultModel: '?ChatModelListOption',
-    title: 'string', isPinned: 'boolean', lastModel: '?string', defaultImageModel: 'ChatImageModel', activeTurnId: '?string',
+    title: 'string', isPinned: 'boolean', lastModel: '?string', defaultImageModel: 'ChatImageModel', toolCapabilities: '?ChatConversationToolCapabilities', activeTurnId: '?string',
     userTurnCount: 'number', messageRevision: 'number', userTurnLimit: 'number', lastMessageAt: 'string', createdAt: 'string', updatedAt: 'string'
   },
   ChatMessage: {
@@ -549,7 +552,7 @@ const frontendInterfaceTypes: Record<string, Record<string, string>> = {
     id: 'string', name: 'string', supportsPromptCaching: 'boolean', supportedReasoningEfforts: 'ChatReasoningEffort[]',
     defaultReasoningEffort: '?ChatReasoningEffort', supportedServiceTiers: 'ChatServiceTier[]', contextWindowTokens: '?number',
     maxInputTokens: '?number', maxOutputTokens: '?number', supportedApiProtocols: 'string[]', inputModalities: 'string[]',
-    outputModalities: 'string[]', supportedTools: 'string[]'
+    outputModalities: 'string[]', supportedTools: 'string[]', generationParameters: 'ChatGenerationParameterCapability[]'
   }
 }
 
@@ -562,14 +565,14 @@ const backendInterfaceTypes: Record<string, Record<string, string>> = {
   ChatMessage: {
     id: 'string', conversationId: 'string', turnId: 'string', sequenceNo: 'number', clientMessageId: '?string', role: 'ChatMessageRole',
     status: 'ChatMessageStatus', contentText: 'string', contentBlocks: 'ChatMessageContentBlock[]', model: 'string', traceId: '?string',
-    finishReason: '?string', errorCode: '?string', createdAt: 'string', completedAt: '?string', expiresAt: 'string'
+    finishReason: '?string', errorCode: '?string', errorMessage: '?string', createdAt: 'string', completedAt: '?string', expiresAt: 'string'
   },
   ChatConversationSyncHead: {
     conversationId: 'string', messageRevision: 'number', lastSequenceNo: 'number',
     activeTurn: '?{turnId:stringassistantMessageId:stringstartedAt:string}', tail: 'ChatConversationSyncMessage[]'
   },
   ChatTurnSubmissionFact: {
-    turnId: 'string', assistantMessageId: 'string', assistantStatus: 'ChatMessageStatus', errorCode: '?string', completedAt: '?string', traceId: '?string'
+    turnId: 'string', assistantMessageId: 'string', assistantStatus: 'ChatMessageStatus', errorCode: '?string', errorMessage: '?string', completedAt: '?string', traceId: '?string'
   },
   ChatAssetApiMetadata: {
     id: 'string', fileName: 'string', mimeType: 'ChatAssetProcessedMimeType', width: 'number', height: 'number', byteSize: 'number'
@@ -602,7 +605,7 @@ const frontendRouteMarkers: Record<string, RegExp> = {
 const sourceGuards: Array<[string, RegExp]> = [
   ['create body 必须严格只允许 apiKeyId', /createConversationSchema = z\.object\(\{ apiKeyId:[\s\S]{0,120}optional\(\) \}\)\.strict\(\)/],
   ['update body 字段和图像模型枚举必须冻结', /updateConversationSchema = z\.object\(\{[\s\S]{0,400}title:[\s\S]{0,240}isPinned:[\s\S]{0,240}defaultImageModel: z\.enum\(\['gpt-image-2'\]\)[\s\S]{0,260}strict\(\)\.refine/],
-  ['stream body 字段必须严格冻结', /messageBodySchema = z\.object\(\{[\s\S]{0,900}clientMessageId:[\s\S]{0,180}replaceTurnId:[\s\S]{0,180}content:[\s\S]{0,180}contentBlocks:[\s\S]{0,180}model:[\s\S]{0,180}reasoningEffort:[\s\S]{0,180}serviceTier:[\s\S]{0,180}\}\)\.strict\(\)/],
+  ['stream body 字段必须严格冻结', /messageBodySchema = z\.object\(\{[\s\S]{0,1200}clientMessageId:[\s\S]{0,180}replaceTurnId:[\s\S]{0,180}content:[\s\S]{0,180}contentBlocks:[\s\S]{0,180}model:[\s\S]{0,180}reasoningEffort:[\s\S]{0,180}serviceTier:[\s\S]{0,180}generationParameters: z\.object\(\{[\s\S]{0,700}temperature:[\s\S]{0,180}topP:[\s\S]{0,180}frequencyPenalty:[\s\S]{0,180}presencePenalty:[\s\S]{0,180}maxOutputTokens:[\s\S]{0,180}seed:[\s\S]{0,220}\}\)\.strict\(\)\.optional\(\)[\s\S]{0,120}\}\)\.strict\(\)/],
   ['消息块只允许 input_text/input_image assetId', /messageContentBlocksSchema = z\.array\(z\.discriminatedUnion\('type',[\s\S]{0,500}input_text[\s\S]{0,300}input_image[\s\S]{0,200}assetId:[\s\S]{0,700}最多粘贴 5 张图片[\s\S]{0,400}同一张图片不能重复引用/],
   ['消息 cursor 必须互斥且 int4 有界', /messagesQuerySchema[\s\S]{0,900}beforeSequenceNo:[\s\S]{0,160}2_147_483_647[\s\S]{0,260}afterSequenceNo:[\s\S]{0,160}2_147_483_647[\s\S]{0,260}fromSequenceNo:[\s\S]{0,160}2_147_483_647[\s\S]{0,320}max\(100\)\.default\(100\)[\s\S]{0,320}消息游标只能指定一个/],
   ['sync cursor 必须是安全非负整数', /syncQuerySchema[\s\S]{0,260}min\(0\)\.max\(Number\.MAX_SAFE_INTEGER\)/],
@@ -613,9 +616,9 @@ const sourceGuards: Array<[string, RegExp]> = [
   ['sync success 必须返回 serverTime/unchanged/head', /unchanged: query\.knownRevision === head\.messageRevision,[\s\S]{0,120}\.\.\.head/],
   ['会话响应必须附加 userTurnLimit', /userTurnLimit: runtimeConfig\.chat\.maxTurnsPerConversation/],
   ['资产读取必须支持 200/304 与 ETag', /Cache-Control', 'private, max-age=86400, immutable'[\s\S]{0,400}requestEtagMatches[\s\S]{0,200}status\(304\)[\s\S]{0,700}status\(200\)/],
-  ['模型列表必须按 API Key 路由供应商合集读取动态目录', /loadOwnedChatModelListAsync[\s\S]{0,3000}listClientModelCatalogAsync/],
+  ['模型列表必须按 API Key 实际账户快照收敛可用模型', /loadOwnedChatModelListAsync[\s\S]{0,1200}loadChatModelListsFromAccountSnapshot[\s\S]{0,2200}loadChatModelCatalogSnapshot[\s\S]{0,1000}resolveChatModelOptionsFromAccountSnapshot/],
   ['模型列表响应不得返回完整能力', /chatRouter\.get\('\/conversations\/:conversationId\/models'[\s\S]{0,360}res\.json\(ok\(modelOptions\)\)/],
-  ['模型详情必须从动态目录定点读取能力并保留 404 code', /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'[\s\S]{0,1000}listClientModelCatalogAsync[\s\S]{0,700}chat_model_not_found/],
+  ['模型详情必须按实际账户快照收敛能力并保留 404 code', /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'[\s\S]{0,1200}loadChatModelCatalogSnapshot[\s\S]{0,700}constrainChatModelOptionForAccounts[\s\S]{0,700}chat_model_not_found/],
   ['stream success 必须是 SSE', /prepareSseResponse\(res\)[\s\S]{0,120}writeChatSseEvent\(res, 'message\.started'/],
   ['stream 413 必须无机器码', /status\(413\)\.json\(\{ message: '消息内容超过 192 KiB 上限' \}\)/],
   ['stream 422 错误必须保持各自 code', /error instanceof ChatContextBudgetError[\s\S]{0,180}status\(422\)[\s\S]{0,180}code: error\.code[\s\S]{0,900}error instanceof ChatModelContextError[\s\S]{0,180}status\(422\)[\s\S]{0,180}code: error\.code/],

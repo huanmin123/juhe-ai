@@ -20,9 +20,23 @@ export function hasAccountTestProtocolSuccessEvidence(
 export function hasAccountModelCatalogSuccessEvidence(model: string, bodyText: string): boolean {
   const target = model.trim()
   if (!target) return false
+  return accountModelCatalogIds(bodyText).includes(target)
+}
+
+export function hasAccountModelCatalogResponseEvidence(bodyText: string): boolean {
   const payload = parseJsonObject(bodyText)
-  if (!payload || payload.object !== 'list' || !Array.isArray(payload.data)) return false
-  return payload.data.some((item) => stringValue(objectValue(item)?.id) === target)
+  return Boolean(Array.isArray(payload?.data) || Array.isArray(payload?.models))
+}
+
+export function accountModelCatalogIds(bodyText: string): string[] {
+  const payload = parseJsonObject(bodyText)
+  if (!payload) return []
+  const values = Array.isArray(payload.data)
+    ? payload.data.map((item) => stringValue(objectValue(item)?.id))
+    : Array.isArray(payload.models)
+      ? payload.models.map((item) => geminiModelId(objectValue(item)?.name))
+      : []
+  return [...new Set(values.filter(Boolean))]
 }
 
 function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, bodyText: string): boolean {
@@ -129,4 +143,9 @@ function objectValue(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function geminiModelId(value: unknown): string {
+  const name = stringValue(value)
+  return name.startsWith('models/') ? name.slice('models/'.length) : name
 }

@@ -162,6 +162,23 @@ export const accountDraftTestSchema = z.object({
   testSessionId: z.string().trim().min(1).optional()
 }).strict()
 
+const accountModelCatalogDiscoveryAccountSchema = z.object({
+  providerCode: z.string().trim().min(1),
+  providerProtocolProfileId: z.string().trim().min(1),
+  type: z.string().trim().min(1),
+  credentials: z.record(z.unknown()).optional(),
+  name: z.string().trim().min(1).optional(),
+  groupId: z.string().trim().min(1).optional(),
+  proxyProfileId: z.string().nullable().optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
+  healthCheckModel: z.string().trim().min(1).optional(),
+  healthCheckEndpointMode: accountHealthCheckEndpointModeSchema.optional()
+}).strict()
+
+export const accountModelCatalogRefreshSchema = z.object({
+  account: accountModelCatalogDiscoveryAccountSchema
+}).strict()
+
 export const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
 }).strict()

@@ -1,3 +1,11 @@
+import {
+  intersectGenerationParameterCapabilities,
+  type ChatGenerationParameter,
+  type ChatGenerationParameterCapabilities,
+  type ChatGenerationParameterCapability,
+  type ChatGenerationParameters
+} from './chat-generation-parameters.js'
+
 export const chatReasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const chatServiceTiers = ['default', 'priority', 'flex'] as const
 
@@ -20,6 +28,7 @@ export interface ChatModelOption {
   inputModalities: string[]
   outputModalities: string[]
   supportedTools: string[]
+  generationParameters: ChatGenerationParameterCapability[]
 }
 
 export interface ChatModelListOption {
@@ -66,6 +75,7 @@ interface ChatModelCatalogCapability {
   inputModalities?: readonly string[]
   outputModalities?: readonly string[]
   supportedTools?: readonly string[]
+  generationParameterCapabilities?: ChatGenerationParameterCapabilities
 }
 
 export function buildChatModelOptions(modelIds: readonly string[], catalog: readonly ChatModelCatalogCapability[]): ChatModelOption[] {
@@ -95,6 +105,7 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
     const inputModalities = intersectCapabilities(items.map((item) => item.inputModalities ?? []))
     const outputModalities = intersectCapabilities(items.map((item) => item.outputModalities ?? []))
     const supportedTools = intersectCapabilities(items.map((item) => item.supportedTools ?? []))
+    const generationParameters = flattenGenerationParameters(items)
     return {
       id,
       supportsPromptCaching: items.length > 0 && items.every((item) => item.supportsPromptCaching === true),
@@ -107,7 +118,8 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
       supportedApiProtocols,
       inputModalities,
       outputModalities,
-      supportedTools
+      supportedTools,
+      generationParameters
     }
   })
 }
@@ -149,18 +161,55 @@ function intersectCapabilities<TValue extends string>(values: readonly (readonly
 
 export function resolveChatModelRequestOptions(
   model: ChatModelOption,
-  input: { reasoningEffort?: ChatReasoningEffort; serviceTier?: ChatServiceTier }
-): { reasoningEffort?: ChatReasoningEffort; serviceTier?: ChatServiceTier; contextWindowTokens?: number; maxInputTokens?: number } {
+  input: { reasoningEffort?: ChatReasoningEffort; serviceTier?: ChatServiceTier; generationParameters?: ChatGenerationParameters }
+): { reasoningEffort?: ChatReasoningEffort; serviceTier?: ChatServiceTier; generationParameters: ChatGenerationParameters; contextWindowTokens?: number; maxInputTokens?: number } {
   if (input.reasoningEffort && !model.supportedReasoningEfforts.includes(input.reasoningEffort)) {
     throw new ChatModelCapabilityError('当前模型不支持所选思考级别，请重新选择')
   }
   if (input.serviceTier && !model.supportedServiceTiers.includes(input.serviceTier)) {
     throw new ChatModelCapabilityError('当前模型不支持所选服务等级，请重新选择')
   }
+  const generationParameters = input.generationParameters ?? {}
+  if (generationParameters.temperature !== undefined && generationParameters.topP !== undefined) {
+    throw new ChatModelCapabilityError('温度和 Top P 只能设置其中一个')
+  }
+  const allowedGenerationParameters = new Map(model.generationParameters.map((capability) => [capability.parameter, capability]))
+  for (const [parameter, value] of Object.entries(generationParameters) as Array<[ChatGenerationParameter, number]>) {
+    const capability = allowedGenerationParameters.get(parameter)
+    if (!capability) throw new ChatModelCapabilityError('当前模型或路由不支持所选生成参数，请重新选择')
+    if (!Number.isFinite(value) || value < capability.min || value > capability.max) {
+      throw new ChatModelCapabilityError(`生成参数 ${parameter} 超出当前模型支持范围`)
+    }
+    if (parameter === 'seed' || parameter === 'maxOutputTokens') {
+      if (!Number.isInteger(value)) throw new ChatModelCapabilityError(`生成参数 ${parameter} 必须是整数`)
+    }
+  }
   return {
     ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    generationParameters,
     ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
     ...(model.maxInputTokens ? { maxInputTokens: model.maxInputTokens } : {})
   }
+}
+
+function flattenGenerationParameters(items: readonly ChatModelCatalogCapability[]): ChatGenerationParameterCapability[] {
+  const mergedByProtocol = intersectGenerationParameterCapabilities(items.map((item) => item.generationParameterCapabilities ?? {}))
+  const activeProtocols = intersectCapabilities(items.map((item) => (item.supportedApiProtocols ?? []).filter((protocol) => (
+    protocol === 'chat_completions' || protocol === 'responses'
+  ))))
+  const capabilityLists = activeProtocols.map((protocol) => mergedByProtocol[protocol] ?? [])
+  if (!capabilityLists.length || capabilityLists.some((list) => !list.length)) return []
+  const [first, ...rest] = capabilityLists
+  return first.filter((candidate) => rest.every((list) => list.some((item) => item.parameter === candidate.parameter)))
+    .map((candidate) => {
+      const matching = capabilityLists.map((list) => list.find((item) => item.parameter === candidate.parameter)!)
+      return {
+        ...candidate,
+        min: Math.max(...matching.map((item) => item.min)),
+        max: Math.min(...matching.map((item) => item.max)),
+        defaultValue: Math.min(Math.max(candidate.defaultValue, Math.max(...matching.map((item) => item.min))), Math.min(...matching.map((item) => item.max)))
+      }
+    })
+    .filter((item) => item.min <= item.max)
 }

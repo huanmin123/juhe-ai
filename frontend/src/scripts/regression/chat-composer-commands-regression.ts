@@ -28,7 +28,7 @@ const stateAt = (doc: ReturnType<typeof schema.node>, anchor: number, head = anc
 
 assert.deepEqual(filterChatComposerCommands('代码').map((item) => item.key), ['code'])
 assert.deepEqual(filterChatComposerCommands('列表'), [])
-assert.deepEqual(chatComposerCommands.map((item) => item.key), ['clear-input', 'code', 'image', 'image-model', 'compact', 'clear'])
+assert.deepEqual(chatComposerCommands.map((item) => item.key), ['clear-input', 'code', 'image', 'parameters', 'image-model', 'compact', 'clear'])
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'clear-input'), {
   key: 'clear-input', kind: 'editor', label: '清空输入', description: '清除当前编辑内容', insert: ''
 })
@@ -38,6 +38,10 @@ assert.deepEqual(chatComposerCommands.find((item) => item.key === 'compact'), {
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'image-model'), {
   key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '设置当前会话的图片生成模型'
 })
+assert.deepEqual(chatComposerCommands.find((item) => item.key === 'parameters'), {
+  key: 'parameters', kind: 'generation', label: '生成参数', description: '设置温度、Top P、重复惩罚和回复长度'
+})
+assert.deepEqual(filterChatComposerCommands('参数').map((item) => item.key), ['parameters'], '中文命令检索必须能定位生成参数弹窗')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'clear'), {
   key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '清除消息但保留会话壳'
 })

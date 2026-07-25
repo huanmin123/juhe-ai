@@ -296,11 +296,12 @@ try {
     body: JSON.stringify({ model: 'gpt-image-1', prompt: 'server side failover' })
   })
   const imageText = await image.text()
-  assert.equal(image.status, 418, `图片完整 HTTP 失败也必须透明返回，实际 ${image.status}: ${imageText}`)
-  assert.match(imageText, /opaque non-stream failure/)
+  assert.equal(image.status, 200, `图片早期失败应切换后备账号，实际 ${image.status}: ${imageText}`)
+  assert.match(imageText, /b64_json/)
   assert.deepEqual(upstreamAuthorizations.slice(imageHitOffset), [
-    'Bearer sk-generic-image-bad'
-  ], '未配置显式规则的图片 HTTP 失败不得切换后备账号')
+    'Bearer sk-generic-image-bad',
+    'Bearer sk-generic-image-good'
+  ], '图片早期失败不得依赖状态码、错误码或错误文案，应直接切换后备账号')
 
   const streamHitOffset = upstreamAuthorizations.length
   const stream = await fetch(`${baseUrl}/v1/responses`, {

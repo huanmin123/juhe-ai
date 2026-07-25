@@ -5,7 +5,9 @@ import { resolve } from 'node:path'
 import {
   accountTestDefaultPrompt,
   accountImageTestDefaultPrompt,
+  accountTestGeminiModelsPath,
   accountTestModelsPath,
+  accountTestModelsPathForProtocol,
   createAnthropicTestRequest,
   createGeminiTestRequest,
   createOpenAIChatCompletionsTestPayload,
@@ -21,16 +23,22 @@ import {
 } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
   parseAccountTestUpstreamErrorCode,
+  redactAccountTestImageResponse,
   resolveAccountTestResponseDiagnostics
 } from '../../modules/accounts/account-test-response-diagnostics.js'
 import {
+  accountModelCatalogIds,
+  hasAccountModelCatalogResponseEvidence,
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from '../../modules/accounts/account-test-success-evidence.js'
-import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
+import { accountBatchEditSchema, accountCreateSchema, accountModelCatalogRefreshSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+assert.equal(accountTestGeminiModelsPath, '/v1beta/models', 'Gemini 模型目录探测必须使用原生 /v1beta/models 路径')
+assert.equal(accountTestModelsPathForProtocol('gemini'), '/v1beta/models', 'Gemini 协议必须选择原生模型目录路径')
+assert.equal(accountTestModelsPathForProtocol('anthropic'), '/v1/models', 'Anthropic 协议必须保留 /v1/models 目录路径')
 assert.deepEqual(accountDiagnosticRetryTimeouts('generation'), [10_000, 20_000, 30_000], '文本测试必须保留三档重试窗口')
 assert.deepEqual(accountDiagnosticRetryTimeouts('image_generation'), [120_000], '图片测试必须只生成一次，并保留 120 秒完成窗口')
 assert.deepEqual(
@@ -88,7 +96,40 @@ assert.equal(
   false,
   '模型目录缺少目标模型时不得判定探针成功'
 )
+assert.deepEqual(
+  accountModelCatalogIds(JSON.stringify({ models: [{ name: 'models/gemini-2.5-pro' }, { name: 'models/gemini-2.5-pro' }] })),
+  ['gemini-2.5-pro'],
+  'Gemini 模型目录必须去除 models/ 前缀并去重'
+)
+assert.equal(
+  hasAccountModelCatalogResponseEvidence(JSON.stringify({ models: [] })),
+  true,
+  '空 Gemini 模型目录仍是有效目录响应，不能误判为协议错误'
+)
+assert.equal(
+  hasAccountModelCatalogResponseEvidence(JSON.stringify({ data: [] })),
+  true,
+  'Anthropic 风格的 data 模型目录即使未携带 OpenAI object=list 也必须视为有效响应'
+)
 assert.equal(accountTestSchema.safeParse({ testEndpointMode: 'images_json' }).success, true, '账户测试契约必须接受 Images API 请求形态')
+assert.equal(accountModelCatalogRefreshSchema.safeParse({
+  account: {
+    providerCode: 'openai-compatible',
+    providerProtocolProfileId: 'openai-v1',
+    type: 'api_key',
+    credentials: { base_url: 'https://upstream.example/v1', api_key: 'sk-test' }
+  }
+}).success, true, '模型目录发现不得要求预先选择支持模型、检查模型或分组')
+assert.deepEqual(redactAccountTestImageResponse(JSON.stringify({
+  created: 1,
+  data: [{ b64_json: 'base64-must-not-leak', url: 'https://image.example/private.png', revised_prompt: 'a white square' }],
+  usage: { total_tokens: 1 }
+})), {
+  created: 1,
+  data: [{ b64_json: '已省略', url: '已省略', revised_prompt: 'a white square' }],
+  usage: { total_tokens: 1 }
+}, '图片测试完整 JSON 必须保留非图片字段，并省略图片内容')
+assert.deepEqual(redactAccountTestImageResponse('not-json'), { response: '已省略' }, '非 JSON 图片响应不得原样返回前端')
 
 for (const mode of ['interactions_json', 'interactions_sse'] as const) {
   assert.equal(accountCreateSchema.safeParse({
@@ -396,7 +437,8 @@ assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupported
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
-assert.match(serviceSource, /const responseDiagnostics = probeKind === 'image_generation'\s*\?\s*\{\}\s*:/, '图片测试不得保留原始响应正文或 Header')
+assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? redactAccountTestImageResponse\(responseText\)/, '图片测试必须先脱敏图片响应正文')
+assert.match(serviceSource, /responseBody: imageResponseBody,\s*responseText: JSON\.stringify\(imageResponseBody\)/, '图片测试必须仅返回已脱敏的响应 JSON')
 assert.match(serviceSource, /probeKind === 'image_generation'\s*\? proxyFailureMessage \|\| protocolEvidenceError \|\| accountTestHttpFailureMessage/, '图片测试失败信息不得回显上游响应正文')
 assert.match(serviceSource, /const suppressDiagnostics = probeKind === 'image_generation'/, '图片测试异常路径不得保留原始错误正文')
 assert.match(serviceSource, /createOpenAIImageGenerationTestRequest/, '人工图像测试必须构造真实图片生成请求')
@@ -411,6 +453,15 @@ assert.match(serviceSource, /测试请求形态不在账户上游接口能力中
 assert.match(serviceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '账户测试空能力错误必须使用上游接口能力文案')
 assert.match(optionsServiceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '测试选项空能力错误必须使用上游接口能力文案')
 assert.match(serviceSource, /handleOpenAIGatewayRequest/, '真实网关测试编排仍应留在 account-test.service.ts')
+assert.match(serviceSource, /preflightAccountModelCatalog/, '人工测试和恢复探针必须先执行可缓存的模型目录预检')
+assert.match(serviceSource, /accountModelCatalogPreflightTtlMs/, '目录预检必须使用有界成功缓存，避免每次探针都额外请求')
+const retryTestSource = serviceSource.slice(
+  serviceSource.indexOf('export async function testOpenAIAccountWithDiagnosticRetries'),
+  serviceSource.indexOf('export async function discoverAccountUpstreamModels')
+)
+assert.match(retryTestSource, /const preflightFailure = await preflightAccountModelCatalog/, '真实模型测试必须先获得目录预检结果')
+assert.match(retryTestSource, /if \(preflightFailure\)\s*\{\s*return accountTestResultWithTotalDuration\(preflightFailure, startedAt\)/, '目录预检不成功时不得继续真实模型测试')
+assert.doesNotMatch(retryTestSource, /继续执行真实模型测试/, '目录预检失败不得存在生成测试降级路径')
 assert.match(serviceSource, /candidateAccounts:\s*\[diagnosticCandidate\]/, '测试服务仍应固定当前诊断候选账号')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')

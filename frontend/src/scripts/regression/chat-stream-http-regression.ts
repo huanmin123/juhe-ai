@@ -32,6 +32,13 @@ try {
     content: '修正后的问题',
     contentBlocks: [{ type: 'input_text', text: '修正后的问题' }],
     model: 'mock-model',
+    generationParameters: {
+      temperature: 0.4,
+      frequencyPenalty: 0.2,
+      presencePenalty: -0.1,
+      maxOutputTokens: 321,
+      seed: 42
+    },
     signal: new AbortController().signal,
     onEvent: () => undefined
   })
@@ -46,6 +53,13 @@ assert.deepEqual({ status: thrown.status, code: thrown.code, message: thrown.mes
   message: '最近一轮已变化，请重新确认后再编辑'
 })
 assert.equal(observedBodies[0]?.replaceTurnId, 'turn_old', '流请求必须透传 replaceTurnId')
+assert.deepEqual(observedBodies[0]?.generationParameters, {
+  temperature: 0.4,
+  frequencyPenalty: 0.2,
+  presencePenalty: -0.1,
+  maxOutputTokens: 321,
+  seed: 42
+}, '流请求必须透传非空生成参数')
 
 let unauthorizedNotified = 0
 setUnauthorizedHandler(() => { unauthorizedNotified += 1 })

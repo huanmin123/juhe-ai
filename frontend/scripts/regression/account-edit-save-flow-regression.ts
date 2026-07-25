@@ -22,6 +22,8 @@ const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
 const testModalSource = readSource('src/views/accounts/useAccountTestModal.ts')
+const apiKeySectionSource = readSource('src/views/accounts/AccountApiKeySection.vue')
+const oauthSectionSource = readSource('src/views/accounts/AccountOAuthSection.vue')
 const packageJson = JSON.parse(readSource('package.json')) as { scripts?: Record<string, string> }
 
 assert.doesNotMatch(
@@ -49,6 +51,22 @@ assert.match(
   /@click="\$emit\('test'\)"/,
   '账户编辑弹窗应保留人工诊断入口'
 )
+assert.match(
+  accountsViewSource,
+  /function cancelAccountModelCatalogSync\(\): void[\s\S]*modelCatalogSyncController\?\.abort\(\)/,
+  '关闭弹窗或变更目录同步输入时必须取消正在进行的上游模型同步'
+)
+assert.match(
+  accountsViewSource,
+  /onBeforeUnmount\(cancelAccountModelCatalogSync\)/,
+  '离开账户页面时必须清理上游模型同步请求与延迟任务'
+)
+for (const [sectionName, source] of [['API Key', apiKeySectionSource], ['OAuth', oauthSectionSource]] as const) {
+  assert.doesNotMatch(source, /<a-form-item required tooltip=/, `${sectionName} 支持模型说明不得由表单标签尾部自动渲染`)
+  assert.match(source, /<span>支持模型<\/span>\s*<a-tooltip[^>]*>\s*<QuestionCircleOutlined class="supported-models-help"/s, `${sectionName} 支持模型说明图标必须紧跟标题`)
+  assert.doesNotMatch(source, /\.supported-models-label\s*\{[\s\S]*?width:\s*100%/, `${sectionName} 支持模型标签不得强制溢出其可用宽度`)
+  assert.doesNotMatch(source, /\.supported-models-label\s*:deep\(\.ant-btn\)\s*\{[\s\S]*?margin-right:\s*-/, `${sectionName} 刷新按钮不得使用负右边距而裁切`)
+}
 
 const savedRuntimeResponse = {
   accountId: 'account-runtime-display',

@@ -48,6 +48,7 @@ export function validateAccountDraftTestForm(input: AccountDraftTestPayloadInput
 
 export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput): AccountDraftTestAccountPayload {
   const payload = buildAccountSavePayload(input)
+  if (!payload.healthCheckModel) throw new Error('请先同步上游模型或选择检查模型后再测试')
   const credentials = accountDraftTestCredentials(payload.credentials, input.accountDetail)
   return {
     providerCode: payload.providerCode,

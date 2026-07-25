@@ -88,7 +88,21 @@
       :tag-options-loading="tagOptionsLoading"
       @delete-tag="$emit('delete-tag', $event)"
     />
-    <a-form-item label="支持模型" required tooltip="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+    <a-form-item required>
+      <template #label>
+        <div class="supported-models-label">
+          <span>支持模型</span>
+          <a-tooltip title="声明这个 Base URL 实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
+            <QuestionCircleOutlined class="supported-models-help" />
+          </a-tooltip>
+          <span class="supported-models-label-spacer"></span>
+          <a-tooltip title="从上游同步可新增模型">
+            <a-button size="small" type="text" :loading="modelSyncing" @click="$emit('refresh-models')">
+              <template #icon><ReloadOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
+      </template>
       <a-select
         v-model:value="form.supportedModels"
         allow-clear
@@ -113,7 +127,7 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
@@ -134,6 +148,7 @@ const props = defineProps<{
   editing: boolean
   form: AccountFormModel
   modelOptions: AccountModelSelectOption[]
+  modelSyncing?: boolean
   modelsLoading: boolean
   protocolCode?: string
   protocolVersion?: string
@@ -146,6 +161,7 @@ defineEmits<{
   (event: 'delete-tag', tagId: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
+  (event: 'refresh-models'): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)
@@ -332,6 +348,29 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 
 .api-key-batch-delete-button {
   padding-inline: 0;
+}
+
+.supported-models-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.supported-models-label-spacer {
+  flex: 1;
+}
+
+.supported-models-label :deep(.ant-btn) {
+  flex: none;
+}
+
+.supported-models-help {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
+}
+
+:deep(.ant-form-item-label > label:has(.supported-models-label)) {
+  width: 100%;
 }
 
 .multi-key-balance-notice {

@@ -20,6 +20,7 @@ import type { ProviderModelApiProtocol } from '@/types/domain/providers'
 import type {
   AccountBalanceDraftTestPayload,
   AccountDraftTestPayload,
+  AccountModelCatalogDiscoveryAccountPayload,
   AccountExportPayload,
   AccountListParams,
   AccountOptionParams,
@@ -52,6 +53,11 @@ export interface AccountTestModelCapabilities {
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 
+export interface AccountModelCatalogRefreshResult {
+  addedModels: string[]
+  recommendedHealthCheckModel?: string
+}
+
 export type AccountTestOptions = AccountManualTestModelOption[]
 
 export const accountsApi = {
@@ -71,6 +77,7 @@ export const accountsApi = {
   forceActivate: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true }, { params })),
   refreshBalance: (id: string, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/accounts/${id}/balance/refresh`, {}, { params })),
   testBalanceDraft: (payload: AccountBalanceDraftTestPayload, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/accounts/balance/test-draft', payload, { params })),
+  refreshModelCatalog: (payload: { account: AccountModelCatalogDiscoveryAccountPayload }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountModelCatalogRefreshResult>(http.post('/accounts/model-catalog/refresh', payload, { params, signal: options?.signal })),
   batchEditContext: (accountIds: string[], params?: ListParams) => unwrap<AccountSummary[]>(http.post('/accounts/batch-edit-context', { accountIds }, { params })),
   batchUpdate: (payload: AccountBatchEditRequest, params?: ListParams) => unwrap<AccountBatchEditResult>(http.post('/accounts/batch-update', payload, { params })),
   updateTags: (id: string, payload: { tags: string[] }, params?: ListParams) => unwrap<AccountTagsUpdateResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
@@ -108,6 +115,7 @@ export const myAccountsApi = {
   forceActivate: (id: string) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/force-activate`, { acknowledgedAccountAvailable: true })),
   refreshBalance: (id: string) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/my-accounts/${id}/balance/refresh`, {})),
   testBalanceDraft: (payload: AccountBalanceDraftTestPayload) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/my-accounts/balance/test-draft', payload)),
+  refreshModelCatalog: (payload: { account: AccountModelCatalogDiscoveryAccountPayload }, options?: RequestControlOptions) => unwrap<AccountModelCatalogRefreshResult>(http.post('/my-accounts/model-catalog/refresh', payload, { signal: options?.signal })),
   batchEditContext: (accountIds: string[]) => unwrap<AccountSummary[]>(http.post('/my-accounts/batch-edit-context', { accountIds })),
   batchUpdate: (payload: AccountBatchEditRequest) => unwrap<AccountBatchEditResult>(http.post('/my-accounts/batch-update', payload)),
   updateTags: (id: string, payload: { tags: string[] }) => unwrap<AccountTagsUpdateResult>(http.patch(`/my-accounts/${id}/tags`, payload)),

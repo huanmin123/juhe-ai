@@ -14,11 +14,12 @@ import {
   createAccountTestTaskAsync,
   failAccountTestTaskAsync
 } from '../../storage/account-test-tasks.repository.js'
-import { prepareAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
+import { prepareAccountDraftTestSnapshotAsync, prepareAccountModelCatalogDiscoverySnapshotAsync } from './account-draft-test.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import {
   accountCreateSchema,
   accountDraftTestSchema,
+  accountModelCatalogRefreshSchema,
   accountUpdateSchema
 } from './account-request.schemas.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
@@ -53,6 +54,7 @@ import {
 } from './account-health-check-dispatch.service.js'
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
+import { refreshAccountDraftModelCatalogAsync } from './account-model-catalog-refresh.service.js'
 
 export const accountsRouter = Router()
 
@@ -106,6 +108,33 @@ accountsRouter.post('/test-draft', async (req, res) => {
     res.status(202).json(ok(task))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户草稿测试任务失败'))
+  }
+})
+
+accountsRouter.post('/model-catalog/refresh', async (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!requestAccess) {
+    res.status(403).json({ message: '缺少系统账户上下文' })
+    return
+  }
+  const parsed = accountModelCatalogRefreshSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型目录同步参数无效'))
+    return
+  }
+  try {
+    const preparedDraft = await prepareAccountModelCatalogDiscoverySnapshotAsync({
+      accountInput: parsed.data.account,
+      requestAccess
+    })
+    res.json(ok(await refreshAccountDraftModelCatalogAsync(preparedDraft)))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '获取上游模型目录失败'))
   }
 })
 
@@ -196,7 +225,7 @@ accountsRouter.post('/', mutationGuard({
       providerCode,
       accountType: parsed.data.type,
       credentials: parsed.data.credentials,
-      supportedModels: parsed.data.supportedModels ?? provider.defaultSupportedModels,
+      supportedModels: parsed.data.supportedModels ?? [],
       systemAccountId: effectiveRequestSystemAccountId(requestAccess)
     })
     const account = await runLoggedOperationAsync(async () => {

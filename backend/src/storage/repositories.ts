@@ -149,8 +149,6 @@ import {
   findProviderDefaultHealthCheckModel,
   findProviderDefaultHealthCheckModelAsync,
   findProviderOptionByCodeAsync,
-  findProviderDefaultSupportedModels,
-  findProviderDefaultSupportedModelsAsync,
   listOpenAIProtocolProfileIds,
   listOpenAIProtocolProfileIdsAsync
 } from './provider.repository.js'
@@ -1739,7 +1737,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
-    : findProviderDefaultSupportedModels(providerCode)
+    : []
   const supportedModels = normalizeAccountSupportedModelsForProvider(
     supportedModelsInput,
     providerCode,
@@ -2003,7 +2001,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const availabilitySchedule = accountAvailabilityScheduleFromRequest(input)
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
-    : await findProviderDefaultSupportedModelsAsync(providerCode)
+    : []
   const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
     supportedModelsInput,
     providerCode,

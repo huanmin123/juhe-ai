@@ -757,8 +757,8 @@ export async function fetchFirstAvailableUpstream(
                   retrySameAccount: false
                 }
                 const failedResponseResult = await handleFailedUpstreamResponse(failedResponseInput)
-                const explicitPolicyFailure = failedResponseResult.action !== 'return_response'
-                if (explicitPolicyFailure) {
+                const accountPolicyFailure = failedResponseResult.failureSource === 'account_error_policy'
+                if (accountPolicyFailure) {
                   await hotQualityAttempt.recordTerminal({
                     outcomeClass: 'explicit_policy_failure',
                     // Configured account policies are account-scoped; transport
@@ -790,7 +790,7 @@ export async function fetchFirstAvailableUpstream(
                 }
                 // An explicit user policy is a failure action, not a transport
                 // success; do not close/recover a circuit from the same attempt.
-                if (!explicitPolicyFailure) {
+                if (!accountPolicyFailure) {
                   await accountCircuitAttempt?.reportFramingComplete()
                 }
                 lastAttempt = failedResponseResult.lastAttempt

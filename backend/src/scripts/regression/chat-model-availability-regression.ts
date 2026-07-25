@@ -31,6 +31,20 @@ assert.deepEqual(modelOptions, [
   { id: 'gpt-mapped', supportedApiProtocols: ['responses'] }
 ], '模型协议应只根据已加载账号快照完成，不为每个模型重复读取账号')
 
+assert.deepEqual(resolveChatModelOptionsFromAccountSnapshot({
+  accounts: [{
+    supportedModels: ['claude-upstream'],
+    supportedEndpointModes: ['messages_sse'],
+    modelMappings: [{
+      sourceModel: 'gpt-bridge',
+      sourceEndpointFamily: 'responses',
+      upstreamModel: 'claude-upstream',
+      upstreamEndpointFamily: 'messages'
+    }]
+  }],
+  modelOptions: [{ id: 'gpt-bridge' }]
+}), [{ id: 'gpt-bridge', supportedApiProtocols: ['responses'] }], '跨协议映射必须依据上游 messages 端点模式判定候选模型可用性')
+
 let now = 1_000
 let loads = 0
 const cache = createChatModelOptionsSnapshotCache({ ttlMs: 5_000, now: () => now })

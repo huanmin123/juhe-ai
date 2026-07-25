@@ -1,5 +1,5 @@
 import { attachChatStream, chatApi, ChatStreamHttpError, ChatStreamProtocolError, streamChatMessage } from '@/api/domains/chat'
-import type { ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatGenerationParameters, ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 
 import { applyChatStreamEvent } from './chatStream'
 
@@ -51,6 +51,7 @@ export interface ChatGenerationRuntimeStartInput {
   model: string
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
+  generationParameters?: ChatGenerationParameters
 }
 
 export interface ChatGenerationRuntimeAttachInput {
@@ -413,6 +414,7 @@ export class ChatGenerationRuntime {
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
+        generationParameters: input.generationParameters,
         signal: controller.signal,
         onActivity: () => this.handleTransportActivity(key, turn),
         onEvent: (event) => this.handleEvent(key, turn, event)

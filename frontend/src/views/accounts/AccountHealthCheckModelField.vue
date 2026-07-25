@@ -2,16 +2,16 @@
   <div class="health-check-config-grid">
     <a-form-item
       label="检查模型"
-      required
-      tooltip="后台激活检查、周期健康检查和恢复探测固定使用这个模型。人工列表测试不受此配置限制。"
+      tooltip="推荐由上游目录自动选择；可手动调整。后台激活检查、周期健康检查和恢复探测使用该模型。"
     >
       <a-select
         v-model:value="form.healthCheckModel"
         :disabled="!options.length"
+        allow-clear
         :loading="modelsLoading"
         option-filter-prop="label"
         :options="options"
-        placeholder="选择后台检查使用的模型"
+        placeholder="同步上游模型后自动推荐"
         show-search
       />
     </a-form-item>

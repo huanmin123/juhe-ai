@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
 
+import {
+  constrainChatGenerationParametersForRoute,
+  generationParameterCapabilitiesForModel,
+  limitGenerationParameterMaxOutputTokens
+} from '../../modules/chat/chat-generation-parameters.js'
 import { buildChatModelOptions, ChatModelCapabilityError, chatModelCapabilities, chatModelListOptions, mergeChatModelCapabilities, resolveChatModelRequestOptions } from '../../modules/chat/chat-model-options.js'
 
 const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'vendor-model', 'custom-model'], [{
@@ -82,7 +87,8 @@ assert.deepEqual(options, [
     supportedApiProtocols: ['responses'],
     inputModalities: ['text'],
     outputModalities: ['text'],
-    supportedTools: ['web_search']
+    supportedTools: ['web_search'],
+    generationParameters: []
   },
   {
     id: 'mixed-cache-model',
@@ -92,7 +98,8 @@ assert.deepEqual(options, [
     supportedApiProtocols: ['responses'],
     inputModalities: ['text'],
     outputModalities: ['text'],
-    supportedTools: []
+    supportedTools: [],
+    generationParameters: []
   },
   {
     id: 'vendor-model',
@@ -102,7 +109,8 @@ assert.deepEqual(options, [
     supportedApiProtocols: ['responses'],
     inputModalities: ['text'],
     outputModalities: ['text'],
-    supportedTools: []
+    supportedTools: [],
+    generationParameters: []
   },
   {
     id: 'custom-model',
@@ -112,7 +120,8 @@ assert.deepEqual(options, [
     supportedApiProtocols: [],
     inputModalities: [],
     outputModalities: [],
-    supportedTools: []
+    supportedTools: [],
+    generationParameters: []
   }
 ])
 
@@ -152,18 +161,89 @@ assert.deepEqual(mergedCapabilities && {
 const model = options[0]
 assert(model)
 assert.deepEqual(resolveChatModelRequestOptions(model, {}), {
+  generationParameters: {},
   contextWindowTokens: 64_000,
   maxInputTokens: 4_000
 }, '中转请求未显式选择时不得主动补思考级别或服务等级')
 assert.deepEqual(resolveChatModelRequestOptions(model, { reasoningEffort: 'high', serviceTier: 'priority' }), {
   reasoningEffort: 'high',
   serviceTier: 'priority',
+  generationParameters: {},
   contextWindowTokens: 64_000,
   maxInputTokens: 4_000
 })
 assert.throws(
   () => resolveChatModelRequestOptions(model, { reasoningEffort: 'max' }),
   (error) => error instanceof ChatModelCapabilityError && error.code === 'chat_model_capability_mismatch'
+)
+
+const parameterModel = buildChatModelOptions(['parameter-model'], [{
+  model: 'parameter-model', supportsPromptCaching: false, supportedReasoningEfforts: [], supportedServiceTiers: [],
+  supportedApiProtocols: ['chat_completions'], inputModalities: ['text'], outputModalities: ['text'], supportedTools: [],
+  generationParameterCapabilities: {
+    chat_completions: [
+      { parameter: 'temperature', min: 0, max: 2, step: 0.1, defaultValue: 1 },
+      { parameter: 'topP', min: 0, max: 1, step: 0.05, defaultValue: 1 },
+      { parameter: 'maxOutputTokens', min: 1, max: 4096, step: 1, defaultValue: 1024 }
+    ]
+  }
+}])[0]!
+assert.deepEqual(parameterModel.generationParameters.map((item) => item.parameter), ['temperature', 'topP', 'maxOutputTokens'])
+assert.deepEqual(resolveChatModelRequestOptions(parameterModel, { generationParameters: { temperature: 0.7, maxOutputTokens: 512 } }).generationParameters, { temperature: 0.7, maxOutputTokens: 512 })
+assert.throws(() => resolveChatModelRequestOptions(parameterModel, { generationParameters: { temperature: 0.7, topP: 0.8 } }), ChatModelCapabilityError)
+assert.throws(() => resolveChatModelRequestOptions(parameterModel, { generationParameters: { seed: 1 } }), ChatModelCapabilityError)
+
+assert.deepEqual(
+  generationParameterCapabilitiesForModel({ providerCode: 'gpt', model: 'gpt-5.4', maxOutputTokens: 8_192 }).responses?.map((item) => item.parameter),
+  ['maxOutputTokens'],
+  'GPT-5 Responses 仅展示可保真透传的最大输出 Tokens'
+)
+assert.deepEqual(
+  generationParameterCapabilitiesForModel({ providerCode: 'gemini', model: 'gemini-2.5-pro' }).chat_completions?.map((item) => item.parameter),
+  ['temperature', 'topP', 'maxOutputTokens'],
+  'Gemini 只展示当前 OpenAI 兼容桥能保真转发的参数'
+)
+assert.deepEqual(
+  generationParameterCapabilitiesForModel({ providerCode: 'custom-compatible', model: 'unknown-model' }),
+  {},
+  '未知兼容模型不得猜测生成参数能力'
+)
+
+const catalogLimitedCapabilities = limitGenerationParameterMaxOutputTokens({
+  responses: [{ parameter: 'maxOutputTokens', min: 1, max: 128_000, step: 1, defaultValue: 4_096 }]
+}, 1_024)
+assert.deepEqual(catalogLimitedCapabilities.responses, [
+  { parameter: 'maxOutputTokens', min: 1, max: 1_024, step: 1, defaultValue: 1_024 }
+], '目录手工覆盖的 maxOutputTokens 必须收紧生成参数上限')
+
+const gptChatCapabilities = generationParameterCapabilitiesForModel({ providerCode: 'gpt', model: 'gpt-4.1' }).chat_completions ?? []
+assert.deepEqual(
+  constrainChatGenerationParametersForRoute({
+    capabilities: gptChatCapabilities,
+    model: 'gpt-4.1',
+    protocol: 'chat_completions',
+    accounts: [{
+      providerCode: 'gpt',
+      modelMappings: [{
+        sourceModel: 'gpt-4.1',
+        sourceEndpointFamily: 'chat_completions',
+        upstreamModel: 'claude-test',
+        upstreamEndpointFamily: 'messages'
+      }]
+    }]
+  }).map((item) => item.parameter),
+  ['temperature', 'topP', 'maxOutputTokens'],
+  '跨协议桥接只能展示明确可保真转发的生成参数'
+)
+assert.deepEqual(
+  constrainChatGenerationParametersForRoute({
+    capabilities: gptChatCapabilities,
+    model: 'gpt-4.1',
+    protocol: 'chat_completions',
+    accounts: [{ providerCode: 'gpt', type: 'oauth' }]
+  }),
+  [],
+  'GPT OAuth 归一化会移除生成参数，详情和发送校验必须一并隐藏'
 )
 
 console.log('chat model options regression passed')

@@ -7,6 +7,77 @@
         <strong>/{{ item.key }}</strong><span>{{ item.label }}</span><small>{{ item.description }}</small>
       </button>
     </div>
+    <a-modal
+      v-model:open="generationParametersModalOpen"
+      centered
+      :width="640"
+      :footer="null"
+      :mask-closable="true"
+      :destroy-on-close="false"
+      wrap-class-name="chat-generation-parameters-modal"
+      @after-close="focus"
+    >
+      <template #title>
+        <div class="chat-generation-modal-title">
+          <div>
+            <strong>生成参数</strong>
+            <span>仅显示当前模型和路由实际支持的控制项</span>
+          </div>
+          <span class="chat-generation-modal-count">{{ generationParameterCapabilities.length }} 项可用</span>
+        </div>
+      </template>
+      <section class="chat-generation-parameters" aria-label="生成参数设置">
+        <p class="chat-generation-modal-intro">参数会在下一次发送时生效。保留关闭状态即可继续使用模型默认行为。</p>
+        <div v-if="generationParameterCapabilities.length" class="chat-generation-parameter-list">
+          <article v-for="capability in generationParameterCapabilities" :key="capability.parameter" class="chat-generation-parameter-card" :class="{ 'is-enabled': generationParameterEnabled(capability.parameter) }">
+            <div class="chat-generation-parameter-card-heading">
+              <div>
+                <h3>{{ generationParameterLabel(capability.parameter) }}</h3>
+                <p>{{ generationParameterDescription(capability.parameter) }}</p>
+              </div>
+              <a-switch :checked="generationParameterEnabled(capability.parameter)" :disabled="disabled" checked-children="启用" un-checked-children="默认" @update:checked="toggleGenerationParameter(capability.parameter, $event)" />
+            </div>
+            <template v-if="generationParameterEnabled(capability.parameter)">
+              <a-input-number
+                v-if="capability.parameter === 'maxOutputTokens' || capability.parameter === 'seed'"
+                :value="generationParameters[capability.parameter]"
+                :min="capability.min"
+                :max="capability.max"
+                :step="capability.step"
+                :precision="0"
+                :disabled="disabled"
+                size="large"
+                class="chat-generation-parameter-number"
+                @update:value="updateGenerationParameter(capability.parameter, $event)"
+              />
+              <a-slider
+                v-else
+                :value="generationParameters[capability.parameter]"
+                :min="capability.min"
+                :max="capability.max"
+                :step="capability.step"
+                :disabled="disabled"
+                :tooltip="{ formatter: (value: number) => formatGenerationParameterValue(capability.parameter, value) }"
+                @update:value="updateGenerationParameter(capability.parameter, $event)"
+              />
+            </template>
+            <div class="chat-generation-parameter-meta">
+              <span>范围 {{ formatGenerationParameterRange(capability.min, capability.max, capability.step) }}</span>
+              <span v-if="generationParameterEnabled(capability.parameter)">当前 {{ formatGenerationParameterValue(capability.parameter, generationParameters[capability.parameter] ?? capability.defaultValue) }}</span>
+              <span v-else>推荐 {{ formatGenerationParameterValue(capability.parameter, capability.defaultValue) }}</span>
+            </div>
+          </article>
+        </div>
+        <a-empty v-else :image="aEmptyImageSimple" description="当前模型没有可调整的生成参数" />
+        <div class="chat-generation-modal-actions">
+          <span>温度和 Top P 不能同时启用。</span>
+          <div>
+            <a-button :disabled="disabled || !hasEnabledGenerationParameters" @click="restoreGenerationParameterDefaults">恢复推荐值</a-button>
+            <a-button type="primary" @click="generationParametersModalOpen = false">完成</a-button>
+          </div>
+        </div>
+      </section>
+    </a-modal>
     <div class="ai-composer-footer">
       <div class="ai-composer-model-controls">
         <a-dropdown :trigger="['click']" placement="topLeft">
@@ -38,6 +109,7 @@
 </template>
 
 <script setup lang="ts">
+import { Empty as AEmpty } from 'ant-design-vue'
 import { PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
 import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
@@ -54,12 +126,12 @@ import { chatComposerCommands, filterChatComposerCommands, findChatComposerComma
 import { chatMixedClipboardParts, type ChatMixedClipboardPart } from './chatMixedClipboard'
 import { chatComposerControlWidths } from './chatComposerControlWidths'
 import { createChatComposerKeyDownHandler } from './chatComposerKeyDownHandler'
-import { reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
+import { chatGenerationParameterDescription, chatGenerationParameterLabel, reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
 import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
 import { maxChatImageCount, selectChatImageFiles, selectChatImageFileSlots } from './chatImageSelection'
 import { ChatImagePreparationQueue } from './chatImagePreparationQueue'
 import { prepareChatImageForUpload } from './chatImageProcessing'
-import type { ChatContextStatus, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatGenerationParameter, ChatGenerationParameters, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import type { ChatImagePolicy } from '@/types/domain/chat'
 
 const props = defineProps<{
@@ -79,6 +151,7 @@ const props = defineProps<{
   modelCapabilitiesLoading: boolean
   reasoningEffort: ChatReasoningEffort | ''
   serviceTier: ChatServiceTier | ''
+  generationParameters: ChatGenerationParameters
   mobile: boolean
 }>()
 const emit = defineEmits<{
@@ -88,6 +161,7 @@ const emit = defineEmits<{
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
+  (event: 'update:generationParameters', value: ChatGenerationParameters): void
 }>()
 
 function handleModelDropdownVisibleChange(open: boolean): void {
@@ -98,6 +172,29 @@ function handleReasoningEffortUpdate(value?: ChatReasoningEffort): void {
 }
 function handleServiceTierUpdate(value?: ChatServiceTier): void {
   emit('update:serviceTier', value ?? '')
+}
+function generationParameterEnabled(parameter: ChatGenerationParameter): boolean {
+  return props.generationParameters[parameter] !== undefined
+}
+function updateGenerationParameter(parameter: ChatGenerationParameter, value: number | number[] | null | undefined): void {
+  if (typeof value !== 'number') return
+  const capability = generationParameterCapabilities.value.find((item) => item.parameter === parameter)
+  if (!capability) return
+  const next = { ...props.generationParameters, [parameter]: value }
+  if (parameter === 'temperature') delete next.topP
+  if (parameter === 'topP') delete next.temperature
+  emit('update:generationParameters', next)
+}
+function toggleGenerationParameter(parameter: ChatGenerationParameter, enabled: boolean): void {
+  const next = { ...props.generationParameters }
+  if (!enabled) delete next[parameter]
+  else {
+    const capability = generationParameterCapabilities.value.find((item) => item.parameter === parameter)
+    if (capability) next[parameter] = capability.defaultValue
+    if (parameter === 'temperature') delete next.topP
+    if (parameter === 'topP') delete next.temperature
+  }
+  emit('update:generationParameters', next)
 }
 function handleToolboxMenuClick(event: { key: string | number }): void {
   if (String(event.key) === 'image') openImagePicker()
@@ -113,6 +210,7 @@ const fileInput = ref<HTMLInputElement>()
 const commandOpen = ref(false)
 const commandQuery = ref('')
 const commandIndex = ref(0)
+const generationParametersModalOpen = ref(false)
 const contentRevision = ref(0)
 const pendingImagePreparationCount = ref(0)
 let conversationGeneration = 0
@@ -219,6 +317,11 @@ const serviceTierOptions = computed(() => (selectedModelOption.value?.supportedS
   const label = value === 'default' ? '服务 默认' : value === 'priority' ? '服务 优先' : '服务 Flex'
   return { label, value, title: label }
 }))
+const generationParameterCapabilities = computed(() => selectedModelOption.value?.generationParameters ?? [])
+const generationParameterLabel = chatGenerationParameterLabel
+const generationParameterDescription = chatGenerationParameterDescription
+const aEmptyImageSimple = AEmpty.PRESENTED_IMAGE_SIMPLE
+const hasEnabledGenerationParameters = computed(() => generationParameterCapabilities.value.some((item) => generationParameterEnabled(item.parameter)))
 const modelControlWidths = computed(() => chatComposerControlWidths('model', props.modelValue, modelSelectOptions.value.map((item) => item.label)))
 const reasoningControlWidths = computed(() => chatComposerControlWidths('reasoning', reasoningOptions.value.find((item) => item.value === props.reasoningEffort)?.label, reasoningOptions.value.map((item) => item.label)))
 const serviceTierControlWidths = computed(() => chatComposerControlWidths('service', serviceTierOptions.value.find((item) => item.value === props.serviceTier)?.label, serviceTierOptions.value.map((item) => item.label)))
@@ -376,9 +479,33 @@ function selectCommand(item: ChatComposerCommand): void {
   } else {
     editor.value.chain().focus().deleteRange(command.range).run()
     if (item.kind === 'image') openImagePicker()
+    else if (item.kind === 'generation') openGenerationParameters()
     else if (item.kind === 'editor') editor.value.commands.insertContent(item.insert)
   }
   commandOpen.value = false
+}
+function openGenerationParameters(): void {
+  if (!generationParameterCapabilities.value.length) {
+    message.info('当前模型没有可调整的生成参数')
+    return
+  }
+  generationParametersModalOpen.value = true
+}
+function restoreGenerationParameterDefaults(): void {
+  const next = { ...props.generationParameters }
+  for (const capability of generationParameterCapabilities.value) {
+    if (next[capability.parameter] !== undefined) next[capability.parameter] = capability.defaultValue
+  }
+  emit('update:generationParameters', next)
+}
+function formatGenerationParameterRange(min: number, max: number, step: number): string {
+  return `${formatCompactNumber(min)} – ${formatCompactNumber(max)}${step > 0 && step !== 1 ? `，步长 ${formatCompactNumber(step)}` : ''}`
+}
+function formatGenerationParameterValue(parameter: ChatGenerationParameter, value: number): string {
+  return parameter === 'maxOutputTokens' || parameter === 'seed' ? formatCompactNumber(Math.trunc(value)) : formatCompactNumber(value)
+}
+function formatCompactNumber(value: number): string {
+  return Number.isInteger(value) ? value.toLocaleString('zh-CN') : String(Number(value.toFixed(4)))
 }
 function currentComposerImageCount(): number {
   let count = 0
@@ -676,9 +803,43 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-command-menu button:hover { background: #f0f7ff; }
 .ai-composer-command-menu button.is-active { background: #eaf3ff; }
 .ai-composer-command-menu small { color: #94a3b8; }
+:global(.chat-generation-parameters-modal .ant-modal) { max-width: calc(100vw - 24px); }
+:global(.chat-generation-parameters-modal .ant-modal-content) { overflow: hidden; padding: 0; border: 1px solid #dbe7f5; border-radius: 16px; box-shadow: 0 24px 64px rgba(15, 23, 42, .2); }
+:global(.chat-generation-parameters-modal .ant-modal-header) { margin: 0; padding: 20px 24px 16px; border-bottom: 1px solid #e8eef6; background: linear-gradient(135deg, #f8fbff 0%, #ffffff 70%); }
+:global(.chat-generation-parameters-modal .ant-modal-body) { padding: 20px 24px 18px; }
+:global(.chat-generation-parameters-modal .ant-modal-close) { top: 17px; inset-inline-end: 18px; color: #64748b; }
+.chat-generation-modal-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-right: 28px; }
+.chat-generation-modal-title strong { display: block; color: #172033; font-size: 18px; line-height: 25px; }
+.chat-generation-modal-title span { display: block; margin-top: 3px; color: #718096; font-size: 12px; line-height: 18px; font-weight: 400; }
+.chat-generation-modal-title .chat-generation-modal-count { flex: 0 0 auto; margin-top: 2px; padding: 3px 8px; border: 1px solid #cfe1fa; border-radius: 999px; color: #1768d6; background: #edf6ff; font-size: 12px; line-height: 18px; }
+.chat-generation-parameters { display: grid; gap: 16px; color: #334155; }
+.chat-generation-modal-intro { margin: 0; color: #64748b; font-size: 13px; line-height: 20px; }
+.chat-generation-parameter-list { display: grid; gap: 10px; }
+.chat-generation-parameter-card { display: grid; gap: 12px; padding: 14px 15px 12px; border: 1px solid #e1e8f0; border-radius: 12px; background: #fbfdff; transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease; }
+.chat-generation-parameter-card.is-enabled { border-color: #bcd8fc; background: #f7fbff; box-shadow: 0 4px 12px rgba(22, 119, 255, .07); }
+.chat-generation-parameter-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.chat-generation-parameter-card-heading h3 { margin: 0; color: #24344d; font-size: 14px; line-height: 21px; font-weight: 650; }
+.chat-generation-parameter-card-heading p { max-width: 450px; margin: 3px 0 0; color: #718096; font-size: 12px; line-height: 18px; }
+.chat-generation-parameter-card-heading :deep(.ant-switch) { flex: 0 0 auto; margin-top: 2px; }
+.chat-generation-parameter-card :deep(.ant-slider) { margin: 3px 7px 1px; }
+.chat-generation-parameter-number { width: 100%; }
+.chat-generation-parameter-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #8895a7; font-size: 12px; line-height: 18px; }
+.chat-generation-parameter-meta span:last-child { color: #4d6482; font-variant-numeric: tabular-nums; }
+.chat-generation-modal-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 4px; border-top: 1px solid #edf1f6; color: #7c899a; font-size: 12px; line-height: 18px; }
+.chat-generation-modal-actions > div { display: flex; gap: 8px; }
 @media (max-width: 520px) {
   .ai-composer-footer { align-items: flex-end; }
   .ai-composer-model-controls :deep(.ant-select-selector) { padding-inline: 3px !important; }
+  :global(.chat-generation-parameters-modal .ant-modal-header) { padding: 17px 18px 14px; }
+  :global(.chat-generation-parameters-modal .ant-modal-body) { padding: 16px 18px; }
+  .chat-generation-modal-title { gap: 8px; }
+  .chat-generation-modal-title strong { font-size: 16px; }
+  .chat-generation-modal-title .chat-generation-modal-count { display: none; }
+  .chat-generation-parameter-card { padding: 13px; }
+  .chat-generation-parameter-card-heading { gap: 10px; }
+  .chat-generation-modal-actions { align-items: flex-start; flex-direction: column; }
+  .chat-generation-modal-actions > div { width: 100%; }
+  .chat-generation-modal-actions :deep(.ant-btn) { flex: 1; }
 }
 @media (pointer: coarse) {
   .ai-composer-context { width: 44px; height: 44px; flex-basis: 44px; }

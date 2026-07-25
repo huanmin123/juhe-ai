@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -19,6 +19,7 @@ import {
   gatewayModelFilterFailureMessage
 } from '../../modules/gateway/dispatch/model-filter.js'
 import { filterOpenAIGatewayRequestCandidateAccounts } from '../../modules/gateway/dispatch/candidate-filter.js'
+import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
 import { logger } from '../../shared/logger.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import type { AccountModelMapping } from '../../domain/types.js'
@@ -119,6 +120,12 @@ assert.equal(unsupported.reason, 'unsupported_model')
 assert.match(gatewayModelFilterFailureMessage(unsupported), /claude-opus-4-6/)
 
 await assertCandidateFilterLoadsModelAwareCandidates()
+await assertCandidateFilterBypassesModelRestrictionsForUpstreamCatalog()
+assert.match(
+  readFileSync(resolve('src/modules/gateway/request/preflight.ts'), 'utf8'),
+  /bypassModelFilter: interactionResourceAffinity !== undefined \|\| options\.forwardModelsRequestToUpstream/,
+  '直连上游模型目录时，网关预检必须绕过账户支持模型筛选'
+)
 await assertStorageRoundTrip()
 
 console.log('account model filter regression passed')
@@ -225,19 +232,18 @@ async function assertStorageRoundTrip(): Promise<void> {
       '账户导入应真实持久化内置模型'
     )
 
-    const defaultedAccount = repositories.createAccount({
+    assert.throws(() => repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '账户模型限制默认回填回归',
+      name: '账户模型限制必填回归',
       type: 'api_key',
       credentials: {
-        api_key: 'sk-account-model-filter-default',
+        api_key: 'sk-account-model-filter-required',
         base_url: 'https://api.openai.com/v1'
       },
       status: 'active',
       groupId: group.id
-    }, access)
-    assert(defaultedAccount.supportedModels?.includes('gpt-5.5'), '创建账户未提交 supportedModels 时应回填供应商默认支持模型')
+    }, access), /账户支持模型不能为空/, '创建账户必须显式选择至少一个支持模型')
 
     const openAICompatibleGroup = repositories.createGroup({
       name: '账户模型限制 OpenAI 兼容分组',
@@ -338,6 +344,45 @@ async function assertCandidateFilterLoadsModelAwareCandidates(): Promise<void> {
   assert.equal(result.outcome, 'accounts')
   if (result.outcome === 'accounts') {
     assert.deepEqual(result.accounts.map((item) => item.id), ['gpt55-only'])
+  }
+}
+
+async function assertCandidateFilterBypassesModelRestrictionsForUpstreamCatalog(): Promise<void> {
+  const result = await filterOpenAIGatewayRequestCandidateAccounts({
+    req: markGatewayUpstreamModelsProbe({
+      method: 'GET',
+      path: '/v1/models',
+      originalUrl: '/v1/models'
+    } as Request),
+    res: {} as Response,
+    auditCapture: {
+      addGatewayMetadata() {}
+    } as unknown as AuditCaptureContext,
+    usageContext: {} as never,
+    startedAt: Date.now(),
+    rawCandidateAccounts: [gpt55Only],
+    clientStrategy: {
+      requestClientCompatibility: 'openai_standard'
+    } as OpenAIGatewayClientStrategyContext,
+    systemAccountId: 'sys_model_filter',
+    groupId: 'group_model_filter',
+    endpoint: 'GET /v1/models',
+    bypassModelFilter: true,
+    routeCoordinator: {
+      requestFallback: async () => ({ attempted: false }),
+      completeFailure: async (failure) => {
+        throw new Error(failure.message)
+      }
+    }
+  })
+
+  assert.equal(result.outcome, 'accounts')
+  if (result.outcome === 'accounts') {
+    assert.deepEqual(
+      result.accounts.map((item) => item.id),
+      ['gpt55-only'],
+      '上游模型目录没有 model 参数时，仍必须使用当前编辑账户，而不是因支持模型限制被筛空'
+    )
   }
 }
 

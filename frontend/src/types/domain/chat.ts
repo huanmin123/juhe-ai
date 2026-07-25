@@ -150,6 +150,15 @@ export type ChatSubmissionStatus =
 
 export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ChatServiceTier = 'default' | 'priority' | 'flex'
+export type ChatGenerationParameter = 'temperature' | 'topP' | 'frequencyPenalty' | 'presencePenalty' | 'maxOutputTokens' | 'seed'
+export type ChatGenerationParameters = Partial<Record<ChatGenerationParameter, number>>
+export interface ChatGenerationParameterCapability {
+  parameter: ChatGenerationParameter
+  min: number
+  max: number
+  step: number
+  defaultValue: number
+}
 export interface ChatModelListOption {
   id: string
   name: string
@@ -169,6 +178,7 @@ export interface ChatModelCapabilities {
   inputModalities: string[]
   outputModalities: string[]
   supportedTools: string[]
+  generationParameters: ChatGenerationParameterCapability[]
 }
 
 export type ChatStreamEvent =

@@ -33,8 +33,9 @@ import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAs
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
-import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport, type ChatTransportProtocol } from './chat-transport.js'
+import { buildChatTransportRequest, chatTransportAccountSupportsProtocol, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport, type ChatTransportAccount, type ChatTransportProtocol } from './chat-transport.js'
 import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption, type ChatModelOption } from './chat-model-options.js'
+import { constrainChatGenerationParametersForRoute, intersectGenerationParameterCapabilityLists, normalizeChatGenerationParameters } from './chat-generation-parameters.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import {
   beginActiveChatAcceptance,
@@ -70,7 +71,7 @@ import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-gene
 import { classifyChatGenerationError, type PublicChatGenerationErrorCode } from './chat-generation-error.js'
 import { createChatSseSubscriber, startChatSseHeartbeat, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
-import { createChatModelOptionsSnapshotCache } from './chat-model-availability.js'
+import { createChatModelOptionsSnapshotCache, resolveChatModelOptionsFromAccountSnapshot } from './chat-model-availability.js'
 import { type ChatHostedTool } from './chat-tools.js'
 import { ChatInternalToolRegistry } from './tools/registry.js'
 import { ChatInternalToolOrchestrator } from './tools/orchestrator.js'
@@ -80,7 +81,6 @@ import { createChatGeneratedImageArtifactSink } from './tools/artifact-sink.js'
 import { loadChatImageEditReferences } from './chat-image-edit-references.js'
 import type { ChatToolExecutionEvent, ChatToolRuntimeEnvironment } from './tools/contracts.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { listClientModelCatalogAsync } from '../model-pricing/client-model-catalog.service.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
 
 export const chatRouter = Router()
@@ -106,7 +106,15 @@ const messageBodySchema = z.object({
   contentBlocks: messageContentBlocksSchema.optional(),
   model: z.string().trim().min(1, '请选择模型').max(200),
   reasoningEffort: z.enum(chatReasoningEfforts).optional(),
-  serviceTier: z.enum(chatServiceTiers).optional()
+  serviceTier: z.enum(chatServiceTiers).optional(),
+  generationParameters: z.object({
+    temperature: z.number().finite().optional(),
+    topP: z.number().finite().optional(),
+    frequencyPenalty: z.number().finite().optional(),
+    presencePenalty: z.number().finite().optional(),
+    maxOutputTokens: z.number().int().finite().optional(),
+    seed: z.number().int().finite().optional()
+  }).strict().optional()
 }).strict()
 const messagesQuerySchema = z.object({
   beforeSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
@@ -201,7 +209,11 @@ chatRouter.post('/conversations', async (req, res, next) => {
       ? await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
       : await requireChatApiKeyForOwnerAsync(auth.systemAccountId)
     const modelAccess = await loadChatModelAccessAsync(apiKey, auth.systemAccountId)
-    const defaultModel = (await loadChatModelListsAsync(auth.systemAccountId, modelAccess.providerCodes)).defaultModel
+    const defaultModel = (await loadChatModelListsFromAccountSnapshot({
+      groupIds: modelAccess.groupIds,
+      systemAccountId: auth.systemAccountId,
+      apiKeyId: apiKey.id
+    })).defaultModel
     const client = await getChatDatabaseClient()
     const conversation = await createChatConversation(client, {
       systemAccountId: auth.systemAccountId,
@@ -563,13 +575,20 @@ chatRouter.get('/conversations/:conversationId/models/:modelId', async (req, res
   try {
     const auth = requireChatAuth()
     const modelAccess = await requireOwnedChatModelAccessAsync(req.params.conversationId, auth.systemAccountId)
-    const catalog = (await Promise.all(modelAccess.providerCodes.map((providerCode) => (
-      listClientModelCatalogAsync({ systemAccountId: auth.systemAccountId, providerCodes: [providerCode] })
-    )))).flat().filter((item) => (
+    const snapshot = await loadChatModelCatalogSnapshot({
+      groupIds: modelAccess.groupIds,
+      systemAccountId: auth.systemAccountId,
+      requestedModel: req.params.modelId,
+      apiKeyId: modelAccess.apiKey.id
+    })
+    const catalog = snapshot.catalog.filter((item) => (
       item.model === req.params.modelId
       && item.supportedApiProtocols.some(isChatModelProtocol)
     ))
-    const modelOption = catalog.length ? buildChatModelOptions([req.params.modelId], catalog)[0] : undefined
+    const baseModelOption = catalog.length ? buildChatModelOptions([req.params.modelId], catalog)[0] : undefined
+    const modelOption = baseModelOption
+      ? constrainChatModelOptionForAccounts(baseModelOption, req.params.modelId, snapshot.accounts)
+      : undefined
     const model = modelOption ? { ...modelOption, name: modelOption.id } satisfies ChatModelCapabilities : undefined
     if (!model) {
       res.status(404).json({ message: '当前会话没有可用的该模型', code: 'chat_model_not_found' })
@@ -688,6 +707,16 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       supportedProtocols: accountSupportedProtocols,
       preferResponses: supportsWebSearch || imageCount > 0
     })
+    const routeAccounts = (await Promise.all([...new Set(groupIds.filter(Boolean))].map((groupId) => (
+      listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
+        requestedModel: body.model,
+        requestedEndpointFamily: protocol
+      })
+    )))).flat().filter((account) => chatTransportAccountSupportsProtocol(account, body.model, protocol))
+    const routeModelOption = constrainChatModelOptionForAccounts(modelOption, body.model, routeAccounts, [protocol])
+    if (!routeModelOption.supportedApiProtocols.length) {
+      throw new ChatModelCapabilityError('当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射')
+    }
     const effectiveTools: ChatHostedTool[] = protocol === 'responses'
       ? [...(supportsWebSearch ? ['web_search' as const] : [])]
       : []
@@ -720,11 +749,12 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       now: new Date().toISOString()
     })
     assertChatPreparationActive(preparationClaim)
-    const modelRequestOptions = resolveChatModelRequestOptions(modelOption, {
+    const modelRequestOptions = resolveChatModelRequestOptions(routeModelOption, {
       reasoningEffort: body.reasoningEffort,
-      serviceTier: body.serviceTier
+      serviceTier: body.serviceTier,
+      generationParameters: normalizeChatGenerationParameters(body.generationParameters)
     })
-    const promptCacheKey = modelOption.supportsPromptCaching
+    const promptCacheKey = routeModelOption.supportsPromptCaching
       ? buildChatPromptCacheKey({
           systemAccountId: ownerId,
           apiKeyId: apiKey.id,
@@ -838,6 +868,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       internalTools,
       reasoningEffort: modelRequestOptions.reasoningEffort,
       serviceTier: modelRequestOptions.serviceTier,
+      generationParameters: modelRequestOptions.generationParameters,
       promptCacheKey
     })
     serializedTransportBody = JSON.stringify(transport.body)
@@ -867,6 +898,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           internalTools,
           reasoningEffort: modelRequestOptions.reasoningEffort,
           serviceTier: modelRequestOptions.serviceTier,
+          generationParameters: modelRequestOptions.generationParameters,
           promptCacheKey
         })
         serializedTransportBody = JSON.stringify(transport.body)
@@ -981,6 +1013,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
                 toolContinuation: request.continuation,
                 reasoningEffort: modelRequestOptions.reasoningEffort,
                 serviceTier: modelRequestOptions.serviceTier,
+                generationParameters: modelRequestOptions.generationParameters,
                 promptCacheKey
               })
               const roundBody = JSON.stringify(roundTransport.body)
@@ -1567,7 +1600,11 @@ async function loadChatConversationToolCapabilities(
 async function loadOwnedChatModelListAsync(conversationId: string, systemAccountId: string): Promise<ChatModelListOption[]> {
   const modelAccess = await requireOwnedChatModelAccessAsync(conversationId, systemAccountId)
   const cacheIdentity = `${systemAccountId}:${modelAccess.apiKey.id}`
-  return chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => (await loadChatModelListsAsync(systemAccountId, modelAccess.providerCodes)).models)
+  return chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => (await loadChatModelListsFromAccountSnapshot({
+    groupIds: modelAccess.groupIds,
+    systemAccountId,
+    apiKeyId: modelAccess.apiKey.id
+  })).models)
 }
 
 async function requireOwnedChatModelAccessAsync(conversationId: string, systemAccountId: string) {
@@ -1581,19 +1618,46 @@ async function loadChatModelAccessAsync(apiKey: Awaited<ReturnType<typeof requir
     await validateGatewayApiKeyAsync(String(apiKey.key))
   ))
   if (!gatewayKey) throw new Error('API Key 不存在或不可用')
-  const providerCodes = [...new Set((gatewayKey.group_bindings ?? [])
+  const activeBindings = (gatewayKey.group_bindings ?? [])
     .filter((binding) => binding.status === 'active' && binding.group_enabled !== 0)
-    .map((binding) => binding.provider_code.trim())
-    .filter(Boolean))]
-  return { apiKey, providerCodes }
+  const groupIds = [...new Set(activeBindings.map((binding) => binding.group_id).filter(Boolean))]
+  return { apiKey, groupIds }
 }
 
-async function loadChatModelListsAsync(systemAccountId: string, providerCodes: readonly string[]) {
-  const catalog = await listClientModelCatalogAsync({ systemAccountId, providerCodes })
-  const models = catalog
-    .filter((item) => item.supportedApiProtocols.some(isChatModelProtocol))
-    .map((item) => ({ id: item.model, name: item.model }))
+async function loadChatModelListsFromAccountSnapshot(input: {
+  groupIds: readonly string[]
+  systemAccountId: string
+  apiKeyId?: string
+}) {
+  const snapshot = await loadChatModelCatalogSnapshot(input)
+  const modelOptions = buildChatModelOptions(snapshot.catalog.map((item) => item.model), snapshot.catalog)
+  const models = resolveChatModelOptionsFromAccountSnapshot({
+    accounts: snapshot.accounts,
+    modelOptions
+  }).map((model) => ({ id: model.id, name: model.id }))
   return { defaultModel: models[0], models }
+}
+
+function constrainChatModelOptionForAccounts(
+  modelOption: ChatModelOption,
+  model: string,
+  accounts: readonly ChatTransportAccount[],
+  requestedProtocols?: readonly ChatTransportProtocol[]
+): ChatModelOption {
+  const supportedApiProtocols = (requestedProtocols ?? modelOption.supportedApiProtocols)
+    .filter((protocol): protocol is ChatTransportProtocol => (
+      (protocol === 'chat_completions' || protocol === 'responses')
+      && accounts.some((account) => chatTransportAccountSupportsProtocol(account, model, protocol))
+    ))
+  const generationParameters = intersectGenerationParameterCapabilityLists(supportedApiProtocols.map((protocol) => (
+    constrainChatGenerationParametersForRoute({
+      capabilities: modelOption.generationParameters,
+      model,
+      protocol,
+      accounts: accounts.filter((account) => chatTransportAccountSupportsProtocol(account, model, protocol))
+    })
+  )))
+  return { ...modelOption, supportedApiProtocols, generationParameters }
 }
 
 function isChatModelProtocol(protocol: string): boolean {

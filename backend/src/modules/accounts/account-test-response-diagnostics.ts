@@ -26,6 +26,28 @@ export function resolveAccountTestResponseDiagnostics(input: {
   }
 }
 
+export function redactAccountTestImageResponse(bodyText: string): unknown {
+  try {
+    return redactImageFields(JSON.parse(bodyText) as unknown)
+  } catch {
+    return { response: '已省略' }
+  }
+}
+
+function redactImageFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactImageFields)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key,
+    isImageResponseField(key) ? '已省略' : redactImageFields(item)
+  ]))
+}
+
+function isImageResponseField(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalized === 'b64json' || normalized === 'url' || normalized === 'imageurl'
+}
+
 export function parseAccountTestUpstreamErrorCode(bodyText: string): string | undefined {
   if (!bodyText) return undefined
   try {

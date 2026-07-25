@@ -46,6 +46,7 @@
     "ChatRunnerState": ["running", "missing", "terminal"],
     "ChatReasoningEffort": ["minimal", "low", "medium", "high", "xhigh", "max"],
     "ChatServiceTier": ["default", "priority", "flex"],
+    "ChatGenerationParameter": ["temperature", "topP", "frequencyPenalty", "presencePenalty", "maxOutputTokens", "seed"],
     "ChatAssetMimeType": ["image/jpeg", "image/png", "image/webp"],
     "ChatImageInputMimeType": ["image/webp"]
   },
@@ -75,13 +76,37 @@
         "supportedApiProtocols": "array:string",
         "inputModalities": "array:string",
         "outputModalities": "array:string",
-        "supportedTools": "array:string"
+        "supportedTools": "array:string",
+        "generationParameters": "array-dto:ChatGenerationParameterCapability"
       },
       "optional": {
         "defaultReasoningEffort": "enum:ChatReasoningEffort",
         "contextWindowTokens": "integer",
         "maxInputTokens": "integer",
         "maxOutputTokens": "integer"
+      },
+      "additionalProperties": false
+    },
+    "ChatGenerationParameterCapability": {
+      "required": {
+        "parameter": "enum:ChatGenerationParameter",
+        "min": "number",
+        "max": "number",
+        "step": "number",
+        "defaultValue": "number"
+      },
+      "optional": {},
+      "additionalProperties": false
+    },
+    "ChatGenerationParameters": {
+      "required": {},
+      "optional": {
+        "temperature": "number",
+        "topP": "number",
+        "frequencyPenalty": "number",
+        "presencePenalty": "number",
+        "maxOutputTokens": "integer",
+        "seed": "integer"
       },
       "additionalProperties": false
     },
@@ -104,6 +129,7 @@
         "apiKeyId": "id",
         "defaultModel": "dto:ChatModelListOption",
         "lastModel": "string",
+        "toolCapabilities": "object",
         "activeTurnId": "id"
       },
       "additionalProperties": false
@@ -516,7 +542,7 @@
       "owner": { "scope": "self-resource", "source": "requireOwnedChatModelAccessAsync", "foreignResult": { "status": 404, "code": "chat_conversation_not_found", "error": "chat_conversation_not_found" } },
       "request": { "path": { "conversationId": "opaque non-empty path segment", "modelId": "opaque model ID path segment" }, "query": {}, "body": { "kind": "none", "fields": [] } },
       "cursor": null,
-      "success": [{ "status": 200, "envelope": "json-data", "dto": "ChatModelCapabilities", "fixture": { "data": { "id": "gpt-5.2", "name": "gpt-5.2", "supportsPromptCaching": true, "supportedReasoningEfforts": ["low", "medium", "high"], "defaultReasoningEffort": "medium", "supportedServiceTiers": ["default", "priority"], "contextWindowTokens": 400000, "maxInputTokens": 360000, "maxOutputTokens": 40000, "supportedApiProtocols": ["responses"], "inputModalities": ["text", "image"], "outputModalities": ["text"], "supportedTools": ["web_search", "function_calling"] } } }],
+      "success": [{ "status": 200, "envelope": "json-data", "dto": "ChatModelCapabilities", "fixture": { "data": { "id": "gpt-5.2", "name": "gpt-5.2", "supportsPromptCaching": true, "supportedReasoningEfforts": ["low", "medium", "high"], "defaultReasoningEffort": "medium", "supportedServiceTiers": ["default", "priority"], "contextWindowTokens": 400000, "maxInputTokens": 360000, "maxOutputTokens": 40000, "supportedApiProtocols": ["responses"], "inputModalities": ["text", "image"], "outputModalities": ["text"], "supportedTools": ["web_search", "function_calling"], "generationParameters": [{ "parameter": "maxOutputTokens", "min": 1, "max": 40000, "step": 1, "defaultValue": 4096 }] } } }],
       "errors": ["chat_conversation_not_found", "chat_model_not_found"]
     },
     {
@@ -526,7 +552,7 @@
       "frontend": "streamChatMessage",
       "auth": "session",
       "owner": { "scope": "self-resource", "source": "getChatConversation + all turn/asset/model operations use auth.systemAccountId", "foreignResult": { "status": 404, "code": "chat_conversation_not_found", "error": "chat_conversation_not_found" } },
-      "request": { "path": { "conversationId": "opaque non-empty path segment" }, "query": {}, "body": { "kind": "json-strict", "fields": ["clientMessageId", "replaceTurnId?", "content", "contentBlocks?", "model", "reasoningEffort?", "serviceTier?"], "constraints": "clientMessageId/replaceTurnId <=100; content trimmed 1..196608 chars and <=192 KiB UTF-8; contentBlocks <=11 with <=5 unique input_image assetId entries; model <=200; enums are exact", "fixture": { "clientMessageId": "<client-message-id>", "content": "请分析这张图", "contentBlocks": [{ "type": "input_text", "text": "请分析这张图" }, { "type": "input_image", "assetId": "<asset-id>" }], "model": "gpt-5.2", "reasoningEffort": "medium", "serviceTier": "priority" } } },
+      "request": { "path": { "conversationId": "opaque non-empty path segment" }, "query": {}, "body": { "kind": "json-strict", "fields": ["clientMessageId", "replaceTurnId?", "content", "contentBlocks?", "model", "reasoningEffort?", "serviceTier?", "generationParameters?"], "constraints": "clientMessageId/replaceTurnId <=100; content trimmed 1..196608 chars and <=192 KiB UTF-8; contentBlocks <=11 with <=5 unique input_image assetId entries; model <=200; generationParameters is optional dto:ChatGenerationParameters; temperature/topP are mutually exclusive; values must be within the current model capability range; enums are exact", "fixture": { "clientMessageId": "<client-message-id>", "content": "请分析这张图", "contentBlocks": [{ "type": "input_text", "text": "请分析这张图" }, { "type": "input_image", "assetId": "<asset-id>" }], "model": "gpt-5.2", "reasoningEffort": "medium", "serviceTier": "priority", "generationParameters": { "maxOutputTokens": 4096 } } } },
       "cursor": null,
       "success": [{ "status": 200, "envelope": "sse", "dto": null, "headers": { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } }],
       "errors": ["request_body_invalid", "request_body_too_large", "chat_invalid_request", "chat_message_too_large", "chat_conversation_not_found", "chat_message_already_exists", "chat_turn_limit_exceeded", "chat_message_in_progress", "chat_replace_conflict", "chat_context_compacting", "chat_conversation_clearing", "chat_storage_quota_exceeded", "chat_image_not_supported", "chat_request_body_too_large", "chat_input_exceeds_context", "chat_asset_unavailable", "chat_model_capability_mismatch", "chat_context_unavailable", "chat_preparation_canceled"]

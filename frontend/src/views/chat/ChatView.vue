@@ -56,6 +56,7 @@
             v-model="selectedModel"
             v-model:reasoning-effort="selectedReasoningEffort"
             v-model:service-tier="selectedServiceTier"
+            v-model:generation-parameters="selectedGenerationParameters"
             :conversation-id="selectedConversation.id"
             :context-status="contextStatus"
             :context-status-loading="contextStatusLoading"
@@ -148,7 +149,7 @@ import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatGenerationParameters, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, beginLatestTurnRetry, isDefinitiveChatHttpRejection, removeInvalidatedGeneratedAssetsFromDraft, resolveChatReconciliationNotice, resolveChatSubmitFailure, restoreChatMessagesAfterRejectedReplacement } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -171,7 +172,7 @@ import {
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
-import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatModelControls } from './composer/chatModelControls'
+import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatGenerationParameters, normalizeChatModelControls } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
 import { clampChatFloatingMenuPosition, resolveChatVisualViewportBounds } from './chatViewport'
 import { chatGenerationRuntime, type RunningTurn } from './chatGenerationRuntime'
@@ -228,6 +229,7 @@ const selectedModel = ref<string>()
 const selectedModelCapabilities = ref<ChatModelCapabilities>()
 const selectedReasoningEffort = ref<ChatReasoningEffort | ''>('')
 const selectedServiceTier = ref<ChatServiceTier | ''>('')
+const selectedGenerationParameters = ref<ChatGenerationParameters>({})
 const contextStatus = ref<ChatContextStatus>()
 const contextStatusLoading = ref(false)
 const messagesLoading = ref(false)
@@ -650,7 +652,8 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
       contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
       model,
       reasoningEffort: selectedReasoningEffort.value || undefined,
-      serviceTier: selectedServiceTier.value || undefined
+      serviceTier: selectedServiceTier.value || undefined,
+      generationParameters: selectedGenerationParameters.value
     })
   } catch (error) {
     if (isRequestUiCurrent(requestContext)) {
@@ -1566,7 +1569,11 @@ async function confirmDeleteConversation(): Promise<void> { const item = pending
 function replaceConversation(next: ChatConversation): void { const index = conversations.value.findIndex((item) => item.id === next.id); if (index >= 0) conversations.value[index] = next; if (detailConversation.value?.id === next.id) detailConversation.value = next }
 function sortConversations(): void { conversations.value.sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt) || right.id.localeCompare(left.id)) }
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
-function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
+function resetModelControls(): void {
+  selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value)
+  selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value)
+  selectedGenerationParameters.value = {}
+}
 function normalizeCurrentModelControls(): void {
   const normalized = normalizeChatModelControls({
     model: selectedModelOption.value,
@@ -1575,6 +1582,10 @@ function normalizeCurrentModelControls(): void {
   })
   selectedReasoningEffort.value = normalized.reasoningEffort
   selectedServiceTier.value = normalized.serviceTier
+  selectedGenerationParameters.value = normalizeChatGenerationParameters({
+    model: selectedModelOption.value,
+    values: selectedGenerationParameters.value
+  })
 }
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'

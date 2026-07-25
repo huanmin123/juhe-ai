@@ -22,6 +22,7 @@ import {
   normalizeAccountModelMappingsForProvider,
   normalizeAccountModelMappingsForProviderAsync
 } from '../../storage/repositories.js'
+import { listGroupsAsync } from '../../storage/group-summary.repository.js'
 import type { RequestAccessScope } from '../auth/request-context.js'
 import {
   assertAccountGptRequestOverridesSupported,
@@ -47,6 +48,153 @@ export interface AccountDraftTestAccountRequest {
   accountExpiresAt?: string | null
   availabilitySchedule?: Record<string, unknown> | null
   notes?: string
+}
+
+/**
+ * 上游模型目录发现不依赖检查模型或已选模型。它仍选用当前用户可管理的同供应商分组，
+ * 以复用真实网关、代理和凭据转发链路。
+ */
+export interface AccountModelCatalogDiscoveryAccountRequest {
+  providerCode: string
+  providerProtocolProfileId: string
+  type: string
+  credentials?: Record<string, unknown>
+  name?: string
+  groupId?: string
+  proxyProfileId?: string | null
+  supportedModels?: string[]
+  healthCheckModel?: string
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
+}
+
+export async function prepareAccountModelCatalogDiscoverySnapshotAsync(input: {
+  accountInput: AccountModelCatalogDiscoveryAccountRequest
+  requestAccess: RequestAccessScope
+}): Promise<{ account: AccountSummary; draftAccount: AccountTestDraftSnapshot }> {
+  const accountInput = input.accountInput
+  const providers = await listProvidersAsync()
+  const provider = providers.find((item) => item.code === accountInput.providerCode)
+  const providerProfile = provider?.protocolProfiles.find((item) => item.id === optionalText(accountInput.providerProtocolProfileId))
+  if (!provider || !providerProfile || !providerProfile.accountTypes.includes(accountInput.type as AccountSummary['type'])) {
+    throw new Error(`供应商 ${accountInput.providerCode} 不支持账户类型 ${accountInput.type}`)
+  }
+  if (!provider.enabled) throw new Error(`供应商已停用：${accountInput.providerCode}`)
+  if (!isGatewaySupportedProtocolProfile(providerProfile)) {
+    throw new Error('当前协议不支持获取上游模型目录')
+  }
+
+  const requestedGroupId = optionalText(accountInput.groupId)
+  const groups = requestedGroupId
+    ? [await findGroupSummaryAsync(requestedGroupId, input.requestAccess)]
+    : await listGroupsAsync(input.requestAccess)
+  const group = groups.find((item) => (
+    item?.providerCode === accountInput.providerCode && item.permissions?.canManageAccounts !== false
+  ))
+  if (!group) throw new Error('请先选择或创建当前供应商的可管理分组，再获取上游模型目录')
+  const ownerSystemAccountId = group.ownerSystemAccountId
+    ?? group.systemAccountId
+    ?? input.requestAccess.systemAccountFilterId
+    ?? input.requestAccess.systemAccountId
+  if (!ownerSystemAccountId) throw new Error('账户分组缺少归属用户，无法获取上游模型目录')
+
+  const clientCompatibility = isAnthropicProtocolProfile(providerProfile)
+    ? 'openai_standard' as const
+    : normalizeOpenAIAccountClientCompatibility(
+        accountInput.providerCode,
+        accountInput.type,
+        undefined,
+        'openai_standard',
+        providerProfile
+      )
+  const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
+    providerCode: accountInput.providerCode,
+    accountType: accountInput.type,
+    clientCompatibility,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
+  const supportedModels = normalizedTextList(accountInput.supportedModels)
+  const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
+    value: accountInput.healthCheckEndpointMode,
+    providerCode: accountInput.providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
+  const id = newId('acctcatalog')
+  const usage = emptyAccountUsageSummary()
+  const account: AccountSummary = {
+    id,
+    systemAccountId: ownerSystemAccountId,
+    ownerSystemAccountId,
+    providerCode: accountInput.providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion,
+    name: optionalText(accountInput.name) ?? '上游模型目录发现',
+    type: accountInput.type as AccountSummary['type'],
+    credentials,
+    status: 'active',
+    concurrencyLimit: 1,
+    currentConcurrency: 0,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility,
+    supportedModels,
+    healthCheckModel: optionalText(accountInput.healthCheckModel) ?? '',
+    healthCheckEndpointMode,
+    modelMappings: [],
+    schedulable: false,
+    availabilitySchedule: accountAvailabilityScheduleFromRequest({}),
+    todayUsage: usage,
+    usage,
+    boundGroupId: group.id,
+    boundGroupName: group.name,
+    groupBindStatus: 'bound',
+    accessType: 'owner',
+    permissions: {
+      canUse: true,
+      canEdit: true,
+      canDelete: true,
+      canAuthorize: false,
+      canViewCredentials: true,
+      canManageAccounts: true,
+      canBindToApiKey: true
+    },
+    effectiveAvailability: {
+      available: true,
+      status: 'available',
+      label: '模型目录发现',
+      color: 'blue'
+    }
+  }
+  return {
+    account,
+    draftAccount: {
+      id,
+      ownerSystemAccountId,
+      groupId: group.id,
+      groupName: group.name,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: providerProfile.id,
+      protocolCode: providerProfile.protocolCode,
+      protocolVersion: providerProfile.protocolVersion,
+      name: account.name,
+      type: account.type,
+      credentials,
+      concurrencyLimit: 1,
+      priority: 0,
+      superPriorityEnabled: false,
+      fallbackEnabled: false,
+      clientCompatibility,
+      supportedModels,
+      healthCheckModel: account.healthCheckModel,
+      healthCheckEndpointMode,
+      modelMappings: [],
+      proxyProfileId: optionalText(accountInput.proxyProfileId)
+    }
+  }
 }
 
 export function savedAccountDraftTestSnapshot(
@@ -349,7 +497,7 @@ async function prepareAccountDraftTestSnapshotResolvedAsync(
   }
 }
 
-function draftAccountCredentials(account: AccountDraftTestAccountRequest, providerBaseUrl: string): Record<string, unknown> {
+function draftAccountCredentials(account: Pick<AccountDraftTestAccountRequest, 'type' | 'credentials'>, providerBaseUrl: string): Record<string, unknown> {
   const credentials = credentialsRecordValue(account.credentials) ?? {}
   if (account.type !== 'oauth' || hasCredentialText(credentials.base_url)) {
     return credentials

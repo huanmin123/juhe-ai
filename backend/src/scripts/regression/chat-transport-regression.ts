@@ -59,6 +59,14 @@ assert.deepEqual(
 assert.equal(responses.body.service_tier, 'default')
 assert.equal(responses.body.prompt_cache_key, firstConversationKey)
 
+const responsesWithGenerationParameters = buildChatTransportRequest({
+  protocol: 'responses', instructions, model: 'model-a', history: [], currentContent: '参数', effectiveTools: [],
+  generationParameters: { temperature: 0.4, maxOutputTokens: 321, frequencyPenalty: 1 }
+})
+assert.equal(responsesWithGenerationParameters.body.temperature, 0.4)
+assert.equal(responsesWithGenerationParameters.body.max_output_tokens, 321)
+assert.equal(Object.hasOwn(responsesWithGenerationParameters.body, 'frequency_penalty'), false, 'Responses 不得透传不支持的 penalty 字段')
+
 const responsesPlainText = buildChatTransportRequest({
   protocol: 'responses', instructions, model: 'model-a', history: [], currentContent: '纯文本首轮', effectiveTools: []
 })
@@ -78,6 +86,18 @@ assert.equal(chat.body.reasoning_effort, 'low')
 assert.equal(chat.body.service_tier, 'flex')
 assert.equal(chat.body.prompt_cache_key, firstConversationKey)
 assert.deepEqual(chat.body.stream_options, { include_usage: true })
+
+const chatWithGenerationParameters = buildChatTransportRequest({
+  protocol: 'chat_completions', instructions, model: 'model-a', history: [], currentContent: '参数', effectiveTools: [],
+  generationParameters: { topP: 0.8, frequencyPenalty: 0.5, presencePenalty: -0.2, maxOutputTokens: 123, seed: 42 }
+})
+assert.deepEqual({
+  top_p: chatWithGenerationParameters.body.top_p,
+  frequency_penalty: chatWithGenerationParameters.body.frequency_penalty,
+  presence_penalty: chatWithGenerationParameters.body.presence_penalty,
+  max_completion_tokens: chatWithGenerationParameters.body.max_completion_tokens,
+  seed: chatWithGenerationParameters.body.seed
+}, { top_p: 0.8, frequency_penalty: 0.5, presence_penalty: -0.2, max_completion_tokens: 123, seed: 42 })
 
 const diagnosticTool = createDiagnosticEchoTool()
 const responsesWithInternalTool = buildChatTransportRequest({

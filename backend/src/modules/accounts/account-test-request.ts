@@ -21,7 +21,16 @@ const claudeCodeVersion = '2.1.201'
 const claudeCodeBuildId = 'eb7'
 const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 export const accountTestModelsPath = '/v1/models'
+export const accountTestGeminiModelsPath = '/v1beta/models'
 export const accountImageTestDefaultPrompt = 'Solid black.'
+
+export function accountTestModelsPathForProtocol(protocolCode: string | undefined): string {
+  return protocolCode === 'gemini' ? accountTestGeminiModelsPath : accountTestModelsPath
+}
+
+export function isAccountTestModelsPath(path: string | undefined): boolean {
+  return path === accountTestModelsPath || path === accountTestGeminiModelsPath
+}
 
 export type AccountTestRequestInput = {
   explicitModel?: string

@@ -122,14 +122,14 @@ try {
       groupId: group.id,
       status: 'active',
       schedulable: true,
-      supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
-          sourceModel: 'deepseek-ai-v4-flash',
+          sourceModel: 'deepseek-v4-flash',
           sourceEndpointFamily: 'chat_completions',
-          upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamModel: 'deepseek-v4-pro',
           upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
@@ -157,8 +157,8 @@ try {
       groupId: bodyInterruptedGroup.id,
       status: 'active',
       schedulable: true,
-      supportedModels: ['deepseek-ai-v4-flash'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json'
     }, access)
     repositories.createAccount({
@@ -174,8 +174,8 @@ try {
       status: 'active',
       schedulable: true,
       priority: 10,
-      supportedModels: ['deepseek-ai-v4-flash'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json'
     }, access)
 
@@ -196,14 +196,14 @@ try {
       groupId: retryGroup.id,
       status: 'active',
       schedulable: true,
-      supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
-          sourceModel: 'deepseek-ai-v4-flash',
+          sourceModel: 'deepseek-v4-flash',
           sourceEndpointFamily: 'chat_completions',
-          upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamModel: 'deepseek-v4-pro',
           upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
@@ -222,14 +222,14 @@ try {
       status: 'active',
       schedulable: true,
       priority: 10,
-      supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
-          sourceModel: 'deepseek-ai-v4-flash',
+          sourceModel: 'deepseek-v4-flash',
           sourceEndpointFamily: 'chat_completions',
-          upstreamModel: 'deepseek-ai-v4-pro',
+          upstreamModel: 'deepseek-v4-pro',
           upstreamEndpointFamily: 'chat_completions',
           enabled: true
         }
@@ -258,8 +258,8 @@ try {
         status: 'active',
         schedulable: true,
         priority: item.priority,
-        supportedModels: ['deepseek-ai-v4-flash'],
-        healthCheckModel: 'deepseek-ai-v4-flash',
+        supportedModels: ['deepseek-v4-flash'],
+        healthCheckModel: 'deepseek-v4-flash',
         healthCheckEndpointMode: 'chat_json'
       }, access)
     }
@@ -281,19 +281,19 @@ try {
       groupId: codexBridgeGroup.id,
       status: 'active',
       schedulable: true,
-      supportedModels: ['deepseek-ai-v4-flash'],
-      healthCheckModel: 'deepseek-ai-v4-flash',
+      supportedModels: ['deepseek-v4-flash'],
+      healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json',
       modelMappings: [{
         sourceModel: 'deepseek-v4-flash',
         sourceEndpointFamily: 'responses',
-        upstreamModel: 'deepseek-ai-v4-flash',
+        upstreamModel: 'deepseek-v4-flash',
         upstreamEndpointFamily: 'chat_completions',
         enabled: true
       }, {
         sourceModel: 'deepseek-v4-flash',
         sourceEndpointFamily: 'chat_completions',
-        upstreamModel: 'deepseek-ai-v4-flash',
+        upstreamModel: 'deepseek-v4-flash',
         upstreamEndpointFamily: 'chat_completions',
         enabled: true
       }]
@@ -346,7 +346,7 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertDeepSeekModels(baseUrl, apiKey.key)
-    await assertPublicModelsWithoutApiKey(baseUrl)
+    await assertModelsWithoutApiKeyRejected(baseUrl)
     await assertInvalidModelsApiKeyRejected(baseUrl)
     await assertDeepSeekChatJson(baseUrl, apiKey.key)
     await assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(baseUrl, bodyInterruptedApiKey.key)
@@ -408,22 +408,21 @@ async function assertDeepSeekModels(baseUrl: string, localApiKey: string): Promi
   assert.equal(response.status, 200, `DeepSeek 本地模型目录应成功，实际 HTTP ${response.status}: ${text}`)
   const body = JSON.parse(text) as { data?: Array<{ id?: string }> }
   const models = new Set((body.data ?? []).map((item) => item.id))
-  assert(models.has('deepseek-ai-v4-flash'), 'DeepSeek 本地模型目录应包含 deepseek-ai-v4-flash')
-  assert(models.has('deepseek-ai-v4-pro'), 'DeepSeek 本地模型目录应包含 deepseek-ai-v4-pro')
+  assert(models.has('deepseek-v4-flash'), 'DeepSeek 本地模型目录应包含 deepseek-v4-flash')
+  assert(models.has('deepseek-v4-pro'), 'DeepSeek 本地模型目录应包含 deepseek-v4-pro')
   assert(models.has(privateDeepSeekModel), '带有效 API Key 的模型目录应包含当前用户个人自定义模型')
 }
 
-async function assertPublicModelsWithoutApiKey(baseUrl: string): Promise<void> {
+async function assertModelsWithoutApiKeyRejected(baseUrl: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/models`)
   const text = await response.text()
-  assert.equal(response.status, 200, `无 API Key 的公开模型目录不应要求认证，实际 HTTP ${response.status}: ${text}`)
-  const body = JSON.parse(text) as { object?: string; data?: Array<{ id?: string }>; error?: unknown }
-  assert.equal(body.object, 'list', '无 API Key 的公开模型目录应返回 OpenAI 风格 object=list')
-  assert(Array.isArray(body.data), '无 API Key 的公开模型目录应返回 data 数组')
-  assert.equal(body.error, undefined, '无 API Key 的公开模型目录不应返回认证错误')
-  assert.equal((body.data ?? []).some((item) => item.id === privateDeepSeekModel), false, '公开模型目录不应泄露用户个人自定义模型')
-  assert.equal(upstreamHits.length, 0, '公开模型目录不应命中上游 mock')
+  assert.equal(response.status, 401, `无 API Key 的模型目录必须认证，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { object?: string; data?: unknown[]; error?: { type?: string } }
+  assert.equal(body.error?.type, 'invalid_request_error', '无 API Key 的模型目录必须返回认证错误')
+  assert.equal(body.object, undefined, '无 API Key 的模型目录不得返回公开模型列表 object=list')
+  assert.equal(body.data, undefined, '无 API Key 的模型目录不得返回公开模型列表 data')
+  assert.equal(upstreamHits.length, 0, '无 API Key 的模型目录不应命中上游 mock')
 }
 
 async function assertInvalidModelsApiKeyRejected(baseUrl: string): Promise<void> {
@@ -451,7 +450,7 @@ async function assertDeepSeekChatJson(baseUrl: string, localApiKey: string): Pro
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello deepseek json' }],
       stream: false
     })
@@ -469,7 +468,7 @@ async function assertDeepSeekChatJson(baseUrl: string, localApiKey: string): Pro
   assert(Number(hit.contentLength) > 0, 'DeepSeek 上游请求应携带 Content-Length')
   assert.equal(hit.transferEncoding, '', 'DeepSeek 上游请求不应使用 chunked transfer-encoding')
   const upstreamBody = JSON.parse(hit.bodyText) as { model?: string }
-  assert.equal(upstreamBody.model, 'deepseek-ai-v4-pro', 'DeepSeek 账户模型映射应改写上游模型')
+  assert.equal(upstreamBody.model, 'deepseek-v4-pro', 'DeepSeek 账户模型映射应改写上游模型')
 
   const usage = parseOpenAIUsageFromJsonBuffer(Buffer.from(text, 'utf8'))
   assert.equal(usage.inputTokens, 1000)
@@ -486,7 +485,7 @@ async function assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello deepseek json body interrupted' }],
       stream: false
     })
@@ -512,7 +511,7 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl: s
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello deepseek invalid choices' }],
       stream: false
     })
@@ -532,7 +531,7 @@ async function assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl: s
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello deepseek invalid choices' }],
       stream: false
     })
@@ -553,7 +552,7 @@ async function assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl: 
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       messages: [{ role: 'user', content: 'hello deepseek invalid choices all bad' }],
       stream: false
     })
@@ -574,7 +573,7 @@ async function assertDeepSeekChatSse(baseUrl: string, localApiKey: string): Prom
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-pro',
+      model: 'deepseek-v4-pro',
       messages: [{ role: 'user', content: 'hello deepseek sse' }],
       stream: true
     })
@@ -597,7 +596,7 @@ async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl: strin
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-pro',
+      model: 'deepseek-v4-pro',
       messages: [{ role: 'user', content: 'hello deepseek precommit stream failure' }],
       stream: true
     })
@@ -619,7 +618,7 @@ async function assertDeepSeekRejectsResponses(baseUrl: string, localApiKey: stri
       'content-type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek-ai-v4-flash',
+      model: 'deepseek-v4-flash',
       input: 'must not reach upstream',
       stream: false
     })
@@ -762,7 +761,7 @@ async function assertDeepSeekCodexResponsesBridge(baseUrl: string, localApiKey: 
     temperature?: number
     top_p?: number
   }
-  assert.equal(body.model, 'deepseek-ai-v4-flash', 'DeepSeek Codex bridge 应应用账号模型映射')
+  assert.equal(body.model, 'deepseek-v4-flash', 'DeepSeek Codex bridge 应应用账号模型映射')
   assert.equal(body.stream, true, 'DeepSeek Codex bridge 上游请求必须使用 Chat SSE')
   assert.equal(body.stream_options?.include_usage, true, 'DeepSeek Codex bridge 应请求流式 usage')
   assert.equal(body.max_tokens, 128, 'DeepSeek Codex bridge 应把 max_output_tokens 转成 max_tokens')
@@ -1274,7 +1273,7 @@ async function assertDeepSeekRejectsNonChatRoutes(baseUrl: string, localApiKey: 
           'content-type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'deepseek-ai-v4-flash',
+          model: 'deepseek-v4-flash',
           messages: [{ role: 'user', content: 'must not reach upstream' }],
           stream: false
         })
@@ -1576,7 +1575,7 @@ function createDeepSeekMockUpstream(): http.Server {
         res.end(JSON.stringify({
           id: '',
           object: '',
-          model: 'deepseek-ai-v4-flash',
+          model: 'deepseek-v4-flash',
           choices: null,
           usage: {
             prompt_tokens: 11,

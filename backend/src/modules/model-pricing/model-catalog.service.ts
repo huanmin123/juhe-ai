@@ -59,6 +59,7 @@ import { shouldInvalidateProviderModelCatalog } from '../gateway/response/model-
 import { buildProviderBillingCostBreakdown, buildProviderCatalogDisplay } from './provider-billing.service.js'
 import type { ProviderCatalogDisplaySection } from './provider-billing.types.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { generationParameterCapabilitiesForModel, limitGenerationParameterMaxOutputTokens } from '../chat/chat-generation-parameters.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../storage/sqlite-read-worker-pool.js'
 
@@ -546,6 +547,10 @@ function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): Prov
     inputModalities: [...(item.inputModalities ?? [])],
     outputModalities: [...(item.outputModalities ?? [])],
     supportedTools: [...(item.supportedTools ?? [])],
+    generationParameterCapabilities: Object.fromEntries(Object.entries(item.generationParameterCapabilities ?? {}).map(([protocol, capabilities]) => [
+      protocol,
+      capabilities.map((capability) => ({ ...capability }))
+    ])),
     serviceTierPrices: cloneServiceTierPrices(item.serviceTierPrices),
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
@@ -673,6 +678,15 @@ function toBuiltInCatalogItem(item: BuiltInProviderModelRecord): ProviderModelCa
     inputModalities: [...(item.inputModalities?.length ? item.inputModalities : staticCapabilities?.inputModalities ?? [])],
     outputModalities: [...(item.outputModalities?.length ? item.outputModalities : staticCapabilities?.outputModalities ?? [])],
     supportedTools: [...(item.supportedTools?.length ? item.supportedTools : staticCapabilities?.supportedTools ?? [])],
+    generationParameterCapabilities: limitGenerationParameterMaxOutputTokens(
+      staticCapabilities?.generationParameterCapabilities
+        ?? generationParameterCapabilitiesForModel({
+        providerCode: item.providerCode,
+        model: item.model,
+        maxOutputTokens: item.maxOutputTokens
+        }),
+      item.maxOutputTokens
+    ),
     supportedServiceTiers: [...(item.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(item.supportedReasoningEfforts ?? [])],
     codexSupportedReasoningLevels: [...(item.codexSupportedReasoningLevels ?? [])],
@@ -697,6 +711,11 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     inputModalities: [],
     outputModalities: [],
     supportedTools: [],
+    generationParameterCapabilities: generationParameterCapabilitiesForModel({
+      providerCode: item.providerCode,
+      model: item.model,
+      maxOutputTokens: item.maxOutputTokens
+    }),
     inputUsdPer1M: item.inputUsdPer1M,
     outputUsdPer1M: item.outputUsdPer1M,
     cachedInputUsdPer1M: item.cachedInputUsdPer1M,

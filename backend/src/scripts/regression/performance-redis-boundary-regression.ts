@@ -654,10 +654,10 @@ function assertOAuthAndRateLimitRedisBoundaries(): void {
   assert.match(penaltyRateLimitSource, /local blocked_index = 0[\s\S]*for index = 1, rule_count do[\s\S]*blocked_index == 0[\s\S]*if blocked_index > 0 then[\s\S]*return \{0, blocked_retry_ms, blocked_index\}[\s\S]*for index = 1, rule_count do[\s\S]*'count', tostring\(counts\[index\] \+ 1\)/, 'Penalty window Redis Lua 必须检查并更新全部 blocked 规则，且只有全部通过后才递增计数')
   assert.match(penaltyRateLimitSource, /const redisPenaltyWindowRateLimitScript = `[\s\S]*HSET[\s\S]*PEXPIRE/, 'Penalty window Redis 限流必须使用 Redis Lua 维护全局窗口和惩罚')
 
-  const publicModelsRateLimitSource = source('modules/gateway/runtime/public-models-rate-limit.service.ts')
-  assert.match(functionBody(publicModelsRateLimitSource, 'consumePublicModelsRateLimit'), /await consumePenaltyWindowRateLimitAsync/, '公开模型列表限流必须走 Redis-aware async penalty limiter')
   const preflightSource = source('modules/gateway/request/preflight.ts')
-  assert.match(functionBody(preflightSource, 'handleGatewayModelsRequestBeforeRequiredAuth'), /await consumePublicModelsRateLimit/, '无鉴权模型列表请求必须 await Redis-aware 限流')
+  const authenticatedModelsRateLimitSource = source('modules/gateway/runtime/authenticated-models-rate-limit.service.ts')
+  assert.match(functionBody(authenticatedModelsRateLimitSource, 'consumeAuthenticatedModelsRateLimit'), /await consumePenaltyWindowRateLimitGroupsAsync/, '认证模型列表限流必须走 Redis-aware async penalty limiter')
+  assert.match(functionBody(preflightSource, 'handleGatewayModelsRequestBeforeRequiredAuth'), /await consumeAuthenticatedModelsRateLimit/, '模型列表在认证成功后必须 await Redis-aware 限流')
 
   const externalSourceAuthSource = source('modules/external-integrations/external-source-auth.middleware.ts')
   assert.match(externalSourceAuthSource, /async function consumeExternalSourceRateLimit[\s\S]*await consumePenaltyWindowRateLimitAsync/, '外部来源限流必须走 Redis-aware async penalty limiter')

@@ -5,6 +5,10 @@ import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientProfile
 } from '../../modules/gateway/client-profiles/strategy.js'
+import {
+  earlyFailedResponseFailoverWindowMs,
+  shouldAdmitFailedResponseToUnifiedFailover
+} from '../../modules/gateway/response/failed-response-failover-admission.js'
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
 const explicitProfiles: OpenAIGatewayClientProfile[] = ['codex', 'claude_code', 'gemini_cli']
@@ -43,8 +47,48 @@ assert.doesNotMatch(
 )
 assert.match(
   failureDispatchSource,
+  /if \(earlyImageFailureEligibleForUnifiedFailover\) \{\s*return await handleOpaqueFailedUpstreamResponse\(input\)/,
+  '图片早期失败必须交给统一的 opaque 失败处理器，而不是自建切号分支'
+)
+assert.match(
+  failureDispatchSource,
   /if \(!explicitPolicyCouldMatch\) \{\s*return \{ action: 'return_response', response \}/,
-  '未配置可能命中的账户错误策略时，完整 HTTP 错误必须原样返回'
+  '非图片早期失败且未配置账户错误策略时，完整 HTTP 错误必须原样返回'
+)
+assert.match(
+  failureDispatchSource,
+  /failureSource: explicitPolicyDecision \? 'account_error_policy' : undefined/,
+  '统一 opaque 失败处理器仅在显式账户策略命中时标识账户策略失败'
+)
+
+const imageRequest = {
+  method: 'POST',
+  originalUrl: '/v1/images/generations',
+  path: '/v1/images/generations'
+} as never
+assert.equal(
+  shouldAdmitFailedResponseToUnifiedFailover({ req: imageRequest, attemptStartedAt: 10_000, nowMs: 15_000 }),
+  true,
+  '图片生成在 5 秒早期失败窗口内应允许切换后续账号'
+)
+assert.equal(
+  shouldAdmitFailedResponseToUnifiedFailover({ req: imageRequest, attemptStartedAt: 10_000, nowMs: 15_001 }),
+  false,
+  '图片生成超过早期失败窗口不得按该规则切号'
+)
+assert.equal(
+  earlyFailedResponseFailoverWindowMs,
+  5_000,
+  '图片早期失败窗口固定为 5 秒'
+)
+assert.equal(
+  shouldAdmitFailedResponseToUnifiedFailover({
+    req: { method: 'POST', originalUrl: '/v1/chat/completions', path: '/v1/chat/completions' } as never,
+    attemptStartedAt: 10_000,
+    nowMs: 10_001
+  }),
+  false,
+  '文本请求不得继承图片早期失败切号规则'
 )
 assert.doesNotMatch(
   finalizationSource,

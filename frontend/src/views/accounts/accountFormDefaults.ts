@@ -35,7 +35,7 @@ export function defaultAccountForm(
   const accountTypes = profile?.accountTypes ?? provider?.accountTypes ?? []
   const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
   const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode, providerList, profile?.id)
-  const supportedModels = defaultSupportedModelsForProvider(provider)
+  const supportedModels: string[] = []
   const supportedEndpointModes = defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile })
   return {
     providerCode: resolvedProviderCode,
@@ -66,7 +66,7 @@ export function defaultAccountForm(
     codexResponsesStrictInterceptEnabled: false,
     supportedEndpointModes,
     supportedModels,
-    healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),
+    healthCheckModel: '',
     healthCheckEndpointMode: defaultAccountHealthCheckEndpointMode(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
     temporaryUnavailableContinuousProbeEnabled: true,
     serviceTierOverride: '',
@@ -86,30 +86,6 @@ export function defaultAccountForm(
     balanceQueryUsedPointer: '',
     balanceQueryDivisor: ''
   }
-}
-
-function defaultSupportedModelsForProvider(provider: ProviderDefinition | undefined): string[] {
-  const output: string[] = []
-  const seen = new Set<string>()
-  for (const item of [provider?.defaultHealthCheckModel, ...(provider?.defaultSupportedModels ?? [])]) {
-    const model = item?.trim() ?? ''
-    if (!model || seen.has(model)) continue
-    seen.add(model)
-    output.push(model)
-  }
-  return output
-}
-
-function defaultHealthCheckModelForProvider(
-  provider: ProviderDefinition | undefined,
-  profile: ProviderDefinition['protocolProfiles'][number] | undefined,
-  supportedModels: string[]
-): string {
-  for (const value of [provider?.defaultHealthCheckModel, profile?.defaultHealthCheckModel, ...supportedModels]) {
-    const model = value?.trim() ?? ''
-    if (model && supportedModels.includes(model)) return model
-  }
-  return ''
 }
 
 export function compactAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {

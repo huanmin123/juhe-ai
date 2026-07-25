@@ -235,7 +235,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
     const healthCheckModel = options.form.healthCheckModel.trim()
-    if (!healthCheckModel || !supportedModels.includes(healthCheckModel)) {
+    if (healthCheckModel && !supportedModels.includes(healthCheckModel)) {
       message.warning('检查模型必须从账户支持模型中选择')
       return
     }
@@ -253,7 +253,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       tags: normalizeFormTagNames(options.form.tags),
       notes: options.form.notes,
       supportedModels,
-      healthCheckModel,
+      ...(healthCheckModel ? { healthCheckModel } : {}),
       healthCheckEndpointMode: options.form.healthCheckEndpointMode,
       credentials: buildBasicEditCredentialsPatch(options.form, options.editingAccountDetail.value?.credentials),
       ...buildAccountBalancePayload(options.form)
@@ -339,7 +339,7 @@ type AccountBasicEditPayload = {
   tags: string[]
   notes: string
   supportedModels: string[]
-  healthCheckModel: string
+  healthCheckModel?: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   credentials: Record<string, unknown>
   balanceQueryEnabled?: boolean

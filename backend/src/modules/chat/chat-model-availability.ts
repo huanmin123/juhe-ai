@@ -1,18 +1,8 @@
-import type { ChatTransportProtocol } from './chat-transport.js'
+import { chatTransportAccountSupportsProtocol, type ChatTransportAccount, type ChatTransportProtocol } from './chat-transport.js'
 import { buildChatModelOptions, type ChatModelOption } from './chat-model-options.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
-interface ChatModelAccountSnapshot {
-  supportedEndpointModes?: readonly string[]
-  supportedModels?: readonly string[]
-  modelMappings?: ReadonlyArray<{
-    enabled?: boolean
-    sourceModel: string
-    sourceEndpointFamily: string
-    upstreamModel: string
-    upstreamEndpointFamily: string
-  }>
-}
+type ChatModelAccountSnapshot = ChatTransportAccount
 
 interface ChatModelOptionLike {
   id: string
@@ -111,18 +101,5 @@ export function createChatModelOptionsSnapshotCache<TValue>(input: {
 
 function supportedProtocolsForModel(accounts: readonly ChatModelAccountSnapshot[], model: string): ChatTransportProtocol[] {
   const protocolOrder: ChatTransportProtocol[] = ['chat_completions', 'responses']
-  return protocolOrder.filter((protocol) => accounts.some((account) => accountSupportsProtocol(account, model, protocol)))
-}
-
-function accountSupportsProtocol(account: ChatModelAccountSnapshot, model: string, protocol: ChatTransportProtocol): boolean {
-  const mapping = account.modelMappings?.find((item) => (
-    item.enabled !== false
-    && item.sourceModel === model
-    && item.sourceEndpointFamily === protocol
-  ))
-  const supportedModels = account.supportedModels ?? []
-  if (supportedModels.length > 0 && !supportedModels.includes(mapping?.upstreamModel ?? model)) return false
-  const upstreamProtocol = mapping?.upstreamEndpointFamily ?? protocol
-  const requiredMode = upstreamProtocol === 'responses' ? 'responses_sse' : 'chat_sse'
-  return account.supportedEndpointModes?.includes(requiredMode) === true
+  return protocolOrder.filter((protocol) => accounts.some((account) => chatTransportAccountSupportsProtocol(account, model, protocol)))
 }
