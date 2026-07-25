@@ -354,6 +354,50 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogGrepConfiguration(t *testing.T)
 	}
 }
 
+func TestNewManagementAPIHandlerInjectsAuditHotSearchRoot(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	function := findFunction(t, file, "newManagementAPIHandlerWithOperationLogSubmitter")
+	found := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || callName(call.Fun) != "managementauditlogs.NewServiceWithOptions" {
+			return true
+		}
+		if len(call.Args) != 2 {
+			t.Fatalf("NewServiceWithOptions args=%d, want 2", len(call.Args))
+		}
+		options, ok := call.Args[1].(*ast.CompositeLit)
+		if !ok {
+			t.Fatalf("audit log service options=%#v", call.Args[1])
+		}
+		for _, element := range options.Elts {
+			pair, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := pair.Key.(*ast.Ident)
+			if !ok || key.Name != "HotSearchRoot" {
+				continue
+			}
+			if got := selectorName(pair.Value); got != "cfg.AuditHotSearchRoot" {
+				t.Fatalf("HotSearchRoot=%s, want cfg.AuditHotSearchRoot", got)
+			}
+			found = true
+			return false
+		}
+		t.Fatal("managementauditlogs.NewServiceWithOptions missing HotSearchRoot")
+		return false
+	})
+	if !found {
+		t.Fatal("newManagementAPIHandlerWithOperationLogSubmitter missing audit hot search service assembly")
+	}
+}
+
 func selectorName(expression ast.Expr) string {
 	selector, ok := expression.(*ast.SelectorExpr)
 	if !ok {

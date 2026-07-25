@@ -399,6 +399,16 @@ func TestHotSearchServiceRestoresDatabaseSummariesAndPreservesSearchOrder(t *tes
 	}
 }
 
+func TestHotSearchServiceWithoutConfiguredRootIsUnavailable(t *testing.T) {
+	result, err := NewService(&auditLogReaderStub{}).HotSearch(context.Background(), HotSearchInput{Keywords: []string{"needle"}})
+	if err != nil {
+		t.Fatalf("HotSearch() error = %v", err)
+	}
+	if result.Available || result.Message != "审计内容搜索镜像目录未配置，审计内容搜索不可用。" || len(result.Items) != 0 {
+		t.Fatalf("HotSearch() result = %+v, want unavailable empty result", result)
+	}
+}
+
 func TestHotSearchServiceReturnsDatabaseFailureInsteadOfEmptySuccess(t *testing.T) {
 	root := t.TempDir()
 	writeHotSearchFile(t, root, "audit-hot-2026072210.ndjson", `{"auditLogId":"audit_1","createdAt":"2026-07-22T10:02:00Z","text":"needle"}`)

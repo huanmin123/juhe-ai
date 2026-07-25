@@ -29,7 +29,6 @@ type GatewayModelsCredentialAuthorizer interface {
 // HTTP adapter. The API key path consumes the already-authorized provider
 // scope rather than a dispatch-preflight DTO.
 type GatewayModelsCatalog interface {
-	Public(context.Context) ([]port.GatewayClientCatalogModel, error)
 	APIKey(context.Context, GatewayModelsAPIKeyScope) ([]port.GatewayClientCatalogModel, error)
 }
 
@@ -124,13 +123,6 @@ type gatewayModelsCatalogServiceAdapter struct {
 	service *gatewayclientcatalog.Service
 }
 
-func (a gatewayModelsCatalogServiceAdapter) Public(ctx context.Context) ([]port.GatewayClientCatalogModel, error) {
-	if a.service == nil {
-		return nil, errors.New("gateway client catalog service is required")
-	}
-	return a.service.Public(ctx)
-}
-
 func (a gatewayModelsCatalogServiceAdapter) APIKey(ctx context.Context, scope GatewayModelsAPIKeyScope) ([]port.GatewayClientCatalogModel, error) {
 	if a.service == nil {
 		return nil, errors.New("gateway client catalog service is required")
@@ -163,52 +155,39 @@ func newGatewayModelsHandler(opts GatewayModelsHandlerOptions) http.Handler {
 		}
 
 		credential, credentialErr := credentials.ExtractGatewayModelsCredential(r, protocol)
-		if credentialErr != nil && !errors.Is(credentialErr, gatewaycredentials.ErrMissingCredential) {
+		if credentialErr != nil {
 			setGatewayModelsPrivateCacheHeaders(w.Header())
+			if errors.Is(credentialErr, gatewaycredentials.ErrMissingCredential) {
+				writeGatewayModelsAuthenticationError(w, protocol, gatewayerrors.ErrCredentialMissing)
+				return
+			}
 			writeGatewayModelsAuthenticationError(w, protocol, credentialErr)
 			return
 		}
 
 		var items []port.GatewayClientCatalogModel
-		var err error
-		if credentialErr == nil {
-			setGatewayModelsPrivateCacheHeaders(w.Header())
-			if opts.Authorizer == nil {
-				writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
-				return
-			}
-			keyScope, authorizationErr := opts.Authorizer.AuthorizeGatewayModels(r.Context(), credential.Secret())
-			if authorizationErr != nil {
-				if _, classified := gatewayerrors.Classify(authorizationErr); classified {
-					writeGatewayModelsAuthenticationError(w, protocol, authorizationErr)
-				} else {
-					writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
-				}
-				return
-			}
-			if opts.Catalog == nil {
-				writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
-				return
-			}
-			items, err = opts.Catalog.APIKey(r.Context(), GatewayModelsAPIKeyScope{
-				SystemAccountID: keyScope.SystemAccountID,
-				ProviderCodes:   append([]string(nil), keyScope.ProviderCodes...),
-			})
-		} else {
-			// ErrMissingCredential means the canonical extractor observed no
-			// eligible credential. A non-empty, ineligible credential header is
-			// still an authentication attempt and must never fall back to public.
-			if gatewayModelsCredentialCandidatePresented(r, protocol) {
-				setGatewayModelsPrivateCacheHeaders(w.Header())
-				writeGatewayModelsAuthenticationError(w, protocol, gatewaycredentials.ErrMalformedCredential)
-				return
-			}
-			if opts.Catalog == nil {
-				writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
-				return
-			}
-			items, err = opts.Catalog.Public(r.Context())
+		setGatewayModelsPrivateCacheHeaders(w.Header())
+		if opts.Authorizer == nil {
+			writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
+			return
 		}
+		keyScope, authorizationErr := opts.Authorizer.AuthorizeGatewayModels(r.Context(), credential.Secret())
+		if authorizationErr != nil {
+			if _, classified := gatewayerrors.Classify(authorizationErr); classified {
+				writeGatewayModelsAuthenticationError(w, protocol, authorizationErr)
+			} else {
+				writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
+			}
+			return
+		}
+		if opts.Catalog == nil {
+			writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
+			return
+		}
+		items, err := opts.Catalog.APIKey(r.Context(), GatewayModelsAPIKeyScope{
+			SystemAccountID: keyScope.SystemAccountID,
+			ProviderCodes:   append([]string(nil), keyScope.ProviderCodes...),
+		})
 		if err != nil {
 			writeGatewayModelsFailure(w, protocol, http.StatusServiceUnavailable, "service_unavailable", "模型目录服务暂时不可用")
 			return
@@ -259,23 +238,6 @@ func gatewayModelsProtocol(r *http.Request) (gatewayclientcatalog.ModelsResponse
 		HasClaudeSessionID:    headerHasNonEmptyValue(r.Header, "X-Claude-Code-Session-Id"),
 		HasClaudeAgentID:      headerHasNonEmptyValue(r.Header, "X-Claude-Code-Agent-Id"),
 	})
-}
-
-func gatewayModelsCredentialCandidatePresented(r *http.Request, protocol gatewayclientcatalog.ModelsResponseProtocol) bool {
-	if headerHasNonEmptyValue(r.Header, "Authorization") ||
-		headerHasNonEmptyValue(r.Header, "X-API-Key") ||
-		headerHasNonEmptyValue(r.Header, "X-Goog-API-Key") {
-		return true
-	}
-	if protocol != gatewayclientcatalog.ModelsProtocolGemini {
-		return false
-	}
-	for _, value := range r.URL.Query()["key"] {
-		if strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func headerHasNonEmptyValue(header http.Header, name string) bool {

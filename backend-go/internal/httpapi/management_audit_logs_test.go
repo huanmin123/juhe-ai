@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,45 @@ func TestManagementAuditLogsHandlerReturnsGenericDependencyError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "postgres") || !strings.Contains(rec.Body.String(), "服务器内部错误") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestManagementAuditHotSearchHandlerParsesQueryAndRequiresAdmin(t *testing.T) {
+	service := &managementAuditLogServiceStub{hotSearchResult: managementauditlogs.HotSearchResult{Items: []managementauditlogs.Summary{}, Page: 1, PageSize: 7, Available: false}}
+	handler := newManagementAuditLogsHandler(service)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/audit-logs/search-hot?keywords=needle&keywords=Needle&keywords=x&limit=7.9&startAt=2026-07-22T10%3A00%3A00Z&endAt=2026-07-22T11%3A00%3A00Z", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	want := managementauditlogs.HotSearchInput{Keywords: []string{"needle", "Needle", "x"}, Limit: 7, LimitProvided: true, StartAt: "2026-07-22T10:00:00Z", EndAt: "2026-07-22T11:00:00Z"}
+	if rec.Code != http.StatusOK || !reflect.DeepEqual(service.hotSearchInput, want) || !service.hotSearchCalled {
+		t.Fatalf("status=%d input=%+v want=%+v body=%s", rec.Code, service.hotSearchInput, want, rec.Body.String())
+	}
+	assertManagementAuditReadResponse(t, rec, service.deadline)
+
+	service.hotSearchCalled = false
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/audit-logs/search-hot", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || service.hotSearchCalled {
+		t.Fatalf("status=%d called=%v body=%s", rec.Code, service.hotSearchCalled, rec.Body.String())
+	}
+}
+
+func TestManagementAuditHotSearchHandlerReturnsGenericDependencyError(t *testing.T) {
+	service := &managementAuditLogServiceStub{err: errors.New("audit root leaked")}
+	handler := newManagementAuditLogsHandler(service)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/audit-logs/search-hot", nil)
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "audit root") || !strings.Contains(rec.Body.String(), "服务器内部错误") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -240,7 +280,7 @@ func TestRouterRegistersManagementAuditLogAndErrorGroupReads(t *testing.T) {
 	for path, want := range map[string]int{
 		"/__aisys__/api/audit-logs":                            http.StatusOK,
 		"/__aisys__/api/audit-logs/runtime":                    http.StatusNotFound,
-		"/__aisys__/api/audit-logs/search-hot":                 http.StatusNotFound,
+		"/__aisys__/api/audit-logs/search-hot":                 http.StatusOK,
 		"/__aisys__/api/audit-logs/audit_1":                    http.StatusOK,
 		"/__aisys__/api/audit-logs/error-groups":               http.StatusOK,
 		"/__aisys__/api/audit-logs/audit_1/payloads/payload_1": http.StatusNotFound,
@@ -256,8 +296,8 @@ func TestRouterRegistersManagementAuditLogAndErrorGroupReads(t *testing.T) {
 			t.Fatalf("%s status=%d want=%d body=%s", path, rec.Code, want, rec.Body.String())
 		}
 	}
-	if service.detailCalls != 1 || service.errorGroupCalls != 1 || service.eventCalls != 1 {
-		t.Fatalf("detail=%d errorGroups=%d events=%d", service.detailCalls, service.errorGroupCalls, service.eventCalls)
+	if service.detailCalls != 1 || service.hotSearchCalls != 1 || service.errorGroupCalls != 1 || service.eventCalls != 1 {
+		t.Fatalf("detail=%d hotSearch=%d errorGroups=%d events=%d", service.detailCalls, service.hotSearchCalls, service.errorGroupCalls, service.eventCalls)
 	}
 }
 
@@ -356,6 +396,10 @@ type managementAuditLogServiceStub struct {
 	called            bool
 	input             managementauditlogs.ListInput
 	result            managementauditlogs.ListResult
+	hotSearchCalled   bool
+	hotSearchCalls    int
+	hotSearchInput    managementauditlogs.HotSearchInput
+	hotSearchResult   managementauditlogs.HotSearchResult
 	detailCalled      bool
 	detailCalls       int
 	detailID          string
@@ -388,6 +432,14 @@ func (s *managementAuditLogServiceStub) List(r *http.Request, input managementau
 	s.input = input
 	s.deadline, s.deadlineSeen = r.Context().Deadline()
 	return s.result, s.err
+}
+
+func (s *managementAuditLogServiceStub) HotSearch(r *http.Request, input managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error) {
+	s.hotSearchCalled = true
+	s.hotSearchCalls++
+	s.hotSearchInput = input
+	s.deadline, s.deadlineSeen = r.Context().Deadline()
+	return s.hotSearchResult, s.err
 }
 
 func (s *managementAuditLogServiceStub) ListErrorGroups(r *http.Request, input managementauditlogs.ErrorGroupListInput) (managementauditlogs.ErrorGroupListResult, error) {

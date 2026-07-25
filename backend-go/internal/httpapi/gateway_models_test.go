@@ -18,26 +18,43 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestGatewayModelsHandlerServesPublicOpenAIModelsWithoutPreflight(t *testing.T) {
-	catalog := &gatewayModelsCatalogStub{publicItems: []port.GatewayClientCatalogModel{{Model: "gpt-5.6", Scope: "built_in"}}}
-	authorizer := &gatewayModelsAuthorizerStub{}
-	handler := newGatewayModelsHandler(GatewayModelsHandlerOptions{Authorizer: authorizer, Catalog: catalog})
+func TestGatewayModelsHandlerRequiresCredential(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		headers    map[string]string
+		wantMarker string
+	}{
+		{name: "openai", path: "/models", wantMarker: `"code":"missing_api_key"`},
+		{name: "anthropic", path: "/v1/models", headers: map[string]string{"Anthropic-Version": "2023-06-01"}, wantMarker: `"type":"authentication_error"`},
+		{name: "gemini", path: "/v1beta/models", wantMarker: `"status":"UNAUTHENTICATED"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			catalog := &gatewayModelsCatalogStub{}
+			authorizer := &gatewayModelsAuthorizerStub{}
+			handler := newGatewayModelsHandler(GatewayModelsHandlerOptions{Authorizer: authorizer, Catalog: catalog})
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			for name, value := range test.headers {
+				request.Header.Set(name, value)
+			}
+			recorder := httptest.NewRecorder()
 
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/models", nil))
+			handler.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
-	}
-	assertGatewayModelsJSON(t, recorder.Body.Bytes(), `{"object":"list","data":[{"id":"gpt-5.6","object":"model","created":0,"owned_by":"openai"}]}`)
-	if authorizer.calls != nil {
-		t.Fatalf("authorizer calls = %#v, want none", authorizer.calls)
-	}
-	if catalog.publicCalls != 1 || len(catalog.apiKeyCalls) != 0 {
-		t.Fatalf("catalog calls = public:%d apiKey:%#v", catalog.publicCalls, catalog.apiKeyCalls)
-	}
-	if got := recorder.Header().Get("Cache-Control"); got != "" {
-		t.Fatalf("public Cache-Control = %q, want empty", got)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
+			}
+			if len(authorizer.calls) != 0 || len(catalog.apiKeyCalls) != 0 {
+				t.Fatalf("missing credential reached services: authorizer=%#v api=%#v", authorizer.calls, catalog.apiKeyCalls)
+			}
+			if !strings.Contains(recorder.Body.String(), test.wantMarker) {
+				t.Fatalf("body = %s, missing %s", recorder.Body.String(), test.wantMarker)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "private, no-cache" {
+				t.Fatalf("Cache-Control = %q", got)
+			}
+		})
 	}
 }
 
@@ -91,8 +108,8 @@ func TestGatewayModelsHandlerAllowsValidAPIKeyWithNoActiveBindings(t *testing.T)
 		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
 	}
 	assertGatewayModelsJSON(t, recorder.Body.Bytes(), `{"object":"list","data":[]}`)
-	if catalog.publicCalls != 0 || len(catalog.apiKeyCalls) != 1 || len(catalog.apiKeyCalls[0].ProviderCodes) != 0 {
-		t.Fatalf("catalog calls = public:%d apiKey:%#v", catalog.publicCalls, catalog.apiKeyCalls)
+	if len(catalog.apiKeyCalls) != 1 || len(catalog.apiKeyCalls[0].ProviderCodes) != 0 {
+		t.Fatalf("catalog API key calls = %#v", catalog.apiKeyCalls)
 	}
 }
 
@@ -131,9 +148,13 @@ func TestGatewayModelsHandlerRendersNativeProtocolShapes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			catalog := &gatewayModelsCatalogStub{publicItems: []port.GatewayClientCatalogModel{{Model: "model-1", Scope: "built_in"}}}
-			handler := newGatewayModelsHandler(GatewayModelsHandlerOptions{Catalog: catalog})
+			catalog := &gatewayModelsCatalogStub{apiKeyItems: []port.GatewayClientCatalogModel{{Model: "model-1", Scope: "built_in"}}}
+			handler := newGatewayModelsHandler(GatewayModelsHandlerOptions{
+				Authorizer: &gatewayModelsAuthorizerStub{result: GatewayModelsAPIKeyScope{SystemAccountID: "sys-1"}},
+				Catalog:    catalog,
+			})
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			request.Header.Set("X-API-Key", "sk-valid")
 			for name, value := range test.headers {
 				request.Header.Set(name, value)
 			}
@@ -162,25 +183,29 @@ func TestGatewayModelsHandlerRendersNativeProtocolShapes(t *testing.T) {
 
 func TestGatewayModelsHandlerNeverDowngradesPresentedInvalidCredentialToPublic(t *testing.T) {
 	tests := []struct {
-		name    string
-		prepare func(*http.Request)
+		name       string
+		prepare    func(*http.Request)
+		wantMarker string
 	}{
 		{
-			name: "malformed higher priority authorization",
+			name:       "malformed higher priority authorization",
+			wantMarker: `"code":"invalid_api_key"`,
 			prepare: func(request *http.Request) {
 				request.Header.Set("Authorization", "Basic sk-wrong-scheme")
 				request.Header.Set("X-API-Key", "sk-valid-lower-priority")
 			},
 		},
 		{
-			name: "ambiguous repeated API key",
+			name:       "ambiguous repeated API key",
+			wantMarker: `"code":"invalid_api_key"`,
 			prepare: func(request *http.Request) {
 				request.Header.Add("X-API-Key", "sk-one")
 				request.Header.Add("X-API-Key", "sk-two")
 			},
 		},
 		{
-			name: "ineligible Gemini header is still presented",
+			name:       "ineligible Gemini header is not an OpenAI credential",
+			wantMarker: `"code":"missing_api_key"`,
 			prepare: func(request *http.Request) {
 				request.Header.Set("X-Goog-API-Key", "sk-gemini-on-openai-path")
 			},
@@ -200,11 +225,11 @@ func TestGatewayModelsHandlerNeverDowngradesPresentedInvalidCredentialToPublic(t
 			if recorder.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
 			}
-			if catalog.publicCalls != 0 || catalog.apiKeyCalls != nil || authorizer.calls != nil {
-				t.Fatalf("invalid credential reached services: public=%d api=%#v authorizer=%#v", catalog.publicCalls, catalog.apiKeyCalls, authorizer.calls)
+			if catalog.apiKeyCalls != nil || authorizer.calls != nil {
+				t.Fatalf("invalid credential reached services: api=%#v authorizer=%#v", catalog.apiKeyCalls, authorizer.calls)
 			}
-			if !strings.Contains(recorder.Body.String(), `"code":"invalid_api_key"`) {
-				t.Fatalf("body = %s, want unified invalid_api_key", recorder.Body.String())
+			if !strings.Contains(recorder.Body.String(), test.wantMarker) {
+				t.Fatalf("body = %s, want marker %s", recorder.Body.String(), test.wantMarker)
 			}
 		})
 	}
@@ -250,7 +275,7 @@ func TestGatewayModelsHandlerHidesDependencyErrors(t *testing.T) {
 		withAPIKey bool
 	}{
 		{name: "authorizer", authorizer: &gatewayModelsAuthorizerStub{err: secretFailure}, catalog: &gatewayModelsCatalogStub{}, withAPIKey: true},
-		{name: "catalog", authorizer: &gatewayModelsAuthorizerStub{}, catalog: &gatewayModelsCatalogStub{publicErr: secretFailure}},
+		{name: "catalog", authorizer: &gatewayModelsAuthorizerStub{}, catalog: &gatewayModelsCatalogStub{apiKeyErr: secretFailure}, withAPIKey: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -359,11 +384,8 @@ func (s *gatewayModelsAuthorizerStub) AuthorizeGatewayModels(_ context.Context, 
 }
 
 type gatewayModelsCatalogStub struct {
-	publicItems []port.GatewayClientCatalogModel
 	apiKeyItems []port.GatewayClientCatalogModel
-	publicErr   error
 	apiKeyErr   error
-	publicCalls int
 	apiKeyCalls []GatewayModelsAPIKeyScope
 }
 
@@ -400,11 +422,6 @@ func (*gatewayModelsReaderStub) ListGatewayClientCatalogProviders(context.Contex
 func (s *gatewayModelsReaderStub) ListGatewayClientCatalogModels(_ context.Context, input port.GatewayClientCatalogModelListInput) ([]port.GatewayClientCatalogModel, error) {
 	s.modelInputs = append(s.modelInputs, input)
 	return nil, nil
-}
-
-func (s *gatewayModelsCatalogStub) Public(context.Context) ([]port.GatewayClientCatalogModel, error) {
-	s.publicCalls++
-	return append([]port.GatewayClientCatalogModel(nil), s.publicItems...), s.publicErr
 }
 
 func (s *gatewayModelsCatalogStub) APIKey(_ context.Context, input GatewayModelsAPIKeyScope) ([]port.GatewayClientCatalogModel, error) {

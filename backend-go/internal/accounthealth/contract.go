@@ -27,6 +27,10 @@ type ProbeOutcome string
 const (
 	// ProbeOutcomeCompleteSuccess permits the caller's success transition.
 	ProbeOutcomeCompleteSuccess ProbeOutcome = "complete_success"
+	// ProbeOutcomeFramingCompleteNeutral means the probe received and fully
+	// framed an upstream response, but the diagnostic result itself was not a
+	// success. It is intentionally not evidence for an account-state mutation.
+	ProbeOutcomeFramingCompleteNeutral ProbeOutcome = "framing_complete_neutral"
 	// ProbeOutcomeUpstreamFailure is the only failed outcome that is attributable
 	// to an account and may drive its persistent health state.
 	ProbeOutcomeUpstreamFailure ProbeOutcome = "upstream_failure"
@@ -42,15 +46,21 @@ type ProbeEvidence struct {
 	Success          bool
 	UpstreamURL      string
 	ResponseObserved bool
+	FramingComplete  bool
 }
 
 // ClassifyAutomaticProbeOutcome matches the Node runtime contract. A successful
-// probe wins. A failed probe is account-attributable only after a real HTTP(S)
-// upstream response has been observed. Local synthetic failures, dial errors,
-// malformed URLs, and requests with no response evidence stay task failures.
+// probe wins. A fully framed diagnostic failure is neutral: it proves neither a
+// transport failure nor an account-state transition. Otherwise a failed probe
+// is account-attributable only after a real HTTP(S) upstream response has been
+// observed. Local synthetic failures, dial errors, malformed URLs, and requests
+// with no response evidence stay task failures.
 func ClassifyAutomaticProbeOutcome(evidence ProbeEvidence) ProbeOutcome {
 	if evidence.Success {
 		return ProbeOutcomeCompleteSuccess
+	}
+	if evidence.FramingComplete {
+		return ProbeOutcomeFramingCompleteNeutral
 	}
 	if evidence.ResponseObserved && IsRealHTTPUpstreamURL(evidence.UpstreamURL) {
 		return ProbeOutcomeUpstreamFailure

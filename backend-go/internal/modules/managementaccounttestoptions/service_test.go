@@ -649,27 +649,26 @@ func TestServiceGetReturnsValidationErrorsForBusinessFailures(t *testing.T) {
 	}
 }
 
-func TestServiceOptionsUsesLightweightReaderAndPreservesSelectedModels(t *testing.T) {
-	heavyReader := &accountTestOptionsReaderStub{err: errors.New("heavy reader must not be called")}
-	codec := &credentialCodecStub{err: errors.New("credentials must not be decrypted")}
+func TestServiceOptionsLoadsCapabilitiesWithoutPerModelQueries(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	source.ProviderCode = "gpt"
+	source.CredentialsEncrypted = "encrypted-options"
+	reader := &accountTestOptionsReaderStub{source: source, found: true}
+	codec := &credentialCodecStub{credentials: map[string]any{
+		"supported_endpoint_modes": []any{"chat_json", "chat_sse"},
+	}}
 	fullCatalog := &modelCatalogStub{err: errors.New("full catalog must not be hydrated")}
 	optionReader := &accountTestOptionReaderStub{
-		listSource: port.ManagementAccountTestOptionListSource{
-			ID: "account-1", OwnerSystemAccountID: "owner-1", ProviderCode: "openai",
-			ProviderProtocolProfileID: "profile_openai_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
-			Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "model-default",
-		},
-		listFound: true,
 		catalogItems: []port.ManagementAccountTestModelCatalogItem{
-			{ID: "builtin-default", ProviderCode: "gpt", Model: "model-default", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"responses"}},
-			{ID: "personal-selected", ProviderCode: "gpt", Model: "model-selected", Scope: "personal", Mode: "chat", SupportedAPIProtocols: []string{"responses"}},
+			{ID: "builtin-default", ProviderCode: "gpt", Model: "model-default", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
+			{ID: "personal-selected", ProviderCode: "gpt", Model: "model-selected", Scope: "personal", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
 			{ID: "builtin-match", ProviderCode: "gpt", Model: "model-match", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
 			{ID: "builtin-image", ProviderCode: "gpt", Model: "model-image-match", Scope: "built_in", Mode: "image", SupportedAPIProtocols: []string{"responses"}},
 			{ID: "builtin-messages", ProviderCode: "anthropic", Model: "model-messages-match", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"messages"}},
 		},
 	}
 	service := NewServiceWithOptions(ServiceOptions{
-		Reader: heavyReader, OptionReader: optionReader, ModelCatalog: fullCatalog, CredentialCodec: codec,
+		Reader: reader, OptionReader: optionReader, ModelCatalog: fullCatalog, CredentialCodec: codec,
 	})
 
 	got, found, err := service.Options(context.Background(), OptionsInput{
@@ -680,23 +679,23 @@ func TestServiceOptionsUsesLightweightReaderAndPreservesSelectedModels(t *testin
 		t.Fatalf("Options() found = %t, err = %v", found, err)
 	}
 	want := []SelectionOption{
-		{ID: "model-default", Name: "model-default"},
-		{ID: "model-selected", Name: "model-selected"},
-		{ID: "model-match", Name: "model-match"},
+		{ID: "model-default", Name: "model-default", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json", "chat_sse"}},
+		{ID: "model-selected", Name: "model-selected", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json", "chat_sse"}},
+		{ID: "model-match", Name: "model-match", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json", "chat_sse"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Options() = %#v, want %#v", got, want)
 	}
-	if heavyReader.calls != 0 || codec.calls != 0 || fullCatalog.calls != 0 {
-		t.Fatalf("heavy dependencies called: reader=%d codec=%d catalog=%d", heavyReader.calls, codec.calls, fullCatalog.calls)
+	if reader.calls != 1 || codec.calls != 1 || fullCatalog.calls != 0 {
+		t.Fatalf("unexpected dependencies called: reader=%d codec=%d catalog=%d", reader.calls, codec.calls, fullCatalog.calls)
 	}
-	if !reflect.DeepEqual(optionReader.listInput, port.ManagementAccountTestOptionsInput{
+	if !reflect.DeepEqual(reader.input, port.ManagementAccountTestOptionsInput{
 		AccountID: "account-1", SystemAccountID: "viewer-1",
 	}) {
-		t.Fatalf("list input = %#v", optionReader.listInput)
+		t.Fatalf("reader input = %#v", reader.input)
 	}
 	wantCatalogInput := port.ManagementAccountTestModelCatalogInput{
-		ProviderCode: "openai", SystemAccountID: "owner-1", Keyword: "match", Limit: 1,
+		ProviderCode: "gpt", SystemAccountID: "owner-1", Keyword: "match", Limit: 1,
 		SelectedIDs: []string{"model-selected", "model-default"},
 	}
 	if !reflect.DeepEqual(optionReader.catalogInputs, []port.ManagementAccountTestModelCatalogInput{wantCatalogInput}) {
@@ -705,13 +704,17 @@ func TestServiceOptionsUsesLightweightReaderAndPreservesSelectedModels(t *testin
 }
 
 func TestServiceOptionsHybridKeepsAnEligibleDuplicateModelFromAnotherProvider(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	source.ID = "account-hybrid"
+	source.ProviderCode = "hybrid"
+	source.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+	source.HealthCheckModel = "shared-model"
+	source.CredentialsEncrypted = "encrypted-hybrid"
+	reader := &accountTestOptionsReaderStub{source: source, found: true}
+	codec := &credentialCodecStub{credentials: map[string]any{
+		"supported_endpoint_modes": []any{"messages_sse", "chat_json"},
+	}}
 	optionReader := &accountTestOptionReaderStub{
-		listSource: port.ManagementAccountTestOptionListSource{
-			ID: "account-hybrid", OwnerSystemAccountID: "owner-1", ProviderCode: "hybrid",
-			ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
-			Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "shared-model",
-		},
-		listFound: true,
 		catalogItems: []port.ManagementAccountTestModelCatalogItem{
 			{ID: "a-ineligible", ProviderCode: "alpha", Model: "shared-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"interactions"}},
 			{ID: "b-ineligible", ProviderCode: "beta", Model: "shared-model", Scope: "personal", Mode: "audio", SupportedAPIProtocols: []string{"messages"}},
@@ -719,7 +722,7 @@ func TestServiceOptionsHybridKeepsAnEligibleDuplicateModelFromAnotherProvider(t 
 			{ID: "window", ProviderCode: "gamma", Model: "window-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
 		},
 	}
-	service := NewServiceWithOptions(ServiceOptions{OptionReader: optionReader})
+	service := NewServiceWithOptions(ServiceOptions{Reader: reader, OptionReader: optionReader, CredentialCodec: codec})
 
 	got, found, err := service.Options(context.Background(), OptionsInput{
 		AccountID: "account-hybrid", SystemAccountID: "viewer-1", Limit: 1,
@@ -728,8 +731,8 @@ func TestServiceOptionsHybridKeepsAnEligibleDuplicateModelFromAnotherProvider(t 
 		t.Fatalf("Options() found = %t, err = %v", found, err)
 	}
 	want := []SelectionOption{
-		{ID: "shared-model", Name: "shared-model"},
-		{ID: "window-model", Name: "window-model"},
+		{ID: "shared-model", Name: "shared-model", SupportedAPIProtocols: []string{"messages"}, TestEndpointModes: []string{"messages_sse"}},
+		{ID: "window-model", Name: "window-model", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Options() = %#v, want %#v", got, want)
@@ -781,7 +784,7 @@ func TestServiceModelCapabilitiesLoadsOnlyRequestedAndMappedModels(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("ModelCapabilities() found = %t, err = %v", found, err)
 	}
-	want := ModelCapabilities{ID: "source-model", Name: "source-model", TestEndpointModes: []string{"messages_sse"}}
+	want := ModelCapabilities{ID: "source-model", Name: "source-model", SupportedAPIProtocols: []string{"messages"}, TestEndpointModes: []string{"messages_sse"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ModelCapabilities() = %#v, want %#v", got, want)
 	}

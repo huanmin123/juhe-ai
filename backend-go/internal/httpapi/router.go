@@ -1212,6 +1212,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/error-groups/{errorGroupId}/events", opts.ManagementAuditErrorGroupEventsHandler.ServeHTTP)
 			}
 			if opts.ManagementAuditLogsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/search-hot", opts.ManagementAuditLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/{id}", opts.ManagementAuditLogsHandler.ServeHTTP)
 			}

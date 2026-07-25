@@ -69,6 +69,26 @@ func TestLoadReadsBoundedRuntimeLogGrepConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadReadsOptionalAuditHotSearchRoot(t *testing.T) {
+	t.Setenv("JUHE_AI_AUDIT_HOT_SEARCH_ROOT", "D:/juhe/audit/search-hot")
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if cfg.AuditHotSearchRoot != "D:/juhe/audit/search-hot" {
+		t.Fatalf("AuditHotSearchRoot=%q", cfg.AuditHotSearchRoot)
+	}
+
+	t.Setenv("JUHE_AI_AUDIT_HOT_SEARCH_ROOT", "")
+	cfg, err = Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() empty root: %v", err)
+	}
+	if cfg.AuditHotSearchRoot != "" {
+		t.Fatalf("AuditHotSearchRoot=%q, want empty by default", cfg.AuditHotSearchRoot)
+	}
+}
+
 func TestLoadUsesGoDevelopmentRuntimeLogDirectoryDefault(t *testing.T) {
 	if _, configured := os.LookupEnv("JUHE_AI_LOG_DIR"); configured {
 		t.Skip("JUHE_AI_LOG_DIR is configured by the test environment")

@@ -1008,7 +1008,9 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
-	auditLogService := managementauditlogs.NewService(store)
+	auditLogService := managementauditlogs.NewServiceWithOptions(store, managementauditlogs.Options{
+		HotSearchRoot: cfg.AuditHotSearchRoot,
+	})
 	runtimeLogService := managementruntimelogs.NewService(store)
 	runtimeLogGrepService := managementruntimeloggrep.NewService(managementruntimeloggrep.Options{
 		Directory:     cfg.RuntimeLogDirectory,

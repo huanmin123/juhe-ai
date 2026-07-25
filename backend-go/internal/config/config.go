@@ -42,6 +42,7 @@ type Config struct {
 	RuntimeLogFileEnabled              bool          `env:"JUHE_AI_LOG_FILE_ENABLED" envDefault:"true"`
 	RuntimeLogRetentionDays            int           `env:"JUHE_AI_LOG_RETENTION_DAYS" envDefault:"30"`
 	RuntimeLogMaxFiles                 int           `env:"JUHE_AI_LOG_MAX_FILES" envDefault:"500"`
+	AuditHotSearchRoot                 string        `env:"JUHE_AI_AUDIT_HOT_SEARCH_ROOT"`
 	RGPath                             string        `env:"JUHE_AI_RG_PATH"`
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
