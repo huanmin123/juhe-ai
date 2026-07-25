@@ -50,7 +50,7 @@
             />
             <div v-if="modelsError" class="test-field-error">{{ modelsError }}</div>
           </a-form-item>
-          <a-form-item class="test-config-field" :label="imageTest ? '检查方式' : '测试请求形态'">
+          <a-form-item class="test-config-field" label="测试请求形态">
             <a-select
               class="test-endpoint-select"
               :value="selectedEndpointModeSelectValue"
@@ -157,7 +157,7 @@ const emit = defineEmits<{
 }>()
 
 const testEndpointModeOptions = computed(() => props.testEndpointModes.map((value) => ({
-  label: value === 'images_json' ? '图像模型可用性（Models API）' : accountEndpointModeLabel(value, props.account),
+  label: accountEndpointModeLabel(value, props.account),
   value
 })))
 const canSelectEndpointMode = computed(() => testEndpointModeOptions.value.length > 1)

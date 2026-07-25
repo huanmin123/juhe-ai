@@ -33,6 +33,7 @@ var expectedDefinitions = []expectedDefinition{
 	{Key: "imageFirstResponseTimeoutSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "imageStreamIdleTimeoutSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "imageUncommittedAttemptMaxLifetimeSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
+	{Key: "chatImageGenerationTotalTimeoutSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "noAvailableAccountWaitTimeoutSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "streamFailureThresholdCount", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "streamFailureThresholdWindowMinutes", Kind: ValueKindInteger, Minimum: 1, Maximum: 1440},
@@ -75,8 +76,8 @@ var expectedDefinitions = []expectedDefinition{
 }
 
 func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
-	if len(expectedDefinitions) != 55 {
-		t.Fatalf("expected definition fixture count = %d, want 55", len(expectedDefinitions))
+	if len(expectedDefinitions) != 56 {
+		t.Fatalf("expected definition fixture count = %d, want 56", len(expectedDefinitions))
 	}
 
 	keys := make([]string, 0, len(expectedDefinitions))
@@ -97,8 +98,8 @@ func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
 			t.Fatalf("Definitions()[%d] = %+v, want %+v", index, got, want)
 		}
 	}
-	if integerCount != 54 {
-		t.Fatalf("integer definition count = %d, want 54", integerCount)
+	if integerCount != 55 {
+		t.Fatalf("integer definition count = %d, want 55", integerCount)
 	}
 	if got := Keys(); !reflect.DeepEqual(got, keys) {
 		t.Fatalf("Keys() = %#v, want %#v", got, keys)
@@ -153,15 +154,15 @@ func TestIntegerDefinitionsAcceptBothBoundsAndRejectOutsideBounds(t *testing.T) 
 
 func TestCurrentNodeDefaultsFormValidCompleteSnapshot(t *testing.T) {
 	defaults := currentNodeDefaultValues()
-	if len(defaults) != 55 {
-		t.Fatalf("default count = %d, want 55", len(defaults))
+	if len(defaults) != 56 {
+		t.Fatalf("default count = %d, want 56", len(defaults))
 	}
 	snapshot, err := NewSnapshot(defaults)
 	if err != nil {
 		t.Fatalf("NewSnapshot(current defaults) error = %v", err)
 	}
-	if snapshot.Len() != 55 {
-		t.Fatalf("snapshot length = %d, want 55", snapshot.Len())
+	if snapshot.Len() != 56 {
+		t.Fatalf("snapshot length = %d, want 56", snapshot.Len())
 	}
 	value, ok := snapshot.Value("usageHotWindowRefreshIntervalSeconds")
 	if !ok || string(value) != "600" {
@@ -389,6 +390,7 @@ func currentNodeDefaultValues() map[string]json.RawMessage {
 		"imageFirstResponseTimeoutSeconds":           json.RawMessage(`600`),
 		"imageStreamIdleTimeoutSeconds":              json.RawMessage(`120`),
 		"imageUncommittedAttemptMaxLifetimeSeconds":  json.RawMessage(`3600`),
+		"chatImageGenerationTotalTimeoutSeconds":     json.RawMessage(`900`),
 		"noAvailableAccountWaitTimeoutSeconds":       json.RawMessage(`270`),
 		"streamFailureThresholdCount":                json.RawMessage(`3`),
 		"streamFailureThresholdWindowMinutes":        json.RawMessage(`5`),

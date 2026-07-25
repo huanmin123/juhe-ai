@@ -34,6 +34,8 @@ try {
     const result = await repository.getManagementSettingsSectionAsync(sectionKey)
     assert.deepEqual(Object.keys(result).sort(), [...repository.managementSettingsSectionCatalog[sectionKey].keys].sort(), `${sectionKey} 只能返回本分区字段`)
   }
+  const gatewayCore = await repository.getManagementSettingsSectionAsync('gateway-core')
+  assert.equal(gatewayCore.chatImageGenerationTotalTimeoutSeconds, 900, 'AI 对话生图总超时默认值必须为 15 分钟')
   assert(readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs > 0, 'SQLite section GET 必须实际经过 read-worker')
 
   const [{ createSystemApiApp }, repositories] = await Promise.all([
@@ -76,6 +78,11 @@ try {
     () => repository.updateManagementSettingsSectionAsync('api-rate-limit', { accountHealthCheckIntervalHours: 1 }),
     /不允许的字段/,
     '跨 section 字段必须拒绝'
+  )
+  await assert.rejects(
+    () => repository.updateManagementSettingsSectionAsync('gateway-core', { chatImageGenerationTotalTimeoutSeconds: 59 }),
+    /必须在 60 到 86400 之间/,
+    'AI 对话生图总超时必须执行系统设置范围校验'
   )
   await assert.rejects(
     () => repository.updateManagementSettingsSectionAsync('api-rate-limit', {}),

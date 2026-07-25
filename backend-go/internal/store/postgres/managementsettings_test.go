@@ -56,6 +56,8 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 	sql := string(source)
 	defaults := nodeSystemSettingDefaultJSON()
+	chatImageTimeoutDefault := defaults["chatImageGenerationTotalTimeoutSeconds"]
+	delete(defaults, "chatImageGenerationTotalTimeoutSeconds")
 	if len(defaults) != 55 {
 		t.Fatalf("initial migration default count = %d, want 55", len(defaults))
 	}
@@ -89,6 +91,14 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 		if strings.Contains(sql, "'"+key+"'") {
 			t.Fatalf("executed migration 000024 must not be modified with %s", key)
 		}
+	}
+	catchUpSource, err := os.ReadFile("../../../db/migrations/000078_w5_chat_image_generation_total_timeout.sql")
+	if err != nil {
+		t.Fatalf("read chat image timeout migration: %v", err)
+	}
+	wantCatchUp := fmt.Sprintf("('sys_admin', 'chatImageGenerationTotalTimeoutSeconds', '%s', now())", chatImageTimeoutDefault)
+	if !strings.Contains(string(catchUpSource), wantCatchUp) {
+		t.Fatalf("chat image timeout migration missing %q", wantCatchUp)
 	}
 }
 
@@ -567,6 +577,7 @@ func nodeSystemSettingDefaultJSON() map[string]string {
 		"imageFirstResponseTimeoutSeconds":           "600",
 		"imageStreamIdleTimeoutSeconds":              "120",
 		"imageUncommittedAttemptMaxLifetimeSeconds":  "3600",
+		"chatImageGenerationTotalTimeoutSeconds":     "900",
 		"noAvailableAccountWaitTimeoutSeconds":       "270",
 		"streamFailureThresholdCount":                "3",
 		"streamFailureThresholdWindowMinutes":        "5",

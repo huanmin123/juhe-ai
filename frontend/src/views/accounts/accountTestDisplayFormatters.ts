@@ -19,7 +19,7 @@ export interface AccountTestOutputLine {
 }
 
 const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
-const imageDiagnosticAttemptTimeoutsMs = [10_000, 20_000]
+const imageDiagnosticAttemptTimeoutsMs = [120_000]
 
 interface SingleAccountTestOutputOptions {
   account?: AccountSummary
@@ -37,9 +37,6 @@ export function accountTestSelectedEndpointModeText(input: {
   testEndpointMode: AccountTestEndpointMode
   selectedEndpointModeText: string
 }): string {
-  if (input.testEndpointMode === 'images_json') {
-    return '图像模型可用性（Models API）'
-  }
   if (input.testEndpointMode !== 'account_default') {
     return accountEndpointModeLabel(input.testEndpointMode, input.account)
   }
@@ -61,7 +58,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
     { text: `供应商：${options.providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' },
     {
-      text: `${imageTest ? '检查方式' : '测试请求形态'}：${selectedEndpointModeText}`,
+      text: `测试请求形态：${selectedEndpointModeText}`,
       tone: 'muted'
     }
   ]
@@ -78,7 +75,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
 
   if (!options.result) {
     lines.push({
-      text: imageTest ? '点击「开始测试」后会通过模型目录检查图像模型是否可用，不生成图片。' : '点击「开始测试」后会显示完整返回结果。',
+      text: imageTest ? '点击「开始测试」后会检查图片生成是否成功。' : '点击「开始测试」后会显示完整返回结果。',
       tone: 'muted'
     })
     return lines
@@ -103,7 +100,7 @@ export function accountTestSingleOutputLines(options: SingleAccountTestOutputOpt
   lines.push(...accountTestApiKeyPoolOutputLines(options.result))
   if (imageTest) {
     lines.push({
-      text: options.result.success ? '图像模型可用，测试通过。' : diagnosticParts.message || options.result.message,
+      text: options.result.success ? '图像生成响应有效，测试通过。' : diagnosticParts.message || options.result.message,
       tone: options.result.success ? 'success' : 'error'
     })
   } else {
@@ -175,9 +172,7 @@ export function accountTestSingleRunningOutputLines(input: {
   const timeoutSchedule = diagnosticAttemptTimeoutsForMode(task?.testEndpointMode ?? input.testEndpointMode)
   const diagnosticMaxWaitMs = timeoutSchedule.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
   const lines: AccountTestOutputLine[] = [
-    { text: isImageTestMode(task?.testEndpointMode ?? input.testEndpointMode)
-      ? '正在检查上游模型目录...'
-      : '正在走账户配置的真实请求流程...', tone: 'warning' },
+    { text: '正在走账户配置的真实请求流程...', tone: 'warning' },
     { text: `使用模型：${input.model}`, tone: 'success' },
     {
       text: `等待策略：后台接收后按 ${timeoutSchedule.map(formatAccountTestDuration).join(' + ')} 执行，运行超过 ${formatAccountTestDuration(diagnosticMaxWaitMs)} 会自动失败`,
@@ -261,9 +256,6 @@ function accountTestActualProtocolLine(
   account: AccountSummary,
   result: AccountTestResult
 ): AccountTestOutputLine {
-  if (isImageTestMode(result.testEndpointMode)) {
-    return { text: '实际检查方式：Models API（模型目录）', tone: 'muted' }
-  }
   const endpointMode = result.testEndpointMode ?? accountTestEndpointModesForAccount(account)[0]
   return {
     text: `实际请求形态：${endpointMode ? accountEndpointModeLabel(endpointMode, account) : fallbackProtocolText(account)}`,

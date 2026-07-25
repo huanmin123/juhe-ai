@@ -38,6 +38,7 @@ var definitions = []Definition{
 	{Key: "imageFirstResponseTimeoutSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "imageStreamIdleTimeoutSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "imageUncommittedAttemptMaxLifetimeSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
+	{Key: "chatImageGenerationTotalTimeoutSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "noAvailableAccountWaitTimeoutSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "streamFailureThresholdCount", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "streamFailureThresholdWindowMinutes", Kind: ValueKindInteger, Minimum: 1, Maximum: 1440},

@@ -25,15 +25,6 @@ export function hasAccountModelCatalogSuccessEvidence(model: string, bodyText: s
   return payload.data.some((item) => stringValue(objectValue(item)?.id) === target)
 }
 
-export function hasAccountImageGenerationSuccessEvidence(bodyText: string): boolean {
-  const payload = parseJsonObject(bodyText)
-  if (!payload || !Array.isArray(payload.data)) return false
-  return payload.data.some((item) => {
-    const image = objectValue(item)
-    return Boolean(stringValue(image?.b64_json) || stringValue(image?.url))
-  })
-}
-
 function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, bodyText: string): boolean {
   let hasChatContent = false
   for (const event of parseServerSentEvents(bodyText)) {

@@ -7,6 +7,7 @@ import { buildSettingsSectionRequestSignature, createSettingsSectionRequestGate 
 const sourceRoot = fileURLToPath(new URL('../..', import.meta.url))
 const view = readFileSync(resolve(sourceRoot, 'views/settings/SettingsView.vue'), 'utf8')
 const api = readFileSync(resolve(sourceRoot, 'api/domains/settings.ts'), 'utf8')
+const settingsForm = readFileSync(resolve(sourceRoot, 'views/settings/settingsForm.ts'), 'utf8')
 
 assert(!view.includes('api.settings.get()'), '设置页不得再请求完整 system settings')
 assert(!view.includes('api.settings.global()'), '设置页品牌应走统一 section 契约')
@@ -22,6 +23,10 @@ assert(view.includes('authState.revision.value'), 'section 请求签名必须包
 assert(view.includes('viewerId: viewer?.id'), 'section 请求签名必须包含 viewer id')
 assert(view.includes('sectionRequestGate.isCurrent'), '迟到成功、失败和 finally 都必须经过 generation/signature 门禁')
 assert(view.includes('for (const key of Object.keys(dirty)) responseValues[key] = current[key]'), 'ready section 重载不得覆盖 dirty 编辑')
+assert(view.includes('systemForm.chatImageGenerationTotalTimeoutSeconds'), '系统设置页必须展示 AI 对话生图总超时')
+assert(view.includes("'chatImageGenerationTotalTimeoutSeconds'"), 'gateway-core section 必须提交 AI 对话生图总超时')
+assert(settingsForm.includes('chatImageGenerationTotalTimeoutSeconds: 900'), '前端默认 AI 对话生图总超时必须为 15 分钟')
+assert(settingsForm.includes("'AI 对话生图总超时', 60, 86400"), '前端必须校验 AI 对话生图总超时范围')
 assert(api.includes("http.get(`/settings/sections/${sectionKey}`)"), '前端 API 必须使用 section GET')
 assert(api.includes("http.patch(`/settings/sections/${sectionKey}`, payload)"), '前端 API 必须使用 section PATCH')
 

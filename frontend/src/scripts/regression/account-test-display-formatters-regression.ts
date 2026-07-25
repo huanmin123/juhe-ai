@@ -175,6 +175,7 @@ const imageRunningLines = accountTestSingleOutputLines({
   activeTask: taskFixture(apiKeyAccount, {
     status: 'running',
     startedAt: new Date(Date.now() - 1500).toISOString(),
+    message: '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s',
     testEndpointMode: 'images_json'
   }),
   testEndpointMode: 'images_json',
@@ -183,9 +184,8 @@ const imageRunningLines = accountTestSingleOutputLines({
   providerLabel: () => 'OpenAI',
   running: true
 })
-assertLineIncludes(imageRunningLines, '检查方式：图像模型可用性（Models API）', '图片测试必须明确展示模型目录检查方式')
-assertLineIncludes(imageRunningLines, '当前窗口估计：第 1/2 次', '图片测试运行中应展示 30 秒目录探针窗口')
-assertLineIncludes(imageRunningLines, '正在检查上游模型目录...', '图片测试运行中不得伪装为真实生图')
+assertLineIncludes(imageRunningLines, '当前窗口估计：第 1/1 次', '图片测试运行中应展示单次 120 秒窗口')
+assertLineIncludes(imageRunningLines, '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s', '图片测试运行中必须明确等待真实生图')
 
 const imageSuccessLines = accountTestSingleOutputLines({
   account: apiKeyAccount,
@@ -203,7 +203,7 @@ const imageSuccessLines = accountTestSingleOutputLines({
   }),
   running: false
 })
-assertLineIncludes(imageSuccessLines, '图像模型可用，测试通过。', '图片测试成功只应展示模型可用性结论')
+assertLineIncludes(imageSuccessLines, '图像生成响应有效，测试通过。', '图片测试成功只应展示图片生成结论')
 assertLineExcludes(imageSuccessLines, 'b64_json', '图片测试终端不得渲染 Base64 响应')
 assertLineExcludes(imageSuccessLines, '响应：', '图片测试终端不得展示原始响应区块')
 

@@ -5,7 +5,6 @@ import {
   gatewayClientAllowsUpstreamSemanticInterpretation,
   type OpenAIGatewayClientProfile
 } from '../../modules/gateway/client-profiles/strategy.js'
-import { isBuiltInImageAccountPermissionFailure } from '../../modules/gateway/response/failure-dispatch.js'
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
 const explicitProfiles: OpenAIGatewayClientProfile[] = ['codex', 'claude_code', 'gemini_cli']
@@ -21,6 +20,7 @@ const finalizationSource = readFileSync(new URL('../../modules/gateway/response/
 const auxiliarySource = readFileSync(new URL('../../modules/gateway/hybrid/auxiliary-dispatch.service.ts', import.meta.url), 'utf8')
 const hybridScoringSource = readFileSync(new URL('../../modules/gateway/hybrid/scoring.service.ts', import.meta.url), 'utf8')
 const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/quality-inspection.service.ts', import.meta.url), 'utf8')
+const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
 assert.match(
   dispatchSource,
   /failedResponseResult\.action === 'return_response'[\s\S]*response: failedResponseResult\.response/,
@@ -36,36 +36,16 @@ assert.doesNotMatch(
   /isOpaqueUpstreamFailoverAllowed/,
   '完整 HTTP 非成功响应不得按端点建立默认接管白名单'
 )
-
-const imagePermissionRequest = {
-  method: 'POST',
-  originalUrl: '/v1/images/generations',
-  path: '/images/generations'
-}
-assert.equal(isBuiltInImageAccountPermissionFailure({
-  req: imagePermissionRequest,
-  statusCode: 403,
-  errorType: 'permission_error',
-  errorMessage: 'Image generation is not enabled for this group'
-}), true, '图片上游组未开启生图应视为当前账户能力不可用并续试候选账户')
-assert.equal(isBuiltInImageAccountPermissionFailure({
-  req: { ...imagePermissionRequest, originalUrl: '/v1/responses', path: '/responses' },
-  statusCode: 403,
-  errorType: 'permission_error',
-  errorMessage: 'Image generation is not enabled for this group'
-}), false, '文本 / Responses 路径不得应用图片账户权限续试规则')
-assert.equal(isBuiltInImageAccountPermissionFailure({
-  req: imagePermissionRequest,
-  statusCode: 403,
-  errorType: 'permission_error',
-  errorMessage: 'Access denied by organization policy'
-}), false, '非明确的图片组权限错误必须原样返回')
-assert.equal(isBuiltInImageAccountPermissionFailure({
-  req: imagePermissionRequest,
-  statusCode: 400,
-  errorType: 'invalid_request_error',
-  errorMessage: 'Image generation is not enabled for this group'
-}), false, '非 403 错误不得套用账户权限续试规则')
+assert.doesNotMatch(
+  failureDispatchSource,
+  /builtInImagePermission|isBuiltInImageAccountPermissionFailure|Image generation is not enabled/,
+  '通用失败派发不得写死图片状态码、错误类型或供应商文案'
+)
+assert.match(
+  failureDispatchSource,
+  /if \(!explicitPolicyCouldMatch\) \{\s*return \{ action: 'return_response', response \}/,
+  '未配置可能命中的账户错误策略时，完整 HTTP 错误必须原样返回'
+)
 assert.doesNotMatch(
   finalizationSource,
   /!interpretUpstreamResponseSemantics \|\| upstreamResponse\.ok/,

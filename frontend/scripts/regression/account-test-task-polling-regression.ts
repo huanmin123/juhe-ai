@@ -39,7 +39,7 @@ assertNotIncludes(accountTestModalSource, 'runBatchAccountTest', '账户测试�
 const accountTestTaskHelpersSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/accountTestTaskHelpers.ts'), 'utf8')
 assertIncludes(accountTestTaskHelpersSource, 'export const accountTestPollIntervalMs = 3000', '任务轮询间隔应为 3000ms')
 assertNotIncludes(accountTestTaskHelpersSource, 'export const accountTestPollIntervalMs = 1000', '任务轮询间隔不得回退为 1000ms')
-assertIncludes(accountTestTaskHelpersSource, 'accountImageDiagnosticAttemptTimeoutsMs = [10_000, 20_000]', '图片测试轮询窗口必须收敛为 30 秒')
+assertIncludes(accountTestTaskHelpersSource, 'accountImageDiagnosticAttemptTimeoutsMs = [120_000]', '图片测试轮询窗口必须保留单次 120 秒')
 assertIncludes(accountTestTaskHelpersSource, "testEndpointMode === 'images_json'", '图片测试必须按 Images API 请求形态选择独立轮询窗口')
 
 console.log('账户测试任务轮询回归通过：轮询循环、超时结果和任务结束清理边界保持分离，间隔 3s')

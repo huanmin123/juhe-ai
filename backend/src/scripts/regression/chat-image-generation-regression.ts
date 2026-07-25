@@ -35,6 +35,11 @@ assert.match(runner, /output_image/)
 assert.match(repository, /output_image|insertChatAssetReference/)
 
 const { ChatImageGenerationRequestError, buildChatImageGenerationRequest, generateChatImage } = await import('../../modules/chat/chat-image-generation-transport.js')
+const { createGenerateImageTool, defaultChatImageGenerationTotalTimeoutSeconds } = await import('../../modules/chat/tools/executors/generate-image.js')
+assert.equal(defaultChatImageGenerationTotalTimeoutSeconds, 900, 'AI 对话生图总超时默认值必须为 15 分钟')
+assert.equal(createGenerateImageTool().limits.timeoutMs, 900_000, '默认图片工具总超时必须为 900 秒')
+assert.equal(createGenerateImageTool({ totalTimeoutSeconds: 1200 }).limits.timeoutMs, 1_200_000, '图片工具必须使用系统设置快照创建总超时')
+assert.throws(() => createGenerateImageTool({ totalTimeoutSeconds: 59 }), /60 到 86400/, '图片工具必须拒绝越界总超时')
 assert.deepEqual(buildChatImageGenerationRequest({ model: 'gpt-image-2', prompt: '生成验收图' }), {
   path: '/v1/images/generations',
   body: { model: 'gpt-image-2', prompt: '生成验收图', n: 1, size: 'auto', quality: 'auto', output_format: 'webp' }

@@ -1,7 +1,7 @@
 import { isOpenAIProtocolProfile, type ProviderProtocolProfileDefinition } from '../../domain/provider-protocol.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 
-export type AccountTestProbeKind = 'generation' | 'models_catalog'
+export type AccountTestProbeKind = 'generation' | 'image_generation' | 'models_catalog'
 
 export function accountTestProbeKind(
   account: ProviderProtocolProfileDefinition & { type?: string },
@@ -21,7 +21,7 @@ export function accountTestProbeKind(
       (modelCapabilities.testEndpointMode === 'images_json' && protocols.includes('images'))
       || (!selectedProtocolSupported && imageOnly)
     )
-    ? 'models_catalog'
+    ? 'image_generation'
     : 'generation'
 }
 
