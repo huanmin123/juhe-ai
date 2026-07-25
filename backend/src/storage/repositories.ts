@@ -140,6 +140,7 @@ export {
   listGroupsPageAsync
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { accountCircuitCredentialOwnerIdentity } from '../domain/account-circuit-owner.js'
 import {
   advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
   advanceAccountCircuitDispatchRevisionFamilyInTransaction
@@ -156,7 +157,7 @@ import {
 } from './provider.repository.js'
 import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId } from './proxy.repository.js'
+import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId, resolveProxyUrlsForProfilesAsync } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from '../modules/gateway/quota/request-quota-checker.js'
 import {
@@ -381,7 +382,23 @@ interface OpenAIOAuthRefreshCandidateRow {
   last_error_message: string | null
   health_check_model: string
   health_check_endpoint_mode: import('../domain/types.js').AccountHealthCheckEndpointMode
+  config_revision: number
 }
+
+export type OpenAIOAuthRefreshCandidateResult =
+  | {
+      kind: 'account'
+      account: AccountSummary
+    }
+  | {
+      kind: 'local_configuration_error'
+      accountId: string
+      accountName: string
+      accountStatus: AccountStatus
+      configRevision: number
+      errorCode: 'oauth_credentials_decrypt_failed'
+      errorMessage: string
+    }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 export { normalizeAccountCredentialsForWrite } from './account-credentials-normalization.js'
@@ -627,6 +644,7 @@ export {
   resolveEnabledProxyProfileId,
   resolveEnabledProxyProfileIdAsync,
   resolveProxyUrlsForProfiles,
+  resolveProxyUrlsForProfilesAsync,
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileAsync,
   resolveProxyUrlForProfileForSystemAccount,
@@ -1276,22 +1294,13 @@ function accountConnectionConfigurationChanged(input: {
   ))
 }
 
-function accountDispatchConfigurationChanged(current: AccountSummary, next: AccountSummary): boolean {
-  return !isDeepStrictEqual(current.credentials, next.credentials)
+function accountCircuitOwnerConfigurationChanged(current: AccountSummary, next: AccountSummary): boolean {
+  return !isDeepStrictEqual(
+    accountCircuitCredentialOwnerIdentity(current.credentials),
+    accountCircuitCredentialOwnerIdentity(next.credentials)
+  )
     || current.proxyProfileId !== next.proxyProfileId
-    || current.status !== next.status
-    || current.concurrencyLimit !== next.concurrencyLimit
-    || current.priority !== next.priority
-    || current.superPriorityEnabled !== next.superPriorityEnabled
-    || current.fallbackEnabled !== next.fallbackEnabled
     || current.clientCompatibility !== next.clientCompatibility
-    || current.schedulable !== next.schedulable
-    || !isDeepStrictEqual(current.availabilitySchedule, next.availabilitySchedule)
-    || current.accountExpiresAt !== next.accountExpiresAt
-    || current.cooldownUntil !== next.cooldownUntil
-    || current.temporaryUnavailableContinuousProbeEnabled !== next.temporaryUnavailableContinuousProbeEnabled
-    || !unorderedStringListEquals(current.supportedModels, next.supportedModels)
-    || !accountModelMappingsEqual(current.modelMappings, next.modelMappings)
 }
 
 export function updateAccountHealthCheckModel(
@@ -1461,7 +1470,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
   leadSeconds: number
   limit: number
   stoppedErrorCode: string
-}): AccountSummary[] {
+}): OpenAIOAuthRefreshCandidateResult[] {
   const leadMs = Math.max(0, Math.trunc(input.leadSeconds)) * 1000
   const dueBefore = new Date(Date.now() + leadMs).toISOString()
   const limit = Math.max(1, Math.min(Math.trunc(input.limit), 500))
@@ -1470,27 +1479,27 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, health_check_model, health_check_endpoint_mode
+        last_error_code, last_error_message, health_check_model, health_check_endpoint_mode, config_revision
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
         AND provider_protocol_profile_id = ?
         AND type = 'oauth'
-        AND oauth_refresh_token_present = 1
+        AND oauth_refresh_token_present IN (0, 1)
         AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
         AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
       ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
       LIMIT ?
     `)
     .all(GPT_OPENAI_V1_PROFILE_ID, input.stoppedErrorCode, dueBefore, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
-  return openAIOAuthRefreshCandidateSummaries(rows)
+  return openAIOAuthRefreshCandidateResults(rows)
 }
 
 export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input: {
   leadSeconds: number
   limit: number
   stoppedErrorCode: string
-}): Promise<AccountSummary[]> {
+}): Promise<OpenAIOAuthRefreshCandidateResult[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listOpenAIOAuthAccountsDueForAccessTokenRefresh(input)
   }
@@ -1503,19 +1512,19 @@ export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input
     SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
       proxy_profile_id, concurrency_limit, priority,
       super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-      last_error_code, last_error_message, health_check_model, health_check_endpoint_mode
+      last_error_code, last_error_message, health_check_model, health_check_endpoint_mode, config_revision
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE authorization_instance_authorization_id IS NULL
       AND deleted_at IS NULL
       AND provider_protocol_profile_id IN (${client.dialect.bindPlaceholders(profileIds.length)})
       AND type = 'oauth'
-      AND oauth_refresh_token_present = 1
+      AND oauth_refresh_token_present IN (0, 1)
       AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
       AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
     ORDER BY (oauth_access_token_expires_at IS NOT NULL) ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
     LIMIT ?
   `, [...profileIds, input.stoppedErrorCode, dueBefore, limit])
-  return openAIOAuthRefreshCandidateSummaries(rows)
+  return openAIOAuthRefreshCandidateResults(rows)
 }
 
 export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
@@ -1528,7 +1537,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, health_check_model, health_check_endpoint_mode
+        last_error_code, last_error_message, health_check_model, health_check_endpoint_mode, config_revision
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND provider_protocol_profile_id = ?
@@ -1543,7 +1552,37 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
 }
 
 function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateRow[]): AccountSummary[] {
-  return rows.map((row) => accountSummaryWithEffectiveAvailability({
+  return rows.map((row) => openAIOAuthRefreshCandidateSummary(row))
+}
+
+function openAIOAuthRefreshCandidateResults(rows: OpenAIOAuthRefreshCandidateRow[]): OpenAIOAuthRefreshCandidateResult[] {
+  return rows.map((row) => {
+    let credentials: Record<string, unknown>
+    try {
+      credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+    } catch {
+      return {
+        kind: 'local_configuration_error' as const,
+        accountId: row.id,
+        accountName: row.name,
+        accountStatus: row.status,
+        configRevision: row.config_revision,
+        errorCode: 'oauth_credentials_decrypt_failed' as const,
+        errorMessage: '本地 OpenAI OAuth 账户凭据无法解密，请重新授权或更新凭据'
+      }
+    }
+    return {
+      kind: 'account' as const,
+      account: openAIOAuthRefreshCandidateSummary(row, credentials)
+    }
+  })
+}
+
+function openAIOAuthRefreshCandidateSummary(
+  row: OpenAIOAuthRefreshCandidateRow,
+  credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+): AccountSummary {
+  return accountSummaryWithEffectiveAvailability({
     id: row.id,
     systemAccountId: row.system_account_id,
     providerCode: row.provider_code,
@@ -1552,7 +1591,7 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     protocolVersion: row.protocol_version,
     name: row.name,
     type: 'oauth',
-    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+    credentials,
     status: row.status,
     concurrencyLimit: row.concurrency_limit,
     currentConcurrency: 0,
@@ -1575,11 +1614,12 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorCode: row.last_error_code ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
+    configRevision: row.config_revision,
     todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
     accessType: 'owner' as const,
     permissions: ownerPermissions()
-  }))
+  })
 }
 
 const defaultDisabledMultiKeyBalanceConfig = { adapter: 'builtin', intervalMinutes: 5 } as const
@@ -2506,7 +2546,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
-  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
+  const circuitOwnerConfigurationChanged = accountCircuitOwnerConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2520,7 +2560,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = NULL, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -2611,6 +2651,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             config_revision = config_revision + 1,
             cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
             cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
+            cooldown_retest_generation = NULL,
             cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
             cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
             cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
@@ -2639,7 +2680,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
       savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
     }
-    if (Number(result.changes ?? 0) > 0 && dispatchConfigurationChanged) {
+    if (Number(result.changes ?? 0) > 0 && circuitOwnerConfigurationChanged) {
       advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
         accountId: id,
         accountRuntimeKey: id,
@@ -2699,6 +2740,284 @@ export class AccountConfigRevisionConflictError extends Error {
     super(`账户配置已发生并发变更，请重试：${accountId}`)
     this.name = 'AccountConfigRevisionConflictError'
   }
+}
+
+interface PreparedOpenAIOAuthCredentialRefresh {
+  credentials: Record<string, unknown>
+  encryptedCredentials: string
+  credentialFingerprint: string | null
+  credentialMask: string
+  accessTokenExpiresAt: string | null
+  refreshTokenPresent: boolean
+  circuitOwnerConfigurationChanged: boolean
+}
+
+function prepareOpenAIOAuthCredentialRefresh(
+  current: AccountSummary,
+  rawCredentials: Record<string, unknown>
+): PreparedOpenAIOAuthCredentialRefresh {
+  if (!isGptVendorCode(current.providerCode) || !isOpenAIProtocolProfile(current) || current.type !== 'oauth') {
+    throw new Error('仅支持窄写回 OpenAI OAuth 账户凭据')
+  }
+  const clientCompatibility = deriveOpenAIAccountClientCompatibility(current.providerCode, current.type, current)
+  const credentials = normalizeAccountCredentialsForWrite(current.type, rawCredentials, {
+    providerCode: current.providerCode,
+    accountType: current.type,
+    clientCompatibility,
+    providerProtocolProfileId: current.providerProtocolProfileId,
+    protocolCode: current.protocolCode,
+    protocolVersion: current.protocolVersion
+  })
+  const credentialSource = requiredAccountCredentialSource(current.type, credentials)
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials, current)
+  return {
+    credentials,
+    encryptedCredentials: encryptJson(credentials),
+    credentialFingerprint: typeof credentialSource === 'string' && credentialSource.trim()
+      ? accountCredentialFingerprint(credentialSource)
+      : null,
+    credentialMask: maskSecret(credentialSource),
+    accessTokenExpiresAt: oauthRefreshMetadata.accessTokenExpiresAt,
+    refreshTokenPresent: oauthRefreshMetadata.refreshTokenPresent,
+    circuitOwnerConfigurationChanged: !isDeepStrictEqual(
+      accountCircuitCredentialOwnerIdentity(current.credentials),
+      accountCircuitCredentialOwnerIdentity(credentials)
+    )
+  }
+}
+
+export function updateOpenAIOAuthCredentialsIfCurrent(
+  id: string,
+  rawCredentials: Record<string, unknown>,
+  expectedConfigRevision: number,
+  access?: AccessScope
+): AccountSummary | undefined {
+  if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+    throw new Error('账户配置版本无效')
+  }
+  const current = findAccountForTest(id, access)
+  if (!current || current.accessType === 'authorized' || current.accountAuthorizationId) return undefined
+  const systemAccountId = current.ownerSystemAccountId ?? current.systemAccountId
+  if (!systemAccountId || !canManageResourceOwner(systemAccountId, access)) return undefined
+  const currentConfigRevision = current.configRevision ?? 1
+  if (currentConfigRevision !== expectedConfigRevision) {
+    throw new AccountConfigRevisionConflictError(id, expectedConfigRevision, currentConfigRevision)
+  }
+  const prepared = prepareOpenAIOAuthCredentialRefresh(current, rawCredentials)
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  const updatedAt = nowIso()
+  try {
+    const result = database.prepare(`
+      UPDATE accounts
+      SET credentials_encrypted = ?,
+          credential_fingerprint = ?,
+          credential_mask = ?,
+          oauth_access_token_expires_at = ?,
+          oauth_refresh_token_present = ?,
+          config_revision = config_revision + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND config_revision = ?
+        AND deleted_at IS NULL
+    `).run(
+      prepared.encryptedCredentials,
+      prepared.credentialFingerprint,
+      prepared.credentialMask,
+      prepared.accessTokenExpiresAt,
+      prepared.refreshTokenPresent ? 1 : 0,
+      updatedAt,
+      id,
+      systemAccountId,
+      expectedConfigRevision
+    )
+    if (Number(result.changes ?? 0) !== 1) {
+      throw new AccountConfigRevisionConflictError(id, expectedConfigRevision)
+    }
+    if (prepared.circuitOwnerConfigurationChanged) {
+      advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.parse(updatedAt)
+      })
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('openai_oauth_credentials_refreshed')
+  return findAccountForTest(id, access)
+}
+
+export async function updateOpenAIOAuthCredentialsIfCurrentAsync(
+  id: string,
+  rawCredentials: Record<string, unknown>,
+  expectedConfigRevision: number,
+  access?: AccessScope
+): Promise<AccountSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return updateOpenAIOAuthCredentialsIfCurrent(id, rawCredentials, expectedConfigRevision, access)
+  }
+  if (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+    throw new Error('账户配置版本无效')
+  }
+  const current = await findAccountForTestAsync(id, access)
+  if (!current || current.accessType === 'authorized' || current.accountAuthorizationId) return undefined
+  const systemAccountId = current.ownerSystemAccountId ?? current.systemAccountId
+  if (!systemAccountId || !canManageResourceOwner(systemAccountId, access)) return undefined
+  const currentConfigRevision = current.configRevision ?? 1
+  if (currentConfigRevision !== expectedConfigRevision) {
+    throw new AccountConfigRevisionConflictError(id, expectedConfigRevision, currentConfigRevision)
+  }
+  const prepared = prepareOpenAIOAuthCredentialRefresh(current, rawCredentials)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const updatedAt = nowIso()
+  await client.transaction(async (tx) => {
+    const result = await tx.execute(`
+      UPDATE ${accountWriteTable(tx, 'accounts')}
+      SET credentials_encrypted = ?,
+          credential_fingerprint = ?,
+          credential_mask = ?,
+          oauth_access_token_expires_at = ?,
+          oauth_refresh_token_present = ?,
+          config_revision = config_revision + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND config_revision = ?
+        AND deleted_at IS NULL
+    `, [
+      prepared.encryptedCredentials,
+      prepared.credentialFingerprint,
+      prepared.credentialMask,
+      prepared.accessTokenExpiresAt,
+      prepared.refreshTokenPresent ? 1 : 0,
+      updatedAt,
+      id,
+      systemAccountId,
+      expectedConfigRevision
+    ])
+    if (Number(result.changes ?? 0) !== 1) {
+      throw new AccountConfigRevisionConflictError(id, expectedConfigRevision)
+    }
+    if (prepared.circuitOwnerConfigurationChanged) {
+      await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: Date.parse(updatedAt)
+      })
+    }
+  })
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('openai_oauth_credentials_refreshed')
+  return await findAccountForTestAsync(id, access)
+}
+
+export interface MarkOpenAIOAuthLocalConfigurationExceptionInput {
+  accountId: string
+  errorCode: string
+  reason: string
+  expectedConfigRevision: number
+  expectedStatus: 'active'
+}
+
+export function markOpenAIOAuthLocalConfigurationExceptionIfCurrent(
+  input: MarkOpenAIOAuthLocalConfigurationExceptionInput
+): boolean {
+  if (!Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
+    throw new Error('账户配置版本无效')
+  }
+  const result = getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'error',
+        schedulable = 0,
+        cooldown_until = NULL,
+        last_error_code = ?,
+        last_error_message = ?,
+        last_error_trace_id = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND provider_code = ?
+      AND protocol_code = 'openai'
+      AND type = 'oauth'
+      AND status = ?
+      AND config_revision = ?
+  `).run(
+    input.errorCode,
+    input.reason,
+    nowIso(),
+    input.accountId,
+    GPT_VENDOR_CODE,
+    input.expectedStatus,
+    input.expectedConfigRevision
+  )
+  if (Number(result.changes ?? 0) !== 1) return false
+  refreshGroupAccountStatsAfterWrite({ accountIds: [input.accountId], reason: 'openai_oauth_local_configuration_exception' })
+  invalidateAccountLookupCache(input.accountId)
+  invalidateGatewayRuntimeAfterBusinessWrite('openai_oauth_local_configuration_exception')
+  return true
+}
+
+export async function markOpenAIOAuthLocalConfigurationExceptionIfCurrentAsync(
+  input: MarkOpenAIOAuthLocalConfigurationExceptionInput
+): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return markOpenAIOAuthLocalConfigurationExceptionIfCurrent(input)
+  }
+  if (!Number.isInteger(input.expectedConfigRevision) || input.expectedConfigRevision < 1) {
+    throw new Error('账户配置版本无效')
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${accountWriteTable(client, 'accounts')}
+    SET status = 'error',
+        schedulable = 0,
+        cooldown_until = NULL,
+        last_error_code = ?,
+        last_error_message = ?,
+        last_error_trace_id = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND provider_code = ?
+      AND protocol_code = 'openai'
+      AND type = 'oauth'
+      AND status = ?
+      AND config_revision = ?
+  `, [
+    input.errorCode,
+    input.reason,
+    nowIso(),
+    input.accountId,
+    GPT_VENDOR_CODE,
+    input.expectedStatus,
+    input.expectedConfigRevision
+  ])
+  if (Number(result.changes ?? 0) !== 1) return false
+  await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [input.accountId], reason: 'openai_oauth_local_configuration_exception' }, client)
+  invalidateAccountLookupCache(input.accountId)
+  invalidateGatewayRuntimeAfterBusinessWrite('openai_oauth_local_configuration_exception')
+  return true
 }
 
 export async function updateAccountAsync(
@@ -3027,7 +3346,7 @@ export async function updateAccountAsync(
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
-  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
+  const circuitOwnerConfigurationChanged = accountCircuitOwnerConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -3044,7 +3363,7 @@ export async function updateAccountAsync(
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_generation = NULL, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -3145,6 +3464,7 @@ export async function updateAccountAsync(
               config_revision = config_revision + 1,
               cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
               cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
+              cooldown_retest_generation = NULL,
               cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
               cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
               cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
@@ -3173,7 +3493,7 @@ export async function updateAccountAsync(
       if (hasTagsInput) {
         savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
       }
-      if (dispatchConfigurationChanged) {
+      if (circuitOwnerConfigurationChanged) {
         await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
           accountId: id,
           accountRuntimeKey: id,
@@ -3343,13 +3663,19 @@ export {
   forceActivatePendingAccountAsync,
   recordAccountStreamFailure,
   recordAccountStreamFailureAsync,
+  recordAccountRuntimeSuccessObservation,
+  recordAccountRuntimeSuccessObservationAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
   updateAuthorizedAccountBindingDispatch,
   updateAuthorizedAccountBindingDispatchAsync,
   type AccountFailureStateClearResult,
   type AccountForceActivateResult,
+  type AccountPrecheckMutationGuard,
   type AccountPrecheckMutationState,
+  type AccountRuntimeFailureObservationGuard,
+  type AccountRuntimeSuccessObservationInput,
+  type AccountRuntimeSuccessObservationResult,
   type AuthorizedAccountBindingRuntimeTarget
 } from './account-runtime-mutation.repository.js'
 

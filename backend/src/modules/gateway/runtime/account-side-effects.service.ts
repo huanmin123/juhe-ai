@@ -69,16 +69,13 @@ import {
   type SuppressibleGatewayAccount
 } from './account-runtime-keys.js'
 import {
+  AccountSideEffectEpochRegistry,
   AccountSideEffectQueue,
+  type AccountSideEffectEpoch,
   type AccountErrorHandlingOperation,
   type AccountSideEffectOperation
 } from './account-side-effect-queue.js'
-import {
-  accountErrorHandlingOperationRuntimeKey,
-  shouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess,
-  shouldCoalesceQueuedAccountErrorHandlingSideEffect,
-  shouldSkipHealthySuccessfulAccountSideEffect
-} from './account-side-effect-policy.js'
+import { accountErrorHandlingOperationRuntimeKey } from './account-side-effect-policy.js'
 import { gatewayAccountConcurrencyAccountId } from '../dispatch/account-concurrency-identity.js'
 import { notifyOneRecoverableUnavailableRuntimeWaiter } from './recoverable-unavailable-wait.js'
 
@@ -323,6 +320,8 @@ export interface GatewayAccountSideEffectState {
   failedAttemptCount: number
   droppedCount: number
   expiredCount: number
+  staleCount: number
+  evictedFailureForSuccessCount: number
   localSuppressedAccountCount: number
   degradedAccountCount: number
   precheckPendingAccountCount: number
@@ -362,6 +361,7 @@ const gatewayAutomaticProbeLimit = pLimit(recoveryProbeMaxConcurrentRuns)
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
 const configuredPolicyAvoidanceStore = createRuntimeStateStore('gateway-configured-account-policy-avoidance')
 const sideEffectQueue = new AccountSideEffectQueue()
+const sideEffectEpochs = new AccountSideEffectEpochRegistry()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
 const precheckStates = new Map<string, PrecheckState>()
@@ -388,28 +388,49 @@ let skippedHealthySuccessCount = 0
 let failedAttemptCount = 0
 let droppedCount = 0
 let expiredCount = 0
+let staleCount = 0
+let evictedFailureForSuccessCount = 0
 
 export async function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): Promise<void> {
-  if (operation.input.trafficSource === 'gateway' && !operation.input.policyDecision) {
+  if (
+    operation.input.trafficSource === 'gateway'
+    && !operation.input.success
+    && !operation.input.policyDecision
+  ) {
     return
   }
-  if (operation.input.success) {
-    const runtimeKey = accountErrorHandlingOperationRuntimeKey(operation)
+  const observedOperation = normalizedObservedAccountSideEffectOperation(operation)
+  const runtimeKey = accountErrorHandlingOperationRuntimeKey(observedOperation)
+  // 容量预检与入队之间没有 await；先拒绝无法入队的观测，避免它把已排队 watermark 变成 stale。
+  if (!canAdmitAccountSideEffectWithoutDropping(observedOperation, runtimeKey)) {
+    droppedCount += 1
+    logDroppedAccountSideEffect(observedOperation)
+    return
+  }
+  const observation = sideEffectEpochs.observe(runtimeKey, {
+    observedAt: observedOperation.input.observedAt!,
+    success: observedOperation.input.success,
+    dispatchRevision: observedOperation.input.dispatchRevision,
+    retain: true
+  })
+  if (!observation.accepted) {
+    staleCount += 1
+    return
+  }
+  let canceledCount = 0
+  if (observedOperation.input.success) {
     recordGatewayAccountSuccessObservation(runtimeKey)
-    const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey)
+    canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey)
     if (canceledCount > 0) {
       canceledBySuccessCount += canceledCount
-      await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey)
     }
-  } else if (coalesceQueuedAccountErrorHandlingSideEffect(operation)) {
+  } else if (coalesceQueuedAccountErrorHandlingSideEffect(observedOperation, observation.epoch)) {
     return
   }
-  if (shouldSkipHealthySuccessfulAccountSideEffect(operation)) {
-    await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(gatewayAccountRuntimeKey(operation.account))
-    skippedHealthySuccessCount += 1
-    return
+  enqueueAccountSideEffect(observedOperation, observation.epoch)
+  if (observedOperation.input.success) {
+    await clearGatewayAccountRuntimeAvailabilityForRuntimeKey(runtimeKey)
   }
-  enqueueAccountSideEffect(operation)
 }
 
 export function suppressGatewayAccountLocally(
@@ -1219,11 +1240,24 @@ async function runDistributedGatewayAccountPrecheck(
     }
 
     const reason = `事前确认探针连续失败 ${state.attemptCount} 次，已标记为临时不可调用；${state.reason}`.slice(0, 1000)
+    const writeFenceHeld = await distributedRecoveryProbeStore.renewGenerationRun(
+      runtimeKey,
+      generation,
+      runId,
+      Date.now() + precheckSuppressionGuardMs,
+      distributedRecoveryProbeStateTtlMs
+    )
+    if (!writeFenceHeld) {
+      logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_precheck_stale_write_fence_ignored')
+      return
+    }
     const markResult = await requestGatewayDbService({
       type: 'mark_account_precheck_temporary_unavailable',
       account,
       reason,
-      precheckStartedAt: new Date(state.startedAtMs).toISOString()
+      precheckStartedAt: new Date(state.startedAtMs).toISOString(),
+      expectedDispatchRevision: account.dispatchRevision ?? 0,
+      expectedStatus: account.status
     }, { priority: 'low' })
     await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
     if (markResult.updated) clearGatewayRuntimeCache()
@@ -2052,11 +2086,32 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
     failedAttemptCount,
     droppedCount,
     expiredCount,
+    staleCount,
+    evictedFailureForSuccessCount,
     localSuppressedAccountCount: countVisibleLocalSuppressions(isPrecheckRuntimeBlocking),
     degradedAccountCount: countLocalAccountDegradations(),
     precheckPendingAccountCount: runtimeConfig.runtimeStateDriver === 'redis' ? 0 : precheckStates.size,
     recoveryProbePendingAccountCount: runtimeConfig.runtimeStateDriver === 'redis' ? 0 : recoveryProbeStates.size,
     nextAttemptAt: nextAttemptAtMs === undefined ? undefined : new Date(nextAttemptAtMs).toISOString()
+  }
+}
+
+function normalizedObservedAccountSideEffectOperation(
+  operation: AccountErrorHandlingOperation
+): AccountErrorHandlingOperation {
+  const observedAtMs = operation.input.observedAt ? Date.parse(operation.input.observedAt) : Number.NaN
+  const dispatchRevision = operation.input.dispatchRevision ?? operation.account.dispatchRevision
+  return {
+    ...operation,
+    input: {
+      ...operation.input,
+      observedAt: Number.isFinite(observedAtMs)
+        ? new Date(observedAtMs).toISOString()
+        : new Date().toISOString(),
+      ...(Number.isSafeInteger(dispatchRevision) && (dispatchRevision ?? 0) > 0
+        ? { dispatchRevision }
+        : {})
+    }
   }
 }
 
@@ -2080,6 +2135,7 @@ export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
 
 export function clearGatewayAccountSideEffectQueueForTest(): void {
   sideEffectQueue.clear()
+  sideEffectEpochs.clear()
   if (drainTimer) {
     clearTimeout(drainTimer)
     drainTimer = undefined
@@ -2249,15 +2305,27 @@ export async function flushGatewayAccountSideEffects(): Promise<void> {
   }
 }
 
-function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
+function enqueueAccountSideEffect(operation: AccountSideEffectOperation, epoch: AccountSideEffectEpoch): void {
   if (sideEffectQueue.length >= maxSideEffectQueueLength) {
-    droppedCount += 1
-    logDroppedAccountSideEffect(operation)
-    return
+    const evictedFailure = operation.input.success
+      ? sideEffectQueue.removeOldestFailure()
+      : undefined
+    if (evictedFailure) {
+      sideEffectEpochs.release(evictedFailure.epoch)
+      droppedCount += 1
+      evictedFailureForSuccessCount += 1
+      logEvictedAccountFailureSideEffectForSuccess(evictedFailure.operation, operation)
+    } else {
+      sideEffectEpochs.release(epoch)
+      droppedCount += 1
+      logDroppedAccountSideEffect(operation)
+      return
+    }
   }
   const now = Date.now()
   sideEffectQueue.push({
     operation,
+    epoch,
     attempts: 0,
     enqueuedAtMs: now,
     nextAttemptAtMs: now,
@@ -2267,26 +2335,58 @@ function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   scheduleSideEffectDrain(0)
 }
 
-function coalesceQueuedAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): boolean {
-  const index = sideEffectQueue.findIndex((item) => shouldCoalesceQueuedAccountErrorHandlingSideEffect(item, operation))
+function canAdmitAccountSideEffectWithoutDropping(
+  operation: AccountErrorHandlingOperation,
+  runtimeKey: string
+): boolean {
+  if (sideEffectQueue.length < maxSideEffectQueueLength) return true
+  if (sideEffectQueue.hasRuntimeKey(runtimeKey)) return true
+  return operation.input.success && sideEffectQueue.hasFailures
+}
+
+function logEvictedAccountFailureSideEffectForSuccess(
+  evictedOperation: AccountSideEffectOperation,
+  successOperation: AccountSideEffectOperation
+): void {
+  logger.warn({
+    event: 'gateway_account_side_effect_failure_evicted_for_success',
+    evictedAccountId: operationAccountId(evictedOperation),
+    successAccountId: operationAccountId(successOperation),
+    queueLength: sideEffectQueue.length,
+    evictedFailureForSuccessCount
+  }, '网关账号副作用队列已满，已为成功 watermark 淘汰最早失败写入')
+}
+
+function coalesceQueuedAccountErrorHandlingSideEffect(
+  operation: AccountErrorHandlingOperation,
+  epoch: AccountSideEffectEpoch
+): boolean {
+  const index = sideEffectQueue.findIndexByRuntimeKey(accountErrorHandlingOperationRuntimeKey(operation))
   if (index < 0) {
     return false
   }
   const now = Date.now()
-  sideEffectQueue.replaceAt(index, {
+  const replaced = sideEffectQueue.replaceAt(index, {
     operation,
+    epoch,
     attempts: 0,
     enqueuedAtMs: now,
     nextAttemptAtMs: now,
     expiresAtMs: now + sideEffectRetentionMs
   })
+  if (!replaced) return false
+  sideEffectEpochs.release(replaced.epoch)
   coalescedCount += 1
   scheduleSideEffectDrain(0)
   return true
 }
 
 function cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey: string): number {
-  return sideEffectQueue.removeWhere((item) => shouldCancelQueuedAccountErrorHandlingSideEffectAfterSuccess(item, runtimeKey))
+  const canceled = sideEffectQueue.removeRuntimeKey(runtimeKey)
+  for (const item of canceled) {
+    sideEffectEpochs.release(item.epoch)
+  }
+  return canceled.length
 }
 
 function logDroppedAccountSideEffect(operation: AccountSideEffectOperation): void {
@@ -2329,22 +2429,39 @@ async function drainSideEffectQueue(): Promise<void> {
   try {
     while (sideEffectQueue.length > 0) {
       const now = Date.now()
-      dropExpiredSideEffects(now)
       const item = sideEffectQueue.peek()
       if (!item) {
         break
       }
-      if (item.nextAttemptAtMs > now) {
-        scheduleSideEffectDrain(item.nextAttemptAtMs - now)
+      const dueAtMs = Math.min(item.nextAttemptAtMs, item.expiresAtMs)
+      if (dueAtMs > now) {
+        scheduleSideEffectDrain(dueAtMs - now)
         break
       }
       sideEffectQueue.pop()
+      if (item.expiresAtMs <= now) {
+        sideEffectEpochs.release(item.epoch)
+        expiredCount += 1
+        continue
+      }
+      if (!sideEffectEpochs.isCurrent(item.epoch)) {
+        sideEffectEpochs.release(item.epoch)
+        staleCount += 1
+        continue
+      }
       try {
         await executeAccountSideEffect(item.operation)
+        sideEffectEpochs.release(item.epoch)
         completedCount += 1
       } catch (error) {
         failedAttemptCount += 1
+        if (!sideEffectEpochs.isCurrent(item.epoch)) {
+          sideEffectEpochs.release(item.epoch)
+          staleCount += 1
+          continue
+        }
         if (Date.now() >= item.expiresAtMs) {
+          sideEffectEpochs.release(item.epoch)
           expiredCount += 1
           logger.warn(errorLogFields(error, {
             event: 'gateway_account_side_effect_expired',
@@ -2364,7 +2481,7 @@ async function drainSideEffectQueue(): Promise<void> {
           attempts: item.attempts,
           retryAt: new Date(item.nextAttemptAtMs).toISOString()
         }), '网关账号副作用写入失败，已加入重试')
-        scheduleSideEffectDrain(item.nextAttemptAtMs - Date.now())
+        scheduleSideEffectDrain(Math.min(item.nextAttemptAtMs, item.expiresAtMs) - Date.now())
         break
       }
     }
@@ -2389,18 +2506,10 @@ function scheduleNextDrainIfNeeded(): void {
   if (processingSideEffects || drainTimer || sideEffectQueue.length === 0) {
     return
   }
-  const nextAttemptAtMs = sideEffectQueue.peek()?.nextAttemptAtMs
-  if (nextAttemptAtMs !== undefined) {
-    scheduleSideEffectDrain(Math.max(0, nextAttemptAtMs - Date.now()))
+  const item = sideEffectQueue.peek()
+  if (item) {
+    scheduleSideEffectDrain(Math.max(0, Math.min(item.nextAttemptAtMs, item.expiresAtMs) - Date.now()))
   }
-}
-
-function dropExpiredSideEffects(now: number): void {
-  const removed = sideEffectQueue.removeWhere((item) => item.expiresAtMs <= now)
-  if (removed === 0) {
-    return
-  }
-  expiredCount += removed
 }
 
 function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean {
@@ -2659,7 +2768,9 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       type: 'mark_account_precheck_temporary_unavailable',
       account: finalState.account,
       reason,
-      precheckStartedAt: new Date(finalState.startedAtMs).toISOString()
+      precheckStartedAt: new Date(finalState.startedAtMs).toISOString(),
+      expectedDispatchRevision: finalState.account.dispatchRevision ?? 0,
+      expectedStatus: finalState.account.status
     }, {
       priority: 'low'
     })

@@ -12,6 +12,8 @@ import {
 
 const maxConcurrentCutoversPerScope = 2
 const activeBudgetByScope = new Map<string, number>()
+type SpeedFirstCutoverSlotAcquirer = typeof tryAcquireAccountConcurrencyAsync
+let speedFirstCutoverSlotAcquirerForTest: SpeedFirstCutoverSlotAcquirer | undefined
 
 export interface SpeedFirstCutoverReservation {
   readonly targetAccountId: string
@@ -32,26 +34,40 @@ export async function reserveSpeedFirstCutoverTarget(input: {
   const budgetKey = `${input.systemAccountId}:${input.routeStrategyId}:${input.groupId}:${input.slowAccountId}`
   if (!tryAcquireBudget(budgetKey)) return undefined
 
-  for (const target of input.targets) {
-    const slot = await tryAcquireAccountConcurrencyAsync(
-      gatewayAccountConcurrencyAccountId(target),
-      target.concurrencyLimit,
-      input.lane === 'image'
-        ? {
-            lane: 'image',
-            laneLimit: effectiveImageLaneConcurrencyLimit({
-              accountConcurrencyLimit: target.concurrencyLimit,
-              policy: input.groupSchedulingPolicy
-            })
-          }
-        : { lane: 'text' }
-    )
-    if (!slot.acquired) continue
-    return createReservation(target, slot, () => releaseBudget(budgetKey))
+  let acquiredSlot: AccountConcurrencySlot | undefined
+  let ownershipTransferred = false
+  try {
+    for (const target of input.targets) {
+      const slotAcquirer = speedFirstCutoverSlotAcquirerForTest ?? tryAcquireAccountConcurrencyAsync
+      const slot = await slotAcquirer(
+        gatewayAccountConcurrencyAccountId(target),
+        target.concurrencyLimit,
+        input.lane === 'image'
+          ? {
+              lane: 'image',
+              laneLimit: effectiveImageLaneConcurrencyLimit({
+                accountConcurrencyLimit: target.concurrencyLimit,
+                policy: input.groupSchedulingPolicy
+              })
+            }
+          : { lane: 'text' }
+      )
+      if (!slot.acquired) continue
+      acquiredSlot = slot
+      const reservation = createReservation(target, slot, () => releaseBudget(budgetKey))
+      ownershipTransferred = true
+      return reservation
+    }
+    return undefined
+  } finally {
+    if (!ownershipTransferred) {
+      try {
+        acquiredSlot?.release()
+      } finally {
+        releaseBudget(budgetKey)
+      }
+    }
   }
-
-  releaseBudget(budgetKey)
-  return undefined
 }
 
 export function speedFirstCutoverBudgetSnapshot(): Array<{ key: string; active: number }> {
@@ -60,6 +76,11 @@ export function speedFirstCutoverBudgetSnapshot(): Array<{ key: string; active: 
 
 export function clearSpeedFirstCutoverReservationsForTest(): void {
   activeBudgetByScope.clear()
+  speedFirstCutoverSlotAcquirerForTest = undefined
+}
+
+export function setSpeedFirstCutoverSlotAcquirerForTest(acquirer?: SpeedFirstCutoverSlotAcquirer): void {
+  speedFirstCutoverSlotAcquirerForTest = acquirer
 }
 
 function createReservation(
@@ -72,8 +93,11 @@ function createReservation(
   const release = () => {
     if (released) return
     released = true
-    slot.release()
-    releaseBudgetLease()
+    try {
+      slot.release()
+    } finally {
+      releaseBudgetLease()
+    }
   }
   const reservedSlot: AccountConcurrencySlot = {
     ...slot,

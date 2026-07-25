@@ -19,6 +19,7 @@ import type { AccountModelMapping } from '../domain/types.js'
 export interface AccountRow {
   id: string
   config_revision: number
+  dispatch_revision?: number
   system_account_id: string
   provider_code: ProviderCode
   provider_protocol_profile_id: string
@@ -51,6 +52,7 @@ export interface AccountRow {
   last_error_trace_id: string | null
   cooldown_retest_failure_count: number
   cooldown_retest_observation_started_at: string | null
+  cooldown_retest_generation?: string | null
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   temporary_unavailable_continuous_probe_enabled: number
@@ -203,6 +205,7 @@ export type AccountListRow = AccountRow & {
   bound_group_local_super_priority_enabled?: number | null
   bound_group_local_fallback_enabled?: number | null
   source_provider_code?: ProviderCode | null
+  source_config_revision?: number | null
   source_provider_protocol_profile_id?: string | null
   source_protocol_code?: string | null
   source_protocol_version?: string | null

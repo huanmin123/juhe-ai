@@ -124,9 +124,13 @@ async function main(): Promise<void> {
 
     const codexSwitch = seedTwoAccountGateway(upstreamBaseUrl, 'codex-switch')
     const latentCodexSwitch = seedThreeAccountGateway(upstreamBaseUrl, 'codex-latent-switch')
+    const concurrentBadSessionStorm = seedThreeAccountGateway(upstreamBaseUrl, 'codex-concurrent-bad-session-storm', {
+      concurrencyLimit: 64
+    })
     const probeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-probe-fail')
     const turnProbeFailCodexSwitch = seedProbeFailureGateway(upstreamBaseUrl, 'codex-turn-probe-fail')
-    const httpFailCodex = seedProbeFailureGateway(upstreamBaseUrl, 'codex-http-fail')
+    const coldHttpFailCodex = seedProbeFailureGateway(upstreamBaseUrl, 'codex-http-fail-cold')
+    const httpFailCodex = seedProbeFailureGateway(upstreamBaseUrl, 'codex-http-fail-after-storm')
     const nonCodexHttpAllFail = seedProbeFailureGateway(upstreamBaseUrl, 'non-codex-http-all-fail')
     const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
     const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
@@ -139,18 +143,20 @@ async function main(): Promise<void> {
 
     await assertCodexPreCommitFailureSwitchesAccountOnServer(baseUrl, codexSwitch, upstreamState)
     await assertCodexPreCommitFailureWalksCandidatesOnServer(baseUrl, latentCodexSwitch, upstreamState)
+    await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, coldHttpFailCodex, upstreamState)
+    await assertConcurrentBadSessionStormDoesNotOpenAccountCircuits(baseUrl, concurrentBadSessionStorm, upstreamState)
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
     await assertCodexTurnAvoidanceUsesFormalRequestWithoutProbe(baseUrl, turnProbeFailCodexSwitch, upstreamState)
     await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
     await assertGenericHttpNon2xxRetriesCandidates(baseUrl, nonCodexHttpAllFail, upstreamState)
     await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
-    await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
+    await assertCodexPostOutputFailureTerminatesWithoutReplay(baseUrl, cyberPolicy, upstreamState)
     await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, clientAbortBeforeHeadersAffinity, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertUsageRecords(codexSwitch)
-    assertAccountsStillActive([codexSwitch, latentCodexSwitch, contextWindow, cyberPolicy, clientAbortAffinity, clientAbortBeforeHeadersAffinity, {
+    assertAccountsStillActive([codexSwitch, latentCodexSwitch, concurrentBadSessionStorm, contextWindow, cyberPolicy, clientAbortAffinity, clientAbortBeforeHeadersAffinity, {
       ...probeFailCodexSwitch,
       freshAccountId: probeFailCodexSwitch.probeFailedAccountId,
       freshUpstreamKey: probeFailCodexSwitch.probeFailedUpstreamKey
@@ -158,6 +164,10 @@ async function main(): Promise<void> {
       ...turnProbeFailCodexSwitch,
       freshAccountId: turnProbeFailCodexSwitch.probeFailedAccountId,
       freshUpstreamKey: turnProbeFailCodexSwitch.probeFailedUpstreamKey
+    }, {
+      ...coldHttpFailCodex,
+      freshAccountId: coldHttpFailCodex.probeFailedAccountId,
+      freshUpstreamKey: coldHttpFailCodex.probeFailedUpstreamKey
     }, {
       ...httpFailCodex,
       freshAccountId: httpFailCodex.probeFailedAccountId,
@@ -168,7 +178,7 @@ async function main(): Promise<void> {
       freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后返回稳定可重试错误，client_aborted 会释放会话亲和且不继续切号')
+    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，同一坏会话 64 路并发不会误杀账户且独立会话会重新按当前优先级选号，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后返回稳定可重试错误，client_aborted 会释放会话亲和且不继续切号')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -200,14 +210,29 @@ async function assertCodexPreCommitFailureSwitchesAccountOnServer(
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
   const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeState = await codexGatewayStateSnapshot(seeded)
 
-  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const result = await requestResponsesRaw(baseUrl, seeded.apiKey, {
     scenario: 'codex-retry-switch',
     turnId: 'turn-codex-switch',
     codex: true,
     retryTag: 'server-retry'
   })
-  assert(streamText.includes('response.completed'), `Codex 输出前失败应由服务端切到备用账号并完成：${streamText}`)
+  const afterState = await codexGatewayStateSnapshot(seeded)
+  const diagnostic = JSON.stringify({
+    response: result,
+    hitDelta: {
+      failed: hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits,
+      fresh: hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits,
+      freshProbe: testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits
+    },
+    beforeState,
+    afterState
+  })
+  assert.equal(result.status, 200, `Codex 输出前失败切号必须保持 200 SSE：${diagnostic}`)
+  assert(result.contentType.includes('text/event-stream'), `Codex 输出前失败切号必须保持 SSE content-type：${diagnostic}`)
+  const streamText = result.text
+  assert(streamText.includes('response.completed'), `Codex 输出前失败应由服务端切到备用账号并完成：${diagnostic}`)
   assert(!streamText.includes('response.failed'), `Codex 服务端切号成功时不应把中间失败交给客户端：${streamText}`)
   assert(!streamText.includes('upstream_retryable_error'), `Codex 服务端切号成功时不应消耗客户端重试次数：${streamText}`)
   assert(!streamText.includes('internal_server_error'), `Codex 服务端切号成功时不应透出首个账号错误码：${streamText}`)
@@ -243,6 +268,55 @@ async function assertCodexPreCommitFailureWalksCandidatesOnServer(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'Codex 本次请求应最终命中真可用账号')
   assert.equal(testProbeHitCount(upstreamState, seeded.latentFailedUpstreamKey) - beforeLatentProbeHits, 0, '服务端隐藏重试不应消耗 Codex turn 探针')
   assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 0, '服务端隐藏重试不应提前探针真可用账号')
+}
+
+async function assertConcurrentBadSessionStormDoesNotOpenAccountCircuits(
+  baseUrl: string,
+  seeded: SeededThreeAccountGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const turnId = `turn-concurrent-bad-session-${Date.now()}`
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeLatentFailedHits = hitCount(upstreamState, seeded.latentFailedUpstreamKey)
+  const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const responses = await Promise.all(Array.from({ length: 64 }, () => requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-missing-terminal-switch',
+    turnId,
+    codex: true,
+    retryTag: 'concurrent-bad-session-storm'
+  })))
+
+  assert.equal(responses.length, 64, '坏会话并发风暴必须覆盖 50+ 并发请求')
+  assert(responses.every((response) => response.includes('response.completed')), '同一坏会话 64 并发风暴应全部由健康账户完成')
+  assert(responses.every((response) => !response.includes('response.failed')), '同一坏会话 64 并发风暴不应把中间失败交给客户端')
+  assert(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits >= 1, '并发风暴应真实命中首选失败账户')
+  assert(hitCount(upstreamState, seeded.latentFailedUpstreamKey) - beforeLatentFailedHits >= 1, '并发风暴应真实扫过第二个失败账户')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, responses.length, '每个并发请求最终都应由健康账户承接')
+
+  const candidates = repositories.listOpenAIAccountsForGroup(seeded.groupId, seeded.systemAccountId, {
+    requestedModel: codexSwitchTestModel
+  })
+  const failedAccount = candidates.find((account) => account.id === seeded.failedAccountId)
+  const latentFailedAccount = candidates.find((account) => account.id === seeded.latentFailedAccountId)
+  assert(failedAccount && latentFailedAccount, '并发风暴后应仍能读取两个失败账户候选')
+  const circuitStore = accountCircuit.getGatewayAccountCircuitStore()
+  const failedState = await circuitStore.get(accountCircuit.gatewayAccountProtocolModelScope(failedAccount, 'text', codexSwitchTestModel))
+  const latentFailedState = await circuitStore.get(accountCircuit.gatewayAccountProtocolModelScope(latentFailedAccount, 'text', codexSwitchTestModel))
+  assert.notEqual(failedState.phase, 'OPEN', '同一坏会话并发不得把首选账户确认成 OPEN')
+  assert.notEqual(latentFailedState.phase, 'OPEN', '同一坏会话并发不得把第二个账户确认成 OPEN')
+
+  const beforeIndependentRetryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const independentRetry = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-turn-direct-formal-success',
+    turnId: `${turnId}-independent`,
+    codex: true,
+    retryTag: 'independent-session-recovery'
+  })
+  assert(independentRetry.includes('response.completed'), '独立会话应能重新验证并恢复风暴中的首选账户')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeIndependentRetryHits, 1, '独立会话应按当前优先级重新尝试首选账户')
+  const recoveredState = await circuitStore.get(accountCircuit.gatewayAccountProtocolModelScope(failedAccount, 'text', codexSwitchTestModel))
+  assert.notEqual(recoveredState.phase, 'OPEN', '独立会话成功后首选账户不得保持或进入 OPEN')
+  assert(['CLOSED', 'RECOVERING'].includes(recoveredState.phase), `独立会话成功后首选账户应可正常使用或进入恢复态，实际 ${recoveredState.phase}`)
 }
 
 async function assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(
@@ -306,20 +380,66 @@ async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
 ): Promise<void> {
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeProbeFailedHits = hitCount(upstreamState, seeded.probeFailedUpstreamKey)
+  const beforeState = await codexGatewayStateSnapshot(seeded)
 
-  const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+  const result = await requestResponsesRaw(baseUrl, seeded.apiKey, {
     scenario: 'codex-http-non2xx-all-fail',
     turnId: 'turn-codex-http-all-fail',
     codex: true,
     retryTag: 'server-retry-exhausted'
   })
-  assert(streamText.includes('response.failed'), `Codex HTTP 非 2xx 全部账号耗尽时应返回 SSE 失败事件：${streamText}`)
+  const afterState = await codexGatewayStateSnapshot(seeded)
+  const transportDiagnostic = JSON.stringify({
+    response: {
+      status: result.status,
+      contentType: result.contentType,
+      headers: result.headers,
+      text: result.text
+    },
+    hitDelta: {
+      failed: hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits,
+      fallback: hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits
+    },
+    beforeState,
+    afterState
+  })
+  assert.equal(result.status, 200, `Codex 精确客户端全候选非 2xx 必须固定为 200 SSE retry event，不得因并发/心跳时序变成 503 JSON：${transportDiagnostic}`)
+  assert(result.contentType.includes('text/event-stream'), `Codex 精确客户端全候选非 2xx 必须保持 SSE content-type：${transportDiagnostic}`)
+  assert(result.text.includes('response.failed'), `Codex 精确客户端全候选非 2xx 必须返回 SSE 失败事件：${transportDiagnostic}`)
+  const streamText = result.text
   assert(streamText.includes('upstream_retryable_error'), `Codex HTTP 非 2xx 全部账号耗尽时应返回客户端可重试错误：${streamText}`)
   assert(!streamText.includes('server_is_overloaded'), `Codex HTTP 非 2xx 全部账号耗尽时不应透出原始致命错误码：${streamText}`)
   assert(!streamText.includes('response.completed'), `HTTP 非 2xx 全部失败不应伪成功：${streamText}`)
 
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应先命中首选账号')
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
+}
+
+async function codexGatewayStateSnapshot(seeded: Pick<SeededGateway, 'groupId' | 'systemAccountId'>) {
+  const candidates = repositories.listOpenAIAccountsForGroup(seeded.groupId, seeded.systemAccountId, {
+    requestedModel: codexSwitchTestModel
+  })
+  const circuitStore = accountCircuit.getGatewayAccountCircuitStore()
+  return Promise.all(candidates.map(async (candidate) => {
+    const persisted = repositories.findAccountForTest(candidate.id, {
+      systemAccountId: seeded.systemAccountId,
+      role: 'user'
+    })
+    const circuit = await circuitStore.get(
+      accountCircuit.gatewayAccountProtocolModelScope(candidate, 'text', codexSwitchTestModel)
+    )
+    return {
+      accountId: candidate.id,
+      accountName: candidate.name,
+      status: persisted?.status,
+      schedulable: persisted?.schedulable,
+      cooldownUntil: persisted?.cooldownUntil,
+      circuitPhase: circuit.phase,
+      circuitGeneration: circuit.generation,
+      circuitDispatchRevision: circuit.dispatchRevision,
+      circuitLease: circuit.lease?.kind
+    }
+  }))
 }
 
 async function assertGenericHttpNon2xxRetriesCandidates(
@@ -371,7 +491,7 @@ async function assertCodexContextWindowSingleRequestSwitchesAccountOnServer(
   assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 0, 'context_length_exceeded 服务端隐藏重试不应消耗 Codex turn 探针')
 }
 
-async function assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(
+async function assertCodexPostOutputFailureTerminatesWithoutReplay(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
@@ -379,6 +499,8 @@ async function assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
   const beforeFreshProbeHits = testProbeHitCount(upstreamState, seeded.freshUpstreamKey)
+  const beforeState = await codexGatewayStateSnapshot(seeded)
+  const beforeRuntimeAvailability = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
 
   const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
     scenario: 'cyber-policy-after-output-error',
@@ -386,15 +508,22 @@ async function assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(
     codex: true,
     retryTag: 'server-retry'
   })
-  assert(streamText.includes('response.completed'), `cyber_policy 应由服务端切到备用账号并完成：${streamText}`)
-  assert(!streamText.includes('response.failed'), `cyber_policy 服务端切号成功时不应把中间失败交给客户端：${streamText}`)
-  assert(!streamText.includes('upstream_retryable_error'), `cyber_policy 服务端切号成功时不应消耗客户端重试次数：${streamText}`)
-  assert(!streamText.includes('partial output'), `cyber_policy 服务端切号成功时不应泄露尚未确认的同批次输出：${streamText}`)
-  assert(!streamText.includes('cyber_policy'), `cyber_policy 服务端切号成功时不应透出原始错误码：${streamText}`)
+  assert(streamText.includes('partial output'), `已有语义输出必须保留，不得回滚或用备用账号覆盖：${streamText}`)
+  assert(!streamText.includes('response.completed'), `输出后失败不得拼接备用账号完成事件：${streamText}`)
+  assert(!streamText.includes('response.failed'), `输出后必须丢弃供应商原始失败事件：${streamText}`)
+  assert(!streamText.includes('upstream_retryable_error'), `输出后稳定结束不得伪造新的可重试事件：${streamText}`)
+  assert(!streamText.includes('cyber_policy'), `输出后不得透出供应商自造错误码：${streamText}`)
+  assert(!streamText.includes('possible cybersecurity risk'), `输出后不得透出供应商错误文案：${streamText}`)
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, 'cyber_policy 本次请求应命中首选失败账号')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'cyber_policy 本次请求应命中备用账号')
-  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 0, 'cyber_policy 服务端隐藏重试不应消耗 Codex turn 探针')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '输出后失败本次请求只应命中首选账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '已有语义输出后严禁重放到备用账号')
+  assert.equal(testProbeHitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshProbeHits, 0, '输出后稳定结束不得触发 Codex turn 探针')
+  assert.deepEqual(await codexGatewayStateSnapshot(seeded), beforeState, '输出后供应商失败结构不得改变账户持久状态或 circuit')
+  assert.deepEqual(
+    accountSideEffects.snapshotGatewayAccountRuntimeAvailability(),
+    beforeRuntimeAvailability,
+    '输出后供应商失败结构不得创建账户运行态抑制'
+  )
 }
 
 async function assertClientAbortClearsSessionAffinity(
@@ -496,7 +625,7 @@ async function assertClientAbortClearsSessionAffinity(
   assert.equal(hitCount(upstreamState, headerSeeded.freshUpstreamKey) - beforeHeaderAbortRetryStickyHits, 0, '响应头前 client_aborted 后不应继续粘住已断开的备用账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
-  const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 200 }).items
+  const records = allUsageRecordsForRegression()
   assert(
     records.some((record) => (
       (record.accountId === seeded.freshAccountId || record.accountId === headerSeeded.freshAccountId)
@@ -576,7 +705,11 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
   }
 }
 
-function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): SeededThreeAccountGateway {
+function seedThreeAccountGateway(
+  upstreamBaseUrl: string,
+  label: string,
+  options: { concurrencyLimit?: number } = {}
+): SeededThreeAccountGateway {
   sequence += 1
   const access = seedGatewayAccess()
   const group = repositories.createGroup({
@@ -599,6 +732,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
+    concurrencyLimit: options.concurrencyLimit,
     priority: 0,
     supportedModels: [codexSwitchTestModel],
     healthCheckModel: codexSwitchTestModel
@@ -616,6 +750,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
+    concurrencyLimit: options.concurrencyLimit,
     priority: 5,
     supportedModels: [codexSwitchTestModel],
     healthCheckModel: codexSwitchTestModel
@@ -633,6 +768,7 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     groupId: group.id,
     status: 'active',
     schedulable: true,
+    concurrencyLimit: options.concurrencyLimit,
     priority: 10,
     supportedModels: [codexSwitchTestModel],
     healthCheckModel: codexSwitchTestModel
@@ -867,7 +1003,7 @@ async function requestResponsesRaw(
     sessionId?: string
     retryTag?: string
   }
-): Promise<{ status: number; contentType: string; text: string }> {
+): Promise<{ status: number; contentType: string; headers: Record<string, string>; text: string }> {
   const headers: Record<string, string> = {
     authorization: `Bearer ${apiKey}`,
     'content-type': 'application/json',
@@ -896,6 +1032,7 @@ async function requestResponsesRaw(
   return {
     status: response.status,
     contentType: response.headers.get('content-type') ?? '',
+    headers: Object.fromEntries(response.headers.entries()),
     text: await response.text()
   }
 }
@@ -1117,12 +1254,23 @@ function sendFailedStream(res: http.ServerResponse, code: string, message: strin
 
 function assertUsageRecords(seeded: SeededGateway): void {
   usageRecordQueue.flushAllUsageRecordQueue()
-  const records = repositories.listUsageRecords(undefined, { page: 1, pageSize: 100 }).items
+  const records = allUsageRecordsForRegression()
   const failedRecords = records.filter((record) => record.accountId === seeded.failedAccountId && record.success === false)
   const successRecords = records.filter((record) => record.accountId === seeded.freshAccountId && record.success === true)
   assert(failedRecords.length >= 1, `应记录首选账号失败，实际 ${failedRecords.length}`)
   assert(successRecords.length >= 1, `应记录备用账号成功，实际 ${successRecords.length}`)
-  assert(failedRecords.some((record) => record.errorCode === 'internal_server_error'), '失败记录应保留上游原始错误码')
+  assert(failedRecords.some((record) => record.errorCode === 'upstream_protocol_failure'), '失败记录应使用与供应商 code/type 无关的结构失败码')
+  assert.equal(failedRecords.some((record) => record.errorCode === 'internal_server_error'), false, '使用记录不得把供应商自造错误码提升为网关失败分类')
+}
+
+function allUsageRecordsForRegression() {
+  const records: ReturnType<typeof repositories.listUsageRecords>['items'] = []
+  for (let page = 1; page <= 20; page += 1) {
+    const result = repositories.listUsageRecords(undefined, { page, pageSize: 500 })
+    records.push(...result.items)
+    if (!result.hasMore) return records
+  }
+  assert.fail('Codex turn 回归使用记录超过 10000 条，测试夹具可能出现无界重试')
 }
 
 function assertAccountsStillActive(gateways: SeededGateway[]): void {

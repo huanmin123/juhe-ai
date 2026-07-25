@@ -20,6 +20,7 @@ const settingsCacheTtlMs = 60_000
 const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
+  'accountCircuitConfirmationFailuresRequired',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -85,7 +86,7 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 export const managementSettingsSectionCatalog = {
   brand: { domain: 'global', keys: globalSettingKeys },
-  'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
+  'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
   'account-health': { domain: 'system', keys: ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'] as const },
   'api-rate-limit': { domain: 'system', keys: ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'] as const },
   'account-test': { domain: 'system', keys: ['accountTestTaskConcurrency'] as const },
@@ -95,6 +96,7 @@ export const managementSettingsSectionCatalog = {
 export type ManagementSettingsSectionKey = keyof typeof managementSettingsSectionCatalog
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
+  accountCircuitConfirmationFailuresRequired: integerSetting(1, 5),
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),

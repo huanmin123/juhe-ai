@@ -152,7 +152,7 @@ export class RecoverableUnavailableWaitCoordinator {
     const key = coordinatorScopeKey(reason, scopeKey)
     const scope = this.scopes.get(key)
     const waiter = scope?.waiters[0]
-    return waiter ? this.settleWaiter(key, waiter.id, 'ready') : false
+    return waiter ? this.settleReadyWaiter(key, waiter) : false
   }
 
   notifyOneForRuntimeKey(runtimeKey: string): boolean {
@@ -163,7 +163,9 @@ export class RecoverableUnavailableWaitCoordinator {
       if (!waiter || !scope.runtimeKeys.has(normalized)) continue
       if (!selected || waiter.id < selected.waiterId) selected = { key, waiterId: waiter.id }
     }
-    return selected ? this.settleWaiter(selected.key, selected.waiterId, 'ready') : false
+    if (!selected) return false
+    const waiter = this.scopes.get(selected.key)?.waiters.find((item) => item.id === selected.waiterId)
+    return waiter ? this.settleReadyWaiter(selected.key, waiter) : false
   }
 
   snapshot(): { scopeCount: number; waiterCount: number; timerCount: number } {
@@ -183,14 +185,22 @@ export class RecoverableUnavailableWaitCoordinator {
       const now = this.now()
       if (head.signal?.aborted) {
         this.settleWaiter(key, head.id, 'aborted')
-      } else if (now >= head.notBeforeMs && head.notBeforeMs <= head.deadlineAtMs) {
-        this.settleWaiter(key, head.id, 'ready')
       } else if (now >= head.deadlineAtMs) {
         this.settleWaiter(key, head.id, 'deadline_exceeded')
+      } else if (now >= head.notBeforeMs) {
+        this.settleWaiter(key, head.id, 'ready')
       } else {
         this.scheduleScope(key, scope)
       }
     }, Math.max(0, dueAtMs - this.now()))
+  }
+
+  private settleReadyWaiter(key: string, waiter: RecoverableUnavailableCoordinatorWaiter): boolean {
+    return this.settleWaiter(
+      key,
+      waiter.id,
+      this.now() >= waiter.deadlineAtMs ? 'deadline_exceeded' : 'ready'
+    )
   }
 
   private settleWaiter(
@@ -223,7 +233,32 @@ export class RecoverableUnavailableWaitCoordinator {
   }
 }
 
-const defaultRecoverableUnavailableWaitCoordinator = new RecoverableUnavailableWaitCoordinator()
+let defaultRecoverableUnavailableWaitCoordinator = new RecoverableUnavailableWaitCoordinator()
+
+export function installRecoverableUnavailableWaitCoordinatorForTest(
+  options: RecoverableUnavailableWaitCoordinatorOptions
+): () => void {
+  const previous = defaultRecoverableUnavailableWaitCoordinator
+  const previousSnapshot = previous.snapshot()
+  if (previousSnapshot.waiterCount > 0 || previousSnapshot.timerCount > 0 || previousSnapshot.scopeCount > 0) {
+    throw new Error('恢复等待协调器仍有活动等待者，不能替换测试实例')
+  }
+  const replacement = new RecoverableUnavailableWaitCoordinator(options)
+  defaultRecoverableUnavailableWaitCoordinator = replacement
+  let restored = false
+  return () => {
+    if (restored) return
+    if (defaultRecoverableUnavailableWaitCoordinator !== replacement) {
+      throw new Error('恢复等待协调器测试实例已被其他调用替换')
+    }
+    const snapshot = replacement.snapshot()
+    if (snapshot.waiterCount > 0 || snapshot.timerCount > 0 || snapshot.scopeCount > 0) {
+      throw new Error(`恢复等待协调器测试实例仍有活动资源：${JSON.stringify(snapshot)}`)
+    }
+    defaultRecoverableUnavailableWaitCoordinator = previous
+    restored = true
+  }
+}
 
 export function notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey: string): boolean {
   return defaultRecoverableUnavailableWaitCoordinator.notifyOneForRuntimeKey(runtimeKey)
@@ -353,7 +388,7 @@ export async function waitForRecoverableUnavailableState<T>(
         scopeKey: input.scopeKey,
         reason: input.reason,
         delayMs: delayMs.delayMs,
-        deadlineAtMs: Math.min(deadlineAtMs, turnStartedAtMs + delayMs.delayMs),
+        deadlineAtMs: turnStartedAtMs + remainingMs,
         signal: input.signal,
         runtimeKeys: input.runtimeKeys
       })

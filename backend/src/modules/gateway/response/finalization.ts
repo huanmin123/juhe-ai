@@ -18,15 +18,8 @@ import {
   type OpenAIGatewayClientStrategyContext
 } from '../client-profiles/strategy.js'
 import {
-  confirmClientIpAccountAvoidanceAfterFinalFailureAsync,
-  confirmClientIpAccountAvoidanceAfterSuccessAsync,
-  rememberClientIpAccountPendingFailure,
   type ClientIpAccountAvoidanceTracker
 } from '../runtime/client-ip-account-avoidance.service.js'
-import {
-  recordGatewayAccountFailureForPrecheck,
-  suppressGatewayAccountLocally
-} from '../runtime/account-side-effects.service.js'
 import { recordClientIpErrorCircuitSuccessAsync } from '../runtime/client-ip-error-circuit.service.js'
 import {
   NonStreamUpstreamBodyPipeError,
@@ -74,7 +67,10 @@ import {
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
 import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
-import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
+import {
+  isGatewayResponsePrecommitDeadlineError,
+  type FirstByteDeadlineHandler
+} from '../upstream/first-byte-deadline.js'
 import {
   buildUsageResponseSnapshot,
   type UsageRequestSnapshot
@@ -158,6 +154,68 @@ export function isSuccessfulEmptyUpstreamResponseAllowed(input: {
   return gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) === 'interactions'
 }
 
+export function protocolValidatedNonStreamResponse(input: {
+  req: Request
+  account: UpstreamAccount
+  responseBodyText?: string
+  statusCode: number
+}): boolean {
+  if (input.statusCode < 200 || input.statusCode >= 300) return false
+  if (isSuccessfulEmptyUpstreamResponseAllowed(input)) return true
+  const text = input.responseBodyText?.trim()
+  if (!text) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    return false
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  const root = parsed as Record<string, unknown>
+  if (isRecordValue(root.error) || root.type === 'error' || root.status === 'failed') return false
+  const path = (input.req.originalUrl || input.req.path || '').split('?', 1)[0].toLowerCase()
+  if (path === '/models' || path === '/v1/models' || path === '/v1beta/models') {
+    return Array.isArray(root.data) || root.object === 'model'
+  }
+  const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
+  switch (endpointFamily) {
+    case 'chat_completions':
+      return Array.isArray(root.choices)
+        && root.choices.some((choice) => {
+          if (!isRecordValue(choice) || isRecordValue(choice.error)) return false
+          return (isRecordValue(choice.message) && !isRecordValue(choice.message.error))
+            || typeof choice.text === 'string'
+        })
+    case 'responses':
+      return (root.object === 'response' || root.type === 'response')
+        && typeof root.id === 'string'
+        && Array.isArray(root.output)
+        && root.status !== 'failed'
+    case 'messages':
+      return root.type === 'message' && Array.isArray(root.content)
+    case 'models':
+      return Array.isArray(root.data) || root.object === 'model'
+    case 'message_token_counting':
+      return typeof root.input_tokens === 'number'
+    case 'generate_content':
+    case 'stream_generate_content':
+      return Array.isArray(root.candidates) || isRecordValue(root.promptFeedback)
+    case 'count_tokens':
+      return typeof root.totalTokens === 'number'
+    case 'embed_content':
+      return isRecordValue(root.embedding) || Array.isArray(root.embeddings)
+    case 'interactions':
+      return typeof root.id === 'string' || typeof root.name === 'string'
+    case 'unknown': {
+      return (path.includes('/embeddings') || path.includes('/images')) && Array.isArray(root.data)
+    }
+  }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 interface HandleUpstreamResponseInput {
   req: Request
   res: Response
@@ -173,7 +231,9 @@ interface HandleUpstreamResponseInput {
   signal: AbortSignal
   firstByteTimeoutMs?: number
   firstByteDeadlineMs?: number
+  responsePrecommitDeadlineAtMs?: number
   onFirstByteDeadline?: FirstByteDeadlineHandler
+  onFirstByteDeadlineSuperseded?: () => void
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
@@ -209,7 +269,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     sessionAffinityKey,
     clientStrategy,
     markFirstOutput,
-    clientIpAccountAvoidanceTracker,
     accountStateMutationEnabled,
     automaticAccountStateMutationEnabled = accountStateMutationEnabled
   } = input
@@ -266,7 +325,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
         firstByteTimeoutMs: input.firstByteTimeoutMs,
         firstByteDeadlineMs: input.firstByteDeadlineMs,
+        responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
         onFirstByteDeadline: input.onFirstByteDeadline,
+        onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
         responseInspectionPolicies: runtimeResponseInspectionPoliciesForInput(input),
         responseInspectionContext: {
           clientProfile: clientStrategy?.clientProfile ?? defaultClientProfile,
@@ -373,7 +434,13 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     errorMessage: streamResult.completed ? undefined : streamResult.message
   })
   if (!streamResult.completed) {
-    const speedFirstFirstByteCutover = input.firstByteDeadlineMs !== undefined && isFirstByteTimeoutStreamResult(streamResult)
+    const upstreamResponseCommitted = isStreamUpstreamResponseCommitted(streamResult)
+    const canRetryUpstream = !upstreamResponseCommitted
+    const responsePrecommitDeadlineExceeded = isResponsePrecommitDeadlineStreamResult(streamResult)
+    const speedFirstFirstByteCutover = canRetryUpstream && (
+      responsePrecommitDeadlineExceeded
+      || (input.firstByteDeadlineMs !== undefined && isFirstByteTimeoutStreamResult(streamResult))
+    )
     const requestSnapshot = usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, streamResult.bodyOmission)
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     await recordCompletedUpstreamAttempt(req, {
@@ -400,25 +467,31 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       }),
       errorMessage: streamResult.message
     })
-    if (!speedFirstFirstByteCutover) {
-      rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-        statusCode: upstreamResponse.status,
-        errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
-        errorPhase: 'stream',
-        errorMessage: streamResult.message,
-        endpoint: usageContext.endpoint
-      })
-    }
-    if (speedFirstFirstByteCutover) {
+    if (responsePrecommitDeadlineExceeded) {
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_first_byte_deadline_cutover',
+        label: 'gateway_request_wall_budget_exhausted',
         metadata: {
           accountId: account.id,
           accountName: account.name,
           timeoutMs: input.firstByteDeadlineMs,
-          message: streamResult.message
+          message: streamResult.message,
+          upstreamResponseBytesWritten: streamResult.upstreamResponseBytesWritten,
+          upstreamResponseCommitted
         }
       })
+    }
+    if (speedFirstFirstByteCutover) {
+      if (!responsePrecommitDeadlineExceeded) {
+        auditCapture.addGatewayMetadata({
+          label: 'normal_route_first_byte_deadline_cutover',
+          metadata: {
+            accountId: account.id,
+            accountName: account.name,
+            timeoutMs: input.firstByteDeadlineMs,
+            message: streamResult.message
+          }
+        })
+      }
       return {
         alreadyFinalized: false,
         retryUpstream: true,
@@ -430,7 +503,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         transportFailure: streamResult.transportFailure
       }
     }
-    if (shouldRetryResponseInspectionOnServer(streamResult, res)) {
+    if (canRetryUpstream && shouldRetryResponseInspectionOnServer(streamResult, res)) {
       auditCapture.addGatewayMetadata({
         label: 'response_inspection_server_retry',
         metadata: responseInspectionAuditMetadata(streamResult.responseInspection)
@@ -447,7 +520,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         transportFailure: streamResult.transportFailure
       }
     }
-    if (shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
+    if (canRetryUpstream && shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
       const clientFacingErrorCode = preCommitStreamServerRetryErrorCode(streamResult, clientStrategy)
       auditCapture.addGatewayMetadata({
         label: 'pre_commit_stream_server_retry',
@@ -492,30 +565,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         })
       }
     }
-    if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
-      const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
-        clientIpAccountAvoidanceTracker,
-        settings
-      )
-      if (clientIpAvoidanceResult.confirmedAccountIds.length > 0) {
-        getRequestLogger().warn({
-          event: 'gateway_client_ip_account_failure_confirmed_after_stream_failure',
-          accountId: account.id,
-          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-          systemAccountId: usageContext.systemAccountId,
-          apiKeyId: usageContext.apiKeyId,
-          groupId: usageContext.groupId,
-          clientIp: usageContext.clientIp
-        }, '流式失败即将返回客户端，客户端 IP 级账号回避状态已确认')
-        auditCapture.addGatewayMetadata({
-          label: 'client_ip_account_avoidance_update',
-          metadata: {
-            reason: 'stream_failure_finalized_to_client',
-            confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds
-          }
-        })
-      }
-    }
     const clientFailureResponseBody = writePreCommitStreamFailureToClient(
       res,
       upstreamResponse,
@@ -536,7 +585,11 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       accountId: account.id,
       firstTokenMs: streamResult.firstTokenMs
     })
-    return { alreadyFinalized: true, transportFailure: streamResult.transportFailure }
+    return {
+      alreadyFinalized: true,
+      errorCode: streamResult.errorCode,
+      transportFailure: streamResult.transportFailure
+    }
   }
 
   const codexResponsesGuardSnapshot = streamResult.codexResponsesGuard
@@ -550,6 +603,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     codexResponsesGuard: codexResponsesGuardSnapshot && codexResponsesGuardSnapshot.outcome !== 'clean'
       ? codexResponsesGuardUsageSummary(codexResponsesGuardSnapshot)
       : undefined,
+    protocolValidatedSuccess: upstreamResponse.ok && streamResult.protocolValidated,
     errorPayload: {}
   }
 }
@@ -642,7 +696,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     sessionAffinityKey,
     accountStateMutationEnabled,
     markFirstOutput,
-    clientIpAccountAvoidanceTracker
   } = input
 
   if (signal.aborted) {
@@ -663,6 +716,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
+  let firstOutputMarked = false
+  const markSemanticOutput = () => {
+    if (firstOutputMarked) return
+    firstOutputMarked = true
+    markFirstOutput?.()
+  }
   const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
@@ -694,12 +753,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           signal,
           firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
+          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
+          onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
             input.downstreamCommitState.markTransportCommitted()
           },
-          onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
+          onChunkWritten: (bytesWritten) => {
+            input.downstreamCommitState.markSemanticCommitted(bytesWritten)
+            markSemanticOutput()
+          },
           beforeDownstreamCommit: isGeminiInteractionCreateRequest(req) && upstreamResponse.ok
             ? async (inspectionBody) => {
               responseResourceId = geminiInteractionIdFromJsonPrefix(inspectionBody)
@@ -713,7 +778,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             : undefined,
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
-            markFirstOutput?.()
           }
         })
         responseBody = pipeResult.capturedBody
@@ -783,6 +847,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           if (firstTokenMs === undefined) {
             firstTokenMs = Date.now() - startedAt
           }
+          markSemanticOutput()
           prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
           if (codexGuardedCompleteBody) {
             res.setHeader('content-length', String(downstreamBody.length))
@@ -822,7 +887,10 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           signal,
           firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
+          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
+          onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
             input.downstreamCommitState.markTransportCommitted()
@@ -833,7 +901,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           },
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
-            markFirstOutput?.()
+            markSemanticOutput()
           }
         })
         responseBody = pipeResult.capturedBody
@@ -859,23 +927,33 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       markFirstOutput?.()
     }
   } catch (error) {
+    const responsePrecommitDeadlineError = responsePrecommitDeadlineErrorFor(error)
+    const responsePrecommitDeadlineExceeded = responsePrecommitDeadlineError !== undefined
     if (
-      input.firstByteDeadlineMs !== undefined
-      && isGatewayFirstByteTimeoutError(error)
-      && error.source === 'configured_deadline'
-      && error.timeoutMs === input.firstByteDeadlineMs
+      (
+        responsePrecommitDeadlineExceeded
+        || (
+          input.firstByteDeadlineMs !== undefined
+          && isGatewayFirstByteTimeoutError(error)
+          && error.source === 'configured_deadline'
+          && error.timeoutMs === input.firstByteDeadlineMs
+        )
+      )
       && !res.headersSent
       && !res.writableEnded
       && !res.destroyed
     ) {
-      const errorMessage = error.message
+      const errorMessage = responsePrecommitDeadlineError?.message
+        ?? (error instanceof Error ? error.message : '上游非流式响应首字超时')
+      const errorCode = responsePrecommitDeadlineError?.code
+        ?? (isGatewayFirstByteTimeoutError(error) ? error.code : 'first_byte_timeout')
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
         statusCode: upstreamResponse.status,
         responseHeaders: upstreamResponse.headers,
         success: false,
         errorPhase: 'upstream_response',
-        errorCode: error.code,
+        errorCode,
         errorMessage
       })
       await recordCompletedUpstreamAttempt(req, {
@@ -886,7 +964,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         stream: isEffectiveOpenAIStreamRequest(req, account),
         startedAt,
         usage: emptyUsage(),
-        errorCode: error.code,
+        errorCode,
         errorMessage,
         requestSnapshot: usageContext.requestSnapshot,
         responseSnapshot: buildUsageResponseSnapshot({
@@ -897,11 +975,16 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
       })
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_first_byte_deadline_cutover',
+        label: responsePrecommitDeadlineExceeded
+          ? 'gateway_request_wall_budget_exhausted'
+          : 'normal_route_first_byte_deadline_cutover',
         metadata: {
           accountId: account.id,
           accountName: account.name,
-          timeoutMs: input.firstByteDeadlineMs,
+          timeoutMs: responsePrecommitDeadlineExceeded
+            ? Math.max(0, (responsePrecommitDeadlineError?.deadlineAtMs ?? startedAt) - startedAt)
+            : input.firstByteDeadlineMs,
+          deadlineAtMs: responsePrecommitDeadlineError?.deadlineAtMs,
           message: errorMessage
         }
       })
@@ -911,7 +994,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         retryReason: 'normal_route_first_byte_timeout',
         excludeCurrentAccount: true,
         message: errorMessage,
-        errorCode: error.code
+        errorCode
       }
     }
     if (isUpstreamRequestAbortedError(error) || signal.aborted) {
@@ -944,6 +1027,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       responseUsageText = error.partialResult.usageTailText
       firstTokenMs = error.partialResult.firstByteMs ?? firstTokenMs
       const errorMessage = error instanceof Error ? error.message : '上游非流式响应正文中断'
+      const errorCode = responsePrecommitDeadlineError?.code ?? 'upstream_body_interrupted'
       logger.warn({
         event: 'gateway_non_stream_body_interrupted_after_output',
         accountId: account.id,
@@ -956,42 +1040,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorMessage
       }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-      if (input.automaticAccountStateMutationEnabled !== false) {
-        const runtimeReason = `上游非流式响应正文中断：${errorMessage}`
-        const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
-        if (usageContext.trafficSource === 'gateway') {
-          recordGatewayAccountFailureForPrecheck(account, settings, {
-            systemAccountId: usageContext.systemAccountId,
-            groupId: usageContext.groupId,
-            apiKeyId: usageContext.apiKeyId,
-            clientIp: usageContext.clientIp,
-            endpoint: usageContext.endpoint,
-            reason: runtimeReason,
-            statusCode: upstreamResponse.status,
-            forcePrecheck: localSuppression.action === 'precheck_required',
-            localSuppressionDelayMs: localSuppression.delayMs
-          })
-        } else {
-          await applyAccountErrorHandlingWithCacheInvalidation(account, {
-            success: false,
-            statusCode: upstreamResponse.status,
-            headers: upstreamResponse.headers,
-            bodyText: responseBodyText || errorMessage,
-            errorMessage,
-            settings,
-            trafficSource: usageContext.trafficSource
-          })
-        }
-        auditCapture.addGatewayMetadata({
-          label: 'non_stream_body_interrupted_runtime_avoidance',
-            metadata: {
-              accountId: account.id,
-              delayMs: localSuppression.delayMs,
-              localFailureCount: localSuppression.localFailureCount,
-              transferredBytes: error.partialResult.transferredBytes
-            }
-          })
-      }
+      // The downstream response is already committed and cannot be replayed.
+      // Keep this request's audit/usage failure, but do not turn one body
+      // interruption into shared account, Key, proxy, or client-IP state.
       await recordCompletedUpstreamAttempt(req, {
         ...usageContext,
         account,
@@ -1001,7 +1052,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         firstTokenMs,
         startedAt,
         usage: emptyUsage(),
-        errorCode: 'upstream_body_interrupted',
+        errorCode,
         errorMessage,
         requestSnapshot: usageContext.requestSnapshot,
         responseSnapshot: buildUsageResponseSnapshot({
@@ -1018,9 +1069,22 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         responseBody: responseBody ?? responseBodyText,
         success: false,
         errorPhase: 'upstream_response',
-        errorCode: 'upstream_body_interrupted',
+        errorCode,
         errorMessage
       })
+      if (responsePrecommitDeadlineError) {
+        auditCapture.addGatewayMetadata({
+          label: 'gateway_request_wall_budget_exhausted',
+          metadata: {
+            accountId: account.id,
+            accountName: account.name,
+            deadlineAtMs: responsePrecommitDeadlineError.deadlineAtMs,
+            timeoutMs: Math.max(0, responsePrecommitDeadlineError.deadlineAtMs - startedAt),
+            transferredBytes: error.partialResult.transferredBytes,
+            message: errorMessage
+          }
+        })
+      }
       auditCapture.finalize({
         outcome: 'upstream_failed',
         success: false,
@@ -1029,17 +1093,22 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         responseBody: responseBodyText,
         responsePartType: 'gateway_response',
         errorPhase: 'upstream_response',
-        errorCode: 'upstream_body_interrupted',
+        errorCode,
         errorMessage,
         accountId: account.id,
         firstTokenMs
       })
       return {
         alreadyFinalized: true,
-        transportFailure: {
-          kind: 'read_incomplete',
-          reason: errorMessage
-        }
+        errorCode,
+        ...(responsePrecommitDeadlineError
+          ? {}
+          : {
+              transportFailure: {
+                kind: 'read_incomplete' as const,
+                reason: errorMessage
+              }
+            })
       }
     }
     throw error
@@ -1088,6 +1157,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseResourceId,
     bodyOmission,
     codexResponsesGuard,
+    protocolValidatedSuccess: forwardedResponseSuccessful && protocolValidatedNonStreamResponse({
+      req,
+      account,
+      responseBodyText: responseBodyText ?? responseSemanticText ?? responseUsageText,
+      statusCode: upstreamResponse.status
+    }),
     errorPayload
   }
 }
@@ -1355,6 +1430,30 @@ function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firs
     && !streamResult.outputReceived
 }
 
+function isResponsePrecommitDeadlineStreamResult(
+  streamResult: { errorCode?: string }
+): boolean {
+  return streamResult.errorCode === 'gateway_request_wall_budget_exhausted'
+}
+
+function isStreamUpstreamResponseCommitted(streamResult: {
+  upstreamResponseBytesWritten: number
+  semanticCommitted: boolean
+}): boolean {
+  return streamResult.upstreamResponseBytesWritten > 0 || streamResult.semanticCommitted
+}
+
+function responsePrecommitDeadlineErrorFor(error: unknown) {
+  if (isGatewayResponsePrecommitDeadlineError(error)) return error
+  if (
+    error instanceof NonStreamUpstreamBodyPipeError
+    && isGatewayResponsePrecommitDeadlineError(error.originalError)
+  ) {
+    return error.originalError
+  }
+  return undefined
+}
+
 function nonStreamImageResponseBodyOmission(bodyText: string | undefined, capturedBytes: number | undefined): StreamBodyOmissionSummary | undefined {
   if (!bodyText || !nonStreamBodyLooksLikeImageGenerationPayload(bodyText)) return undefined
   const bodyBytes = capturedBytes ?? Buffer.byteLength(bodyText, 'utf8')
@@ -1579,14 +1678,39 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     settings,
     usageContext,
     startedAt,
-    result,
-    clientIpAccountAvoidanceTracker
+    result
   } = input
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
   const forwardedResponseSuccessful = upstreamResponse.ok
-  if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
+  const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
+  if (protocolValidatedSuccess && !isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
+    const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
+      systemAccountId: usageContext.systemAccountId,
+      apiKeyId: usageContext.apiKeyId,
+      groupId: usageContext.groupId,
+      clientIp: usageContext.clientIp,
+      endpoint: usageContext.endpoint
+    })
+    if (clearedClientIpErrorCircuit) {
+      getRequestLogger().info({
+        event: 'gateway_client_ip_error_circuit_recovered',
+        accountId: account.id,
+        systemAccountId: usageContext.systemAccountId,
+        apiKeyId: usageContext.apiKeyId,
+        groupId: usageContext.groupId,
+        clientIp: usageContext.clientIp
+      }, '客户端 IP 级错误熔断状态已按完整成功响应恢复')
+      auditCapture.addGatewayMetadata({
+        label: 'client_ip_error_circuit',
+        metadata: {
+          recovered: true
+        }
+      })
+    }
+  }
+  if (interpretUpstreamResponseSemantics && protocolValidatedSuccess) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       if (input.automaticAccountStateMutationEnabled !== false) {
         const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
@@ -1604,29 +1728,6 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
           })
         }
       }
-      const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
-        systemAccountId: usageContext.systemAccountId,
-        apiKeyId: usageContext.apiKeyId,
-        groupId: usageContext.groupId,
-        clientIp: usageContext.clientIp,
-        endpoint: usageContext.endpoint
-      })
-      if (clearedClientIpErrorCircuit) {
-        getRequestLogger().info({
-          event: 'gateway_client_ip_error_circuit_recovered',
-          accountId: account.id,
-          systemAccountId: usageContext.systemAccountId,
-          apiKeyId: usageContext.apiKeyId,
-          groupId: usageContext.groupId,
-          clientIp: usageContext.clientIp
-        }, '客户端 IP 级错误熔断状态已按成功响应恢复')
-        auditCapture.addGatewayMetadata({
-          label: 'client_ip_error_circuit',
-          metadata: {
-            recovered: true
-          }
-        })
-      }
     }
     if (input.automaticAccountStateMutationEnabled !== false) {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
@@ -1642,35 +1743,13 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     }
   }
 
-  if (upstreamResponse.ok && !isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
-    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
-      clientIpAccountAvoidanceTracker,
-      account.id,
-      settings
-    )
-    if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
-      getRequestLogger().info({
-        event: 'gateway_client_ip_account_failure_confirmed',
-        accountId: account.id,
-        confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-        clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-      }, '客户端 IP 级账号回避状态已按成功响应更新')
-      auditCapture.addGatewayMetadata({
-        label: 'client_ip_account_avoidance_update',
-        metadata: {
-          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-        }
-      })
-    }
-  }
-
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
     account,
     stream: isEffectiveOpenAIStreamRequest(req, account),
     statusCode: upstreamResponse.status,
     success: forwardedResponseSuccessful,
+    protocolValidatedSuccess,
     firstTokenMs: result.firstTokenMs,
     startedAt,
     completedAtMs: input.completedAtMs,

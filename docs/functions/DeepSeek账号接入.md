@@ -27,7 +27,7 @@ DeepSeek hosted API 没有需要本项目优先接入的独立 native 网关协�
 - 已落地部分支持 OpenAI-compatible Chat Completions JSON / SSE；当前不进入 Responses 模型检测。
 - 已落地 DeepSeek 普通 OpenAI v1 账户下的显式 Responses -> Chat SSE 桥接，覆盖 `/v1/responses` 入站、上游 `/v1/chat/completions` 改写、function tools、`web_search` guidance、`input_image` data URL、`reasoning_content`、截断失败和 SSE error 事件。
 - DeepSeek Anthropic v1 已新增 `profile_deepseek_anthropic_v1`、前端接入类型、凭据归一化和 Anthropic 协议 driver 分支；默认只启用 Messages JSON / SSE，不启用 Count Tokens。默认分组按 `providerCode=deepseek` 归并。
-- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、同协议模型映射、未配置映射的 `/responses` 拒绝、普通账号显式 Responses -> Chat bridge、`web_search` guidance 且不命中上游、cache usage、`reasoning_content`、`insufficient_system_resource` 和上游 `Content-Length`。
+- 本地 mock AI 回归已覆盖 Chat JSON、Chat SSE、同协议模型映射、未配置映射的 `/responses` 拒绝、普通账号显式 Responses -> Chat bridge、`web_search` guidance 且不命中上游、cache usage、`reasoning_content`、`insufficient_system_resource` 原样透传 / bridge 中性完成和上游 `Content-Length`。
 - 历史 `https://vsllm.com` 验证中，`deepseek-ai-v4-flash` JSON / SSE 曾通过；本轮 `2026-06-24` 使用当前 vsllm 账号复测时，`deepseek-v4-flash` 直连和网关链路均超时，`deepseek-ai-v4-flash` 返回当天额度耗尽，`deepseek-v4-pro` 超时或 TLS 连接错误。当前不能把该通道作为 DeepSeek 真实成功样本，待更换 Key、额度恢复或上游稳定后补测。
 
 ## 供应商与协议档案
@@ -256,11 +256,11 @@ DeepSeek Context Caching 默认启用，调用方不需要额外请求参数。�
 
 ### Finish Reason
 
-DeepSeek Chat Completions 的 `finish_reason` 除常见值外，还可能出现 `insufficient_system_resource`。该值应进入响应语义检查和上游错误诊断，不要被误判为本地网关错误。
+DeepSeek Chat Completions 的 `finish_reason` 除常见值外，还可能出现 `insufficient_system_resource`。网关可以原样透传、解析和审计该字段，但不得由系统把具体字符串解释为资源不足、可重试或账号异常；只有用户显式响应检查策略才能用它作为处置条件。统一边界见 [AI 账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md)。
 
 本项目处理策略：
 
-- `insufficient_system_resource` 是上游成功响应内的异常完成语义，不是 HTTP 非 `2xx`
+- `insufficient_system_resource` 是完整响应中的不透明终止字段，不是 HTTP 非 `2xx`，也不是系统内置的异常完成语义
 - 如果没有产生可接受输出，可按响应语义检查策略触发可行的服务端重试或诊断记录
 - 如果已经写出可见输出，仍遵守现有流式失败边界，不能静默拼接第二个上游回答
 - 不因为单次该 finish reason 直接把账号写成持久异常；账号副作用仍走运行态屏障和确认流程
@@ -352,9 +352,9 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ### 错误处理、切号与恢复
 
-- 通用 DeepSeek 客户端的完整 HTTP 响应不论状态均透明转发；连接失败、超时、读取异常和 EOF 进入 transport 重试流水线，精确客户端语义另由对应画像策略处理
-- DeepSeek 错误码、错误类型、错误文案和 `finish_reason` 只作为诊断、响应语义检查和账户错误处理策略输入，不写死余额不足、限流或账号坏等分支
-- `insufficient_system_resource` 可作为供应商层响应语义条件观察或重试，但持久账号状态仍必须经运行态屏障、半开探测或事前确认
+- 通用 DeepSeek 客户端的完整 `2xx` / 普通 payload 透明；安全文本推理的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级 Key / 账户接管，连接失败、超时和未完成 framing 进入 transport 流水线。图片、文件和其他副作用 POST 派发后保持 at-most-once，精确客户端语义另由对应画像策略处理
+- DeepSeek 错误码、错误类型、错误文案和 `finish_reason` 只允许原样透传、审计，或作为用户显式响应检查 / 账户错误策略的匹配输入；系统不写死余额不足、限流、可重试或账号坏等分支
+- `insufficient_system_resource` 与其他未知 `finish_reason` 等价：未命中用户显式策略时不观察为故障、不自动重试或切号，也不产生账户、Key、代理、模型或质量状态副作用
 - Keep-alive comment / 空行不能触发流式缺终止事件错误，也不能被记录成可见输出
 - DeepSeek OpenAI-compatible 不提供失败后的请求改写策略；Responses -> Chat bridge 只由账号模型别名显式触发，不能把未配置映射的普通 OpenAI Responses 请求临时改写到 DeepSeek
 
@@ -392,8 +392,8 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 | 模型混池 | DeepSeek 模型进入 GPT 目录或 GPT 账号兜底承接 DeepSeek 请求 | `providerCode = deepseek` 独立目录和价格 |
 | 跨供应商切号 | OpenAI/GPT/GLM 账号失败后切到 DeepSeek，或反向切换 | 按 `provider_code`、模型路由和账户能力过滤 |
 | 旧别名默认化 | 新账号默认测试 `deepseek-chat` / `deepseek-reasoner` | 新默认使用 `deepseek-v4-flash` |
-| 错误硬编码 | 401/403/402/429/5xx 或余额文案直接写死账号状态 | 只进诊断和账户错误处理策略输入，持久状态需确认 |
-| `insufficient_system_resource` 误判 | 当成本地网关错误或立即打坏账号 | 作为响应语义异常完成，可观察 / 重试，不能直接写持久状态 |
+| 错误硬编码 | 401/403/402/429/5xx 或余额文案直接写死账号状态 | 只进诊断和用户显式账户错误策略输入；显式策略命中后直接执行带 provenance / generation / CAS 的配置动作，未命中时只有独立后台 transport 证据可推进自动状态 |
+| `insufficient_system_resource` 误判 | 当成资源不足、可重试错误或立即打坏账号 | 作为不透明终止字段原样透传 / 审计；只有用户显式策略可授权处置 |
 | cache 成本漏算 | 只保存 prompt/completion tokens，丢 cache hit/miss | 保留 `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` |
 | Balance 误用 | 请求前查余额或用余额替代本地额度 | Balance 仅后续诊断候选，不进热路径 |
 | 代理路径不一致 | 真实请求走代理，账户测试 / 恢复探活直连 | 所有真实上游模型调用都走账户绑定代理 |
@@ -451,7 +451,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 - DeepSeek 供应商策略保留 `user_id`、`thinking`、`reasoning_effort`、`reasoning_content`、cache usage、keep-alive 和 beta 能力边界
 - DeepSeek Codex bridge 保留 Codex `/v1/responses` 入站形态、function tools、`input_image` data URL、reasoning 和上游 Chat SSE 错误事件语义
 - DeepSeek 模型目录和价格目录单独建文件，成本估算按 `providerCode=deepseek` 查找
-- DeepSeek 响应语义检查补充 `reasoning_content`、cache usage、`insufficient_system_resource`、SSE comment / 非流式空行保活
+- DeepSeek 响应解析补充 `reasoning_content`、cache usage、`insufficient_system_resource` 原样终止字段、SSE comment / 非流式空行保活；解析不等于系统赋予业务语义
 - DeepSeek 账户错误处理、账号切换、半开恢复、后台复测全部复用现有统一链路
 - DeepSeek 导入导出、公开推送、前端供应商能力、模型检测入口隔离和账户测试补齐回归测试
 - 文档、导入协议、接口契约、SQLite 存储说明、模型目录清洗和测试说明同步更新

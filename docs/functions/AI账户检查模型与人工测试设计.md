@@ -180,7 +180,7 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 
 `testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个普通生成模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
-后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都属于检查失败，不能把 `pending_test` 账户激活进号池。
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`，只做诊断 / 有界顺延，不是自动负向状态证据。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
@@ -190,16 +190,16 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 
 | 场景 | 模型来源 | 允许的状态副作用 |
 | --- | --- | --- |
-| 新账户激活检查 | 账户检查模型 | 成功后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；失败固定每 1 小时复检，从首次失败起满 24 小时仍失败则原子转为 `error` |
+| 新账户激活检查 | 账户检查模型 | `complete_success` 后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；完整 framing 中性结果只顺延；只有连续独立 `transport_incomplete` 从首次起满 24 小时后仍失败才原子转为 `error` |
 | 关键配置变更复检 | 账户检查模型 | 按配置变更类型进入待检查或正常健康阈值流程 |
 | 正常账户周期健康检查 | 账户检查模型 | 写健康事实；达到阈值且确认账户级故障后进入保护状态 |
 | 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
-| 账号级冷却复测 | 账户检查模型 | 成功恢复账号持久状态；进入长期不可用后固定每 1 小时复测，从观察起点满 7 天仍失败则原子转为 `error` |
+| 账号级冷却复测 | 账户检查模型 | `complete_success` 只恢复匹配来源的自动状态；进入长期不可用后固定每 1 小时复测，只有连续独立 `transport_incomplete` 从观察起点满 7 天后仍失败才原子转为 `error` |
 | API Key 恢复探针 | 账户检查模型 | 只更新目标 Key 运行态 |
 
 底层请求执行器只返回诊断结果，不自行决定状态。上层策略服务根据 `purpose` 应用允许的副作用，不再依赖通用 `disableAccountStateMutation` 布尔参数控制所有场景。
 
-健康检查任务入队时必须记录账户 `configRevision`。探测完成后的成功、失败计数和达到阈值后的保护状态写入都使用该版本及本次失败快照做 CAS；探测期间如果账户配置发生变化，旧结果直接丢弃。失败探测开始后如果出现更新的真实请求成功信号，旧失败也不得重新累加计数或把账户置为临时不可调用。
+健康检查任务入队时必须记录账户 `configRevision`。探测完成后的成功、`transport_incomplete` 失败计数和达到阈值后的保护状态写入都使用该版本及本次失败快照做 CAS；探测期间如果账户配置发生变化，旧结果归为 `stale` 并丢弃。传输失败探测开始后如果出现更新的真实协议成功信号，旧失败也不得重新累加计数或把账户置为临时不可调用。
 
 建议服务边界：
 
@@ -218,7 +218,7 @@ runApiKeyRecoveryProbe()
 - 新增账户默认保存为 `pending_test` 且不可调度。
 - 导入请求中的 `active` 同样先落为 `pending_test`。
 - 保存事务完成后立即投递后台激活检查，不等待人工测试任务，也不接受人工测试任务 ID 作为激活凭证。
-- 后台激活检查成功后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。失败保持 `pending_test`，保存首次失败时间和检查失败摘要，固定每 1 小时复检；从首次失败起满 24 小时仍失败时原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
+- 后台激活检查得到 `complete_success` 后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。完整 framing 但协议未成功保持 `pending_test`，只写有界诊断并每 1 小时顺延；只有连续独立 `transport_incomplete` 才保存首次失败时间并累计，从首次传输失败起满 24 小时后的再次独立传输失败才原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次传输失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
 - 检查失败的 `pending_test` 提供“重新检查”：同一事务把失败计数、首次失败时间、错误摘要和检查计划重置到新账户待检查基线，随后立即投递后台激活检查。尚无失败事实的普通待检查账户不提供该操作。
 - 用户可以在保存前人工测试草稿，但该结果只用于判断是否愿意保存，不参与账户激活。
 - 明确创建为 `disabled` 的账户尊重人工停用，不投递激活检查。
@@ -237,32 +237,30 @@ runApiKeyRecoveryProbe()
 ## 11. 多 API Key 账户
 
 - 人工测试可以返回每个 Key 的诊断明细，但不能写 Key 运行态。
-- 新账户后台激活检查按系统探针策略检查 Key 池，至少一个 Key 成功时账户可以激活；失败 Key 由系统探针写入 Key 运行态并进入恢复队列。
+- 新账户后台激活检查按系统探针策略检查 Key 池，至少一个 Key 得到 `complete_success` 时账户可以激活；只有带独立 `transport_incomplete` 证据且通过来源 CAS 的 Key 才可进入对应自动 transport 运行态，完整 HTTP / 协议失败保持中性。
 - 已保存账户新增或替换 Key 后，由后台 Key 检查初始化或更新 Key 运行态，不复用人工测试结果。
 - 账号级周期健康检查只使用当前可用 Key 集合；Key 级冷却恢复固定命中目标 Key。
 - 所有 Key 不可用时，账户通过 Key 池派生可用性退出调度，不需要由人工测试改变账户状态。
 
 ## 12. 失败分类
 
-系统探针失败不能仅按 HTTP 状态码把整个账户标记为不可用。
+系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。只有第三类是自动负向证据；完整 HTTP/SSE 的任意状态码、错误对象或协议失败都属于中性，任务、本地配置或过期结果不计数、不改状态。
 
-账户级故障候选：
+自动 transport 失败候选：
 
-- 凭据失效或账户级授权失败。
 - Base URL、代理、DNS、连接或 TLS 故障。
-- 上游持续超时、不可达或服务级故障。
-- 经账户错误处理策略和诊断分类确认的账户级限流或封禁。
+- lane hard timeout、读取中断、响应未完整结束或 framing 未完成。
 
-模型或检查配置故障：
+凭据失效、账户级授权失败、限流、封禁或服务级故障不得从上游 status/body 自动推断；只有用户显式账户错误策略可以授权对应业务动作。本地可验证的凭据缺失、解密失败、配置非法和 OAuth token 生命周期错误走独立本地路径。
 
-- `model_not_found`
-- 模型未授权或模型级权限不足
-- `unsupported_endpoint`
-- 请求形态与模型协议不匹配
-- 检查模型不属于支持模型
-- 最小检查请求模板错误
+本地可验证的模型或检查配置故障：
 
-模型或检查配置故障只记录“检查模型配置异常”，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
+- 本地目录中检查模型缺失、不可见或不属于最终支持模型。
+- 本地账户能力没有可执行的检查 endpoint mode。
+- 本地请求形态与已声明协议能力不匹配，或最小检查请求模板无法构造。
+- 本地凭据缺失、解密失败或必要配置非法。
+
+这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
 
 ## 13. 状态边界
 
@@ -271,7 +269,7 @@ runApiKeyRecoveryProbe()
 | 账户状态 | 系统行为 |
 | --- | --- |
 | `active` | 周期健康检查和必要运行态恢复 |
-| `pending_test` | 激活检查；失败后每 1 小时重试，首次失败满 24 小时仍失败则进入 `error` |
+| `pending_test` | 激活检查；中性 / unknown 有界顺延，连续独立 `transport_incomplete` 后每 1 小时重试，首次传输失败满 24 小时后仍有独立传输失败才进入 `error` |
 | `temporary_unavailable` | 账号级冷却恢复 |
 | `rate_limited` | 限流恢复 |
 | `error` | 人工“异常恢复”只原子重置为 `pending_test` 并立即投递激活检查，不能直接恢复为 `active` |

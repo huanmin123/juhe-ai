@@ -1,22 +1,18 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { getRequestLogger, getTraceId } from '../../../shared/request-context.js'
+import { getTraceId } from '../../../shared/request-context.js'
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { type AccountErrorPolicyDecision, type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   clearGatewayAutomaticAccountRuntimeAvailability,
-  enqueueGatewayAccountErrorHandlingSideEffect,
-  recordGatewayAccountFailureForPrecheck,
-  suppressGatewayAccountLocally
+  enqueueGatewayAccountErrorHandlingSideEffect
 } from './account-side-effects.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 import { parseOpenAICodexUsageHeaders } from '../adapters/gpt-codex/usage.service.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { type StreamFailureContext } from '../response/stream.js'
 import { headersToObject } from '../upstream/headers.js'
-import { recordGatewayUpstreamBucketFailureAsync } from './proxy-health.service.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import type { GatewayUsageContext } from '../usage/records.js'
-import { recordGatewayAccountApiKeyFailure } from './account-api-key-effects.service.js'
 import { requestGatewayDbService } from './gateway-db-service-request.js'
 
 export async function applyAccountErrorHandlingWithCacheInvalidation(
@@ -35,6 +31,8 @@ export async function applyAccountErrorHandlingWithCacheInvalidation(
   const normalizedInput = {
     ...input,
     traceId: getTraceId(),
+    observedAt: new Date().toISOString(),
+    dispatchRevision: account.dispatchRevision,
     headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers
   }
   await enqueueGatewayAccountErrorHandlingSideEffect({
@@ -76,117 +74,16 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
 }
 
 export async function handleStreamFailure(
-  account: UpstreamAccount,
-  reason: string,
-  settings: GatewaySettings,
-  errorCode: string | undefined,
-  context: StreamFailureContext,
-  usageContext?: GatewayUsageContext,
-  accountStateMutationEnabled = true
+  _account: UpstreamAccount,
+  _reason: string,
+  _settings: GatewaySettings,
+  _errorCode: string | undefined,
+  _context: StreamFailureContext,
+  _usageContext?: GatewayUsageContext,
+  _accountStateMutationEnabled = true
 ): Promise<void> {
-  if (!accountStateMutationEnabled) {
-    return
-  }
-
-  await recordGatewayUpstreamBucketFailureAsync(account, '流式响应失败')
-  const reasonWithCode = errorCode ? `${errorCode}；${reason}` : reason
-  const isolateAccountApiKeyFailure = Boolean(account.selectedApiKeyFingerprint)
-  if (context.protocolFailureEventReceived) {
-    getRequestLogger().info({
-      event: 'gateway_stream_protocol_failure_account_side_effects_enabled',
-      accountId: account.id,
-      accountName: account.name,
-      errorCode,
-      reason,
-      downstreamBytesWritten: context.downstreamBytesWritten,
-      outputReceived: context.outputReceived
-    }, '流式响应收到协议失败事件，继续进入账号运行态处理')
-  }
-  if (usageContext?.trafficSource === 'gateway') {
-    if (!shouldApplyGatewayStreamFailureAccountSideEffects(context)) {
-      const runtimeReason = `流式响应在可见输出前失败：${reason}`
-      const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
-      recordGatewayAccountFailureForPrecheck(account, settings, {
-        systemAccountId: usageContext.systemAccountId,
-        groupId: usageContext.groupId,
-        apiKeyId: usageContext.apiKeyId,
-        clientIp: usageContext.clientIp,
-        endpoint: usageContext.endpoint,
-        reason: runtimeReason,
-        forcePrecheck: localSuppression.action === 'precheck_required',
-        localSuppressionDelayMs: localSuppression.delayMs
-      })
-      getRequestLogger().info({
-        event: 'gateway_stream_failure_pre_output_runtime_avoidance',
-        accountId: account.id,
-        accountName: account.name,
-        errorCode,
-        reason,
-        downstreamBytesWritten: context.downstreamBytesWritten,
-        outputReceived: context.outputReceived,
-        delayMs: localSuppression.delayMs,
-        localFailureCount: localSuppression.localFailureCount
-      }, '流式失败未产生可见模型输出，已进入本地短期避让但不累计持久流失败')
-      return
-    }
-    await recordGatewayAccountApiKeyFailure(account, {
-      status: 'temporary_unavailable',
-      errorCode,
-      errorMessage: reasonWithCode,
-      traceId: usageContext.traceId,
-      trafficSource: usageContext.trafficSource,
-      clientIp: usageContext.clientIp,
-      apiKeyId: usageContext.apiKeyId,
-      source: 'stream_failure'
-    })
-    if (isolateAccountApiKeyFailure) {
-      return
-    }
-    const runtimeReason = `流式响应失败：${reason}`
-    const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
-    recordGatewayAccountFailureForPrecheck(account, settings, {
-      systemAccountId: usageContext.systemAccountId,
-      groupId: usageContext.groupId,
-      apiKeyId: usageContext.apiKeyId,
-      clientIp: usageContext.clientIp,
-      endpoint: usageContext.endpoint,
-      reason: runtimeReason,
-      forcePrecheck: localSuppression.action === 'precheck_required',
-      localSuppressionDelayMs: localSuppression.delayMs
-    })
-  } else {
-    await recordGatewayAccountApiKeyFailure(account, {
-      status: 'temporary_unavailable',
-      errorCode,
-      errorMessage: reasonWithCode,
-      traceId: usageContext?.traceId,
-      trafficSource: usageContext?.trafficSource,
-      source: 'stream_failure'
-    })
-    if (isolateAccountApiKeyFailure) {
-      return
-    }
-    await applyAccountErrorHandlingWithCacheInvalidation(account, {
-      success: false,
-      errorMessage: reasonWithCode,
-      settings,
-      trafficSource: usageContext?.trafficSource
-    })
-  }
-  if (!context.outputReceived) {
-    getRequestLogger().warn({
-      event: 'gateway_stream_failure_account_runtime_handled',
-      accountId: account.id,
-      accountName: account.name,
-      errorCode,
-      reason,
-      downstreamBytesWritten: context.downstreamBytesWritten
-    }, usageContext?.trafficSource === 'gateway' ? '流式失败已进入账号运行态短暂避让' : '流式失败已进入账号运行态处理')
-  }
-}
-
-function shouldApplyGatewayStreamFailureAccountSideEffects(context: StreamFailureContext): boolean {
-  return context.outputReceived
+  // Stream framing and protocol observations are request-local. Only the
+  // transport circuit or an explicit user policy may authorize shared state.
 }
 
 export function clearAccountStreamFailureStateWithCacheInvalidation(account: UpstreamAccount | string): void {

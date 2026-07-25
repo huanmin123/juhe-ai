@@ -166,6 +166,8 @@ try {
     await assertAnthropicMessagesJson(baseUrl, apiKey.key)
     await assertAnthropicMessagesSse(baseUrl, apiKey.key)
     await assertAnthropicSseRetryExhaustedErrorShape(baseUrl, upstreamBaseUrl)
+    await assertAnthropicSsePreCommitFailureSwitchesAccount(baseUrl, upstreamBaseUrl)
+    await assertAnthropicHostedWorkStaysAtMostOnce(baseUrl, upstreamBaseUrl)
     await assertClaudeCodeClientProfileHeader(baseUrl, apiKey.key)
     await assertAnthropicBetaHeaderForwardsClientValue(baseUrl, upstreamBaseUrl)
     await assertAnthropicLocalErrorShape(baseUrl)
@@ -175,10 +177,11 @@ try {
     await assertAnthropicEmptyJsonContentStaysOpaque(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
     assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl)
-    await assertAnthropicApiKeyPoolStaysOpaque(baseUrl, upstreamBaseUrl)
-    await assertAnthropicResponseInspectionStaysOpaque(baseUrl, upstreamBaseUrl)
-    await assertAnthropicJsonErrorStaysOpaque(baseUrl, upstreamBaseUrl)
-    await assertAnthropicSseErrorStaysOpaque(baseUrl, upstreamBaseUrl)
+    await assertAnthropicApiKeyPoolOpaqueFailover(baseUrl, upstreamBaseUrl)
+    await assertAnthropicConfiguredResponseInspectionSwitchesRequestLocally(baseUrl, upstreamBaseUrl)
+    await assertAnthropicJsonErrorSwitchesRequestLocally(baseUrl, upstreamBaseUrl)
+    await assertAnthropicSseErrorSwitchesRequestLocally(baseUrl, upstreamBaseUrl)
+    await assertAnthropicSseErrorFieldStaysNeutral(baseUrl, upstreamBaseUrl)
     await assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
     assertAnthropicSignatureDeltaIsNotOutput()
@@ -508,6 +511,7 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewayCache.clearGatewayRuntimeCache()
+  const claudeCodeHitOffset = upstreamHits.length
   const claudeCodeResponse = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -534,7 +538,165 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
   assert.equal(payload.error?.type, 'overloaded_error', 'Claude Code SSE 失败尾包 error.type 应为 overloaded_error')
   assert.equal(payload.error?.code, 'upstream_retryable_error', 'Claude Code SSE 失败尾包应返回网关稳定可重试码')
   assert(payload.error?.message, 'Claude Code SSE 失败尾包应包含错误消息')
-  assert(upstreamHits.some((hit) => hit.xApiKey === 'sk-ant-empty-sse'), 'Anthropic SSE 重试耗尽应命中提前结束 mock 上游')
+  const claudeCodeHits = upstreamHits.slice(claudeCodeHitOffset)
+  assert(claudeCodeHits.length > 0, 'Claude Code SSE 重试耗尽必须在本次请求真实命中提前结束 mock 上游')
+  assert(claudeCodeHits.every((hit) => hit.xApiKey === 'sk-ant-empty-sse'), 'Claude Code SSE 重试耗尽不得被前一个通用请求的历史命中掩盖')
+}
+
+async function assertAnthropicSsePreCommitFailureSwitchesAccount(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const group = repositories.createGroup({
+    name: 'Anthropic SSE 提交前切号分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  const failedAccount = repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic SSE 提交前空响应账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-empty-sse',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const healthyAccount = repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic SSE 提交前健康账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-empty-sse-failover-good',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 100
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: 'Anthropic SSE 提交前切号 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic SSE 提交前切号 API Key 未返回明文密钥')
+
+  accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewayCache.clearGatewayRuntimeCache()
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey.key,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      [gatewayClientProfileHeader]: 'claude_code'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'switch after empty pre-commit SSE' }],
+      max_tokens: 16,
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `Anthropic 提交前空 SSE 应切换健康账户，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/)
+  assert.match(text, /anthropic sse ok/)
+  assert.doesNotMatch(text, /^event: error$/m, '健康后备账户成功后不得保留前一账户错误尾包')
+  assert.deepEqual(
+    upstreamHits.map((hit) => hit.xApiKey),
+    ['sk-ant-empty-sse', 'sk-ant-empty-sse-failover-good'],
+    'Anthropic 提交前协议失败必须只切换一次并返回健康账户结果'
+  )
+  await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, healthyAccount.id], apiKey.id)
+}
+
+async function assertAnthropicHostedWorkStaysAtMostOnce(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  const cases = [
+    {
+      label: 'server-tool',
+      body: { tools: [{ type: 'web_search_20250305', name: 'web_search' }] }
+    },
+    {
+      label: 'mcp',
+      body: { mcp_servers: [{ type: 'url', url: 'https://mcp.invalid' }] }
+    },
+    {
+      label: 'container',
+      body: { container: 'container_mock' }
+    }
+  ] as const
+
+  for (const testCase of cases) {
+    const group = repositories.createGroup({
+      name: `Anthropic ${testCase.label} at-most-once 分组`,
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    const failedAccount = repositories.createAccount({
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      name: `Anthropic ${testCase.label} 空响应账户`,
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-ant-empty-sse',
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['messages_sse']
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true,
+      priority: 0
+    }, access)
+    const fallbackAccount = repositories.createAccount({
+      providerCode: ANTHROPIC_PROVIDER_CODE,
+      name: `Anthropic ${testCase.label} 后备账户`,
+      type: 'api_key',
+      credentials: {
+        api_key: `sk-ant-${testCase.label}-fallback`,
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['messages_sse']
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true,
+      priority: 100
+    }, access)
+    const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: `Anthropic ${testCase.label} at-most-once Key`,
+      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(apiKey.key, `Anthropic ${testCase.label} API Key 未返回明文密钥`)
+
+    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    gatewayCache.clearGatewayRuntimeCache()
+    upstreamHits.length = 0
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey.key,
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        [gatewayClientProfileHeader]: 'claude_code'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [{ role: 'user', content: `at-most-once ${testCase.label}` }],
+        max_tokens: 16,
+        stream: true,
+        ...testCase.body
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 503, `Anthropic ${testCase.label} 已派发后不得切号，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /upstream_outcome_unknown/)
+    assert.deepEqual(upstreamHits.map((hit) => hit.xApiKey), ['sk-ant-empty-sse'], `Anthropic ${testCase.label} 不得命中后备账户`)
+    await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, fallbackAccount.id], apiKey.id)
+  }
 }
 
 async function assertClaudeCodeClientProfileHeader(baseUrl: string, localApiKey: string): Promise<void> {
@@ -916,13 +1078,13 @@ function assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl: string
   }, access), /当前供应商协议不支持 OpenAI 账号模型别名/, 'Anthropic Messages 账号不应允许配置 OpenAI 协议模型映射')
 }
 
-async function assertAnthropicApiKeyPoolStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicApiKeyPoolOpaqueFailover(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic 多 Key 隔离回归分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const sourceAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic 多 Key 隔离来源账户',
     type: 'api_key',
@@ -938,7 +1100,7 @@ async function assertAnthropicApiKeyPoolStaysOpaque(baseUrl: string, upstreamBas
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const rescueAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic 多 Key 隔离救援账户',
     type: 'api_key',
@@ -961,22 +1123,24 @@ async function assertAnthropicApiKeyPoolStaysOpaque(baseUrl: string, upstreamBas
 
   upstreamHits.length = 0
   const first = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool failover')
-  assert.equal(first.status, 503, `通用 Anthropic 客户端应保留坏 Key 的上游状态，实际 HTTP ${first.status}: ${first.text}`)
-  assert.match(first.text, /mock key pool bad key/, '通用 Anthropic 客户端应看到坏 Key 的上游原始错误')
+  assert.equal(first.status, 200, `通用 Anthropic 文本请求应 opaque 切换到同账户健康 Key，实际 HTTP ${first.status}: ${first.text}`)
+  assert.match(first.text, /anthropic json ok/, '通用 Anthropic 客户端应收到健康 Key 的完整响应')
+  assert.doesNotMatch(first.text, /mock key pool bad key/, '网关不得把中间坏 Key 的供应商原始错误泄漏给客户端')
   assert.deepEqual(
     upstreamHits.map((hit) => hit.xApiKey),
-    ['sk-ant-keypool-bad'],
-    '通用 Anthropic 客户端不得按上游状态轮换账户内 Key 或切换救援账户'
+    ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
+    '通用 Anthropic 文本请求应只依据完整 HTTP 失败做请求内 opaque Key 轮换，并优先耗尽兄弟 Key'
   )
+  await assertRequestLocalSwitchDidNotMutateSharedState([sourceAccount.id, rescueAccount.id], apiKey.id)
 }
 
-async function assertAnthropicResponseInspectionStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicConfiguredResponseInspectionSwitchesRequestLocally(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic 响应检查换号分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const pollutedAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic 污染响应账户',
     type: 'api_key',
@@ -990,7 +1154,7 @@ async function assertAnthropicResponseInspectionStaysOpaque(baseUrl: string, ups
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const cleanAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic 干净响应账户',
     type: 'api_key',
@@ -1038,8 +1202,8 @@ async function assertAnthropicResponseInspectionStaysOpaque(baseUrl: string, ups
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收污染响应，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按响应检查策略换号')
+  assert.equal(response.status, 200, `用户明确配置的响应策略应在下游提交前切到健康账户，实际 HTTP ${response.status}: ${text}`)
+  assert.deepEqual(upstreamHits.map((hit) => hit.xApiKey), ['sk-ant-polluted', 'sk-ant-clean'], '响应检查策略只能在当前请求内有界切到下一账户')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
@@ -1047,17 +1211,19 @@ async function assertAnthropicResponseInspectionStaysOpaque(baseUrl: string, ups
     xApiKey: 'sk-ant-polluted'
   })
   const body = JSON.parse(text) as { content?: Array<{ text?: string }> }
-  assert.equal(body.content?.[0]?.text, 'ANTHROPIC-POLLUTED', `通用 Anthropic 客户端应看到上游原始内容：${text}`)
+  assert.equal(body.content?.[0]?.text, 'anthropic clean ok', `客户端只能看到切号后的健康响应：${text}`)
+  assert.doesNotMatch(text, /ANTHROPIC-POLLUTED/, '中间账户的失败内容不得泄漏给客户端')
+  await assertRequestLocalSwitchDidNotMutateSharedState([pollutedAccount.id, cleanAccount.id], apiKey.id)
 }
 
-async function assertAnthropicJsonErrorStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicJsonErrorSwitchesRequestLocally(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   createAnthropicOverloadedErrorSwitchPolicy()
   const group = repositories.createGroup({
     name: 'Anthropic JSON error 换号分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const failedAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic JSON error 账户',
     type: 'api_key',
@@ -1071,7 +1237,7 @@ async function assertAnthropicJsonErrorStaysOpaque(baseUrl: string, upstreamBase
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const cleanAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic JSON error 干净账户',
     type: 'api_key',
@@ -1107,27 +1273,28 @@ async function assertAnthropicJsonErrorStaysOpaque(baseUrl: string, upstreamBase
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `通用 Anthropic 客户端应保留上游 JSON 响应状态，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按 JSON 错误内容换号')
+  assert.equal(response.status, 200, `明确 JSON type:error 应在下游提交前切到健康账户，实际 HTTP ${response.status}: ${text}`)
+  assert.deepEqual(upstreamHits.map((hit) => hit.xApiKey), ['sk-ant-error-json', 'sk-ant-clean'], '明确 JSON type:error 只能在当前请求内有界切号一次')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'trigger anthropic json error inspection',
     xApiKey: 'sk-ant-error-json'
   })
-  const body = JSON.parse(text) as { type?: string; error?: { type?: string; message?: string } }
-  assert.equal(body.type, 'error', `通用 Anthropic 客户端应看到上游原始 JSON 错误：${text}`)
-  assert.equal(body.error?.message, 'mock overloaded', `通用 Anthropic 客户端应看到上游原始错误内容：${text}`)
+  const body = JSON.parse(text) as { content?: Array<{ text?: string }> }
+  assert.equal(body.content?.[0]?.text, 'anthropic clean ok', `客户端只能看到切号后的健康 JSON：${text}`)
+  assert.doesNotMatch(text, /mock overloaded/, '中间 JSON type:error 不得泄漏给客户端')
+  await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, cleanAccount.id], apiKey.id)
 }
 
-async function assertAnthropicSseErrorStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicSseErrorSwitchesRequestLocally(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   createAnthropicOverloadedErrorSwitchPolicy()
   const group = repositories.createGroup({
     name: 'Anthropic SSE error 换号分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const failedAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic SSE error 账户',
     type: 'api_key',
@@ -1141,7 +1308,7 @@ async function assertAnthropicSseErrorStaysOpaque(baseUrl: string, upstreamBaseU
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const cleanAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     name: 'Anthropic SSE error 干净账户',
     type: 'api_key',
@@ -1178,15 +1345,86 @@ async function assertAnthropicSseErrorStaysOpaque(baseUrl: string, upstreamBaseU
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `通用 Anthropic 客户端应保留上游 SSE 状态，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按 SSE 错误事件换号')
-  assert.match(text, /mock overloaded/, `通用 Anthropic 客户端应看到上游原始 SSE 错误：${text}`)
+  assert.equal(response.status, 200, `明确 event:error 应在下游提交前切到健康账户，实际 HTTP ${response.status}: ${text}`)
+  assert.deepEqual(upstreamHits.map((hit) => hit.xApiKey), ['sk-ant-error-sse', 'sk-ant-clean-sse'], '明确 event:error 只能在当前请求内有界切号一次')
+  assert.match(text, /anthropic sse ok/, `客户端应收到健康账户的完整 SSE：${text}`)
+  assert.doesNotMatch(text, /mock overloaded/, '中间 event:error 不得泄漏给客户端')
+  assert.doesNotMatch(text, /^event: error$/m, '客户端不得看到中间账户的错误事件')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'trigger anthropic sse error inspection',
     xApiKey: 'sk-ant-error-sse'
   })
+  await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, cleanAccount.id], apiKey.id)
+}
+
+async function assertAnthropicSseErrorFieldStaysNeutral(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+  createAnthropicOverloadedErrorSwitchPolicy()
+  const group = repositories.createGroup({
+    name: 'Anthropic SSE 普通 error 字段分组',
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    enabled: true
+  }, access)
+  const account = repositories.createAccount({
+    providerCode: ANTHROPIC_PROVIDER_CODE,
+    name: 'Anthropic SSE 普通 error 字段账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-error-field-sse',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['messages_sse']
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: 'Anthropic SSE 普通 error 字段 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(apiKey.key, 'Anthropic SSE 普通 error 字段 API Key 未返回明文密钥')
+
+  upstreamHits.length = 0
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5',
+      messages: [{ role: 'user', content: 'trigger anthropic ordinary event error field' }],
+      max_tokens: 16,
+      stream: true
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 200, `普通事件的 error 字段必须保持中性，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, '普通事件的 data.error 不得触发切号')
+  assert.equal(upstreamHits[0]?.xApiKey, 'sk-ant-error-field-sse')
+  assert.match(text, /anthropic sse ok/, `普通事件仍应完整透传可见输出：${text}`)
+  assert.doesNotMatch(text, /^event: error$/m, '普通事件的 data.error 不得被改写为错误事件')
+  assert.equal(inspectAnthropicStreamText(text).failedReceived, false, '普通事件的 data.error 不得标记协议失败')
+  await assertRequestLocalSwitchDidNotMutateSharedState([account.id], apiKey.id)
+}
+
+async function assertRequestLocalSwitchDidNotMutateSharedState(accountIds: string[], gatewayApiKeyId: string): Promise<void> {
+  await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+  for (const accountId of accountIds) {
+    const summary = repositories.findAccountForTest(accountId, access)
+    assert(summary, `缺少账户状态摘要：${accountId}`)
+    assert.equal(summary.status, 'active', `请求内切号不得修改账户状态：${accountId}`)
+    assert.equal(summary.schedulable, true, `请求内切号不得关闭账户调度：${accountId}`)
+    assert.equal(summary.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, `请求内切号不得写 Key temporary_unavailable：${accountId}`)
+    assert.equal(summary.apiKeyRuntime?.rateLimited ?? 0, 0, `请求内切号不得写 Key rate_limited：${accountId}`)
+    assert.equal(summary.apiKeyRuntime?.error ?? 0, 0, `请求内切号不得写 Key error：${accountId}`)
+    assert.equal(summary.apiKeyRuntime?.disabled ?? 0, 0, `请求内切号不得写 Key disabled：${accountId}`)
+  }
+  assert.equal(repositories.findApiKeySummary(gatewayApiKeyId, access)?.status, 'active', '请求内切号不得修改客户端网关 API Key 状态')
 }
 
 async function assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -1556,6 +1794,8 @@ function createAnthropicMockUpstream(): http.Server {
             sendAnthropicSseEmpty(res)
           } else if (req.headers['x-api-key'] === 'sk-ant-error-sse') {
             sendAnthropicSseError(res)
+          } else if (req.headers['x-api-key'] === 'sk-ant-error-field-sse') {
+            sendAnthropicSse(res, true)
           } else {
             sendAnthropicSse(res)
           }
@@ -1642,7 +1882,7 @@ function sendAnthropicJson(res: http.ServerResponse, xApiKey: string, bodyText: 
   }))
 }
 
-function sendAnthropicSse(res: http.ServerResponse): void {
+function sendAnthropicSse(res: http.ServerResponse, includeErrorField = false): void {
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   writeSse(res, 'message_start', {
     type: 'message_start',
@@ -1663,7 +1903,13 @@ function sendAnthropicSse(res: http.ServerResponse): void {
   writeSse(res, 'content_block_delta', {
     type: 'content_block_delta',
     index: 0,
-    delta: { type: 'text_delta', text: 'anthropic sse ok' }
+    delta: { type: 'text_delta', text: 'anthropic sse ok' },
+    ...(includeErrorField
+      ? {
+          error: { type: 'overloaded_error', message: 'ordinary field only' },
+          metadata: { error: 'diagnostic only' }
+        }
+      : {})
   })
   writeSse(res, 'content_block_stop', {
     type: 'content_block_stop',

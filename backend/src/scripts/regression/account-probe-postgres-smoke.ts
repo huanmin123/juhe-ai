@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
@@ -289,7 +290,7 @@ try {
   assert.equal(repeatedPendingFailure.failureStartedAt, pendingFailureStartedAt, 'PG pending 账户第二次失败应保留首次失败时间')
 
   const cooldownObservationStartedAt = new Date(Date.now() - 60_000).toISOString()
-  await setCooldownDue(account.id, dueAt, cooldownObservationStartedAt)
+  const cooldownGuard = await setCooldownDue(account.id, dueAt, cooldownObservationStartedAt)
   const cooldownCandidates = await handleDbServiceOperation({
     type: 'list_accounts_due_for_cooldown_retest',
     limit: 20
@@ -298,12 +299,16 @@ try {
   assert.ok(cooldownCandidate, 'PG cooldown retest 候选应返回到期冷却账号')
   assert.equal(cooldownCandidate.status, 'temporary_unavailable', 'PG cooldown retest 候选应保留冷却状态')
   assert.equal(cooldownCandidate.boundGroupId, group.id, 'PG cooldown retest 候选应带分组绑定')
+  assert.equal(cooldownCandidate.cooldownRetestDispatchRevision, cooldownGuard.expectedDispatchRevision, 'PG cooldown retest 候选应携带当前派发版本')
+  assert.equal(cooldownCandidate.cooldownRetestGeneration, cooldownGuard.expectedGeneration, 'PG cooldown retest 候选应携带当前冷却代次')
+  assert.equal(cooldownCandidate.cooldownRetestSourceConfigRevision, undefined, 'PG owner cooldown retest 候选不应伪造来源配置版本')
 
   const cooldownAccount = await handleDbServiceOperation({
     type: 'find_account_for_cooldown_retest',
     accountId: account.id
   })
   assert.equal(cooldownAccount?.id, account.id, 'PG cooldown retest 单账号读取应返回目标账号')
+  assert.equal(cooldownAccount?.cooldownRetestGeneration, cooldownGuard.expectedGeneration, 'PG cooldown retest 单账号读取应保留冷却代次')
 
   const cooldownFailure = await handleDbServiceOperation({
     type: 'record_cooldown_account_retest_failure',
@@ -316,8 +321,7 @@ try {
       fastThresholdSeconds: 60,
       maxPauseMinutes: 1,
       maxRecoveryHours: 12,
-      expectedConfigRevision: configRevision,
-      expectedObservationStartedAt: cooldownObservationStartedAt
+      ...cooldownGuard
     }
   })
   assert.equal(cooldownFailure.changed, true, 'PG cooldown failure 应写回退避状态')
@@ -333,8 +337,8 @@ try {
   const staleConfigFailure = await recordCooldownAccountRetestFailureAsync(account.id, {
     statusCode: 503,
     errorMessage: 'PG stale config cooldown smoke',
-    expectedConfigRevision: configRevision + 1,
-    expectedObservationStartedAt: cooldownObservationStartedAt,
+    ...cooldownGuard,
+    expectedConfigRevision: cooldownGuard.expectedConfigRevision + 1,
     maxPauseMinutes: 1,
     maxRecoveryHours: 12
   })
@@ -344,7 +348,7 @@ try {
   const staleObservationFailure = await recordCooldownAccountRetestFailureAsync(account.id, {
     statusCode: 503,
     errorMessage: 'PG stale observation cooldown smoke',
-    expectedConfigRevision: configRevision,
+    ...cooldownGuard,
     expectedObservationStartedAt: new Date(Date.now() - 120_000).toISOString(),
     maxPauseMinutes: 1,
     maxRecoveryHours: 12
@@ -352,14 +356,37 @@ try {
   assert.equal(staleObservationFailure.changed, false, 'PG 观察窗口失配的冷却失败不得更新账户')
   assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownFailure, 'PG 观察窗口失配的冷却失败不得改变运行态')
 
-  const successObservationStartedAt = new Date(Date.now() - 30_000).toISOString()
-  await setCooldownDue(account.id, dueAt, successObservationStartedAt)
+  const staleDispatchFailure = await recordCooldownAccountRetestFailureAsync(account.id, {
+    statusCode: 503,
+    errorMessage: 'PG stale dispatch cooldown smoke',
+    ...cooldownGuard,
+    expectedDispatchRevision: cooldownGuard.expectedDispatchRevision + 1,
+    maxPauseMinutes: 1,
+    maxRecoveryHours: 12
+  })
+  assert.equal(staleDispatchFailure.changed, false, 'PG 派发版本失配的冷却失败不得更新账户')
+  assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownFailure, 'PG 派发版本失配的冷却失败不得改变运行态')
+
+  const staleGenerationFailure = await recordCooldownAccountRetestFailureAsync(account.id, {
+    statusCode: 503,
+    errorMessage: 'PG stale generation cooldown smoke',
+    ...cooldownGuard,
+    expectedGeneration: `cooldown:${randomUUID()}`,
+    maxPauseMinutes: 1,
+    maxRecoveryHours: 12
+  })
+  assert.equal(staleGenerationFailure.changed, false, 'PG 冷却代次失配的失败结果不得更新账户')
+  assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownFailure, 'PG 冷却代次失配的失败结果不得改变运行态')
+
+  const successObservationStartedAt = cooldownObservationStartedAt
+  const successGuard = await setCooldownDue(account.id, dueAt, successObservationStartedAt)
+  assert.notEqual(successGuard.expectedGeneration, cooldownGuard.expectedGeneration, 'PG 相同观察时间开启新冷却周期时必须轮换独立代次')
   const beforeStaleCooldownSuccess = await readAccountRuntimeFields(account.id)
   const staleConfigSuccess = await handleDbServiceOperation({
     type: 'record_cooldown_account_retest_success',
     accountId: account.id,
-    expectedConfigRevision: configRevision + 1,
-    expectedObservationStartedAt: successObservationStartedAt
+    ...successGuard,
+    expectedConfigRevision: successGuard.expectedConfigRevision + 1
   })
   assert.equal(staleConfigSuccess.changed, false, 'PG 配置版本失配的冷却成功不得恢复账户')
   assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownSuccess, 'PG 配置版本失配的冷却成功不得改变运行态')
@@ -367,17 +394,25 @@ try {
   const staleObservationSuccess = await handleDbServiceOperation({
     type: 'record_cooldown_account_retest_success',
     accountId: account.id,
-    expectedConfigRevision: configRevision,
+    ...successGuard,
     expectedObservationStartedAt: new Date(Date.now() - 120_000).toISOString()
   })
   assert.equal(staleObservationSuccess.changed, false, 'PG 观察窗口失配的冷却成功不得恢复账户')
   assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownSuccess, 'PG 观察窗口失配的冷却成功不得改变运行态')
 
+  const staleGenerationSuccess = await handleDbServiceOperation({
+    type: 'record_cooldown_account_retest_success',
+    accountId: account.id,
+    ...successGuard,
+    expectedGeneration: `cooldown:${randomUUID()}`
+  })
+  assert.equal(staleGenerationSuccess.changed, false, 'PG 冷却代次失配的成功结果不得恢复账户')
+  assert.deepEqual(await readAccountRuntimeFields(account.id), beforeStaleCooldownSuccess, 'PG 冷却代次失配的成功结果不得改变运行态')
+
   const cooldownSuccess = await handleDbServiceOperation({
     type: 'record_cooldown_account_retest_success',
     accountId: account.id,
-    expectedConfigRevision: configRevision,
-    expectedObservationStartedAt: successObservationStartedAt
+    ...successGuard
   })
   assert.equal(cooldownSuccess.changed, true, 'PG 当前冷却复测成功应恢复账户')
   const afterCooldownSuccess = await readAccountRuntimeFields(account.id)
@@ -386,22 +421,15 @@ try {
   assert.equal(afterCooldownSuccess.cooldown_until, null, 'PG cooldown success 应清除冷却时间')
   assert.equal(afterCooldownSuccess.cooldown_retest_failure_count, 0, 'PG cooldown success 应清零失败次数')
   assert.equal(afterCooldownSuccess.cooldown_retest_observation_started_at, null, 'PG cooldown success 应清除观察窗口')
+  assert.equal(afterCooldownSuccess.cooldown_retest_generation, null, 'PG cooldown success 应清除冷却代次')
 
   const concurrentObservationStartedAt = new Date().toISOString()
-  const pool = await getPostgresPool()
-  await pool.query(`
-    UPDATE juhe_business.accounts
-    SET status = 'temporary_unavailable',
-        schedulable = 1,
-        cooldown_until = $1,
-        cooldown_retest_failure_count = 0,
-        cooldown_retest_observation_started_at = $2
-    WHERE id = $3
-  `, [dueAt, concurrentObservationStartedAt, account.id])
+  const concurrentGuard = await setCooldownDue(account.id, dueAt, concurrentObservationStartedAt)
   const concurrentFailures = await Promise.all([
     recordCooldownAccountRetestFailureAsync(account.id, {
       statusCode: 503,
       errorMessage: 'PG concurrent cooldown smoke A',
+      ...concurrentGuard,
       initialBackoffSeconds: 1,
       maxPauseMinutes: 1,
       maxRecoveryHours: 12
@@ -409,6 +437,7 @@ try {
     recordCooldownAccountRetestFailureAsync(account.id, {
       statusCode: 503,
       errorMessage: 'PG concurrent cooldown smoke B',
+      ...concurrentGuard,
       initialBackoffSeconds: 1,
       maxPauseMinutes: 1,
       maxRecoveryHours: 12
@@ -421,6 +450,38 @@ try {
   )
   const afterConcurrentFailures = await readAccountRuntimeFields(account.id)
   assert.equal(afterConcurrentFailures.cooldown_retest_failure_count, 2, 'PG 并发冷却复测最终必须保留两次失败计数')
+
+  const failureDeferObservationStartedAt = new Date(Date.now() + 1_000).toISOString()
+  const failureDeferGuard = await setCooldownDue(account.id, dueAt, failureDeferObservationStartedAt)
+  const [racingFailure, racingDefer] = await Promise.all([
+    handleDbServiceOperation({
+      type: 'record_cooldown_account_retest_failure',
+      accountId: account.id,
+      input: {
+        statusCode: 503,
+        errorMessage: 'PG failure/defer cooldown race',
+        ...failureDeferGuard,
+        initialBackoffSeconds: 30,
+        maxPauseMinutes: 1,
+        maxRecoveryHours: 12
+      }
+    }),
+    handleDbServiceOperation({
+      type: 'defer_cooldown_account_retest',
+      accountId: account.id,
+      ...failureDeferGuard,
+      delaySeconds: 1
+    })
+  ])
+  assert.equal(racingFailure.changed, true, 'PG failure/defer 竞态中的失败结果必须成功持久化')
+  assert.equal(typeof racingDefer.changed, 'boolean', 'PG failure/defer 竞态中的 defer 必须返回明确写入结果')
+  assert.ok(racingFailure.cooldownUntil, 'PG failure/defer 竞态中的失败结果应返回冷却期限')
+  const afterFailureDeferRace = await readAccountRuntimeFields(account.id)
+  assert.ok(afterFailureDeferRace.cooldown_until, 'PG failure/defer 竞态后应保留冷却期限')
+  assert(
+    Date.parse(String(afterFailureDeferRace.cooldown_until)) >= Date.parse(racingFailure.cooldownUntil),
+    'PG 短 defer 与失败写回竞态不得缩短失败退避期限'
+  )
 
   await assertProbeExplainUsesIndexes(dueAt)
 
@@ -448,14 +509,24 @@ async function setHealthCheckDue(accountId: string, dueAt: string): Promise<void
         cooldown_until = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_generation = NULL,
         account_expires_at = NULL,
         updated_at = $1
     WHERE id = $2
   `, [dueAt, accountId])
 }
 
-async function setCooldownDue(accountId: string, dueAt: string, observationStartedAt: string | null = null): Promise<void> {
+interface CooldownRetestExpectedState {
+  expectedConfigRevision: number
+  expectedDispatchRevision: number
+  expectedObservationStartedAt: string
+  expectedGeneration: string
+  expectedSourceConfigRevision?: number
+}
+
+async function setCooldownDue(accountId: string, dueAt: string, observationStartedAt: string): Promise<CooldownRetestExpectedState> {
   const pool = await getPostgresPool()
+  const generation = `cooldown:${randomUUID()}`
   await pool.query(`
     UPDATE juhe_business.accounts
     SET status = 'temporary_unavailable',
@@ -463,12 +534,48 @@ async function setCooldownDue(accountId: string, dueAt: string, observationStart
         cooldown_until = $1,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = $2,
+        cooldown_retest_generation = $3,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
         account_expires_at = NULL,
         updated_at = $1
-    WHERE id = $3
-  `, [dueAt, observationStartedAt, accountId])
+    WHERE id = $4
+  `, [dueAt, observationStartedAt, generation, accountId])
+  const result = await pool.query(`
+    SELECT accounts.config_revision, accounts.dispatch_revision,
+      accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_generation,
+      source_accounts.config_revision AS source_config_revision
+    FROM juhe_business.accounts accounts
+    LEFT JOIN juhe_business.accounts source_accounts
+      ON source_accounts.id = accounts.authorization_instance_source_account_id
+    WHERE accounts.id = $1
+    LIMIT 1
+  `, [accountId])
+  const row = result.rows[0] as Record<string, string | number | null> | undefined
+  assert(row, 'PG cooldown fixture 应能读回 guard 字段')
+  const expectedConfigRevision = Number(row.config_revision)
+  const expectedDispatchRevision = Number(row.dispatch_revision)
+  assert.ok(Number.isInteger(expectedConfigRevision) && expectedConfigRevision >= 1, 'PG cooldown fixture 应读到有效配置版本')
+  assert.ok(Number.isInteger(expectedDispatchRevision) && expectedDispatchRevision >= 1, 'PG cooldown fixture 应读到有效派发版本')
+  assert.equal(normalizePostgresTimestamp(row.cooldown_retest_observation_started_at), observationStartedAt, 'PG cooldown fixture 应读回当前观察窗口')
+  assert.equal(row.cooldown_retest_generation, generation, 'PG cooldown fixture 应读回独立冷却代次')
+  const expectedState: CooldownRetestExpectedState = {
+    expectedConfigRevision,
+    expectedDispatchRevision,
+    expectedObservationStartedAt: observationStartedAt,
+    expectedGeneration: generation
+  }
+  if (row.source_config_revision !== null && row.source_config_revision !== undefined) {
+    const expectedSourceConfigRevision = Number(row.source_config_revision)
+    assert.ok(Number.isInteger(expectedSourceConfigRevision) && expectedSourceConfigRevision >= 1, 'PG cooldown fixture 应读到有效来源配置版本')
+    expectedState.expectedSourceConfigRevision = expectedSourceConfigRevision
+  }
+  return expectedState
+}
+
+function normalizePostgresTimestamp(value: unknown): string | undefined {
+  if (value instanceof Date) return value.toISOString()
+  return typeof value === 'string' ? value : undefined
 }
 
 async function setPendingHealthFailureFixture(accountId: string, failureStartedAt: string): Promise<void> {
@@ -553,8 +660,8 @@ async function assertHealthActivationRollsBackWhenDirtyWriteBlocked(accountId: s
 async function readAccountRuntimeFields(accountId: string): Promise<Record<string, string | number | null>> {
   const pool = await getPostgresPool()
   const result = await pool.query(`
-    SELECT status, schedulable, config_revision, cooldown_until, last_error_code, last_error_message,
-      cooldown_retest_failure_count, cooldown_retest_observation_started_at, last_health_check_status_code,
+    SELECT status, schedulable, config_revision, dispatch_revision, cooldown_until, last_error_code, last_error_message,
+      cooldown_retest_failure_count, cooldown_retest_observation_started_at, cooldown_retest_generation, last_health_check_status_code,
       last_health_check_at, last_health_success_at, next_health_check_at,
       health_check_failure_count, last_health_check_error_code, last_health_check_error_message
     FROM juhe_business.accounts

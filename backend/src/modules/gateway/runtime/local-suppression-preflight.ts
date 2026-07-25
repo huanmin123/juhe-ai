@@ -107,12 +107,14 @@ export async function resolveLocalSuppressionFilter(input: {
     return undefined
   }
 
-  const errorCode = waitSkippedReason ?? 'temporarily_blocked_local_account_suppression'
   await input.routeCoordinator.completeFailure({
     statusCode: 503,
     message: '所有上游账户正在临时隔离，请稍后重试',
     errorType: 'service_unavailable',
-    errorCode,
+    // The wait reason is internal coordination state and remains available in
+    // audit metadata above. Clients receive one stable retry contract instead
+    // of coupling themselves to gateway scheduling internals.
+    errorCode: 'upstream_retryable_error',
     errorPhase: 'dispatch',
     retryAfterMs: filter.nextRetryAfterMs
   })

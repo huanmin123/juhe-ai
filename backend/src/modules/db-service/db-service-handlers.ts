@@ -77,6 +77,8 @@ import {
   listPublicGlobalSettings,
   listPublicGlobalSettingsAsync,
   markAccountException,
+  markOpenAIOAuthLocalConfigurationExceptionIfCurrent,
+  markOpenAIOAuthLocalConfigurationExceptionIfCurrentAsync,
   markAccountCooldown,
   markAccountCooldownAsync,
   markAccountDisabledByFailure,
@@ -106,8 +108,8 @@ import {
   recordAuthorizedAccountBindingStreamFailureAsync,
   resolveGroupUsageAccessMetadata,
   resolveGroupUsageAccessMetadataAsync,
-  resolveProxyUrlForProfile,
-  resolveProxyUrlForProfileAsync,
+  resolveProxyUrlsForProfiles,
+  resolveProxyUrlsForProfilesAsync,
   syncAccountAvailabilityScheduleStatuses,
   syncAccountAvailabilityScheduleStatusesAsync,
   syncApiKeyAvailabilityScheduleStatuses,
@@ -115,6 +117,8 @@ import {
   type OpenAIAccountSecret,
   updateAccount,
   updateAccountAsync,
+  updateOpenAIOAuthCredentialsIfCurrent,
+  updateOpenAIOAuthCredentialsIfCurrentAsync,
   updateProxyTestState,
   updateProxyTestStateAsync,
   validateGatewayApiKey,
@@ -166,6 +170,7 @@ import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
 } from '../gateway/runtime/runtime-cache.service.js'
+import { authorizeAccountApiKeyPersistentMutationForTrafficSource } from '../gateway/runtime/account-api-key-mutation-authority.js'
 import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { isDynamicRouteStrategyMode } from '../../domain/route-strategy.js'
 import {
@@ -187,6 +192,8 @@ import {
 } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
+  deferAccountApiKeyRuntimeProbe,
+  deferAccountApiKeyRuntimeProbeAsync,
   recordAccountApiKeyRuntimeFailure,
   recordAccountApiKeyRuntimeFailureAsync,
   recordAccountApiKeyRuntimeSuccess,
@@ -230,6 +237,7 @@ import {
   claimAccountCircuitOutbox,
   cleanupAccountCircuitControlPlane,
   compareAndSetAccountCircuitIncident,
+  getAccountCircuitIncidentByScopeKey,
   listAccountCircuitIncidentsForRebuild,
   listAccountCircuitIncidentsByRuntimeKeys,
   listAccountCircuitProjectionGaps,
@@ -578,11 +586,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             ...operation.authorizedBinding
           }, {
             allowPendingTestRestore: operation.allowPendingTestRestore,
-            allowErrorRestore: operation.allowErrorRestore
+            allowErrorRestore: operation.allowErrorRestore,
+            expectedLastErrorCodes: operation.expectedLastErrorCodes
           })
           : await clearAccountFailureStateResultAsync(operation.accountId, internalDbServiceAccountAccess, {
             allowPendingTestRestore: operation.allowPendingTestRestore,
-            allowErrorRestore: operation.allowErrorRestore
+            allowErrorRestore: operation.allowErrorRestore,
+            expectedLastErrorCodes: operation.expectedLastErrorCodes
           })
         if (result.changed) {
           clearGatewayRuntimeCacheLocal()
@@ -642,6 +652,14 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         })
       }
     case 'record_account_api_key_failure': {
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'failure',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await recordAccountApiKeyRuntimeFailureAsync({
           account: operation.account,
@@ -655,8 +673,23 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     }
     case 'record_account_api_key_success': {
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'success',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
       if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account, { observedAt: operation.observedAt })
+        const result = await recordAccountApiKeyRuntimeSuccessAsync(operation.account, {
+          observedAt: operation.observedAt,
+          expectedStatus: operation.expectedStatus,
+          expectedNextProbeAt: operation.expectedNextProbeAt,
+          expectedStateUpdatedAt: operation.expectedStateUpdatedAt,
+          expectedAccountConfigRevision: operation.expectedAccountConfigRevision,
+          expectedProbeClaimToken: operation.expectedProbeClaimToken
+        })
         if (result.changed) {
           clearGatewayRuntimeCacheLocal()
         }
@@ -664,23 +697,50 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
       return handleDbServiceOperationSync(operation)
     }
+    case 'defer_account_api_key_probe': {
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'defer',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await deferAccountApiKeyRuntimeProbeAsync({
+          account: operation.account,
+          ...operation.input
+        })
+      }
+      return handleDbServiceOperationSync(operation)
+    }
     case 'update_proxy_test_state': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await updateProxyTestStateAsync(operation.proxyId, operation.input)
-        if (updated) {
-          clearGatewayRuntimeCacheLocal()
-        }
         return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
       }
       return handleDbServiceOperationSync(operation)
     }
     case 'update_openai_oauth_credentials': {
       if (runtimeConfig.databaseDriver === 'postgres') {
-        const updated = await updateAccountAsync(operation.accountId, { credentials: operation.credentials }, internalDbServiceAccountAccess)
+        const updated = await updateOpenAIOAuthCredentialsIfCurrentAsync(
+          operation.accountId,
+          operation.credentials,
+          operation.expectedConfigRevision,
+          internalDbServiceAccountAccess
+        )
         if (updated) {
           clearGatewayRuntimeCacheLocal()
         }
         return { updated: Boolean(updated) }
+      }
+      return handleDbServiceOperationSync(operation)
+    }
+    case 'mark_openai_oauth_local_configuration_exception': {
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const updated = await markOpenAIOAuthLocalConfigurationExceptionIfCurrentAsync(operation)
+        if (updated) clearGatewayRuntimeCacheLocal()
+        return { updated }
       }
       return handleDbServiceOperationSync(operation)
     }
@@ -766,7 +826,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         if (updated) {
           clearGatewayRuntimeCacheLocal()
         }
-        return { updated: Boolean(updated) }
+        return {
+          updated: Boolean(updated),
+          ...(!updated
+            ? { skippedReason: await precheckTemporaryUnavailableSkipReasonAsync(operation, authorizedTarget) ?? 'mutation_fence_conflict' }
+            : {})
+        }
       }
       return handleDbServiceOperationSync(operation)
     }
@@ -890,7 +955,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await recordCooldownAccountRetestSuccessAsync(operation.accountId, {
           expectedConfigRevision: operation.expectedConfigRevision,
-          expectedObservationStartedAt: operation.expectedObservationStartedAt
+          expectedDispatchRevision: operation.expectedDispatchRevision,
+          expectedObservationStartedAt: operation.expectedObservationStartedAt,
+          expectedGeneration: operation.expectedGeneration,
+          expectedSourceConfigRevision: operation.expectedSourceConfigRevision
         })
         if (result.changed) clearGatewayRuntimeCacheLocal()
         return result
@@ -917,6 +985,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           maxedFailureCount: result.maxedFailureCount,
           observationStartedAt: result.observationStartedAt,
           observationElapsedSeconds: result.observationElapsedSeconds,
+          observationTimeoutSeconds: result.observationTimeoutSeconds,
+          transitionedToError: result.transitionedToError,
           errorCode: result.errorCode,
           errorMessage: result.errorMessage
         }
@@ -924,14 +994,23 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'defer_cooldown_account_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await deferCooldownAccountRetestAsync(operation.accountId, operation.delaySeconds)
+        return await deferCooldownAccountRetestAsync(operation.accountId, {
+          delaySeconds: operation.delaySeconds,
+          expectedConfigRevision: operation.expectedConfigRevision,
+          expectedDispatchRevision: operation.expectedDispatchRevision,
+          expectedObservationStartedAt: operation.expectedObservationStartedAt,
+          expectedGeneration: operation.expectedGeneration,
+          expectedSourceConfigRevision: operation.expectedSourceConfigRevision
+        })
       }
       return handleDbServiceOperationSync(operation)
     case 'mark_account_exception': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await markAccountExceptionAsync(operation.accountId, operation.errorCode, operation.reason, {
           preserveDisabled: operation.preserveDisabled,
-          traceId: operation.traceId
+          traceId: operation.traceId,
+          expectedConfigRevision: operation.expectedConfigRevision,
+          expectedStatus: operation.expectedStatus
         })
         if (updated) {
           clearGatewayRuntimeCacheLocal()
@@ -1062,6 +1141,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return await advanceAccountCircuitDispatchRevision(operation.input)
     case 'compare_and_set_account_circuit_incident':
       return await compareAndSetAccountCircuitIncident(operation.input)
+    case 'get_account_circuit_incident_by_scope_key':
+      return await getAccountCircuitIncidentByScopeKey(operation.circuitScopeKey)
     case 'claim_account_circuit_outbox':
       return await claimAccountCircuitOutbox(operation)
     case 'ack_account_circuit_outbox':
@@ -1075,7 +1156,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'list_account_circuit_incidents_for_rebuild':
       return await listAccountCircuitIncidentsForRebuild(operation)
     case 'list_account_circuit_incidents_by_runtime_keys':
-      return await listAccountCircuitIncidentsByRuntimeKeys(operation.accountRuntimeKeys)
+      return await listAccountCircuitIncidentsByRuntimeKeys(operation.accountRuntimeKeys, {
+        includeRetainedClosed: operation.includeRetainedClosed,
+        nowMs: operation.nowMs
+      })
     case 'list_account_circuit_projection_gaps':
       return await listAccountCircuitProjectionGaps(operation)
     case 'cleanup_account_circuit_control_plane':
@@ -1305,11 +1389,21 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
             accounts: operation.accounts
           })
     case 'update_openai_oauth_credentials': {
-      const updated = updateAccount(operation.accountId, { credentials: operation.credentials }, internalDbServiceAccountAccess)
+      const updated = updateOpenAIOAuthCredentialsIfCurrent(
+        operation.accountId,
+        operation.credentials,
+        operation.expectedConfigRevision,
+        internalDbServiceAccountAccess
+      )
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
       return { updated: Boolean(updated) }
+    }
+    case 'mark_openai_oauth_local_configuration_exception': {
+      const updated = markOpenAIOAuthLocalConfigurationExceptionIfCurrent(operation)
+      if (updated) clearGatewayRuntimeCacheLocal()
+      return { updated }
     }
     case 'find_openai_oauth_account_for_refresh':
       return findOpenAIOAuthAccountForRefresh(operation.accountId)
@@ -1325,6 +1419,14 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'record_account_api_key_failure': {
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'failure',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
       const result = recordAccountApiKeyRuntimeFailure({
         account: operation.account,
         ...operation.input
@@ -1335,11 +1437,40 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'record_account_api_key_success': {
-      const result = recordAccountApiKeyRuntimeSuccess(operation.account, { observedAt: operation.observedAt })
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'success',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
+      const result = recordAccountApiKeyRuntimeSuccess(operation.account, {
+        observedAt: operation.observedAt,
+        expectedStatus: operation.expectedStatus,
+        expectedNextProbeAt: operation.expectedNextProbeAt,
+        expectedStateUpdatedAt: operation.expectedStateUpdatedAt,
+        expectedAccountConfigRevision: operation.expectedAccountConfigRevision,
+        expectedProbeClaimToken: operation.expectedProbeClaimToken
+      })
       if (result.changed) {
         clearGatewayRuntimeCacheLocal()
       }
       return result
+    }
+    case 'defer_account_api_key_probe': {
+      const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
+        'defer',
+        operation.trafficSource,
+        operation.mutationContext
+      )
+      if (!authorization.allowed) {
+        return unauthorizedAccountApiKeyMutationResult(authorization.reason)
+      }
+      return deferAccountApiKeyRuntimeProbe({
+        account: operation.account,
+        ...operation.input
+      })
     }
     case 'record_account_stream_failure': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.input.account)
@@ -1364,7 +1495,12 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
-      return { updated: Boolean(updated) }
+      return {
+        updated: Boolean(updated),
+        ...(!updated
+          ? { skippedReason: precheckTemporaryUnavailableSkipReason(operation, authorizedTarget) ?? 'mutation_fence_conflict' }
+          : {})
+      }
     }
     case 'mark_account_temporary_unavailable': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
@@ -1391,7 +1527,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
           })
         : clearAccountFailureStateResult(operation.accountId, internalDbServiceAccountAccess, {
         allowPendingTestRestore: operation.allowPendingTestRestore,
-        allowErrorRestore: operation.allowErrorRestore
+        allowErrorRestore: operation.allowErrorRestore,
+        expectedLastErrorCodes: operation.expectedLastErrorCodes
         })
       if (result.changed) {
         clearGatewayRuntimeCacheLocal()
@@ -1449,7 +1586,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'record_cooldown_account_retest_success': {
       const result = recordCooldownAccountRetestSuccess(operation.accountId, {
         expectedConfigRevision: operation.expectedConfigRevision,
-        expectedObservationStartedAt: operation.expectedObservationStartedAt
+        expectedDispatchRevision: operation.expectedDispatchRevision,
+        expectedObservationStartedAt: operation.expectedObservationStartedAt,
+        expectedGeneration: operation.expectedGeneration,
+        expectedSourceConfigRevision: operation.expectedSourceConfigRevision
       })
       if (result.changed) clearGatewayRuntimeCacheLocal()
       return result
@@ -1474,16 +1614,27 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         maxedFailureCount: result.maxedFailureCount,
         observationStartedAt: result.observationStartedAt,
         observationElapsedSeconds: result.observationElapsedSeconds,
+        observationTimeoutSeconds: result.observationTimeoutSeconds,
+        transitionedToError: result.transitionedToError,
         errorCode: result.errorCode,
         errorMessage: result.errorMessage
       }
     }
     case 'defer_cooldown_account_retest':
-      return deferCooldownAccountRetest(operation.accountId, operation.delaySeconds)
+      return deferCooldownAccountRetest(operation.accountId, {
+        delaySeconds: operation.delaySeconds,
+        expectedConfigRevision: operation.expectedConfigRevision,
+        expectedDispatchRevision: operation.expectedDispatchRevision,
+        expectedObservationStartedAt: operation.expectedObservationStartedAt,
+        expectedGeneration: operation.expectedGeneration,
+        expectedSourceConfigRevision: operation.expectedSourceConfigRevision
+      })
     case 'mark_account_exception': {
       const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
         preserveDisabled: operation.preserveDisabled,
-        traceId: operation.traceId
+        traceId: operation.traceId,
+        expectedConfigRevision: operation.expectedConfigRevision,
+        expectedStatus: operation.expectedStatus
       })
       if (updated) {
         clearGatewayRuntimeCacheLocal()
@@ -1492,9 +1643,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'update_proxy_test_state': {
       const updated = updateProxyTestState(operation.proxyId, operation.input)
-      if (updated) {
-        clearGatewayRuntimeCacheLocal()
-      }
       return { updated: Boolean(updated), proxyStatus: updated?.testStatus }
     }
     case 'mark_all_group_account_stats_dirty':
@@ -1545,6 +1693,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { deleted: cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit) }
     case 'advance_account_circuit_dispatch_revision':
     case 'compare_and_set_account_circuit_incident':
+    case 'get_account_circuit_incident_by_scope_key':
     case 'claim_account_circuit_outbox':
     case 'ack_account_circuit_outbox':
     case 'release_account_circuit_outbox_for_replay':
@@ -1646,13 +1795,23 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
   }
 }
 
+function unauthorizedAccountApiKeyMutationResult(reason: string): { changed: false; skippedReason: string } {
+  return {
+    changed: false,
+    skippedReason: `unauthorized_account_api_key_mutation:${reason}`
+  }
+}
+
 function precheckTemporaryUnavailableSkipReason(
   operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>,
   authorizedTarget: ReturnType<typeof authorizedBindingRuntimeTarget>
 ): string | undefined {
   const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
   if (!Number.isFinite(startedAtMs)) {
-    return undefined
+    return 'invalid_precheck_fence'
+  }
+  if (!Number.isSafeInteger(operation.expectedDispatchRevision) || operation.expectedDispatchRevision < 1) {
+    return 'invalid_precheck_fence'
   }
   const state = getAccountPrecheckMutationState({
     accountId: operation.account.id,
@@ -1663,6 +1822,16 @@ function precheckTemporaryUnavailableSkipReason(
   }
   if (state.status === 'disabled' || state.status === 'error') {
     return 'hard_unavailable'
+  }
+  if (state.dispatchRevision !== operation.expectedDispatchRevision) {
+    return 'stale_dispatch_revision'
+  }
+  if (state.status !== operation.expectedStatus) {
+    return 'stale_account_status'
+  }
+  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? Date.parse(state.lastHealthSuccessAt) : NaN
+  if (Number.isFinite(lastHealthSuccessAtMs) && lastHealthSuccessAtMs >= startedAtMs) {
+    return 'newer_health_success'
   }
   if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
     return 'stale_account_updated'
@@ -1676,7 +1845,10 @@ async function precheckTemporaryUnavailableSkipReasonAsync(
 ): Promise<string | undefined> {
   const startedAtMs = operation.precheckStartedAt ? Date.parse(operation.precheckStartedAt) : NaN
   if (!Number.isFinite(startedAtMs)) {
-    return undefined
+    return 'invalid_precheck_fence'
+  }
+  if (!Number.isSafeInteger(operation.expectedDispatchRevision) || operation.expectedDispatchRevision < 1) {
+    return 'invalid_precheck_fence'
   }
   const state = await getAccountPrecheckMutationStateAsync({
     accountId: operation.account.id,
@@ -1687,6 +1859,16 @@ async function precheckTemporaryUnavailableSkipReasonAsync(
   }
   if (state.status === 'disabled' || state.status === 'error') {
     return 'hard_unavailable'
+  }
+  if (state.dispatchRevision !== operation.expectedDispatchRevision) {
+    return 'stale_dispatch_revision'
+  }
+  if (state.status !== operation.expectedStatus) {
+    return 'stale_account_status'
+  }
+  const lastHealthSuccessAtMs = state.lastHealthSuccessAt ? Date.parse(state.lastHealthSuccessAt) : NaN
+  if (Number.isFinite(lastHealthSuccessAtMs) && lastHealthSuccessAtMs >= startedAtMs) {
+    return 'newer_health_success'
   }
   if (state.updatedAt && Date.parse(state.updatedAt) > startedAtMs && state.updatedAt !== state.lastUsedAt) {
     return 'stale_account_updated'
@@ -1701,9 +1883,10 @@ function applyPrecheckErrorPolicyTarget(
   return authorizedTarget
     ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
         ...authorizedTarget,
-        reason: operation.reason
+        reason: operation.reason,
+        precheckGuard: precheckMutationGuard(operation)
       })
-    : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+    : markAccountTemporaryUnavailable(operation.account.id, operation.reason, undefined, undefined, precheckMutationGuard(operation))
 }
 
 async function applyPrecheckErrorPolicyTargetAsync(
@@ -1713,9 +1896,20 @@ async function applyPrecheckErrorPolicyTargetAsync(
   return authorizedTarget
     ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({
         ...authorizedTarget,
-        reason: operation.reason
+        reason: operation.reason,
+        precheckGuard: precheckMutationGuard(operation)
       })
-    : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason)
+    : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason, undefined, undefined, precheckMutationGuard(operation))
+}
+
+function precheckMutationGuard(
+  operation: Extract<DbServiceOperation, { type: 'mark_account_precheck_temporary_unavailable' }>
+) {
+  return {
+    expectedDispatchRevision: operation.expectedDispatchRevision,
+    expectedStatus: operation.expectedStatus,
+    precheckStartedAt: operation.precheckStartedAt
+  }
 }
 
 function recoverableUnavailableOpenAIAccounts(
@@ -1770,9 +1964,12 @@ function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
   if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
     return undefined
   }
+  const proxyResolution = account.proxyProfileId
+    ? resolveProxyUrlsForProfiles([account.proxyProfileId]).get(account.proxyProfileId)
+    : undefined
   return {
     ...account,
-    proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+    ...openAIOAuthRefreshProxyResolutionFields(account.proxyProfileId, proxyResolution)
   }
 }
 
@@ -1781,9 +1978,32 @@ async function findOpenAIOAuthAccountForRefreshAsync(accountId: string): Promise
   if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
     return undefined
   }
+  const proxyResolution = account.proxyProfileId
+    ? (await resolveProxyUrlsForProfilesAsync([account.proxyProfileId])).get(account.proxyProfileId)
+    : undefined
   return {
     ...account,
-    proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
+    ...openAIOAuthRefreshProxyResolutionFields(account.proxyProfileId, proxyResolution)
+  }
+}
+
+function openAIOAuthRefreshProxyResolutionFields(
+  proxyProfileId: string | undefined,
+  resolution: { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } | undefined
+): {
+    proxyUrl?: string
+    localConfigurationError?: {
+      code: 'oauth_proxy_configuration_invalid'
+      message: string
+    }
+  } {
+  if (!proxyProfileId) return {}
+  if (resolution?.proxyUrl) return { proxyUrl: resolution.proxyUrl }
+  return {
+    localConfigurationError: {
+      code: 'oauth_proxy_configuration_invalid',
+      message: resolution?.errorMessage ?? 'OpenAI OAuth 账户配置的代理不可用，请检查代理配置'
+    }
   }
 }
 

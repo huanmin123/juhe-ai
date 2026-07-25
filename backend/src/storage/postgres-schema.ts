@@ -31,6 +31,43 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
+    source: 'account-circuit-confirmation-pg-constraints',
+    sql: `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
+      AND conname = 'account_circuit_confirmation_failures_required_check'
+  ) THEN
+    ALTER TABLE account_circuit_incidents
+      ADD CONSTRAINT account_circuit_confirmation_failures_required_check
+      CHECK (confirmation_failures_required BETWEEN 1 AND 5);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
+      AND conname = 'account_circuit_confirmation_failure_count_check'
+  ) THEN
+    ALTER TABLE account_circuit_incidents
+      ADD CONSTRAINT account_circuit_confirmation_failure_count_check
+      CHECK (consecutive_failures <= confirmation_failures_required);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.account_circuit_incidents'::regclass
+      AND conname = 'account_circuit_confirmation_evidence_json_check'
+  ) THEN
+    ALTER TABLE account_circuit_incidents
+      ADD CONSTRAINT account_circuit_confirmation_evidence_json_check
+      CHECK (
+        jsonb_typeof(confirmation_failure_evidence_keys_json::jsonb) = 'array'
+        AND jsonb_array_length(confirmation_failure_evidence_keys_json::jsonb) <= confirmation_failures_required + 1
+      );
+  END IF;
+END $$`
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'api-keys-pg-prefix-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup ON api_keys((name COLLATE "C"), id)'
   },
@@ -369,6 +406,9 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   transformed = transformed.replace(/CHECK\s*\(\s*json_valid\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+AND\s+json_type\(\s*\1\s*\)\s*=\s*'(object|array)'\s*\)/gi, (_match, columnName: string, jsonType: string) => {
     return `CHECK (jsonb_typeof(${columnName}::jsonb) = '${jsonType.toLowerCase()}')`
   })
+  transformed = transformed.replace(/\bjson_array_length\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/gi, (_match, columnName: string) => {
+    return `jsonb_array_length(${columnName}::jsonb)`
+  })
   transformed = transformed.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s+COLLATE\s+NOCASE\b/gi, (_match, columnName: string) => {
     return `lower(${columnName})`
   })
@@ -387,6 +427,7 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
   transformed = transformChatMessagesTableForPostgres(transformed, schemaName)
   transformed = transformAccountRuntimeTablesForPostgres(transformed, schemaName)
+  transformed = transformProxyProfilesTableForPostgres(transformed, schemaName)
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')
   return transformed
@@ -421,6 +462,15 @@ function postgresTimestampColumns(sql: string, columnNames: string[]): string {
     )
   }
   return transformed
+}
+
+function transformProxyProfilesTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {
+  if (schemaName !== 'juhe_business') return sql
+  if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+proxy_profiles\s*\(/i.test(sql.trim())) return sql
+  return postgresTimestampColumns(
+    sql.replace(/\benabled\s+integer\s+NOT\s+NULL\s+DEFAULT\s+1\b/i, 'enabled boolean NOT NULL DEFAULT true'),
+    ['last_tested_at', 'created_at', 'updated_at']
+  )
 }
 
 function transformProviderModelCatalogTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {

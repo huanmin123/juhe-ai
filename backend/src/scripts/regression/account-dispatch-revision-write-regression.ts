@@ -115,16 +115,48 @@ try {
   const afterNotes = database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }
   assert.equal(afterNotes.dispatch_revision, 2, '非调度字段更新不得推进 dispatch revision')
 
+  repositories.updateAccount(account.id, {
+    credentials: {
+      ...account.credentials,
+      error_handling_rules: [{
+        enabled: true,
+        name: '用户显式策略',
+        priority: 1,
+        action: 'retry_next',
+        status_codes: [429]
+      }]
+    }
+  }, access)
+  const afterExplicitPolicy = database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }
+  assert.equal(afterExplicitPolicy.dispatch_revision, 2, '用户显式错误策略变化不得复活 OPEN 传输电路')
+
   repositories.updateAccount(account.id, { priority: 5 }, access)
   const afterPriority = database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }
-  assert.equal(afterPriority.dispatch_revision, 3, '优先级变化必须推进 dispatch revision')
-  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(authorizedInstance.id) as { dispatch_revision: number }).dispatch_revision, 2, '来源调度变化必须在同事务推进授权实例 revision')
-  assert.equal((await listAccountCircuitIncidentsForRebuild({ limit: 20 })).items.length, 0, 'revision 变化后旧 owner/authorized incident 不得被 rebuild 复活')
+  assert.equal(afterPriority.dispatch_revision, 2, '优先级变化不得清空传输故障电路')
+  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(authorizedInstance.id) as { dispatch_revision: number }).dispatch_revision, 1, '来源优先级变化不得推进授权实例电路 revision')
+
+  repositories.updateAccount(account.id, { concurrencyLimit: 9 }, access)
+  const afterConcurrency = database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }
+  assert.equal(afterConcurrency.dispatch_revision, 2, '并发上限变化不得清空传输故障电路')
+  assert.equal((await listAccountCircuitIncidentsForRebuild({ limit: 20 })).items.length, 2, '无关调度配置变化后 owner/authorized OPEN 必须仍可重建')
 
   repositories.updateAccount(account.id, { credentials: { api_key: 'sk-dispatch-revision-write-2', base_url: 'https://api.openai.com/v1' } }, access)
   const afterCredentials = database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }
-  assert.equal(afterCredentials.dispatch_revision, 4, '凭据变化必须推进 dispatch revision')
-  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(authorizedInstance.id) as { dispatch_revision: number }).dispatch_revision, 3, '来源凭据变化必须 fence 授权实例旧运行态')
+  assert.equal(afterCredentials.dispatch_revision, 3, '凭据变化必须推进电路 owner revision')
+  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(authorizedInstance.id) as { dispatch_revision: number }).dispatch_revision, 2, '来源凭据变化必须 fence 授权实例旧运行态')
+  assert.equal((await listAccountCircuitIncidentsForRebuild({ limit: 20 })).items.length, 0, '连接身份 revision 变化后旧 owner/authorized incident 不得被 rebuild 复活')
+
+  const proxy = repositories.createProxy({
+    name: 'dispatch revision proxy',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 17890,
+    enabled: true
+  }, access)
+  repositories.updateAccount(account.id, { proxyProfileId: proxy.id }, access)
+  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(account.id) as { dispatch_revision: number }).dispatch_revision, 4, '代理绑定变化必须创建新电路代')
+  assert.equal((database.prepare('SELECT dispatch_revision FROM accounts WHERE id = ?').get(authorizedInstance.id) as { dispatch_revision: number }).dispatch_revision, 3, '来源代理变化必须 fence 授权实例旧运行态')
+
   assert.equal((database.prepare("SELECT COUNT(*) AS count FROM account_circuit_outbox WHERE account_id = ? AND event_type = 'dispatch_revision_changed'").get(account.id) as { count: number }).count, 3)
   assert.equal((database.prepare("SELECT COUNT(*) AS count FROM account_circuit_outbox WHERE account_id = ? AND account_runtime_key = ? AND event_type = 'dispatch_revision_changed'").get(authorizedInstance.id, authorizedInstance.id) as { count: number }).count, 2, '授权实例必须获得自己的裸 ID revision outbox')
 

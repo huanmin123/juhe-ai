@@ -156,7 +156,7 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 - 验证本地 API Key 作为下游认证时，上游 `Authorization: Bearer <access_token>` 不会被 Anthropic 判定为第三方异常或拒绝。
 - 验证 OAuth 账号链路是否还需要额外 Claude Code OAuth 专属 header；API Key 路径只允许在 `claude_code` 客户端画像下补齐已验证的 Claude Code header / query。
 - 验证 access token 刷新、setup token 有效期、账号额度、会话限制、RPM 和风控失败是否能稳定归入现有账户错误处理策略。
-- 验证失败场景不能只靠状态码或错误类型判死账号，仍必须走统一确认、半开、冷却复测和并发归零流程。
+- 完整 HTTP 状态、错误类型和正文不能作为系统自动死亡证据；安全文本请求只做 opaque 请求级接管。只有本地 transport failure 才进入统一确认、半开、冷却复测和并发归零流程，用户显式策略另按声明动作执行。
 
 在新需求完成真实验证并重新设计前，前端不展示 Anthropic 订阅网页登录 OAuth 或 WIF。当前项目已开放官方 Bearer Token 型 `oauth` 账户导入与创建，但仍不新增订阅网页登录、Setup Token、Cookie / sessionKey 或其他私有登录代理运行路径。
 
@@ -335,8 +335,8 @@ Anthropic 非流式错误结构：
 
 - HTTP 状态码、`error.type`、错误文案和 `request_id` 只作为使用记录、审计、诊断摘要和账户错误处理策略输入。
 - 代码不得内置 `authentication_error = 账号异常`、`rate_limit_error = 账号限流`、`overloaded_error = 临时不可调用` 这类固定映射。
-- 通用 Anthropic 客户端的完整上游非 2xx 响应原样转发，不按状态或错误体切号；Claude Code 精确画像才允许按其协议语义和显式策略处理。transport / timeout 失败仍按“同账号确认 -> 切换其他账号 / 分组 -> 后台事前确认”的统一流程处理。
-- 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案，但命中结果只是待确认目标状态；真实网关流量不能绕过确认直接写 `temporary_unavailable`、`rate_limited` 或 `error`。
+- 通用 Anthropic 客户端不解释完整上游非 `2xx` 的状态或错误体；安全文本 Messages 请求只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，不写共享状态。Claude Code 精确画像才允许额外按声明的协议结构处理，用户显式策略按配置执行。transport / timeout 失败仍按“独立确认 -> 切换其他账号 / 分组 -> 后台事前确认”的统一流程处理。
+- 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案；这是账户所有者的显式管理意图，命中后按配置的 `retry_next`、TTL 避让或状态动作执行并保留来源，不走系统默认 transport 分类。只有 `retry_next` 表达重放意图，且副作用 POST 派发后仍受 at-most-once 门禁。
 - Anthropic `event: error`、缺少 `message_stop`、上游 EOF 或流式中断按流式失败流水线处理；是否写持久账号状态仍由确认阶段决定。
 - 最终返回给 Anthropic native 客户端的本地错误使用 Anthropic error shape，而不是 OpenAI error shape；所有候选账号耗尽时返回本地统一错误语义，不透传最后一个上游错误体作为权威结论。
 - `request-id` 响应头和 body 内 `request_id` 都应写入审计元数据，便于排障。
@@ -594,7 +594,7 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 - Anthropic 多 API Key 启用 Key 级运行态隔离，单 Key 失败不直接冷却整个账户。
 - 新增 Claude Code 客户端画像识别，显式 `x-juhe-client-profile: claude_code` 或官方 CLI 多信号影响本地画像、审计和上游请求头 / query 补齐；本地画像 header 不透传上游。
 - 新增 Anthropic native 返回适配器，负责 JSON / SSE 响应语义帧抽取、usage 解析、流内错误识别和本地错误渲染。
-- Anthropic 上游失败复用现有同账号确认、本地账号短期屏蔽、半开探测、事前确认、冷却复测和账户错误处理策略，不新增协议专属账号状态机。
+- Anthropic 不新增协议专属账号状态机：generic HTTP 状态、错误体和正文中断不产生共享账户/Key 状态；只有可重放文本主派发已开始、响应头前 transport failure 可以消费整请求安全原地重试 token，兄弟 Key 先行且不占 token。账户状态动作只来自用户显式策略或带独立 generation 的后台 transport 证据，半开探测和冷却复测继续复用通用流程。
 - Anthropic 使用记录明细当前落地 input / output / cache read / cache write / 1h cache / thinking tokens 和 `usage_semantic`；统计预聚合和授权消耗的新增维度需要后续 schema 与 worker 扩展。
 - Anthropic 模型目录和价格目录单独维护，成本估算按 `providerCode=anthropic` 查找。
 - 文档、导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明同步更新。
@@ -618,7 +618,7 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 - 流式响应能按 `message_start -> content_block_* -> message_delta -> message_stop` 增量转发，并正确处理 `ping` 和未知事件。
 - 流内 `event: error` 能进入统一上游失败链路。
 - `authentication_error`、`rate_limit_error`、`overloaded_error` 等 Anthropic 错误类型只进入审计和策略匹配输入，不能被代码直接写成异常、限流或临时不可调用。
-- 账户错误处理策略命中 Anthropic 错误类型后，只形成待确认目标；确认失败且当前账号并发归零后才允许写持久状态。
+- 账户错误处理策略命中 Anthropic 错误类型后，按用户显式 provenance / generation / CAS 直接执行配置动作，不等待系统自动 confirmation；未命中策略的完整 HTTP / 正文只作请求级 opaque 诊断。只有独立后台 transport 证据才进入自动确认；`retry_next` 仍受安全文本与副作用 at-most-once 门禁。
 - 尚未写出任何 SSE body 的流式失败可以服务端切号；已经写出任意 Anthropic SSE body 后不做静默拼接。
 - 模型不匹配、端点不支持、本地认证失败、额度不足和分组无可承接账号不写 Anthropic 账号状态。
 - 本地认证失败、分组无账号、端点能力不匹配和模型不匹配时返回 Anthropic error shape。

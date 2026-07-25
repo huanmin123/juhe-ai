@@ -177,6 +177,7 @@ export async function updateAccountsBatchAsync(input: {
             last_error_message = ?,
             cooldown_retest_failure_count = ?,
             cooldown_retest_observation_started_at = ?,
+            cooldown_retest_generation = NULL,
             cooldown_retest_last_at = ?,
             cooldown_retest_last_status_code = ?,
             health_check_model = ?,

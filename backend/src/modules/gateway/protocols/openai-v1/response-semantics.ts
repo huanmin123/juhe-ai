@@ -48,6 +48,7 @@ export interface ResponseSemanticFrame {
   stepIndex?: number
   contentIndex?: number
   visibleOutput?: boolean
+  provenance?: 'upstream' | 'gateway_protocol_contract'
 }
 
 export function openAIResponseEndpointFamilyFromRequest(req: Request): OpenAIResponseEndpointFamily {

@@ -5,6 +5,7 @@ import { bindRequestContextFields, logRequestStage } from '../../../shared/reque
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../../storage/repositories.js'
 import {
   listCachedActiveResponseInspectionPoliciesForAccountsAsync,
+  listCachedProviderModelCatalogAsync,
   listFreshOpenAIAccountsForGroupAsync,
   listCachedOpenAIAccountsForGroupAsync,
   listRecoverableUnavailableOpenAIAccountsForGroupAsync,
@@ -21,6 +22,8 @@ import {
   getGatewayRequestBodyState
 } from './body.js'
 import {
+  isOpenAIGatewayImageGenerationModel,
+  resolveOpenAIGatewayRequestLane,
   type OpenAIGatewayRequestLane
 } from '../protocols/openai-v1/request-lane.js'
 import {
@@ -106,7 +109,10 @@ import {
   consumeAuthenticatedModelsRateLimit,
   type AuthenticatedModelsRateLimitDecision
 } from '../runtime/authenticated-models-rate-limit.service.js'
-import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
+import {
+  normalRouteFirstByteDeadlineAppliesToLane,
+  normalRouteSpeedFirstAppliesToLane
+} from '../policy/speed-first-lane.js'
 import type { NormalRouteSpeedFirstRuntimeConfig } from '../runtime/normal-route-latency-degradation.service.js'
 import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import {
@@ -716,6 +722,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       return undefined
     }
     if (hybridRoute.outcome === 'selected') {
+      requestLane = resolveOpenAIGatewayRequestLane(req)
       apiKeyRecord = hybridRoute.apiKeyRecord
       groupId = hybridRoute.groupId
       identity = {
@@ -972,7 +979,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     apiKeyRecord: groupFallbackApiKeyRecord ?? apiKeyRecord,
     gatewayRequestWallBudget,
-    normalRouteFirstByteConfig: options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord),
+    normalRouteFirstByteConfig: normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+      ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+      : undefined,
     hybridRoute: selectedHybridRoute
   })
   let pendingRouteReason: string | undefined
@@ -1003,7 +1012,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     downstreamCommitState,
     routePlanSnapshot,
     interactionResourceAffinity,
-    normalRouteFirstByteConfig: options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+    normalRouteFirstByteConfig: normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+      ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+      : undefined
   })
   // Candidate and preparation layers only report route actions. The HTTP route
   // loop owns group switching and the eventual terminal response.
@@ -1011,10 +1022,24 @@ export async function prepareOpenAIGatewayDispatchContext(
     requestFallback: interactionResourceAffinity
       ? async () => ({ attempted: false })
       : async (reason) => {
-          const hasAnotherBoundGroup = apiKeyRecord?.group_bindings?.some((binding) => (
-            binding.status === 'active' && binding.group_id !== groupId
-          )) ?? false
-          if (!hasAnotherBoundGroup) {
+          // Only advertise fallback when the route plan still has a concrete
+          // later target. A previous group is not a fallback candidate: on the
+          // last group, capacity waiting must stay in this group so the
+          // high-concurrency queue can wake on a released account slot.
+          if (!canAttemptApiKeyGroupFallback(apiKeyRecord, groupId, routePlanSnapshot)) {
+            return { attempted: false }
+          }
+          const candidate = await resolveNextApiKeyGroupFallbackCandidate({
+            req,
+            reason,
+            apiKeyRecord,
+            systemAccountId,
+            groupId,
+            requestLane,
+            requestClientCompatibility: clientStrategy.requestClientCompatibility,
+            routePlanSnapshot
+          })
+          if (!candidate) {
             return { attempted: false }
           }
           pendingRouteReason = reason
@@ -1081,6 +1106,12 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (candidateFilter.outcome === 'completed') {
     return pendingRouteFailure ? buildRouteAction() : undefined
   }
+  if (
+    requestLane !== 'image'
+    && await accountModelMappingsTargetImage(req, candidateFilter.accounts, systemAccountId)
+  ) {
+    requestLane = 'image'
+  }
   const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
     req,
     res,
@@ -1106,8 +1137,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
-  const normalRouteFirstByteConfig = options.normalRouteFirstByteConfig
-    ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+  const normalRouteFirstByteConfig = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+    ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+    : undefined
   const normalRouteSpeedFirstConfig = normalRouteSpeedFirstAppliesToLane(requestLane)
     ? normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
     : undefined
@@ -1653,6 +1685,7 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   if (!override) return base
   return {
     gatewayTextRawBodyLimitMegabytes: override.gatewayTextRawBodyLimitMegabytes ?? base.gatewayTextRawBodyLimitMegabytes,
+    accountCircuitConfirmationFailuresRequired: override.accountCircuitConfirmationFailuresRequired ?? base.accountCircuitConfirmationFailuresRequired,
     defaultTemporaryUnschedulableMinutes: override.defaultTemporaryUnschedulableMinutes ?? base.defaultTemporaryUnschedulableMinutes,
     temporaryUnschedulableRetryIntervalSeconds: override.temporaryUnschedulableRetryIntervalSeconds ?? base.temporaryUnschedulableRetryIntervalSeconds,
     temporaryUnschedulableRetryAttempts: override.temporaryUnschedulableRetryAttempts ?? base.temporaryUnschedulableRetryAttempts,
@@ -1777,6 +1810,55 @@ function shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(input: 
     const mapping = resolveOpenAIAccountModelMapping(account, requestModel(input.req), sourceEndpointFamily)
     return mapping?.upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
   })
+}
+
+async function accountModelMappingsTargetImage(
+  req: Request,
+  accounts: UpstreamAccount[],
+  systemAccountId: string
+): Promise<boolean> {
+  const sourceEndpointFamily = gatewayRequestEndpointFamily(req)
+  const requestedModel = requestModel(req)
+  const mappedModelCatalogScopes = new Map<string, {
+    providerCode: string
+    systemAccountId: string
+    models: Set<string>
+  }>()
+  for (const account of accounts) {
+    const upstreamModel = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)?.upstreamModel
+    if (!upstreamModel) continue
+    if (isOpenAIGatewayImageGenerationModel(upstreamModel)) return true
+    const providerCode = account.providerCode.trim()
+    if (!providerCode) continue
+    const catalogOwnerSystemAccountId = account.accountOwnerSystemAccountId?.trim() || systemAccountId
+    const catalogScopeKey = `${providerCode}\u0000${catalogOwnerSystemAccountId}`
+    const scope = mappedModelCatalogScopes.get(catalogScopeKey) ?? {
+      providerCode,
+      systemAccountId: catalogOwnerSystemAccountId,
+      models: new Set<string>()
+    }
+    scope.models.add(upstreamModel.trim())
+    mappedModelCatalogScopes.set(catalogScopeKey, scope)
+  }
+  if (mappedModelCatalogScopes.size === 0) return false
+
+  const catalogs = await Promise.all([...mappedModelCatalogScopes.values()].map(async ({ providerCode, systemAccountId, models }) => ({
+    models,
+    items: await listCachedProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId,
+      includeUnpriced: true
+    })
+  })))
+  return catalogs.some(({ models, items }) => items.some((item) => (
+    models.has(item.model.trim())
+    && (
+      item.supportedApiProtocols.includes('images')
+      || item.outputModalities?.includes('image') === true
+      || item.imageOutputUsdPer1M !== undefined
+      || item.outputUsdPerImage !== undefined
+    )
+  )))
 }
 
 export function buildGatewayUsageContext(input: {

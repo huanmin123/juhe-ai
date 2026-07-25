@@ -11,7 +11,10 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { type AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
-import { waitForRecoverableUnavailableState } from '../../modules/gateway/runtime/recoverable-unavailable-wait.js'
+import {
+  RecoverableUnavailableWaitCoordinator,
+  waitForRecoverableUnavailableState
+} from '../../modules/gateway/runtime/recoverable-unavailable-wait.js'
 import { logger } from '../../shared/logger.js'
 
 interface MockUpstreamHit {
@@ -30,10 +33,13 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-recoverable-unavailable-mock
 runtimeConfig.databasePath = join(tempRoot, 'gateway-recoverable-unavailable-mock-ai.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
+runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
+runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.secret = 'gateway-recoverable-unavailable-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
+runtimeConfig.runtimeMode = 'standalone'
 runtimeConfig.cacheDriver = 'memory'
 runtimeConfig.runtimeStateDriver = 'memory'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
@@ -91,6 +97,7 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
     const localSuppression = createSingleAccountScenario('本地屏蔽恢复等待', 'sk-recoverable-local-suppression', upstreamBaseUrl)
+    const allRecoverableTimeout = createSingleAccountScenario('全池可恢复最大等待', 'sk-recoverable-max-wait', upstreamBaseUrl)
     const transportFailure = createSingleAccountScenario('传输失败直接交还客户端', 'sk-recoverable-transport-failure', upstreamBaseUrl)
     const persistentTransportFailure = createSingleAccountScenario('持续传输失败直接交还客户端', 'sk-recoverable-transport-always-fails', upstreamBaseUrl)
     const rateLimitedCooldown = createSingleAccountScenario('限流冷却恢复等待', 'sk-recoverable-rate-limited', upstreamBaseUrl)
@@ -103,6 +110,7 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertLocalSuppressionWaitsAndRecovers(baseUrl, localSuppression)
+    await assertAllRecoverableAccountsHonorMaxWait(baseUrl, allRecoverableTimeout)
     await assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, transportFailure)
     await assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, persistentTransportFailure)
     await assertRateLimitedCooldownWaitsAndRecovers(baseUrl, rateLimitedCooldown)
@@ -141,6 +149,19 @@ async function assertLocalSuppressionWaitsAndRecovers(baseUrl: string, scenario:
   assert(elapsedMs >= 900, `本地屏蔽恢复等待不应在释放前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `本地屏蔽恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-local-suppression'), ['Bearer sk-recoverable-local-suppression'])
+}
+
+async function assertAllRecoverableAccountsHonorMaxWait(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+  const startHitCount = upstreamHits.length
+  accountSideEffects.suppressGatewayAccountLocallyForTest(scenario.accountId, 30_000, 'mock ai 全池可恢复最大等待')
+  const startedAt = Date.now()
+  const response = await postChat(baseUrl, scenario.apiKey, 'all recoverable accounts should honor max wait')
+  const elapsedMs = Date.now() - startedAt
+  assert.equal(response.status, 503, `全池仅有尚未到期的可恢复账户时应交还客户端重试，实际 HTTP ${response.status}: ${response.text}`)
+  assert(elapsedMs >= 2_500, `全池可恢复等待不得立即失败，应消费约 3 秒短协调预算，实际 ${elapsedMs}ms`)
+  assert(elapsedMs < 6_000, `全池可恢复等待不得无界超过共享短协调上界，实际 ${elapsedMs}ms`)
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-max-wait'), [], '等待预算耗尽前账户未恢复时不得请求上游')
+  assert.match(response.text, /upstream_retryable_error/, `全池可恢复等待耗尽后应返回稳定可重试错误码，实际耗时 ${elapsedMs}ms`)
 }
 
 async function assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -250,6 +271,24 @@ async function assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl: string,
 }
 
 async function assertRecoverableWaitTimeoutBranch(): Promise<void> {
+  let nowMs = 1_000
+  interface FakeTimer { cancelled: boolean }
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    now: () => nowMs,
+    setTimer(callback, delayMs) {
+      const timer: FakeTimer = { cancelled: false }
+      queueMicrotask(() => {
+        if (timer.cancelled) return
+        nowMs += delayMs
+        callback()
+      })
+      return timer
+    },
+    clearTimer(timer) {
+      const fakeTimer = timer as FakeTimer
+      fakeTimer.cancelled = true
+    }
+  })
   const metadata: Array<{ label?: string; metadata: Record<string, unknown> }> = []
   const auditCapture = {
     addGatewayMetadata(input: { label?: string; metadata: Record<string, unknown> }) {
@@ -265,7 +304,10 @@ async function assertRecoverableWaitTimeoutBranch(): Promise<void> {
     nextRetryAfterMs: (state) => state.retryAfterMs,
     auditCapture,
     maxWaitMs: 140,
-    checkIntervalMs: 40
+    checkIntervalMs: 40,
+    requestStartedAtMs: nowMs,
+    coordinator,
+    now: () => nowMs
   })
   assert.equal(result.ready, false, '恢复等待 helper 超时分支不应返回 ready')
   assert.equal(result.timedOut, true, '恢复等待 helper 应标记 timedOut')

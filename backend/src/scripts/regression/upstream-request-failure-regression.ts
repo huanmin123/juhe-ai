@@ -34,6 +34,8 @@ const [
   gatewayCache,
   accountSideEffects,
   gatewayFailureDispatch,
+  gatewayHotQuality,
+  accountRuntimeKeys,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -45,6 +47,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/response/failure-dispatch.js'),
+  import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
+  import('../../modules/gateway/runtime/account-runtime-keys.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
@@ -81,6 +85,10 @@ async function main(): Promise<void> {
     const upstreamAuthorizations: string[] = []
     upstreamServer = http.createServer((req, res) => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      if (req.url?.includes('mock_side_effect_transport_drop=1')) {
+        req.socket.destroy()
+        return
+      }
       res.writeHead(422, {
         'content-type': 'application/json; charset=utf-8',
         'x-upstream-contract': 'opaque'
@@ -92,10 +100,17 @@ async function main(): Promise<void> {
 
     const opaqueGroup = repositories.createGroup({ name: '不透明非幂等失败回归分组', providerCode: 'gpt', enabled: true }, access)
     const opaqueAccounts = [
-      createAccount(opaqueGroup.id, '01-不透明失败账户', 'sk-opaque-failure-first', upstreamBaseUrl),
+      createAccount(opaqueGroup.id, '01-不透明失败账户', 'sk-opaque-failure-first', upstreamBaseUrl, true),
       createAccount(opaqueGroup.id, '02-不透明后备账户', 'sk-opaque-failure-fallback', upstreamBaseUrl)
     ]
     const opaqueApiKey = createRegressionApiKey(opaqueGroup.id, 'sk-opaque-request-failure-regression')
+
+    const sideEffectTransportGroup = repositories.createGroup({ name: '副作用传输失败不可重放分组', providerCode: 'gpt', enabled: true }, access)
+    const sideEffectTransportAccounts = [
+      createAccount(sideEffectTransportGroup.id, '01-副作用传输失败账户', 'sk-side-effect-transport-first', upstreamBaseUrl),
+      createAccount(sideEffectTransportGroup.id, '02-副作用传输失败后备账户', 'sk-side-effect-transport-fallback', upstreamBaseUrl)
+    ]
+    const sideEffectTransportApiKey = createRegressionApiKey(sideEffectTransportGroup.id, 'sk-side-effect-transport-regression')
 
     closedTransportServer = http.createServer()
     await listen(closedTransportServer)
@@ -125,21 +140,53 @@ async function main(): Promise<void> {
     assert.match(invalidJsonText, /请求体不是合法 JSON/)
     assert.equal(upstreamAuthorizations.length, invalidJsonHitsBefore, '无效 JSON 不应命中上游')
 
-    const opaqueResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const opaqueResponse = await fetch(`${baseUrl}/v1/audio/speech`, {
       method: 'POST',
       headers: { authorization: `Bearer ${opaqueApiKey.key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'opaque non-idempotent failure must not replay' }],
-        stream: false
+        purpose: 'assistants',
+        content: 'opaque resource creation failure must not replay'
       })
     })
     const opaqueResponseText = await opaqueResponse.text()
-    assert.equal(opaqueResponse.status, 422, `通用 POST 应原样返回首个完整上游非 2xx：${opaqueResponseText}`)
-    assert.equal(opaqueResponseText, opaqueFailureBody, '通用 POST 应保留不透明上游错误体')
-    assert.equal(opaqueResponse.headers.get('x-upstream-contract'), 'opaque', '通用 POST 应保留不透明上游响应头')
+    assert.equal(opaqueResponse.status, 503, `副作用 POST 的未知完整上游结果应返回稳定网关错误：${opaqueResponseText}`)
+    assert.match(opaqueResponseText, /upstream_outcome_unknown/, '副作用 POST 不得把供应商错误当作客户端重试语义')
+    assert.doesNotMatch(opaqueResponseText, /Invalid value for model level|invalid_request_error|422/, '副作用 POST 不得泄漏供应商状态或错误正文')
+    assert.equal(opaqueResponse.headers.get('x-upstream-contract'), null, '副作用 POST 不得泄漏不透明上游响应头')
     assert.deepEqual(upstreamAuthorizations, ['Bearer sk-opaque-failure-first'], '完整 HTTP 非 2xx 后不得换 Key 或跨账号重放 POST')
     assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
+    const opaqueAccount = opaqueAccounts[0]!
+    const opaqueQuality = await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
+      accountRuntimeKey: accountRuntimeKeys.gatewayAccountRuntimeKey(opaqueAccount),
+      protocolProfile: opaqueAccount.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+      requestLane: 'text',
+      modelFamily: gatewayHotQuality.gatewayHotQualityModelFamily('gpt-4o-mini')
+    })
+    assert.ok(opaqueQuality, '透明返回的非 2xx 也必须完成热质量 attempt 诊断闭环')
+    assert.equal(opaqueQuality.window5m.completedResponses, 0, '透明返回的非 2xx 不得记为 completed_response')
+    assert.equal(opaqueQuality.window5m.upstreamResponseFailures, 1, '透明返回的非 2xx 只能增加 opaque 诊断计数')
+    assert.equal(opaqueQuality.window5m.qualityAttempts, 0, 'opaque HTTP 不得进入跨请求 reliability 评分')
+    assert.equal(opaqueQuality.window5m.firstByteSampleCount, 0, 'opaque HTTP 不得进入跨请求速度评分')
+    assert.equal(opaqueQuality.window5m.lastFailureAtMs, undefined, 'opaque HTTP 不得改变候选探索的新鲜度排序')
+    assert.equal(opaqueQuality.sampleState, 'cold', '只有 opaque HTTP 诊断的账户必须保持 cold 中性状态')
+    assert.equal(opaqueQuality.effectiveReliability, 0.5, 'opaque HTTP 诊断不得偏移候选排序的中性可靠性')
+
+    const sideEffectTransportOffset = upstreamAuthorizations.length
+    const sideEffectTransportResponse = await fetch(`${baseUrl}/v1/audio/speech?mock_side_effect_transport_drop=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sideEffectTransportApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o-mini', input: 'already dispatched side effect must not replay' })
+    })
+    const sideEffectTransportText = await sideEffectTransportResponse.text()
+    assert.equal(sideEffectTransportResponse.status, 503, sideEffectTransportText)
+    assert.match(sideEffectTransportText, /upstream_outcome_unknown/)
+    assert.deepEqual(
+      upstreamAuthorizations.slice(sideEffectTransportOffset),
+      ['Bearer sk-side-effect-transport-first'],
+      'audio/files 等副作用 POST 一旦 dispatch，transport 失败不得自动换 Key 或账户重放'
+    )
+    assertAccountsRemainAvailable(sideEffectTransportAccounts, '副作用 transport 失败')
 
     const transportResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -158,7 +205,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：通用 POST 完整非 2xx 原样返回且不重放，传输失败保持请求级并返回统一可重试错误，失败不会污染账户状态')
+    console.log('上游请求失败回归通过：副作用 POST 的完整非 2xx/transport 均不重放且不泄漏，安全推理传输失败保持请求级切号，失败不改业务账户状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -176,13 +223,26 @@ async function main(): Promise<void> {
   }
 }
 
-function createAccount(groupId: string, name: string, apiKey: string, baseUrl: string) {
+function createAccount(groupId: string, name: string, apiKey: string, baseUrl: string, withBodyConstrainedRule = false) {
   const account = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name,
     type: 'api_key',
-    credentials: { api_key: apiKey, base_url: baseUrl },
+    credentials: {
+      api_key: apiKey,
+      base_url: baseUrl,
+      error_handling_rules: withBodyConstrainedRule
+        ? [{
+            enabled: true,
+            name: '仅匹配用户指定正文',
+            priority: 1,
+            status_codes: [422],
+            keywords: ['configured-body-marker'],
+            action: 'retry_next'
+          }]
+        : undefined
+    },
     groupId,
     supportedModels: ['gpt-4o-mini'],
     status: 'active',

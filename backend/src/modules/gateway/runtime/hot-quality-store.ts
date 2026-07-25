@@ -14,6 +14,7 @@ export interface HotQualityScope {
 
 export type HotQualityTerminalOutcomeClass =
   | 'completed_response'
+  | 'upstream_response_failure'
   | 'explicit_policy_failure'
   | 'transport_failure'
   | 'timeout'
@@ -23,7 +24,7 @@ export type HotQualityTerminalOutcomeClass =
   | 'client_cancellation'
 
 export type HotQualityFailureScope = 'none' | 'key' | 'protocol_model' | 'account' | 'upstream_bucket'
-export type HotQualityTerminalSource = 'gateway_transport' | 'explicit_policy' | 'request_lifecycle'
+export type HotQualityTerminalSource = 'gateway_transport' | 'upstream_response' | 'explicit_policy' | 'request_lifecycle'
 
 export interface HotQualityTerminalRecord {
   terminalOutcomeId: string
@@ -38,6 +39,7 @@ export type HotQualityFirstByteHistogram = readonly [number, number, number, num
 export interface HotQualityCounters {
   attempts: number
   completedResponses: number
+  upstreamResponseFailures: number
   localTransportFailures: number
   timeouts: number
   readInterruptions: number

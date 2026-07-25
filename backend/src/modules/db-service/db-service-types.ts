@@ -1,10 +1,11 @@
-import type { AccountRuntimeProbePresentation, AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
+import type { AccountRuntimeProbePresentation, AccountStatus, AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
+import type { ProxyTestStateUpdateInput } from '../../storage/proxy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type {
   BackgroundDatasetWriteOperation,
@@ -17,6 +18,7 @@ import type {
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
 import type { RequestQuotaCosts } from '../gateway/quota/request-quota-checker.js'
 import type { AccountErrorHandlingResult, AccountErrorPolicyDecision, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
+import type { AccountApiKeyPersistentMutationContext } from '../gateway/runtime/account-api-key-mutation-authority.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
@@ -440,8 +442,12 @@ export interface DbServiceGatewayRuntime {
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
 }
 
-export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode'> & {
+export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId' | 'lastErrorCode' | 'configRevision'> & {
   proxyUrl?: string
+  localConfigurationError?: {
+    code: 'oauth_proxy_configuration_invalid'
+    message: string
+  }
 }
 
 export type DbServiceOperation =
@@ -603,6 +609,15 @@ export type DbServiceOperation =
     type: 'update_openai_oauth_credentials'
     accountId: string
     credentials: Record<string, unknown>
+    expectedConfigRevision: number
+  }
+  | {
+    type: 'mark_openai_oauth_local_configuration_exception'
+    accountId: string
+    errorCode: string
+    reason: string
+    expectedConfigRevision: number
+    expectedStatus: 'active'
   }
   | {
     type: 'find_openai_oauth_account_for_refresh'
@@ -624,6 +639,8 @@ export type DbServiceOperation =
       bodyText?: string
       errorMessage?: string
       traceId?: string
+      observedAt?: string
+      dispatchRevision?: number
       settings?: GatewaySettings
       trafficSource?: OpenAIGatewayTrafficSource
       policyDecision?: AccountErrorPolicyDecision
@@ -632,21 +649,50 @@ export type DbServiceOperation =
   | {
     type: 'record_account_api_key_failure'
     account: OpenAIAccountSecret
-      input: {
-        status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-        statusCode?: number
-        errorCode?: string
-        errorMessage?: string
-        traceId?: string
-        cooldownUntil?: string
-        observedAt?: string
-      }
+    trafficSource: OpenAIGatewayTrafficSource
+    mutationContext: AccountApiKeyPersistentMutationContext
+    input: {
+      status?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+      statusCode?: number
+      errorCode?: string
+      errorMessage?: string
+      traceId?: string
+      cooldownUntil?: string
+      observedAt?: string
+      expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+      expectedNextProbeAt?: string
+      expectedStateUpdatedAt?: string
+      expectedAccountConfigRevision?: number
+      expectedProbeClaimToken?: string
     }
-    | {
-      type: 'record_account_api_key_success'
-      account: OpenAIAccountSecret
+  }
+  | {
+    type: 'record_account_api_key_success'
+    account: OpenAIAccountSecret
+    trafficSource: OpenAIGatewayTrafficSource
+    mutationContext: AccountApiKeyPersistentMutationContext
+    observedAt?: string
+    expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+    expectedNextProbeAt?: string
+    expectedStateUpdatedAt?: string
+    expectedAccountConfigRevision?: number
+    expectedProbeClaimToken?: string
+  }
+  | {
+    type: 'defer_account_api_key_probe'
+    account: OpenAIAccountSecret
+    trafficSource: OpenAIGatewayTrafficSource
+    mutationContext: AccountApiKeyPersistentMutationContext
+    input: {
+      expectedStatus: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+      expectedNextProbeAt?: string
+      expectedStateUpdatedAt?: string
+      expectedAccountConfigRevision?: number
+      expectedProbeClaimToken?: string
+      delaySeconds: number
       observedAt?: string
     }
+  }
   | {
     type: 'record_account_stream_failure'
     input: {
@@ -668,7 +714,9 @@ export type DbServiceOperation =
     type: 'mark_account_precheck_temporary_unavailable'
     account: OpenAIAccountSecret
     reason: string
-    precheckStartedAt?: string
+    precheckStartedAt: string
+    expectedDispatchRevision: number
+    expectedStatus: AccountStatus
   }
   | {
     type: 'mark_account_temporary_unavailable'
@@ -681,6 +729,7 @@ export type DbServiceOperation =
     accountId: string
     allowPendingTestRestore?: boolean
     allowErrorRestore?: boolean
+    expectedLastErrorCodes?: string[]
     expectedConfigRevision?: number
     expectedCooldownRetestObservationStartedAt?: string
     authorizedBinding?: {
@@ -788,12 +837,20 @@ export type DbServiceOperation =
     type: 'record_cooldown_account_retest_success'
     accountId: string
     expectedConfigRevision: number
-    expectedObservationStartedAt?: string
+    expectedDispatchRevision: number
+    expectedObservationStartedAt: string
+    expectedGeneration: string
+    expectedSourceConfigRevision?: number
   }
   | {
     type: 'defer_cooldown_account_retest'
     accountId: string
     delaySeconds?: number
+    expectedConfigRevision: number
+    expectedDispatchRevision: number
+    expectedObservationStartedAt: string
+    expectedGeneration: string
+    expectedSourceConfigRevision?: number
   }
   | {
     type: 'record_cooldown_account_retest_failure'
@@ -803,10 +860,16 @@ export type DbServiceOperation =
       statusCode?: number
       errorCode?: string
       errorMessage?: string
-      expectedConfigRevision?: number
-      expectedObservationStartedAt?: string
+      expectedConfigRevision: number
+      expectedDispatchRevision: number
+      expectedObservationStartedAt: string
+      expectedGeneration: string
+      expectedSourceConfigRevision?: number
+      initialBackoffSeconds?: number
+      fastThresholdSeconds?: number
       maxPauseMinutes?: number
       maxRecoveryHours?: number
+      backoffMultiplier?: number
     }
   }
   | {
@@ -816,18 +879,13 @@ export type DbServiceOperation =
     reason: string
     preserveDisabled?: boolean
     traceId?: string
+    expectedConfigRevision?: number
+    expectedStatus?: import('../../domain/types.js').AccountStatus
   }
   | {
     type: 'update_proxy_test_state'
     proxyId: string
-    input: {
-      testStatus: string
-      latencyMs?: number | null
-      outboundIp?: string | null
-      outboundRegion?: string | null
-      lastTestMessage?: string | null
-      lastTestedAt?: string
-    }
+    input: ProxyTestStateUpdateInput
   }
   | {
     type: 'mark_all_group_account_stats_dirty'
@@ -870,6 +928,10 @@ export type DbServiceOperation =
     input: CompareAndSetAccountCircuitIncidentInput
   }
   | {
+    type: 'get_account_circuit_incident_by_scope_key'
+    circuitScopeKey: string
+  }
+  | {
     type: 'claim_account_circuit_outbox'
     ownerId: string
     nowMs?: number
@@ -901,6 +963,8 @@ export type DbServiceOperation =
   | {
     type: 'list_account_circuit_incidents_by_runtime_keys'
     accountRuntimeKeys: string[]
+    includeRetainedClosed?: boolean
+    nowMs?: number
   }
   | {
     type: 'list_account_circuit_projection_gaps'
@@ -1051,10 +1115,12 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :
   T extends { type: 'find_openai_oauth_account_for_refresh' } ? DbServiceOpenAIOAuthRefreshAccount | undefined :
+  T extends { type: 'mark_openai_oauth_local_configuration_exception' } ? { updated: boolean } :
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_api_key_failure' } ? { changed: boolean; skippedReason?: string } :
   T extends { type: 'record_account_api_key_success' } ? { changed: boolean; skippedReason?: string } :
+  T extends { type: 'defer_account_api_key_probe' } ? { changed: boolean; skippedReason?: string } :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'mark_account_precheck_temporary_unavailable' } ? { updated: boolean; skippedReason?: string } :
   T extends { type: 'mark_account_temporary_unavailable' } ? { updated: boolean } :
@@ -1084,6 +1150,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'cleanup_expired_system_sessions' } ? { deleted: number } :
   T extends { type: 'advance_account_circuit_dispatch_revision' } ? AdvanceAccountCircuitDispatchRevisionResult :
   T extends { type: 'compare_and_set_account_circuit_incident' } ? CompareAndSetAccountCircuitIncidentResult :
+  T extends { type: 'get_account_circuit_incident_by_scope_key' } ? AccountCircuitIncidentRecord | undefined :
   T extends { type: 'claim_account_circuit_outbox' } ? AccountCircuitOutboxRecord[] :
   T extends { type: 'ack_account_circuit_outbox' } ? { acknowledged: boolean } :
   T extends { type: 'release_account_circuit_outbox_for_replay' } ? { released: boolean } :

@@ -375,6 +375,7 @@ function snapshot(
   const counters = {
     attempts: qualityAttempts10m,
     completedResponses: qualityAttempts10m,
+    upstreamResponseFailures: 0,
     localTransportFailures: 0,
     timeouts: 0,
     readInterruptions: 0,

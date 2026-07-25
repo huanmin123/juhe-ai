@@ -78,7 +78,7 @@ try {
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async () => {
     throw new Error('模拟刷新失败 Authorization: Bearer oauth-refresh-bearer-token sk-oauth-refresh-secret-token refresh_token=oauth-refresh-token-secret client_secret=oauth-refresh-client-secret proxy=https://oauth-refresh-proxy-user:oauth-refresh-proxy-password@example.com')
   })
-  const failedAccount = await createOAuthAccount('连续失败账户', 'fail-token', new Date(Date.now() - 60_000).toISOString(), group.id, undefined)
+  const failedAccount = await createOAuthAccount('不可信上游连续失败账户', 'fail-token', new Date(Date.now() - 60_000).toISOString(), group.id, undefined)
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const failedResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
       leadSeconds: 300,
@@ -88,17 +88,38 @@ try {
       accountIds: [failedAccount.id]
     })
     assert.equal(failedResult.failed, 1, `第 ${attempt} 次 PG OAuth 刷新应记录 1 个失败`)
-    assert.equal(failedResult.exceptioned, attempt === 3 ? 1 : 0, `第 ${attempt} 次 PG OAuth 异常标记数量不正确`)
+    assert.equal(failedResult.exceptioned, 0, `第 ${attempt} 次 PG OAuth 不可信上游失败不得标记账户异常`)
   }
   const failedLatest = await findAccountForTestAsync(failedAccount.id, access)
-  assert.equal(failedLatest?.status, 'error', 'PG OAuth 连续失败 3 次后应标记 error')
-  assert.equal(failedLatest?.lastErrorCode, oauthRefreshService.OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE, 'PG OAuth 连续失败应写入固定错误码')
-  assertErrorMessageRedacted(failedLatest?.lastErrorMessage)
+  assert.equal(failedLatest?.status, 'active', 'PG OAuth 不可信上游连续失败不得改变账户状态')
+  assert.equal(failedLatest?.schedulable, true, 'PG OAuth 不可信上游连续失败不得改变调度资格')
+  assert.equal(failedLatest?.lastErrorCode, undefined, 'PG OAuth 不可信上游连续失败不得写账户错误码')
+
+  oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async () => {
+    throw new oauthRefreshService.OpenAIOAuthRefreshLocalConfigurationError('本地 OAuth 代理配置无法解析')
+  })
+  const localConfigurationAccount = await createOAuthAccount('本地配置连续失败账户', 'local-fail-token', new Date(Date.now() - 60_000).toISOString(), group.id, undefined)
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const failedResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
+      leadSeconds: 300,
+      batchSize: 20,
+      retryBackoffSeconds: 0,
+      persistMode: 'db-service',
+      accountIds: [localConfigurationAccount.id]
+    })
+    assert.equal(failedResult.failed, 1, `第 ${attempt} 次 PG OAuth 本地配置错误应记录 1 个失败`)
+    assert.equal(failedResult.exceptioned, attempt === 3 ? 1 : 0, `第 ${attempt} 次 PG OAuth 本地配置异常标记数量不正确`)
+  }
+  const localConfigurationLatest = await findAccountForTestAsync(localConfigurationAccount.id, access)
+  assert.equal(localConfigurationLatest?.status, 'error', 'PG OAuth 连续本地配置错误应标记 error')
+  assert.equal(localConfigurationLatest?.lastErrorCode, oauthRefreshService.OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE, 'PG OAuth 本地配置错误应写入专用错误码')
+  assertLocalConfigurationErrorMessage(localConfigurationLatest?.lastErrorMessage)
 
   console.log(JSON.stringify({
     message: 'OpenAI OAuth access token refresh PG smoke 通过',
     refreshed: successResult.refreshed,
-    failureExceptioned: true,
+    untrustedFailureNeutral: true,
+    localConfigurationExceptioned: true,
     explainIndexed: true
   }))
 } finally {
@@ -147,18 +168,9 @@ async function createOAuthAccount(
   return { id: account.id }
 }
 
-function assertErrorMessageRedacted(message: string | undefined): void {
+function assertLocalConfigurationErrorMessage(message: string | undefined): void {
   assert(message?.includes('已停止自动刷新'), `PG OAuth 错误信息缺少停止自动刷新说明：${message ?? ''}`)
-  for (const secret of [
-    'oauth-refresh-bearer-token',
-    'sk-oauth-refresh-secret-token',
-    'oauth-refresh-token-secret',
-    'oauth-refresh-client-secret',
-    'oauth-refresh-proxy-user',
-    'oauth-refresh-proxy-password'
-  ]) {
-    assert(!message?.includes(secret), `PG OAuth 错误信息不应包含敏感片段：${secret}`)
-  }
+  assert(message?.includes('本地配置错误'), `PG OAuth 错误信息必须明确证据来自本地配置：${message ?? ''}`)
 }
 
 async function assertOAuthRefreshDueExplainUsesIndex(): Promise<void> {
@@ -175,8 +187,8 @@ async function assertOAuthRefreshDueExplainUsesIndex(): Promise<void> {
         AND deleted_at IS NULL
         AND provider_protocol_profile_id = $1
         AND type = 'oauth'
-        AND oauth_refresh_token_present = 1
-        AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> 'oauth_token_refresh_failed')
+        AND oauth_refresh_token_present IN (0, 1)
+        AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> 'oauth_token_refresh_local_configuration_invalid')
         AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= $2)
       ORDER BY (oauth_access_token_expires_at IS NOT NULL) ASC,
         oauth_access_token_expires_at ASC,

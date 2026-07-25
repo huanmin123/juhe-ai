@@ -52,7 +52,8 @@ const [
   usageRecordQueue,
   auditLogQueue,
   accountImportService,
-  accountExportService
+  accountExportService,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -63,11 +64,13 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/accounts/account-import.service.js'),
-  import('../../modules/accounts/account-export.service.js')
+  import('../../modules/accounts/account-export.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: MockGlmHit[] = []
+const glmOpaqueFinishReasons = ['sensitive', 'network_error', 'model_context_window_exceeded'] as const
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -144,7 +147,9 @@ try {
       expectedAuthorization: 'Bearer sk-glm-coding-upstream',
       expectedContent: 'glm mock sse ok'
     })
+    await assertGlmOpaqueFinishReasons(baseUrl, general.localApiKey, coding.localApiKey)
     await assertGlmCodingResponsesBridge(baseUrl, coding.localApiKey)
+    await assertGlmCodingResponsesBridgeTreatsProviderFinishReasonsAsOpaque(baseUrl, coding.localApiKey)
     await assertGlmCodingRejectsResponsesBridge(baseUrl, codingOpenAIStandard.localApiKey)
     await assertGlmJsonErrorSuppressesAndRecovers(baseUrl, failover.localApiKey, failover.rescueAccountId)
     await assertGlmRejectsResponses(baseUrl, general.localApiKey)
@@ -160,8 +165,9 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRootWithRetry()
 }
 
 function assertGlmSeeds(): void {
@@ -253,13 +259,14 @@ function createGlmScenario(input: {
       api_key: input.upstreamApiKey,
       base_url: input.baseUrl
     },
-    supportedModels: input.supportedModels,
+    supportedModels: input.supportedModels ?? ['glm-4.7-flash'],
     modelMappings: input.modelMappings,
     groupId: group.id,
     status: 'active',
     priority: 0,
     schedulable: true
   }, access)
+  activateFixtureAccount(account.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: input.localApiKeyName,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -275,7 +282,7 @@ function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; resc
     providerCode: GLM_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const primaryAccount = repositories.createAccount({
     providerCode: GLM_PROVIDER_CODE,
     providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
     name: 'GLM Mock 错误主账户',
@@ -284,11 +291,13 @@ function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; resc
       api_key: 'sk-glm-error-primary',
       base_url: baseUrl
     },
+    supportedModels: ['glm-4.7-flash'],
     groupId: group.id,
     status: 'active',
     priority: 0,
     schedulable: true
   }, access)
+  activateFixtureAccount(primaryAccount.id)
   const rescueAccount = repositories.createAccount({
     providerCode: GLM_PROVIDER_CODE,
     providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
@@ -301,7 +310,8 @@ function createGlmFailoverScenario(baseUrl: string): { localApiKey: string; resc
     groupId: group.id,
     status: 'disabled',
     priority: 100,
-    schedulable: false
+    schedulable: false,
+    supportedModels: ['glm-4.7-flash']
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'GLM Mock 错误切号 Key',
@@ -432,6 +442,7 @@ async function assertGlmJsonErrorSuppressesAndRecovers(baseUrl: string, localApi
     status: 'active',
     schedulable: true
   }, access)
+  activateFixtureAccount(rescueAccountId)
   const recoveryStart = upstreamHits.length
   const recoveryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -449,8 +460,9 @@ async function assertGlmJsonErrorSuppressesAndRecovers(baseUrl: string, localApi
   assert.equal(recoveryResponse.status, 200, `GLM 主账号失败后应避让并恢复到备用账号，实际 HTTP ${recoveryResponse.status}: ${recoveryText}`)
   assert.match(recoveryText, /glm mock json ok/)
   assert.deepEqual(upstreamHits.slice(recoveryStart).map((hit) => hit.authorization), [
+    'Bearer sk-glm-error-primary',
     'Bearer sk-glm-error-rescue'
-  ], 'GLM 恢复请求应避开刚失败的主账号并命中备用账号')
+  ], '新请求不得继承未知 HTTP 失败形成的共享避让，应重新选择主账号并在本请求内切到备用账号')
 }
 
 async function assertGlmChatJson(input: {
@@ -475,7 +487,7 @@ async function assertGlmChatJson(input: {
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `GLM Chat JSON 应成功，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.status, 200, `GLM Chat JSON 应成功，实际 HTTP ${response.status}: ${text}; 上游命中: ${JSON.stringify(upstreamHits.slice(start))}`)
   assert.match(text, new RegExp(input.expectedContent))
   const hits = upstreamHits.slice(start)
   assert.equal(hits.length, 1, 'GLM Chat JSON 应只命中一次上游')
@@ -569,6 +581,61 @@ async function assertGlmCodingResponsesBridge(baseUrl: string, localApiKey: stri
   assert.equal(upstreamBody.stream, true, 'GLM Responses -> Chat bridge 必须使用上游 Chat SSE')
 }
 
+async function assertGlmOpaqueFinishReasons(baseUrl: string, jsonApiKey: string, sseApiKey: string): Promise<void> {
+  for (const finishReason of glmOpaqueFinishReasons) {
+    for (const stream of [false, true]) {
+      const start = upstreamHits.length
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${stream ? sseApiKey : jsonApiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: stream ? 'glm-5.2' : 'glm-4.7-flash',
+          messages: [{ role: 'user', content: `glm opaque finish ${finishReason}` }],
+          stream
+        })
+      })
+      const text = await response.text()
+      assert.equal(response.status, 200, `GLM ${stream ? 'SSE' : 'JSON'} ${finishReason} 应保持完整响应：${text}`)
+      assert.match(text, new RegExp(`"finish_reason"\\s*:\\s*"${finishReason}"`), `GLM ${stream ? 'SSE' : 'JSON'} 应原样透传 ${finishReason}`)
+      assert(!text.includes('response.failed'), `GLM ${stream ? 'SSE' : 'JSON'} ${finishReason} 不应合成失败事件`)
+      assert(!text.includes('upstream_retryable_error'), `GLM ${stream ? 'SSE' : 'JSON'} ${finishReason} 不应合成可重试错误`)
+      assert(!text.includes('content_filter'), `GLM ${stream ? 'SSE' : 'JSON'} ${finishReason} 不应合成内容过滤错误`)
+      assert.equal(upstreamHits.length, start + 1, `GLM ${stream ? 'SSE' : 'JSON'} ${finishReason} 应只命中一次上游`)
+    }
+  }
+}
+
+async function assertGlmCodingResponsesBridgeTreatsProviderFinishReasonsAsOpaque(baseUrl: string, localApiKey: string): Promise<void> {
+  for (const finishReason of glmOpaqueFinishReasons) {
+    const start = upstreamHits.length
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json',
+        accept: 'text/event-stream'
+      },
+      body: JSON.stringify({
+        model: 'glm-5.2',
+        input: `glm bridge opaque finish ${finishReason}`,
+        stream: true,
+        store: false
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `GLM bridge ${finishReason} 应保持完整 SSE 响应：${text}`)
+    assert.match(text, /event: response\.completed/, `GLM bridge ${finishReason} 只应作为不透明终止值完成`)
+    assert(!text.includes('event: response.failed'), `GLM bridge ${finishReason} 不应合成失败事件`)
+    assert(!text.includes('upstream_retryable_error'), `GLM bridge ${finishReason} 不应合成可重试错误`)
+    assert(!text.includes('content_filter'), `GLM bridge ${finishReason} 不应合成内容过滤错误`)
+    assert(!text.includes('context_length_exceeded'), `GLM bridge ${finishReason} 不应合成上下文错误`)
+    assert.equal(upstreamHits.length, start + 1, `GLM bridge ${finishReason} 应只命中一次上游`)
+  }
+}
+
 async function assertGlmCodingRejectsResponsesBridge(baseUrl: string, localApiKey: string): Promise<void> {
   const start = upstreamHits.length
   const response = await fetch(`${baseUrl}/v1/responses`, {
@@ -633,6 +700,16 @@ function createGlmMockUpstream(): http.Server {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache'
         })
+        const opaqueFinishReason = glmOpaqueFinishReasons.find((finishReason) => bodyText.includes(`opaque finish ${finishReason}`))
+        if (opaqueFinishReason) {
+          res.write(`data: ${JSON.stringify({
+            id: 'chatcmpl-glm-opaque-sse',
+            object: 'chat.completion.chunk',
+            choices: [{ index: 0, delta: {}, finish_reason: opaqueFinishReason }]
+          })}\n\n`)
+          res.end('data: [DONE]\n\n')
+          return
+        }
         res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"glm mock reasoning"},"finish_reason":null}]}\n\n')
         res.write('data: {"id":"chatcmpl-glm-mock-sse","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"glm mock sse ok"},"finish_reason":null}]}\n\n')
         if (Array.isArray(requestBody.tools)) {
@@ -643,6 +720,7 @@ function createGlmMockUpstream(): http.Server {
         return
       }
 
+      const opaqueFinishReason = glmOpaqueFinishReasons.find((finishReason) => bodyText.includes(`opaque finish ${finishReason}`))
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
         id: 'chatcmpl-glm-mock-json',
@@ -651,7 +729,7 @@ function createGlmMockUpstream(): http.Server {
           {
             index: 0,
             message: { role: 'assistant', content: 'glm mock json ok' },
-            finish_reason: 'stop'
+            finish_reason: opaqueFinishReason ?? 'stop'
           }
         ],
         usage: {
@@ -696,4 +774,35 @@ function closeServer(server: http.Server | undefined): Promise<void> {
       else resolvePromise()
     })
   })
+}
+
+async function removeTempRootWithRetry(): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100 * (attempt + 1)))
+    }
+  }
+  if (
+    lastError
+    && typeof lastError === 'object'
+    && 'code' in lastError
+    && (lastError.code === 'EBUSY' || lastError.code === 'EPERM')
+  ) {
+    return
+  }
+  throw lastError
+}
+
+function activateFixtureAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `测试账户 ${accountId} 应通过后台检查激活`)
 }

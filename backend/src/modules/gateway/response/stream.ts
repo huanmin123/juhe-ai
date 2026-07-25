@@ -13,7 +13,14 @@ import {
   UpstreamRequestAbortedError
 } from '../upstream/request.js'
 import { GatewayFirstByteTimeoutError, isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
-import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
+import {
+  decideFirstByteDeadlineAfterPendingRead,
+  GatewayResponsePrecommitDeadlineError,
+  isGatewayResponsePrecommitDeadlineError,
+  observeFirstBytePendingRead,
+  type FirstByteDeadlineAction,
+  type FirstByteDeadlineHandler
+} from '../upstream/first-byte-deadline.js'
 import {
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
@@ -92,7 +99,9 @@ export interface StreamPipeOptions {
   endpointFamily?: ResponseEndpointFamily
   firstByteTimeoutMs?: number
   firstByteDeadlineMs?: number
+  responsePrecommitDeadlineAtMs?: number
   onFirstByteDeadline?: FirstByteDeadlineHandler
+  onFirstByteDeadlineSuperseded?: () => void
   prepareDownstream?: () => void
   beforeDownstreamCommit?: (input: { responseResourceId?: string }) => Promise<void>
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
@@ -115,6 +124,17 @@ class StreamBeforeDownstreamCommitError extends Error {
     super('流式响应下游提交前准备失败')
     this.name = 'StreamBeforeDownstreamCommitError'
   }
+}
+
+interface StreamFirstByteDeadlineReadDecision {
+  action?: FirstByteDeadlineAction
+  decisionError?: unknown
+}
+
+interface StreamChunkReadResult {
+  result: IteratorResult<Uint8Array>
+  firstByteDeadlineObserved: boolean
+  firstByteDeadlineReadDecision?: StreamFirstByteDeadlineReadDecision
 }
 
 export async function pipeUpstreamStream(
@@ -193,10 +213,9 @@ export async function pipeUpstreamStream(
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
-  // Protocol events only become control actions through an explicit runtime
-  // inspection policy. A precise client profile alone must not reinterpret an
-  // unknown vendor failure event.
-  const interpretedProtocolFailure = (_inspection: GatewayStreamInspection) => false
+  // A protocol-declared failure terminal is a framing fact, not a claim about
+  // the provider-specific code or message carried inside it.
+  const interpretedProtocolFailure = (inspection: GatewayStreamInspection) => inspection.failedReceived
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
   const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : streamDiagnosticCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -206,6 +225,7 @@ export async function pipeUpstreamStream(
   let responseInspectionParserSkipLogged = false
   let firstTokenMs: number | undefined
   let firstByteDeadlineObserved = false
+  let pendingFirstByteDeadlineReadDecision: StreamFirstByteDeadlineReadDecision | undefined
   let waitingForFirstChunk = true
   let lastUpstreamActivityAt = startedAt
   let lastSseEventActivityAt: number | undefined
@@ -215,6 +235,7 @@ export async function pipeUpstreamStream(
   let responseResourceId: string | undefined
   let pendingProtocolEvent = false
   let streamParserSkipped = false
+  let protocolTerminalReceived = false
   let chunkIndex = 0
   let totalUpstreamBytes = 0
   let totalResponseBytes = 0
@@ -308,7 +329,26 @@ export async function pipeUpstreamStream(
     semanticResultReceived = semanticResultReceived || streamSemanticResultReceived(inspection)
     pendingProtocolEvent = inspection.pendingEvent
     streamParserSkipped = inspection.skipped
+    protocolTerminalReceived = protocolTerminalReceived || inspection.terminalReceived
     responseResourceId ??= inspection.responseResourceId
+  }
+  const settleStreamFirstByteDeadlineReadDecision = (semanticResultInRead: boolean) => {
+    const decision = pendingFirstByteDeadlineReadDecision
+    if (!decision) return
+    pendingFirstByteDeadlineReadDecision = undefined
+    if (semanticResultInRead) {
+      options.onFirstByteDeadlineSuperseded?.()
+      return
+    }
+    if (decision.decisionError !== undefined) throw decision.decisionError
+    if (decision.action === 'abort') {
+      const deadlineMs = options.firstByteDeadlineMs ?? 0
+      throw new GatewayFirstByteTimeoutError(
+        `上游流式响应 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个有效输出`,
+        deadlineMs,
+        'configured_deadline'
+      )
+    }
   }
   const closeIterator = () => {
     clientClosed = true
@@ -377,11 +417,13 @@ export async function pipeUpstreamStream(
       responseInspectionObservations,
       responseInspectionObservationOmittedCount,
       downstreamCommit.downstreamBytesWritten,
+      totalResponseBytes,
       downstreamCommit.transportCommitted || res.headersSent,
       downstreamCommit.semanticCommitted,
       uncommittedStreamResponseBody(preCommitBuffer),
       responseResourceId,
-      guardSnapshot
+      guardSnapshot,
+      completed && protocolTerminalReceived && !streamParserSkipped
     )
   }
   const finishTerminalSuccess = async (
@@ -486,13 +528,17 @@ export async function pipeUpstreamStream(
         firstByteDeadlineObserved
       }, signal, {
         firstByteDeadlineMs: options.firstByteDeadlineMs,
-        onFirstByteDeadline: options.onFirstByteDeadline
+        responsePrecommitDeadlineAtMs: options.responsePrecommitDeadlineAtMs,
+        onFirstByteDeadline: options.onFirstByteDeadline,
+        onFirstByteDeadlineSuperseded: options.onFirstByteDeadlineSuperseded
       })
       firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
+      pendingFirstByteDeadlineReadDecision = readResult.firstByteDeadlineReadDecision
       const result = readResult.result
       const readWaitMs = Date.now() - readStartedAt
 
       if (result.done) {
+        settleStreamFirstByteDeadlineReadDecision(false)
         completed = true
         break
       }
@@ -522,7 +568,11 @@ export async function pipeUpstreamStream(
       }
       recordResponseInspectionObservations(interceptResult.observations)
       let latestInspection = inspector.snapshot()
+      if (interceptResult.chunks.length === 0 && !interceptResult.intercepted) {
+        settleStreamFirstByteDeadlineReadDecision(false)
+      }
       if (shouldReturnResponseInspectionBeforeDownstreamWrite(interceptResult.intercepted, res, totalResponseBytes)) {
+        settleStreamFirstByteDeadlineReadDecision(true)
         await closeAsyncIterator(iterator)
         const decision = interceptResult.intercepted!
         const failurePayload = responseInspectionFailurePayloadForDecision(decision, options.clientRetryEnabled === true)
@@ -543,6 +593,7 @@ export async function pipeUpstreamStream(
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
       if (interceptResult.intercepted && shouldFailBeforeDownstreamCommit()) {
+        settleStreamFirstByteDeadlineReadDecision(true)
         await closeAsyncIterator(iterator)
         const decision = interceptResult.intercepted
         const failurePayload = responseInspectionFailurePayloadForDecision(decision, options.clientRetryEnabled === true)
@@ -566,7 +617,8 @@ export async function pipeUpstreamStream(
       let chunkWriteMs = 0
       let chunkCanEndAfterTerminal = false
       let chunkWroteDownstream = false
-      for (const outbound of interceptResult.chunks) {
+      for (let outboundIndex = 0; outboundIndex < interceptResult.chunks.length; outboundIndex += 1) {
+        const outbound = interceptResult.chunks[outboundIndex]!
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
@@ -588,23 +640,34 @@ export async function pipeUpstreamStream(
         } else if (outboundSseEventCount > 0 || latestInspection.pendingEvent) {
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
+        if (pendingFirstByteDeadlineReadDecision) {
+          const semanticResultInRead = streamSemanticResultReceived(latestInspection)
+          const lastOutboundInRead = outboundIndex === interceptResult.chunks.length - 1
+          if (semanticResultInRead || lastOutboundInRead) {
+            settleStreamFirstByteDeadlineReadDecision(semanticResultInRead)
+          } else {
+            // Keep all transformed fragments from the same raw read private
+            // until we know whether that read contains a semantic result.
+            appendStreamPreCommitChunk(preCommitBuffer, outbound)
+            continue
+          }
+        }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
           appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
-        if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
-          discardPreCommitChunks()
-          const message = latestInspection.errorMessage ?? '上游流式响应失败'
-          const errorCode = streamClientFailureCode(
-            latestInspection.errorCode ?? gatewayStreamFailureCode(message),
-            latestInspection.outputReceived,
-            options.clientRetryEnabled === true,
-            totalResponseBytes
-          )
+        if (interpretedProtocolFailure(latestInspection)) {
+          const beforeDownstreamCommit = shouldFailBeforeDownstreamCommit()
+          if (beforeDownstreamCommit) discardPreCommitChunks()
+          const message = '上游流式响应返回失败终态'
+          const errorCode = 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           await closeAsyncIterator(iterator)
+          if (!beforeDownstreamCommit) endResponse(res)
           streamLogger.warn({
-            event: 'gateway_stream_failure_before_downstream_commit',
+            event: beforeDownstreamCommit
+              ? 'gateway_stream_failure_before_downstream_commit'
+              : 'gateway_stream_failure_after_downstream_commit',
             message,
             errorCode,
             totalUpstreamBytes,
@@ -612,7 +675,9 @@ export async function pipeUpstreamStream(
             chunkIndex,
             sseEventCount: latestInspection.eventCount,
             recentSseEventTypes: latestInspection.recentEventTypes
-          }, '网关在下游提交前解析到流式失败，交由上层决定是否服务端换号重试')
+          }, beforeDownstreamCommit
+            ? '网关在下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
+            : '网关在下游提交后解析到流式失败，已丢弃供应商失败事件并稳定结束当前流')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         const writeStartedAt = Date.now()
@@ -804,18 +869,17 @@ export async function pipeUpstreamStream(
           appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
-        if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
-          discardPreCommitChunks()
-          const message = latestInspection.errorMessage ?? '上游流式响应失败'
-          const errorCode = streamClientFailureCode(
-            latestInspection.errorCode ?? gatewayStreamFailureCode(message),
-            latestInspection.outputReceived,
-            options.clientRetryEnabled === true,
-            totalResponseBytes
-          )
+        if (interpretedProtocolFailure(latestInspection)) {
+          const beforeDownstreamCommit = shouldFailBeforeDownstreamCommit()
+          if (beforeDownstreamCommit) discardPreCommitChunks()
+          const message = '上游流式响应返回失败终态'
+          const errorCode = 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
+          if (!beforeDownstreamCommit) endResponse(res)
           streamLogger.warn({
-            event: 'gateway_stream_failure_before_downstream_commit',
+            event: beforeDownstreamCommit
+              ? 'gateway_stream_failure_before_downstream_commit'
+              : 'gateway_stream_failure_after_downstream_commit',
             message,
             errorCode,
             totalUpstreamBytes,
@@ -824,7 +888,9 @@ export async function pipeUpstreamStream(
             sseEventCount: latestInspection.eventCount,
             recentSseEventTypes: latestInspection.recentEventTypes,
             eofPendingFlush: true
-          }, '网关在 EOF pending 下游提交前解析到流式失败，交由上层决定是否服务端换号重试')
+          }, beforeDownstreamCommit
+            ? '网关在 EOF pending 下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
+            : '网关在 EOF pending 下游提交后解析到流式失败，已丢弃供应商失败事件并稳定结束当前流')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await flushPreCommitChunks()
@@ -943,6 +1009,41 @@ export async function pipeUpstreamStream(
         }, '网关流式转发因下游连接提前关闭而结束')
       endResponse(res)
       throw error
+    }
+    if (isGatewayResponsePrecommitDeadlineError(error)) {
+      const inspection = inspector.finish()
+      const message = error.message
+      const upstreamResponseCommitted = totalResponseBytes > 0
+      streamLogger.warn({
+        event: 'gateway_stream_response_precommit_deadline_exceeded',
+        elapsedMs: Date.now() - startedAt,
+        deadlineAtMs: error.deadlineAtMs,
+        chunkCount: chunkIndex,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        upstreamResponseCommitted,
+        outputReceived: inspection.outputReceived,
+        terminalReceived: inspection.terminalReceived
+      }, '网关请求墙钟到达时流式响应仍未产生可提交语义结果')
+      if (upstreamResponseCommitted) {
+        interruptResponse(res)
+      }
+      return finishStreamResult(
+        false,
+        message,
+        error.code,
+        firstTokenMs,
+        inspection.usage,
+        responseCapture,
+        upstreamCapture,
+        diagnosticCapture,
+        undefined,
+        inspection.outputReceived,
+        inspection.estimatedOutputTokens,
+        inspection.imageOutputReceived,
+        captureSuccessPayloads,
+        bodyOmissionFor(inspection)
+      )
     }
     const rawMessage = error instanceof Error ? error.message : '上游流式响应已中断'
     const inspection = inspector.finish()
@@ -1334,15 +1435,24 @@ async function readNextStreamChunk(
   signal?: AbortSignal,
   options: {
     firstByteDeadlineMs?: number
+    responsePrecommitDeadlineAtMs?: number
     onFirstByteDeadline?: FirstByteDeadlineHandler
+    onFirstByteDeadlineSuperseded?: () => void
   } = {}
-): Promise<{ result: IteratorResult<Uint8Array>; firstByteDeadlineObserved: boolean }> {
-  const pendingRead = iterator.next()
+): Promise<StreamChunkReadResult> {
+  const pendingRead = observeFirstBytePendingRead(iterator.next())
   let firstByteDeadlineObserved = status.firstByteDeadlineObserved
 
   while (true) {
     const now = Date.now()
     const firstByteDeadlineMs = options.firstByteDeadlineMs
+    const responsePrecommitRemainingMs = !status.semanticResultReceived
+      && options.responsePrecommitDeadlineAtMs !== undefined
+      ? options.responsePrecommitDeadlineAtMs - now
+      : undefined
+    if (responsePrecommitRemainingMs !== undefined && responsePrecommitRemainingMs <= 0) {
+      throw new GatewayResponsePrecommitDeadlineError(options.responsePrecommitDeadlineAtMs ?? 0)
+    }
     const firstByteRemainingMs = status.waitingForFirstOutput
       && !status.parserSkipped
       && !firstByteDeadlineObserved
@@ -1352,12 +1462,26 @@ async function readNextStreamChunk(
     if (firstByteRemainingMs !== undefined && firstByteRemainingMs <= 0) {
       firstByteDeadlineObserved = true
       const deadlineMs = firstByteDeadlineMs ?? 0
-      const action = await options.onFirstByteDeadline?.({
+      const decision = await decideFirstByteDeadlineAfterPendingRead(pendingRead, options.onFirstByteDeadline, {
         elapsedMs: Date.now() - startedAt,
         timeoutMs: deadlineMs,
         transport: 'stream'
-      }) ?? 'abort'
-      if (action === 'abort') {
+      }, {
+        responsePrecommitDeadlineAtMs: options.responsePrecommitDeadlineAtMs,
+        onResponsePrecommitDeadline: options.onFirstByteDeadlineSuperseded
+      })
+      if (decision.type === 'response_precommit_deadline') throw decision.error
+      if (decision.type === 'read') {
+        return {
+          result: decision.result,
+          firstByteDeadlineObserved,
+          firstByteDeadlineReadDecision: {
+            action: decision.action,
+            decisionError: decision.decisionError
+          }
+        }
+      }
+      if (decision.action === 'abort') {
         throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个有效输出`, deadlineMs, 'configured_deadline')
       }
       continue
@@ -1367,12 +1491,20 @@ async function readNextStreamChunk(
     if (readPlan.timeoutMs <= 0) {
       throw streamReadPlanTimeoutError(readPlan)
     }
-    const race = await raceStreamReadWithDeadlines(pendingRead, {
+    const race = await raceStreamReadWithDeadlines(pendingRead.promise, {
       signal,
       softTimeoutMs: firstByteRemainingMs,
-      planTimeoutMs: readPlan.timeoutMs
+      planTimeoutMs: readPlan.timeoutMs,
+      responsePrecommitTimeoutMs: responsePrecommitRemainingMs
     })
     if (race.type === 'read') {
+      if (
+        options.responsePrecommitDeadlineAtMs !== undefined
+        && !status.semanticResultReceived
+        && (pendingRead.settledAtMs() ?? Date.now()) > options.responsePrecommitDeadlineAtMs
+      ) {
+        throw new GatewayResponsePrecommitDeadlineError(options.responsePrecommitDeadlineAtMs)
+      }
       return { result: race.result, firstByteDeadlineObserved }
     }
     if (race.type === 'abort') {
@@ -1381,14 +1513,31 @@ async function readNextStreamChunk(
     if (race.type === 'plan_timeout') {
       throw streamReadPlanTimeoutError(readPlan)
     }
+    if (race.type === 'response_precommit_timeout') {
+      throw new GatewayResponsePrecommitDeadlineError(options.responsePrecommitDeadlineAtMs ?? 0)
+    }
 
     firstByteDeadlineObserved = true
-    const action = await options.onFirstByteDeadline?.({
+    const decision = await decideFirstByteDeadlineAfterPendingRead(pendingRead, options.onFirstByteDeadline, {
       elapsedMs: Date.now() - startedAt,
       timeoutMs: options.firstByteDeadlineMs ?? 0,
       transport: 'stream'
-    }) ?? 'abort'
-    if (action === 'abort') {
+    }, {
+      responsePrecommitDeadlineAtMs: options.responsePrecommitDeadlineAtMs,
+      onResponsePrecommitDeadline: options.onFirstByteDeadlineSuperseded
+    })
+    if (decision.type === 'response_precommit_deadline') throw decision.error
+    if (decision.type === 'read') {
+      return {
+        result: decision.result,
+        firstByteDeadlineObserved,
+        firstByteDeadlineReadDecision: {
+          action: decision.action,
+          decisionError: decision.decisionError
+        }
+      }
+    }
+    if (decision.action === 'abort') {
       throw new GatewayFirstByteTimeoutError(`上游流式响应 ${Math.ceil((options.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个有效输出`, options.firstByteDeadlineMs ?? 0, 'configured_deadline')
     }
   }
@@ -1406,27 +1555,37 @@ async function raceStreamReadWithDeadlines(
     signal?: AbortSignal
     softTimeoutMs?: number
     planTimeoutMs: number
+    responsePrecommitTimeoutMs?: number
   }
 ): Promise<
   | { type: 'read'; result: IteratorResult<Uint8Array> }
   | { type: 'soft_timeout' }
   | { type: 'plan_timeout' }
+  | { type: 'response_precommit_timeout' }
   | { type: 'abort' }
 > {
   let softTimer: NodeJS.Timeout | undefined
   let planTimer: NodeJS.Timeout | undefined
+  let responsePrecommitTimer: NodeJS.Timeout | undefined
   let abortListener: (() => void) | undefined
   try {
     const races: Array<Promise<
       | { type: 'read'; result: IteratorResult<Uint8Array> }
       | { type: 'soft_timeout' }
       | { type: 'plan_timeout' }
+      | { type: 'response_precommit_timeout' }
       | { type: 'abort' }
     >> = [pendingRead.then((result) => ({ type: 'read' as const, result }))]
     const softTimeoutMs = input.softTimeoutMs
     if (softTimeoutMs !== undefined) {
       races.push(new Promise((resolve) => {
         softTimer = setTimeout(() => resolve({ type: 'soft_timeout' as const }), Math.max(1, softTimeoutMs))
+      }))
+    }
+    const responsePrecommitTimeoutMs = input.responsePrecommitTimeoutMs
+    if (responsePrecommitTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        responsePrecommitTimer = setTimeout(() => resolve({ type: 'response_precommit_timeout' as const }), Math.max(1, responsePrecommitTimeoutMs))
       }))
     }
     races.push(new Promise((resolve) => {
@@ -1444,6 +1603,7 @@ async function raceStreamReadWithDeadlines(
     return await Promise.race(races)
   } finally {
     if (softTimer) clearTimeout(softTimer)
+    if (responsePrecommitTimer) clearTimeout(responsePrecommitTimer)
     if (planTimer) clearTimeout(planTimer)
     if (input.signal && abortListener) {
       input.signal.removeEventListener('abort', abortListener)

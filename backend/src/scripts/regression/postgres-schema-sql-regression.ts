@@ -47,6 +47,9 @@ const providerModelCatalogCreateSql = statements.find(
 const customProviderModelsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS custom_provider_models\b/i.test(statement.sql)
 )?.sql ?? ''
+const proxyProfilesCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS proxy_profiles\b/i.test(statement.sql)
+)?.sql ?? ''
 const accountTestTasksCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_tasks\b/i.test(statement.sql)
 )?.sql ?? ''
@@ -115,10 +118,13 @@ assert.match(sql, /account_api_key_runtime_states[\s\S]+last_trace_id text/, 'Ke
 assert.match(accountApiKeyRuntimeTraceMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.account_api_key_runtime_states[\s\S]+credential_revision text[\s\S]+last_trace_id text[\s\S]+updated_at text NOT NULL/, 'Goose 63 必须为 fresh PostgreSQL 创建当前完整 Key 运行态表')
 assert.match(accountApiKeyRuntimeTraceMigration, /account_api_key_runtime_states[\s\S]+ADD COLUMN IF NOT EXISTS last_trace_id text/, 'Goose 63 必须为既有 PostgreSQL 业务库补齐 Key 运行态 traceId')
 assert.match(accountApiKeyRuntimeTraceMigration, /idx_account_api_key_runtime_unique[\s\S]+idx_account_api_key_runtime_status[\s\S]+idx_account_api_key_runtime_probe[\s\S]+idx_account_api_key_runtime_owner/, 'Goose 63 必须为 fresh PostgreSQL 创建 Key 运行态索引')
+assert.match(sql, /account_api_key_runtime_states[\s\S]+probe_claim_token text[\s\S]+probe_claimed_until text/, 'Key 运行态 PostgreSQL schema 必须包含探针 claim')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')
 assert.match(customProviderModelsCreateSql, /catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 自定义模型发布字段必须与 Goose 59 保持 boolean')
+assert.match(proxyProfilesCreateSql, /enabled boolean NOT NULL DEFAULT true/, 'Node PG 代理启用字段必须与 Goose 6 保持 boolean')
+assert.match(proxyProfilesCreateSql, /last_tested_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 代理检测与配置时间必须与 Goose 6 保持 timestamptz')
 assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(
   listBuiltInProviderModelsAsyncSql,

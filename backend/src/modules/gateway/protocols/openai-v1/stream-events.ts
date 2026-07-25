@@ -99,15 +99,18 @@ export function classifyOpenAIStreamEvent(
     : 0
   const imageOutput = Boolean(data && openAIStreamEventHasImageOutput(data, event.eventType))
   const visibleOutput = Boolean(data && (estimatedOutputTokens > 0 || openAIStreamEventHasVisibleOutput(data, event.eventType)))
-  const terminal = event.eventType === '[DONE]'
+  const failed = event.eventType === 'response.failed'
+    || event.eventName === 'response.failed'
+    || event.eventType === 'image_generation.failed'
+    || event.eventName === 'image_generation.failed'
+    || event.eventType === 'error'
+    || event.eventName === 'error'
+  const terminal = failed
+    || event.eventType === '[DONE]'
     || event.eventType === 'response.completed'
     || event.eventType === 'response.done'
     || event.eventType === 'response.incomplete'
-    || event.eventType === 'response.failed'
     || event.eventType === 'image_generation.completed'
-    || event.eventType === 'image_generation.failed'
-  const failed = event.eventType === 'response.failed'
-    || event.eventType === 'image_generation.failed'
   const usage = data ? extractEventUsage(data) : {}
   const usageFound = hasAnyUsageValue(usage)
 

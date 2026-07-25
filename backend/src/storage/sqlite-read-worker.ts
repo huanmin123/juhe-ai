@@ -99,7 +99,7 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   resolveGroupUsageAccessMetadata,
-  resolveProxyUrlForProfile
+  resolveProxyUrlsForProfiles
 } from './repositories.js'
 import {
   findResourceAuthorizationSummary,
@@ -350,9 +350,21 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       if (!account || !isGptVendorCode(account.providerCode) || !isOpenAIProtocolProfile(account) || account.type !== 'oauth') {
         return undefined
       }
+      const proxyResolution = account.proxyProfileId
+        ? resolveProxyUrlsForProfiles([account.proxyProfileId]).get(account.proxyProfileId)
+        : undefined
       return {
         ...account,
-        proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+        ...(proxyResolution?.proxyUrl
+          ? { proxyUrl: proxyResolution.proxyUrl }
+          : account.proxyProfileId
+            ? {
+                localConfigurationError: {
+                  code: 'oauth_proxy_configuration_invalid' as const,
+                  message: proxyResolution?.errorMessage ?? 'OpenAI OAuth 账户配置的代理不可用，请检查代理配置'
+                }
+              }
+            : {})
       }
     }
     case 'load_gateway_api_key_for_validation_read_only':

@@ -5,7 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -13,19 +13,30 @@ interface CooldownAccountRetestQueueItem {
   accountId: string
   accountName: string
   configRevision: number
-  cooldownRetestObservationStartedAt?: string
+  dispatchRevision: number
+  cooldownRetestObservationStartedAt: string
+  cooldownRetestGeneration: string
+  sourceConfigRevision?: number
   maxPauseMinutes: number
   maxRecoveryHours: number
 }
 
 const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [], 0)
+const queuedCooldownFenceByAccountId = new Map<string, string>()
+const cooldownRetestNeutralInitialDelaySeconds = 30
+const cooldownRetestNeutralMaxDelaySeconds = 15 * 60
+const cooldownRetestNeutralJitterRatio = 0.2
 
 const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueItem>({
   name: 'cooldown-account-retest',
   policy: cooldownAccountRetestRetryPolicy,
   concurrency: 1,
   run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runCooldownAccountRetestQueueItem(item, context)),
+  onSuccess: (event) => {
+    releaseQueuedCooldownFence(event.item)
+  },
   onExhausted: (event) => {
+    releaseQueuedCooldownFence(event.item)
     logger.warn(errorLogFields(event.error, {
       event: 'background_cooldown_account_retest_retry_exhausted',
       accountId: event.item.accountId,
@@ -39,14 +50,44 @@ export function enqueueCooldownAccountRetest(
   account: AccountSummary,
   strategy: { maxPauseMinutes: number; maxRecoveryHours: number }
 ): boolean {
-  return cooldownAccountRetestQueue.enqueue(account.id, {
+  const dispatchRevision = account.cooldownRetestDispatchRevision
+  const generation = account.cooldownRetestGeneration?.trim()
+  const sourceConfigRevision = account.accessType === 'authorized'
+    ? account.cooldownRetestSourceConfigRevision
+    : undefined
+  if (
+    !account.cooldownRetestObservationStartedAt
+    || !generation
+    || !Number.isInteger(dispatchRevision)
+    || dispatchRevision! < 1
+    || (account.accessType === 'authorized' && (!Number.isInteger(sourceConfigRevision) || sourceConfigRevision! < 1))
+  ) {
+    logger.warn({
+      event: 'background_cooldown_account_retest_missing_generation',
+      accountId: account.id,
+      accountName: account.name
+    }, '冷却账户缺少复测观察代次，已拒绝投递以避免旧结果越权写回')
+    return false
+  }
+  const item: CooldownAccountRetestQueueItem = {
     accountId: account.id,
     accountName: account.name,
     configRevision: account.configRevision ?? 1,
+    dispatchRevision: dispatchRevision!,
     cooldownRetestObservationStartedAt: account.cooldownRetestObservationStartedAt,
+    cooldownRetestGeneration: generation,
+    sourceConfigRevision,
     maxPauseMinutes: strategy.maxPauseMinutes,
     maxRecoveryHours: strategy.maxRecoveryHours
+  }
+  const queueFence = cooldownQueueFence(item)
+  const queuedFence = queuedCooldownFenceByAccountId.get(account.id)
+  if (queuedFence === queueFence) return false
+  const enqueued = cooldownAccountRetestQueue.enqueue(account.id, item, {
+    replaceExisting: queuedFence !== undefined
   })
+  if (enqueued) queuedCooldownFenceByAccountId.set(account.id, queueFence)
+  return enqueued
 }
 
 export function getCooldownAccountRetestQueueSnapshot() {
@@ -62,7 +103,15 @@ async function runCooldownAccountRetestQueueItem(
   context: { attemptIndex: number; retryNumber: number }
 ) {
   const account = await cooldownRetestAccountForQueueItem(item)
-  if (!account || !isAccountDueForCooldownRetest(account) || (account.configRevision ?? 1) !== item.configRevision || account.cooldownRetestObservationStartedAt !== item.cooldownRetestObservationStartedAt) {
+  if (
+    !account
+    || !isAccountDueForCooldownRetest(account)
+    || (account.configRevision ?? 1) !== item.configRevision
+    || account.cooldownRetestDispatchRevision !== item.dispatchRevision
+    || account.cooldownRetestObservationStartedAt !== item.cooldownRetestObservationStartedAt
+    || account.cooldownRetestGeneration !== item.cooldownRetestGeneration
+    || account.cooldownRetestSourceConfigRevision !== item.sourceConfigRevision
+  ) {
     logger.debug({
       event: 'background_cooldown_account_retest_discarded',
       accountId: item.accountId,
@@ -77,7 +126,7 @@ async function runCooldownAccountRetestQueueItem(
 
   const groupId = account.boundGroupId
   const diagnosticStartedAt = Date.now()
-  let upstreamResponseObserved = false
+  let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -85,9 +134,13 @@ async function runCooldownAccountRetestQueueItem(
     testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     retryAllFailures: true,
-    onUpstreamAttempt: (attempt) => {
-      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
+    onDiagnosticAttemptProgress: () => {
+      upstreamAttempt = undefined
     },
+    onUpstreamAttempt: (attempt) => {
+      upstreamAttempt = attempt
+    },
+    shouldRetryFailure: (attemptResult) => automaticAccountProbeOutcome(attemptResult, { upstreamAttempt }) === 'upstream_failure',
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -104,13 +157,16 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: undefined,
     traceId: undefined
   }))
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_cooldown_account_retest_success',
       accountId: account.id,
       expectedConfigRevision: item.configRevision,
-      expectedObservationStartedAt: item.cooldownRetestObservationStartedAt
+      expectedDispatchRevision: item.dispatchRevision,
+      expectedObservationStartedAt: item.cooldownRetestObservationStartedAt,
+      expectedGeneration: item.cooldownRetestGeneration,
+      expectedSourceConfigRevision: item.sourceConfigRevision
     }, backgroundProbeDbServiceTimeoutMs)
     logger.info({
       event: 'background_cooldown_account_retest_restored',
@@ -126,11 +182,21 @@ async function runCooldownAccountRetestQueueItem(
     return true
   }
 
-  if (probeOutcome === 'probe_task_failure') {
+  if (probeOutcome !== 'upstream_failure') {
+    const delaySeconds = cooldownRetestNeutralDeferDelaySeconds({
+      accountId: item.accountId,
+      generation: item.cooldownRetestGeneration,
+      observationStartedAt: item.cooldownRetestObservationStartedAt
+    })
     const deferred = await requestBackgroundWorkerDbService({
       type: 'defer_cooldown_account_retest',
       accountId: account.id,
-      delaySeconds: 10
+      delaySeconds,
+      expectedConfigRevision: item.configRevision,
+      expectedDispatchRevision: item.dispatchRevision,
+      expectedObservationStartedAt: item.cooldownRetestObservationStartedAt,
+      expectedGeneration: item.cooldownRetestGeneration,
+      expectedSourceConfigRevision: item.sourceConfigRevision
     }, backgroundProbeDbServiceTimeoutMs)
     logger.warn({
       event: 'background_cooldown_account_retest_task_failed',
@@ -139,11 +205,11 @@ async function runCooldownAccountRetestQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber,
       probeOutcome,
-      upstreamResponseObserved,
       durationMs: result.durationMs,
+      nextDelaySeconds: delaySeconds,
       nextCooldownUntil: deferred?.cooldownUntil,
       message: result.message
-    }, '冷却账户复测未形成可归因的上游失败，已保留账户状态')
+    }, '冷却账户复测未形成传输失败证据，已保留账户状态')
     return true
   }
 
@@ -156,7 +222,10 @@ async function runCooldownAccountRetestQueueItem(
       errorMessage: result.message,
       traceId: result.traceId,
       expectedConfigRevision: item.configRevision,
+      expectedDispatchRevision: item.dispatchRevision,
       expectedObservationStartedAt: item.cooldownRetestObservationStartedAt,
+      expectedGeneration: item.cooldownRetestGeneration,
+      expectedSourceConfigRevision: item.sourceConfigRevision,
       maxPauseMinutes: item.maxPauseMinutes,
       maxRecoveryHours: item.maxRecoveryHours
     }
@@ -172,7 +241,6 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: result.errorCode,
     accountFailureEligible: result.accountFailureEligible,
     probeOutcome,
-    upstreamResponseObserved,
     durationMs: result.durationMs,
     retestFailureCount: failure?.failureCount ?? 0,
     retestAction: failure?.action,
@@ -199,6 +267,45 @@ async function runCooldownAccountRetestQueueItem(
     logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')
   }
   return true
+}
+
+export function cooldownRetestNeutralDeferDelaySeconds(input: {
+  accountId: string
+  generation: string
+  observationStartedAt: string
+  nowMs?: number
+}): number {
+  const nowMs = Number.isFinite(input.nowMs) ? Number(input.nowMs) : Date.now()
+  const observationStartedAtMs = Date.parse(input.observationStartedAt)
+  const elapsedSeconds = Number.isFinite(observationStartedAtMs)
+    ? Math.max(0, Math.floor((nowMs - observationStartedAtMs) / 1000))
+    : 0
+  const completedInitialIntervals = elapsedSeconds / cooldownRetestNeutralInitialDelaySeconds
+  const growthStep = Math.max(0, Math.min(
+    5,
+    Math.floor(Math.log2(completedInitialIntervals + 1))
+  ))
+  const baseDelaySeconds = Math.min(
+    cooldownRetestNeutralMaxDelaySeconds,
+    cooldownRetestNeutralInitialDelaySeconds * Math.pow(2, growthStep)
+  )
+  const jitterRangeSeconds = Math.max(1, Math.floor(baseDelaySeconds * cooldownRetestNeutralJitterRatio))
+  const jitterBucketCount = jitterRangeSeconds * 2 + 1
+  const jitterSeconds = stableCooldownRetestHash(`${input.accountId}:${input.generation}:${growthStep}`) % jitterBucketCount
+    - jitterRangeSeconds
+  return Math.max(
+    3,
+    Math.min(cooldownRetestNeutralMaxDelaySeconds, baseDelaySeconds + jitterSeconds)
+  )
+}
+
+function stableCooldownRetestHash(value: string): number {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
 }
 
 async function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueueItem): Promise<AccountSummary | undefined> {
@@ -253,4 +360,20 @@ function isAccountDueForCooldownRetest(account: AccountSummary): boolean {
     }
   }
   return true
+}
+
+function releaseQueuedCooldownFence(item: CooldownAccountRetestQueueItem): void {
+  if (queuedCooldownFenceByAccountId.get(item.accountId) === cooldownQueueFence(item)) {
+    queuedCooldownFenceByAccountId.delete(item.accountId)
+  }
+}
+
+function cooldownQueueFence(item: CooldownAccountRetestQueueItem): string {
+  return JSON.stringify([
+    item.configRevision,
+    item.dispatchRevision,
+    item.cooldownRetestObservationStartedAt,
+    item.cooldownRetestGeneration,
+    item.sourceConfigRevision ?? null
+  ])
 }

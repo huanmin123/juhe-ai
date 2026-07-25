@@ -17,9 +17,13 @@ const auditCapture = {
 await testFifoWakeOneWithSingleScopeTimer()
 await testAbortRemovesQueuedWaiter()
 await testScopeAndGlobalLimits()
+await testGlobalCapacityCanBeReusedWithoutLeaks()
 await testOriginalStartAndAbsoluteDeadline()
 await testRuntimeKeyWakeOnePreservesFifo()
 await testDeadlineBeforeNotBeforeDoesNotWakeReady()
+await testCoordinatorRegistrationDriftDoesNotShortenTurn()
+await testLateTimerCannotRefreshAfterAbsoluteDeadline()
+await testLateRuntimeNotificationCannotRefreshAfterAbsoluteDeadline()
 await testCoordinationBudgetUsesEarliestRetryAndIgnoresDuplicateWake()
 await testCoordinationBudgetPausesOnAbort()
 await testCoordinationBudgetConflictIsTemporarilyBlocked()
@@ -108,6 +112,67 @@ async function testScopeAndGlobalLimits(): Promise<void> {
   assert.deepEqual(coordinator.snapshot(), { scopeCount: 0, waiterCount: 0, timerCount: 0 })
 }
 
+async function testGlobalCapacityCanBeReusedWithoutLeaks(): Promise<void> {
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    maxWaitersPerScope: 12,
+    maxWaitersGlobal: 12,
+    now: () => 1_000,
+    setTimer() { return {} },
+    clearTimer() {}
+  })
+  const admittedControllers = Array.from({ length: 12 }, () => new AbortController())
+  const admitted = admittedControllers.map((controller, index) => coordinator.waitForTurn({
+    scopeKey: `scope-capacity-${index % 4}`,
+    reason: 'account_cooldown_recoverable',
+    delayMs: 1_000,
+    deadlineAtMs: 5_000,
+    signal: controller.signal
+  }))
+  assert.deepEqual(
+    coordinator.snapshot(),
+    { scopeCount: 4, waiterCount: 12, timerCount: 4 },
+    '四个 scope 必须共享单进程 12 个等待名额，并且每个 scope 只有一个 timer'
+  )
+
+  const overflowResults = await Promise.all(Array.from({ length: 52 }, (_, index) => coordinator.waitForTurn({
+    scopeKey: `scope-overflow-${index}`,
+    reason: 'account_cooldown_recoverable',
+    delayMs: 1_000,
+    deadlineAtMs: 5_000
+  })))
+  assert.deepEqual(
+    overflowResults,
+    Array.from({ length: 52 }, () => 'global_limit'),
+    '容量饱和后所有额外等待者都必须立即得到 global_limit'
+  )
+  assert.deepEqual(coordinator.snapshot(), { scopeCount: 4, waiterCount: 12, timerCount: 4 })
+
+  admittedControllers[0]!.abort()
+  assert.equal(await admitted[0], 'aborted')
+  const replacementController = new AbortController()
+  const replacement = coordinator.waitForTurn({
+    scopeKey: 'scope-capacity-replacement',
+    reason: 'account_cooldown_recoverable',
+    delayMs: 1_000,
+    deadlineAtMs: 5_000,
+    signal: replacementController.signal
+  })
+  assert.deepEqual(
+    coordinator.snapshot(),
+    { scopeCount: 5, waiterCount: 12, timerCount: 5 },
+    '释放一个名额后必须能立即补位，不能永久丢失全局容量'
+  )
+
+  for (const controller of admittedControllers.slice(1)) controller.abort()
+  replacementController.abort()
+  assert.deepEqual(await Promise.all([...admitted.slice(1), replacement]), Array.from({ length: 12 }, () => 'aborted'))
+  assert.deepEqual(
+    coordinator.snapshot(),
+    { scopeCount: 0, waiterCount: 0, timerCount: 0 },
+    '全部等待结束后 scope、waiter 和 timer 必须归零'
+  )
+}
+
 async function testOriginalStartAndAbsoluteDeadline(): Promise<void> {
   const requestStartedAtMs = Date.now() - 100
   let refreshCount = 0
@@ -177,6 +242,90 @@ async function testDeadlineBeforeNotBeforeDoesNotWakeReady(): Promise<void> {
   nowMs = 600
   timerCallback?.()
   assert.equal(await waiting, 'deadline_exceeded', '最早重试晚于预算 deadline 时不得提前刷新候选')
+}
+
+async function testCoordinatorRegistrationDriftDoesNotShortenTurn(): Promise<void> {
+  let coordinatorNowMs = 501
+  let timerCallback: (() => void) | undefined
+  let timerDelayMs: number | undefined
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    now: () => coordinatorNowMs,
+    setTimer(callback, delayMs) {
+      timerCallback = callback
+      timerDelayMs = delayMs
+      return callback
+    },
+    clearTimer() {}
+  })
+  let refreshCount = 0
+  const waiting = waitForRecoverableUnavailableState({
+    scopeKey: 'scope-registration-drift',
+    reason: 'account_cooldown_recoverable',
+    initialState: { ready: false },
+    refresh: () => {
+      refreshCount += 1
+      return { ready: true }
+    },
+    isReady: state => state.ready,
+    nextRetryAfterMs: () => 100,
+    auditCapture,
+    maxWaitMs: 4_500,
+    requestStartedAtMs: 500,
+    deadlineAtMs: 5_000,
+    coordinator,
+    now: () => 500
+  })
+  await Promise.resolve()
+  assert.equal(timerDelayMs, 100, '协调器注册晚 1ms 不得把正常等待裁成提前 deadline')
+  coordinatorNowMs = 601
+  timerCallback?.()
+  const result = await waiting
+  assert.equal(result.ready, true)
+  assert.equal(refreshCount, 1, '仍有绝对预算时必须按本轮 delay 刷新一次')
+  assert.deepEqual(coordinator.snapshot(), { scopeCount: 0, waiterCount: 0, timerCount: 0 })
+}
+
+async function testLateTimerCannotRefreshAfterAbsoluteDeadline(): Promise<void> {
+  let nowMs = 500
+  let timerCallback: (() => void) | undefined
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    now: () => nowMs,
+    setTimer(callback) {
+      timerCallback = callback
+      return callback
+    },
+    clearTimer() {}
+  })
+  const waiting = coordinator.waitForTurn({
+    scopeKey: 'scope-late-timer',
+    reason: 'account_cooldown_recoverable',
+    delayMs: 50,
+    deadlineAtMs: 600
+  })
+  nowMs = 700
+  timerCallback?.()
+  assert.equal(await waiting, 'deadline_exceeded', 'timer 在绝对 deadline 后迟到时不得继续刷新候选')
+  assert.deepEqual(coordinator.snapshot(), { scopeCount: 0, waiterCount: 0, timerCount: 0 })
+}
+
+async function testLateRuntimeNotificationCannotRefreshAfterAbsoluteDeadline(): Promise<void> {
+  let nowMs = 500
+  const coordinator = new RecoverableUnavailableWaitCoordinator({
+    now: () => nowMs,
+    setTimer() { return {} },
+    clearTimer() {}
+  })
+  const waiting = coordinator.waitForTurn({
+    scopeKey: 'scope-late-runtime-notification',
+    reason: 'precheck_half_open',
+    runtimeKeys: ['runtime-late-notification'],
+    delayMs: 1_000,
+    deadlineAtMs: 600
+  })
+  nowMs = 601
+  assert.equal(coordinator.notifyOneForRuntimeKey('runtime-late-notification'), true)
+  assert.equal(await waiting, 'deadline_exceeded', 'runtime 通知到达绝对 deadline 后不得越界唤醒刷新')
+  assert.deepEqual(coordinator.snapshot(), { scopeCount: 0, waiterCount: 0, timerCount: 0 })
 }
 
 async function testCoordinationBudgetUsesEarliestRetryAndIgnoresDuplicateWake(): Promise<void> {

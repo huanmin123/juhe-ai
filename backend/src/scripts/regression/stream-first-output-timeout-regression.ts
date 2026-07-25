@@ -344,12 +344,7 @@ async function main(): Promise<void> {
     assert.equal(overloadedBeforeOutputAccount?.status, 'active', '未输出前容量错误不应把账号置为临时不可调用')
     assert.equal(overloadedBeforeOutputAccount?.streamFailureCount, 0, '未输出前容量错误不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertResponseInspectionAuditMetadata(overloadedBeforeOutputCredential.account.id, {
-      upstreamErrorCode: 'server_is_overloaded',
-      rewriteErrorCode: 'server_is_overloaded',
-      fallbackReason: 'before_downstream_write_response_failure',
-      downstreamWritten: false
-    })
+    await assertNoResponseInspectionPolicyMatch(overloadedBeforeOutputCredential.account.id)
 
     const failedEventServerRetryResult = await requestStreamScenario(baseUrl, failedEventServerRetryCredential.apiKey.key, 'server-retry-response-failed-then-success')
     assert(failedEventServerRetryResult.streamText.includes('resp_failed_retry_backup'), `流内失败后应切备用账号完成：${failedEventServerRetryResult.streamText}`)
@@ -357,7 +352,7 @@ async function main(): Promise<void> {
     assert(!failedEventServerRetryResult.streamText.includes('server_is_overloaded'), `服务端切号成功时不应把原始流内失败下发客户端：${failedEventServerRetryResult.streamText}`)
     assert(!failedEventServerRetryResult.streamText.includes('response.failed'), `流内失败服务端切号成功时客户端不应看到失败事件：${failedEventServerRetryResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'server_is_overloaded')
+    assertFailedUsageRecordErrorCode(failedEventServerRetryCredential.primaryAccount.id, 'upstream_protocol_failure')
     assertSuccessfulUsageRecord(failedEventServerRetryCredential.backupAccount.id, { inputTokens: 3, outputTokens: 1 })
     const fourAccountServerRetryResult = await requestStreamScenario(baseUrl, fourAccountServerRetryCredential.apiKey.key, 'server-retry-fourth-account-then-success')
     assert(fourAccountServerRetryResult.streamText.includes('resp_fourth_retry_success'), `隐藏重试不应限制为前三个账号，应继续切到第 4 个账号完成：${fourAccountServerRetryResult.streamText}`)
@@ -389,12 +384,7 @@ async function main(): Promise<void> {
     assert.equal(genericErrorEventAccount?.status, 'active', '未知 error 事件未输出前不应把账号置为临时不可调用')
     assert.equal(genericErrorEventAccount?.streamFailureCount, 0, '未知 error 事件未输出前不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertResponseInspectionAuditMetadata(genericErrorEventCredential.account.id, {
-      upstreamErrorCode: 'internal_server_error',
-      rewriteErrorCode: 'internal_server_error',
-      fallbackReason: 'before_downstream_write_response_failure',
-      downstreamWritten: false
-    })
+    await assertNoResponseInspectionPolicyMatch(genericErrorEventCredential.account.id)
 
     const cyberPolicyResult = await requestStreamFailureBeforeOutput(baseUrl, cyberPolicyCredential.apiKey.key, 'cyber-policy-before-output')
     assert(!cyberPolicyResult.streamText.includes('cyber_policy'), `未输出前 cyber_policy 不应把原始错误码发给客户端：${cyberPolicyResult.streamText}`)
@@ -405,40 +395,30 @@ async function main(): Promise<void> {
     assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertResponseInspectionAuditMetadata(cyberPolicyCredential.account.id, {
-      upstreamErrorCode: 'cyber_policy',
-      rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_response_failure',
-      downstreamWritten: false
-    })
+    await assertNoResponseInspectionPolicyMatch(cyberPolicyCredential.account.id)
 
     const cyberPolicyAfterOutputResult = await requestStreamScenario(baseUrl, cyberPolicyAfterOutputCredential.apiKey.key, 'cyber-policy-after-output')
-    assert(!cyberPolicyAfterOutputResult.streamText.includes('hello'), `尚未写入下游时不应泄露同批次前序输出：${cyberPolicyAfterOutputResult.streamText}`)
-    assert(!cyberPolicyAfterOutputResult.streamText.includes('cyber_policy'), `尚未写入下游时 cyber_policy 不应把原始错误码发给客户端：${cyberPolicyAfterOutputResult.streamText}`)
-    assert(cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时 cyber_policy 应改写为可重试错误：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(cyberPolicyAfterOutputResult.streamText.includes('hello'), `已经提交的语义输出必须保留：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(!cyberPolicyAfterOutputResult.streamText.includes('cyber_policy'), `输出后不应把不可信上游错误码发给客户端：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(!cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后不得拼接网关错误或透明重放：${cyberPolicyAfterOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const cyberPolicyAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
     assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
     assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
     await auditLogQueue.flushAllAuditLogQueueAsync()
-    await assertResponseInspectionAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
-      upstreamErrorCode: 'cyber_policy',
-      rewriteErrorCode: 'upstream_retryable_error',
-      fallbackReason: 'before_downstream_write_response_failure',
-      downstreamWritten: false
-    })
+    await assertNoResponseInspectionPolicyMatch(cyberPolicyAfterOutputCredential.account.id)
 
     const contextWindowResult = await requestStreamFailureBeforeOutput(baseUrl, contextWindowCredential.apiKey.key, 'context-window-before-output')
     assert(!contextWindowResult.streamText.includes('context_length_exceeded'), `未输出前 context_length_exceeded 不应把原始错误码发给客户端：${contextWindowResult.streamText}`)
     assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
-    assert.equal(nonCodexErrorEventResult.status, 200, `普通客户端必须保持上游 SSE 状态：${nonCodexErrorEventResult.status} ${nonCodexErrorEventResult.streamText}`)
-    assert(nonCodexErrorEventResult.contentType.includes('text/event-stream'), `普通客户端必须保持上游 SSE content-type：${nonCodexErrorEventResult.contentType}`)
-    assert(nonCodexErrorEventResult.streamText.includes('response.created'), `普通客户端必须收到上游原始创建事件：${nonCodexErrorEventResult.streamText}`)
-    assert(nonCodexErrorEventResult.streamText.includes('internal_server_error'), `普通客户端必须透明接收上游错误事件：${nonCodexErrorEventResult.streamText}`)
-    assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端不得被改写为网关专用可重试码：${nonCodexErrorEventResult.streamText}`)
+    assert.equal(nonCodexErrorEventResult.status, 503, `普通客户端在输出前失败时应收到稳定网关错误：${nonCodexErrorEventResult.status} ${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.contentType.includes('application/json'), `输出前失败应保持稳定 JSON 错误契约：${nonCodexErrorEventResult.contentType}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('response.created'), `预提交事件不应在失败后泄漏：${nonCodexErrorEventResult.streamText}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('internal_server_error'), `不可信上游错误码不应透传给普通客户端：${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端应收到网关专用可重试码：${nonCodexErrorEventResult.streamText}`)
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
     assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包未输出前不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
@@ -446,10 +426,10 @@ async function main(): Promise<void> {
     assert(overloadedNoBoundaryResult.streamText.includes('upstream_retryable_error'), `EOF 尾包未输出前应按通用兜底改写为可重试错误：${overloadedNoBoundaryResult.streamText}`)
 
     const overloadedAfterOutputResult = await requestServerOverloadedAfterOutput(baseUrl, overloadedAfterOutputCredential.apiKey.key)
-    assert(!overloadedAfterOutputResult.streamText.includes('hello'), `尚未写入下游时不应泄露同批次前序输出：${overloadedAfterOutputResult.streamText}`)
-    assert(!overloadedAfterOutputResult.streamText.includes('server_is_overloaded'), `尚未写入下游时容量错误应按可重试失败改写：${overloadedAfterOutputResult.streamText}`)
-    assert(!overloadedAfterOutputResult.streamText.includes('Our servers are currently overloaded'), `尚未写入下游时容量错误文案应按可重试失败改写：${overloadedAfterOutputResult.streamText}`)
-    assert(overloadedAfterOutputResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时容量错误应给下游明确可重试信号：${overloadedAfterOutputResult.streamText}`)
+    assert(overloadedAfterOutputResult.streamText.includes('hello'), `已经提交的文本输出必须保留：${overloadedAfterOutputResult.streamText}`)
+    assert(!overloadedAfterOutputResult.streamText.includes('server_is_overloaded'), `输出后不得泄漏不可信上游错误码：${overloadedAfterOutputResult.streamText}`)
+    assert(!overloadedAfterOutputResult.streamText.includes('Our servers are currently overloaded'), `输出后不得泄漏不可信上游错误文案：${overloadedAfterOutputResult.streamText}`)
+    assert(!overloadedAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后不得拼接网关错误或透明重放：${overloadedAfterOutputResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const overloadedAfterOutputAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === overloadedAfterOutputCredential.account.id)
@@ -457,9 +437,9 @@ async function main(): Promise<void> {
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().precheckPendingAccountCount, 0, '单次输出后容量错误不应触发账号事前确认')
 
     const outputItemThenFailureResult = await requestStreamScenario(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
-    assert(!outputItemThenFailureResult.streamText.includes('response.output_item.added'), `尚未写入下游时不应泄露同批次 output item：${outputItemThenFailureResult.streamText}`)
-    assert(!outputItemThenFailureResult.streamText.includes('internal_server_error'), `尚未写入下游时 output item 后失败应改写原始错误：${outputItemThenFailureResult.streamText}`)
-    assert(outputItemThenFailureResult.streamText.includes('upstream_retryable_error'), `尚未写入下游时 output item 后失败应给下游明确可重试信号：${outputItemThenFailureResult.streamText}`)
+    assert(!outputItemThenFailureResult.streamText.includes('response.output_item.added'), `尚未提交的 output item 在同批次失败时不得泄漏：${outputItemThenFailureResult.streamText}`)
+    assert(!outputItemThenFailureResult.streamText.includes('internal_server_error'), `output item 后不得泄漏不可信上游错误：${outputItemThenFailureResult.streamText}`)
+    assert(outputItemThenFailureResult.streamText.includes('upstream_retryable_error'), `尚未提交的 output item 失败后应返回稳定可重试错误：${outputItemThenFailureResult.streamText}`)
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const outputItemThenFailureAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === outputItemThenFailureCredential.account.id)
@@ -481,7 +461,7 @@ async function main(): Promise<void> {
       assert(!jsonResponseForStreamResult.text.includes('json response ok'), `已提交 SSE 后不得混入原始 JSON 正文：${jsonResponseForStreamResult.text}`)
     }
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端透明转发上游 SSE 错误、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端不泄漏上游 SSE 错误、输出后保留已提交内容且不重放、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -1621,17 +1601,8 @@ function sampleBucketForTraceId(traceId: string): number {
   return digest.readUInt32BE(0) % 10000
 }
 
-async function assertResponseInspectionAuditMetadata(
-  accountId: string,
-  expected: {
-    upstreamErrorCode: string
-    rewriteErrorCode: string
-    fallbackReason: string
-    downstreamWritten: boolean
-  }
-): Promise<void> {
-  const logs = repositories.listAuditLogs({ accountId, outcome: 'stream_failed', page: 1, pageSize: 20 })
-  let metadata: Record<string, unknown> | undefined
+async function assertNoResponseInspectionPolicyMatch(accountId: string): Promise<void> {
+  const logs = repositories.listAuditLogs({ accountId, page: 1, pageSize: 20 })
   for (const item of logs.items) {
     const detail = repositories.getAuditLogDetail(item.id)
     if (!detail) continue
@@ -1640,19 +1611,13 @@ async function assertResponseInspectionAuditMetadata(
       const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id)
       if (!payloadDetail?.bodyText) continue
       const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
-      if (body.metadata?.responsePolicyMatched === true) {
-        metadata = body.metadata
-        break
-      }
+      assert.notEqual(
+        body.metadata?.responsePolicyMatched,
+        true,
+        `账号 ${accountId} 的不可信上游错误码不应命中内部响应策略`
+      )
     }
-    if (metadata) break
   }
-  assert(metadata, `未找到账号 ${accountId} 的响应检查审计日志`)
-  assert.equal(metadata.responseInspectionIntercepted, true, '审计元信息应标记 responseInspectionIntercepted')
-  assert.equal(metadata.fallbackReason, expected.fallbackReason, '审计元信息兜底原因不正确')
-  assert.equal(metadata.upstreamErrorCode, expected.upstreamErrorCode, '审计元信息上游错误码不正确')
-  assert.equal(metadata.rewriteErrorCode, expected.rewriteErrorCode, '审计元信息改写错误码不正确')
-  assert.equal(metadata.downstreamWritten, expected.downstreamWritten, '审计元信息 downstreamWritten 不正确')
 }
 
 function listen(server: http.Server): Promise<void> {

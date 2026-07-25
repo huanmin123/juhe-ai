@@ -881,7 +881,13 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_openai_accounts_for_group_result_read_only' } ? OpenAIAccountsForGroupResult :
   T extends { type: 'find_openai_account_for_group_read_only' } ? OpenAIAccountSecret | undefined :
   T extends { type: 'find_account_for_test_read_only' } ? AccountSummary | undefined :
-  T extends { type: 'find_openai_oauth_account_for_refresh_read_only' } ? (AccountSummary & { proxyUrl?: string }) | undefined :
+  T extends { type: 'find_openai_oauth_account_for_refresh_read_only' } ? (AccountSummary & {
+    proxyUrl?: string
+    localConfigurationError?: {
+      code: 'oauth_proxy_configuration_invalid'
+      message: string
+    }
+  }) | undefined :
   T extends { type: 'load_gateway_api_key_for_validation_read_only' } ? GatewayApiKeyRow | undefined :
   T extends { type: 'read_gateway_runtime_static_read_only' } ? DbServiceGatewayRuntime :
   T extends { type: 'list_active_client_ip_policies_read_only' } ? ActiveClientIpPolicy[] :

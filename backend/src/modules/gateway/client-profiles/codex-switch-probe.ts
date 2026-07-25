@@ -17,8 +17,6 @@ import {
   isDiagnosticTimeoutSignal
 } from '../../accounts/account-diagnostic-retry-policy.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
-import { recordGatewayUpstreamBucketFailureAsync } from '../runtime/proxy-health.service.js'
-import { getRequestLogger } from '../../../shared/request-context.js'
 import { requestGatewayDbService } from '../runtime/gateway-db-service-request.js'
 
 export interface CodexSwitchProbeResult {
@@ -94,20 +92,14 @@ export async function probeCodexSwitchCandidateAccount(
       })
       lastResult = result
       if (result.success || !shouldRetryCodexSwitchProbeSameAccount(attemptSignal, input.signal, attemptIndex)) {
-        const probeResult = codexSwitchProbeResultFromAccountTest(account, result, startedAt)
-        await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
-        return probeResult
+        return codexSwitchProbeResultFromAccountTest(account, result, startedAt)
       }
     }
-    const probeResult = lastResult
+    return lastResult
       ? codexSwitchProbeResultFromAccountTest(account, lastResult, startedAt)
       : failedProbe(account, startedAt, 'account_test_failed', 'Codex 切号真实账号测试失败：未执行探针')
-    await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
-    return probeResult
   } catch (error) {
-    const probeResult = failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
-    await recordCodexSwitchProbeBucketFailure(account, probeResult, input.signal)
-    return probeResult
+    return failedProbe(account, startedAt, 'account_test_failed', errorMessage(error))
   }
 }
 
@@ -143,23 +135,6 @@ function codexSwitchProbeResultFromAccountTest(
     modelMappingSource: result.modelMappingSource,
     sourceEndpointFamily: result.sourceEndpointFamily,
     upstreamEndpointFamily: result.upstreamEndpointFamily
-  }
-}
-
-async function recordCodexSwitchProbeBucketFailure(
-  account: UpstreamAccount,
-  result: CodexSwitchProbeResult,
-  signal?: AbortSignal
-): Promise<void> {
-  if (result.success || signal?.aborted) return
-  try {
-    await recordGatewayUpstreamBucketFailureAsync(account, `Codex 切号探针失败：${result.errorCode ?? 'account_test_failed'}`)
-  } catch (error) {
-    getRequestLogger().warn({
-      event: 'gateway_codex_switch_probe_bucket_failure_record_failed',
-      accountId: account.id,
-      error: errorMessage(error)
-    }, 'Codex 切号探针失败后记录上游桶运行态失败失败')
   }
 }
 

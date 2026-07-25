@@ -163,6 +163,7 @@ export async function selectAccountApiKeyForDispatch(
   account: UpstreamAccount,
   options: {
     excludeFingerprints?: Iterable<string>
+    continueAfterFingerprint?: string
   } = {}
 ): Promise<UpstreamAccount | undefined> {
   if (account.type !== 'api_key') {
@@ -181,11 +182,21 @@ export async function selectAccountApiKeyForDispatch(
   })
   const fixedFingerprint = account.selectedApiKeyFingerprint?.trim()
   if (fixedFingerprint && apiKeyPoolIsolationEnabled) {
+    const excludedFingerprints = new Set(options.excludeFingerprints ?? [])
+    if (excludedFingerprints.has(fixedFingerprint)) {
+      return undefined
+    }
     const fixed = apiKeyEntries.find((entry) => entry.fingerprint === fixedFingerprint)
     if (!fixed) {
       return undefined
     }
-    return accountWithSelectedApiKey(account, fixed.key, fixed.fingerprint, fixed.index)
+    return accountWithSelectedApiKey(
+      account,
+      fixed.key,
+      fixed.fingerprint,
+      fixed.index,
+      account.selectedApiKeyTransientGeneration
+    )
   }
 
   const transientStates = await loadGatewayAccountApiKeyTransientStatesForDispatch(
@@ -193,14 +204,16 @@ export async function selectAccountApiKeyForDispatch(
     apiKeyEntries.map((entry) => entry.fingerprint)
   )
 
+  const runtimeStates = [
+    ...(account.apiKeyRuntimeStates ?? []),
+    ...transientStates
+  ]
   const selected = await selectAccountRuntimeApiKeyEntryAsync({
     accountId,
     credentials,
     excludeFingerprints: options.excludeFingerprints,
-    runtimeStates: [
-      ...(account.apiKeyRuntimeStates ?? []),
-      ...transientStates
-    ]
+    continueAfterFingerprint: options.continueAfterFingerprint,
+    runtimeStates
   })
   if (!selected && apiKeyPoolIsolationEnabled) {
     return undefined
@@ -213,7 +226,10 @@ export async function selectAccountApiKeyForDispatch(
     account,
     selected.key,
     apiKeyPoolIsolationEnabled ? selected.fingerprint : undefined,
-    apiKeyPoolIsolationEnabled ? selected.index : undefined
+    apiKeyPoolIsolationEnabled ? selected.index : undefined,
+    apiKeyPoolIsolationEnabled
+      ? runtimeStates.find((state) => state.keyFingerprint === selected.fingerprint && state.transientGeneration !== undefined)?.transientGeneration
+      : undefined
   )
 }
 
@@ -221,13 +237,15 @@ function accountWithSelectedApiKey(
   account: UpstreamAccount,
   apiKey: string,
   selectedApiKeyFingerprint?: string,
-  selectedApiKeyIndex?: number
+  selectedApiKeyIndex?: number,
+  selectedApiKeyTransientGeneration?: string
 ): UpstreamAccount {
   return {
     ...account,
     apiKey,
     selectedApiKeyFingerprint,
     selectedApiKeyIndex,
+    selectedApiKeyTransientGeneration,
     credentials: {
       ...account.credentials,
       api_key: apiKey

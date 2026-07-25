@@ -5,6 +5,7 @@ import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   isEffectiveOpenAIStreamRequest,
+  isStartedUpstreamTransportError,
   requestUpstream,
   upstreamRequestTimeoutMs,
   upstreamSocketTimeoutMs,
@@ -18,6 +19,12 @@ import {
 } from '../codex-responses/chat-bridge-state.js'
 import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
+
+const primaryStartedGatewayTransportErrors = new WeakSet<object>()
+
+export function isPrimaryStartedGatewayTransportError(error: unknown): boolean {
+  return isWeakSetValue(error) && primaryStartedGatewayTransportErrors.has(error)
+}
 
 interface PerformUpstreamRequestAttemptInput {
   req: Request
@@ -100,6 +107,9 @@ export async function performUpstreamRequestAttempt(
       proxyEnabled: Boolean(account.proxyUrl)
     }, 'success', fetchHeadersStartedAt)
   } catch (error) {
+    if (isStartedUpstreamTransportError(error) && isWeakSetValue(error)) {
+      primaryStartedGatewayTransportErrors.add(error)
+    }
     logRequestStage('upstream.fetch_headers', {
       accountId: account.id,
       providerCode: account.providerCode,
@@ -180,6 +190,10 @@ export async function performUpstreamRequestAttempt(
     body: transformedResponse.body,
     codexResponsesGuardMarker: createCodexResponsesGuardMarker('raw_upstream')
   }
+}
+
+function isWeakSetValue(value: unknown): value is object {
+  return (typeof value === 'object' && value !== null) || typeof value === 'function'
 }
 
 function upstreamTransportForAttempt(

@@ -225,13 +225,14 @@ export class AnthropicStreamInspector {
     const event = parseAnthropicSseEventText(rawText)
     const eventType = event.eventType || event.eventName || eventName || 'message'
     const data = event.data
-    const summary = this.classifyEvent(eventType, data, event.dataParseError, this.dataBytes)
+    const summary = this.classifyEvent(eventType, event.eventName || eventName, data, event.dataParseError, this.dataBytes)
     this.recordEventSummary(summary)
     this.resetEvent()
   }
 
   private classifyEvent(
     eventType: string,
+    eventName: string,
     data: Record<string, unknown> | undefined,
     parseError: boolean,
     dataBytes: number
@@ -244,7 +245,7 @@ export class AnthropicStreamInspector {
       this.inspection.recentEventTypes.shift()
     }
 
-    const error = data ? extractAnthropicStreamEventError(data) : undefined
+    const error = data ? extractAnthropicStreamEventError(data, eventType, eventName) : undefined
     const failed = Boolean(error)
     const terminal = eventType === 'message_stop' || failed
     const outputText = data ? outputTextFromAnthropicStreamEvent(eventType, data) : undefined

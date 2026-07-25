@@ -43,8 +43,9 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
     const token = requiredKey(input.accrualToken, 'accrualToken')
     if (!this.states.has(state.poolKey)) return cloneSameTierExplorationState(state)
     if (input.eligible && !state.accruedTokens.includes(token)) {
+      // Keep a rolling idempotency window; a full window must not freeze a hot pool forever.
       if (state.accruedTokens.length >= SAME_TIER_EXPLORATION_IDENTITY_CAPACITY) {
-        return cloneSameTierExplorationState(state)
+        state.accruedTokens = state.accruedTokens.slice(-(SAME_TIER_EXPLORATION_IDENTITY_CAPACITY - 1))
       }
       state.credit = Math.min(SAME_TIER_EXPLORATION_CREDIT_CAP, state.credit + SAME_TIER_EXPLORATION_CREDIT_INCREMENT)
       state.accruedTokens = [...state.accruedTokens, token]

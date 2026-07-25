@@ -9,9 +9,19 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
-import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../../modules/gateway/dispatch/upstream-dispatch.js'
+import {
+  fetchFirstAvailableUpstream,
+  UpstreamAttemptError,
+  type GatewayUpstreamRequestCoordinationContext
+} from '../../modules/gateway/dispatch/upstream-dispatch.js'
 import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
 import { clearHighConcurrencyGroupQueues } from '../../modules/gateway/runtime/high-concurrency-queue.service.js'
+import { ServerRetryBudget } from '../../modules/gateway/runtime/server-retry-budget.js'
+import {
+  GatewayRequestAttemptTracker,
+  GatewayRequestWallBudget,
+  RouteCoordinationBudget
+} from '../../modules/gateway/routing/route-coordination.js'
 import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
@@ -38,6 +48,7 @@ const [databaseModule, usageRecordQueue, usageRecordShards] = await Promise.all(
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  accountCircuitConfirmationFailuresRequired: 2,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
@@ -83,6 +94,7 @@ const auditCapture = {
 
 let holdAndReleaseServer: http.Server | undefined
 let hitAccountIds: string[] = []
+let requestCoordinationSequence = 0
 
 try {
   clearAccountConcurrency()
@@ -107,14 +119,9 @@ try {
   assert.equal(retrySlot.acquired, true, '短等回归前应成功占用账号并发槽')
   setTimeout(() => retrySlot.release(), 950)
 
-  const retryResult = await fetchFirstAvailableUpstream(
+  const retryResult = await fetchTestUpstream(
     buildRequest(),
-    [retryAccount],
-    settings,
-    usageContext,
-    auditCapture,
-    undefined,
-    new AbortController().signal
+    [retryAccount]
   )
   assert.equal(retryResult.account.id, retryAccount.id, '账号并发短等后应继续使用原账号')
   assert.equal(retryResult.upstreamUrl, `${retryAccount.baseUrl}/chat/completions`, '账号并发短等后应命中同一上游地址')
@@ -135,14 +142,9 @@ try {
   assert.equal(heldSlot.acquired, true, '测试前应成功占用账号并发槽')
 
   await assert.rejects(
-    fetchFirstAvailableUpstream(
+    fetchTestUpstream(
       buildRequest(),
-      [saturatedAccount],
-      settings,
-      usageContext,
-      auditCapture,
-      undefined,
-      new AbortController().signal
+      [saturatedAccount]
     ),
     (error: unknown) => error instanceof UpstreamAttemptError
       && error.lastAttempt?.upstreamUrl === 'concurrency:limit'
@@ -172,15 +174,9 @@ try {
   assert.equal(highConcurrencyHeldSlot.acquired, true, '高并发排队测试前应先占用账号并发槽')
   const releaseHighConcurrencyHeldSlot = setTimeout(() => highConcurrencyHeldSlot.release(), 1500)
   try {
-    const queuedDispatchResult = await fetchFirstAvailableUpstream(
+    const queuedDispatchResult = await fetchTestUpstream(
       buildRequest(),
       [highConcurrencyQueuedAccount],
-      settings,
-      usageContext,
-      auditCapture,
-      undefined,
-      new AbortController().signal,
-      undefined,
       'text',
       {
         maxQueueWaitMs: 3000,
@@ -212,19 +208,13 @@ try {
   assert.equal(heldImageSlot.acquired, true, '测试前应先占用图像通道槽')
 
   await assert.rejects(
-    fetchFirstAvailableUpstream(
+    fetchTestUpstream(
       buildRequest({
         originalUrl: '/v1/images/generations',
         path: '/images/generations',
         body: { model: 'gpt-image-1', prompt: 'draw a small gateway diagram' }
       }),
       [imageLaneAccount],
-      settings,
-      usageContext,
-      auditCapture,
-      undefined,
-      new AbortController().signal,
-      undefined,
       'image'
     ),
     (error: unknown) => error instanceof UpstreamAttemptError
@@ -238,15 +228,9 @@ try {
   assert.equal(imageLaneFailureUsage?.success, 0, '图像通道满也应写入失败使用记录')
   assert.match(imageLaneFailureUsage?.error_message ?? '', /图像通道并发已达到上限/, '图像通道满使用记录应保留错误原因')
 
-  const textResultWhileImageHeld = await fetchFirstAvailableUpstream(
+  const textResultWhileImageHeld = await fetchTestUpstream(
     buildRequest(),
     [imageLaneAccount],
-    settings,
-    usageContext,
-    auditCapture,
-    undefined,
-    new AbortController().signal,
-    undefined,
     'text'
   )
   assert.equal(textResultWhileImageHeld.response.status, 200, '图像通道满时文本请求仍应使用预留并发槽')
@@ -266,19 +250,13 @@ try {
   assert.equal(configuredHeldImageSlotA.acquired, true, '自定义图像通道上限测试前应占用第一个图像槽')
   assert.equal(configuredHeldImageSlotB.acquired, true, '自定义图像通道上限测试前应占用第二个图像槽')
   await assert.rejects(
-    fetchFirstAvailableUpstream(
+    fetchTestUpstream(
       buildRequest({
         originalUrl: '/v1/images/generations',
         path: '/images/generations',
         body: { model: 'gpt-image-1', prompt: 'draw another gateway diagram' }
       }),
       [configuredImageLaneAccount],
-      settings,
-      usageContext,
-      auditCapture,
-      undefined,
-      new AbortController().signal,
-      undefined,
       'image',
       { imageLaneMaxConcurrency: 2 }
     ),
@@ -286,15 +264,9 @@ try {
       && error.lastAttempt?.upstreamUrl === 'concurrency:limit'
       && error.message.includes('账户图像通道并发已达到上限 2/2')
   )
-  const configuredTextResult = await fetchFirstAvailableUpstream(
+  const configuredTextResult = await fetchTestUpstream(
     buildRequest(),
     [configuredImageLaneAccount],
-    settings,
-    usageContext,
-    auditCapture,
-    undefined,
-    new AbortController().signal,
-    undefined,
     'text',
     { imageLaneMaxConcurrency: 2 }
   )
@@ -321,19 +293,13 @@ try {
   const busyOrderSlot = tryAcquireAccountConcurrency(imageLaneBusyAccount.id, imageLaneBusyAccount.concurrencyLimit, { lane: 'image', laneLimit: 1 })
   assert.equal(busyOrderSlot.acquired, true, '排序测试前应占用第一个账号图像通道')
   hitAccountIds = []
-  const orderedImageResult = await fetchFirstAvailableUpstream(
+  const orderedImageResult = await fetchTestUpstream(
     buildRequest({
       originalUrl: '/v1/images/generations',
       path: '/images/generations',
       body: { model: 'gpt-image-1', prompt: 'route to available image lane' }
     }),
     [imageLaneBusyAccount, imageLaneAvailableAccount],
-    settings,
-    usageContext,
-    auditCapture,
-    undefined,
-    new AbortController().signal,
-    undefined,
     'image'
   )
   assert.equal(orderedImageResult.account.id, imageLaneAvailableAccount.id, '图像请求应优先选择图像通道仍可用的账号')
@@ -396,6 +362,43 @@ async function drainAndRelease(result: Awaited<ReturnType<typeof fetchFirstAvail
   for await (const _chunk of result.response.body ?? []) {
   }
   result.releaseConcurrency()
+}
+
+function fetchTestUpstream(
+  req: Parameters<typeof fetchFirstAvailableUpstream>[0],
+  accounts: Parameters<typeof fetchFirstAvailableUpstream>[1],
+  requestLane: Parameters<typeof fetchFirstAvailableUpstream>[8] = 'text',
+  groupSchedulingPolicy?: Parameters<typeof fetchFirstAvailableUpstream>[9]
+): ReturnType<typeof fetchFirstAvailableUpstream> {
+  return fetchFirstAvailableUpstream(
+    req,
+    accounts,
+    settings,
+    usageContext,
+    auditCapture,
+    undefined,
+    new AbortController().signal,
+    undefined,
+    requestLane,
+    groupSchedulingPolicy,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    createRequestCoordination()
+  )
+}
+
+function createRequestCoordination(): GatewayUpstreamRequestCoordinationContext {
+  const requestId = `${usageContext.traceId}_${++requestCoordinationSequence}`
+  return {
+    scope: 'gateway_request',
+    serverRetryBudget: new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000),
+    gatewayRequestWallBudget: new GatewayRequestWallBudget({ requestAcceptedAtMs: Date.now() }),
+    routeCoordinationBudget: new RouteCoordinationBudget({ requestId }),
+    requestAttemptTracker: new GatewayRequestAttemptTracker()
+  }
 }
 
 function buildRequest(input: {

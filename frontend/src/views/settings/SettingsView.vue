@@ -54,8 +54,8 @@
           <div class="section-heading">
             <div>
               <h3 class="section-title">
-                <span>网关请求体限制</span>
-                <a-tooltip title="控制文本请求进入上游前可承载的最大上下文体积，保存后会随运行时缓存刷新生效。图像生成请求和网关入口硬保护仍保留 64MB 上限。">
+                <span>网关请求与电路</span>
+                <a-tooltip title="控制文本请求体上限和账户传输电路的独立确认阈值，保存后随运行时缓存刷新生效。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -67,6 +67,11 @@
             <div class="setting-item">
               <a-form-item label="文本请求体上限（MB）" tooltip="可设置 1 到 64；调大可承载更长上下文，也会增加单请求内存压力。">
                 <a-input-number v-model:value="systemForm.gatewayTextRawBodyLimitMegabytes" :min="1" :max="64" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="电路独立确认失败次数" tooltip="首次 transport 失败进入待确认；默认还需 2 个不同请求的独立失败证据才熔断，完整 HTTP 响应不计失败。">
+                <a-input-number v-model:value="systemForm.accountCircuitConfirmationFailuresRequired" :min="1" :max="5" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -197,12 +202,12 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="临时状态重试间隔（秒）" tooltip="普通上游失败切号前，同账号原地重试之间等待多久。">
+              <a-form-item label="安全原地重试间隔（秒）" tooltip="仅对可安全重放的文本请求，在主请求已发出且响应头到达前发生传输异常时使用；完整 HTTP、正文中断、配置首字截止和副作用请求不占次数。">
                 <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryIntervalSeconds" :min="0" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="临时状态重试次数" tooltip="普通上游失败会先按该次数原地重试当前账号；仍失败才切换账号并记录临时不可调用。">
+              <a-form-item label="安全原地重试次数" tooltip="整次请求共享的同账户重试上限；兄弟 Key 会先尝试且不占次数。不按上游状态码或正文判断，也不写账户或 Key 状态。">
                 <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryAttempts" :min="0" :max="10" style="width: 100%" />
               </a-form-item>
             </div>
@@ -261,7 +266,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane：当前账号超过该时间仍未返回响应头或非流式首字节时，进入未提交接管。">
+              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane 的唯一 attempt：超时只终止当前尝试；下游未提交返回 503/upstream_outcome_unknown，已写出则结束或断流；不会自动切 Key、账户或分组。">
                 <a-input-number v-model:value="systemForm.imageFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
@@ -363,7 +368,7 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'account-test': ['accountTestTaskConcurrency'],

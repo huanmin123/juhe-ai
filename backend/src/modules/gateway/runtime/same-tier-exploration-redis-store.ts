@@ -222,8 +222,11 @@ local status = nil
 local reservation = nil
 if operation == 'accrue' then
   local token = input['accrualToken']
-  if input['eligible'] and not has_value(state['accruedTokens'], token)
-      and #(state['accruedTokens'] or {}) < identity_capacity then
+  if input['eligible'] and not has_value(state['accruedTokens'], token) then
+    -- Rolling idempotency window: capacity must not permanently freeze a hot pool.
+    while #(state['accruedTokens'] or {}) >= identity_capacity do
+      table.remove(state['accruedTokens'], 1)
+    end
     state['credit'] = math.min(1, tonumber(state['credit'] or 0) + 0.05)
     table.insert(state['accruedTokens'], token)
   end

@@ -244,11 +244,12 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
     return
   }
   try {
-    const report = await testProxyById(req.params.id, { persist: false, deadlineMs: manualProxyTestDeadlineMs })
-    if (!report) {
+    const execution = await testProxyById(req.params.id, { persist: false, deadlineMs: manualProxyTestDeadlineMs })
+    if (!execution) {
       res.status(404).json({ message: '代理不存在' })
       return
     }
+    const { report } = execution
     const after = await requestDbService({
       type: 'update_proxy_test_state',
       proxyId: report.proxyId,
@@ -258,11 +259,12 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
         outboundIp: report.outboundIp,
         outboundRegion: report.outboundRegion,
         lastTestMessage: report.message,
-        lastTestedAt: report.testedAt
+        lastTestedAt: report.testedAt,
+        expectedConfigUpdatedAt: execution.configUpdatedAt
       }
     })
-    if (!after.updated) {
-      throw new Error('代理不存在')
+    if (after.updated && after.proxyStatus !== report.status) {
+      throw new Error('DB service 未确认代理检测状态写入成功')
     }
     await runLoggedOperationAsync(async () => {
       return {

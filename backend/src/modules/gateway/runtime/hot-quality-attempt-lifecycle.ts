@@ -127,7 +127,7 @@ function terminalAttemptObservation(
 ): 'completed' | 'transport_failure' | 'unknown' | 'client_canceled' {
   if (outcome === 'completed_response' || outcome === 'explicit_policy_failure') return 'completed'
   if (outcome === 'client_cancellation') return 'client_canceled'
-  if (outcome === 'unknown') return 'unknown'
+  if (outcome === 'upstream_response_failure' || outcome === 'unknown') return 'unknown'
   return 'transport_failure'
 }
 

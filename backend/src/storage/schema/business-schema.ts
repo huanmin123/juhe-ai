@@ -337,6 +337,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_error_trace_id TEXT,
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
       cooldown_retest_observation_started_at TEXT,
+      cooldown_retest_generation TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
@@ -402,6 +403,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       upstream_attempt_observed INTEGER NOT NULL DEFAULT 0 CHECK (upstream_attempt_observed IN (0, 1)),
       backoff_level INTEGER NOT NULL DEFAULT 0 CHECK (backoff_level >= 0),
       consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+      confirmation_failures_required INTEGER NOT NULL DEFAULT 1 CHECK (confirmation_failures_required BETWEEN 1 AND 5),
+      confirmation_failure_evidence_keys_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(confirmation_failure_evidence_keys_json) AND json_type(confirmation_failure_evidence_keys_json) = 'array'),
       recovering_successes INTEGER NOT NULL DEFAULT 0 CHECK (recovering_successes >= 0),
       last_failure_class TEXT CHECK (last_failure_class IN ('connect_failed', 'timeout_before_complete', 'read_interrupted', 'incomplete_response', 'explicit_policy')),
       retained_until_ms INTEGER,
@@ -412,6 +415,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
       CHECK (length(incident_id) BETWEEN 1 AND 256),
       CHECK (length(transition_id) BETWEEN 1 AND 256),
+      CHECK (consecutive_failures <= confirmation_failures_required),
+      CHECK (json_array_length(confirmation_failure_evidence_keys_json) <= confirmation_failures_required + 1),
       CHECK ((scope_kind = 'account' AND key_fingerprint IS NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
         OR (scope_kind = 'key' AND key_fingerprint IS NOT NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
         OR (scope_kind = 'protocol_model' AND key_fingerprint IS NULL AND protocol_code IS NOT NULL AND request_lane IS NOT NULL AND model_family IS NOT NULL)),
@@ -497,6 +502,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_error_message TEXT,
       last_trace_id TEXT,
       last_probe_at TEXT,
+      probe_claim_token TEXT,
+      probe_claimed_until TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
@@ -1162,13 +1169,52 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
   `)
   ensureApiKeyPurposeSchema(database)
+  ensureAccountCooldownRetestGenerationSchema(database)
+  ensureAccountCircuitConfirmationSchema(database)
+  ensureAccountApiKeyProbeClaimSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
 }
 
+function ensureAccountCooldownRetestGenerationSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(accounts)').all() as Array<{ name?: string }>
+  if (columns.length === 0) return
+  if (!columns.some((column) => column.name === 'cooldown_retest_generation')) {
+    database.exec('ALTER TABLE accounts ADD COLUMN cooldown_retest_generation TEXT')
+  }
+}
+
+function ensureAccountApiKeyProbeClaimSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(account_api_key_runtime_states)').all() as Array<{ name?: string }>
+  if (columns.length === 0) return
+  if (!columns.some((column) => column.name === 'probe_claim_token')) {
+    database.exec('ALTER TABLE account_api_key_runtime_states ADD COLUMN probe_claim_token TEXT')
+  }
+  if (!columns.some((column) => column.name === 'probe_claimed_until')) {
+    database.exec('ALTER TABLE account_api_key_runtime_states ADD COLUMN probe_claimed_until TEXT')
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe_claim
+      ON account_api_key_runtime_states(status, next_probe_at ASC, probe_claimed_until ASC)
+      WHERE next_probe_at IS NOT NULL;
+  `)
+}
+
+function ensureAccountCircuitConfirmationSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name?: string }>
+  if (columns.length === 0) return
+  if (!columns.some((column) => column.name === 'confirmation_failures_required')) {
+    database.exec('ALTER TABLE account_circuit_incidents ADD COLUMN confirmation_failures_required INTEGER NOT NULL DEFAULT 1 CHECK (confirmation_failures_required BETWEEN 1 AND 5)')
+  }
+  if (!columns.some((column) => column.name === 'confirmation_failure_evidence_keys_json')) {
+    database.exec("ALTER TABLE account_circuit_incidents ADD COLUMN confirmation_failure_evidence_keys_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(confirmation_failure_evidence_keys_json) AND json_type(confirmation_failure_evidence_keys_json) = 'array')")
+  }
+}
+
 function ensureApiKeyPurposeSchema(database: DatabaseSync): void {
   const columns = database.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name?: string }>
+  if (columns.length === 0) return
   if (!columns.some((column) => column.name === 'purpose')) {
     database.exec("ALTER TABLE api_keys ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat'))")
   }

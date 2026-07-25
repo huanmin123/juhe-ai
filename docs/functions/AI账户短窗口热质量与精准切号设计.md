@@ -1,16 +1,16 @@
 # AI 账户短窗口热质量与精准切号设计
 
-> 当前状态：已实现并完成开发验收（2026-07-23）；执行证据由 [PLAN-0158-20260722T160050118Z](../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 跟踪。生产部署与生产流量验证不在本次范围内。
+> 当前状态：Node 实现与 Mock / SQLite / 隔离 Redis、PostgreSQL 证据已在本计划分层门禁中验证；最终代码收口、远端同步和真实账户探针仍待完成。生产部署与生产流量验证不在本次范围内。
 >
 > 2026-07-22 多 Agent 复核修订稿：同层受控探索、整请求墙钟总预算（默认 270s handoff）、实例级运行态键与物理凭据去重、同层唯一候选最多一轮、生命周期 saga 闭环。
 >
-> 本文定义普通路由下的账户短窗口热质量、故障单飞、受控半开、请求内精准切号和客户端止损目标。现行实现事实仍以 [策略路由设计](策略路由设计.md)、[普通路由速度优先延迟切换设计](普通路由速度优先延迟切换设计.md)、[AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md) 为准；本文评审通过并实施时，必须同步收敛其中与本设计冲突的普通失败、优先级边界和半开语义。
+> 本文定义普通路由下的账户短窗口热质量、故障单飞、受控半开、请求内精准切号和客户端止损目标。账户错误和状态变更的最高约束是 [AI 账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md)；本专题负责路由、预算与电路实现事实，其他专题出现冲突时必须同步修正，不能反向覆盖该边界。
 
 ### 实现状态快照（2026-07-23）
 
 当前代码已经包含真实网关 attempt 热质量生命周期、同层探索 credit / cursor、公共首字截止与墙钟裁剪、账户电路 memory / Redis adapter、控制面 ledger / bridge、受控恢复和有界路由观测摘要。dispatch revision 对 owner / authorized 实例原子 fan-out，投影保持单调并过滤旧 durable incident；控制面持久化失败使用有界批次、覆盖合并和 fail-closed 重建门禁。
 
-开发验收已覆盖 mock 并发与异常矩阵、真实共享 Redis 多 adapter、临时 PostgreSQL、前后端类型检查/构建和最小真实模型请求。生产部署、生产流量和 Redis 服务端高可用故障切换仍需独立授权与验证。
+此前基线已覆盖 Mock 并发与异常矩阵、隔离 Redis 多 adapter、临时 PostgreSQL 和前后端类型检查/构建；后续代码修复与远端同步完成后仍须按 PLAN-0172 在同一最终 SHA 重跑。最小真实账户探针尚未执行，临时 PostgreSQL 测试库清理仍待收口；生产部署、生产流量和 Redis 服务端高可用故障切换不在本次验证范围内。
 
 ## 1. 背景
 
@@ -18,7 +18,7 @@
 
 现行链路还存在以下组合风险：
 
-- 单个请求先在同一账号原地确认多次，其他并发请求也能同时命中该账号，形成失败风暴。
+- 如果同账户原地重试按账号或候选重复发放，其他并发请求还能同时命中该账号，会形成失败风暴；因此必须使用整请求共享 token，并和电路 confirmation lease 完全隔离。
 - 普通失败建立共享软阻断较晚，后台确认生效前，多 IP、多会话仍可重复访问同一异常账号。
 - 普通运行态降级和 IP 回避保留账户优先级层，异常高优先级账号可能持续挡住低优先级健康账号。
 - 现有质量统计以后台聚合和持久结果为主，不适合作为秒级调度事实；短窗口传输完成率也不能只作为报表字段而不进入可靠性判断。
@@ -35,7 +35,7 @@
 - performance 模式使用 Redis、standalone 模式使用进程内存保存热状态，不把热质量写入业务库或统计结果库。
 - 一个账号出现网关本地可验证的 transport、timeout、读取中断或未完成响应后，只允许一个请求持有确认租约继续验证；其他请求立即排除该账号并重新选号。
 - 高优先级账号异常时允许当前请求有界逃逸到下一优先级层，避免客户端被异常主账号长期卡住。
-- 为全部客户端恢复全局整请求墙钟预算（默认 270 秒）：服务端切号不得把客户端时间耗尽；到期 handoff 客户端重试重选。
+- 为可重放请求恢复全局整请求墙钟预算（默认 270 秒）：服务端切号不得把客户端时间耗尽；到期 handoff 客户端重试重选。图片和其他 at-most-once 请求在派发前仍受协调预算约束，派发后的 in-flight attempt 改由 lane 专用时限约束。
 - 保持用户配置的超级优先、账号优先级、备用和分组边界；禁止跨优先级 / 备用层探索，只允许同配置层受控观测。
 - 同层受控探索只重分配真实用户请求的一小部分，不制造合成业务流量，也不让冷账号因无样本永远进不了同层排序。
 - 明确路由策略是最高业务调度层；账户电路、热质量和切号只能在路由选定的分组与候选范围内工作，保证速度优先继续作为路由层目标覆盖账户偏好。
@@ -81,7 +81,7 @@ API Key
 - `cost_first`：本文简称“普通模式”。优先尊重账户配置、会话亲和和稳定顺序，仅在账号已不可调度或当前请求证明确实失败时切换。
 - `speed_first`：本文简称“快速模式”。在硬约束和账户可用性通过后，路由层首字速度目标高于超级优先、账号优先级、备用、会话亲和与热质量；确认进入 `latency_degraded` 的账号可以被同分组未降级硬可承接账号越过。
 
-两者共用账户故障电路、短窗口可靠性、首字定义、计时起点和 `firstByteDeadlineMs`。普通模式把截止时仍无首字解释为本地存活失败；只有快速模式继续启用慢样本累计、`latency_degraded`、确认慢后切号和速度恢复探针。
+两者共用账户故障电路、短窗口可靠性、首字定义、计时起点和 `firstByteDeadlineMs`。配置截止只产生请求级调度结果，对 transport 电路、Key 状态和共享可靠性保持中性：普通模式可据此推进当前请求候选，快速模式还启用慢样本累计、`latency_degraded`、确认慢后切号和速度恢复探针。连接/读取失败与 lane hard timeout 才进入账户故障电路。
 
 ### 3.3 路由结果内的三类事实
 
@@ -213,23 +213,23 @@ hybridScoreDecision
 
 历史实现曾把 270 秒当成整请求绝对墙钟总预算（PLAN-0130），后为支持长会话/生图被改成只累计零可派发等待（PLAN-0134）。结果是：有多个账号可切时，服务端可能把客户端时间耗尽在连续 attempt 上，客户端反而来不及自己重试重选。
 
-本设计恢复**全局通用**的整请求墙钟预算，同时保留等待预算语义。三类预算全部客户端、全部路由模式共用，不是 Codex 特例：
+本设计为**可重放文本**恢复独立整请求墙钟预算，同时保留等待预算语义。三类预算不是 Codex 特例，但是否允许继续派发仍必须服从请求的重放安全性；已派发图片和其他副作用请求不进入文本重放墙钟：
 
 | 预算 | 默认 | 是否暂停 | 计什么 | 到期动作 |
 | --- | --- | --- | --- | --- |
-| `GatewayRequestWallBudget` | 270 秒墙钟 | **不暂停** | 从请求接入到决策点的绝对墙钟；约束切号、confirmation、探索、rescue、等待与后续 attempt 启动 | 决策点到期则停止服务端继续切号，把可重试错误交还客户端，让客户端重新请求并重新选号 |
+| `GatewayRequestWallBudget` | 固定默认 270 秒墙钟 | **不暂停** | 可重放文本从请求接收到重放决策点的绝对墙钟；贯穿 Key、账户、分组、排队、attempt、confirmation、探索和 rescue | 决策点到期则停止服务端继续切号，把可重试错误交还客户端，让客户端重新请求并重新选号；不机械中断已经派发的 at-most-once 图片 attempt |
 | `ServerRetryBudget` | 270 秒累计 | attempt/读取期间暂停 | 仅零可派发、半开等待、并发槽/FIFO 等待 | 可恢复等待交还客户端；不等于硬无号 |
 | `routeCoordinationBudget` | 3 秒累计 | fetch/首字/读取期间暂停 | 故障后重新选号、层切换、短等待 | 返回 `temporarily_blocked` 或 `request_exhausted`，由路由协调器解释 |
 
 `GatewayRequestWallBudget` 规则：
 
-1. `gatewayRequestWallDeadlineAtMs = requestAcceptedAtMs + gatewayRequestWallBudgetMs`，默认 `gatewayRequestWallBudgetMs = noAvailableAccountWaitTimeoutSeconds * 1000`（当前 270 秒），请求开始只解析一次，跨分组/主备/轮询/混合智能均不重置。
+1. `gatewayRequestWallDeadlineAtMs = requestAcceptedAtMs + gatewayRequestWallBudgetMs`，`gatewayRequestWallBudgetMs` 独立固定默认 270 秒，不从 `noAvailableAccountWaitTimeoutSeconds` 派生；请求开始只解析一次，跨 Key、账户、分组、主备、轮询和混合智能均不重置。
 2. 只在**决策点**强制检查：启动下一个账号 attempt、confirmation、half-open、同层探索、快速模式 rescue、进入可恢复等待、跨分组 fallback。
 3. 决策点若 `now + finalResponseReserveMs >= gatewayRequestWallDeadlineAtMs`，或剩余时间不够一次有意义 attempt，则不得再启动新 attempt；路由协调器返回客户端可重试的服务端接管结束（handoff），**不**把账号写成共享硬耗尽。
 4. 下游**已提交**可见语义内容后，墙钟预算不再为了“再切一个号”而中断当前流；当前流继续受 lane timeout / idle timeout 约束。墙钟预算的职责是防止把客户端时间烧在切换上，不是截断已经对客户端可见的成功响应。
-5. 下游未提交时，墙钟到期可以结束当前无首字/未提交 attempt，并 handoff；不得为了“再试更多号”越过 deadline。
-6. 图像等长耗时 lane：单次已取得首字并正常推进的 attempt 可以超过 270 秒完成读取；但**切换阶段**仍受同一墙钟约束。10 个账号连续尝试若累计墙钟超过 270 秒，即使后面还有未试账号，也先交还客户端重试重选，而不是在服务端耗死。
-7. 该机制对 Codex、Claude Code、Gemini CLI、generic 客户端一视同仁；动机包含“客户端自身有时间上限”，实现不得做成供应商或画像特例。
+5. 对可重放文本，下游未提交时墙钟到期可以结束当前无首字/未提交 attempt 并 handoff；不得为了“再试更多号”越过 deadline。正文已中断、完整 HTTP 和副作用请求不能借墙钟到期获得额外重放资格。
+6. 图片等 at-most-once lane：派发前的候选扫描、并发排队和零可派发等待仍受协调预算约束；一旦上游传输已经开始，不再存在自动切换阶段。图片 in-flight attempt 使用独立 600 秒首响应、120 秒 raw chunk idle 与 3600 秒未提交上限，可按 10–15 分钟生成场景配置并跨过文本 270 秒墙钟，但只能执行一次。超时或断尾时，下游未提交返回 `503/upstream_outcome_unknown`，已写出则结束或断流，不能改写响应或切 Key、账户、分组。
+7. 可重放文本墙钟对 Codex、Claude Code、Gemini CLI、generic 客户端一视同仁；动机包含“客户端自身有时间上限”，实现不得做成供应商或画像特例。
 
 `requestPrecommitDeadlineAtMs` 由墙钟预算派生：默认等于 `gatewayRequestWallDeadlineAtMs`，并再预留 `finalResponseReserveMs`（建议 1–2 秒）给最终错误/响应写出。每次 attempt 的有效首字 deadline 必须裁剪为：
 
@@ -328,7 +328,7 @@ spend 1 credit = 1 same_tier_exploration assignment
 
 ## 5. 热质量模型
 
-本文“热质量”默认只表示网关可自动验证的传输完成可靠性与首字速度，不等于上游业务可用性。未配置高级规则时，一个持续快速返回完整 HTTP `401 / 429 / 5xx` 或任意错误正文的账号仍会被视为“传输完整且首字快”；这是“不依赖不可控上游响应语义”的刻意边界，不是遗漏。账户所有者若希望这些响应影响切号、Key 或账号状态，必须在前端高级设置中显式配置规则。
+本文“热质量”只统计可验证的协议成功、传输失败和首字速度，不等于按上游状态码猜测业务可用性。只有协议结构验证成功的响应进入 `completedResponses` 和正向速度样本；完整 HTTP `401 / 429 / 5xx`、任意错误正文和 `2xx-invalid-body` 进入中性的 `upstreamResponseFailures` 诊断计数，不抬高也不降低共享可靠性。账户所有者若希望特定响应产生语义动作，必须在前端高级设置中显式配置规则。
 
 ### 5.1 存储边界
 
@@ -353,7 +353,7 @@ spend 1 credit = 1 same_tier_exploration assignment
 
 只有多个独立本地 transport 事实或用户显式高级策略明确指定账号动作时，才写全局 `accountRuntimeKey` 电路。单模型、单 endpoint 或单 Key 故障不能因为共享物理账号而阻断其他模型或另一条快速路由中的健康能力。任何上游状态码、响应头、错误码或正文都不能作为系统自动扩大作用域的证据。
 
-自动从 `protocol_model` 扩大到 `account` 的首轮固定条件为：同一 `accountRuntimeKey` 在 60 秒内至少有 2 个不同 `protocol_model` 作用域分别完成 confirmation 并进入 `OPEN`，合计至少 3 次本地可验证失败，且从最早一条升级证据之后没有该账号的 transport 完整响应。升级证据使用有界 scope set、事件 ID 去重和 account generation 的原子 CAS；任一新的完整响应清除尚未提交的聚合升级证据，但不提前关闭已经建立的 account 电路。实现不得自行把单作用域的并发失败扩大成账号级故障。
+自动从 `protocol_model` 扩大到 `account` 只按窗口内当前仍为 `OPEN` 的独立 scope 计数。`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 默认 `3`、合法范围 `3..64`；`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 默认 `600000ms`、合法范围 `60000..86400000ms`。scope key 固定包含 `accountRuntimeKey + protocolProfile + requestLane + modelBucket`；同 scope 重复失败、较大的 confirmation 计数和同坏会话并发都只贡献一个 scope。每个 scope 的新证据只刷新自己的观察时间，窗口滚动淘汰过期项；任一新的完整 framing 清除尚未提交的聚合升级证据，但不提前关闭已经建立的 account 电路。实现不得把阈值配置到 3 以下，也不得把单作用域的并发失败扩大成账号级故障。
 
 热质量按以下维度隔离：
 
@@ -376,6 +376,7 @@ accountRuntimeKey
 ```text
 attempts
 completedResponses
+upstreamResponseFailures
 localTransportFailures
 timeouts
 readInterruptions
@@ -400,7 +401,7 @@ Redis 更新必须使用原子脚本或等价 Store 操作完成“校验 attemp
 
 逻辑终态键为 `gateway-attempt-terminal:v1:{attemptId}`，保存有界 `terminalOutcomeId / outcomeClass / failureScope / source / createdAtMs`，TTL 至少 1 小时；不得保存上游状态码、响应头或正文。后续质量、电路和 usage 投影都以 `terminalOutcomeId` 去重。
 
-`attempts` 在真实上游派发成功后递增，用于审计实际负载。同一个 attempt 在可靠性计数中只能有一个终态：命中用户显式高级规则的失败动作优先计入 `explicitPolicyFailures`，不再同时计入 `completedResponses`；未命中用户高级规则的完整响应计入 `completedResponses`；形成完整响应前的本地失败计入对应本地失败字段；客户端取消、租约过期但结论未知或进程终止等情况计入 `unknownOutcomes / clientCancellations`。未知和客户端取消不进入完成率分母。这项互斥只服务于用户授权后的质量语义，不允许系统自行解析完整响应。
+`attempts` 在真实上游派发成功后递增，用于审计实际负载。同一个 attempt 在可靠性计数中只能有一个终态：命中用户显式高级规则的失败动作优先计入 `explicitPolicyFailures`；协议结构验证成功才计入 `completedResponses`；完整非 `2xx`、`2xx-invalid-body` 和其他 framing 完整但未获协议成功证据的响应计入 `upstreamResponseFailures`，不进入 `qualityAttempts`、首字速度样本或 `lastFailureAtMs`；形成完整响应前的本地失败计入对应本地失败字段；客户端取消、租约过期但结论未知或进程终止等情况计入 `unknownOutcomes / clientCancellations`。中性、未知和客户端取消都不进入完成率分母。这项互斥不允许系统自行解析响应 code/type/message。
 
 `localTransportFailures` 是本地失败终态总数，`timeouts / readInterruptions / incompleteResponses` 只是它的互斥诊断子类，计算 `qualityAttempts` 时不得重复相加。
 
@@ -457,18 +458,18 @@ effectiveReliability = 0.5 + (reliability - 0.5) * confidence
 
 自动机制不维护任何上游状态码、错误码、错误类型、响应头、正文、文案、完成状态或供应商特例白名单。自动退避固定使用本文的本地退避序列，不读取上游 `Retry-After` 或类似提示。
 
-### 6.2 任何完整上游响应默认不进入自动处理
+### 6.2 完整上游响应不产生共享错误语义
 
-只要通用客户端收到完整上游 HTTP 响应，且没有命中用户显式高级规则，无论状态码、响应头和正文是什么，系统都视为“传输已完成”：
+完整 framing 只证明传输已经完成，不证明业务成功，也不证明账户、Key、模型或供应商死亡。未命中用户显式高级规则时：
 
-- 原样转发状态、允许的响应头和正文；
-- 不自动重试或切号；
-- 不轮换账户内 Key；
-- 不写 Key、`protocol_model` 或账户短电路；
-- 不累计热质量失败，只累计 `completedResponses` 和实际首字时间；
-- 不据此写持久账户状态或后台失败结论。
+- 通用客户端的完整 `2xx`、JSON `error` 字段、普通事件 `data.error` 和任意完成值保持正文透明，不按字段自动切号；
+- 安全文本推理端点的完整非 `2xx` 可以只按 `response.ok` 作为 opaque 请求级失败，在本请求内唯一轮换 Key / 账户；不得读取状态码或正文决定动作；
+- 图片、音频、文件、资源创建、后台任务、hosted tool 和其他副作用 POST 一旦派发后不进入上述隐式重放路径；
+- 完整 framing 不写 Key、`protocol_model` 或 account 语义状态；传输电路可以清除本次传输怀疑，但不能清除用户策略状态；
+- 只有协议验证成功才累计正向热质量并恢复 Key；完整非 `2xx`、`2xx-invalid-body` 和 opaque 错误终态对共享热质量保持中性；
+- 不据此写持久账户状态或后台业务失败结论。
 
-精确客户端画像可以继续完成协议兼容和向客户端渲染协议事件，但不能依据完整响应语义自动重试、切号、轮换 Key、写电路或写账户状态。现有任何 `system_default` 响应检查、默认错误类型表或内置客户端重试规则都不构成用户授权；实施本文时必须停用其账户调度副作用，或改造成由账户所有者在前端显式启用的模板。
+精确客户端画像可以按协议声明的 `response.failed`、SSE 事件名 `event: error` 等结构收口本次 attempt；普通 payload 的 `data.error` 不是结构失败。该结构事实在请求语义允许且下游未提交时可以触发请求内切号，但不能依据 code/type/message 自动轮换 Key、写电路或写账户状态。任何 `system_default` 错误类型表都不构成用户状态授权。
 
 ### 6.3 用户前端高级设置是唯一响应语义入口
 
@@ -483,10 +484,11 @@ effectiveReliability = 0.5 + (reliability - 0.5) * confidence
 
 ### 6.4 多 API Key
 
-- 系统自动机制不能因为任意完整上游响应轮换或摘除当前 Key。
+- 系统自动机制不能因为完整响应中的状态码、错误码、错误类型或正文把当前 Key 写入共享避让；安全文本推理端点可以仅按 opaque 非 `2xx` 在本请求内排除该 Key。
 - selected Key 在本地解密、装配或读取运行态时失败，可以建立 Key 级本地电路并尝试账户内下一个可执行 Key。
 - transport、timeout 或读取中断默认进入当前 `protocol_model` 或 `upstream_bucket` 作用域，不因使用了某个 Key 就自动归咎该 Key。
 - 只有用户显式高级策略指定 Key 动作时，才允许根据上游响应内容建立 Key 电路。
+- 本请求按池顺序唯一尝试全部当前可执行 Key，不以固定两个 Key 截断；跨账户重复物理凭据只发送一次，整个请求最多 64 次真实上游 attempt。真实池穷尽、64 次安全截断和墙钟截断必须区分，均不得推进账户死亡。
 - 所有 Key 都因本地可验证原因不可执行，或用户显式策略指定账号级动作时，才推进账户级电路。
 - Key、`protocol_model` 和账户电路都使用 generation 与租约，旧结果不能覆盖新配置或新凭据状态。
 
@@ -496,12 +498,13 @@ effectiveReliability = 0.5 + (reliability - 0.5) * confidence
 stateDiagram-v2
   [*] --> CLOSED
   CLOSED --> SUSPECT: 本地可验证 transport 失败或显式策略动作
-  SUSPECT --> RECOVERING: 确认租约完整成功
-  SUSPECT --> OPEN: 确认 attempt 失败或超时
+  SUSPECT --> RECOVERING: 当前确认 framing 完整
+  SUSPECT --> SUSPECT: 独立 confirmation transport 失败（计数 +1，继续 due）
+  SUSPECT --> OPEN: 达到独立 confirmation 失败阈值
   OPEN --> HALF_OPEN: openUntil 到期
-  HALF_OPEN --> RECOVERING: 半开租约完整成功
+  HALF_OPEN --> RECOVERING: 半开租约形成匹配 generation 的完整 transport framing
   HALF_OPEN --> OPEN: 半开失败/超时
-  RECOVERING --> CLOSED: 连续完整成功达到阈值
+  RECOVERING --> CLOSED: 连续完整 transport framing 达到阈值
   RECOVERING --> OPEN: 本地可验证 transport 失败或显式策略动作
 ```
 
@@ -515,9 +518,9 @@ stateDiagram-v2
 | `HALF_OPEN` | 排除并换号 | 仅一个 probe lease | 到期后的单飞验证 |
 | `RECOVERING` | 普通请求排除并换号 | 仅一个 matching-generation recovery canary lease | 防止偶尔成功一次立即恢复全部流量 |
 
-只有未命中用户显式失败动作，并且 transport 层形成完整 HTTP 响应，或 SSE 在未发生读取中断的情况下正常结束，才算账户恢复成功；判定过程不得检查 HTTP 状态码、响应头或业务正文。仅收到响应头、首字节、部分 token、心跳，或请求被客户端取消，都不能关闭电路。
+`framing_complete_neutral` 只证明当前传输 framing 已完成，可按匹配 generation 清理轻量 transport 怀疑；它不是账户或 Key 的业务成功证据。只有探针形成匹配 provenance 的 `complete_success`，或父 account 达到通用协议成功阈值，才算对应账户级业务恢复。仅收到响应头、首字节、部分 token、心跳，或请求被客户端取消，都不能关闭电路。
 
-`RECOVERING` 不允许普通请求无租约进入。每次只能有一个匹配当前 generation 的 recovery canary lease；canary 完整成功后原子递增 `recoveringSuccesses`，等待建议 3 秒恢复间隔后再允许下一个独立 lease。连续 3 个不同 lease 完整成功才进入 `CLOSED`。任意本地可验证 transport 失败或用户显式策略失败动作立即进入 `OPEN` 并增加退避；取消、没有形成真实 attempt 或旧 generation 结果只释放租约，不计成功或失败。后台恢复探针和受控真实请求都必须先取得该 lease，且恢复探针不进入业务热质量统计。
+`RECOVERING` 不允许普通请求无租约进入。每次只能有一个匹配当前 generation 的 recovery canary lease；canary 形成完整 transport framing 后原子递增 `recoveringSuccesses`，等待建议 3 秒恢复间隔后再允许下一个独立 lease。连续 3 个不同 lease 形成完整 framing 才关闭自动 transport circuit。这里的 `CLOSED` 只表示 transport 怀疑解除；若结果只是 `framing_complete_neutral`，仍不得恢复账户 / Key 业务运行态或持久状态，业务恢复继续要求匹配 provenance 的 `complete_success`。任意本地可验证 transport 失败或用户显式策略失败动作立即进入 `OPEN` 并增加退避；取消、没有形成真实 attempt 或旧 generation 结果只释放租约，不计成功或失败。后台恢复探针和受控真实请求都必须先取得该 lease，且恢复探针不进入业务热质量统计。
 
 ### 7.2 Redis 状态
 
@@ -568,15 +571,16 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 
 | 参数 | 建议值 |
 | --- | --- |
-| confirmation 首字 deadline | 使用本次请求统一的 `firstByteDeadlineMs` |
-| 同账号 confirmation 重试 | 最多 1 次 |
+| confirmation hard deadline | 使用当前 lane 的 hard first-response / attempt lifetime，并按本请求剩余墙钟裁剪；不得把路由配置 `firstByteDeadlineMs` 到期算 confirmation 失败 |
+| confirmation 失败阈值 | 首次失败后还需 2 次独立 confirmation；同一请求不能连续自证 |
 | 半开同时请求 | 1 |
 | 短退避序列 | `3s -> 5s -> 10s -> 30s -> 60s` |
-| 自动运行态最大退避 | 5 分钟 |
+| 自动运行态最大退避 | 15 分钟基线，并按 scope 加确定性 jitter |
 | `RECOVERING` 并发 | 1 |
 | recovery canary 间隔 | 3 秒 |
-| `RECOVERING -> CLOSED` | 连续 3 次完整成功 |
+| `RECOVERING -> CLOSED` | 连续 3 次匹配 generation 的完整 transport framing；只关闭自动 transport circuit，不代表业务状态恢复 |
 | `RECOVERING` 失败 | 立即重新 `OPEN` 并增加退避 |
+| 父 account 升级 | 默认 10 分钟内至少 3 个当前 OPEN 独立 `protocol_model` scope；阈值可调但不得低于 3 |
 
 用户显式策略建立的 TTL、持久 `temporary_unavailable / rate_limited / error` 和后台持久冷却复测继续使用现有语义；短账户电路是请求热路径保护，不替代账户所有者的显式策略。
 
@@ -600,8 +604,8 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 
 | 层 | 状态 / 机制 | 谁可写 | 对调度影响 | 恢复 |
 | --- | --- | --- | --- | --- |
-| 请求热路径短电路 | `SUSPECT / OPEN / HALF_OPEN / RECOVERING` | 网关本地 transport 或用户显式策略 | 立即排除普通业务流量；单飞验证 | framing 完整 canary / 到期半开；不读状态码 |
-| 后台运行态 | `recovery_wait`、`precheck_pending`、`runtime_degraded` | 仅独立后台探针确认后 | 软阻断普通候选；保留探针与半开 | 探针 framing 完整或匹配 generation 半开成功 |
+| 请求热路径短电路 | `SUSPECT / OPEN / HALF_OPEN / RECOVERING` | 网关本地 transport 或用户显式策略 | 立即排除普通业务流量；单飞验证 | framing neutral 只能清理匹配 transport 怀疑；账户 / Key 业务恢复需 `complete_success`；不读状态码 |
+| 后台运行态 | `recovery_wait`、`precheck_pending`、`runtime_degraded` | 仅独立后台探针确认后 | 软阻断普通候选；保留探针与半开 | `framing_complete_neutral` 只诊断 / 顺延；匹配 generation 的 `complete_success` 或专属 TTL / 人工出口恢复 |
 | 路由速度态 | `latency_degraded` | 仅 speed_first 路由上下文 | 未降级账号优先；账号仍可兜底 | 连续首字达标 / TTL / 手动；不写持久故障 |
 | 持久账户状态 | `temporary_unavailable` / `rate_limited` / `error` / `disabled` | 后台确认且并发归零后，或用户显式策略 | 硬不可调度 | 冷却复测、有界探活开关、人工恢复 |
 | 用户策略阻断 | `gateway-policy-block` | 仅显式高级规则 | 与自动层取交集 | TTL / 人工；自动成功不能提前解除 |
@@ -620,8 +624,8 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 
 热质量桶可以完全易失；但 `CLOSED` 以外的活动 circuit incident、最新 `dispatchRevision` watermark 与关闭 tombstone 属于可重建控制事实。
 
-- performance：状态转换必须经可靠队列写入最小持久 incident ledger；Redis 启动后先按 ledger 重建。重建完成前相关作用域返回 `temporarily_blocked(reason=runtime_state_rebuilding)`，不得 fail-open 成健康。
-- standalone：进程重启同样从业务库 / 本地 ledger 重建；重建完成前行为同上。
+- performance：状态转换必须经可靠队列写入最小持久 incident ledger；Redis 启动后按有界分页从 ledger 重建。已完成权威投影的账户立即恢复正常状态判断；尚未确认的账户通过一次按账户权威查询渐进恢复其父 incident、最多 64 个活动/恢复必需子 incident、当前 revision 和 `CLOSED` ledger。只有该账户仍无法确认的作用域返回 `temporarily_blocked(reason=runtime_state_rebuilding)`，不得把未确认伪装成健康，也不得连带阻塞其他已确认账户。
+- standalone：进程重启同样从业务库 / 本地 ledger 有界重建，并使用相同的按账户渐进恢复与局部阻断语义；全量分页未完成不等于全站不可用。
 - 若产品明确接受 Redis 丢失后 fail-open，必须删除“活动状态不得因过期恢复”的保证，并写入告警与验收；本文默认不接受。
 
 `dispatchRevision` 跨 DB 与 Redis 不做伪原子事务，采用 outbox saga：
@@ -663,7 +667,7 @@ observedDispatchRevision
 leaseId
 ```
 
-Key circuit 只接受同 Key 证据；protocol-model circuit 只接受同协议 / lane / modelFamily 或驱动声明可覆盖该作用域的证据；account circuit 关闭需要覆盖导致升级的独立 scope 集合，不能由单一健康模型替代。`transportComplete` 只驱动自动短电路；`protocolSuccess` 继续服务持久健康检查和冷却语义。
+Key circuit 只接受同 Key 的合法共享证据；protocol-model circuit 只接受同协议 / lane / modelFamily 或驱动声明可覆盖该作用域的证据。父 account circuit 关闭不再要求覆盖全部肇事子 scope，而是累计可配置数量的通用协议成功证据，当前默认 3；`requiredRecoveryScopeKeys` 只用于保留有界父子关系、冷重建和子级独立恢复，不能成为“每个子模型必须再次有流量”的关闭门槛。父级关闭后仍 `OPEN / RECOVERING` 的子 scope 继续按自己的 due 主动验证并保持调度阻断。`transportComplete` 只驱动自动短电路；`protocolSuccess` 继续服务父级通用恢复证据、持久健康检查和冷却语义。
 
 未知 / 取消 / owner 丢失终态：
 
@@ -674,9 +678,9 @@ Key circuit 只接受同 Key 证据；protocol-model circuit 只接受同协议 
 
 `attempt-terminal` 是不可变事件，不是“全部投影完成”标记。每个 projector 必须有独立幂等 ACK；自动 circuit 的 terminal 创建与 circuit transition 应在同一 Redis 原子操作内完成，或 terminal 进入可靠队列并重放到显式 ACK。读到既有 terminal 时必须继续补齐未完成投影。terminal TTL 不得短于可靠队列最大重放窗口。
 
-每轮故障生成稳定 `incidentId`，状态转换另用 `transitionId`。升级时记录 `parentIncidentId / childIncidentIds / causedByTerminalOutcomeId`；父级 account circuit 只 shadow 子 scope，不隐式关闭子 circuit；父级关闭后仍由子状态决定对应请求是否可派发。`CLOSED` 仅表示“当前自动 circuit 层不再阻断”，不等于账户整体 dispatchable。关闭时原子移除 due 并保留 CLOSED tombstone。
+每轮故障生成稳定 `incidentId`，状态转换另用 `transitionId`。升级时记录 `parentIncidentId / childIncidentIds / causedByTerminalOutcomeId`；父级 account circuit 只 shadow 子 scope，不隐式关闭子 circuit。父级关闭使用可配置的通用协议成功证据阈值，当前默认 3，不要求 `requiredRecoveryScopeKeys` 中所有肇事子 scope 重新获得流量；关闭后仍处于 `OPEN / RECOVERING` 的子 scope 不被删除或重置，对应请求仍由子状态决定是否可派发。父 incident 和子 incident 都按 generation/revision 持久化，冷重建必须一起恢复；父级 `childIncidentIds / requiredRecoveryScopeKeys` 去重后最多 64 个，超限子 scope 继续保留自己的 incident，但不能放大父级单行 payload 或单轮恢复 fan-out。`CLOSED` 仅表示“当前自动 circuit 层不再阻断”，不等于账户整体 dispatchable。关闭时原子移除 due、清理本代父级升级证据并保留 CLOSED tombstone。
 
-进入 `RECOVERING` 时 `recoveringSuccesses = 0`；只有进入该状态后取得的 3 个不同 recovery-canary lease 完整成功才关闭。confirmation / half-open 进入 `RECOVERING` 的那次成功不计入这 3 次。
+进入 `RECOVERING` 时 `recoveringSuccesses = 0`；只有进入该状态后取得的 3 个不同 recovery-canary lease 形成匹配 generation 的完整 transport framing 才关闭自动 circuit。confirmation / half-open 进入 `RECOVERING` 的那次 framing 不计入这 3 次；仅 framing 中性的结果不能恢复业务运行态。
 
 ## 8. 单飞确认与并发换赛道
 
@@ -684,7 +688,7 @@ Key circuit 只接受同 Key 证据；protocol-model circuit 只接受同协议 
 
 1. 把电路从 `CLOSED` 转为 `SUSPECT`，递增 generation。
 2. 获取该 generation 的 confirmation lease。
-3. 租约持有者最多再确认一次同账号；确认 attempt 复用本请求解析出的同一 `firstByteDeadlineMs`，并再按 `requestPrecommitDeadlineAtMs / finalResponseReserveMs` 裁剪，不得另设更短或更长 timer。初始租约一次覆盖真实 attempt 的 hard lifetime 与安全余量；心跳只允许延长。账号仍有匹配 generation 且未超过 `attemptHardDeadlineMs` 的在途 attempt 时，禁止其他请求重新取得确认租约。
+3. 当前租约最多执行一个独立 confirmation attempt；首次 transport 失败只把 `SUSPECT` 计数加一并重新安排 due，后续独立 confirmation 由后台 due 队列继续，达到“首次失败后再 2 次独立失败”的阈值才进入 `OPEN`。确认 attempt 使用当前 lane hard first-response / attempt lifetime，并按 `requestPrecommitDeadlineAtMs / finalResponseReserveMs` 裁剪。路由配置 `firstByteDeadlineMs` 可以产生中性的调度观察，但不得结束 confirmation 或计为 confirmation failure。初始租约一次覆盖真实 attempt 的 hard lifetime 与安全余量；心跳只允许延长。账号仍有匹配 generation 且未超过 `attemptHardDeadlineMs` 的在途 attempt 时，禁止其他请求重新取得确认租约。
 4. 其他请求读取到 `SUSPECT` 后，不等待外国租约结果，立即排除该账号并在当前分组重新选号；不得 await 后台探针。
 
 动作矩阵：
@@ -698,9 +702,9 @@ Key circuit 只接受同 Key 证据；protocol-model circuit 只接受同协议 
 
 故障响应返回前已经发往该账号的在途请求不能撤回；本设计保证失败被观察后的新请求不再继续灌入。
 
-confirmation 重试只允许发生在下游语义尚未提交时。confirmation 与普通 attempt 共用本次请求的 `firstByteDeadlineMs`，不再设置 5 秒 confirmation 专属 deadline，也不被协调等待预算改写。confirmation 是真实上游 attempt，其 fetch 与首字观察期间 `routeCoordinationBudget` 暂停；如果当前请求已经没有首字前 attempt 预算，租约持有者直接换号，不强行确认。首字截止只限制首字前等待：一旦收到可见首字，后续响应读取继续使用当前 lane timeout 和流式 idle timeout；只有 HTTP framing 完整，或 SSE 在没有读取中断的情况下正常结束，才提交恢复结果，且不得检查业务正文。
+confirmation 只服务独立后台 transport 证据和可安全重放的文本电路；图片、音频、文件 / 资源、后台任务、hosted tool 等副作用请求派发后不得以前台 confirmation 重放。confirmation 不设置 5 秒专属 deadline，也不把普通路由配置首字截止当传输失败；它使用当前 lane hard first-response / attempt lifetime，并受请求剩余墙钟与最终响应预留裁剪。confirmation 是真实上游 attempt，其 fetch 与首字观察期间 `routeCoordinationBudget` 暂停；如果当前请求已经没有完成一次有意义 hard probe 的预算，租约持有者直接换号，不强行确认。收到可见首字后，后续响应读取继续使用当前 lane timeout 和流式 idle timeout；只有 HTTP framing 完整，或 SSE 在没有读取中断的情况下正常结束，才提交中性 framing 结果；需要账户 / Key 业务恢复时还必须形成匹配 provenance 的 `complete_success`。
 
-confirmation 租约到期但没有形成真实上游 attempt、或租约请求被客户端取消时，结论为未知：只释放当前租约并允许下一次受控确认，不能把“没有得到结论”伪造成账号失败并推进退避。
+confirmation 租约到期但没有形成真实上游 attempt、租约请求被客户端取消或探针任务自身失败时，结论为 unknown：保留 `SUSPECT` generation 和确认计数，按当前电路退避与确定性 jitter 渐进延后下一次 due；不能把“没有得到结论”伪造成账号失败，也不能把 `retryAt` 设为当前时间形成热循环。
 
 半开租约和 confirmation 租约都禁止同账号原地多轮重试。租约失败只提交一次状态转换和一次结构化日志，其他因电路被排除的请求不重复写上游失败日志。
 
@@ -728,7 +732,7 @@ attemptedProtocolModelKeys
 attemptedAccountRuntimeKeys
 attemptedPhysicalCredentialKeys
 attemptedKeyFingerprints
-sameAccountConfirmationBudget
+sameAccountRetryTokenBudget
 currentTierKey
 currentTierUniqueAttemptCount
 routeCoordinationBudget
@@ -738,23 +742,23 @@ routeCoordinationBudget
 
 | 预算 | 统一标准 |
 | --- | --- |
-| 普通同账号原地重试 | 0；仅允许一个 matching-generation confirmation lease |
-| confirmation lease 持有者 | 1 |
+| 普通同账户安全原地重试 | 配置值（默认 3）作为整次请求共享 token；仅限可重放文本请求的主请求已开始、响应头前 transport failure；同账户兄弟 Key 先按请求内池唯一尝试且不消费 token，兄弟 Key 耗尽后才允许重试当前凭据；token 不按账户、Key、分组或 compact 阶段重置 |
+| matching-generation confirmation lease | 每个 incident 同时最多 1 个；与请求级安全原地重试 token 相互独立 |
 | 同优先级层本地可验证失败 | 同层所有唯一候选最多一轮；不设固定 2 账号上限 |
-| 首字观测 | `normalRoutingConfig.firstByteDeadlineMs`，普通模式和快速模式完全共用；默认 10 秒，范围 10–60 秒 |
+| 路由首字观测 | `normalRoutingConfig.firstByteDeadlineMs`，普通模式和快速模式完全共用；默认 10 秒，范围 10–60 秒；到期只形成中性调度结果，不等于 lane hard timeout |
 | 路由协调等待 | 一个 `routeCoordinationBudget`，初始最多 3 秒 |
-| 整请求墙钟总预算 | `GatewayRequestWallBudget`，默认 270 秒绝对墙钟，不暂停；决策点到期 handoff 客户端重试重选 |
+| 整请求墙钟总预算 | `GatewayRequestWallBudget`，默认 270 秒绝对墙钟，不暂停；决策点到期 handoff 客户端重试重选。已派发的 at-most-once 图片 attempt 例外使用图片专用时限，不被该墙钟取消 |
 | 零可派发等待预算 | `ServerRetryBudget`，默认 270 秒累计，attempt/读取暂停 |
 
 同层规则：当前层内每个唯一 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的账号不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
 
 如果当前层所有账号已经处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有 account 电路已经建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
 
-普通路由在请求开始时只解析一次 `normalRoutingConfig.firstByteDeadlineMs`，普通模式、快速模式、confirmation 和同请求后续账号 attempt 都复用这个值。建议默认 10 秒、允许 10–60 秒，且始终不超过当前 lane first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入公共 `normalRoutingConfig.firstByteDeadlineMs`，迁移完成后删除速度模式专属字段，禁止两个字段同时生效。image 等合法长耗时 lane 继续按 lane 规则决定是否启用首字观测，但一旦启用，也只能产生同一种首字事件。
+普通路由在请求开始时只解析一次 `normalRoutingConfig.firstByteDeadlineMs`，普通模式、快速模式和同请求后续账号 attempt 都复用这个路由观察值。建议默认 10 秒、允许 10–60 秒，且始终不超过当前 lane first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入公共 `normalRoutingConfig.firstByteDeadlineMs`，迁移完成后删除速度模式专属字段，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不启用文本切换观察，派发后只受图片专用时限约束。
 
 统一首字协议固定为：真实上游派发时启动一次计时；非流式以首个 body 字节、流式以首个可见语义 chunk 为首字；响应头、SSE heartbeat、空事件和内部缓冲不算；每个 attempt 只产生一次 `observed / deadline_reached / cancelled / unknown` 结果。任何账户层、响应处理层或快速模式都不能再创建第二个首字 timer。
 
-两种模式只在统一结果后的路由动作上不同：`cost_first` 在截止前严格保持超级优先、优先级和会话亲和；截止时仍无首字则由路由层形成一次 `timeout_before_complete`，有替代候选时切号，没有替代候选时结束当前 attempt，不再继续等另一套 120 秒首字 timeout。`speed_first` 在同一截止事件上先记录慢样本，是否切号仍由 `slowTriggerCount`、`latency_degraded`、下游提交状态和请求内切号上限裁决。快速模式不能改变首字 deadline，只能决定事件后的动作。
+两种模式只对可重放文本生效，并在统一结果后的路由动作上不同：`cost_first` 在截止前严格保持超级优先、优先级和会话亲和；截止时仍无首字可由路由层形成一次 `normal_route_first_byte_timeout` 调度结果，并在安全窗口内推进候选。`speed_first` 在同一截止事件上先记录慢样本，是否切号仍由 `slowTriggerCount`、`latency_degraded`、下游提交状态和请求内切号上限裁决。无论哪种模式，该配置截止都不能上报 `timeout_before_complete` transport failure、推进 `SUSPECT/OPEN`、写 Key 失败、降低共享可靠性或投递恢复副作用；只有独立 lane hard timeout 保留这些传输语义。图片和其他副作用请求不创建该软截止事件。
 
 尝试身份按失败作用域更新：本地 Key 准备失败或用户显式 Key 级动作只加入 `attemptedKeyFingerprints`，允许同一账号尝试另一个未尝试 Key；真实 transport 失败首先加入当前 `attemptedProtocolModelKey`，保持 model / lane / protocol 隔离；account 电路升级或用户显式 account 级动作加入实例级 `attemptedAccountRuntimeKeys`；同一请求额外记录 `attemptedPhysicalCredentialKeys`，阻止同一物理凭据通过另一授权实例再次进入，但不共享电路或热质量。完整响应若没有用户显式动作则直接结束请求，不产生新的尝试身份。
 
@@ -764,7 +768,7 @@ routeCoordinationBudget
 
 `ServerRetryBudget` 每个网关请求只创建一次，并且只有路由协调器能够启动、暂停和消费它。派发真实 attempt 前暂停；`routeCoordinationBudget` 运行时同步受它约束；跨账号、账户配置层、分组、主备和轮询环均不得重置。单次等待上限固定为 `min(routeCoordinationBudgetRemaining, ServerRetryBudgetRemaining, wallRemainingMs, max(0, earliestRetryAtMs - now))`。
 
-`GatewayRequestWallBudget` 是更高层的硬边界：即使还有未尝试好号，只要墙钟在决策点已到期，也必须 handoff 客户端，让客户端发起新请求重新选号。这与“有号可用却继续在服务端死磕到客户端超时”相对。墙钟耗尽不得写成账户硬耗尽，也不得阻止下一次客户端请求使用这些账号。
+`GatewayRequestWallBudget` 是可重放决策的更高层硬边界：即使还有未尝试好号，只要墙钟在决策点已到期，也必须 handoff 客户端，让客户端发起新请求重新选号。这与“有号可用却继续在服务端死磕到客户端超时”相对。墙钟耗尽不得写成账户硬耗尽，也不得阻止下一次客户端请求使用这些账号。图片等 at-most-once 请求一旦完成上游派发，不再启动后续 attempt，其 in-flight 等待由 lane 专用时限负责。
 
 预算状态至少包含 `requestId / budgetId / version / remainingMs / activeSinceMs / lastWaitToken`。同一请求的异步分支只能由 route coordinator 使用 `version` CAS 启停；每次等待携带幂等 `waitToken`，重复唤醒、取消回调或 fallback 回调不能重复扣减。账户层只能读取剩余值，不能创建、续期或消费预算。
 
@@ -811,13 +815,13 @@ routeCoordinationBudget
 
 ## 12. 流式与客户端边界
 
-- 下游语义提交前可以排除失败账号并重新选号。
+- 只有可安全重放文本在下游语义提交前、派发阶段和共享预算仍允许时，才可以排除失败账号并重新选号；已派发副作用请求保持唯一 attempt。
 - SSE 已写出可见语义内容后，不允许切号拼接另一个账号输出，也不允许重新发送工具调用。
-- SSE 心跳、仅响应头或内部缓冲未提交不算完整恢复成功，是否允许切号继续沿用 `downstreamCommitState`。
+- SSE 心跳、仅响应头或内部缓冲未提交不算完整恢复成功；是否允许可安全重放文本切号继续仍取决于 `downstreamCommitState` 与请求语义门禁，副作用请求不因未提交获得资格。
 - 非流式响应只有在完整 body 读取结束后才提交下游；读取中断前不把部分 body 当成成功。
 - confirmation / half-open 的流式首个可见语义 chunk 按正常链路立即提交并转发，不为等待完整恢复结果缓存整条流；提交后若读取中断，当前客户端只能结束断流，同时为后续请求重新打开对应电路，不能再切号拼接。
-- 精确 Codex、Claude Code、Gemini CLI 客户端可以保持协议事件渲染和客户端侧重试提示，但服务端不能依据完整响应语义自动重试、切号、轮 Key 或写账户状态。
-- `generic_*` 的任何完整上游响应继续透明转发，不能建立自动账户电路；只有形成完整响应前的本地 transport 失败，或用户显式高级策略动作，才能建立对应作用域的电路。
+- 精确 Codex、Claude Code、Gemini CLI 客户端可以保持协议事件渲染和客户端侧重试提示，并按协议声明的失败事件结构收口当前 attempt；普通 `data.error` payload 仍保持中性。服务端不能依据事件 code/type/message 推断账户语义、轮 Key 或写账户状态。
+- `generic_*` 的完整 `2xx` 和普通 payload 透明；安全文本完整非 `2xx` 可仅按 `response.ok=false` 做请求级 opaque 接管，副作用请求完整非 `2xx` 或结果未知不隐式重放，下游未提交时返回稳定 `503/upstream_outcome_unknown`。只有形成完整响应前的本地 transport 失败，或用户显式高级策略动作，才能建立对应作用域的电路。
 - 客户端取消只释放租约和并发，不把账号标为失败；confirmation / half-open 请求被客户端取消时结论为未知，释放当前租约并等待下一次受控验证。
 
 ## 13. 与现有机制的关系
@@ -834,23 +838,22 @@ routeCoordinationBudget
 | 历史账户质量统计 | 继续用于展示和分析，不进入实时热路径 |
 | 快速模式 `latency_degraded` | 保持路由层最高偏好覆盖，热质量不得改变其跨账户偏好的语义 |
 
-### 13.1 已知现行冲突与迁移要求
+### 13.1 现行边界与禁回退要求
 
-本文是目标设计，不代表现行网关已经满足边界。当前 `failure-dispatch`、`upstream-dispatch`、流式结束重试决策和系统默认响应检查仍存在依据完整非 2xx 响应、错误类型或正文自动同号重试、切账号、轮换 Key、写上游桶或写运行态的路径；这些路径与本文及系统核心原则冲突。
+当前实现允许安全文本推理端点把完整非 `2xx` 作为 opaque 请求级失败切换 Key / 账户，但禁止从状态码、错误类型、正文或普通事件 payload 推导任何共享状态。维护时必须同时守住以下两条边界，不能把“允许接管”误写成“允许解释语义”：
 
-实施时必须以行为验收而不是保留旧分支为准：
-
-- 未配置前端高级规则的完整响应只透明转发，现有非 2xx 自动同号重试、自动 `tryNextApiKey`、自动账号回避和上游桶失败写入全部移除。
-- `system_default` Codex / Gemini CLI 等响应语义规则不得继续产生服务端账户调度副作用；可以保留协议渲染，或作为用户显式启用的模板。
-- 旧的 `same-account retry budget` 不再参与普通候选扫描，只保留 matching-generation confirmation lease 一次验证。
-- 现有 preparation / dispatch / routes 多层直接调用 fallback 的路径先收敛为统一 route-coordinator result contract，再接入四类账户结果；否则不能保证跨组预算和尝试集合不被重置。
-- 迁移必须增加“完整任意状态响应不自动切号”和“仅用户显式规则允许响应语义动作”的反向回归，防止旧默认规则复活。
+- 未配置用户高级规则时，完整 `2xx` 的 JSON/SSE payload 保持透明；完整非 `2xx` 只在安全文本推理端点按 `response.ok` 有界接管，不写 Key、账户、IP 避让、热质量失败或上游桶语义状态。
+- `system_default` Codex / Gemini CLI 等规则只解释协议声明的结构并渲染客户端结果，不能依据 code/type/message 产生账户状态副作用。
+- 同账户多 Key 使用本请求唯一集合，不恢复固定 2-Key 截断；账户和分组切换共享 64 次真实 attempt、墙钟和物理凭据去重。
+- 图片与其他副作用 POST 发送后 at-most-once；不能用 `semanticCommitted=false` 代替“上游尚未执行”的证据。
+- preparation / dispatch / routes 必须共享候选与预算结果，跨组推进不得重置 `attempted*` 集合。
+- 回归必须同时覆盖“状态码互换不改变共享副作用”“opaque 非 `2xx` 可救回安全推理”“普通 `data.error` 不构成结构失败”和“副作用 POST 不重放”。
 
 短账户电路成功恢复不能提前清除用户显式 TTL，也不能直接把持久异常账号改为 `active`。持久状态恢复仍由后台健康检查、冷却复测或人工操作负责。
 
 显式策略与短电路的精确关系：
 
-- `retry_next` 只是不写持久账户状态；规则命中后可以按用户显式选择建立易失短电路，避免其他请求继续灌入。未配置规则的完整响应不能触发该行为。
+- `retry_next` 只是不写持久账户状态；规则命中后可以按用户显式选择建立易失短电路，避免其他请求继续灌入。它只表达重放意图，仍必须通过请求 lane 的安全重放门禁；已派发副作用请求和已提交响应不得因该动作再次执行。未配置规则的完整响应不能触发该行为。
 - `cooldown / disable` 由显式策略推进持久状态，账户短电路只承担状态写回完成前的即时止损，不能覆盖或撤销持久动作。
 - 显式策略 TTL 未到期时，短电路 canary 或普通成功不能提前解除该 TTL。
 - 所有路由模式都可以消费 Key / protocol-model / account 电路给出的账户可执行性，但只能在路由已选分组内过滤候选。weighted、round-robin、failover、hybrid 等路由仍由各自协调器解释 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`，账户层不改变分组顺序和策略算法。
@@ -925,29 +928,29 @@ gateway_request_wall_handoff_total
 8. 半开偶尔成功一次后再次失败：先进入 `RECOVERING`，失败立即重开，不能一次成功清空历史。
 9. Redis 双 server 同时抢 confirmation / half-open：同一 generation 只有一个租约成功。
 10. 单 Key 本地解密或装配失败但账户内还有可执行 Key：切 Key，不打开账户电路；任意完整 HTTP 响应都不能触发自动 Key 轮换。
-11. 通用客户端收到任意完整 HTTP 响应：不论状态码和正文均透明转发，不自动切号或写电路；形成完整响应前的连接失败、timeout 或读取中断才触发对应作用域的保护。
+11. 通用客户端收到完整 `2xx` 或普通 `data.error` payload：不按正文自动切号；安全文本推理的完整非 `2xx` 可作为 opaque 请求级失败切后续 Key / 账户，但副作用请求完整响应不得隐式重放，任何完整响应都不得按状态码或正文写共享电路语义。
 12. 普通模式：健康高优先级账号继续优先，质量只重排同层账号。
 13. 快速模式：已确认慢的超级优先账号被未降级低优先级或备用账号越过；热质量和亲和不能拉回慢账号。
 14. 快速模式首次单次慢但未确认：只记录慢样本，不因本设计新增的热速度信号强制切号。
 15. 快速模式账号在完整响应前发生本地 transport 失败：立即走账户电路和切号，不等待 `slowTriggerCount`；完整 HTTP 响应仍透明转发。
-16. SSE 首字前失败可以切号；首字后失败绝不透明重放。
+16. 可重放文本 SSE 只有在首字前且未发生正文中断时才可按安全边界切号；首字后失败绝不透明重放。图片和其他副作用请求派发后无论是否出现首字都只有唯一 attempt。
 17. 客户端取消 confirmation / half-open：释放租约，不累计账号失败结论。
-18. `RECOVERING` 连续三个不同 canary lease 完整成功后才关闭；普通请求不能抢占 canary，取消不计结果。
-19. cost-first 的 model A 在完整响应前发生 transport 失败时只打开 `protocol_model` 电路，speed-first 的 model B 仍可使用同账号；多个独立模型作用域均发生本地 transport 失败，或用户显式指定账号级动作时，才允许两个路由都过滤该账号。
+18. `RECOVERING` 连续三个不同 canary lease 形成匹配 generation 的完整 transport framing 后才关闭自动 circuit；普通请求不能抢占 canary，取消不计结果，framing 中性不能恢复业务状态。
+19. cost-first 的 model A 在完整响应前发生 transport 失败时只打开 `protocol_model` 电路，speed-first 的 model B 仍可使用同账号；配置窗口内至少 3 个当前 OPEN 的独立 scope，或用户显式指定 account 级动作时，才允许两个路由都过滤该账号。两个 scope、同 scope 重复失败或较大 failure count 都不能升级。
 20. 普通模式和快速模式均使用同一个 3 秒 `routeCoordinationBudget`：存在可恢复账号时返回 `temporarily_blocked`，仅本请求无未尝试候选时返回 `request_exhausted`；不覆盖共享 `ServerRetryBudget`，后续分组仍由路由协调器决定。
 21. 10 个 P1 同时 `OPEN` 时不重复扫描 P1；到期后同 generation 只允许一个半开租约。
 22. 大量未知模型名统一进入有界 `unknown` 桶；内存 / Redis 高基数保护和退化指标生效。
 23. Redis 不可用：performance 模式记录基础设施故障并保守处理，不回退本机共享假象。
 24. 同一个 confirmation / half-open 结果被重复提交：CAS 只生效一次，due 索引与状态一致，并增加幂等重放指标。
 25. `normal / failover / round_robin / weighted / hybrid_smart` 分别收到四类账户结果：分组推进、等待和最终错误均由各自路由协调器决定，账户层不能跨分组或重置 `ServerRetryBudget`。
-26. 用户显式 `retry_next` 依次尝试完多个仍为 `CLOSED` 的账号：返回 `request_exhausted`，不重复扫描已尝试账号，也不把这些账号写成共享硬耗尽。
+26. 用户显式 `retry_next` 在可重放文本中依次尝试完多个仍为 `CLOSED` 的账号：返回 `request_exhausted`，不重复扫描已尝试账号，也不把这些账号写成共享硬耗尽；副作用 lane 的派发后 `retry_next` 必须被 at-most-once 门禁拒绝。
 27. 旧 generation、错误 leaseId 或重复 transitionId 在新状态提交结果：全部被原子拒绝，不能改写 state、退避、恢复计数或 due 索引。
 28. `OPEN` 到期后两个 server 同时调度 `HALF_OPEN / RECOVERING`：只有一个 matching-generation lease 生效，状态值与 due 索引始终原子一致。
-29. 普通模式和快速模式针对同一请求解析出相同 `firstByteDeadlineMs`，每个 attempt 只有一个首字 timer；普通模式在截止时形成存活失败并切号，快速模式在同一事件上按慢样本状态机裁决，confirmation 也不能另建 5 秒 timer。
+29. 普通模式和快速模式针对同一可重放文本请求解析出相同 `firstByteDeadlineMs`，每个 attempt 只有一个路由首字观察 timer；普通模式可在截止时请求级切号，快速模式在同一事件上按慢样本状态机裁决，但两者都不形成 transport failure。confirmation 不另建 5 秒 timer，使用 lane hard timeout；配置截止后旧 attempt 迟到成功时不得再被取消或记失败。图片和其他副作用请求不创建该 timer。
 30. 5 个或 10 个 P1 各使用完整 `firstByteDeadlineMs` 时，整请求仍受 `GatewayRequestWallBudget`（默认 270 秒墙钟）约束；决策点到期必须返回 `client_handoff(reason=gateway_request_wall_budget_exhausted, remainingUntriedCandidatesPossible=true)`，不得用 `request_exhausted`/`hard_exhausted` 伪装；即使后面还有未尝试好号，也不得继续服务端切号把客户端时间耗尽。
-31. 图像 lane 单次已取得首字的正常长响应可以超过 270 秒完成读取；但切换阶段仍受同一墙钟约束，且下游已提交后不得为了再切号中断当前流。
+31. 图像 lane 在上游派发前仍受协调预算约束；派发后的唯一 in-flight attempt 使用 600 秒首响应、120 秒 raw chunk idle 和 3600 秒未提交上限，可配置覆盖 10–15 分钟生成并超过文本 270 秒完成读取。完整非 `2xx`、结果未知的 transport failure、超时和正文中断都不得切 Key / 账户 / 分组；下游未提交返回 `503/upstream_outcome_unknown`，已写出则结束或断流且不能改写。
 32. 同层探索不得选中 P2 / 备用；快速模式 `latency_degraded` 切到备用记为 `route_rescue` 并消耗 rescue 预算，不消耗探索 credit。
-33. 完整 HTTP `401 / 429 / 5xx` 在 confirmation、half-open 与 recovery probe 中均判定 `framing_complete`，不得因非 2xx 或正文缺少协议完成证据而打开 / 保持电路。
+33. 完整 HTTP `401 / 429 / 5xx` 在 confirmation、half-open 与 transport recovery probe 中均判定 `framing_complete`，不得因非 2xx 或正文缺少协议完成证据而打开 / 保持传输电路；它也不是 Key 或账户业务成功证据。
 34. 授权实例 A 失败不影响授权实例 B 的电路与热质量；但同一请求内 `physicalCredentialKey` 去重阻止重复打入同一物理凭据。
 35. 候选窗尾部同层账号可通过 `sameTierExplorationCursor` 被观测，不被 top-256/512 永久饿死。
 36. 同一物理账号以不同授权实例出现在主用和备用分组：实例级电路不共享；本请求用 `attemptedPhysicalCredentialKeys` 阻止重复打入同一物理凭据；显式 Key 级动作仍允许同实例换未尝试 Key。
@@ -957,6 +960,8 @@ gateway_request_wall_handoff_total
 40. 热质量 finalizer 与队列重放重复提交同一 `attemptId`：一分钟桶只增加一次；取消和未知不进入 `qualityAttempts`。
 41. 流式 confirmation 首个语义 chunk 提交后发生读取中断：不缓存整流、不拼接第二账号，当前客户端断流且后续请求重新避让该账号。
 42. Redis 丢失 / 重建后，活动电路不得因 key 缺失直接 `CLOSED`；必须结合 due 索引、policy block 与 fencing 记录保守重建，并触发后台修复。
+43. `SUSPECT` 后台 probe 连续返回 unknown：状态和确认计数不变，due 按退避与 jitter 渐进后移，不形成零间隔自旋，也不推进 `OPEN`。
+44. 父 account incident 带 64 个恢复子 scope 冷重建：父子 generation/revision、due 与 CLOSED ledger 一致；第 65 个子 scope 不扩张父 payload，仍保留独立子 incident 且不被误判 `CLOSED`。
 
 ## 16. 落地顺序
 
@@ -964,7 +969,7 @@ gateway_request_wall_handoff_total
 
 - 建立 route-coordinator result contract，由路由协调器统一消费 `dispatchable / temporarily_blocked / request_exhausted / hard_exhausted`，以及请求级 `client_handoff`。
 - 收敛 preparation、dispatch、routes 中分散的直接 fallback、尝试集合和重试预算，确保每请求只有一个 `ServerRetryBudget` 和一个 `GatewayRequestWallBudget`。
-- 移除未获用户显式授权的非 2xx / 错误正文自动重试、切号、轮 Key、运行态和上游桶写入。
+- 移除未获用户显式授权的非 `2xx` / 错误正文语义分类，以及由此产生的共享 Key/账户状态、IP 回避、热质量和上游桶写入；安全文本端点仍可仅按 `response.ok=false` 做 opaque 请求级唯一 Key/账户接管，受全请求 64 次真实 attempt、墙钟和语义提交边界约束。
 - 停用 `system_default` 响应规则的服务端账户调度副作用，并建立透明响应反向回归。
 
 ### 第一阶段：止损
@@ -972,12 +977,12 @@ gateway_request_wall_handoff_total
 - 建立账户 / Key 短电路 Store Port 和 memory / Redis adapter。
 - 把本地 transport 结果分类和用户显式策略动作接入 `SUSPECT / OPEN`，不建立上游响应语义 classifier。
 - 实现 confirmation 单飞和其他请求立即换号。
-- 把普通同账号默认原地重试从候选扫描前移除，只保留租约持有者一次确认。
-- 覆盖通用完整 HTTP 响应透明转发，以及响应完成前 transport 失败的共享保护。
+- 移除按账户或候选重新发放的无界原地重试；保留请求级安全原地重试 token，仅用于可重放文本请求的主请求已开始、响应头前 transport failure。同账户兄弟 Key 先按请求内池唯一尝试且不消费 token，兄弟 Key 耗尽后才允许重试当前凭据。它不处理完整 HTTP、首字切换截止或副作用请求，也不承担电路 confirmation 和共享状态变更。
+- 覆盖通用完整 `2xx` 响应透明转发、安全文本非 `2xx` 的内容无关请求级接管，以及响应完成前 transport 失败的共享保护；三者的质量和状态终态必须隔离。
 
 ### 第二阶段：精准切号
 
-- 引入请求内 `attemptedAccountRuntimeKeys / attemptedPhysicalCredentialKeys / attemptedKeyFingerprints`、同层唯一候选一轮和公共 `normalRoutingConfig.firstByteDeadlineMs`。
+- 引入请求内 `attemptedAccountRuntimeKeys / attemptedPhysicalCredentialKeys / attemptedKeyFingerprints`、同层唯一候选一轮和仅用于可重放文本的公共 `normalRoutingConfig.firstByteDeadlineMs`。
 - 落地 `GatewayRequestWallBudget`、`requestPrecommitDeadlineAtMs / finalResponseReserveMs / uncommittedAttemptDeadlineAtMs` 与 attempt 首字裁剪；明确墙钟预算与 `ServerRetryBudget` 等待预算分离。
 - 明确普通模式与快速模式两套候选裁决顺序。
 - 更新当前禁止异常账号跨优先级的冲突测试，使其只保护健康账户的配置顺序。
@@ -1006,14 +1011,15 @@ gateway_request_wall_handoff_total
 本文采用以下推荐默认值，评审时重点确认：
 
 - 同层所有唯一候选最多一轮，不设固定 2 账号上限；
-- 普通模式和快速模式共用 `normalRoutingConfig.firstByteDeadlineMs`，默认 10 秒、范围 10–60 秒，只在请求开始时解析一次；两种模式只差首字结果后的动作；
-- 整请求恢复全局 `GatewayRequestWallBudget`（默认 270 秒绝对墙钟，决策点 handoff 客户端）；`ServerRetryBudget` 仍只累计零可派发等待；另有首字前裁剪与尾窗保留；
-- confirmation 最多一次，使用同一个首字 deadline，不另设 5 秒 timer；租约本身覆盖 attempt hard lifetime；
+- 可重放文本的普通模式和快速模式共用中性的 `normalRoutingConfig.firstByteDeadlineMs`，默认 10 秒、范围 10–60 秒，只在请求开始时解析一次；两种模式只差首字结果后的调度动作，lane hard timeout 才是传输失败；图片和其他副作用请求永久排除；
+- 可重放文本使用独立固定默认 270 秒的 `GatewayRequestWallBudget`（决策点 handoff 客户端），不从 `noAvailableAccountWaitTimeoutSeconds` 派生；`ServerRetryBudget` 只累计零可派发、FIFO / 并发槽和半开等待；已派发图片 attempt 只受 600/120/3600 图片时限约束并保持 at-most-once；
+- 单次请求最多取得一次 confirmation，首次失败后需两个独立 confirmation 失败才 `OPEN`；confirmation 不另设 5 秒 timer，也不把路由配置截止当失败，使用 lane hard timeout；租约本身覆盖 attempt hard lifetime；
 - 故障切号、重新选号和零可派发等待共用一个 3 秒 `routeCoordinationBudget`；
-- 短退避为 `3s -> 5s -> 10s -> 30s -> 60s`；
-- `RECOVERING` 连续 3 次完整成功才关闭电路；
+- 退避从 `3s -> 5s -> 10s -> 30s -> 60s` 起步，长期故障延伸到 15 分钟基线并加入确定性 jitter；
+- 父 account 只在配置窗口内至少 3 个当前 OPEN 独立 scope 后升级，scope 阈值可调但硬下限为 3；
+- `RECOVERING` 连续 3 次匹配 generation 的完整 transport framing 才关闭自动电路；framing 中性不恢复业务状态；
 - 热质量只重排完整账户配置层相同的账号；
 - 禁止跨优先级 / 备用层探索；同层按约 1/20 credit 受控观测，无流量时不补合成请求；
 - 快速模式 `latency_degraded` 和确认慢后切号继续优先于账户偏好与热质量。
 
-这些值不新增首轮用户配置项。先通过 Mock AI、高并发和真实短窗口观测验证固定默认，再判断哪些参数确有用户配置价值。
+这些值不新增账户或管理页面配置项；confirmation、父级升级阈值 / 窗口、容量、重建和恢复并发由部署运行配置控制。变更默认值必须先通过 Mock AI、高并发、Memory/Redis 一致性和真实短窗口观测验证。

@@ -14,6 +14,7 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
   releaseGenerationLease(runtimeKey: string, generation: number, leaseId: string, ttlMs: number): Promise<boolean>
   completeGenerationLease(runtimeKey: string, generation: number, leaseId: string): Promise<boolean>
   acquireGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<TState | undefined>
+  renewGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<boolean>
   commitGenerationRun(state: TState, runId: string, ttlMs: number): Promise<boolean>
   deleteGenerationRun(runtimeKey: string, generation: number, runId: string): Promise<boolean>
   listDue(nowMs: number, limit: number): Promise<string[]>
@@ -200,6 +201,18 @@ implements RuntimeProbeStateStore<TState> {
     return running
   }
 
+  async renewGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<boolean> {
+    const current = this.freshEntry(runtimeKey)?.value as (TState & ProbeCoordinationFields) | undefined
+    if (!current || current.generation !== generation || current.probeRunId !== runId) return false
+    const renewed = {
+      ...current,
+      nextProbeAtMs: Math.max(current.nextProbeAtMs, runUntilMs),
+      probeRunUntilMs: runUntilMs
+    } as TState & ProbeCoordinationFields
+    this.entries.set(runtimeKey, { value: renewed, expiresAtMs: Date.now() + normalizedTtlMs(ttlMs) })
+    return true
+  }
+
   async commitGenerationRun(state: TState, runId: string, ttlMs: number): Promise<boolean> {
     const current = this.freshEntry(state.runtimeKey)?.value as (TState & ProbeCoordinationFields) | undefined
     if (!current || current.generation !== state.generation || current.probeRunId !== runId) return false
@@ -330,6 +343,20 @@ implements RuntimeProbeStateStore<TState> {
     } catch {
       return undefined
     }
+  }
+
+  async renewGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisRenewProbeGenerationRunScript, {
+      keys: [this.stateKey(runtimeKey), this.dueKey],
+      arguments: [
+        runtimeKey,
+        String(Math.max(0, Math.trunc(generation))),
+        runId,
+        String(Math.max(0, Math.trunc(runUntilMs))),
+        String(normalizedTtlMs(ttlMs))
+      ]
+    })
+    return numericRedisResult(result) === 1
   }
 
   async commitGenerationRun(state: TState, runId: string, ttlMs: number): Promise<boolean> {
@@ -785,6 +812,22 @@ local encoded = cjson.encode(incoming)
 redis.call('SET', KEYS[1], encoded, 'PX', ARGV[2])
 redis.call('ZADD', KEYS[2], tonumber(incoming['nextProbeAtMs']) or tonumber(ARGV[3]) or 0, ARGV[4])
 redis.call('PEXPIRE', KEYS[2], ARGV[2])
+return 1
+`
+
+const redisRenewProbeGenerationRunScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then return 0 end
+if tonumber(decoded['generation']) ~= tonumber(ARGV[2]) then return 0 end
+if decoded['probeRunId'] ~= ARGV[3] then return 0 end
+decoded['probeRunUntilMs'] = tonumber(ARGV[4])
+decoded['nextProbeAtMs'] = math.max(tonumber(decoded['nextProbeAtMs']) or 0, tonumber(ARGV[4]))
+local encoded = cjson.encode(decoded)
+redis.call('SET', KEYS[1], encoded, 'PX', ARGV[5])
+redis.call('ZADD', KEYS[2], tonumber(decoded['nextProbeAtMs']) or 0, ARGV[1])
+redis.call('PEXPIRE', KEYS[2], ARGV[5])
 return 1
 `
 

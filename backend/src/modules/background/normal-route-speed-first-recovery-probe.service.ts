@@ -11,6 +11,7 @@ import {
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
+  deferNormalRouteLatencyProbeCandidateAsync,
   discardNormalRouteLatencyProbeCandidateAsync,
   recordNormalRouteFirstByteSuccessAsync,
   recordNormalRouteProbeFailureAsync,
@@ -138,6 +139,22 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber
     }, recovery?.cleared ? '普通路由速度优先恢复探针达标，账号已恢复正常调度' : '普通路由速度优先恢复探针达标，继续累计恢复次数')
+    return true
+  }
+
+  if (transportOutcome.kind !== 'transport_incomplete' && !result.success) {
+    const deferred = await deferNormalRouteLatencyProbeCandidateAsync(item)
+    logger.debug({
+      event: 'background_normal_route_speed_first_recovery_probe_neutral',
+      accountId: item.accountId,
+      accountName: item.accountName,
+      routeStrategyId: item.scope.routeStrategyId,
+      groupId: item.scope.groupId,
+      transportOutcome: transportOutcome.kind,
+      statusCode: result.statusCode,
+      firstByteMs,
+      deferred
+    }, '普通路由速度优先恢复探针收到中性结果，已保留降级状态并顺延探针')
     return true
   }
 

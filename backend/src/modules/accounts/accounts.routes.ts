@@ -395,7 +395,8 @@ accountsRouter.patch('/:id', async (req, res) => {
       let account: AccountSummary | undefined
       if (requestedClearFailureState === true) {
         const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess, {
-          allowPendingTestRestore: existingAccount.status === 'pending_test'
+          allowPendingTestRestore: existingAccount.status === 'pending_test',
+          allowExplicitPolicyRestore: true
         })
         if (!restoredAccount) {
           throw new Error('账户不存在')

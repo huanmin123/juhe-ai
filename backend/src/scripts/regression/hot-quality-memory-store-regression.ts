@@ -9,6 +9,7 @@ import {
   createHotQualityModelFamilyCatalog,
   hotQualityScopeKey,
   type HotQualityScope,
+  type HotQualityTerminalSource,
   type HotQualityTerminalOutcomeClass
 } from '../../modules/gateway/runtime/hot-quality-store.js'
 
@@ -52,7 +53,7 @@ async function finish(
     terminalOutcomeId?: string
     firstByteMs?: number
     failureScope?: 'none' | 'key' | 'protocol_model' | 'account' | 'upstream_bucket'
-    source?: 'gateway_transport' | 'explicit_policy' | 'request_lifecycle'
+    source?: HotQualityTerminalSource
   }
 ): Promise<void> {
   const attempted = await target.recordAttempt({ attemptId: input.attemptId, scope: input.scope, nowMs: now })
@@ -146,6 +147,7 @@ assert.equal((await store.recordTerminal({
 })).status, 'applied', '输入修正后必须仍能提交唯一终态')
 
 await finish(store, { attemptId: 'explicit', scope, outcomeClass: 'explicit_policy_failure', firstByteMs: 1_500 })
+await finish(store, { attemptId: 'opaque-http', scope, outcomeClass: 'upstream_response_failure', source: 'upstream_response', firstByteMs: 250, failureScope: 'none' })
 await finish(store, { attemptId: 'timeout', scope, outcomeClass: 'timeout' })
 await finish(store, { attemptId: 'read', scope, outcomeClass: 'read_interruption', firstByteMs: 5_000 })
 await finish(store, { attemptId: 'incomplete', scope, outcomeClass: 'incomplete_response' })
@@ -155,8 +157,9 @@ await finish(store, { attemptId: 'cancel', scope, outcomeClass: 'client_cancella
 
 const mutualSnapshot = await store.get(scope, now)
 assert.ok(mutualSnapshot)
-assert.equal(mutualSnapshot.window5m.attempts, 8)
+assert.equal(mutualSnapshot.window5m.attempts, 9)
 assert.equal(mutualSnapshot.window5m.completedResponses, 1)
+assert.equal(mutualSnapshot.window5m.upstreamResponseFailures, 1)
 assert.equal(mutualSnapshot.window5m.explicitPolicyFailures, 1)
 assert.equal(mutualSnapshot.window5m.localTransportFailures, 4, '本地失败总数不得与诊断子类重复累计')
 assert.equal(mutualSnapshot.window5m.timeouts, 1)
@@ -164,12 +167,32 @@ assert.equal(mutualSnapshot.window5m.readInterruptions, 1)
 assert.equal(mutualSnapshot.window5m.incompleteResponses, 1)
 assert.equal(mutualSnapshot.window5m.unknownOutcomes, 1)
 assert.equal(mutualSnapshot.window5m.clientCancellations, 1)
-assert.equal(mutualSnapshot.window5m.qualityAttempts, 6, 'unknown 与 cancel 必须排除在完成率分母外')
+assert.equal(mutualSnapshot.window5m.qualityAttempts, 6, 'unknown、cancel 与 opaque HTTP 都必须排除在完成率分母外')
 assert.equal(mutualSnapshot.window5m.adjustedCompletionRate, 3 / 10)
-assert.equal(mutualSnapshot.window5m.firstByteSampleCount, 3, 'unknown/cancel 的首字不得进入热速度样本')
+assert.equal(mutualSnapshot.window5m.firstByteSampleCount, 3, 'unknown、cancel 与 opaque HTTP 的首字不得进入热速度样本')
 assert.deepEqual(mutualSnapshot.window5m.firstByteHistogram, [1, 1, 1, 0, 0, 0, 0, 0])
 assert.equal(mutualSnapshot.sampleState, 'known')
 assert.equal(mutualSnapshot.reliabilityLevel, 'unhealthy')
+
+const opaqueOnlyScope: HotQualityScope = { ...scope, accountRuntimeKey: 'acct:opaque-only' }
+await finish(store, {
+  attemptId: 'opaque-only',
+  scope: opaqueOnlyScope,
+  outcomeClass: 'upstream_response_failure',
+  source: 'upstream_response',
+  firstByteMs: 1,
+  failureScope: 'none'
+})
+const opaqueOnlySnapshot = await store.get(opaqueOnlyScope, now)
+assert.ok(opaqueOnlySnapshot)
+assert.equal(opaqueOnlySnapshot.window5m.attempts, 1, 'opaque HTTP 终态仍应完成 attempt 诊断闭环')
+assert.equal(opaqueOnlySnapshot.window5m.upstreamResponseFailures, 1, 'opaque HTTP 只保留独立诊断计数')
+assert.equal(opaqueOnlySnapshot.window5m.qualityAttempts, 0, 'opaque HTTP 不得改变跨请求 reliability 样本')
+assert.equal(opaqueOnlySnapshot.window5m.adjustedCompletionRate, 0.5)
+assert.equal(opaqueOnlySnapshot.window5m.firstByteSampleCount, 0, 'opaque HTTP 不得改变跨请求速度样本')
+assert.equal(opaqueOnlySnapshot.window5m.lastFailureAtMs, undefined, 'opaque HTTP 不得改变候选探索使用的失败时间')
+assert.equal(opaqueOnlySnapshot.sampleState, 'cold', '只有 opaque HTTP 的账号在候选排序中必须仍是 cold')
+assert.equal(opaqueOnlySnapshot.reliabilityLevel, 'unknown')
 assert.deepEqual(
   Object.keys((await store.getTerminal('completed-1', now)) ?? {}).sort(),
   ['createdAtMs', 'failureScope', 'outcomeClass', 'source', 'terminalOutcomeId'],

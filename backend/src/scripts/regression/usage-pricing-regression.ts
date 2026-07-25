@@ -565,6 +565,8 @@ assert.equal(estimateProviderCostUsd({
 }), 0.5, 'xAI 输入达到 200k 阈值时必须对全量输入启用长上下文价格')
 const geminiModelPricingList = listProviderModelPricing(GEMINI_PROVIDER_CODE)
 assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3.5-flash',
   'gemini-3.1-pro-preview',
   'gemini-3.1-pro-preview-customtools',
@@ -949,6 +951,16 @@ assert.equal(buildProviderCostBreakdown({
 })?.thinkingTokens, 12)
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
+const beforeOpenAI20260723Shutdown = new Date().toISOString().slice(0, 10) < '2026-07-23'
+const openAIModelsShutDownOn20260723 = [
+  'gpt-5.2-codex',
+  'gpt-5.1-chat-latest',
+  'gpt-5.1-codex',
+  'gpt-5.1-codex-max',
+  'gpt-5.1-codex-mini',
+  'gpt-5-chat-latest',
+  'gpt-5-codex'
+] as const
 assert.equal(openAIModelPricingById.get('codex-auto-review')?.releaseDate, undefined, '未确认发布时间的 Codex 自动审查模型必须保持未知')
 const datedOpenAIModelPricingList = openAIModelPricingList.filter((item) => item.releaseDate)
 for (let index = 1; index < datedOpenAIModelPricingList.length; index += 1) {
@@ -967,15 +979,8 @@ for (const id of [
   'gpt-5.2',
   'gpt-5.2-2025-12-11',
   'gpt-5.2-chat-latest',
-  'gpt-5.2-codex',
   'gpt-5.1',
-  'gpt-5.1-chat-latest',
-  'gpt-5.1-codex',
-  'gpt-5.1-codex-max',
-  'gpt-5.1-codex-mini',
   'gpt-5',
-  'gpt-5-chat-latest',
-  'gpt-5-codex',
   'gpt-5-mini',
   'gpt-5-nano',
   'gpt-5-pro',
@@ -987,7 +992,8 @@ for (const id of [
   'gpt-3.5-turbo',
   'gpt-image-1',
   'babbage-002',
-  'davinci-002'
+  'davinci-002',
+  ...(beforeOpenAI20260723Shutdown ? openAIModelsShutDownOn20260723 : [])
 ]) {
   assert.equal(availableOpenAIModels.has(id), true, `${id} should be exposed while official shutdown date has not passed`)
   assert.ok(getProviderModelPricing(GPT_VENDOR_CODE, id), `${id} should resolve pricing`)
@@ -996,7 +1002,8 @@ for (const id of [
   'gpt-4.5-preview',
   'gpt-5.3-codex-spark',
   'codex-mini-latest',
-  'o1-mini'
+  'o1-mini',
+  ...(!beforeOpenAI20260723Shutdown ? openAIModelsShutDownOn20260723 : [])
 ]) {
   assert.equal(availableOpenAIModels.has(id), false, `${id} should not be exposed`)
   assert.equal(getProviderModelPricing(GPT_VENDOR_CODE, id), undefined, `${id} should not resolve pricing`)
@@ -1005,7 +1012,10 @@ for (const id of [
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedApiProtocols, ['chat_completions', 'responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-2025-12-11')?.supportedApiProtocols, ['chat_completions', 'responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.3-codex')?.supportedApiProtocols, ['responses'])
-assert.deepEqual(openAIModelPricingById.get('gpt-5.2-codex')?.supportedApiProtocols, ['responses'])
+assert.deepEqual(
+  openAIModelPricingById.get('gpt-5.2-codex')?.supportedApiProtocols,
+  beforeOpenAI20260723Shutdown ? ['responses'] : undefined
+)
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images', 'responses'])
 assert.deepEqual(openAIModelPricingById.get('gpt-4o-mini-tts')?.supportedApiProtocols, ['audio'])
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
@@ -1038,11 +1048,11 @@ assert.deepEqual(openAIModelPricingById.get('gpt-5-pro')?.supportedReasoningEffo
 assert.equal(openAIModelPricingById.get('gpt-5-pro')?.defaultReasoningEffort, undefined)
 assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
 assert.equal(openAIModelPricingById.get('gpt-5.4-mini')?.releaseDate, '2026-03-17')
-assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-01')
+assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-24')
 assert.equal(openAIModelPricingById.get('gpt-5.2')?.releaseDate, '2025-12-11')
 assert.equal(openAIModelPricingById.get('gpt-5-search-api')?.releaseDate, '2025-08-07')
 assert.equal(openAIModelPricingById.get('gpt-4.1')?.releaseDate, '2025-04-14')
-assert.equal(openAIModelPricingById.get('babbage-002')?.releaseDate, '2024-01-04')
+assert.equal(openAIModelPricingById.get('babbage-002')?.releaseDate, undefined, '未确认发布时间的 babbage-002 必须保持未知')
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.inputUsdPer1M, 5)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.outputUsdPer1M, 30)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.cachedInputUsdPer1M, 0.5)
@@ -1058,7 +1068,7 @@ assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.cacheWriteUsdPer1M, 1.2
 
 assert.equal(estimateProviderCostUsd({
   providerCode: GPT_VENDOR_CODE,
-  model: 'gpt-5.2-codex',
+  model: 'gpt-5.2',
   inputTokens: 1000,
   outputTokens: 200,
   cacheReadTokens: 300
@@ -1264,9 +1274,9 @@ assert.match(modelPricingProviderDriverRegistrySource, /buildAnthropicModelCandi
 
 const gatewayFailureDispatchSource = readSource('modules/gateway/response/failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
-assert.match(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/)
-assert.match(gatewayFailureDispatchSource, /parseGatewayProtocolErrorPayload/)
+assert.match(gatewayFailureDispatchSource, /automaticUpstreamReplayAllowedAfterDispatch/)
 assert.match(gatewayFailureDispatchSource, /recordFailedDispatchAttempt/, '账号准备等未创建 upstream attempt 的失败分支必须补审计 attempt')
+assert.doesNotMatch(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/, '通用失败不得写跨请求本地账户屏蔽')
 assert.doesNotMatch(gatewayFailureDispatchSource, /parseErrorPayload/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryAttempt\(/)
@@ -1280,11 +1290,11 @@ assert.doesNotMatch(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPo
 assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulable_same_account_retry/)
 
 const gatewayUpstreamDispatchSource = readSource('modules/gateway/dispatch/upstream-dispatch.ts')
-assert.match(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
-assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(sameAccountRetryPolicy\)/)
-assert.match(gatewayUpstreamDispatchSource, /shouldRetryPolicyAttempt\(attemptIndex, sameAccountRetryPolicy\)/)
-assert.match(gatewayUpstreamDispatchSource, /waitForSameAccountRetry/)
+assert.doesNotMatch(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
+assert.match(gatewayUpstreamDispatchSource, /requestAttemptTracker\.tryReserveSameAccountRetry/)
+assert.match(gatewayUpstreamDispatchSource, /pendingSameAccountRetryId/)
+assert.match(gatewayUpstreamDispatchSource, /waitForRetryDelayMs\(sameAccountRetryDelayMs, \{ signal \}\)/)
 assert.match(gatewayUpstreamDispatchSource, /recordAccountCapacityLimitFailure\([\s\S]*auditCapture[\s\S]*auditAttemptIndex/, '账号容量失败写使用记录时也必须补审计 attempt')
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
@@ -1452,6 +1462,7 @@ assert.match(codexSwitchProbeSource, /diagnosticAttemptSignal\(input\.signal,\s*
 assert.match(codexSwitchProbeSource, /isDiagnosticTimeoutSignal\(attemptSignal\)/)
 assert.match(codexSwitchProbeSource, /result\.success\s*\|\|\s*!shouldRetryCodexSwitchProbeSameAccount/, 'Codex 切号探针拿到明确失败后应立即换候选账号，只在本地超时时同账号递进等待')
 assert.match(codexSwitchProbeSource, /codexSwitchProbeGatewayTimeoutMs\(timeoutMs\)/)
+assert.doesNotMatch(codexSwitchProbeSource, /recordGatewayUpstreamBucketFailureAsync/, 'Codex 切号人工诊断不得把任意状态码或协议失败写入共享 proxy/upstream 健康桶')
 assert.doesNotMatch(codexSwitchProbeSource, /8_000|codexSwitchProbeTimeoutMs|testOpenAIAccountWithDiagnosticRetries/, 'Codex 切号探针不能保留 8s 专用超时，也不能使用普通账号测试的全失败原地重试包装器')
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')

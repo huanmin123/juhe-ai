@@ -66,6 +66,8 @@ export interface AccountCircuitIncidentRecord {
   upstreamAttemptObserved: boolean
   backoffLevel: number
   consecutiveFailures: number
+  confirmationFailuresRequired: number
+  confirmationFailureEvidenceKeys: string[]
   recoveringSuccesses: number
   lastFailureClass?: AccountCircuitFailureClass
   retainedUntilMs?: number
@@ -144,9 +146,12 @@ export interface CompareAndSetAccountCircuitIncidentInput {
   upstreamAttemptObserved?: boolean
   backoffLevel?: number
   consecutiveFailures?: number
+  confirmationFailuresRequired?: number
+  confirmationFailureEvidenceKeys?: string[]
   recoveringSuccesses?: number
   lastFailureClass?: AccountCircuitFailureClass
   retainedUntilMs?: number
+  stateUpdatedAtMs?: number
   nowMs?: number
 }
 
@@ -209,6 +214,8 @@ interface AccountCircuitIncidentRow {
   upstream_attempt_observed: number | bigint | string | boolean
   backoff_level: number | bigint | string
   consecutive_failures: number | bigint | string
+  confirmation_failures_required: number | bigint | string
+  confirmation_failure_evidence_keys_json: string
   recovering_successes: number | bigint | string
   last_failure_class: string | null
   retained_until_ms: number | bigint | string | null
@@ -241,14 +248,20 @@ interface AccountCircuitOutboxRow {
   updated_at_ms: number | bigint | string
 }
 
-interface NormalizedIncidentMutation extends Omit<CompareAndSetAccountCircuitIncidentInput, 'childIncidentIds' | 'nowMs'> {
+interface NormalizedIncidentMutation extends Omit<
+  CompareAndSetAccountCircuitIncidentInput,
+  'childIncidentIds' | 'confirmationFailuresRequired' | 'confirmationFailureEvidenceKeys' | 'stateUpdatedAtMs' | 'nowMs'
+> {
   childIncidentIds: string[]
+  confirmationFailuresRequired: number
+  confirmationFailureEvidenceKeys: string[]
   nowMs: number
   cooldownObservationGeneration: number
   upstreamAttemptObserved: boolean
   backoffLevel: number
   consecutiveFailures: number
   recoveringSuccesses: number
+  stateUpdatedAtMs: number
 }
 
 const businessSchemaName = 'juhe_business'
@@ -260,7 +273,8 @@ const incidentColumnList = `
   transition_id, cooldown_observation_generation, open_until_ms, next_transition_at_ms,
   lease_id, lease_purpose, lease_owner_run_id, lease_until_ms, attempt_started_at_ms,
   attempt_hard_deadline_ms, upstream_attempt_observed, backoff_level,
-  consecutive_failures, recovering_successes, last_failure_class, retained_until_ms,
+  consecutive_failures, confirmation_failures_required, confirmation_failure_evidence_keys_json,
+  recovering_successes, last_failure_class, retained_until_ms,
   created_at_ms, updated_at_ms
 `
 const outboxColumnList = `
@@ -514,6 +528,9 @@ export async function compareAndSetAccountCircuitIncidentInClient(
     if (current && current.accountId !== input.accountId) {
       throw new Error('账户 circuit scope key 已被其他账户占用')
     }
+    if (current && current.generation > input.generation) {
+      return { status: 'cas_conflict', currentDispatchRevision, incident: current }
+    }
 
     const ledgerRevision = (currentLedgerRevision ?? 0) + 1
     const incident = await upsertIncident(tx, input, current, ledgerRevision)
@@ -679,32 +696,36 @@ export async function listAccountCircuitIncidentsForRebuild(
 }
 
 export async function listAccountCircuitIncidentsByRuntimeKeys(
-  accountRuntimeKeys: string[]
+  accountRuntimeKeys: string[],
+  options: { includeRetainedClosed?: boolean; nowMs?: number } = {}
 ): Promise<AccountCircuitIncidentRecord[]> {
-  return listAccountCircuitIncidentsByRuntimeKeysInClient(await accountCircuitDatabaseClient(), accountRuntimeKeys)
+  return listAccountCircuitIncidentsByRuntimeKeysInClient(await accountCircuitDatabaseClient(), accountRuntimeKeys, options)
 }
 
 export async function listAccountCircuitIncidentsByRuntimeKeysInClient(
   client: DatabaseClient,
-  accountRuntimeKeys: string[]
+  accountRuntimeKeys: string[],
+  options: { includeRetainedClosed?: boolean; nowMs?: number } = {}
 ): Promise<AccountCircuitIncidentRecord[]> {
   const keys = [...new Set(accountRuntimeKeys.map((key) => requiredText(key, 1024, 'accountRuntimeKey')))]
   if (keys.length === 0) return []
   if (keys.length > 100) throw new Error('账户 circuit 摘要单次最多查询 100 个运行态键')
   const incidents = businessTable(client, 'account_circuit_incidents')
   const accounts = businessTable(client, 'accounts')
+  const includeRetainedClosed = options.includeRetainedClosed === true
+  const nowMs = nonNegativeInteger(options.nowMs ?? Date.now(), 'nowMs')
   const rows = await client.query<AccountCircuitIncidentRow>(`
     SELECT ${incidentColumnList}
     FROM ${incidents} circuit_incident
     WHERE account_runtime_key IN (${keys.map(() => '?').join(', ')})
-      AND state <> 'CLOSED'
+      AND ${includeRetainedClosed ? '(state <> \'CLOSED\' OR retained_until_ms > ?)' : "state <> 'CLOSED'"}
       AND dispatch_revision = (
         SELECT current_account.dispatch_revision
         FROM ${accounts} current_account
         WHERE current_account.id = circuit_incident.account_id
       )
     ORDER BY account_runtime_key ASC, updated_at_ms ASC, circuit_scope_key ASC
-  `, keys)
+  `, includeRetainedClosed ? [...keys, nowMs] : keys)
   return rows.map(mapIncidentRow)
 }
 
@@ -885,7 +906,7 @@ async function upsertIncident(
 ): Promise<AccountCircuitIncidentRecord> {
   const incidents = businessTable(client, 'account_circuit_incidents')
   const projectedLedgerRevision = current?.projectedLedgerRevision ?? 0
-  const createdAtMs = current?.createdAtMs ?? input.nowMs
+  const createdAtMs = current?.createdAtMs ?? input.stateUpdatedAtMs
   const params = [
     input.circuitScopeKey,
     input.accountId,
@@ -918,11 +939,13 @@ async function upsertIncident(
     input.upstreamAttemptObserved ? 1 : 0,
     input.backoffLevel,
     input.consecutiveFailures,
+    input.confirmationFailuresRequired,
+    JSON.stringify(input.confirmationFailureEvidenceKeys),
     input.recoveringSuccesses,
     input.lastFailureClass ?? null,
     input.retainedUntilMs ?? null,
     createdAtMs,
-    input.nowMs
+    input.stateUpdatedAtMs
   ]
   const placeholders = params.map(() => '?').join(', ')
   const row = await client.one<AccountCircuitIncidentRow>(`
@@ -959,6 +982,8 @@ async function upsertIncident(
       upstream_attempt_observed = excluded.upstream_attempt_observed,
       backoff_level = excluded.backoff_level,
       consecutive_failures = excluded.consecutive_failures,
+      confirmation_failures_required = excluded.confirmation_failures_required,
+      confirmation_failure_evidence_keys_json = excluded.confirmation_failure_evidence_keys_json,
       recovering_successes = excluded.recovering_successes,
       last_failure_class = excluded.last_failure_class,
       retained_until_ms = excluded.retained_until_ms,
@@ -1057,6 +1082,11 @@ function mapIncidentRow(row: AccountCircuitIncidentRow): AccountCircuitIncidentR
     upstreamAttemptObserved: booleanValue(row.upstream_attempt_observed),
     backoffLevel: integerValue(row.backoff_level, 'backoff_level'),
     consecutiveFailures: integerValue(row.consecutive_failures, 'consecutive_failures'),
+    confirmationFailuresRequired: integerValue(row.confirmation_failures_required, 'confirmation_failures_required'),
+    confirmationFailureEvidenceKeys: parseConfirmationFailureEvidenceKeys(
+      row.confirmation_failure_evidence_keys_json,
+      integerValue(row.confirmation_failures_required, 'confirmation_failures_required')
+    ),
     recoveringSuccesses: integerValue(row.recovering_successes, 'recovering_successes'),
     ...(row.last_failure_class ? { lastFailureClass: row.last_failure_class as AccountCircuitFailureClass } : {}),
     ...optionalIntegerProperty('retainedUntilMs', row.retained_until_ms),
@@ -1107,6 +1137,7 @@ function familyDispatchTransitionId(transitionId: string, accountId: string): st
 
 function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInput): NormalizedIncidentMutation {
   const nowMs = nonNegativeInteger(input.nowMs ?? Date.now(), 'nowMs')
+  const stateUpdatedAtMs = nonNegativeInteger(input.stateUpdatedAtMs ?? nowMs, 'stateUpdatedAtMs')
   const state = incidentState(input.state)
   const scopeKind = circuitScopeKind(input.scopeKind, 'scopeKind')
   const keyFingerprint = optionalText(input.keyFingerprint, 256, 'keyFingerprint')
@@ -1130,6 +1161,19 @@ function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInp
   if (leaseFieldCount !== 0 && leaseFieldCount !== 4) {
     throw new Error('leaseId / leasePurpose / leaseOwnerRunId / leaseUntilMs 必须同时提供或同时省略')
   }
+  const confirmationFailuresRequired = positiveInteger(
+    input.confirmationFailuresRequired ?? 1,
+    'confirmationFailuresRequired',
+    5
+  )
+  const consecutiveFailures = nonNegativeInteger(input.consecutiveFailures ?? 0, 'consecutiveFailures', 5)
+  if (consecutiveFailures > confirmationFailuresRequired) {
+    throw new Error('consecutiveFailures 不能超过 confirmationFailuresRequired')
+  }
+  const confirmationFailureEvidenceKeys = confirmationEvidenceKeys(
+    input.confirmationFailureEvidenceKeys ?? [],
+    confirmationFailuresRequired
+  )
   return {
     accountId: requiredText(input.accountId, 256, 'accountId'),
     accountRuntimeKey: requiredText(input.accountRuntimeKey, 1024, 'accountRuntimeKey'),
@@ -1162,16 +1206,19 @@ function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInp
     ...optionalIntegerInput('attemptHardDeadlineMs', input.attemptHardDeadlineMs),
     upstreamAttemptObserved: input.upstreamAttemptObserved === true,
     backoffLevel: nonNegativeInteger(input.backoffLevel ?? 0, 'backoffLevel'),
-    consecutiveFailures: nonNegativeInteger(input.consecutiveFailures ?? 0, 'consecutiveFailures'),
+    consecutiveFailures,
+    confirmationFailuresRequired,
+    confirmationFailureEvidenceKeys,
     recoveringSuccesses: nonNegativeInteger(input.recoveringSuccesses ?? 0, 'recoveringSuccesses'),
     ...(input.lastFailureClass === undefined ? {} : { lastFailureClass: failureClass(input.lastFailureClass) }),
     ...(retainedUntilMs !== undefined ? { retainedUntilMs } : {}),
+    stateUpdatedAtMs,
     nowMs
   }
 }
 
 function boundedIdArray(values: string[]): string[] {
-  if (!Array.isArray(values) || values.length > 16) throw new Error('childIncidentIds 最多包含 16 项')
+  if (!Array.isArray(values) || values.length > 64) throw new Error('childIncidentIds 最多包含 64 项')
   const normalized = values.map((value, index) => requiredText(value, 256, `childIncidentIds[${index}]`))
   return [...new Set(normalized)]
 }
@@ -1183,6 +1230,31 @@ function parseBoundedIdArray(value: string): string[] {
   } catch {
     throw new Error('持久化 childIncidentIds 不是合法有界数组')
   }
+}
+
+function confirmationEvidenceKeys(values: string[], confirmationFailuresRequired: number): string[] {
+  if (!Array.isArray(values) || values.length > confirmationFailuresRequired + 1) {
+    throw new Error(`confirmationFailureEvidenceKeys 最多包含 ${confirmationFailuresRequired + 1} 项`)
+  }
+  const normalized = values.map((value, index) => {
+    const key = requiredText(value, 64, `confirmationFailureEvidenceKeys[${index}]`).toLowerCase()
+    if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('confirmationFailureEvidenceKeys 只能包含 SHA256')
+    return key
+  })
+  return [...new Set(normalized)]
+}
+
+function parseConfirmationFailureEvidenceKeys(value: string, confirmationFailuresRequired: number): string[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error('持久化 confirmationFailureEvidenceKeys 不是合法 JSON')
+  }
+  if (!Array.isArray(parsed) || !parsed.every((item): item is string => typeof item === 'string')) {
+    throw new Error('持久化 confirmationFailureEvidenceKeys 不是合法数组')
+  }
+  return confirmationEvidenceKeys(parsed, confirmationFailuresRequired)
 }
 
 function assertScopeShape(

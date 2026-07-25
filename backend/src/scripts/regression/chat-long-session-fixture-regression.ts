@@ -582,13 +582,14 @@ const liveTree = new Map<number, TrackedProcessIdentity>([
   [103, { pid: 103, parentPid: 999, creationTime: 'reused-worker', commandLine: 'unrelated-process' }]
 ])
 const killedPids: number[] = []
+let processListCalls = 0
 await stopTrackedWindowsProcessTree({
   rootPid: 101,
   tracked: trackedTree,
   servicePort: 34567,
   captureTree: async () => [...liveTree.values()],
   taskkillTree: async () => { liveTree.delete(101); throw new Error('taskkill_spawn_failed') },
-  listCurrentProcesses: async () => [...liveTree.values()],
+  listCurrentProcesses: async () => { processListCalls += 1; return [...liveTree.values()] },
   killPid: async (pid) => { killedPids.push(pid); liveTree.delete(pid) },
   isPortListening: async () => liveTree.has(102),
   timeoutMs: 250,
@@ -596,6 +597,7 @@ await stopTrackedWindowsProcessTree({
 })
 assert.deepEqual(killedPids, [102], 'fallback 必须杀后端子 PID，且不能误杀已复用 PID')
 assert.equal(liveTree.has(103), true, 'PID 身份变化时必须视为复用并跳过')
+assert.equal(processListCalls, 4, 'fallback 必须复用单次进程快照，不能按 tracked PID 重复全量枚举 WMI')
 
 const reusedRootTracked: TrackedProcessIdentity[] = [
   { pid: 201, parentPid: 0, creationTime: 'old-root', commandLine: 'old-pnpm-root' }

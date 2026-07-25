@@ -110,21 +110,16 @@ try {
   ]) {
     assert.ok(accountColumns.some((row) => row.name === column), `accounts 应包含 ${column} 字段`)
   }
-  assert.equal(accountTestFailureEligibleForAccount({
-    statusCode: 404,
-    errorCode: 'model_not_found',
-    message: 'The model does not exist'
-  }), false, '检查模型不存在不应判定为整个账户故障')
-  assert.equal(accountTestFailureEligibleForAccount({
-    statusCode: 400,
-    errorCode: 'invalid_request_error',
-    message: 'Unsupported model'
-  }), false, '模型或请求配置错误不应判定为整个账户故障')
-  assert.equal(accountTestFailureEligibleForAccount({
-    statusCode: 401,
-    errorCode: 'invalid_api_key',
-    message: 'Invalid API key'
-  }), true, '凭据失败应判定为账户故障')
+  for (const [statusCode, errorCode, message] of [
+    [400, 'invalid_request_error', 'Unsupported model'],
+    [401, 'invalid_api_key', 'Invalid API key'],
+    [404, 'model_not_found', 'The model does not exist'],
+    [429, 'rate_limit', 'Provider-defined throttling'],
+    [500, 'server_error', 'Provider-defined failure'],
+    [503, 'upstream_body_interrupted', 'Provider-controlled diagnostic']
+  ] as const) {
+    assert.equal(accountTestFailureEligibleForAccount({ statusCode, errorCode, message }), true, `HTTP ${statusCode} 的供应商语义不得改变诊断重试资格`)
+  }
 
   const group = repositories.createGroup({
     name: '账号健康检测回归分组',

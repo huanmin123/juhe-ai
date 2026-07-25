@@ -2,12 +2,13 @@ import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -77,13 +78,26 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   if (!candidateAccount || candidateAccount.type !== 'api_key') {
     return true
   }
+  const currentKey = accountApiKeyEntries(candidateAccount.credentials)
+    .find((entry) => entry.fingerprint === item.keyFingerprint && entry.key === item.apiKey)
+  if (!currentKey) {
+    logger.debug({
+      event: 'background_account_api_key_cooldown_retest_stale_credential_discarded',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint,
+      attemptIndex: context.attemptIndex
+    }, '账户内 API Key 复测凭据已轮换，已丢弃旧队列项')
+    return true
+  }
   const fixedKeyCandidate = {
     ...candidateAccount,
     apiKey: item.apiKey,
     selectedApiKeyFingerprint: item.keyFingerprint,
     selectedApiKeyIndex: item.keyIndex
   }
-  let upstreamResponseObserved = false
+  const probeStartedAt = new Date().toISOString()
+  let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
     testEndpointMode: account.healthCheckEndpointMode,
@@ -93,7 +107,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
     onUpstreamAttempt: (attempt) => {
-      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
+      upstreamAttempt = attempt
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -103,11 +117,23 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     }
   })
 
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
-      account: fixedKeyCandidate
+      account: fixedKeyCandidate,
+      trafficSource: 'cooldown_retest',
+      mutationContext: {
+        authority: 'automatic_probe',
+        trafficSource: 'cooldown_retest',
+        probeOutcome: 'complete_success'
+      },
+      observedAt: probeStartedAt,
+      expectedStatus: item.status,
+      expectedNextProbeAt: item.nextProbeAt,
+      expectedStateUpdatedAt: item.stateUpdatedAt,
+      expectedProbeClaimToken: item.probeClaimToken,
+      expectedAccountConfigRevision: item.accountConfigRevision
     }, backgroundProbeDbServiceTimeoutMs)
     logger.info({
       event: 'background_account_api_key_cooldown_retest_restored',
@@ -123,7 +149,26 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     return true
   }
 
-  if (probeOutcome === 'probe_task_failure') {
+  if (probeOutcome !== 'upstream_failure') {
+    const deferred = await requestBackgroundWorkerDbService({
+      type: 'defer_account_api_key_probe',
+      account: fixedKeyCandidate,
+      trafficSource: 'cooldown_retest',
+      mutationContext: {
+        authority: 'automatic_probe',
+        trafficSource: 'cooldown_retest',
+        probeOutcome
+      },
+      input: {
+        expectedStatus: item.status,
+        expectedNextProbeAt: item.nextProbeAt,
+        expectedStateUpdatedAt: item.stateUpdatedAt,
+        expectedProbeClaimToken: item.probeClaimToken,
+        expectedAccountConfigRevision: item.accountConfigRevision,
+        delaySeconds: 60,
+        observedAt: probeStartedAt
+      }
+    }, backgroundProbeDbServiceTimeoutMs)
     logger.warn({
       event: 'background_account_api_key_cooldown_retest_task_failed',
       accountId: account.id,
@@ -132,22 +177,34 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber,
       probeOutcome,
-      upstreamResponseObserved,
       durationMs: result.durationMs,
+      deferred: deferred?.changed ?? false,
       message: result.message
-    }, '账户内 API Key 复测未形成可归因的上游失败，已保留 Key 状态')
+    }, '账户内 API Key 复测未形成传输失败证据，已保留 Key 状态')
     return true
   }
 
   const failure = await requestBackgroundWorkerDbService({
     type: 'record_account_api_key_failure',
     account: fixedKeyCandidate,
+    trafficSource: 'cooldown_retest',
+    mutationContext: {
+      authority: 'automatic_probe',
+      trafficSource: 'cooldown_retest',
+      probeOutcome: 'upstream_failure'
+    },
     input: {
       status: 'temporary_unavailable',
       statusCode: result.statusCode,
       errorCode: result.errorCode,
       errorMessage: result.message,
-      traceId: result.traceId
+      traceId: result.traceId,
+      observedAt: probeStartedAt,
+      expectedStatus: item.status,
+      expectedNextProbeAt: item.nextProbeAt,
+      expectedStateUpdatedAt: item.stateUpdatedAt,
+      expectedProbeClaimToken: item.probeClaimToken,
+      expectedAccountConfigRevision: item.accountConfigRevision
     }
   }, backgroundProbeDbServiceTimeoutMs)
   logger.debug({
@@ -160,7 +217,6 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     probeOutcome,
-    upstreamResponseObserved,
     durationMs: result.durationMs,
     changed: failure?.changed ?? false,
     message: result.message

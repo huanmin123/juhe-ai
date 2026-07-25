@@ -24,7 +24,7 @@ import {
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
-import { OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
+import { isManagedOpenAIOAuthRefreshErrorCode, isOpenAIOAuthRefreshLocalConfigurationError, openAIOAuthRefreshManagedErrorCodes, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -348,7 +348,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
-    if (error instanceof ProxyProfileUnavailableError) {
+    if (error instanceof ProxyProfileUnavailableError || isOpenAIOAuthRefreshLocalConfigurationError(error)) {
       res.status(400).json(badRequest(error.message))
       return
     }
@@ -540,8 +540,10 @@ async function updateOpenAIOAuthAccountCredentials(
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  if (updated.status !== 'pending_test' && updated.status !== 'disabled' && (updated.status !== 'error' || updated.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)) {
-    return await clearAccountFailureStateAsync(account.id, access) ?? updated
+  if (updated.status === 'error' && isManagedOpenAIOAuthRefreshErrorCode(updated.lastErrorCode)) {
+    return await clearAccountFailureStateAsync(account.id, access, {
+      expectedLastErrorCodes: openAIOAuthRefreshManagedErrorCodes
+    }) ?? updated
   }
   return updated
 }
@@ -558,7 +560,7 @@ export function buildReauthorizedOpenAIOAuthCredentials(
 }
 
 function isBlockedOpenAIOAuthErrorAccount(account: NonNullable<Awaited<ReturnType<typeof findEditableOpenAIOAuthAccount>>>): boolean {
-  return account.status === 'error' && account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+  return account.status === 'error' && !isManagedOpenAIOAuthRefreshErrorCode(account.lastErrorCode)
 }
 
 function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMessage: string): void {

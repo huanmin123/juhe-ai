@@ -12,7 +12,12 @@ const framingComplete: TransportProbeOutcome = {
 assert.equal(transportProbeMeetsFirstByteTarget({
   success: false,
   firstTokenMs: 800
-}, framingComplete, 1_000), true, '速度恢复只依赖 framing 和首字，不得读取业务 success')
+}, framingComplete, 1_000), false, '完整但业务无效的快速响应不得恢复共享速度排名')
+
+assert.equal(transportProbeMeetsFirstByteTarget({
+  success: true,
+  firstTokenMs: 800
+}, framingComplete, 1_000), true, '协议成功且首字达标才可作为速度恢复证据')
 
 assert.equal(transportProbeMeetsFirstByteTarget({
   success: true,

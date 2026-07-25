@@ -215,12 +215,13 @@ export function accountTestEndpointModesForModel(
   capabilities?: { supportedApiProtocols?: readonly string[] }
 ): AccountSupportedEndpointMode[] {
   const source = { ...account, ...(draftAccount ?? {}) }
+  const type = normalizedAccountType(source.type)
   const imageOnlyModel = capabilities?.supportedApiProtocols?.includes('images') === true
     || /^(?:gpt-image|dall-e)(?:-|$)/iu.test(model.trim())
   if (
     imageOnlyModel
-    && normalizedAccountType(source.type) === 'api_key'
-    && accountProviderProtocolKind(source) === 'openai_v1'
+    && type === 'api_key'
+    && accountProviderProtocolKind({ ...source, type }) === 'openai_v1'
   ) {
     return ['images_json']
   }

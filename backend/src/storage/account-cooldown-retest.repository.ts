@@ -1,4 +1,8 @@
 import type { AccountSummary } from '../domain/types.js'
+import {
+  EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+  isExplicitAccountErrorPolicyCooldown
+} from '../domain/account-runtime-provenance.js'
 import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
@@ -18,10 +22,11 @@ import {
   accountResourceProviderProtocolProfileId,
   accountResourceProxyProfileId,
   accountResourceType,
-  isAuthorizedSourceAccountAvailableForDispatch,
-  loadAuthorizationQuotaExceededByAuthorizationId
+  loadAuthorizationQuotaExceededByAuthorizationId,
+  loadAuthorizationQuotaExceededByAuthorizationIdAsync
 } from './account-summary.repository.js'
 import { isCoolingAccountStatus } from './account-status.js'
+import { newCooldownRetestGeneration } from './account-runtime-mutation-helpers.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -50,10 +55,28 @@ const cooldownRetestLongTermIntervalSeconds = 60 * 60
 const cooldownRetestObservationTimeoutSeconds = 7 * 24 * 60 * 60
 const businessSchemaName = 'juhe_business'
 const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
+const ecmaScriptTrimWhitespaceCodePoints = [
+  9, 10, 11, 12, 13, 32, 160, 5760,
+  8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+  8232, 8233, 8239, 8287, 12288, 65279
+]
+const sqliteCooldownRetestWhitespaceSql = ecmaScriptTrimWhitespaceCodePoints.map((codePoint) => `char(${codePoint})`).join(' || ')
+const postgresCooldownRetestWhitespaceSql = ecmaScriptTrimWhitespaceCodePoints.map((codePoint) => `CHR(${codePoint})`).join(' || ')
+
+function sqliteTrimCooldownRetestText(expression: string): string {
+  return `TRIM(${expression}, ${sqliteCooldownRetestWhitespaceSql})`
+}
+
+function postgresTrimCooldownRetestText(expression: string): string {
+  return `BTRIM(${expression}, ${postgresCooldownRetestWhitespaceSql})`
+}
 
 export interface CooldownAccountRetestFailureInput {
-  expectedConfigRevision?: number
-  expectedObservationStartedAt?: string
+  expectedConfigRevision: number
+  expectedDispatchRevision: number
+  expectedObservationStartedAt: string
+  expectedGeneration: string
+  expectedSourceConfigRevision?: number
   traceId?: string
   statusCode?: number
   errorCode?: string
@@ -106,27 +129,106 @@ export interface CooldownAccountRetestDeferResult {
 
 export interface CooldownAccountRetestSuccessInput {
   expectedConfigRevision: number
-  expectedObservationStartedAt?: string
+  expectedDispatchRevision: number
+  expectedObservationStartedAt: string
+  expectedGeneration: string
+  expectedSourceConfigRevision?: number
+}
+
+export interface CooldownAccountRetestDeferInput extends CooldownAccountRetestSuccessInput {
+  delaySeconds?: number
 }
 
 interface CooldownRetestExpectedState {
-  expectedConfigRevision?: number
-  expectedObservationStartedAt?: string
+  expectedConfigRevision: number
+  expectedDispatchRevision: number
+  expectedObservationStartedAt: string
+  expectedGeneration: string
+  expectedSourceConfigRevision?: number
 }
 
-function cooldownRetestExpectedStateGuard(input: CooldownRetestExpectedState): {
-  sql: string
-  params: Array<number | string>
-} {
-  const clauses: string[] = []
-  const params: Array<number | string> = []
-  if (input.expectedConfigRevision !== undefined) {
-    clauses.push('AND config_revision = ?')
-    params.push(input.expectedConfigRevision)
+function cooldownRetestExpectedStateGuard(
+  input: CooldownRetestExpectedState,
+  options: {
+    accountsTable: string
+    authorizationsTable: string
+    groupAccountsTable: string
+    now: string
+    targetAlias?: string
   }
-  if (input.expectedObservationStartedAt !== undefined) {
-    clauses.push('AND cooldown_retest_observation_started_at = ?')
-    params.push(input.expectedObservationStartedAt)
+): {
+  sql: string
+  params: Array<number | string | null>
+} {
+  const targetAlias = options.targetAlias ?? 'accounts'
+  const expectedObservationStartedAt = input.expectedObservationStartedAt?.trim()
+  const expectedGeneration = input.expectedGeneration?.trim()
+  if (
+    !Number.isInteger(input.expectedConfigRevision)
+    || input.expectedConfigRevision < 1
+    || !Number.isInteger(input.expectedDispatchRevision)
+    || input.expectedDispatchRevision < 1
+    || !expectedObservationStartedAt
+    || !Number.isFinite(Date.parse(expectedObservationStartedAt))
+    || !expectedGeneration
+    || (input.expectedSourceConfigRevision !== undefined
+      && (!Number.isInteger(input.expectedSourceConfigRevision) || input.expectedSourceConfigRevision < 1))
+  ) {
+    return { sql: '      AND 1 = 0', params: [] }
+  }
+  const clauses = [
+    `AND ${targetAlias}.config_revision = ?`,
+    `AND ${targetAlias}.dispatch_revision = ?`,
+    `AND ${targetAlias}.cooldown_retest_observation_started_at = ?`,
+    `AND ${targetAlias}.cooldown_retest_generation = ?`,
+    `AND ${targetAlias}.schedulable = 1`,
+    `AND (${targetAlias}.account_expires_at IS NULL OR ${targetAlias}.account_expires_at > ?)`
+  ]
+  const params: Array<number | string | null> = [
+    input.expectedConfigRevision,
+    input.expectedDispatchRevision,
+    expectedObservationStartedAt,
+    expectedGeneration,
+    options.now
+  ]
+  if (input.expectedSourceConfigRevision === undefined) {
+    clauses.push(`AND ${targetAlias}.authorization_instance_authorization_id IS NULL`)
+    clauses.push(`AND ${targetAlias}.authorization_instance_source_account_id IS NULL`)
+    clauses.push(`AND ${targetAlias}.authorization_instance_owner_system_account_id IS NULL`)
+  } else {
+    clauses.push(`AND ${targetAlias}.authorization_instance_authorization_id IS NOT NULL`)
+    clauses.push(`AND ${targetAlias}.authorization_instance_source_account_id IS NOT NULL`)
+    clauses.push(`AND ${targetAlias}.authorization_instance_owner_system_account_id IS NOT NULL`)
+    clauses.push(`AND EXISTS (
+        SELECT 1
+        FROM ${options.accountsTable} cooldown_source_accounts
+        JOIN ${options.authorizationsTable} cooldown_authorizations
+          ON cooldown_authorizations.id = ${targetAlias}.authorization_instance_authorization_id
+        WHERE cooldown_source_accounts.id = ${targetAlias}.authorization_instance_source_account_id
+          AND cooldown_source_accounts.deleted_at IS NULL
+          AND cooldown_source_accounts.config_revision = ?
+          AND cooldown_source_accounts.status = 'active'
+          AND cooldown_source_accounts.schedulable = 1
+          AND (cooldown_source_accounts.account_expires_at IS NULL OR cooldown_source_accounts.account_expires_at > ?)
+          AND (cooldown_source_accounts.cooldown_until IS NULL OR cooldown_source_accounts.cooldown_until <= ?)
+          AND (cooldown_source_accounts.last_error_code IS NULL OR cooldown_source_accounts.last_error_code <> 'account_expired')
+          AND cooldown_authorizations.resource_type = 'account'
+          AND cooldown_authorizations.resource_id = cooldown_source_accounts.id
+          AND cooldown_authorizations.resource_owner_system_account_id = cooldown_source_accounts.system_account_id
+          AND cooldown_authorizations.grantee_system_account_id = ${targetAlias}.system_account_id
+          AND ${targetAlias}.authorization_instance_owner_system_account_id = cooldown_source_accounts.system_account_id
+          AND cooldown_authorizations.status = 'active'
+          AND (cooldown_authorizations.expires_at IS NULL OR cooldown_authorizations.expires_at > ?)
+          AND EXISTS (
+            SELECT 1
+            FROM ${options.groupAccountsTable} cooldown_group_accounts
+            WHERE cooldown_group_accounts.account_id = ${targetAlias}.id
+              AND cooldown_group_accounts.system_account_id = ${targetAlias}.system_account_id
+              AND cooldown_group_accounts.account_authorization_id = ${targetAlias}.authorization_instance_authorization_id
+              AND cooldown_group_accounts.enabled = 1
+          )
+      )`)
+    params.push(input.expectedSourceConfigRevision, options.now, options.now, options.now)
   }
   return {
     sql: clauses.map((clause) => `      ${clause}`).join('\n'),
@@ -134,33 +236,52 @@ function cooldownRetestExpectedStateGuard(input: CooldownRetestExpectedState): {
   }
 }
 
-export function deferCooldownAccountRetest(id: string, delaySeconds = 10): CooldownAccountRetestDeferResult {
+export function deferCooldownAccountRetest(id: string, input: CooldownAccountRetestDeferInput): CooldownAccountRetestDeferResult {
   const now = nowIso()
-  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(delaySeconds) * 1000).toISOString()
+  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(input.delaySeconds ?? 30) * 1000).toISOString()
+  const expectedState = cooldownRetestExpectedStateGuard(input, {
+    accountsTable: 'accounts',
+    authorizationsTable: 'resource_authorizations',
+    groupAccountsTable: 'group_accounts',
+    now,
+    targetAlias: 'target'
+  })
   const result = getBusinessDatabase().prepare(`
-    UPDATE accounts
+    UPDATE accounts AS target
     SET cooldown_until = ?, updated_at = ?
-    WHERE id = ?
-      AND deleted_at IS NULL
-      AND status IN ('temporary_unavailable', 'rate_limited')
-  `).run(cooldownUntil, now, id)
+    WHERE target.id = ?
+      AND target.deleted_at IS NULL
+      AND target.status IN ('temporary_unavailable', 'rate_limited')
+      AND (target.cooldown_until IS NULL OR target.cooldown_until < ?)
+${expectedState.sql}
+  `).run(cooldownUntil, now, id, cooldownUntil, ...expectedState.params)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) invalidateAccountLookupCache(id)
   return { changed, cooldownUntil: changed ? cooldownUntil : undefined }
 }
 
-export async function deferCooldownAccountRetestAsync(id: string, delaySeconds = 10): Promise<CooldownAccountRetestDeferResult> {
-  if (runtimeConfig.databaseDriver !== 'postgres') return deferCooldownAccountRetest(id, delaySeconds)
+export async function deferCooldownAccountRetestAsync(id: string, input: CooldownAccountRetestDeferInput): Promise<CooldownAccountRetestDeferResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return deferCooldownAccountRetest(id, input)
   const now = nowIso()
-  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(delaySeconds) * 1000).toISOString()
+  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(input.delaySeconds ?? 30) * 1000).toISOString()
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const accountsTable = cooldownRetestTable(client, 'accounts')
+  const expectedState = cooldownRetestExpectedStateGuard(input, {
+    accountsTable,
+    authorizationsTable: cooldownRetestTable(client, 'resource_authorizations'),
+    groupAccountsTable: cooldownRetestTable(client, 'group_accounts'),
+    now,
+    targetAlias: 'target'
+  })
   const result = await client.execute(`
-    UPDATE ${cooldownRetestTable(client, 'accounts')}
+    UPDATE ${accountsTable} AS target
     SET cooldown_until = ?, updated_at = ?
-    WHERE id = ?
-      AND deleted_at IS NULL
-      AND status IN ('temporary_unavailable', 'rate_limited')
-  `, [cooldownUntil, now, id])
+    WHERE target.id = ?
+      AND target.deleted_at IS NULL
+      AND target.status IN ('temporary_unavailable', 'rate_limited')
+      AND (target.cooldown_until IS NULL OR target.cooldown_until < ?)
+${expectedState.sql}
+  `, [cooldownUntil, now, id, cooldownUntil, ...expectedState.params])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) invalidateAccountLookupCache(id)
   return { changed, cooldownUntil: changed ? cooldownUntil : undefined }
@@ -170,21 +291,34 @@ export function recordCooldownAccountRetestSuccess(
   id: string,
   input: CooldownAccountRetestSuccessInput
 ): { changed: boolean; accountStatus?: string } {
-  const expectedState = cooldownRetestExpectedStateGuard(input)
-  const result = getBusinessDatabase().prepare(`
-    UPDATE accounts
-    SET status = 'active', schedulable = 1, cooldown_until = NULL,
-        last_error_code = NULL, last_error_message = NULL, last_error_trace_id = NULL,
-        cooldown_retest_failure_count = 0, cooldown_retest_observation_started_at = NULL,
-        cooldown_retest_last_at = NULL, cooldown_retest_last_status_code = NULL,
-        updated_at = ?
-    WHERE id = ? AND deleted_at IS NULL
-      AND status IN ('temporary_unavailable', 'rate_limited')
+  const now = nowIso()
+  const expectedState = cooldownRetestExpectedStateGuard(input, {
+    accountsTable: 'accounts',
+    authorizationsTable: 'resource_authorizations',
+    groupAccountsTable: 'group_accounts',
+    now,
+    targetAlias: 'target'
+  })
+  const changed = runInDatabaseTransaction(() => {
+    const result = getBusinessDatabase().prepare(`
+      UPDATE accounts AS target
+      SET status = 'active', schedulable = 1, cooldown_until = NULL,
+          last_error_code = NULL, last_error_message = NULL, last_error_trace_id = NULL,
+          cooldown_retest_failure_count = 0, cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_generation = NULL,
+          cooldown_retest_last_at = NULL, cooldown_retest_last_status_code = NULL,
+          updated_at = ?
+      WHERE target.id = ? AND target.deleted_at IS NULL
+        AND target.status IN ('temporary_unavailable', 'rate_limited')
 ${expectedState.sql}
-  `).run(nowIso(), id, ...expectedState.params)
-  const changed = Number(result.changes ?? 0) > 0
+    `).run(now, id, ...expectedState.params)
+    const updated = Number(result.changes ?? 0) > 0
+    if (updated) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_restored' })
+    }
+    return updated
+  })
   if (changed) {
-    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_restored' })
     invalidateAccountLookupCache(id)
     notifyGatewayRuntimeCacheInvalidation('account_cooldown_retest_restored')
   }
@@ -197,21 +331,35 @@ export async function recordCooldownAccountRetestSuccessAsync(
 ): Promise<{ changed: boolean; accountStatus?: string }> {
   if (runtimeConfig.databaseDriver !== 'postgres') return recordCooldownAccountRetestSuccess(id, input)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const expectedState = cooldownRetestExpectedStateGuard(input)
-  const result = await client.execute(`
-    UPDATE ${cooldownRetestTable(client, 'accounts')}
-    SET status = 'active', schedulable = 1, cooldown_until = NULL,
-        last_error_code = NULL, last_error_message = NULL, last_error_trace_id = NULL,
-        cooldown_retest_failure_count = 0, cooldown_retest_observation_started_at = NULL,
-        cooldown_retest_last_at = NULL, cooldown_retest_last_status_code = NULL,
-        updated_at = ?
-    WHERE id = ? AND deleted_at IS NULL
-      AND status IN ('temporary_unavailable', 'rate_limited')
+  const now = nowIso()
+  const changed = await client.transaction(async (tx) => {
+    const accountsTable = cooldownRetestTable(tx, 'accounts')
+    const expectedState = cooldownRetestExpectedStateGuard(input, {
+      accountsTable,
+      authorizationsTable: cooldownRetestTable(tx, 'resource_authorizations'),
+      groupAccountsTable: cooldownRetestTable(tx, 'group_accounts'),
+      now,
+      targetAlias: 'target'
+    })
+    const result = await tx.execute(`
+      UPDATE ${accountsTable} AS target
+      SET status = 'active', schedulable = 1, cooldown_until = NULL,
+          last_error_code = NULL, last_error_message = NULL, last_error_trace_id = NULL,
+          cooldown_retest_failure_count = 0, cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_generation = NULL,
+          cooldown_retest_last_at = NULL, cooldown_retest_last_status_code = NULL,
+          updated_at = ?
+      WHERE target.id = ? AND target.deleted_at IS NULL
+        AND target.status IN ('temporary_unavailable', 'rate_limited')
 ${expectedState.sql}
-  `, [nowIso(), id, ...expectedState.params])
-  const changed = Number(result.changes ?? 0) > 0
+    `, [now, id, ...expectedState.params])
+    const updated = Number(result.changes ?? 0) > 0
+    if (updated) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown_retest_restored' }, tx)
+    }
+    return updated
+  })
   if (changed) {
-    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown_retest_restored' }, client)
     invalidateAccountLookupCache(id)
     notifyGatewayRuntimeCacheInvalidation('account_cooldown_retest_restored')
   }
@@ -219,12 +367,224 @@ ${expectedState.sql}
 }
 
 function normalizedTaskFailureDelaySeconds(value: number): number {
-  if (!Number.isFinite(value)) return 10
-  return Math.max(3, Math.min(60, Math.trunc(value)))
+  if (!Number.isFinite(value)) return 30
+  return Math.max(3, Math.min(15 * 60, Math.trunc(value)))
+}
+
+interface LegacyCooldownRetestStateRow {
+  id: string
+  config_revision: number | bigint | string
+  dispatch_revision: number | bigint | string
+  status: string
+  cooldown_retest_observation_started_at: string | null
+  cooldown_retest_generation: string | null
+}
+
+function repairLegacyCooldownRetestStateInSqlite(
+  limit: number,
+  accountId?: string,
+  cursor?: CooldownAccountRetestCursor
+): void {
+  const database = getBusinessDatabase()
+  const now = nowIso()
+  const accountIdFilter = accountId ? 'AND id = ?' : ''
+  const cursorFilter = !accountId && cursor
+    ? 'AND (cooldown_until, priority, created_at, id) > (?, ?, ?, ?)'
+    : ''
+  const accountsSource = accountId ? 'accounts' : 'accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order'
+  const scanParams: Array<string | number> = [now]
+  if (accountId) scanParams.push(accountId)
+  if (!accountId && cursor) {
+    scanParams.push(cursor.cooldownUntil, cursor.priority, cursor.createdAt, cursor.id)
+  }
+  const trimmedObservation = sqliteTrimCooldownRetestText('cooldown_retest_observation_started_at')
+  const trimmedGeneration = sqliteTrimCooldownRetestText('cooldown_retest_generation')
+  const legacyPredicate = `
+        deleted_at IS NULL
+        AND status IN ('temporary_unavailable', 'rate_limited')
+        AND schedulable = 1
+        AND type IN ('api_key', 'oauth', 'google_oauth')
+        AND cooldown_until IS NOT NULL
+        AND cooldown_until <= ?
+        AND (
+          cooldown_retest_observation_started_at IS NULL
+          OR ${trimmedObservation} = ''
+          OR cooldown_retest_generation IS NULL
+          OR ${trimmedGeneration} = ''
+          OR cooldown_retest_observation_started_at <> ${trimmedObservation}
+          OR cooldown_retest_generation <> ${trimmedGeneration}
+          OR ${trimmedObservation} NOT GLOB '????-??-??T??:??:??.???Z'
+          OR strftime('%s', ${trimmedObservation}) IS NULL
+        )
+        ${accountIdFilter}
+        ${cursorFilter}`
+  const repairRequired = database.prepare(`
+    SELECT 1
+    FROM ${accountsSource}
+    WHERE ${legacyPredicate}
+    LIMIT 1
+  `).get(...scanParams)
+  if (!repairRequired) return
+  const params = [...scanParams, normalizedCooldownRetestLimit(limit)]
+
+  runInDatabaseTransaction(() => {
+    const rows = database.prepare(`
+      SELECT id, config_revision, dispatch_revision, status,
+        cooldown_retest_observation_started_at, cooldown_retest_generation
+      FROM ${accountsSource}
+      WHERE ${legacyPredicate}
+      ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
+      LIMIT ?
+    `).all(...params) as unknown as LegacyCooldownRetestStateRow[]
+    for (const row of rows) {
+      const observationStartedAt = validCooldownRetestObservation(row.cooldown_retest_observation_started_at) ?? now
+      const generation = optionalString(row.cooldown_retest_generation)?.trim()
+      if (observationStartedAt === row.cooldown_retest_observation_started_at && generation === row.cooldown_retest_generation) continue
+      const nextGeneration = newCooldownRetestGeneration()
+      database.prepare(`
+        UPDATE accounts
+        SET cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+          AND status = ?
+          AND config_revision = ?
+          AND dispatch_revision = ?
+          AND cooldown_retest_observation_started_at IS ?
+          AND cooldown_retest_generation IS ?
+      `).run(
+        observationStartedAt,
+        nextGeneration,
+        row.id,
+        row.status,
+        Number(row.config_revision),
+        Number(row.dispatch_revision),
+        row.cooldown_retest_observation_started_at,
+        row.cooldown_retest_generation
+      )
+    }
+  }, database)
+}
+
+async function repairLegacyCooldownRetestStateInPostgres(
+  client: DatabaseClient,
+  limit: number,
+  accountId?: string,
+  cursor?: CooldownAccountRetestCursor
+): Promise<void> {
+  const now = nowIso()
+  const accountIdFilter = accountId ? 'AND id = ?' : ''
+  const cursorFilter = !accountId && cursor
+    ? 'AND (cooldown_until, priority, created_at, id) > (?, ?, ?, ?)'
+    : ''
+  const params: Array<string | number> = [now]
+  if (accountId) params.push(accountId)
+  if (!accountId && cursor) {
+    params.push(cursor.cooldownUntil, cursor.priority, cursor.createdAt, cursor.id)
+  }
+  params.push(normalizedCooldownRetestLimit(limit))
+  const accountsTable = cooldownRetestTable(client, 'accounts')
+  const trimmedObservation = postgresTrimCooldownRetestText('cooldown_retest_observation_started_at')
+  const trimmedGeneration = postgresTrimCooldownRetestText('cooldown_retest_generation')
+  await client.transaction(async (tx) => {
+    const rows = await tx.query<LegacyCooldownRetestStateRow>(`
+      SELECT id, config_revision, dispatch_revision, status,
+        cooldown_retest_observation_started_at, cooldown_retest_generation
+      FROM ${accountsTable}
+      WHERE deleted_at IS NULL
+        AND status IN ('temporary_unavailable', 'rate_limited')
+        AND schedulable = 1
+        AND type IN ('api_key', 'oauth', 'google_oauth')
+        AND cooldown_until IS NOT NULL
+        AND cooldown_until <= ?
+        AND (
+          cooldown_retest_observation_started_at IS NULL
+          OR ${trimmedObservation} = ''
+          OR cooldown_retest_generation IS NULL
+          OR ${trimmedGeneration} = ''
+          OR cooldown_retest_observation_started_at <> ${trimmedObservation}
+          OR cooldown_retest_generation <> ${trimmedGeneration}
+          OR ${trimmedObservation} !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+          OR NOT pg_input_is_valid(${trimmedObservation}, 'timestamptz')
+        )
+        ${accountIdFilter}
+        ${cursorFilter}
+      ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+    `, params)
+    for (const row of rows) {
+      const observationStartedAt = validCooldownRetestObservation(row.cooldown_retest_observation_started_at) ?? now
+      const generation = optionalString(row.cooldown_retest_generation)?.trim()
+      if (observationStartedAt === row.cooldown_retest_observation_started_at && generation === row.cooldown_retest_generation) continue
+      const nextGeneration = newCooldownRetestGeneration()
+      await tx.execute(`
+        UPDATE ${accountsTable}
+        SET cooldown_retest_observation_started_at = ?, cooldown_retest_generation = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+          AND status = ?
+          AND config_revision = ?
+          AND dispatch_revision = ?
+          AND cooldown_retest_observation_started_at IS NOT DISTINCT FROM ?
+          AND cooldown_retest_generation IS NOT DISTINCT FROM ?
+      `, [
+        observationStartedAt,
+        nextGeneration,
+        row.id,
+        row.status,
+        Number(row.config_revision),
+        Number(row.dispatch_revision),
+        row.cooldown_retest_observation_started_at,
+        row.cooldown_retest_generation
+      ])
+    }
+  })
+}
+
+function validCooldownRetestObservation(value: string | null | undefined): string | undefined {
+  const normalized = optionalString(value)?.trim()
+  if (!normalized) return undefined
+  const parsed = Date.parse(normalized)
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined
+}
+
+function cooldownRetestExpectedStateMatchesAccount(
+  account: AccountSummary,
+  input: CooldownRetestExpectedState
+): boolean {
+  if ((account.configRevision ?? 1) !== input.expectedConfigRevision) return false
+  if ((account.cooldownRetestDispatchRevision ?? 1) !== input.expectedDispatchRevision) return false
+  if (account.cooldownRetestObservationStartedAt !== input.expectedObservationStartedAt?.trim()) return false
+  if (account.cooldownRetestGeneration !== input.expectedGeneration?.trim()) return false
+  if (input.expectedSourceConfigRevision === undefined) return account.accessType !== 'authorized'
+  return account.accessType === 'authorized'
+    && account.cooldownRetestSourceConfigRevision === input.expectedSourceConfigRevision
+}
+
+function cooldownRetestExpectedStateMatchesRow(
+  row: AccountListRow,
+  input: CooldownRetestExpectedState
+): boolean {
+  if (Number(row.config_revision ?? 1) !== input.expectedConfigRevision) return false
+  if (Number(row.dispatch_revision ?? 1) !== input.expectedDispatchRevision) return false
+  if (row.cooldown_retest_observation_started_at !== input.expectedObservationStartedAt?.trim()) return false
+  if (row.cooldown_retest_generation !== input.expectedGeneration?.trim()) return false
+  if (input.expectedSourceConfigRevision === undefined) return row.access_type !== 'authorized'
+  return row.access_type === 'authorized'
+    && optionalNumber(row.source_config_revision) === input.expectedSourceConfigRevision
+}
+
+function laterCooldownUntil(current: string | undefined, candidate: string): string {
+  const currentMs = current ? Date.parse(current) : Number.NaN
+  const candidateMs = Date.parse(candidate)
+  if (!Number.isFinite(currentMs)) return candidate
+  if (!Number.isFinite(candidateMs)) return current ?? candidate
+  return currentMs >= candidateMs ? current! : candidate
 }
 
 export function findAccountForCooldownRetest(accountId: string): AccountSummary | undefined {
   disableExpiredAccounts()
+  repairLegacyCooldownRetestStateInSqlite(1, accountId)
   return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(1, accountId))[0]
 }
 
@@ -234,6 +594,7 @@ export async function findAccountForCooldownRetestAsync(accountId: string): Prom
   }
   await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  await repairLegacyCooldownRetestStateInPostgres(client, 1, accountId)
   return (await cooldownRetestDueAccountSummariesAsync(client, await queryAccountsDueForCooldownRetestAsync(client, 1, accountId)))[0]
 }
 
@@ -251,7 +612,9 @@ export function listAccountsDueForCooldownRetestPage(
 ): CooldownAccountRetestPage {
   disableExpiredAccounts()
   const normalizedLimit = normalizedCooldownRetestLimit(limit)
-  const rows = queryAccountsDueForCooldownRetest(cooldownRetestScanLimit(normalizedLimit), undefined, cursor)
+  const scanLimit = cooldownRetestScanLimit(normalizedLimit)
+  repairLegacyCooldownRetestStateInSqlite(scanLimit, undefined, cursor)
+  const rows = queryAccountsDueForCooldownRetest(scanLimit, undefined, cursor)
   return cooldownRetestPageFromRows(rows, cooldownRetestDueAccountSummaries(rows), normalizedLimit)
 }
 
@@ -265,12 +628,20 @@ export async function listAccountsDueForCooldownRetestPageAsync(
   await disableExpiredAccountsAsync()
   const normalizedLimit = normalizedCooldownRetestLimit(limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await queryAccountsDueForCooldownRetestAsync(client, cooldownRetestScanLimit(normalizedLimit), undefined, cursor)
+  const scanLimit = cooldownRetestScanLimit(normalizedLimit)
+  await repairLegacyCooldownRetestStateInPostgres(client, scanLimit, undefined, cursor)
+  const rows = await queryAccountsDueForCooldownRetestAsync(client, scanLimit, undefined, cursor)
   return cooldownRetestPageFromRows(rows, await cooldownRetestDueAccountSummariesAsync(client, rows), normalizedLimit)
 }
 
 export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
-  return runInDatabaseTransaction(() => recordCooldownAccountRetestFailureInSqliteTransaction(id, input))
+  disableExpiredAccounts()
+  const result = runInDatabaseTransaction(() => recordCooldownAccountRetestFailureInSqliteTransaction(id, input))
+  if (result.changed) {
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite(result.transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff')
+  }
+  return result
 }
 
 function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
@@ -278,7 +649,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
-  if (!current || !isCoolingAccountStatus(current.status)) {
+  if (!current || !isCoolingAccountStatus(current.status) || !cooldownRetestExpectedStateMatchesAccount(current, input)) {
     return {
       action: 'discard',
       changed: false,
@@ -297,19 +668,30 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
   const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt, current.status === 'temporary_unavailable' && current.temporaryUnavailableContinuousProbeEnabled === false)
 
   const transitionedToError = recovery.stage === 'terminal'
-  const cooldownUntil = transitionedToError
+  const calculatedCooldownUntil = transitionedToError
     ? undefined
     : new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
+  const cooldownUntil = transitionedToError
+    ? undefined
+    : laterCooldownUntil(current.cooldownUntil, calculatedCooldownUntil!)
   const persistedErrorCode = transitionedToError
     ? (current.status === 'temporary_unavailable' && current.temporaryUnavailableContinuousProbeEnabled === false
         ? cooldownRetestLimitedProbeTimeoutCode
         : cooldownRetestObservationTimeoutCode)
-    : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
+    : isExplicitAccountErrorPolicyCooldown(current.lastErrorCode, current.lastErrorMessage)
+      ? EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
+      : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
   const cooldownMessage = cooldownRetestFailureMessage(failureCount, recovery, testErrorMessage)
-  const expectedState = cooldownRetestExpectedStateGuard(input)
+  const expectedState = cooldownRetestExpectedStateGuard(input, {
+    accountsTable: 'accounts',
+    authorizationsTable: 'resource_authorizations',
+    groupAccountsTable: 'group_accounts',
+    now,
+    targetAlias: 'target'
+  })
   const result = getBusinessDatabase()
     .prepare(`
-      UPDATE accounts
+      UPDATE accounts AS target
       SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
           schedulable = CASE WHEN ? = 1 THEN 0 ELSE 1 END,
           cooldown_until = ?,
@@ -323,9 +705,9 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
-      WHERE id = ?
-        AND deleted_at IS NULL
-        AND status = ?
+      WHERE target.id = ?
+        AND target.deleted_at IS NULL
+        AND target.status = ?
 ${expectedState.sql}
     `)
     .run(
@@ -345,13 +727,23 @@ ${expectedState.sql}
       ...expectedState.params
     )
   const changed = Number(result.changes ?? 0) > 0
+  if (!changed) {
+    const latest = failureAccountSummary(id, current)
+    return {
+      action: 'discard',
+      changed: false,
+      failureCount: latest.cooldownRetestFailureCount ?? 0,
+      account: latest,
+      cooldownUntil: latest.cooldownUntil,
+      errorCode,
+      errorMessage: testErrorMessage
+    }
+  }
   if (changed) {
     refreshGroupAccountStatsAfterWrite({
       accountIds: [id],
       reason: transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff'
     })
-    invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite(transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff')
   }
   const action = cooldownRetestAction(recovery.stage)
   return {
@@ -386,10 +778,10 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const maxPauseMinutes = input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const expectedState = cooldownRetestExpectedStateGuard(input)
+  const accountsTable = cooldownRetestTable(client, 'accounts')
   const transactionResult = await client.transaction(async (tx) => {
     const current = (await queryAccountCooldownRetestStateAsync(tx, id, { forUpdate: true }))[0]
-    if (!current || !isCoolingAccountStatus(current.status)) {
+    if (!current || !isCoolingAccountStatus(current.status) || !cooldownRetestExpectedStateMatchesRow(current, input)) {
       return {
         changed: false,
         found: Boolean(current),
@@ -406,6 +798,13 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
 
     const nowDate = new Date()
     const now = nowDate.toISOString()
+    const expectedState = cooldownRetestExpectedStateGuard(input, {
+      accountsTable,
+      authorizationsTable: cooldownRetestTable(tx, 'resource_authorizations'),
+      groupAccountsTable: cooldownRetestTable(tx, 'group_accounts'),
+      now,
+      targetAlias: 'target'
+    })
     const failureCount = Math.max(0, Number(current.cooldown_retest_failure_count ?? 0)) + 1
     const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
     const observationStartedAt = current.cooldown_retest_observation_started_at ?? now
@@ -414,17 +813,22 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
       maxPauseMinutes
     }, nowDate, observationStartedAt, current.status === 'temporary_unavailable' && current.temporary_unavailable_continuous_probe_enabled === 0)
     const transitionedToError = recovery.stage === 'terminal'
-    const cooldownUntil = transitionedToError
+    const calculatedCooldownUntil = transitionedToError
       ? undefined
       : new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
+    const cooldownUntil = transitionedToError
+      ? undefined
+      : laterCooldownUntil(current.cooldown_until ?? undefined, calculatedCooldownUntil!)
     const persistedErrorCode = transitionedToError
       ? (current.status === 'temporary_unavailable' && current.temporary_unavailable_continuous_probe_enabled === 0
           ? cooldownRetestLimitedProbeTimeoutCode
           : cooldownRetestObservationTimeoutCode)
-      : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
+      : isExplicitAccountErrorPolicyCooldown(current.last_error_code, current.last_error_message)
+        ? EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
+        : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
     const cooldownMessage = cooldownRetestFailureMessage(failureCount, recovery, testErrorMessage)
     const update = await tx.execute(`
-      UPDATE ${cooldownRetestTable(tx, 'accounts')}
+      UPDATE ${cooldownRetestTable(tx, 'accounts')} AS target
       SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
           schedulable = CASE WHEN ? = 1 THEN 0 ELSE 1 END,
           cooldown_until = ?,
@@ -438,9 +842,9 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
-      WHERE id = ?
-        AND deleted_at IS NULL
-        AND status = ?
+      WHERE target.id = ?
+        AND target.deleted_at IS NULL
+        AND target.status = ?
 ${expectedState.sql}
     `, [
       transitionedToError ? 1 : 0,
@@ -459,6 +863,21 @@ ${expectedState.sql}
       ...expectedState.params
     ])
     const changed = Number(update.changes ?? 0) > 0
+    if (!changed) {
+      return {
+        changed: false,
+        found: true,
+        transitionedToError: false,
+        result: {
+          action: 'discard',
+          changed: false,
+          failureCount: Math.max(0, Number(current.cooldown_retest_failure_count ?? 0)),
+          cooldownUntil: current.cooldown_until ?? undefined,
+          errorCode,
+          errorMessage: testErrorMessage
+        } satisfies CooldownAccountRetestFailureResult
+      }
+    }
     if (changed) {
       await refreshGroupAccountStatsAfterWriteAsync({
         accountIds: [id],
@@ -504,7 +923,6 @@ ${expectedState.sql}
 }
 
 function findAccountCooldownRetestState(accountId: string): AccountSummary | undefined {
-  disableExpiredAccounts()
   return cooldownRetestAccountSummaries(queryAccountCooldownRetestState(accountId))[0]
 }
 
@@ -525,8 +943,13 @@ function queryAccountsDueForCooldownRetest(
   const cursorFilter = !accountId && cursor
     ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
     : ''
+  const accountsSource = accountId ? 'accounts' : 'accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order'
+  const trimmedObservation = sqliteTrimCooldownRetestText('accounts.cooldown_retest_observation_started_at')
+  const trimmedGeneration = sqliteTrimCooldownRetestText('accounts.cooldown_retest_generation')
   const params: Array<string | number> = [
     ...endpointModes,
+    now,
+    now,
     now,
     now,
     now
@@ -541,9 +964,12 @@ function queryAccountsDueForCooldownRetest(
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT ${cooldownRetestAccountSelectColumns()}
-      FROM accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order
+      FROM ${accountsSource}
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
+      LEFT JOIN accounts source_accounts
+        ON source_accounts.id = accounts.authorization_instance_source_account_id
+        AND source_accounts.deleted_at IS NULL
       WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
@@ -551,13 +977,35 @@ function queryAccountsDueForCooldownRetest(
         AND accounts.schedulable = 1
         AND accounts.cooldown_until IS NOT NULL
         AND accounts.cooldown_until <= ?
+        AND accounts.cooldown_retest_observation_started_at IS NOT NULL
+        AND ${trimmedObservation} <> ''
+        AND accounts.cooldown_retest_generation IS NOT NULL
+        AND ${trimmedGeneration} <> ''
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
         AND (
-          accounts.authorization_instance_authorization_id IS NULL
+          (
+            accounts.authorization_instance_authorization_id IS NULL
+            AND accounts.authorization_instance_source_account_id IS NULL
+            AND accounts.authorization_instance_owner_system_account_id IS NULL
+          )
           OR (
-            ra.id IS NOT NULL
+            accounts.authorization_instance_authorization_id IS NOT NULL
+            AND accounts.authorization_instance_source_account_id IS NOT NULL
+            AND accounts.authorization_instance_owner_system_account_id IS NOT NULL
+            AND ra.id IS NOT NULL
+            AND ra.resource_type = 'account'
+            AND ra.resource_id = accounts.authorization_instance_source_account_id
+            AND ra.resource_owner_system_account_id = source_accounts.system_account_id
+            AND ra.grantee_system_account_id = accounts.system_account_id
+            AND accounts.authorization_instance_owner_system_account_id = source_accounts.system_account_id
             AND ra.status = 'active'
             AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+            AND source_accounts.provider_code IS NOT NULL
+            AND source_accounts.status = 'active'
+            AND source_accounts.schedulable = 1
+            AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
+            AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
+            AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
           )
         )
         ${accountIdFilter}
@@ -578,10 +1026,6 @@ function queryAccountsDueForCooldownRetest(
     `)
     .all(...params) as unknown as AccountListRow[]
   return hydrateAccountRowsWithRuntimeState(rows, { includeCredentials: true })
-    .filter((row) => row.access_type !== 'authorized' || (
-      Boolean(row.source_provider_code)
-      && isAuthorizedSourceAccountAvailableForDispatch(row, now)
-  ))
 }
 
 async function queryAccountsDueForCooldownRetestAsync(
@@ -596,8 +1040,12 @@ async function queryAccountsDueForCooldownRetestAsync(
   const cursorFilter = !accountId && cursor
     ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
     : ''
+  const trimmedObservation = postgresTrimCooldownRetestText('accounts.cooldown_retest_observation_started_at')
+  const trimmedGeneration = postgresTrimCooldownRetestText('accounts.cooldown_retest_generation')
   const params: Array<string | number> = [
     ...endpointModes,
+    now,
+    now,
     now,
     now,
     now
@@ -643,13 +1091,35 @@ async function queryAccountsDueForCooldownRetestAsync(
       AND accounts.schedulable = 1
       AND accounts.cooldown_until IS NOT NULL
       AND accounts.cooldown_until <= ?
+      AND accounts.cooldown_retest_observation_started_at IS NOT NULL
+      AND ${trimmedObservation} <> ''
+      AND accounts.cooldown_retest_generation IS NOT NULL
+      AND ${trimmedGeneration} <> ''
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
       AND (
-        accounts.authorization_instance_authorization_id IS NULL
+        (
+          accounts.authorization_instance_authorization_id IS NULL
+          AND accounts.authorization_instance_source_account_id IS NULL
+          AND accounts.authorization_instance_owner_system_account_id IS NULL
+        )
         OR (
-          ra.id IS NOT NULL
+          accounts.authorization_instance_authorization_id IS NOT NULL
+          AND accounts.authorization_instance_source_account_id IS NOT NULL
+          AND accounts.authorization_instance_owner_system_account_id IS NOT NULL
+          AND ra.id IS NOT NULL
+          AND ra.resource_type = 'account'
+          AND ra.resource_id = accounts.authorization_instance_source_account_id
+          AND ra.resource_owner_system_account_id = source_accounts.system_account_id
+          AND ra.grantee_system_account_id = accounts.system_account_id
+          AND accounts.authorization_instance_owner_system_account_id = source_accounts.system_account_id
           AND ra.status = 'active'
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+          AND source_accounts.provider_code IS NOT NULL
+          AND source_accounts.status = 'active'
+          AND source_accounts.schedulable = 1
+          AND (source_accounts.last_error_code IS NULL OR source_accounts.last_error_code <> 'account_expired')
+          AND (source_accounts.account_expires_at IS NULL OR source_accounts.account_expires_at > ?)
+          AND (source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
         )
       )
       ${accountIdFilter}
@@ -658,10 +1128,7 @@ async function queryAccountsDueForCooldownRetestAsync(
     ORDER BY accounts.cooldown_until ASC, accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
     LIMIT ?
   `, params)
-  return rows.filter((row) => row.access_type !== 'authorized' || (
-    Boolean(row.source_provider_code)
-    && isAuthorizedSourceAccountAvailableForDispatch(row, now)
-  ))
+  return rows
 }
 
 function cooldownRetestPageFromRows(
@@ -671,7 +1138,7 @@ function cooldownRetestPageFromRows(
 ): CooldownAccountRetestPage {
   const accounts = summaries.slice(0, limit)
   const lastAccountId = accounts.at(-1)?.id
-  const cursorRow = lastAccountId
+  const cursorRow = accounts.length >= limit && lastAccountId
     ? rows.find((row) => row.id === lastAccountId)
     : rows.at(-1)
   return {
@@ -699,6 +1166,9 @@ function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {
       FROM accounts
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
+      LEFT JOIN accounts source_accounts
+        ON source_accounts.id = accounts.authorization_instance_source_account_id
+        AND source_accounts.deleted_at IS NULL
       WHERE accounts.id = ?
         AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
@@ -759,7 +1229,8 @@ function cooldownRetestAccountSelectColumns(): string {
         ra.effective_source_type AS authorization_effective_source_type,
         ra.effective_source_team_id AS authorization_effective_source_team_id,
         ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
-        ra.resource_id AS authorization_resource_id`
+        ra.resource_id AS authorization_resource_id,
+        source_accounts.config_revision AS source_config_revision`
 }
 
 function cooldownRetestAccountSelectColumnsAsync(): string {
@@ -774,6 +1245,7 @@ function cooldownRetestAccountSelectColumnsAsync(): string {
         ra.effective_source_team_id AS authorization_effective_source_team_id,
         ra.resource_owner_system_account_id AS authorization_resource_owner_system_account_id,
         ra.resource_id AS authorization_resource_id,
+        source_accounts.config_revision AS source_config_revision,
         source_accounts.provider_code AS source_provider_code,
         source_accounts.provider_protocol_profile_id AS source_provider_protocol_profile_id,
         source_accounts.protocol_code AS source_protocol_code,
@@ -840,6 +1312,7 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       configRevision: Number(row.config_revision ?? 1),
+      cooldownRetestDispatchRevision: Number(row.dispatch_revision ?? 1),
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -849,6 +1322,10 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       lastErrorTraceId: row.last_error_trace_id ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+      cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
+      cooldownRetestSourceConfigRevision: row.access_type === 'authorized'
+        ? optionalNumber(row.source_config_revision)
+        : undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       temporaryUnavailableContinuousProbeEnabled: isAuthorizedView
@@ -885,7 +1362,7 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
 async function cooldownRetestAccountSummariesAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<AccountSummary[]> {
   if (!rows.length) return []
   const runtimeAccountIds = [...new Set(rows.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
-  const [accountNames, supportedModelsByAccount, modelMappingsByAccount, currentConcurrencyByAccount] = await Promise.all([
+  const [accountNames, supportedModelsByAccount, modelMappingsByAccount, currentConcurrencyByAccount, quotaExceededByAuthorization] = await Promise.all([
     loadSystemAccountNameMapByIdsAsync(client, rows.flatMap((row) => [
       row.system_account_id,
       row.authorization_resource_owner_system_account_id ?? '',
@@ -893,7 +1370,8 @@ async function cooldownRetestAccountSummariesAsync(client: DatabaseClient, rows:
     ])),
     loadSupportedModelsByAccountIdsAsync(runtimeAccountIds),
     loadModelMappingsByAccountIdsAsync(runtimeAccountIds),
-    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id))
+    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)),
+    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows)
   ])
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
@@ -929,6 +1407,7 @@ async function cooldownRetestAccountSummariesAsync(client: DatabaseClient, rows:
       healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       configRevision: Number(row.config_revision ?? 1),
+      cooldownRetestDispatchRevision: Number(row.dispatch_revision ?? 1),
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -937,6 +1416,10 @@ async function cooldownRetestAccountSummariesAsync(client: DatabaseClient, rows:
       lastErrorMessage: row.last_error_message ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+      cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
+      cooldownRetestSourceConfigRevision: row.access_type === 'authorized'
+        ? optionalNumber(row.source_config_revision)
+        : undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       temporaryUnavailableContinuousProbeEnabled: isAuthorizedView
@@ -964,7 +1447,7 @@ async function cooldownRetestAccountSummariesAsync(client: DatabaseClient, rows:
       authorizationStatus: isAuthorizedView ? row.authorization_status ?? undefined : undefined,
       authorizationExpiresAt: isAuthorizedView ? row.authorization_expires_at ?? undefined : undefined,
       authorizationLimits: isAuthorizedView ? parseRequestQuotaLimitsJson(row.authorization_limits_json) : undefined,
-      authorizationQuotaExceeded: false,
+      authorizationQuotaExceeded: isAuthorizedView && row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined,
       permissions: isAuthorizedView ? authorizedAccountPermissions(false) : ownerPermissions()
     })
   })
@@ -1066,7 +1549,7 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
   const maxRecoverySeconds = boundedInteger(input.maxRecoveryHours, 12, 1, 24 * 30) * 60 * 60
   const longTermIntervalSeconds = cooldownRetestLongTermIntervalSeconds
   const multiplier = boundedInteger(input.backoffMultiplier, temporaryUnavailableBackoffMultiplier, 2, 10)
-  const exponent = Math.max(0, Math.min(failureCount, 30))
+  const exponent = Math.max(0, Math.min(failureCount - 1, 30))
   const uncappedBackoffSeconds = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffSeconds * Math.pow(multiplier, exponent))
   const firstMaxedFailureCount = firstCappedBackoffFailureCount(initialBackoffSeconds, multiplier, maxPauseSeconds)
   const maxedFailureCount = failureCount >= firstMaxedFailureCount ? failureCount - firstMaxedFailureCount + 1 : 0
@@ -1126,7 +1609,7 @@ function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplie
     return 1
   }
   const raw = Math.ceil(Math.log(maxPauseSeconds / initialBackoffSeconds) / Math.log(multiplier))
-  return Math.max(1, raw)
+  return Math.max(1, raw + 1)
 }
 
 function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: number, stage: 'fast' | 'slow', lastError: string): string {

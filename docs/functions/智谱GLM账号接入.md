@@ -228,7 +228,7 @@ GLM 账户测试必须复用真实网关链路：
 | Endpoint mode | GLM 两个 OpenAI v1 档案真实能力默认仅 `chat_json/chat_sse`；GLM Coding 只在普通账号显式 `responses -> chat_completions` 模型别名命中且请求侧为 Responses 语义时，通过共享 bridge 承接流式 `/v1/responses`。 | 如果沿用 GPT API Key 默认四项能力，Responses 请求可能被误认为上游原生支持；如果把 bridge 隐藏在 profile 里，路由和审计无法判断该请求为什么跨协议。 |
 | 协议转换 | Codex Responses -> Chat Completions 转换必须复用共享 adapter，供应商 driver 只配置启用条件、默认模型、Base URL 和局部差异。 | 如果把转换写死在 GLM，后续 DeepSeek 等供应商会复制协议逻辑，工具调用、reasoning、usage 和错误事件容易分叉。 |
 | 请求兼容 | 默认透传 GLM 扩展字段；`developer` role、`response_format`、`temperature`、`thinking/reasoning_effort` 等差异只在 GLM 供应商层处理或提示，不写进全局 OpenAI v1 规则。 | 全局改写会影响 GPT、DeepSeek 和其他 OpenAI-compatible 上游；完全忽略差异会让常见客户端错误难排查。 |
-| 错误处理 | 通用客户端完整 JSON / SSE 响应透明转发；transport / timeout 进入统一错误输入。只有精确客户端画像才允许按显式策略解释 `finish_reason` 或 Coding Plan 错误码。 | 直接按状态码或错误正文硬编码限流 / 异常会破坏协议中立边界。 |
+| 错误处理 | 通用客户端完整 `2xx` / 普通 JSON / SSE payload 透明；安全文本完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级候选接管，transport / timeout 进入统一错误输入。图片、文件和其他副作用 POST 派发后保持 at-most-once。只有精确客户端画像或用户显式策略才允许解释声明范围内的 `finish_reason` / Coding Plan 错误码，且不能越过请求语义门禁。 | 直接按状态码或错误正文硬编码限流 / 异常会破坏协议中立边界。 |
 | 账号切换与恢复 | GLM 失败后先走本地短暂屏蔽、候选切号、事前确认和冷却复测；手动测试、健康检测和恢复探活都使用最小 Chat Completions 请求，并标记 `manual_account_test` 或 `cooldown_retest`。 | Coding Plan 测试会消耗套餐；后台批量探测或错误恢复如果不节流，会把套餐额度浪费用在恢复任务上。 |
 | 模型目录 | GLM 云 API 模型、Coding Plan 模型、历史别名和 `glm-5.2[1m]` 这类工具侧模型后缀要逐项确认；开源权重只作为自托管参考，不等于云 API 模型。 | 把开源模型 ID、工具侧别名或已自动升级旧模型当成官方 API 计价模型，会导致 `/v1/models`、模型映射和成本估算失真。 |
 | 价格与 usage | 按官方价格页维护 GLM 价格；解析 `usage.prompt_tokens_details.cached_tokens`、推理 token 和 GLM 扩展 usage 字段；Coding Plan 的本地成本只作估算，不代表官方套餐余额。 | 普通 API 计费和 Coding 套餐权益语义不同，不能把本地美元成本展示成 Coding Plan 额度；漏解析推理 / 缓存字段会导致成本和诊断偏差。 |

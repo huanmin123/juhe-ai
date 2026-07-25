@@ -34,6 +34,7 @@ const [
 
 const gatewaySettings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  accountCircuitConfirmationFailuresRequired: 2,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
@@ -102,6 +103,79 @@ try {
   assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '账户错误处理临时不可调用不应修改归属人原账户')
   assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '账户错误处理临时不可调用应只写入被授权实例状态')
   assertAuthorizedInstanceError(cooldownAccount.instanceId, granteeAccess, /insufficient_quota；runtime side effect cooldown/, '账户错误处理临时不可调用应保留真实上游错误摘要')
+
+  const authorizedFailureObservedAt = new Date(Date.now() + 1_000).toISOString()
+  const authorizedSuccessObservedAt = new Date(Date.now() + 2_000).toISOString()
+  const authorizedRecovery = applyAccountErrorHandling(cooldownGatewayAccount, {
+    success: true,
+    observedAt: authorizedSuccessObservedAt,
+    dispatchRevision: cooldownGatewayAccount.dispatchRevision,
+    trafficSource: 'gateway'
+  })
+  assert.equal(authorizedRecovery.changed, false, '较新普通成功不得越权恢复被授权实例的显式 cooldown')
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '被授权实例的显式 cooldown 必须保持')
+  const authorizedNoObservationRecovery = applyAccountErrorHandling({
+    ...cooldownGatewayAccount,
+    lastErrorMessage: '冷却前授权快照的旧诊断'
+  }, {
+    success: true,
+    trafficSource: 'account_health_check'
+  })
+  assert.equal(authorizedNoObservationRecovery.changed, false, '授权旧快照且无 observedAt 的成功也不得清理显式 cooldown')
+  const authorizedCooldownState = authorizedInstanceRuntimeState(cooldownAccount.instanceId)
+  assert.equal(authorizedCooldownState.lastErrorCode, 'explicit_account_error_policy_cooldown', '授权实例必须持久化显式 cooldown provenance')
+  assert(authorizedCooldownState.cooldownRetestObservationStartedAt, '授权实例必须持久化 cooldown 代次')
+  assert(authorizedCooldownState.cooldownRetestGeneration, '授权实例必须持久化唯一 cooldown generation')
+  assert(authorizedCooldownState.sourceConfigRevision, '授权实例 guard 必须携带来源账户 config revision')
+  const authorizedCooldownGuard = cooldownRetestGuard(authorizedCooldownState)
+  assertAuthorizedCooldownRetestGuardRejectedAcrossOutcomes(cooldownAccount.instanceId, {
+    ...authorizedCooldownGuard,
+    expectedConfigRevision: authorizedCooldownState.configRevision + 1
+  }, '授权实例陈旧 config revision')
+  assertAuthorizedCooldownRetestGuardRejectedAcrossOutcomes(cooldownAccount.instanceId, {
+    ...authorizedCooldownGuard,
+    expectedDispatchRevision: authorizedCooldownGuard.expectedDispatchRevision + 1
+  }, '授权实例陈旧 dispatch revision')
+  assertAuthorizedCooldownRetestGuardRejectedAcrossOutcomes(cooldownAccount.instanceId, {
+    ...authorizedCooldownGuard,
+    expectedGeneration: `${authorizedCooldownGuard.expectedGeneration}-stale`
+  }, '授权实例陈旧 generation')
+  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '授权实例陈旧 defer 不应修改归属人原账户')
+  const rotatedSource = repositories.updateAccount(cooldownAccount.sourceId, {
+    notes: '授权 cooldown source config revision rotation'
+  }, ownerAccess)
+  assert(rotatedSource, '授权来源账户 config revision 轮换失败')
+  const rotatedAuthorizedCooldownState = authorizedInstanceRuntimeState(cooldownAccount.instanceId)
+  assert.notEqual(
+    rotatedAuthorizedCooldownState.sourceConfigRevision,
+    authorizedCooldownState.sourceConfigRevision,
+    '来源账户配置轮换必须推进授权实例 guard 所见 source config revision'
+  )
+  assertAuthorizedCooldownRetestGuardRejectedAcrossOutcomes(
+    cooldownAccount.instanceId,
+    authorizedCooldownGuard,
+    '来源账户 config revision 轮换后的旧复测'
+  )
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'temporary_unavailable', '来源账户轮换后的陈旧复测不得改变授权实例状态')
+  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '来源账户 config revision 轮换和陈旧复测不应修改归属人原账户')
+  const authorizedSourceMatchedRecovery = repositories.recordCooldownAccountRetestSuccess(cooldownAccount.instanceId, {
+    ...cooldownRetestGuard(rotatedAuthorizedCooldownState)
+  })
+  assert.equal(authorizedSourceMatchedRecovery.changed, true, '授权实例仅能由匹配当前 source config revision 的复测成功恢复')
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'active', '来源匹配应只恢复被授权实例')
+  const authorizedLateFailure = applyAccountErrorHandling(cooldownGatewayAccount, {
+    success: false,
+    statusCode: 500,
+    bodyText: cooldownBody,
+    settings: gatewaySettings,
+    policyDecision: cooldownPolicyDecision,
+    observedAt: authorizedFailureObservedAt,
+    dispatchRevision: cooldownGatewayAccount.dispatchRevision,
+    trafficSource: 'gateway'
+  })
+  assert.equal(authorizedLateFailure.changed, false, '被授权实例的迟到失败不得覆盖较新成功 watermark')
+  assertAuthorizedInstanceStatus(cooldownAccount.instanceId, granteeAccess, 'active', '被授权实例应保持匹配代次恢复后的 active 状态')
+  assertOwnerStillActive(cooldownAccount.sourceId, ownerAccess, '被授权实例观测 fencing 不应影响归属人原账户')
 
   const genericFailureGatewayAccount = authorizedGatewayAccount(genericFailureAccount.instanceId, granteeGroup.id, grantee.id)
   const genericFailureResult = applyAccountErrorHandling(genericFailureGatewayAccount, {
@@ -236,6 +310,11 @@ function assertOwnerStillActive(accountId: string, ownerAccess: { systemAccountI
   assert.equal(ownerView?.status, 'active', message)
   assert.equal(ownerView?.schedulable, true, `${message}：主账户调度开关也不应被关闭`)
   assert.equal(ownerView?.cooldownUntil, undefined, `${message}：主账户冷却时间不应被写入`)
+  assert.equal(ownerView?.lastErrorCode, undefined, `${message}：主账户错误 code 不应被写入`)
+  assert.equal(ownerView?.lastErrorMessage, undefined, `${message}：主账户错误摘要不应被写入`)
+  assert.equal(ownerView?.cooldownRetestFailureCount ?? 0, 0, `${message}：主账户 cooldown 失败计数不应被写入`)
+  assert.equal(ownerView?.cooldownRetestObservationStartedAt, undefined, `${message}：主账户 cooldown observation 不应被写入`)
+  assert.equal(ownerView?.cooldownRetestGeneration, undefined, `${message}：主账户 cooldown generation 不应被写入`)
   assert.equal(ownerView?.streamFailureCount ?? 0, 0, `${message}：主账户流式失败计数不应被写入`)
 }
 
@@ -247,6 +326,103 @@ function assertAuthorizedInstanceStatus(accountId: string, granteeAccess: { syst
 function assertAuthorizedInstanceError(accountId: string, granteeAccess: { systemAccountId: string; role: 'user' }, pattern: RegExp, message: string): void {
   const granteeView = repositories.findAccountSummary(accountId, granteeAccess)
   assert.match(granteeView?.lastErrorMessage ?? '', pattern, message)
+}
+
+function authorizedInstanceRuntimeState(accountId: string): {
+  configRevision: number
+  dispatchRevision: number
+  cooldownRetestObservationStartedAt?: string
+  cooldownRetestGeneration?: string
+  sourceConfigRevision?: number
+  lastErrorCode?: string
+} {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT target.config_revision,
+             target.dispatch_revision,
+             target.cooldown_retest_observation_started_at,
+             target.cooldown_retest_generation,
+             source.config_revision AS source_config_revision,
+             target.last_error_code
+      FROM accounts target
+      LEFT JOIN accounts source ON source.id = target.authorization_instance_source_account_id AND source.deleted_at IS NULL
+      WHERE target.id = ? AND target.deleted_at IS NULL
+    `)
+    .get(accountId) as unknown as {
+      config_revision?: number
+      dispatch_revision?: number
+      cooldown_retest_observation_started_at?: string | null
+      cooldown_retest_generation?: string | null
+      source_config_revision?: number | null
+      last_error_code?: string | null
+    } | undefined
+  assert(row, `授权实例 ${accountId} 运行态不存在`)
+  return {
+    configRevision: row.config_revision ?? 1,
+    dispatchRevision: row.dispatch_revision ?? 1,
+    cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
+    cooldownRetestGeneration: row.cooldown_retest_generation ?? undefined,
+    sourceConfigRevision: row.source_config_revision ?? undefined,
+    lastErrorCode: row.last_error_code ?? undefined
+  }
+}
+
+function assertAuthorizedCooldownRetestGuardRejectedAcrossOutcomes(
+  accountId: string,
+  guard: {
+    expectedConfigRevision: number
+    expectedDispatchRevision: number
+    expectedObservationStartedAt: string
+    expectedGeneration: string
+    expectedSourceConfigRevision: number
+  },
+  label: string
+): void {
+  assert.equal(
+    repositories.recordCooldownAccountRetestSuccess(accountId, guard).changed,
+    false,
+    `${label} success 不得恢复授权实例`
+  )
+  assert.equal(
+    repositories.deferCooldownAccountRetest(accountId, { ...guard, delaySeconds: 3 }).changed,
+    false,
+    `${label} defer 不得改写授权实例`
+  )
+  assert.equal(
+    repositories.recordCooldownAccountRetestFailure(accountId, {
+      ...guard,
+      errorCode: 'stale_authorized_cooldown_retest_guard',
+      errorMessage: `${label} failure`
+    }).changed,
+    false,
+    `${label} failure 不得改写授权实例`
+  )
+}
+
+function cooldownRetestGuard(state: {
+  configRevision?: number
+  dispatchRevision?: number
+  cooldownRetestDispatchRevision?: number
+  cooldownRetestObservationStartedAt?: string
+  cooldownRetestGeneration?: string
+  sourceConfigRevision?: number
+  cooldownRetestSourceConfigRevision?: number
+}) {
+  const expectedConfigRevision = state.configRevision ?? 1
+  const expectedDispatchRevision = state.cooldownRetestDispatchRevision ?? state.dispatchRevision ?? 1
+  const expectedObservationStartedAt = state.cooldownRetestObservationStartedAt?.trim() ?? ''
+  const expectedGeneration = state.cooldownRetestGeneration?.trim() ?? ''
+  const expectedSourceConfigRevision = state.cooldownRetestSourceConfigRevision ?? state.sourceConfigRevision
+  assert(expectedObservationStartedAt, '授权 cooldown guard 必须携带 observation')
+  assert(expectedGeneration, '授权 cooldown guard 必须携带 generation')
+  assert(expectedSourceConfigRevision, '授权 cooldown guard 必须携带 source config revision')
+  return {
+    expectedConfigRevision,
+    expectedDispatchRevision,
+    expectedObservationStartedAt,
+    expectedGeneration,
+    expectedSourceConfigRevision
+  }
 }
 
 async function withDbServiceRole<T>(action: () => Promise<T>): Promise<T> {

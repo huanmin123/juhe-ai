@@ -689,8 +689,13 @@ function processChatCompletionsSseEvent(state: GeminiChatStreamState, rawEventTe
   }
   const data = event.data
   if (!data) return []
-  if (event.eventName === 'error' || event.eventType === 'error' || objectValue(data.error)) {
-    const error = objectValue(data.error) ?? data
+  if (
+    event.eventName === 'error'
+    || event.eventType === 'error'
+    || event.eventName === 'response.failed'
+    || event.eventType === 'response.failed'
+  ) {
+    const error = objectValue(data.error) ?? objectValue(objectValue(data.response)?.error) ?? data
     return failGeminiStream(
       state,
       stringValue(error.message) ?? '上游 Chat Completions SSE 返回错误事件',

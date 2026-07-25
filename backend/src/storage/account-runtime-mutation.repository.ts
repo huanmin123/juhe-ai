@@ -1,4 +1,9 @@
 import type { AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus } from '../domain/types.js'
+import {
+  EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+  isExplicitAccountErrorPolicyCooldown,
+  LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX
+} from '../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
@@ -22,6 +27,7 @@ import {
   initialCooldownUntilForStatusAsync,
   invalidateGatewayRuntimeAfterBusinessWrite,
   isAccountExpired,
+  newCooldownRetestGeneration,
   temporaryUnavailableRuntimeState
 } from './account-runtime-mutation-helpers.js'
 
@@ -96,11 +102,26 @@ async function accountEnabledGroupIdForClientAsync(client: DatabaseClient, accou
 interface ClearAccountFailureStateOptions {
   allowErrorRestore?: boolean
   allowPendingTestRestore?: boolean
+  allowExplicitPolicyRestore?: boolean
+  expectedLastErrorCodes?: readonly string[]
 }
 
 export interface AccountFailureStateClearResult {
   account?: AccountSummary
   changed: boolean
+}
+
+function normalizedExpectedLastErrorCodes(value: readonly string[] | undefined): string[] | undefined {
+  if (!value) return undefined
+  const codes = [...new Set(value.map((item) => item.trim()).filter(Boolean))]
+  return codes.length ? codes : undefined
+}
+
+function expectedLastErrorCodePredicate(codes: readonly string[] | undefined): string {
+  if (!codes?.length) return ''
+  return `
+          AND status = 'error'
+          AND last_error_code IN (${codes.map(() => '?').join(', ')})`
 }
 
 function normalizedLastErrorTraceId(value?: string): string | null {
@@ -256,6 +277,11 @@ export function clearAccountFailureStateResult(
   if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, accountAccess)) {
     return { changed: false }
   }
+  const expectedLastErrorCodes = normalizedExpectedLastErrorCodes(options.expectedLastErrorCodes)
+  if (expectedLastErrorCodes && (current.status !== 'error' || !current.lastErrorCode || !expectedLastErrorCodes.includes(current.lastErrorCode))) {
+    return { account: current, changed: false }
+  }
+  const expectedLastErrorClause = expectedLastErrorCodePredicate(expectedLastErrorCodes)
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (current.status === 'disabled' && !expiredByPackage) {
     return { account: current, changed: false }
@@ -264,6 +290,11 @@ export function clearAccountFailureStateResult(
     return { account: current, changed: false }
   }
   if (current.status === 'error' && options.allowErrorRestore === false) {
+    return { account: current, changed: false }
+  }
+  if (!expiredByPackage
+    && options.allowExplicitPolicyRestore !== true
+    && isExplicitAccountErrorPolicyCooldown(current.lastErrorCode, current.lastErrorMessage)) {
     return { account: current, changed: false }
   }
   if (expiredByPackage) {
@@ -285,8 +316,9 @@ export function clearAccountFailureStateResult(
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
+          ${expectedLastErrorClause}
       `)
-      .run('账户套餐已过期，已自动停用', nowIso(), id)
+      .run('账户套餐已过期，已自动停用', nowIso(), id, ...(expectedLastErrorCodes ?? []))
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
@@ -325,8 +357,9 @@ export function clearAccountFailureStateResult(
         WHERE id = ?
           AND deleted_at IS NULL
           AND status = ?
+          ${expectedLastErrorClause}
       `)
-      .run(nowIso(), id, current.status)
+      .run(nowIso(), id, current.status, ...(expectedLastErrorCodes ?? []))
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_health_check_restarted' })
@@ -357,6 +390,11 @@ export function clearAccountFailureStateResult(
         AND status <> 'disabled'
         AND (? = 1 OR status <> 'error')
         AND (? = 1 OR status <> 'pending_test')
+        AND (? = 1 OR NOT (
+          COALESCE(last_error_code, '') = ?
+          OR (last_error_code IS NULL AND COALESCE(last_error_message, '') LIKE ?)
+        ))
+        ${expectedLastErrorClause}
         AND (
           status <> 'active'
           OR schedulable <> 1
@@ -372,7 +410,16 @@ export function clearAccountFailureStateResult(
           OR stream_failure_window_started_at IS NOT NULL
         )
     `)
-    .run(nowIso(), id, options.allowErrorRestore === false ? 0 : 1, options.allowPendingTestRestore === true ? 1 : 0)
+    .run(
+      nowIso(),
+      id,
+      options.allowErrorRestore === false ? 0 : 1,
+      options.allowPendingTestRestore === true ? 1 : 0,
+      options.allowExplicitPolicyRestore === true ? 1 : 0,
+      EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+      `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
+      ...(expectedLastErrorCodes ?? [])
+    )
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_restored' })
@@ -411,6 +458,11 @@ export async function clearAccountFailureStateResultAsync(
   if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, accountAccess)) {
     return { changed: false }
   }
+  const expectedLastErrorCodes = normalizedExpectedLastErrorCodes(options.expectedLastErrorCodes)
+  if (expectedLastErrorCodes && (current.status !== 'error' || !current.lastErrorCode || !expectedLastErrorCodes.includes(current.lastErrorCode))) {
+    return { account: current, changed: false }
+  }
+  const expectedLastErrorClause = expectedLastErrorCodePredicate(expectedLastErrorCodes)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (current.status === 'disabled' && !expiredByPackage) {
@@ -420,6 +472,11 @@ export async function clearAccountFailureStateResultAsync(
     return { account: current, changed: false }
   }
   if (current.status === 'error' && options.allowErrorRestore === false) {
+    return { account: current, changed: false }
+  }
+  if (!expiredByPackage
+    && options.allowExplicitPolicyRestore !== true
+    && isExplicitAccountErrorPolicyCooldown(current.lastErrorCode, current.lastErrorMessage)) {
     return { account: current, changed: false }
   }
 
@@ -442,7 +499,8 @@ export async function clearAccountFailureStateResultAsync(
       WHERE id = ?
         AND system_account_id = ?
         AND deleted_at IS NULL
-    `, ['账户套餐已过期，已自动停用', nowIso(), id, ownerSystemAccountId])
+        ${expectedLastErrorClause}
+    `, ['账户套餐已过期，已自动停用', nowIso(), id, ownerSystemAccountId, ...(expectedLastErrorCodes ?? [])])
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
@@ -482,7 +540,8 @@ export async function clearAccountFailureStateResultAsync(
         AND system_account_id = ?
         AND deleted_at IS NULL
         AND status = ?
-    `, [nowIso(), id, ownerSystemAccountId, current.status])
+        ${expectedLastErrorClause}
+    `, [nowIso(), id, ownerSystemAccountId, current.status, ...(expectedLastErrorCodes ?? [])])
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_health_check_restarted' }, client)
@@ -513,6 +572,11 @@ export async function clearAccountFailureStateResultAsync(
       AND status <> 'disabled'
       AND (? = 1 OR status <> 'error')
       AND (? = 1 OR status <> 'pending_test')
+      AND (? = 1 OR NOT (
+        COALESCE(last_error_code, '') = ?
+        OR (last_error_code IS NULL AND COALESCE(last_error_message, '') LIKE ?)
+      ))
+      ${expectedLastErrorClause}
       AND (
         status <> 'active'
         OR schedulable <> 1
@@ -532,7 +596,11 @@ export async function clearAccountFailureStateResultAsync(
     id,
     ownerSystemAccountId,
     options.allowErrorRestore === false ? 0 : 1,
-    options.allowPendingTestRestore === true ? 1 : 0
+    options.allowPendingTestRestore === true ? 1 : 0,
+    options.allowExplicitPolicyRestore === true ? 1 : 0,
+    EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+    `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
+    ...(expectedLastErrorCodes ?? [])
   ])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
@@ -558,6 +626,10 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
     return { account: current, changed: false }
   }
   if (current.status === 'pending_test' && options.allowPendingTestRestore !== true) {
+    return { account: current, changed: false }
+  }
+  if (options.allowExplicitPolicyRestore !== true
+    && isExplicitAccountErrorPolicyCooldown(current.lastErrorCode, current.lastErrorMessage)) {
     return { account: current, changed: false }
   }
   const hasFailureState = current.status !== 'active'
@@ -592,6 +664,10 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
       AND status <> 'disabled'
       AND (? = 1 OR status <> 'error')
       AND (? = 1 OR status <> 'pending_test')
+      AND (? = 1 OR NOT (
+        COALESCE(last_error_code, '') = ?
+        OR (last_error_code IS NULL AND COALESCE(last_error_message, '') LIKE ?)
+      ))
       AND (
         status <> 'active'
         OR schedulable <> 1
@@ -622,6 +698,9 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
     target.accountAuthorizationId,
     options.allowErrorRestore === false ? 0 : 1,
     options.allowPendingTestRestore === true ? 1 : 0,
+    options.allowExplicitPolicyRestore === true ? 1 : 0,
+    EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+    `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
     target.systemAccountId,
     target.groupId,
     target.accountAuthorizationId
@@ -684,8 +763,34 @@ export interface AuthorizedAccountBindingRuntimeTarget {
 
 export interface AccountPrecheckMutationState {
   status: AccountStatus
+  dispatchRevision: number
   updatedAt?: string
   lastUsedAt?: string
+  lastHealthSuccessAt?: string
+}
+
+export interface AccountPrecheckMutationGuard {
+  expectedDispatchRevision: number
+  expectedStatus: AccountStatus
+  precheckStartedAt: string
+}
+
+export interface AccountRuntimeFailureObservationGuard {
+  expectedDispatchRevision: number
+  observedAt: string
+}
+
+export interface AccountRuntimeSuccessObservationInput {
+  accountId: string
+  expectedDispatchRevision?: number
+  observedAt: string
+  authorizedBinding?: AuthorizedAccountBindingRuntimeTarget
+}
+
+export interface AccountRuntimeSuccessObservationResult {
+  accepted: boolean
+  changed: boolean
+  accountStatus?: AccountStatus
 }
 
 function normalizedAuthorizedAccountBindingRuntimeTarget(
@@ -757,8 +862,10 @@ export function getAccountPrecheckMutationState(input: {
       .prepare(`
         SELECT
           accounts.status,
+          accounts.dispatch_revision,
           accounts.updated_at,
-          accounts.last_used_at
+          accounts.last_used_at,
+          accounts.last_health_success_at
         FROM group_accounts
         INNER JOIN accounts ON accounts.id = group_accounts.account_id
         WHERE group_accounts.account_id = ?
@@ -773,33 +880,41 @@ export function getAccountPrecheckMutationState(input: {
       `)
       .get(target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, target.systemAccountId, target.accountAuthorizationId) as unknown as {
         status?: AccountStatus | null
+        dispatch_revision?: number | bigint | string | null
         updated_at?: string | null
         last_used_at?: string | null
+        last_health_success_at?: string | null
       } | undefined
     if (!row) {
       return undefined
     }
     return {
       status: normalizeAccountStatus(row.status),
+      dispatchRevision: Number(row.dispatch_revision ?? 0),
       updatedAt: row.updated_at ?? undefined,
-      lastUsedAt: row.last_used_at ?? undefined
+      lastUsedAt: row.last_used_at ?? undefined,
+      lastHealthSuccessAt: row.last_health_success_at ?? undefined
     }
   }
 
   const row = getBusinessDatabase()
-    .prepare('SELECT status, updated_at, last_used_at FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
+    .prepare('SELECT status, dispatch_revision, updated_at, last_used_at, last_health_success_at FROM accounts WHERE id = ? AND deleted_at IS NULL LIMIT 1')
     .get(input.accountId) as unknown as {
       status?: AccountStatus | null
+      dispatch_revision?: number | bigint | string | null
       updated_at?: string | null
       last_used_at?: string | null
+      last_health_success_at?: string | null
     } | undefined
   if (!row) {
     return undefined
   }
   return {
     status: normalizeAccountStatus(row.status),
+    dispatchRevision: Number(row.dispatch_revision ?? 0),
     updatedAt: row.updated_at ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined
+    lastUsedAt: row.last_used_at ?? undefined,
+    lastHealthSuccessAt: row.last_health_success_at ?? undefined
   }
 }
 
@@ -817,13 +932,17 @@ export async function getAccountPrecheckMutationStateAsync(input: {
   const row = target
     ? await client.one<{
       status?: AccountStatus | null
+      dispatch_revision?: number | bigint | string | null
       updated_at?: string | null
       last_used_at?: string | null
+      last_health_success_at?: string | null
     }>(`
       SELECT
         accounts.status,
+        accounts.dispatch_revision,
         accounts.updated_at,
-        accounts.last_used_at
+        accounts.last_used_at,
+        accounts.last_health_success_at
       FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
       INNER JOIN ${accountRuntimeMutationTable(client, 'accounts')} accounts ON accounts.id = group_accounts.account_id
       WHERE group_accounts.account_id = ?
@@ -838,10 +957,12 @@ export async function getAccountPrecheckMutationStateAsync(input: {
     `, [target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, target.systemAccountId, target.accountAuthorizationId])
     : await client.one<{
       status?: AccountStatus | null
+      dispatch_revision?: number | bigint | string | null
       updated_at?: string | null
       last_used_at?: string | null
+      last_health_success_at?: string | null
     }>(`
-      SELECT status, updated_at, last_used_at
+      SELECT status, dispatch_revision, updated_at, last_used_at, last_health_success_at
       FROM ${accountRuntimeMutationTable(client, 'accounts')}
       WHERE id = ?
         AND deleted_at IS NULL
@@ -852,9 +973,322 @@ export async function getAccountPrecheckMutationStateAsync(input: {
   }
   return {
     status: normalizeAccountStatus(row.status),
+    dispatchRevision: Number(row.dispatch_revision ?? 0),
     updatedAt: row.updated_at ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined
+    lastUsedAt: row.last_used_at ?? undefined,
+    lastHealthSuccessAt: row.last_health_success_at ?? undefined
   }
+}
+
+interface AccountRuntimeSuccessObservationRow {
+  status?: AccountStatus | null
+  dispatch_revision?: number | bigint | string | null
+  account_expires_at?: string | null
+  cooldown_until?: string | null
+  last_error_code?: string | null
+  last_error_message?: string | null
+  last_error_trace_id?: string | null
+  cooldown_retest_failure_count?: number | bigint | string | null
+  cooldown_retest_observation_started_at?: string | null
+  cooldown_retest_last_at?: string | null
+  cooldown_retest_last_status_code?: number | bigint | string | null
+  stream_failure_count?: number | bigint | string | null
+  stream_failure_window_started_at?: string | null
+  last_health_success_at?: string | null
+  updated_at?: string | null
+}
+
+export function recordAccountRuntimeSuccessObservation(
+  input: AccountRuntimeSuccessObservationInput
+): AccountRuntimeSuccessObservationResult {
+  const observedAt = normalizedRuntimeObservationAt(input.observedAt)
+  if (!observedAt) return { accepted: false, changed: false }
+  const target = input.authorizedBinding
+    ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
+    : undefined
+  if (input.authorizedBinding && !target) return { accepted: false, changed: false }
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let result: AccountRuntimeSuccessObservationResult = { accepted: false, changed: false }
+  try {
+    const row = target
+      ? database.prepare(`
+          SELECT accounts.status, accounts.dispatch_revision, accounts.account_expires_at,
+            accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message,
+            accounts.last_error_trace_id, accounts.cooldown_retest_failure_count,
+            accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_last_at,
+            accounts.cooldown_retest_last_status_code, accounts.stream_failure_count,
+            accounts.stream_failure_window_started_at, accounts.last_health_success_at,
+            accounts.updated_at
+          FROM group_accounts
+          INNER JOIN accounts ON accounts.id = group_accounts.account_id
+          WHERE group_accounts.account_id = ?
+            AND group_accounts.system_account_id = ?
+            AND group_accounts.group_id = ?
+            AND group_accounts.enabled = 1
+            AND group_accounts.account_authorization_id = ?
+            AND accounts.system_account_id = ?
+            AND accounts.authorization_instance_authorization_id = ?
+            AND accounts.deleted_at IS NULL
+          LIMIT 1
+        `).get(target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, target.systemAccountId, target.accountAuthorizationId) as unknown as AccountRuntimeSuccessObservationRow | undefined
+      : database.prepare(`
+          SELECT status, dispatch_revision, account_expires_at, cooldown_until, last_error_code,
+            last_error_message, last_error_trace_id, cooldown_retest_failure_count,
+            cooldown_retest_observation_started_at, cooldown_retest_last_at,
+            cooldown_retest_last_status_code, stream_failure_count,
+            stream_failure_window_started_at, last_health_success_at, updated_at
+          FROM accounts
+          WHERE id = ? AND deleted_at IS NULL
+          LIMIT 1
+        `).get(input.accountId) as unknown as AccountRuntimeSuccessObservationRow | undefined
+    result = applyAccountRuntimeSuccessObservationSync(database, input, observedAt, target, row)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  finalizeAccountRuntimeSuccessObservation(input, target, result)
+  return result
+}
+
+export async function recordAccountRuntimeSuccessObservationAsync(
+  input: AccountRuntimeSuccessObservationInput
+): Promise<AccountRuntimeSuccessObservationResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return recordAccountRuntimeSuccessObservation(input)
+  }
+  const observedAt = normalizedRuntimeObservationAt(input.observedAt)
+  if (!observedAt) return { accepted: false, changed: false }
+  const target = input.authorizedBinding
+    ? normalizedAuthorizedAccountBindingRuntimeTarget(input.authorizedBinding)
+    : undefined
+  if (input.authorizedBinding && !target) return { accepted: false, changed: false }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.transaction(async (tx) => {
+    const row = target
+      ? await tx.one<AccountRuntimeSuccessObservationRow>(`
+          SELECT accounts.status, accounts.dispatch_revision, accounts.account_expires_at,
+            accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message,
+            accounts.last_error_trace_id, accounts.cooldown_retest_failure_count,
+            accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_last_at,
+            accounts.cooldown_retest_last_status_code, accounts.stream_failure_count,
+            accounts.stream_failure_window_started_at, accounts.last_health_success_at,
+            accounts.updated_at
+          FROM ${accountRuntimeMutationTable(tx, 'group_accounts')} group_accounts
+          INNER JOIN ${accountRuntimeMutationTable(tx, 'accounts')} accounts ON accounts.id = group_accounts.account_id
+          WHERE group_accounts.account_id = ?
+            AND group_accounts.system_account_id = ?
+            AND group_accounts.group_id = ?
+            AND group_accounts.enabled = 1
+            AND group_accounts.account_authorization_id = ?
+            AND accounts.system_account_id = ?
+            AND accounts.authorization_instance_authorization_id = ?
+            AND accounts.deleted_at IS NULL
+          LIMIT 1
+          FOR UPDATE
+        `, [target.accountId, target.systemAccountId, target.groupId, target.accountAuthorizationId, target.systemAccountId, target.accountAuthorizationId])
+      : await tx.one<AccountRuntimeSuccessObservationRow>(`
+          SELECT status, dispatch_revision, account_expires_at, cooldown_until, last_error_code,
+            last_error_message, last_error_trace_id, cooldown_retest_failure_count,
+            cooldown_retest_observation_started_at, cooldown_retest_last_at,
+            cooldown_retest_last_status_code, stream_failure_count,
+            stream_failure_window_started_at, last_health_success_at, updated_at
+          FROM ${accountRuntimeMutationTable(tx, 'accounts')}
+          WHERE id = ? AND deleted_at IS NULL
+          LIMIT 1
+          FOR UPDATE
+        `, [input.accountId])
+    return await applyAccountRuntimeSuccessObservationAsync(tx, input, observedAt, target, row)
+  })
+  await finalizeAccountRuntimeSuccessObservationAsync(client, input, target, result)
+  return result
+}
+
+function applyAccountRuntimeSuccessObservationSync(
+  database: ReturnType<typeof getBusinessDatabase>,
+  input: AccountRuntimeSuccessObservationInput,
+  observedAt: string,
+  target: Required<AuthorizedAccountBindingRuntimeTarget> | undefined,
+  row: AccountRuntimeSuccessObservationRow | undefined
+): AccountRuntimeSuccessObservationResult {
+  const decision = accountRuntimeSuccessObservationDecision(input, observedAt, row)
+  if (!decision.accepted || !row) return decision
+  const statement = database.prepare(`
+    UPDATE accounts
+    SET status = CASE WHEN ? = 1 THEN 'active' ELSE status END,
+        schedulable = CASE WHEN ? = 1 THEN 1 ELSE schedulable END,
+        cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
+        last_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_error_code END,
+        last_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_error_message END,
+        last_error_trace_id = CASE WHEN ? = 1 THEN NULL ELSE last_error_trace_id END,
+        cooldown_retest_failure_count = CASE WHEN ? = 1 THEN 0 ELSE cooldown_retest_failure_count END,
+        cooldown_retest_observation_started_at = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_observation_started_at END,
+        cooldown_retest_last_at = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_last_at END,
+        cooldown_retest_last_status_code = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_last_status_code END,
+        stream_failure_count = CASE WHEN ? = 1 THEN 0 ELSE stream_failure_count END,
+        stream_failure_window_started_at = CASE WHEN ? = 1 THEN NULL ELSE stream_failure_window_started_at END,
+        last_health_success_at = ?,
+        updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+    WHERE id = ? AND deleted_at IS NULL
+      ${target ? 'AND system_account_id = ? AND authorization_instance_authorization_id = ?' : ''}
+      ${input.expectedDispatchRevision ? 'AND dispatch_revision = ?' : ''}
+      AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+      ${target ? `AND EXISTS (
+        SELECT 1 FROM group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )` : ''}
+  `)
+  const restore = decision.changed ? 1 : 0
+  const params: Array<string | number> = [
+    restore, restore, restore, restore, restore, restore,
+    restore, restore, restore, restore, restore, restore,
+    observedAt, observedAt, observedAt,
+    input.accountId
+  ]
+  if (target) params.push(target.systemAccountId, target.accountAuthorizationId)
+  if (input.expectedDispatchRevision) params.push(input.expectedDispatchRevision)
+  params.push(observedAt)
+  if (target) params.push(target.systemAccountId, target.groupId, target.accountAuthorizationId)
+  const write = statement.run(...params)
+  if (Number(write.changes ?? 0) <= 0) return { accepted: false, changed: false, accountStatus: decision.accountStatus }
+  return decision
+}
+
+async function applyAccountRuntimeSuccessObservationAsync(
+  client: DatabaseClient,
+  input: AccountRuntimeSuccessObservationInput,
+  observedAt: string,
+  target: Required<AuthorizedAccountBindingRuntimeTarget> | undefined,
+  row: AccountRuntimeSuccessObservationRow | undefined
+): Promise<AccountRuntimeSuccessObservationResult> {
+  const decision = accountRuntimeSuccessObservationDecision(input, observedAt, row)
+  if (!decision.accepted || !row) return decision
+  const restore = decision.changed ? 1 : 0
+  const params: Array<string | number> = [
+    restore, restore, restore, restore, restore, restore,
+    restore, restore, restore, restore, restore, restore,
+    observedAt, observedAt, observedAt,
+    input.accountId
+  ]
+  if (target) params.push(target.systemAccountId, target.accountAuthorizationId)
+  if (input.expectedDispatchRevision) params.push(input.expectedDispatchRevision)
+  params.push(observedAt)
+  if (target) params.push(target.systemAccountId, target.groupId, target.accountAuthorizationId)
+  const write = await client.execute(`
+    UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+    SET status = CASE WHEN ? = 1 THEN 'active' ELSE status END,
+        schedulable = CASE WHEN ? = 1 THEN 1 ELSE schedulable END,
+        cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
+        last_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_error_code END,
+        last_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_error_message END,
+        last_error_trace_id = CASE WHEN ? = 1 THEN NULL ELSE last_error_trace_id END,
+        cooldown_retest_failure_count = CASE WHEN ? = 1 THEN 0 ELSE cooldown_retest_failure_count END,
+        cooldown_retest_observation_started_at = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_observation_started_at END,
+        cooldown_retest_last_at = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_last_at END,
+        cooldown_retest_last_status_code = CASE WHEN ? = 1 THEN NULL ELSE cooldown_retest_last_status_code END,
+        stream_failure_count = CASE WHEN ? = 1 THEN 0 ELSE stream_failure_count END,
+        stream_failure_window_started_at = CASE WHEN ? = 1 THEN NULL ELSE stream_failure_window_started_at END,
+        last_health_success_at = ?,
+        updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+    WHERE id = ? AND deleted_at IS NULL
+      ${target ? 'AND system_account_id = ? AND authorization_instance_authorization_id = ?' : ''}
+      ${input.expectedDispatchRevision ? 'AND dispatch_revision = ?' : ''}
+      AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+      ${target ? `AND EXISTS (
+        SELECT 1 FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
+        WHERE group_accounts.account_id = accounts.id
+          AND group_accounts.system_account_id = ?
+          AND group_accounts.group_id = ?
+          AND group_accounts.enabled = 1
+          AND group_accounts.account_authorization_id = ?
+      )` : ''}
+  `, params)
+  if (Number(write.changes ?? 0) <= 0) return { accepted: false, changed: false, accountStatus: decision.accountStatus }
+  return decision
+}
+
+function accountRuntimeSuccessObservationDecision(
+  input: AccountRuntimeSuccessObservationInput,
+  observedAt: string,
+  row: AccountRuntimeSuccessObservationRow | undefined
+): AccountRuntimeSuccessObservationResult {
+  if (!row) return { accepted: false, changed: false }
+  const status = normalizeAccountStatus(row.status)
+  const dispatchRevision = Number(row.dispatch_revision ?? 0)
+  if (input.expectedDispatchRevision && dispatchRevision !== input.expectedDispatchRevision) {
+    return { accepted: false, changed: false, accountStatus: status }
+  }
+  if (row.last_health_success_at && row.last_health_success_at > observedAt) {
+    return { accepted: false, changed: false, accountStatus: status }
+  }
+  const expired = isAccountExpired(row.account_expires_at, Date.parse(observedAt))
+  const explicitPolicyCooldown = isExplicitAccountErrorPolicyCooldown(row.last_error_code, row.last_error_message)
+  const observationCanRestoreCurrentState = !isCoolingAccountStatus(status)
+    || !row.updated_at
+    || row.updated_at <= observedAt
+  const restoreAllowed = status !== 'disabled'
+    && status !== 'error'
+    && status !== 'pending_test'
+    && !isCoolingAccountStatus(status)
+    && !explicitPolicyCooldown
+    && !expired
+  const changed = restoreAllowed && observationCanRestoreCurrentState && (
+    status !== 'active'
+    || Boolean(row.cooldown_until)
+    || Boolean(row.last_error_code)
+    || Boolean(row.last_error_message)
+    || Boolean(row.last_error_trace_id)
+    || Number(row.cooldown_retest_failure_count ?? 0) > 0
+    || Boolean(row.cooldown_retest_observation_started_at)
+    || Boolean(row.cooldown_retest_last_at)
+    || row.cooldown_retest_last_status_code !== null && row.cooldown_retest_last_status_code !== undefined
+    || Number(row.stream_failure_count ?? 0) > 0
+    || Boolean(row.stream_failure_window_started_at)
+  )
+  return { accepted: true, changed, accountStatus: changed ? 'active' : status }
+}
+
+function finalizeAccountRuntimeSuccessObservation(
+  input: AccountRuntimeSuccessObservationInput,
+  target: Required<AuthorizedAccountBindingRuntimeTarget> | undefined,
+  result: AccountRuntimeSuccessObservationResult
+): void {
+  if (!result.accepted) return
+  invalidateAccountLookupCache(input.accountId)
+  if (!result.changed) return
+  refreshGroupAccountStatsAfterWrite({
+    accountIds: [input.accountId],
+    ...(target ? { groupIds: [target.groupId] } : {}),
+    reason: target ? 'authorized_account_runtime_success' : 'account_runtime_success'
+  })
+  invalidateGatewayRuntimeAfterBusinessWrite(target ? 'authorized_account_runtime_success' : 'account_runtime_success')
+}
+
+async function finalizeAccountRuntimeSuccessObservationAsync(
+  client: DatabaseClient,
+  input: AccountRuntimeSuccessObservationInput,
+  target: Required<AuthorizedAccountBindingRuntimeTarget> | undefined,
+  result: AccountRuntimeSuccessObservationResult
+): Promise<void> {
+  if (!result.accepted) return
+  invalidateAccountLookupCache(input.accountId)
+  if (!result.changed) return
+  await refreshGroupAccountStatsAfterWriteAsync({
+    accountIds: [input.accountId],
+    ...(target ? { groupIds: [target.groupId] } : {}),
+    reason: target ? 'authorized_account_runtime_success' : 'account_runtime_success'
+  }, client)
+  invalidateGatewayRuntimeAfterBusinessWrite(target ? 'authorized_account_runtime_success' : 'account_runtime_success')
+}
+
+function normalizedRuntimeObservationAt(value: string): string | undefined {
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
 }
 
 export function clearAuthorizedAccountBindingFailureStateByContext(
@@ -889,6 +1323,10 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
         AND status <> 'disabled'
         AND (? = 1 OR status <> 'error')
         AND (? = 1 OR status <> 'pending_test')
+        AND (? = 1 OR NOT (
+          COALESCE(last_error_code, '') = ?
+          OR (last_error_code IS NULL AND COALESCE(last_error_message, '') LIKE ?)
+        ))
         AND (
           status <> 'active'
           OR schedulable <> 1
@@ -913,7 +1351,20 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
             AND group_accounts.account_authorization_id = ?
         )
     `)
-    .run(now, target.accountId, target.systemAccountId, target.accountAuthorizationId, options.allowErrorRestore === false ? 0 : 1, options.allowPendingTestRestore === true ? 1 : 0, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    .run(
+      now,
+      target.accountId,
+      target.systemAccountId,
+      target.accountAuthorizationId,
+      options.allowErrorRestore === false ? 0 : 1,
+      options.allowPendingTestRestore === true ? 1 : 0,
+      options.allowExplicitPolicyRestore === true ? 1 : 0,
+      EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+      `${LEGACY_EXPLICIT_ACCOUNT_ERROR_POLICY_MESSAGE_PREFIX}%`,
+      target.systemAccountId,
+      target.groupId,
+      target.accountAuthorizationId
+    )
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ groupIds: [target.groupId], accountIds: [target.accountId], reason: 'authorized_account_restored' })
@@ -931,6 +1382,7 @@ export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
     reason: string
     traceId?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
+    precheckGuard?: AccountPrecheckMutationGuard
   }
 ): AccountSummary | undefined {
   return markAuthorizedAccountBindingCooldownByContext({
@@ -944,6 +1396,7 @@ export async function markAuthorizedAccountBindingTemporaryUnavailableByContextA
     reason: string
     traceId?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
+    precheckGuard?: AccountPrecheckMutationGuard
   }
 ): Promise<AccountSummary | undefined> {
   return markAuthorizedAccountBindingCooldownByContextAsync({
@@ -958,7 +1411,10 @@ export function markAuthorizedAccountBindingCooldownByContext(
     reason: string
     traceId?: string
     status?: AccountStatus
+    failureCode?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
+    precheckGuard?: AccountPrecheckMutationGuard
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
   }
 ): AccountSummary | undefined {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
@@ -975,6 +1431,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
     : input.cooldownUntil ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
   const observationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+  const cooldownGeneration = newCooldownRetestGeneration()
   const now = nowIso()
   const result = getBusinessDatabase()
     .prepare(`
@@ -982,22 +1439,25 @@ export function markAuthorizedAccountBindingCooldownByContext(
       SET status = ?,
           schedulable = 1,
           cooldown_until = ?,
-          last_error_code = NULL,
+          last_error_code = ?,
           last_error_message = ?,
           last_error_trace_id = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
+          cooldown_retest_generation = ?,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
-          updated_at = ?
+          updated_at = ${accountRuntimeFailureUpdatedAtSql(input.runtimeFailureGuard)}
       WHERE id = ?
         AND system_account_id = ?
         AND authorization_instance_authorization_id = ?
         AND deleted_at IS NULL
         AND status NOT IN ('disabled', 'error')
         ${accountHealthCheckGuardSql(input.healthCheckGuard)}
+        ${accountPrecheckMutationGuardSql(input.precheckGuard)}
+        ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
         AND EXISTS (
           SELECT 1
           FROM group_accounts
@@ -1011,14 +1471,18 @@ export function markAuthorizedAccountBindingCooldownByContext(
     .run(
       cooldownStatus,
       cooldownUntil,
+      input.failureCode?.trim().slice(0, 120) || null,
       input.reason || null,
       normalizedLastErrorTraceId(input.traceId),
       observationStartedAt ?? null,
-      now,
+      cooldownGeneration,
+      ...accountRuntimeFailureUpdatedAtParams(input.runtimeFailureGuard, now),
       target.accountId,
       target.systemAccountId,
       target.accountAuthorizationId,
       ...accountHealthCheckGuardParams(input.healthCheckGuard),
+      ...accountPrecheckMutationGuardParams(input.precheckGuard),
+      ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
       target.systemAccountId,
       target.groupId,
       target.accountAuthorizationId
@@ -1038,7 +1502,10 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
     reason: string
     traceId?: string
     status?: AccountStatus
+    failureCode?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
+    precheckGuard?: AccountPrecheckMutationGuard
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
   }
 ): Promise<AccountSummary | undefined> {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
@@ -1060,6 +1527,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
   }
   const observationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+  const cooldownGeneration = newCooldownRetestGeneration()
   const now = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
@@ -1067,22 +1535,25 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
     SET status = ?,
         schedulable = 1,
         cooldown_until = ?,
-        last_error_code = NULL,
+        last_error_code = ?,
         last_error_message = ?,
         last_error_trace_id = ?,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
+        cooldown_retest_generation = ?,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
-        updated_at = ?
+        updated_at = ${accountRuntimeFailureUpdatedAtSql(input.runtimeFailureGuard)}
     WHERE id = ?
       AND system_account_id = ?
       AND authorization_instance_authorization_id = ?
       AND deleted_at IS NULL
       AND status NOT IN ('disabled', 'error')
       ${accountHealthCheckGuardSql(input.healthCheckGuard)}
+      ${accountPrecheckMutationGuardSql(input.precheckGuard)}
+      ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
       AND EXISTS (
         SELECT 1
         FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
@@ -1095,14 +1566,18 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
   `, [
     cooldownStatus,
     cooldownUntil,
+    input.failureCode?.trim().slice(0, 120) || null,
     input.reason || null,
     normalizedLastErrorTraceId(input.traceId),
     observationStartedAt ?? null,
-    now,
+    cooldownGeneration,
+    ...accountRuntimeFailureUpdatedAtParams(input.runtimeFailureGuard, now),
     target.accountId,
     target.systemAccountId,
     target.accountAuthorizationId,
     ...accountHealthCheckGuardParams(input.healthCheckGuard),
+    ...accountPrecheckMutationGuardParams(input.precheckGuard),
+    ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
     target.systemAccountId,
     target.groupId,
     target.accountAuthorizationId
@@ -1117,7 +1592,10 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
 }
 
 export function markAuthorizedAccountBindingDisabledByFailure(
-  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    reason: string
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+  }
 ): AccountSummary | undefined {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target) {
@@ -1139,12 +1617,13 @@ export function markAuthorizedAccountBindingDisabledByFailure(
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
-          updated_at = ?
+          updated_at = ${accountRuntimeFailureUpdatedAtSql(input.runtimeFailureGuard)}
       WHERE id = ?
         AND system_account_id = ?
         AND authorization_instance_authorization_id = ?
         AND deleted_at IS NULL
         AND status <> 'disabled'
+        ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
         AND EXISTS (
           SELECT 1
           FROM group_accounts
@@ -1155,7 +1634,17 @@ export function markAuthorizedAccountBindingDisabledByFailure(
             AND group_accounts.account_authorization_id = ?
         )
     `)
-    .run(input.reason || null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    .run(
+      input.reason || null,
+      ...accountRuntimeFailureUpdatedAtParams(input.runtimeFailureGuard, now),
+      target.accountId,
+      target.systemAccountId,
+      target.accountAuthorizationId,
+      ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
+      target.systemAccountId,
+      target.groupId,
+      target.accountAuthorizationId
+    )
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -1166,7 +1655,10 @@ export function markAuthorizedAccountBindingDisabledByFailure(
 }
 
 export async function markAuthorizedAccountBindingDisabledByFailureAsync(
-  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    reason: string
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+  }
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return markAuthorizedAccountBindingDisabledByFailure(input)
@@ -1191,12 +1683,13 @@ export async function markAuthorizedAccountBindingDisabledByFailureAsync(
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
-        updated_at = ?
+        updated_at = ${accountRuntimeFailureUpdatedAtSql(input.runtimeFailureGuard)}
     WHERE id = ?
       AND system_account_id = ?
       AND authorization_instance_authorization_id = ?
       AND deleted_at IS NULL
       AND status <> 'disabled'
+      ${accountRuntimeFailureObservationGuardSql(input.runtimeFailureGuard)}
       AND EXISTS (
         SELECT 1
         FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
@@ -1206,7 +1699,17 @@ export async function markAuthorizedAccountBindingDisabledByFailureAsync(
           AND group_accounts.enabled = 1
           AND group_accounts.account_authorization_id = ?
       )
-  `, [input.reason || null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
+  `, [
+    input.reason || null,
+    ...accountRuntimeFailureUpdatedAtParams(input.runtimeFailureGuard, now),
+    target.accountId,
+    target.systemAccountId,
+    target.accountAuthorizationId,
+    ...accountRuntimeFailureObservationGuardParams(input.runtimeFailureGuard),
+    target.systemAccountId,
+    target.groupId,
+    target.accountAuthorizationId
+  ])
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -1495,7 +1998,7 @@ function accountHealthCheckGuardSql(guard: AccountHealthCheckMutationGuard | und
     AND config_revision = ?
     AND last_health_check_at = ?
     AND health_check_failure_count = ?
-    AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+    AND (last_health_success_at IS NULL OR last_health_success_at < ?)
   `
 }
 
@@ -1509,22 +2012,75 @@ function accountHealthCheckGuardParams(guard: AccountHealthCheckMutationGuard | 
   ]
 }
 
+function accountPrecheckMutationGuardSql(guard: AccountPrecheckMutationGuard | undefined): string {
+  if (!guard) return ''
+  return `
+    AND dispatch_revision = ?
+    AND status = ?
+    AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+  `
+}
+
+function accountPrecheckMutationGuardParams(guard: AccountPrecheckMutationGuard | undefined): Array<string | number> {
+  if (!guard) return []
+  return [
+    Math.max(0, Math.trunc(guard.expectedDispatchRevision)),
+    guard.expectedStatus,
+    guard.precheckStartedAt
+  ]
+}
+
+function accountRuntimeFailureObservationGuardSql(guard: AccountRuntimeFailureObservationGuard | undefined): string {
+  if (!guard) return ''
+  return `
+    AND dispatch_revision = ?
+    AND (last_health_success_at IS NULL OR last_health_success_at < ?)
+    AND (updated_at IS NULL OR updated_at <= ?)
+  `
+}
+
+function accountRuntimeFailureObservationGuardParams(guard: AccountRuntimeFailureObservationGuard | undefined): Array<string | number> {
+  if (!guard) return []
+  return [
+    Math.max(1, Math.trunc(guard.expectedDispatchRevision)),
+    guard.observedAt,
+    guard.observedAt
+  ]
+}
+
+function accountRuntimeFailureUpdatedAtSql(guard: AccountRuntimeFailureObservationGuard | undefined): string {
+  return guard
+    ? 'CASE WHEN updated_at IS NULL OR updated_at < ? THEN ? ELSE updated_at END'
+    : '?'
+}
+
+function accountRuntimeFailureUpdatedAtParams(
+  guard: AccountRuntimeFailureObservationGuard | undefined,
+  fallback: string
+): string[] {
+  return guard ? [guard.observedAt, guard.observedAt] : [fallback]
+}
+
 export function markAccountTemporaryUnavailable(
   id: string,
   reason: string,
   healthCheckGuard?: AccountHealthCheckMutationGuard,
-  traceId?: string
+  traceId?: string,
+  precheckGuard?: AccountPrecheckMutationGuard,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
 ): AccountSummary | undefined {
-  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId)
+  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId, precheckGuard, runtimeFailureGuard)
 }
 
 export async function markAccountTemporaryUnavailableAsync(
   id: string,
   reason: string,
   healthCheckGuard?: AccountHealthCheckMutationGuard,
-  traceId?: string
+  traceId?: string,
+  precheckGuard?: AccountPrecheckMutationGuard,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
 ): Promise<AccountSummary | undefined> {
-  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId)
+  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId, precheckGuard, runtimeFailureGuard)
 }
 
 export function markAccountCooldown(
@@ -1533,7 +2089,10 @@ export function markAccountCooldown(
   reason: string,
   status: AccountStatus = 'temporary_unavailable',
   healthCheckGuard?: AccountHealthCheckMutationGuard,
-  traceId?: string
+  traceId?: string,
+  precheckGuard?: AccountPrecheckMutationGuard,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard,
+  failureCode?: string
 ): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
@@ -1563,16 +2122,28 @@ export function markAccountCooldown(
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
+          AND status = ?
+          AND config_revision = ?
           ${accountHealthCheckGuardSql(healthCheckGuard)}
+          ${accountPrecheckMutationGuardSql(precheckGuard)}
+          ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
       `)
-      .run('账户套餐已过期，已自动停用', nowIso(), id, ...accountHealthCheckGuardParams(healthCheckGuard))
-    if (Number(result.changes ?? 0) > 0) {
-      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
-      invalidateAccountLookupCache(id)
-      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
-    } else if (healthCheckGuard) {
+      .run(
+        '账户套餐已过期，已自动停用',
+        nowIso(),
+        id,
+        current.status,
+        current.configRevision ?? 1,
+        ...accountHealthCheckGuardParams(healthCheckGuard),
+        ...accountPrecheckMutationGuardParams(precheckGuard),
+        ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
+      )
+    if (Number(result.changes ?? 0) <= 0) {
       return undefined
     }
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     return findInternalAccountSummary(id)
   }
 
@@ -1587,6 +2158,7 @@ export function markAccountCooldown(
     : until ?? initialCooldownUntilForStatus(cooldownStatus, cooldownNowMs) ?? new Date(cooldownNowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
   const cooldownObservationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+  const cooldownGeneration = newCooldownRetestGeneration()
 
   const result = getBusinessDatabase()
     .prepare(`
@@ -1594,37 +2166,47 @@ export function markAccountCooldown(
       SET status = ?,
           schedulable = 1,
           cooldown_until = ?,
-          last_error_code = NULL,
+          last_error_code = ?,
           last_error_message = ?,
           last_error_trace_id = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
+          cooldown_retest_generation = ?,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
-          updated_at = ?
+          updated_at = ${accountRuntimeFailureUpdatedAtSql(runtimeFailureGuard)}
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = ?
+        AND config_revision = ?
         ${accountHealthCheckGuardSql(healthCheckGuard)}
+        ${accountPrecheckMutationGuardSql(precheckGuard)}
+        ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
     `)
     .run(
       cooldownStatus,
       cooldownUntil,
+      failureCode?.trim().slice(0, 120) || null,
       reason || null,
       normalizedLastErrorTraceId(traceId),
       cooldownObservationStartedAt ?? null,
-      cooldownNow,
+      cooldownGeneration,
+      ...accountRuntimeFailureUpdatedAtParams(runtimeFailureGuard, cooldownNow),
       id,
-      ...accountHealthCheckGuardParams(healthCheckGuard)
+      current.status,
+      current.configRevision ?? 1,
+      ...accountHealthCheckGuardParams(healthCheckGuard),
+      ...accountPrecheckMutationGuardParams(precheckGuard),
+      ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
     )
-  if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
-    invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
-  } else if (healthCheckGuard) {
+  if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
+  refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
 
   return findInternalAccountSummary(id)
 }
@@ -1635,7 +2217,10 @@ export async function markAccountCooldownAsync(
   reason: string,
   status: AccountStatus = 'temporary_unavailable',
   healthCheckGuard?: AccountHealthCheckMutationGuard,
-  traceId?: string
+  traceId?: string,
+  precheckGuard?: AccountPrecheckMutationGuard,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard,
+  failureCode?: string
 ): Promise<AccountSummary | undefined> {
   const current = await findAccountSummaryAsync(id, internalAccountReadAccess)
   if (!current) {
@@ -1665,15 +2250,27 @@ export async function markAccountCooldownAsync(
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = ?
+        AND config_revision = ?
         ${accountHealthCheckGuardSql(healthCheckGuard)}
-    `, ['账户套餐已过期，已自动停用', nowIso(), id, ...accountHealthCheckGuardParams(healthCheckGuard)])
-    if (Number(result.changes ?? 0) > 0) {
-      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
-      invalidateAccountLookupCache(id)
-      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
-    } else if (healthCheckGuard) {
+        ${accountPrecheckMutationGuardSql(precheckGuard)}
+        ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
+    `, [
+      '账户套餐已过期，已自动停用',
+      nowIso(),
+      id,
+      current.status,
+      current.configRevision ?? 1,
+      ...accountHealthCheckGuardParams(healthCheckGuard),
+      ...accountPrecheckMutationGuardParams(precheckGuard),
+      ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
+    ])
+    if (Number(result.changes ?? 0) <= 0) {
       return undefined
     }
+    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     return findAccountSummaryAsync(id, internalAccountReadAccess)
   }
 
@@ -1693,42 +2290,53 @@ export async function markAccountCooldownAsync(
       ?? new Date(cooldownNowMs + (defaultCooldownMinutes ?? 1) * 60_000).toISOString()
   const cooldownObservationStartedAt = temporaryState?.observationStartedAt
     ?? cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
+  const cooldownGeneration = newCooldownRetestGeneration()
 
   const result = await client.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
     SET status = ?,
         schedulable = 1,
         cooldown_until = ?,
-        last_error_code = NULL,
+        last_error_code = ?,
         last_error_message = ?,
         last_error_trace_id = ?,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
+        cooldown_retest_generation = ?,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
-        updated_at = ?
+        updated_at = ${accountRuntimeFailureUpdatedAtSql(runtimeFailureGuard)}
     WHERE id = ?
       AND deleted_at IS NULL
+      AND status = ?
+      AND config_revision = ?
       ${accountHealthCheckGuardSql(healthCheckGuard)}
+      ${accountPrecheckMutationGuardSql(precheckGuard)}
+      ${accountRuntimeFailureObservationGuardSql(runtimeFailureGuard)}
   `, [
     cooldownStatus,
     cooldownUntil,
+    failureCode?.trim().slice(0, 120) || null,
     reason || null,
     normalizedLastErrorTraceId(traceId),
     cooldownObservationStartedAt ?? null,
-    cooldownNow,
+    cooldownGeneration,
+    ...accountRuntimeFailureUpdatedAtParams(runtimeFailureGuard, cooldownNow),
     id,
-    ...accountHealthCheckGuardParams(healthCheckGuard)
+    current.status,
+    current.configRevision ?? 1,
+    ...accountHealthCheckGuardParams(healthCheckGuard),
+    ...accountPrecheckMutationGuardParams(precheckGuard),
+    ...accountRuntimeFailureObservationGuardParams(runtimeFailureGuard)
   ])
-  if (Number(result.changes ?? 0) > 0) {
-    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown' }, client)
-    invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
-  } else if (healthCheckGuard) {
+  if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
+  await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown' }, client)
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
 
   return findAccountSummaryAsync(id, internalAccountReadAccess)
 }
@@ -1787,6 +2395,7 @@ export function migrateAccountTraffic(input: {
     : undefined
   const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
   const sourceObservationStartedAt = sourceTemporaryState?.observationStartedAt ?? null
+  const sourceCooldownGeneration = sourceTemporaryState ? newCooldownRetestGeneration() : null
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -1802,6 +2411,7 @@ export function migrateAccountTraffic(input: {
               last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = NULL,
+              cooldown_retest_generation = NULL,
               cooldown_retest_last_at = NULL,
               cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
@@ -1820,6 +2430,7 @@ export function migrateAccountTraffic(input: {
               last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = ?,
+              cooldown_retest_generation = ?,
               cooldown_retest_last_at = NULL,
               cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
@@ -1827,7 +2438,7 @@ export function migrateAccountTraffic(input: {
               updated_at = ?
           WHERE id = ? AND system_account_id = ?
         `)
-        .run(sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, now, sourceRow.id, sourceRow.system_account_id)
+        .run(sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, sourceCooldownGeneration, now, sourceRow.id, sourceRow.system_account_id)
     if (Number(updateResult.changes ?? 0) <= 0) {
       rollbackDatabaseTransaction(database, transactionStarted)
       return undefined
@@ -1907,6 +2518,7 @@ export async function migrateAccountTrafficAsync(input: {
     : undefined
   const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
   const sourceObservationStartedAt = sourceTemporaryState?.observationStartedAt ?? null
+  const sourceCooldownGeneration = sourceTemporaryState ? newCooldownRetestGeneration() : null
   const changed = await client.transaction(async (tx) => {
     const result = input.sourceStatus === 'disabled'
       ? await tx.execute(`
@@ -1919,6 +2531,7 @@ export async function migrateAccountTrafficAsync(input: {
               last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = NULL,
+              cooldown_retest_generation = NULL,
               cooldown_retest_last_at = NULL,
               cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
@@ -1936,6 +2549,7 @@ export async function migrateAccountTrafficAsync(input: {
               last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = ?,
+              cooldown_retest_generation = ?,
               cooldown_retest_last_at = NULL,
               cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
@@ -1943,7 +2557,7 @@ export async function migrateAccountTrafficAsync(input: {
               updated_at = ?
           WHERE id = ?
             AND system_account_id = ?
-        `, [sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, now, sourceRow.id, sourceRow.system_account_id])
+        `, [sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, sourceCooldownGeneration, now, sourceRow.id, sourceRow.system_account_id])
     return Number(result.changes ?? 0) > 0
   })
   if (!changed) {
@@ -2232,6 +2846,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
     ? temporaryUnavailableRuntimeState()
     : undefined
   const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
+  const sourceCooldownGeneration = sourceTemporaryState ? newCooldownRetestGeneration() : null
   const now = nowIso()
   const sourceStatus: AccountStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
   const result = getBusinessDatabase()
@@ -2245,6 +2860,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
           last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
+          cooldown_retest_generation = ?,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
@@ -2270,6 +2886,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
       sourceCooldownUntil,
       manualTrafficMigrationReason,
       sourceTemporaryState?.observationStartedAt ?? null,
+      sourceCooldownGeneration,
       now,
       sourceAccount.id,
       systemAccountId,
@@ -2326,6 +2943,7 @@ async function migrateAuthorizedAccountBindingTrafficAsync(input: {
     ? temporaryUnavailableRuntimeState()
     : undefined
   const sourceCooldownUntil = sourceTemporaryState?.cooldownUntil ?? null
+  const sourceCooldownGeneration = sourceTemporaryState ? newCooldownRetestGeneration() : null
   const now = nowIso()
   const sourceStatus: AccountStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -2339,6 +2957,7 @@ async function migrateAuthorizedAccountBindingTrafficAsync(input: {
         last_error_trace_id = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
+        cooldown_retest_generation = ?,
         cooldown_retest_last_at = NULL,
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
@@ -2363,6 +2982,7 @@ async function migrateAuthorizedAccountBindingTrafficAsync(input: {
     sourceCooldownUntil,
     manualTrafficMigrationReason,
     sourceTemporaryState?.observationStartedAt ?? null,
+    sourceCooldownGeneration,
     now,
     sourceAccount.id,
     systemAccountId,
@@ -2388,16 +3008,29 @@ export function markAccountException(
   id: string,
   errorCode: string,
   reason: string,
-  options: { preserveDisabled?: boolean; traceId?: string } = {}
+  options: {
+    preserveDisabled?: boolean
+    traceId?: string
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+    expectedConfigRevision?: number
+    expectedStatus?: AccountStatus
+  } = {}
 ): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
     return undefined
   }
-  if (current.status === 'disabled' && options.preserveDisabled !== false) {
+  if (current.status === 'error' || (current.status === 'disabled' && options.preserveDisabled !== false)) {
+    return undefined
+  }
+  if (options.expectedStatus !== undefined && current.status !== options.expectedStatus) {
+    return undefined
+  }
+  if (options.expectedConfigRevision !== undefined && (current.configRevision ?? 1) !== options.expectedConfigRevision) {
     return undefined
   }
 
+  const updatedAt = nowIso()
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -2413,16 +3046,29 @@ export function markAccountException(
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
-          updated_at = ?
+          updated_at = ${accountRuntimeFailureUpdatedAtSql(options.runtimeFailureGuard)}
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = ?
+        AND config_revision = ?
+        ${accountRuntimeFailureObservationGuardSql(options.runtimeFailureGuard)}
     `)
-    .run(errorCode || null, reason || null, normalizedLastErrorTraceId(options.traceId), nowIso(), id)
-  if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_exception' })
-    invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
+    .run(
+      errorCode || null,
+      reason || null,
+      normalizedLastErrorTraceId(options.traceId),
+      ...accountRuntimeFailureUpdatedAtParams(options.runtimeFailureGuard, updatedAt),
+      id,
+      options.expectedStatus ?? current.status,
+      options.expectedConfigRevision ?? current.configRevision ?? 1,
+      ...accountRuntimeFailureObservationGuardParams(options.runtimeFailureGuard)
+    )
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
   }
+  refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_exception' })
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
 
   return findInternalAccountSummary(id)
 }
@@ -2431,7 +3077,13 @@ export async function markAccountExceptionAsync(
   id: string,
   errorCode: string,
   reason: string,
-  options: { preserveDisabled?: boolean; traceId?: string } = {}
+  options: {
+    preserveDisabled?: boolean
+    traceId?: string
+    runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+    expectedConfigRevision?: number
+    expectedStatus?: AccountStatus
+  } = {}
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return markAccountException(id, errorCode, reason, options)
@@ -2440,10 +3092,17 @@ export async function markAccountExceptionAsync(
   if (!current) {
     return undefined
   }
-  if (current.status === 'disabled' && options.preserveDisabled !== false) {
+  if (current.status === 'error' || (current.status === 'disabled' && options.preserveDisabled !== false)) {
+    return undefined
+  }
+  if (options.expectedStatus !== undefined && current.status !== options.expectedStatus) {
+    return undefined
+  }
+  if (options.expectedConfigRevision !== undefined && (current.configRevision ?? 1) !== options.expectedConfigRevision) {
     return undefined
   }
 
+  const updatedAt = nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const result = await client.execute(`
     UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
@@ -2459,36 +3118,57 @@ export async function markAccountExceptionAsync(
         cooldown_retest_last_status_code = NULL,
         stream_failure_count = 0,
         stream_failure_window_started_at = NULL,
-        updated_at = ?
+        updated_at = ${accountRuntimeFailureUpdatedAtSql(options.runtimeFailureGuard)}
     WHERE id = ?
       AND deleted_at IS NULL
-  `, [errorCode || null, reason || null, normalizedLastErrorTraceId(options.traceId), nowIso(), id])
-  if (Number(result.changes ?? 0) > 0) {
-    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_exception' }, client)
-    invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
+      AND status = ?
+      AND config_revision = ?
+      ${accountRuntimeFailureObservationGuardSql(options.runtimeFailureGuard)}
+  `, [
+    errorCode || null,
+    reason || null,
+    normalizedLastErrorTraceId(options.traceId),
+    ...accountRuntimeFailureUpdatedAtParams(options.runtimeFailureGuard, updatedAt),
+    id,
+    options.expectedStatus ?? current.status,
+    options.expectedConfigRevision ?? current.configRevision ?? 1,
+    ...accountRuntimeFailureObservationGuardParams(options.runtimeFailureGuard)
+  ])
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
   }
+  await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_exception' }, client)
+  invalidateAccountLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
 
   return await findInternalAccountSummaryAsync(id)
 }
 
-export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
+export function markAccountDisabledByFailure(
+  id: string,
+  reason: string,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current || current.status === 'error') {
     return undefined
   }
-  return markAccountException(id, 'upstream_failure', reason)
+  return markAccountException(id, 'upstream_failure', reason, { runtimeFailureGuard })
 }
 
-export async function markAccountDisabledByFailureAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
+export async function markAccountDisabledByFailureAsync(
+  id: string,
+  reason: string,
+  runtimeFailureGuard?: AccountRuntimeFailureObservationGuard
+): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return markAccountDisabledByFailure(id, reason)
+    return markAccountDisabledByFailure(id, reason, runtimeFailureGuard)
   }
   const current = await findInternalAccountSummaryAsync(id)
   if (!current || current.status === 'error') {
     return undefined
   }
-  return await markAccountExceptionAsync(id, 'upstream_failure', reason)
+  return await markAccountExceptionAsync(id, 'upstream_failure', reason, { runtimeFailureGuard })
 }
 
 export function recordAccountStreamFailure(input: {

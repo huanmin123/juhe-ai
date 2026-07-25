@@ -6,7 +6,7 @@ import type { HybridQualityInspectionOutcome } from '../hybrid/quality-inspectio
 import type { CodexResponsesGuardUsageSummary } from '../codex-responses/response-guard.js'
 
 export type UpstreamResponseHandlingResult =
-  | { alreadyFinalized: true; transportFailure?: StreamTransportFailure }
+  | { alreadyFinalized: true; errorCode?: string; transportFailure?: StreamTransportFailure }
   | {
     alreadyFinalized: false
     retryUpstream: true
@@ -29,6 +29,7 @@ export type UpstreamResponseHandlingResult =
     responseResourceId?: string
     bodyOmission?: StreamBodyOmissionSummary
     codexResponsesGuard?: CodexResponsesGuardUsageSummary
+    protocolValidatedSuccess?: boolean
     errorPayload: Record<string, unknown>
     transportFailure?: StreamTransportFailure
   }

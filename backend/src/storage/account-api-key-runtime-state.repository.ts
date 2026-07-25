@@ -21,11 +21,36 @@ export interface AccountApiKeyRuntimeFailureInput {
   traceId?: string
   cooldownUntil?: string
   observedAt?: string
+  expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+  expectedNextProbeAt?: string
+  expectedStateUpdatedAt?: string
+  expectedAccountConfigRevision?: number
+  expectedProbeClaimToken?: string
 }
 
 export interface AccountApiKeyRuntimeWriteResult {
   changed: boolean
   skippedReason?: string
+}
+
+export interface AccountApiKeyRuntimeProbeDeferInput {
+  account: OpenAIAccountSecret
+  expectedStatus: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+  expectedNextProbeAt?: string
+  delaySeconds: number
+  observedAt?: string
+  expectedStateUpdatedAt?: string
+  expectedAccountConfigRevision?: number
+  expectedProbeClaimToken?: string
+}
+
+export interface AccountApiKeyRuntimeSuccessInput {
+  observedAt?: string
+  expectedStatus?: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
+  expectedNextProbeAt?: string
+  expectedStateUpdatedAt?: string
+  expectedAccountConfigRevision?: number
+  expectedProbeClaimToken?: string
 }
 
 export interface AccountApiKeyRuntimeProbeCandidate {
@@ -35,7 +60,11 @@ export interface AccountApiKeyRuntimeProbeCandidate {
   keyIndex: number
   apiKey: string
   status: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-  nextProbeAt?: string
+  nextProbeAt: string
+  stateUpdatedAt: string
+  accountConfigRevision: number
+  probeClaimToken: string
+  probeClaimedUntil: string
 }
 
 export interface AccountApiKeyRuntimeSummary {
@@ -62,6 +91,7 @@ interface AccountApiKeyRuntimeRow {
   cooldown_until: string | null
   next_probe_at: string | null
   probe_backoff_seconds: number | null
+  updated_at: string
 }
 
 interface AccountApiKeyRuntimeDetailRow {
@@ -94,13 +124,17 @@ interface AccountApiKeyRuntimeProbeRow {
   key_fingerprint: string
   key_index: number
   status: Exclude<AccountApiKeyRuntimeStatus, 'active' | 'disabled'>
-  next_probe_at: string | null
+  next_probe_at: string
+  updated_at: string
   account_name: string
   provider_code: string
   protocol_code: string
   protocol_version: string
   type: string
   credentials_encrypted: string
+  config_revision: number
+  probe_claim_token: string | null
+  probe_claimed_until: string | null
 }
 
 interface AccountApiKeyRuntimeSummarySourceRow {
@@ -115,7 +149,21 @@ interface AccountApiKeyRuntimeSummarySourceRow {
 
 const initialProbeBackoffSeconds = 3
 const maxProbeBackoffSeconds = 60 * 60
+const probeClaimLeaseSeconds = 10 * 60
+const probeCandidateScanLimit = 10_000
 const businessSchemaName = 'juhe_business'
+
+type AccountApiKeyExpectedProbeStateInput = Pick<
+  AccountApiKeyRuntimeSuccessInput,
+  'expectedStatus' | 'expectedNextProbeAt' | 'expectedStateUpdatedAt' | 'expectedAccountConfigRevision' | 'expectedProbeClaimToken'
+>
+
+interface AccountApiKeyExpectedProbeStateFence {
+  provided: boolean
+  sql: string
+  params: string[]
+  invalidReason?: string
+}
 
 export function loadAccountApiKeyRuntimeStatesByAccountIds(
   accountIds: string[]
@@ -195,16 +243,20 @@ export async function loadAccountApiKeyRuntimeStatesByAccountIdsAsync(
 export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountApiKeyRuntimeProbeCandidate[] {
   const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
   const now = nowIso()
-  const rows = getBusinessDatabase()
+  const database = getBusinessDatabase()
+  const rows = database
     .prepare(`
       SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
+        states.updated_at,
         accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
-        accounts.type, accounts.credentials_encrypted
+        accounts.type, accounts.credentials_encrypted, accounts.config_revision,
+        states.probe_claim_token, states.probe_claimed_until
       FROM account_api_key_runtime_states states
       JOIN accounts ON accounts.id = states.account_id
       WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
         AND states.next_probe_at IS NOT NULL
         AND states.next_probe_at <= ?
+        AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
         AND accounts.deleted_at IS NULL
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
@@ -212,8 +264,9 @@ export function listAccountApiKeyRuntimeStatesDueForProbe(limit = 20): AccountAp
       ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
       LIMIT ?
     `)
-    .all(now, now, normalizedLimit * 3) as unknown as AccountApiKeyRuntimeProbeRow[]
-  return accountApiKeyRuntimeProbeCandidatesFromRows(rows, normalizedLimit)
+    .all(now, now, now, probeCandidateScanLimit) as unknown as AccountApiKeyRuntimeProbeRow[]
+  const candidates = accountApiKeyRuntimeProbeCandidatesFromRows(rows, probeCandidateScanLimit)
+  return claimAccountApiKeyRuntimeProbeCandidatesSync(database, candidates, normalizedLimit, now)
 }
 
 export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20): Promise<AccountApiKeyRuntimeProbeCandidate[]> {
@@ -225,25 +278,29 @@ export async function listAccountApiKeyRuntimeStatesDueForProbeAsync(limit = 20)
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
   const rows = await client.query<AccountApiKeyRuntimeProbeRow>(`
     SELECT states.account_id, states.key_fingerprint, states.key_index, states.status, states.next_probe_at,
+      states.updated_at,
       accounts.name AS account_name, accounts.provider_code, accounts.protocol_code, accounts.protocol_version,
-      accounts.type, accounts.credentials_encrypted
+      accounts.type, accounts.credentials_encrypted, accounts.config_revision,
+      states.probe_claim_token, states.probe_claimed_until
     FROM ${accountApiKeyRuntimeStatesTable(client)} states
     JOIN ${accountApiKeyRuntimeBusinessTable(client, 'accounts')} accounts ON accounts.id = states.account_id
     WHERE states.status IN ('temporary_unavailable', 'rate_limited', 'error')
       AND states.next_probe_at IS NOT NULL
       AND states.next_probe_at <= ?
+      AND (states.probe_claimed_until IS NULL OR states.probe_claimed_until <= ?)
       AND accounts.deleted_at IS NULL
       AND accounts.status = 'active'
       AND accounts.schedulable = 1
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
     ORDER BY states.next_probe_at ASC, states.updated_at ASC, states.account_id ASC, states.key_index ASC
     LIMIT ?
-  `, [now, now, normalizedLimit * 3])
-  return accountApiKeyRuntimeProbeCandidatesFromRows(rows, normalizedLimit)
+  `, [now, now, now, probeCandidateScanLimit])
+  const candidates = accountApiKeyRuntimeProbeCandidatesFromRows(rows, probeCandidateScanLimit)
+  return await claimAccountApiKeyRuntimeProbeCandidatesAsync(client, candidates, normalizedLimit, now)
 }
 
 function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeProbeRow[], limit: number): AccountApiKeyRuntimeProbeCandidate[] {
-  const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
+  const normalizedLimit = Math.max(1, Math.min(probeCandidateScanLimit, Math.trunc(limit)))
   const output: AccountApiKeyRuntimeProbeCandidate[] = []
   for (const row of rows) {
     let credentials: Record<string, unknown>
@@ -265,6 +322,9 @@ function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeP
     if (!entry) {
       continue
     }
+    if (!Number.isSafeInteger(row.config_revision) || row.config_revision < 1) {
+      continue
+    }
     output.push({
       accountId: row.account_id,
       accountName: row.account_name,
@@ -272,13 +332,87 @@ function accountApiKeyRuntimeProbeCandidatesFromRows(rows: AccountApiKeyRuntimeP
       keyIndex: Number.isInteger(row.key_index) ? row.key_index : entry.index,
       apiKey: entry.key,
       status: row.status,
-      nextProbeAt: row.next_probe_at ?? undefined
+      nextProbeAt: row.next_probe_at,
+      stateUpdatedAt: row.updated_at,
+      accountConfigRevision: row.config_revision,
+      probeClaimToken: row.probe_claim_token ?? '',
+      probeClaimedUntil: row.probe_claimed_until ?? ''
     })
     if (output.length >= normalizedLimit) {
       break
     }
   }
   return output
+}
+
+function claimAccountApiKeyRuntimeProbeCandidatesSync(
+  database: ReturnType<typeof getBusinessDatabase>,
+  candidates: AccountApiKeyRuntimeProbeCandidate[],
+  limit: number,
+  now: string
+): AccountApiKeyRuntimeProbeCandidate[] {
+  const claimed: AccountApiKeyRuntimeProbeCandidate[] = []
+  const claimedUntil = new Date(Date.parse(now) + probeClaimLeaseSeconds * 1000).toISOString()
+  for (const candidate of candidates) {
+    if (claimed.length >= limit) break
+    const token = newId('account_api_key_probe_claim')
+    const result = database.prepare(`
+      UPDATE account_api_key_runtime_states
+      SET probe_claim_token = ?, probe_claimed_until = ?
+      WHERE account_id = ?
+        AND key_fingerprint = ?
+        AND status = ?
+        AND next_probe_at = ?
+        AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+    `).run(
+      token,
+      claimedUntil,
+      candidate.accountId,
+      candidate.keyFingerprint,
+      candidate.status,
+      candidate.nextProbeAt,
+      now
+    )
+    if (Number(result.changes ?? 0) !== 1) continue
+    claimed.push({ ...candidate, probeClaimToken: token, probeClaimedUntil: claimedUntil })
+  }
+  return claimed
+}
+
+async function claimAccountApiKeyRuntimeProbeCandidatesAsync(
+  client: DatabaseClient,
+  candidates: AccountApiKeyRuntimeProbeCandidate[],
+  limit: number,
+  now: string
+): Promise<AccountApiKeyRuntimeProbeCandidate[]> {
+  return await client.transaction(async (tx) => {
+    const claimed: AccountApiKeyRuntimeProbeCandidate[] = []
+    const claimedUntil = new Date(Date.parse(now) + probeClaimLeaseSeconds * 1000).toISOString()
+    for (const candidate of candidates) {
+      if (claimed.length >= limit) break
+      const token = newId('account_api_key_probe_claim')
+      const result = await tx.execute(`
+        UPDATE ${accountApiKeyRuntimeStatesTable(tx)}
+        SET probe_claim_token = ?, probe_claimed_until = ?
+        WHERE account_id = ?
+          AND key_fingerprint = ?
+          AND status = ?
+          AND next_probe_at = ?
+          AND (probe_claimed_until IS NULL OR probe_claimed_until <= ?)
+      `, [
+        token,
+        claimedUntil,
+        candidate.accountId,
+        candidate.keyFingerprint,
+        candidate.status,
+        candidate.nextProbeAt,
+        now
+      ])
+      if (result.changes !== 1) continue
+      claimed.push({ ...candidate, probeClaimToken: token, probeClaimedUntil: claimedUntil })
+    }
+    return claimed
+  })
 }
 
 export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string[]): Map<string, AccountApiKeyRuntimeSummary> {
@@ -455,10 +589,19 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
+  const expectedFence = expectedProbeStateFence(input)
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    'accounts',
+    'account_api_key_runtime_states.account_id'
+  )
   const database = getBusinessDatabase()
   const existing = database
     .prepare(`
-      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds
+      SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds, updated_at
       FROM account_api_key_runtime_states
       WHERE account_id = ?
         AND key_fingerprint = ?
@@ -467,6 +610,9 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
     .get(target.accountId, target.keyFingerprint) as unknown as AccountApiKeyRuntimeRow | undefined
   if (existing?.status === 'disabled') {
     return { changed: false, skippedReason: 'key_disabled' }
+  }
+  if (expectedFence.provided && !existing) {
+    return { changed: false, skippedReason: 'stale_probe_state' }
   }
 
   const now = nowIso()
@@ -497,11 +643,15 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
               last_error_code = ?,
               last_error_message = ?,
               last_trace_id = ?,
+              probe_claim_token = NULL,
+              probe_claimed_until = NULL,
               updated_at = ?
           WHERE account_id = ?
             AND key_fingerprint = ?
             AND status <> 'disabled'
-            AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+            AND (last_attempt_at IS NULL OR last_attempt_at < ?)
+            ${expectedFence.sql}
+            ${configFence.sql}
         `)
         .run(
           target.systemAccountId,
@@ -519,7 +669,9 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           now,
           target.accountId,
           target.keyFingerprint,
-          observedAt
+          observedAt,
+          ...expectedFence.params,
+          ...configFence.params
         )
     : database
         .prepare(`
@@ -557,7 +709,10 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
   if (changed) {
     markRuntimeStateChanged(target.accountId)
   }
-  return { changed }
+  return {
+    changed,
+    ...(expectedFence.provided && !changed ? { skippedReason: 'stale_probe_state' } : {})
+  }
 }
 
 export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKeyRuntimeFailureInput): Promise<AccountApiKeyRuntimeWriteResult> {
@@ -568,9 +723,19 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
+  const expectedFence = expectedProbeStateFence(input, 'current_state.')
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    accountApiKeyRuntimeBusinessTable(client, 'accounts'),
+    'current_state.account_id',
+    true
+  )
   const existing = await client.one<AccountApiKeyRuntimeRow>(`
-    SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds
+    SELECT account_id, key_fingerprint, key_index, status, cooldown_until, next_probe_at, probe_backoff_seconds, updated_at
     FROM ${accountApiKeyRuntimeStatesTable(client)}
     WHERE account_id = ?
       AND key_fingerprint = ?
@@ -578,6 +743,9 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   `, [target.accountId, target.keyFingerprint])
   if (existing?.status === 'disabled') {
     return { changed: false, skippedReason: 'key_disabled' }
+  }
+  if (expectedFence.provided && !existing) {
+    return { changed: false, skippedReason: 'stale_probe_state' }
   }
 
   const now = nowIso()
@@ -590,6 +758,74 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   const errorCode = input.errorCode ?? (typeof input.statusCode === 'number' ? `http_${input.statusCode}` : null)
   const errorMessage = sanitizeRuntimeErrorMessage(input.errorMessage ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败'))
   const table = accountApiKeyRuntimeStatesTable(client)
+  const atomicNextBackoffSql = `(CASE
+    WHEN current_state.probe_backoff_seconds > 0
+      THEN LEAST(${maxProbeBackoffSeconds}, current_state.probe_backoff_seconds * 2)
+    ELSE ${initialProbeBackoffSeconds}
+  END)`
+  const atomicNextProbeAtSql = `to_char(
+    (statement_timestamp() + ${atomicNextBackoffSql} * INTERVAL '1 second') AT TIME ZONE 'UTC',
+    'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+  )`
+  const preserveExplicitCooldownSql = input.cooldownUntil && status === 'rate_limited' ? 'TRUE' : 'FALSE'
+
+  if (expectedFence.provided) {
+    const fencedResult = await client.execute(`
+      UPDATE ${table} AS current_state
+      SET system_account_id = ?,
+          key_index = ?,
+          status = ?,
+          failure_count = current_state.failure_count + 1,
+          consecutive_failures = current_state.consecutive_failures + 1,
+          cooldown_until = CASE
+            WHEN ${preserveExplicitCooldownSql} THEN ?
+            ELSE ${atomicNextProbeAtSql}
+          END,
+          next_probe_at = CASE
+            WHEN ${preserveExplicitCooldownSql} THEN ?
+            ELSE ${atomicNextProbeAtSql}
+          END,
+          probe_backoff_seconds = ${atomicNextBackoffSql},
+          recovery_started_at = COALESCE(current_state.recovery_started_at, ?),
+          last_attempt_at = ?,
+          last_failure_at = ?,
+          last_error_code = ?,
+          last_error_message = ?,
+          last_trace_id = ?,
+          probe_claim_token = NULL,
+          probe_claimed_until = NULL,
+          updated_at = ?
+      WHERE current_state.account_id = ?
+        AND current_state.key_fingerprint = ?
+        AND current_state.status <> 'disabled'
+        AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at < ?)
+        ${expectedFence.sql}
+        ${configFence.sql}
+    `, [
+      target.systemAccountId,
+      target.keyIndex,
+      status,
+      nextProbeAt,
+      nextProbeAt,
+      now,
+      observedAt,
+      observedAt,
+      errorCode,
+      errorMessage,
+      normalizeRuntimeTraceId(input.traceId),
+      now,
+      target.accountId,
+      target.keyFingerprint,
+      observedAt,
+      ...expectedFence.params,
+      ...configFence.params
+    ])
+    const changed = Number(fencedResult.changes ?? 0) > 0
+    if (changed) {
+      await markRuntimeStateChangedAsync(client, target.accountId)
+    }
+    return { changed, ...(!changed ? { skippedReason: 'stale_probe_state' } : {}) }
+  }
 
   const result = await client.execute(`
     INSERT INTO ${table} AS current_state (
@@ -607,18 +843,26 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       status = excluded.status,
       failure_count = current_state.failure_count + 1,
       consecutive_failures = current_state.consecutive_failures + 1,
-      cooldown_until = excluded.cooldown_until,
-      next_probe_at = excluded.next_probe_at,
-      probe_backoff_seconds = excluded.probe_backoff_seconds,
+      cooldown_until = CASE
+        WHEN ${preserveExplicitCooldownSql} THEN excluded.cooldown_until
+        ELSE ${atomicNextProbeAtSql}
+      END,
+      next_probe_at = CASE
+        WHEN ${preserveExplicitCooldownSql} THEN excluded.next_probe_at
+        ELSE ${atomicNextProbeAtSql}
+      END,
+      probe_backoff_seconds = ${atomicNextBackoffSql},
       recovery_started_at = COALESCE(current_state.recovery_started_at, excluded.recovery_started_at),
       last_attempt_at = excluded.last_attempt_at,
       last_failure_at = excluded.last_failure_at,
       last_error_code = excluded.last_error_code,
       last_error_message = excluded.last_error_message,
       last_trace_id = excluded.last_trace_id,
+      probe_claim_token = NULL,
+      probe_claimed_until = NULL,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
-      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
+      AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at < excluded.last_attempt_at)
   `, [
     newId('account_api_key_runtime_state'),
     target.systemAccountId,
@@ -646,13 +890,175 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
   return { changed }
 }
 
-export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): AccountApiKeyRuntimeWriteResult {
+export function deferAccountApiKeyRuntimeProbe(input: AccountApiKeyRuntimeProbeDeferInput): AccountApiKeyRuntimeWriteResult {
+  const target = accountApiKeyRuntimeTarget(input.account)
+  if (!target) {
+    return { changed: false, skippedReason: 'not_api_key_pool_account' }
+  }
+  const expectedNextProbeAt = normalizeExpectedProbeAt(input.expectedNextProbeAt)
+  if (!expectedNextProbeAt) {
+    return { changed: false, skippedReason: 'missing_expected_probe_at' }
+  }
+  const expectedFence = expectedProbeStateFence({
+    ...input,
+    expectedNextProbeAt
+  })
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    'accounts',
+    'account_api_key_runtime_states.account_id'
+  )
+  const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
+  const nextProbeAt = new Date(Date.now() + normalizeProbeDeferSeconds(input.delaySeconds) * 1000).toISOString()
+  const result = getBusinessDatabase()
+    .prepare(`
+      UPDATE account_api_key_runtime_states
+      SET next_probe_at = ?,
+          last_attempt_at = ?,
+          probe_claim_token = NULL,
+          probe_claimed_until = NULL,
+          updated_at = ?
+      WHERE account_id = ?
+        AND key_fingerprint = ?
+        AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+        ${expectedFence.sql}
+        ${configFence.sql}
+    `)
+    .run(
+      nextProbeAt,
+      observedAt,
+      now,
+      target.accountId,
+      target.keyFingerprint,
+      observedAt,
+      ...expectedFence.params,
+      ...configFence.params
+    )
+  const changed = Number(result.changes ?? 0) > 0
+  return { changed, ...(!changed ? { skippedReason: 'stale_probe_state' } : {}) }
+}
+
+export async function deferAccountApiKeyRuntimeProbeAsync(input: AccountApiKeyRuntimeProbeDeferInput): Promise<AccountApiKeyRuntimeWriteResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return deferAccountApiKeyRuntimeProbe(input)
+  }
+  const target = accountApiKeyRuntimeTarget(input.account)
+  if (!target) {
+    return { changed: false, skippedReason: 'not_api_key_pool_account' }
+  }
+  const expectedNextProbeAt = normalizeExpectedProbeAt(input.expectedNextProbeAt)
+  if (!expectedNextProbeAt) {
+    return { changed: false, skippedReason: 'missing_expected_probe_at' }
+  }
+  const expectedFence = expectedProbeStateFence({
+    ...input,
+    expectedNextProbeAt
+  })
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
+  const now = nowIso()
+  const observedAt = normalizeObservedAt(input.observedAt, now)
+  const nextProbeAt = new Date(Date.now() + normalizeProbeDeferSeconds(input.delaySeconds) * 1000).toISOString()
+  const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    accountApiKeyRuntimeBusinessTable(client, 'accounts'),
+    'current_state.account_id',
+    true
+  )
+  const result = await client.execute(`
+    UPDATE ${accountApiKeyRuntimeStatesTable(client)} AS current_state
+    SET next_probe_at = ?,
+        last_attempt_at = ?,
+        probe_claim_token = NULL,
+        probe_claimed_until = NULL,
+        updated_at = ?
+    WHERE account_id = ?
+      AND key_fingerprint = ?
+      AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+      ${expectedFence.sql}
+      ${configFence.sql}
+  `, [
+    nextProbeAt,
+    observedAt,
+    now,
+    target.accountId,
+    target.keyFingerprint,
+    observedAt,
+    ...expectedFence.params,
+    ...configFence.params
+  ])
+  const changed = Number(result.changes ?? 0) > 0
+  return { changed, ...(!changed ? { skippedReason: 'stale_probe_state' } : {}) }
+}
+
+export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, input: AccountApiKeyRuntimeSuccessInput = {}): AccountApiKeyRuntimeWriteResult {
   const target = accountApiKeyRuntimeTarget(account)
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
+  const expectedFence = expectedProbeStateFence(input)
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    'accounts',
+    'account_api_key_runtime_states.account_id'
+  )
   const now = nowIso()
   const observedAt = normalizeObservedAt(input.observedAt, now)
+  if (expectedFence.provided) {
+    const fencedResult = getBusinessDatabase()
+      .prepare(`
+        UPDATE account_api_key_runtime_states
+        SET system_account_id = ?,
+            key_index = ?,
+            status = 'active',
+            consecutive_failures = 0,
+            success_count = success_count + 1,
+            cooldown_until = NULL,
+            next_probe_at = NULL,
+            probe_backoff_seconds = 0,
+            recovery_started_at = NULL,
+            last_attempt_at = ?,
+            last_success_at = ?,
+            last_error_code = NULL,
+            last_error_message = NULL,
+            last_trace_id = NULL,
+            probe_claim_token = NULL,
+            probe_claimed_until = NULL,
+            updated_at = ?
+        WHERE account_id = ?
+          AND key_fingerprint = ?
+          AND status <> 'disabled'
+          AND (last_attempt_at IS NULL OR last_attempt_at <= ?)
+          ${expectedFence.sql}
+          ${configFence.sql}
+      `)
+      .run(
+        target.systemAccountId,
+        target.keyIndex,
+        observedAt,
+        observedAt,
+        now,
+        target.accountId,
+        target.keyFingerprint,
+        observedAt,
+        ...expectedFence.params,
+        ...configFence.params
+      )
+    const changed = Number(fencedResult.changes ?? 0) > 0
+    if (changed) {
+      markRuntimeStateChanged(target.accountId)
+    }
+    return { changed, ...(!changed ? { skippedReason: 'stale_probe_state' } : {}) }
+  }
   const result = getBusinessDatabase()
     .prepare(`
       INSERT INTO account_api_key_runtime_states (
@@ -679,6 +1085,8 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
         last_error_code = NULL,
         last_error_message = NULL,
         last_trace_id = NULL,
+        probe_claim_token = NULL,
+        probe_claimed_until = NULL,
         updated_at = excluded.updated_at
       WHERE account_api_key_runtime_states.status <> 'disabled'
         AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
@@ -701,7 +1109,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
   return { changed }
 }
 
-export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret, input: { observedAt?: string } = {}): Promise<AccountApiKeyRuntimeWriteResult> {
+export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAccountSecret, input: AccountApiKeyRuntimeSuccessInput = {}): Promise<AccountApiKeyRuntimeWriteResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAccountApiKeyRuntimeSuccess(account, input)
   }
@@ -709,9 +1117,63 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
   if (!target) {
     return { changed: false, skippedReason: 'not_api_key_pool_account' }
   }
+  const expectedFence = expectedProbeStateFence(input, 'current_state.')
+  if (expectedFence.invalidReason) {
+    return { changed: false, skippedReason: expectedFence.invalidReason }
+  }
   const now = nowIso()
   const observedAt = normalizeObservedAt(input.observedAt, now)
   const client = await getAccountApiKeyRuntimeStateDatabaseClient()
+  const configFence = expectedAccountConfigRevisionFence(
+    input,
+    accountApiKeyRuntimeBusinessTable(client, 'accounts'),
+    'current_state.account_id',
+    true
+  )
+  if (expectedFence.provided) {
+    const fencedResult = await client.execute(`
+      UPDATE ${accountApiKeyRuntimeStatesTable(client)} AS current_state
+      SET system_account_id = ?,
+          key_index = ?,
+          status = 'active',
+          consecutive_failures = 0,
+          success_count = current_state.success_count + 1,
+          cooldown_until = NULL,
+          next_probe_at = NULL,
+          probe_backoff_seconds = 0,
+          recovery_started_at = NULL,
+          last_attempt_at = ?,
+          last_success_at = ?,
+          last_error_code = NULL,
+          last_error_message = NULL,
+          last_trace_id = NULL,
+          probe_claim_token = NULL,
+          probe_claimed_until = NULL,
+          updated_at = ?
+      WHERE current_state.account_id = ?
+        AND current_state.key_fingerprint = ?
+        AND current_state.status <> 'disabled'
+        AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= ?)
+        ${expectedFence.sql}
+        ${configFence.sql}
+    `, [
+      target.systemAccountId,
+      target.keyIndex,
+      observedAt,
+      observedAt,
+      now,
+      target.accountId,
+      target.keyFingerprint,
+      observedAt,
+      ...expectedFence.params,
+      ...configFence.params
+    ])
+    const changed = Number(fencedResult.changes ?? 0) > 0
+    if (changed) {
+      await markRuntimeStateChangedAsync(client, target.accountId)
+    }
+    return { changed, ...(!changed ? { skippedReason: 'stale_probe_state' } : {}) }
+  }
   const result = await client.execute(`
     INSERT INTO ${accountApiKeyRuntimeStatesTable(client)} AS current_state (
       id, system_account_id, account_id, key_fingerprint, key_index,
@@ -737,6 +1199,8 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       last_error_code = NULL,
       last_error_message = NULL,
       last_trace_id = NULL,
+      probe_claim_token = NULL,
+      probe_claimed_until = NULL,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
@@ -761,7 +1225,14 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
 function normalizeObservedAt(value: string | undefined, fallback: string): string {
   if (!value) return fallback
   const time = Date.parse(value)
-  return Number.isFinite(time) ? new Date(time).toISOString() : fallback
+  if (!Number.isFinite(time)) {
+    throw new Error('observedAt 必须是有效 ISO 时间')
+  }
+  const fallbackTime = Date.parse(fallback)
+  if (!Number.isFinite(fallbackTime)) {
+    throw new Error('observedAt fallback 必须是有效 ISO 时间')
+  }
+  return new Date(Math.min(time, fallbackTime)).toISOString()
 }
 
 function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKeyRuntimeTarget | undefined {
@@ -1039,6 +1510,77 @@ function nextProbeBackoffSeconds(previous: number | null | undefined): number {
   return value > 0
     ? Math.min(maxProbeBackoffSeconds, value * 2)
     : initialProbeBackoffSeconds
+}
+
+function normalizeExpectedProbeAt(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized && Number.isFinite(Date.parse(normalized)) ? normalized : undefined
+}
+
+function expectedProbeStateFence(
+  input: AccountApiKeyExpectedProbeStateInput,
+  columnPrefix = ''
+): AccountApiKeyExpectedProbeStateFence {
+  const predicates: string[] = []
+  const params: string[] = []
+  if (input.expectedStatus !== undefined) {
+    predicates.push(`${columnPrefix}status = ?`)
+    params.push(input.expectedStatus)
+  }
+  if (input.expectedNextProbeAt !== undefined) {
+    const expectedNextProbeAt = normalizeExpectedProbeAt(input.expectedNextProbeAt)
+    if (!expectedNextProbeAt) {
+      return { provided: true, sql: '', params: [], invalidReason: 'invalid_expected_probe_at' }
+    }
+    predicates.push(`${columnPrefix}next_probe_at = ?`)
+    params.push(expectedNextProbeAt)
+  }
+  if (input.expectedStateUpdatedAt !== undefined) {
+    const expectedStateUpdatedAt = normalizeExpectedProbeAt(input.expectedStateUpdatedAt)
+    if (!expectedStateUpdatedAt) {
+      return { provided: true, sql: '', params: [], invalidReason: 'invalid_expected_state_updated_at' }
+    }
+    predicates.push(`${columnPrefix}updated_at = ?`)
+    params.push(expectedStateUpdatedAt)
+  }
+  if (input.expectedProbeClaimToken !== undefined) {
+    const expectedProbeClaimToken = input.expectedProbeClaimToken.trim()
+    if (!expectedProbeClaimToken) {
+      return { provided: true, sql: '', params: [], invalidReason: 'invalid_expected_probe_claim_token' }
+    }
+    predicates.push(`${columnPrefix}probe_claim_token = ?`)
+    params.push(expectedProbeClaimToken)
+  }
+  if (
+    input.expectedAccountConfigRevision !== undefined
+    && (!Number.isSafeInteger(input.expectedAccountConfigRevision) || input.expectedAccountConfigRevision < 1)
+  ) {
+    return { provided: true, sql: '', params: [], invalidReason: 'invalid_expected_account_config_revision' }
+  }
+  return {
+    provided: predicates.length > 0 || input.expectedAccountConfigRevision !== undefined,
+    sql: predicates.map((predicate) => `\n      AND ${predicate}`).join(''),
+    params
+  }
+}
+
+function expectedAccountConfigRevisionFence(
+  input: AccountApiKeyExpectedProbeStateInput,
+  accountsTable: string,
+  stateAccountIdColumn: string,
+  lockAccountRow = false
+): { sql: string; params: number[] } {
+  if (input.expectedAccountConfigRevision === undefined) {
+    return { sql: '', params: [] }
+  }
+  return {
+    sql: `\n      AND EXISTS (\n        SELECT 1\n        FROM ${accountsTable} probe_account\n        WHERE probe_account.id = ${stateAccountIdColumn}\n          AND probe_account.deleted_at IS NULL\n          AND probe_account.config_revision = ?${lockAccountRow ? '\n        FOR UPDATE' : ''}\n      )`,
+    params: [input.expectedAccountConfigRevision]
+  }
+}
+
+function normalizeProbeDeferSeconds(value: number): number {
+  return Math.max(initialProbeBackoffSeconds, Math.min(maxProbeBackoffSeconds, Math.trunc(value)))
 }
 
 function sanitizeRuntimeErrorMessage(value: string): string {

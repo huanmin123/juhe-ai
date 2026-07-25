@@ -223,13 +223,14 @@ export class GeminiStreamInspector {
     const rawText = `${eventName ? `event: ${eventName}\n` : ''}${this.dataLines.map((line) => `data: ${line}`).join('\n')}\n\n`
     const event = parseOpenAISseEventText(rawText)
     const eventType = event.eventType || event.eventName || eventName || 'message'
-    const summary = this.classifyEvent(eventType, event.data, event.dataParseError, this.dataBytes)
+    const summary = this.classifyEvent(eventType, event.eventName || eventName, event.data, event.dataParseError, this.dataBytes)
     this.recordEventSummary(summary)
     this.resetEvent()
   }
 
   private classifyEvent(
     eventType: string,
+    eventName: string,
     data: Record<string, unknown> | undefined,
     parseError: boolean,
     dataBytes: number
@@ -242,8 +243,8 @@ export class GeminiStreamInspector {
       this.inspection.recentEventTypes.shift()
     }
 
-    const error = data ? extractGeminiStreamEventError(data) : undefined
-    const failed = Boolean(error) || eventType === 'interaction.failed'
+    const error = data ? extractGeminiStreamEventError(data, eventType, eventName) : undefined
+    const failed = Boolean(error)
     const outputText = data ? outputTextFromGeminiStreamEvent(data) : undefined
     const output = Boolean(outputText)
     const finishReason = data ? firstGeminiFinishReason(data, eventType) : undefined

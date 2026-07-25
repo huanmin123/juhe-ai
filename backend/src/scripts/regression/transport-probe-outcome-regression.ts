@@ -4,7 +4,7 @@ import {
   transportProbeOutcomeFromAccountTestResult
 } from '../../modules/accounts/automatic-account-probe-outcome.js'
 
-for (const status of [401, 429, 503]) {
+for (const status of [400, 401, 429, 500, 503]) {
   assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
     success: false,
     statusCode: status,
@@ -54,9 +54,24 @@ assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
 }, {
   upstreamAttempt: {
     upstreamUrl: 'https://api.openai.com/v1/responses',
-    status: 200
+    status: 200,
+    transportFailureKind: 'read_incomplete'
   }
 }), { kind: 'transport_incomplete', failureKind: 'read', statusCode: 200 })
+
+for (const errorCode of ['invalid_protocol_success_response', 'upstream_body_interrupted', 'upstream_timeout']) {
+  assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+    success: false,
+    statusCode: 200,
+    errorCode,
+    message: 'provider-controlled diagnostic'
+  }, {
+    upstreamAttempt: {
+      upstreamUrl: 'https://api.openai.com/v1/responses',
+      status: 200
+    }
+  }), { kind: 'framing_complete', statusCode: 200 }, `${errorCode} 不得伪造 transport incomplete`)
+}
 
 assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
   success: false,
@@ -70,7 +85,7 @@ assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
 
 assert.equal(transportProbeMeetsFirstByteTarget({ success: false, firstTokenMs: 800 }, {
   kind: 'framing_complete', statusCode: 503
-}, 1_000), true)
+}, 1_000), false)
 assert.equal(transportProbeMeetsFirstByteTarget({ success: true, firstTokenMs: 800 }, {
   kind: 'transport_incomplete', failureKind: 'read', statusCode: 200
 }, 1_000), false)

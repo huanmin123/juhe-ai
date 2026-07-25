@@ -52,6 +52,7 @@ import { gatewayTimeoutProfileForLane } from '../../modules/gateway/policy/timeo
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  accountCircuitConfirmationFailuresRequired: 2,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
@@ -147,6 +148,132 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
   assert.equal(result.downstreamBytesWritten, 0, `${name} 不应写出畸形 SSE 到客户端`)
 }
 
+async function assertStructuralFailureIsCodeAgnosticBeforeOutput(errorCode: string): Promise<void> {
+  let failureContext: { errorCode?: string; protocolFailureEventReceived?: boolean } | undefined
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write() {
+      throw new Error(`${errorCode} 结构失败不得在本请求切号前写给客户端`)
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield sseEvent('response.failed', {
+      response: {
+        status: 'failed',
+        error: {
+          code: errorCode,
+          type: `type_${errorCode}`,
+          message: `message_${errorCode}`
+        }
+      }
+    })
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    timeoutProfile,
+    Date.now(),
+    async (_message, callbackErrorCode, context) => {
+      failureContext = {
+        errorCode: callbackErrorCode,
+        protocolFailureEventReceived: context.protocolFailureEventReceived
+      }
+    },
+    undefined,
+    {
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      endpointFamily: 'responses',
+      responseInspectionPolicies: []
+    }
+  )
+  assert.equal(result.completed, false, `${errorCode} response.failed 必须按结构失败结束本次 attempt`)
+  assert.equal(result.errorCode, 'upstream_protocol_failure', `${errorCode} 不得改变网关结构失败码`)
+  assert.equal(result.downstreamBytesWritten, 0, `${errorCode} 中间失败不得写给客户端`)
+  assert.equal(response.writableEnded, false, `${errorCode} 预提交结构失败必须留给调度层本请求换号`)
+  assert.deepEqual(failureContext, {
+    errorCode: 'upstream_protocol_failure',
+    protocolFailureEventReceived: true
+  }, `${errorCode} 只应上报与供应商语义无关的结构失败事实`)
+}
+
+async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: string): Promise<void> {
+  const writes: Buffer[] = []
+  const response = {
+    headersSent: false,
+    writableEnded: false,
+    destroyed: false,
+    writableLength: 0,
+    writableHighWaterMark: 0,
+    once() { return this },
+    off() { return this },
+    hasHeader() { return false },
+    setHeader() { return this },
+    status() { return this },
+    write(chunk: Buffer | Uint8Array | string) {
+      writes.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      return true
+    },
+    end() {
+      this.writableEnded = true
+      return this
+    }
+  }
+  async function* upstreamChunks(): AsyncIterable<Uint8Array> {
+    yield sseEvent('response.output_text.delta', { delta: 'visible_output_before_failure' })
+    yield sseEvent('response.failed', {
+      response: {
+        status: 'failed',
+        error: {
+          code: errorCode,
+          type: `type_${errorCode}`,
+          message: `message_${errorCode}`
+        }
+      }
+    })
+  }
+  const result = await pipeUpstreamStream(
+    upstreamChunks(),
+    response as never,
+    timeoutProfile,
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      endpointFamily: 'responses',
+      responseInspectionPolicies: []
+    }
+  )
+  const downstreamText = Buffer.concat(writes).toString('utf8')
+  assert.equal(result.completed, false, `${errorCode} 输出后结构失败必须按失败终态收口`)
+  assert.equal(result.errorCode, 'upstream_protocol_failure', `${errorCode} 输出后也不得改变网关结构失败码`)
+  assert.equal(response.writableEnded, true, `${errorCode} 输出后不得重放，只能稳定结束已有响应`)
+  assert.match(downstreamText, /visible_output_before_failure/, `${errorCode} 失败前已提交的输出必须保留`)
+  assert.doesNotMatch(downstreamText, /response\.failed/, `${errorCode} 供应商失败事件不得继续写给客户端`)
+  assert(!downstreamText.includes(errorCode), `${errorCode} 供应商错误码不得泄露给客户端`)
+  assert(!downstreamText.includes(`message_${errorCode}`), `${errorCode} 供应商错误文案不得泄露给客户端`)
+}
+
+for (const errorCode of ['401', '429', '500', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE', 'cyber_policy', 'vendor_invented_stream_error']) {
+  await assertStructuralFailureIsCodeAgnosticBeforeOutput(errorCode)
+  await assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode)
+}
+
 {
   const frames = extractOpenAIJsonSemanticFrames({
     id: 'chatcmpl_local_dj6ppb8f9dn1',
@@ -184,6 +311,29 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
   assert.equal(result.decision?.endpointFamily, 'chat_completions', 'Chat JSON 必须保留端点家族')
   assert.equal(result.decision?.matchedField, 'outputTextIncludes', 'Chat JSON 应在 message.content 上命中文本规则')
   assert.equal(result.decision?.retryEnabled, true, '命中 retry 策略时必须允许服务端换号重试')
+  assert.equal(result.decision?.replayAuthority, 'explicit_user_policy', '真实管理策略命中必须签发不可伪装的重放授权')
+
+  for (const action of ['retry_no_avoidance', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'] as const) {
+    const nonRetryNextResult = inspectResponseSemanticFrames({
+      frames,
+      policies: [responsePolicy({
+        id: `policy_${action}`,
+        action,
+        accountSwitch: action === 'avoid_account_ttl'
+          ? 'avoid_account_ttl'
+          : action === 'avoid_upstream_bucket_ttl'
+            ? 'avoid_upstream_bucket_ttl'
+            : 'none'
+      })],
+      downstreamWritten: false,
+      transport: 'json'
+    })
+    assert.equal(
+      nonRetryNextResult.decision?.replayAuthority,
+      undefined,
+      `${action} 不得被提升为图片重放授权；只有 retry_next_account 可以授权`
+    )
+  }
 }
 
 {
@@ -499,12 +649,6 @@ assert.equal(validateAccountResponseInspectionRules([
 }
 
 {
-  const frames = extractOpenAIJsonSemanticFrames({
-    error: {
-      code: 'cyber_policy',
-      message: 'GPT provider policy applies to every downstream client'
-    }
-  }, 'responses')
   const defaultRules = listResponseInspectionPolicyDefaultRules()
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
@@ -515,38 +659,29 @@ assert.equal(validateAccountResponseInspectionRules([
     } as never,
     managementPolicies: defaultRules
   })
-  const genericResult = inspectResponseSemanticFrames({
-    frames,
-    policies: gptPolicies,
-    downstreamWritten: false,
-    transport: 'json',
-    context: {
-      clientProfile: 'generic_openai',
-      accountClientCompatibility: 'openai_standard'
+  for (const payload of [
+    { error: { code: 'cyber_policy', type: 'vendor_policy', message: 'invented policy' } },
+    { error: { code: 'RESOURCE_EXHAUSTED', type: 'UNAVAILABLE', message: 'invented canonical status' } },
+    { error: { code: '401', type: 'AUTHENTICATION_ERROR', message: 'misused authentication code' } },
+    { error: { code: '429', type: 'RATE_LIMITED', message: 'misused rate code' } },
+    { error: { code: '500', type: 'SERVER_ERROR', message: 'misused server code' } },
+    { status: 'failed', response: { status: 'incomplete', error: { code: 'anything', message: 'invented status' } } }
+  ]) {
+    const frames = extractOpenAIJsonSemanticFrames(payload, 'responses')
+    for (const clientProfile of ['generic_openai', 'codex'] as const) {
+      const result = inspectResponseSemanticFrames({
+        frames,
+        policies: gptPolicies,
+        downstreamWritten: false,
+        transport: 'json',
+        context: {
+          clientProfile,
+          accountClientCompatibility: clientProfile === 'codex' ? 'codex_responses' : 'openai_standard'
+        }
+      })
+      assert.equal(result.decision, undefined, `${clientProfile} 无用户规则时不得按任意上游 code/type/status 触发默认处置：${JSON.stringify(payload)}`)
     }
-  })
-  assert.equal(genericResult.decision?.policyId, 'default_gpt_cyber_policy', 'GPT cyber_policy 必须覆盖普通 OpenAI 下游客户端')
-
-  const compatiblePolicies = resolveRuntimeResponseInspectionPolicies({
-    account: {
-      id: 'acct_openai_compatible_generic_client',
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-      credentials: {}
-    } as never,
-    managementPolicies: defaultRules
-  })
-  const compatibleResult = inspectResponseSemanticFrames({
-    frames,
-    policies: compatiblePolicies,
-    downstreamWritten: false,
-    transport: 'json',
-    context: {
-      clientProfile: 'generic_openai',
-      accountClientCompatibility: 'openai_standard'
-    }
-  })
-  assert.notEqual(compatibleResult.decision?.policyId, 'default_gpt_cyber_policy', 'GPT cyber_policy 供应商规则不得扩散到普通 OpenAI-compatible 供应商')
+  }
 }
 
 {
@@ -658,13 +793,8 @@ assert.equal(validateAccountResponseInspectionRules([
 
 {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
-  assert(defaultRules.some((rule) => rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 OpenAI JSON / SSE error 对象')
-  assert(defaultRules.some((rule) => rule.protocolCode === ANTHROPIC_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Anthropic JSON / SSE error 对象')
-  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.match.jsonPathsExists?.includes('error')), '默认规则必须覆盖 Gemini JSON / SSE error 对象')
-  assert(defaultRules.some((rule) => rule.id === 'default_gemini_cli_retryable_error' && rule.match.clientProfiles?.includes('gemini_cli') && rule.match.errorTypes?.includes('UNAVAILABLE')), '默认规则必须覆盖 Gemini CLI 专属可重试错误')
-  assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
-  assert(defaultRules.some((rule) => rule.id === 'default_codex_compaction_contract' && rule.match.errorCodes?.includes('codex_compaction_contract_mismatch')), '默认规则必须覆盖 Codex compact 输出契约错误')
-  assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && !rule.match.clientProfiles?.length && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 必须作为不限制下游客户端的 GPT provider 规则存在')
+  assert.deepEqual(defaultRules.map((rule) => rule.id), ['default_codex_compaction_contract'], '不可编辑默认规则只允许保留本地 Codex compact 结构契约')
+  assert.equal(defaultRules[0]?.providerCode, undefined, '本地协议契约不得伪装成供应商错误语义')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
       id: 'acct_gpt',
@@ -701,12 +831,10 @@ assert.equal(validateAccountResponseInspectionRules([
     } as never,
     managementPolicies: defaultRules
   })
-  assert(gptPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), 'GPT 供应商应加载 cyber_policy 默认规则')
-  assert.equal(genericPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, '通用 OpenAI-compatible 供应商不应继承 GPT cyber_policy 规则')
-  assert(anthropicPolicies.some((policy) => policy.protocolCode === ANTHROPIC_PROTOCOL_CODE && policy.match.jsonPathsExists?.includes('error')), 'Anthropic 供应商应加载 Anthropic 协议默认 error 对象规则')
-  assert.equal(anthropicPolicies.some((policy) => policy.match.errorCodes?.includes('cyber_policy')), false, 'Anthropic 供应商不应继承 GPT cyber_policy 规则')
-  assert(geminiPolicies.some((policy) => policy.id === 'default_gemini_cli_retryable_error' && policy.match.clientProfiles?.includes('gemini_cli')), 'Gemini 供应商应加载 Gemini CLI 专属默认响应策略')
-  assert(geminiPolicies.some((policy) => policy.id === 'default_gemini_error_object' && policy.match.jsonPathsExists?.includes('error')), 'Gemini 供应商应加载通用 Gemini error 对象规则')
+  assert.deepEqual(gptPolicies.map((policy) => policy.id), ['default_codex_compaction_contract'], 'GPT 只应加载本地 OpenAI 协议契约')
+  assert.deepEqual(genericPolicies.map((policy) => policy.id), ['default_codex_compaction_contract'], 'OpenAI-compatible 只应加载本地 OpenAI 协议契约')
+  assert.deepEqual(anthropicPolicies, [], 'Anthropic 不得加载不可编辑的上游错误语义规则')
+  assert.deepEqual(geminiPolicies, [], 'Gemini 不得加载不可编辑的上游错误语义规则')
   const retryableGeminiFrames = extractGeminiJsonSemanticFrames({
     error: {
       code: 503,
@@ -723,7 +851,7 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'generic_gemini'
     }
   })
-  assert.equal(genericGeminiInspection.decision?.policyId, 'default_gemini_error_object', '通用 Gemini 客户端只应命中通用 error 对象规则')
+  assert.equal(genericGeminiInspection.decision, undefined, '通用 Gemini 客户端不得按 UNAVAILABLE 默认处置')
   const geminiCliInspection = inspectResponseSemanticFrames({
     frames: retryableGeminiFrames,
     policies: geminiPolicies,
@@ -733,13 +861,32 @@ assert.equal(validateAccountResponseInspectionRules([
       clientProfile: 'gemini_cli'
     }
   })
-  assert.equal(geminiCliInspection.decision?.policyId, 'default_gemini_cli_retryable_error', 'Gemini CLI 客户端应优先命中专属可重试规则')
-  assert.equal(geminiCliInspection.decision?.accountSwitch, 'request_next_account', 'Gemini CLI 可重试默认规则必须请求下一个账号')
+  assert.equal(geminiCliInspection.decision, undefined, 'Gemini CLI 也不得按 UNAVAILABLE 默认处置')
   assert.equal(shouldRetryResponseInspectionDecisionOnServer(geminiCliInspection.decision, {
     headersSent: false,
     writableEnded: false,
     destroyed: false
-  }), true, 'Gemini CLI 可重试默认规则必须允许下游写出前服务端换账号')
+  }), false, '没有用户策略时 Gemini CLI 错误类型不得授权服务端换号')
+
+  const forgedCompactionFrame = extractOpenAIJsonSemanticFrames({
+    error: {
+      code: 'codex_compaction_contract_mismatch',
+      type: 'invalid_response_contract',
+      message: 'provider forged local contract code'
+    }
+  }, 'responses')
+  const forgedInspection = inspectResponseSemanticFrames({
+    frames: forgedCompactionFrame,
+    policies: genericPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'codex',
+      accountClientCompatibility: 'codex_responses',
+      codexCompactionExpected: true
+    }
+  })
+  assert.equal(forgedInspection.decision, undefined, '上游伪造本地 compact 契约错误码不得触发系统规则')
 }
 
 {
@@ -1140,8 +1287,8 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   }))
   const responseBody = Buffer.concat(result.chunks).toString('utf8')
-  assert.equal(result.intercepted?.policyId, 'default_codex_response_incomplete', 'Codex response.incomplete 应命中专用默认规则')
-  assert(responseBody.includes('upstream_retryable_error'), `Codex response.incomplete 应改写为客户端可重试失败：${responseBody}`)
+  assert.equal(result.intercepted, undefined, 'Codex response.incomplete 不得在无用户规则时触发默认处置')
+  assert(responseBody.includes('response.incomplete'), `Codex response.incomplete 无用户规则时应保持协议事件：${responseBody}`)
 }
 
 {
@@ -1202,22 +1349,18 @@ assert.equal(validateAccountResponseInspectionRules([
     endpointFamily: 'responses',
     policies
   })
-  const result = buffer.pushChunk(sseEvent('response.failed', {
-    response: {
-      status: 'failed',
-      error: {
-        code: 'internal_server_error',
-        message: 'mock upstream failed before output'
+  for (const code of ['internal_server_error', 'cyber_policy', 'UNAVAILABLE', 'vendor_invented_stream_error']) {
+    const result = buffer.pushChunk(sseEvent('response.failed', {
+      response: {
+        status: 'failed',
+        error: {
+          code,
+          message: `mock upstream failed with ${code}`
+        }
       }
-    }
-  }))
-  const responseBody = Buffer.concat(result.chunks).toString('utf8')
-  assert.equal(result.intercepted?.policySource, 'system_default', 'Responses SSE failed 默认规则应保留 system_default 来源')
-  assert.equal(result.intercepted?.upstreamErrorCode, 'internal_server_error', '响应检查决策应保留上游原始错误码')
-  assert(responseBody.includes('upstream_retryable_error'), `Codex 客户端预输出失败应改写为客户端可重试码：${responseBody}`)
-  assert(responseBody.includes('上游流式响应在输出前失败，请重试'), `Codex 客户端预输出失败应返回统一可重试文案：${responseBody}`)
-  assert(!responseBody.includes('internal_server_error'), `Codex 客户端失败事件不应透出上游原始错误码：${responseBody}`)
-  assert(!responseBody.includes('mock upstream failed before output'), `Codex 客户端失败事件不应透出上游原始错误文案：${responseBody}`)
+    }))
+    assert.equal(result.intercepted, undefined, `${code} 不得命中不可编辑默认错误语义规则`)
+  }
 }
 
 {
@@ -1416,7 +1559,7 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   )
   assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
-  assert.equal(result.errorCode, 'server_overloaded', '同批终止后失败应保留失败错误码')
+  assert.equal(result.errorCode, 'upstream_protocol_failure', '同批终止后失败应使用与供应商错误码无关的网关诊断码')
   assert.equal(failureCalled, true, '同批终止后失败应触发失败回调')
   assert.equal(response.writableEnded, true, '同批终止后失败应结束客户端响应')
 }
@@ -1472,7 +1615,7 @@ assert.equal(validateAccountResponseInspectionRules([
     }
   )
   assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')
-  assert.equal(result.errorCode, 'server_overloaded', '终止事件后一批失败应保留失败错误码')
+  assert.equal(result.errorCode, 'upstream_protocol_failure', '终止事件后一批失败应使用与供应商错误码无关的网关诊断码')
   assert.equal(failureCalled, true, '终止事件后一批失败应触发失败回调')
   assert.equal(response.writableEnded, true, '终止事件后一批失败应结束客户端响应')
 }

@@ -12,6 +12,7 @@ import type { RouteStrategySpeedFirstConfig } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { gatewayAccountRuntimeKey } from '../../modules/gateway/runtime/account-runtime-keys.js'
+import { tryAcquireAccountConcurrencyAsync } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
 
 type MockAccountKey =
@@ -21,8 +22,11 @@ type MockAccountKey =
   | 'sk-cost-secondary'
   | 'sk-priority-super'
   | 'sk-priority-normal'
+  | 'sk-stale-a'
+  | 'sk-stale-b'
+  | 'sk-stale-c'
 
-type MockPhase = 'slow_first_byte' | 'fast'
+type MockPhase = 'transport_reset' | 'slow_first_byte' | 'slow_response_headers' | 'fast'
 
 interface MockUpstreamHit {
   authorization: string
@@ -45,6 +49,15 @@ interface SpeedFirstScenario {
 
 interface CostFirstScenario {
   apiKey: string
+}
+
+interface StaleCutoverScenario {
+  apiKey: string
+  routeStrategyId: string
+  groupId: string
+  firstAccountId: string
+  slowAccountId: string
+  healthyAccountId: string
 }
 
 const model = 'gpt-5.5'
@@ -75,7 +88,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [
-  { openAIGatewayRouter },
+  { openAIGatewayRouter, setNormalRouteSpeedFirstDecisionOperationsForTest },
   { requestContextMiddleware },
   databaseModule,
   repositories,
@@ -86,6 +99,8 @@ const [
   auditLogQueue,
   latencyDegradation,
   gatewayHotQuality,
+  accountCircuit,
+  cutoverReservations,
   accountTestService
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -99,6 +114,8 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
   import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
+  import('../../modules/gateway/runtime/account-circuit.service.js'),
+  import('../../modules/gateway/runtime/speed-first-cutover-reservation.service.js'),
   import('../../modules/accounts/account-test.service.js')
 ])
 
@@ -110,7 +127,10 @@ const accountPhases = new Map<MockAccountKey, MockPhase>([
   ['sk-cost-primary', 'fast'],
   ['sk-cost-secondary', 'fast'],
   ['sk-priority-super', 'fast'],
-  ['sk-priority-normal', 'fast']
+  ['sk-priority-normal', 'fast'],
+  ['sk-stale-a', 'fast'],
+  ['sk-stale-b', 'fast'],
+  ['sk-stale-c', 'fast']
 ])
 
 const app = express()
@@ -136,14 +156,13 @@ try {
     const speedScenario = createSpeedFirstScenario(upstreamBaseUrl)
     const costScenario = createCostFirstScenario(upstreamBaseUrl)
     const priorityScenario = createPriorityTierScenario(upstreamBaseUrl)
+    const staleCutoverScenario = createStaleCutoverScenario(upstreamBaseUrl)
 
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
-    // The previous scenario intentionally creates valid hot-quality observations;
-    // this latency-degradation scenario owns a fresh independent observation window.
     gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
     await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
     await assertCostFirstRouteUnaffected(baseUrl, costScenario)
@@ -152,16 +171,25 @@ try {
     await assertBulkFastTrafficAfterRecovery(baseUrl, speedScenario)
     await assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl, speedScenario)
     await assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(baseUrl, speedScenario)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+    await assertResponseHeaderDeadlineUsesReservedCutover(baseUrl, speedScenario)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+    await assertLocalDecisionFailuresKeepCurrentUpstream(baseUrl, speedScenario)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+    await assertAlreadyAttemptedCandidateIsNotReserved(baseUrl, staleCutoverScenario)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
     await assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl, speedScenario)
     await assertAllDegradedBypassKeepsOriginalOrder(baseUrl, speedScenario)
     await assertStreamSlowFirstByteRetriesBeforeDownstreamOutput(baseUrl, speedScenario)
 
-    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、跨账户偏好覆盖、替补亲和回归、批量混合请求、降级后置、成本优先隔离、后台探针恢复、已降级候选不切换、全部降级旁路和流式首字确认切号均生效')
+    console.log('普通路由速度优先 Mock AI 回归通过：偶发慢后快样本清理、Chat/Responses 首字慢延迟切号、跨账户偏好覆盖、替补亲和回归、批量混合请求、降级后置、成本优先隔离、后台探针恢复、本地状态/样本/并发预占异常 fail-open、请求内旧候选不再预占、已降级候选不切换、全部降级旁路和流式首字确认切号均生效')
   } finally {
     await closeServer(appServer)
     await closeServer(upstreamServer)
   }
 } finally {
+  setNormalRouteSpeedFirstDecisionOperationsForTest(undefined)
+  cutoverReservations.setSpeedFirstCutoverSlotAcquirerForTest(undefined)
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
@@ -440,6 +468,10 @@ async function assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(ba
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
   setAccountPhase('sk-speed-primary', 'slow_first_byte')
   setAccountPhase('sk-speed-secondary', 'fast')
+  const primaryAccount = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+    .find((account) => account.id === scenario.primaryAccountId)
+  assert(primaryAccount, 'Responses 首字截止测试需要找到主账户 runtime 快照')
+  const primaryCircuitScope = accountCircuit.gatewayAccountProtocolModelScope(primaryAccount, 'text', model)
 
   for (let attempt = 1; attempt <= speedFirstConfig.slowTriggerCount; attempt += 1) {
     const hitStart = upstreamHits.length
@@ -456,6 +488,11 @@ async function assertResponsesSlowFirstByteUsesObservationAndConfirmedCutover(ba
       assert.match(response.text, /mock ai responses sk-speed-secondary/, 'Responses 确认退化后应隐藏切到副号返回')
       assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/responses'), 1, 'Responses 确认退化后应切到副号')
     }
+    assert.equal(
+      (await accountCircuit.getGatewayAccountCircuitStore().get(primaryCircuitScope)).phase,
+      'CLOSED',
+      `Responses 第 ${attempt} 次优化性首字截止不得污染账户传输熔断`
+    )
   }
 
   const bulkHitStart = upstreamHits.length
@@ -484,6 +521,32 @@ async function assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl:
   await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.secondaryAccountId }, scope, speedFirstRuntimeConfig)
   await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.secondaryAccountId }, scope, speedFirstRuntimeConfig)
   await latencyDegradation.recordNormalRouteFirstByteSlowAsync({ id: scenario.primaryAccountId }, scope, speedFirstRuntimeConfig)
+  assert.equal(
+    await latencyDegradation.isNormalRouteAccountLatencyDegradedAsync({ id: scenario.secondaryAccountId }, scope),
+    true,
+    '已降级候选阻断切号测试必须先确认副号状态已持久化'
+  )
+  assert.equal(
+    await latencyDegradation.isNormalRouteAccountLatencyDegradedAsync({ id: scenario.primaryAccountId }, scope),
+    false,
+    '当前主号在本场景只有一次慢样本，不得继承前序场景的降级状态'
+  )
+  const runtimeAccounts = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+  const directOrder = await latencyDegradation.orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
+    runtimeAccounts,
+    scope,
+    speedFirstRuntimeConfig
+  )
+  assert.deepEqual(
+    directOrder.accounts.map((account) => account.id),
+    [scenario.primaryAccountId, scenario.secondaryAccountId],
+    '请求前生产延迟排序必须把已降级副号稳定放在主号之后'
+  )
+  const suppression = await accountSideEffects.filterGatewayAccountRuntimeSuppressionsAsync(runtimeAccounts)
+  assert(
+    suppression.accounts.some((account) => account.id === scenario.primaryAccountId),
+    `优化性首字截止不得把主号写入共享抑制；suppressed=${JSON.stringify(suppression.suppressedAccountIds)}`
+  )
 
   setAccountPhase('sk-speed-primary', 'slow_first_byte')
   setAccountPhase('sk-speed-secondary', 'fast')
@@ -491,9 +554,13 @@ async function assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl:
   const startedAt = Date.now()
   const response = await postChat(baseUrl, scenario.apiKey, 'degraded remaining candidate should not receive speed cutover', false)
   assert.equal(response.status, 200, `剩余候选已降级时应继续等待当前主号成功，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /late mock ai body/, '剩余候选已降级时不应切到已降级副号，应返回当前主号慢响应')
-  assert(Date.now() - startedAt >= firstByteDeadlineMs - 2_500, '已降级候选阻断切号应等待首字阈值确认后继续当前响应')
   const hits = upstreamHits.slice(hitStart)
+  assert.match(
+    response.text,
+    /late mock ai body/,
+    `剩余候选已降级时不应切到已降级副号，应返回当前主号慢响应；hits=${JSON.stringify(hits)}`
+  )
+  assert(Date.now() - startedAt >= firstByteDeadlineMs - 2_500, '已降级候选阻断切号应等待首字阈值确认后继续当前响应')
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, '已降级候选阻断切号请求应先命中主号')
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '已降级副号不应作为当前请求速度切换目标')
   const candidates = await listSpeedProbeCandidates(scenario)
@@ -503,6 +570,218 @@ async function assertSpeedFirstDoesNotCutoverToAlreadyDegradedCandidate(baseUrl:
   await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
   setAccountPhase('sk-speed-primary', 'fast')
   setAccountPhase('sk-speed-secondary', 'fast')
+}
+
+async function assertResponseHeaderDeadlineUsesReservedCutover(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '响应头前速度切换测试需要有效普通路由 scope')
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync(
+    { id: scenario.primaryAccountId },
+    scope,
+    speedFirstRuntimeConfig
+  )
+  const primaryAccount = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+    .find((account) => account.id === scenario.primaryAccountId)
+  assert(primaryAccount, '响应头前速度切换测试需要找到主账户 runtime 快照')
+  const primaryCircuitScope = accountCircuit.gatewayAccountProtocolModelScope(primaryAccount, 'text', model)
+
+  setAccountPhase('sk-speed-primary', 'slow_response_headers')
+  setAccountPhase('sk-speed-secondary', 'fast')
+  const hitStart = upstreamHits.length
+  const response = await postChat(baseUrl, scenario.apiKey, 'response header deadline must consume reserved target', false)
+  assert.equal(response.status, 200, `响应头前首字截止应隐藏切到已预占副号，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /mock ai chat sk-speed-secondary/, '响应头前首字截止应返回副号完整响应')
+  const hits = upstreamHits.slice(hitStart)
+  assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, '响应头前切换应先命中主号一次')
+  assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 1, '预占槽必须由外层消费，不能反向阻塞副号')
+  assert.equal(
+    (await accountCircuit.getGatewayAccountCircuitStore().get(primaryCircuitScope)).phase,
+    'CLOSED',
+    '响应头前配置型首字截止不得推进账户电路'
+  )
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+}
+
+async function assertLocalDecisionFailuresKeepCurrentUpstream(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '本地速度决策异常测试需要有效普通路由 scope')
+  const primaryAccount = repositories.listOpenAIAccountsForGroup(scenario.groupId, access.systemAccountId, { requestedModel: model })
+    .find((account) => account.id === scenario.primaryAccountId)
+  assert(primaryAccount, '本地速度决策异常测试需要找到主账户 runtime 快照')
+  const primaryCircuitScope = accountCircuit.gatewayAccountProtocolModelScope(primaryAccount, 'text', model)
+
+  const failureCases = [
+    {
+      name: 'latency_state_read',
+      install: (onInvoked: () => void) => setNormalRouteSpeedFirstDecisionOperationsForTest({
+        isAccountLatencyDegradedAsync: async () => {
+          onInvoked()
+          throw new Error('回归注入：速度状态 Redis 读取失败')
+        }
+      }),
+      preseedSlowSample: false
+    },
+    {
+      name: 'slow_sample_write',
+      install: (onInvoked: () => void) => setNormalRouteSpeedFirstDecisionOperationsForTest({
+        recordFirstByteSlowAsync: async () => {
+          onInvoked()
+          throw new Error('回归注入：慢样本 Redis 写入失败')
+        }
+      }),
+      preseedSlowSample: false
+    },
+    {
+      name: 'cutover_slot_reservation',
+      install: (onInvoked: () => void) => setNormalRouteSpeedFirstDecisionOperationsForTest({
+        reserveCutoverTarget: async () => {
+          onInvoked()
+          throw new Error('回归注入：并发预占状态异常')
+        }
+      }),
+      preseedSlowSample: true
+    }
+  ] as const
+
+  for (const failureCase of failureCases) {
+    await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+    accountCircuit.resetGatewayAccountCircuitStoreForTest()
+    if (failureCase.preseedSlowSample) {
+      await latencyDegradation.recordNormalRouteFirstByteSlowAsync(
+        { id: scenario.primaryAccountId },
+        scope,
+        speedFirstRuntimeConfig
+      )
+    }
+    setAccountPhase('sk-speed-primary', 'slow_first_byte')
+    setAccountPhase('sk-speed-secondary', 'fast')
+    let invocationCount = 0
+    failureCase.install(() => {
+      invocationCount += 1
+    })
+
+    const hitStart = upstreamHits.length
+    const startedAt = Date.now()
+    let response: Awaited<ReturnType<typeof postChat>>
+    try {
+      response = await postChat(baseUrl, scenario.apiKey, `local speed decision failure ${failureCase.name}`, false)
+    } finally {
+      setNormalRouteSpeedFirstDecisionOperationsForTest(undefined)
+    }
+    const hits = upstreamHits.slice(hitStart)
+    assert(invocationCount > 0, `${failureCase.name} 故障注入必须真实命中本地决策操作`)
+    assert.equal(response.status, 200, `${failureCase.name} 不得中断健康上游，实际 HTTP ${response.status}: ${response.text}`)
+    assert.match(response.text, /late mock ai body/, `${failureCase.name} 应继续返回当前慢但健康的主号响应`)
+    assert(Date.now() - startedAt >= firstByteDeadlineMs - 2_500, `${failureCase.name} 应继续等待当前上游而非立即错误切换`)
+    assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, `${failureCase.name} 应只命中当前主号一次`)
+    assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, `${failureCase.name} 不得切到副号`)
+    assert.equal(
+      (await accountCircuit.getGatewayAccountCircuitStore().get(primaryCircuitScope)).phase,
+      'CLOSED',
+      `${failureCase.name} 属于本地优化异常，不得分类为上游 transport failure`
+    )
+  }
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync(
+    { id: scenario.primaryAccountId },
+    scope,
+    speedFirstRuntimeConfig
+  )
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+  let recoveryWriteInvocations = 0
+  setNormalRouteSpeedFirstDecisionOperationsForTest({
+    recordFirstByteSuccessAsync: async () => {
+      recoveryWriteInvocations += 1
+      throw new Error('回归注入：速度恢复样本 Redis 写入失败')
+    }
+  })
+  const recoveryHitStart = upstreamHits.length
+  let recoveryResponse: Awaited<ReturnType<typeof postChat>>
+  try {
+    recoveryResponse = await postChat(baseUrl, scenario.apiKey, 'local speed recovery observation failure', false)
+  } finally {
+    setNormalRouteSpeedFirstDecisionOperationsForTest(undefined)
+  }
+  const recoveryHits = upstreamHits.slice(recoveryHitStart)
+  assert.equal(recoveryWriteInvocations, 1, '恢复样本故障注入必须在已完成响应后命中一次')
+  assert.equal(recoveryResponse.status, 200, `恢复样本写入失败不得丢弃健康响应，实际 HTTP ${recoveryResponse.status}: ${recoveryResponse.text}`)
+  assert.match(recoveryResponse.text, /mock ai chat sk-speed-primary/, '恢复样本写入失败仍应返回主号完整响应')
+  assert.equal(countHits(recoveryHits, 'sk-speed-primary', '/v1/chat/completions'), 1, '恢复样本写入失败应只命中主号一次')
+  assert.equal(countHits(recoveryHits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复样本写入失败不得误切副号')
+  assert.equal(
+    (await accountCircuit.getGatewayAccountCircuitStore().get(primaryCircuitScope)).phase,
+    'CLOSED',
+    '恢复样本写入失败不得推进账户传输电路'
+  )
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-speed-primary', 'fast')
+  setAccountPhase('sk-speed-secondary', 'fast')
+}
+
+async function assertAlreadyAttemptedCandidateIsNotReserved(
+  baseUrl: string,
+  scenario: StaleCutoverScenario
+): Promise<void> {
+  const scope = latencyDegradation.normalRouteLatencyDegradationScope({
+    systemAccountId: access.systemAccountId,
+    routeStrategyId: scenario.routeStrategyId,
+    groupId: scenario.groupId
+  })
+  assert(scope, '请求内旧候选预占测试需要有效普通路由 scope')
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  await latencyDegradation.recordNormalRouteFirstByteSlowAsync(
+    { id: scenario.slowAccountId },
+    scope,
+    speedFirstRuntimeConfig
+  )
+  setAccountPhase('sk-stale-a', 'transport_reset')
+  setAccountPhase('sk-stale-b', 'slow_first_byte')
+  setAccountPhase('sk-stale-c', 'fast')
+
+  const reservationTargetIds: string[] = []
+  cutoverReservations.setSpeedFirstCutoverSlotAcquirerForTest(async (accountId, concurrencyLimit, options) => {
+    reservationTargetIds.push(accountId)
+    return tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, options)
+  })
+  const hitStart = upstreamHits.length
+  let response: Awaited<ReturnType<typeof postChat>>
+  try {
+    response = await postChat(baseUrl, scenario.apiKey, 'already attempted account must not receive cutover reservation', false)
+  } finally {
+    cutoverReservations.setSpeedFirstCutoverSlotAcquirerForTest(undefined)
+  }
+  const hits = upstreamHits.slice(hitStart)
+  assert.equal(response.status, 200, `A 传输失败、B 慢时应直接预占并切到 C，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /mock ai chat sk-stale-c/, '请求内旧候选被排除后应返回 C 的完整响应')
+  assert.equal(countHits(hits, 'sk-stale-a', '/v1/chat/completions'), 1, 'A 应只发生一次真实 transport 失败')
+  assert.equal(countHits(hits, 'sk-stale-b', '/v1/chat/completions'), 1, 'B 应只等待一次首字截止')
+  assert.equal(countHits(hits, 'sk-stale-c', '/v1/chat/completions'), 1, 'C 应只执行一次真实替补请求')
+  assert.deepEqual(
+    reservationTargetIds,
+    [scenario.healthyAccountId],
+    'reservation 前必须按 requestAttemptTracker 排除已尝试 A，只能为仍可派发的 C 预占'
+  )
+
+  await latencyDegradation.clearNormalRouteLatencyDegradationForRouteStrategyAsync(scenario.routeStrategyId)
+  setAccountPhase('sk-stale-a', 'fast')
+  setAccountPhase('sk-stale-b', 'fast')
+  setAccountPhase('sk-stale-c', 'fast')
 }
 
 async function assertAllDegradedBypassKeepsOriginalOrder(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
@@ -612,6 +891,57 @@ function createSpeedFirstScenario(upstreamBaseUrl: string): SpeedFirstScenario {
     primaryAccountName: primary.name,
     secondaryAccountId: secondary.id,
     secondaryAccountName: secondary.name
+  }
+}
+
+function createStaleCutoverScenario(upstreamBaseUrl: string): StaleCutoverScenario {
+  const group = repositories.createGroup({
+    name: '普通路由速度优先旧候选 Mock AI 分组',
+    providerCode: GPT_VENDOR_CODE,
+    enabled: true
+  }, access)
+  const createAccount = (name: string, apiKey: MockAccountKey) => {
+    const account = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name,
+      type: 'api_key',
+      credentials: {
+        api_key: apiKey,
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['responses_sse', 'chat_json', 'chat_sse']
+      },
+      groupId: group.id,
+      status: 'active',
+      schedulable: true,
+      supportedModels: [model],
+      healthCheckModel: model
+    }, access)
+    activateFixtureAccount(account.id)
+    return account
+  }
+  const first = createAccount('01-普通路由速度优先旧候选 A', 'sk-stale-a')
+  const slow = createAccount('02-普通路由速度优先当前慢候选 B', 'sk-stale-b')
+  const healthy = createAccount('03-普通路由速度优先健康替补 C', 'sk-stale-c')
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '普通路由速度优先旧候选 Mock AI 网关 Key',
+    groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      firstByteDeadlineMs,
+      speedFirstConfig
+    },
+    status: 'active'
+  }, access)
+  assert(apiKey.key, '速度优先旧候选 Mock AI 网关 Key 未返回明文密钥')
+  assert(apiKey.routeStrategyId, '速度优先旧候选 Mock AI 网关 Key 未绑定策略路由')
+  return {
+    apiKey: apiKey.key,
+    routeStrategyId: apiKey.routeStrategyId,
+    groupId: group.id,
+    firstAccountId: first.id,
+    slowAccountId: slow.id,
+    healthyAccountId: healthy.id
   }
 }
 
@@ -869,8 +1199,16 @@ function createMockOpenAIUpstream(): http.Server {
         sendJsonError(res, 404, 'mock ai path not found')
         return
       }
+      if (phase === 'transport_reset') {
+        res.destroy(new Error('回归模拟上游传输连接重置'))
+        return
+      }
       if (phase === 'slow_first_byte') {
         sendSlowFirstByteResponse(res, path === '/v1/responses' ? 'responses' : stream ? 'chat_stream' : 'chat_json')
+        return
+      }
+      if (phase === 'slow_response_headers') {
+        sendSlowResponseHeaders(res, path === '/v1/responses' ? 'responses' : stream ? 'chat_stream' : 'chat_json')
         return
       }
       if (path === '/v1/responses') {
@@ -901,6 +1239,20 @@ function sendSlowFirstByteResponse(res: http.ServerResponse, mode: 'chat_json' |
         res.end(JSON.stringify(chatJsonBody('late mock ai body')))
       }
     } catch {
+    }
+  }, slowBodyDelayMs)
+  timer.unref()
+}
+
+function sendSlowResponseHeaders(res: http.ServerResponse, mode: 'chat_json' | 'chat_stream' | 'responses'): void {
+  const timer = setTimeout(() => {
+    if (res.destroyed || res.writableEnded) return
+    if (mode === 'responses') {
+      sendResponsesCompleted(res, 'late response headers')
+    } else if (mode === 'chat_stream') {
+      sendChatCompletionSse(res, 'late response headers')
+    } else {
+      sendChatCompletionJson(res, 'late response headers')
     }
   }, slowBodyDelayMs)
   timer.unref()

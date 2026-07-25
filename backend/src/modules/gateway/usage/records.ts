@@ -158,17 +158,13 @@ export async function recordFailedUpstreamAttempt(
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
     ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
   const failureObservation = interpretUpstreamSemantics
-    ? classifyGatewayUpstreamFailure({
-        phase: input.failureAttribution === 'client_lifecycle'
-          ? 'client_lifecycle'
-          : typeof input.statusCode === 'number'
-            ? 'upstream_response'
-            : 'upstream_request',
-        statusCode: input.statusCode,
-        errorCode,
-        errorType,
-        hasAlternativeApiKeys: Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
-      })
+      ? classifyGatewayUpstreamFailure({
+          phase: input.failureAttribution === 'client_lifecycle'
+            ? 'client_lifecycle'
+            : typeof input.statusCode === 'number'
+              ? 'upstream_response'
+              : 'upstream_request'
+        })
     : {}
 
   logGatewayAttemptFailure(usageContext, {
@@ -241,6 +237,7 @@ export async function recordCompletedUpstreamAttempt(
     endpoint: string
     statusCode?: number
     success: boolean
+    protocolValidatedSuccess?: boolean
     stream: boolean
     firstTokenMs?: number
     startedAt: number
@@ -257,8 +254,11 @@ export async function recordCompletedUpstreamAttempt(
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): Promise<void> {
-  if (input.success) {
-    recordGatewayAccountApiKeySuccess(input.account, 'upstream_attempt_completed')
+  if (input.success && input.protocolValidatedSuccess === true) {
+    recordGatewayAccountApiKeySuccess(input.account, {
+      source: 'upstream_attempt_completed',
+      trafficSource: input.trafficSource
+    })
   }
   const model = requestModel(req)
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId

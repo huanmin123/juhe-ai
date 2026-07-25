@@ -283,6 +283,7 @@ local function empty_bucket()
     minuteStartedAtMs = current_minute * 60000,
     attempts = 0,
     completedResponses = 0,
+    upstreamResponseFailures = 0,
     localTransportFailures = 0,
     timeouts = 0,
     readInterruptions = 0,
@@ -353,6 +354,8 @@ local function apply_terminal(bucket)
   if outcome == 'completed_response' then
     bucket['completedResponses'] = increment(bucket['completedResponses'])
     bucket['lastCompletedAtMs'] = math.max(tonumber(bucket['lastCompletedAtMs'] or 0), now_ms)
+  elseif outcome == 'upstream_response_failure' then
+    bucket['upstreamResponseFailures'] = increment(bucket['upstreamResponseFailures'])
   elseif outcome == 'explicit_policy_failure' then
     bucket['explicitPolicyFailures'] = increment(bucket['explicitPolicyFailures'])
     bucket['lastFailureAtMs'] = math.max(tonumber(bucket['lastFailureAtMs'] or 0), now_ms)
@@ -376,7 +379,7 @@ local function apply_terminal(bucket)
   elseif outcome == 'client_cancellation' then
     bucket['clientCancellations'] = increment(bucket['clientCancellations'])
   end
-  if input['firstByteMs'] ~= nil and outcome ~= 'unknown' and outcome ~= 'client_cancellation' then
+  if input['firstByteMs'] ~= nil and outcome ~= 'upstream_response_failure' and outcome ~= 'unknown' and outcome ~= 'client_cancellation' then
     local sample = tonumber(input['firstByteMs'])
     bucket['firstByteSampleCount'] = increment(bucket['firstByteSampleCount'])
     bucket['firstByteSumMs'] = add(bucket['firstByteSumMs'], sample)
@@ -546,7 +549,10 @@ function parseRedisHotQualityEntry(value: string): RedisHotQualityEntry {
   return {
     scopeKey: parsed.scopeKey,
     scope: normalizeHotQualityScope(parsed.scope),
-    buckets: parsed.buckets,
+    buckets: Object.fromEntries(Object.entries(parsed.buckets).map(([key, bucket]) => [
+      key,
+      { ...bucket, upstreamResponseFailures: bucket.upstreamResponseFailures ?? 0 }
+    ])),
     expiresAtMs: parsed.expiresAtMs
   }
 }
@@ -594,7 +600,7 @@ function positiveInteger(value: number, name: string): number {
 }
 
 function assertOutcomeClass(value: HotQualityTerminalOutcomeClass): void {
-  if (!['completed_response', 'explicit_policy_failure', 'transport_failure', 'timeout', 'read_interruption', 'incomplete_response', 'unknown', 'client_cancellation'].includes(value)) {
+  if (!['completed_response', 'upstream_response_failure', 'explicit_policy_failure', 'transport_failure', 'timeout', 'read_interruption', 'incomplete_response', 'unknown', 'client_cancellation'].includes(value)) {
     throw new Error('热质量 outcomeClass 非法')
   }
 }
@@ -606,7 +612,7 @@ function assertFailureScope(value: HotQualityFailureScope): void {
 }
 
 function assertTerminalSource(value: HotQualityTerminalSource): void {
-  if (!['gateway_transport', 'explicit_policy', 'request_lifecycle'].includes(value)) {
+  if (!['gateway_transport', 'upstream_response', 'explicit_policy', 'request_lifecycle'].includes(value)) {
     throw new Error('热质量 terminal source 非法')
   }
 }

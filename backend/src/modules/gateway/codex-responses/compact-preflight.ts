@@ -122,10 +122,15 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       onFirstByte: upstreamResult.markFirstOutput
     })
     upstreamResult.hotQualityAttempt.markFirstByte(readResult.firstByteMs)
+    const opaqueUpstreamResponse = !upstreamResult.response.ok && !readResult.truncated
     await upstreamResult.hotQualityAttempt.recordTerminal({
-      outcomeClass: readResult.truncated ? 'incomplete_response' : 'completed_response',
+      outcomeClass: readResult.truncated
+        ? 'incomplete_response'
+        : opaqueUpstreamResponse
+          ? 'upstream_response_failure'
+          : 'completed_response',
       failureScope: readResult.truncated ? 'protocol_model' : 'none',
-      source: 'gateway_transport',
+      source: opaqueUpstreamResponse ? 'upstream_response' : 'gateway_transport',
       firstByteMs: readResult.firstByteMs
     })
     const summary = extractChatCompletionSummary(readResult.bodyText)

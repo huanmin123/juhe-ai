@@ -27,6 +27,7 @@ export interface AccountApiKeyRuntimeSelectionState {
   keyFingerprint: string
   status: AccountApiKeyRuntimeStatus
   keyIndex?: number
+  transientGeneration?: string
   cooldownUntil?: string
   nextProbeAt?: string
 }
@@ -48,6 +49,7 @@ export function selectAccountRuntimeApiKey(input: {
   credentials: Record<string, unknown>
   runtimeStates?: AccountApiKeyRuntimeSelectionState[]
   excludeFingerprints?: Iterable<string>
+  continueAfterFingerprint?: string
 }): string | undefined {
   return selectAccountRuntimeApiKeyEntry(input)?.key
 }
@@ -57,23 +59,26 @@ export function selectAccountRuntimeApiKeyEntry(input: {
   credentials: Record<string, unknown>
   runtimeStates?: AccountApiKeyRuntimeSelectionState[]
   excludeFingerprints?: Iterable<string>
+  continueAfterFingerprint?: string
 }): AccountApiKeyEntry | undefined {
   const entries = accountApiKeyEntries(input.credentials)
   if (!entries.length) return undefined
   const excludedFingerprints = new Set([...(input.excludeFingerprints ?? [])].map((value) => value.trim()).filter(Boolean))
+  const availableEntries = accountApiKeyEntriesAvailableForDispatch(entries, input.runtimeStates)
   const candidateEntries = excludedFingerprints.size
-    ? entries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
-    : entries
+    ? availableEntries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
+    : availableEntries
   if (!candidateEntries.length) return undefined
-  if (entries.length === 1) return candidateEntries[0]
-  const availableEntries = accountApiKeyEntriesAvailableForDispatch(candidateEntries, input.runtimeStates)
-  if (!availableEntries.length) return undefined
-  if (availableEntries.length === 1) return availableEntries[0]
+  if (candidateEntries.length === 1) return candidateEntries[0]
+  const continuationFingerprint = input.continueAfterFingerprint?.trim()
+  if (continuationFingerprint) {
+    return selectNextApiKeyAfterFingerprint(entries, candidateEntries, continuationFingerprint)
+  }
   const strategy = accountApiKeyStrategy(input.credentials)
   assertSyncAccountApiKeyRotationAllowed(strategy)
   return strategy === 'weighted_round_robin'
-    ? selectWeightedApiKey(input.accountId, availableEntries)
-    : selectRoundRobinApiKey(input.accountId, availableEntries)
+    ? selectWeightedApiKey(input.accountId, candidateEntries)
+    : selectRoundRobinApiKey(input.accountId, candidateEntries)
 }
 
 export async function selectAccountRuntimeApiKeyEntryAsync(input: {
@@ -81,25 +86,28 @@ export async function selectAccountRuntimeApiKeyEntryAsync(input: {
   credentials: Record<string, unknown>
   runtimeStates?: AccountApiKeyRuntimeSelectionState[]
   excludeFingerprints?: Iterable<string>
+  continueAfterFingerprint?: string
 }): Promise<AccountApiKeyEntry | undefined> {
   const entries = accountApiKeyEntries(input.credentials)
   if (!entries.length) return undefined
   const excludedFingerprints = new Set([...(input.excludeFingerprints ?? [])].map((value) => value.trim()).filter(Boolean))
+  const availableEntries = accountApiKeyEntriesAvailableForDispatch(entries, input.runtimeStates)
   const candidateEntries = excludedFingerprints.size
-    ? entries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
-    : entries
+    ? availableEntries.filter((entry) => !excludedFingerprints.has(entry.fingerprint))
+    : availableEntries
   if (!candidateEntries.length) return undefined
-  if (entries.length === 1) return candidateEntries[0]
-  const availableEntries = accountApiKeyEntriesAvailableForDispatch(candidateEntries, input.runtimeStates)
-  if (!availableEntries.length) return undefined
-  if (availableEntries.length === 1) return availableEntries[0]
+  if (candidateEntries.length === 1) return candidateEntries[0]
+  const continuationFingerprint = input.continueAfterFingerprint?.trim()
+  if (continuationFingerprint) {
+    return selectNextApiKeyAfterFingerprint(entries, candidateEntries, continuationFingerprint)
+  }
   if (runtimeConfig.runtimeStateDriver !== 'redis') {
     return selectAccountRuntimeApiKeyEntry(input)
   }
   const strategy = accountApiKeyStrategy(input.credentials)
   return strategy === 'weighted_round_robin'
-    ? selectWeightedApiKeyWithRedisCounter(input.accountId, availableEntries)
-    : selectRoundRobinApiKeyWithRedisCounter(input.accountId, availableEntries)
+    ? selectWeightedApiKeyWithRedisCounter(input.accountId, candidateEntries)
+    : selectRoundRobinApiKeyWithRedisCounter(input.accountId, candidateEntries)
 }
 
 export function accountApiKeyEntries(credentials: Record<string, unknown>): AccountApiKeyEntry[] {
@@ -235,6 +243,21 @@ function accountApiKeyEntriesAvailableForDispatch(
   )
   if (!unavailableFingerprints.size) return entries
   return entries.filter((entry) => !unavailableFingerprints.has(entry.fingerprint))
+}
+
+function selectNextApiKeyAfterFingerprint(
+  poolEntries: AccountApiKeyEntry[],
+  candidateEntries: AccountApiKeyEntry[],
+  previousFingerprint: string
+): AccountApiKeyEntry {
+  const previousIndex = poolEntries.findIndex((entry) => entry.fingerprint === previousFingerprint)
+  if (previousIndex < 0) return candidateEntries[0]
+  const candidateFingerprints = new Set(candidateEntries.map((entry) => entry.fingerprint))
+  for (let offset = 1; offset <= poolEntries.length; offset += 1) {
+    const entry = poolEntries[(previousIndex + offset) % poolEntries.length]
+    if (entry && candidateFingerprints.has(entry.fingerprint)) return entry
+  }
+  return candidateEntries[0]
 }
 
 async function nextRedisAccountApiKeyRotationIndex(

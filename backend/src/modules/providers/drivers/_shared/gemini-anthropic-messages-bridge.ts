@@ -646,7 +646,7 @@ function processAnthropicSseEventAsGemini(state: AnthropicGeminiStreamState, raw
   }
   const data = event.data
   if (!data) return []
-  if (event.eventName === 'error' || event.eventType === 'error' || data.type === 'error' || objectValue(data.error)) {
+  if (event.eventName === 'error' || event.eventType === 'error' || data.type === 'error') {
     const error = objectValue(data.error) ?? data
     return failGeminiStream(
       state,

@@ -160,15 +160,30 @@ assert.match(functionBody(accountConcurrencySource, 'loadAccountCurrentConcurren
 assert.match(functionBody(accountConcurrencySource, 'releaseRedisAccountConcurrencyWithRetry'), /redis_account_concurrency_release_failed/, 'Redis 账号并发释放失败不能吞错，必须重试并记录错误')
 
 const proxyHealthSource = source('modules/gateway/runtime/proxy-health.service.ts')
+const failureDispatchSource = source('modules/gateway/response/failure-dispatch.ts')
 assert.match(proxyHealthSource, /createRuntimeStateStore\('gateway-upstream-bucket-health'\)/, 'Redis runtime state 下上游桶健康必须写共享运行态')
 assert.doesNotMatch(proxyHealthSource, /createAppCache/, '上游桶健康不能依赖 createAppCache 作为 performance 事实源')
 assert.doesNotMatch(proxyHealthSource, /withRedisBucketEntryLock|upstreamBucketFailureLock|acquireLock|releaseLock|bucket-lock|运行态锁等待超时/, 'Redis 上游桶健康不能在请求路径引入分布式锁等待')
 assert.match(functionBody(proxyHealthSource, 'shouldUseRedisUpstreamBucketHealthState'), /runtimeConfig\.runtimeStateDriver === 'redis'/, 'Redis 上游桶健康必须只在 Redis runtime state driver 下启用共享状态')
-assert.match(functionBody(proxyHealthSource, 'orderGatewayAccountsByUpstreamBucketHealthAsync'), /shouldUseRedisUpstreamBucketHealthState\(\)[\s\S]*loadRedisBucketEntriesForAccounts[\s\S]*Promise\.all\(pendingWrites\)/, 'Redis 上游桶排序必须读取共享状态并等待半开探测写入')
-assert.match(proxyHealthSource, /async function recordGatewayUpstreamBucketFailureKeyAsync[\s\S]*getRedisBucketFailureEntry[\s\S]*setRedisBucketFailureEntry/, 'Redis 上游桶失败记录必须使用无锁共享状态写入')
+assert.match(functionBody(proxyHealthSource, 'orderGatewayAccountsByUpstreamBucketHealthAsync'), /shouldUseRedisUpstreamBucketHealthState\(\)[\s\S]*loadRedisBucketEntriesForAccounts[\s\S]*await claimRedisHalfOpenLeasesForAccounts[\s\S]*orderGatewayAccountsByUpstreamBucketHealthWithEntries/, 'Redis 上游桶排序必须读取共享状态并等待原子半开租约写入')
+assert.match(proxyHealthSource, /async function recordGatewayUpstreamBucketFailureKeyAsync[\s\S]*mutateRedisBucketFailureEntry[\s\S]*compareSetJson/, 'Redis 上游桶失败样本必须通过 CAS 原子合并')
+assert.match(proxyHealthSource, /claimRedisHalfOpenLeasesForAccounts[\s\S]*ensureRedisHalfOpenProbe[\s\S]*compareSetJson/, 'Redis 上游桶半开探测必须通过 CAS 原子抢占单账号租约')
+assert.match(proxyHealthSource, /async function recordGatewayUpstreamBucketSuccessAsync[\s\S]*compareDeleteJson/, 'Redis 上游桶成功恢复必须 compare-delete，禁止旧成功删除较新失败')
+assert.doesNotMatch(proxyHealthSource, /upstreamBucketFailureStateStore\.delete|setRedisBucketFailureEntry/, 'Redis 上游桶状态禁止回退无条件覆盖或删除')
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderGatewayAccountsByUpstreamBucketHealthAsync/, '调度准备必须等待 Redis 上游桶健康排序')
-assert.match(source('modules/gateway/response/failure-dispatch.ts'), /await recordGatewayUpstreamBucketFailureAsync/, '上游失败处理必须等待 Redis 上游桶失败记录')
+assert.doesNotMatch(
+  failureDispatchSource,
+  /\b(?:recordGateway(?:UpstreamBucket|Proxy)Failure(?:Async)?|rememberClientIpAccountPendingFailure|recordGatewayAccountApiKey(?:Local)?Failure|recordGatewayAccountFailureForPrecheck|suppressGatewayAccountLocally)\b/,
+  '未知 HTTP、正文和普通 foreground transport 不得从 failure dispatch 写共享 proxy/IP、账户或 Key 避让状态'
+)
 assert.match(source('modules/gateway/response/finalization.ts'), /await recordGatewayUpstreamBucketSuccessAsync/, '上游成功最终化必须等待 Redis 上游桶恢复清理')
+const opaqueFailureDispatchBody = functionBody(failureDispatchSource, 'handleOpaqueFailedUpstreamResponse')
+assert.match(opaqueFailureDispatchBody, /const explicitPolicyDecision =[\s\S]*decideAccountErrorPolicy[\s\S]*if \(explicitPolicyDecision\) \{[\s\S]*applyAccountErrorHandlingWithCacheInvalidation/, '完整未知 HTTP 只有精确命中的用户显式策略可以触发账户状态副作用')
+
+const upstreamDispatchSource = source('modules/gateway/dispatch/upstream-dispatch.ts')
+const upstreamDispatchBody = functionBody(upstreamDispatchSource, 'fetchFirstAvailableUpstream')
+assert.match(upstreamDispatchBody, /const explicitPolicyFailure =[\s\S]*failureKind === 'explicit_policy'[\s\S]*outcomeClass: explicitPolicyFailure \? 'explicit_policy_failure' : 'upstream_response_failure',[\s\S]*failureScope: explicitPolicyFailure \? 'account' : 'none'/, '未知状态码和正文必须以 failureScope none 结束共享质量 attempt，只有用户显式策略可以记账户级质量失败')
+assert.match(upstreamDispatchBody, /const confirmedTransportQuality = accountCircuitAttempt\?\.isConfirmation === true[\s\S]*&& !localRequestFailure[\s\S]*&& !neutralFirstByteDeadline[\s\S]*getHotQualityAttempt\(\)\.recordTerminal\(confirmedTransportQuality[\s\S]*\? hotQualityTerminalForDispatchError\(error, signal\)[\s\S]*: \{ outcomeClass: 'unknown', failureScope: 'none', source: 'request_lifecycle' \}/, '普通 foreground transport 必须保持共享质量中性，只有独立 circuit confirmation 可以记录传输质量失败')
 
 const clientIpAccountAvoidanceSource = source('modules/gateway/runtime/client-ip-account-avoidance.service.ts')
 assert.match(clientIpAccountAvoidanceSource, /createRuntimeStateStore\('gateway-client-ip-account-avoidance'\)/, 'Redis runtime state 下 Client-IP 账号回避必须写共享运行态')
@@ -177,8 +192,7 @@ assert.doesNotMatch(clientIpAccountAvoidanceSource, /withRedisClientIpAccountAvo
 assert.match(functionBody(clientIpAccountAvoidanceSource, 'orderOpenAIAccountsByClientIpAccountAvoidanceAsync'), /shouldUseRedisClientIpAccountAvoidanceState\(\)[\s\S]*getRedisClientIpAccountAvoidanceEntry/, 'Redis Client-IP 账号回避排序必须读取共享状态')
 assert.match(functionBody(clientIpAccountAvoidanceSource, 'confirmTrackerPendingFailuresAsync'), /getRedisClientIpAccountAvoidanceEntry[\s\S]*setRedisClientIpAccountAvoidanceEntry/, 'Redis Client-IP 账号回避确认必须无锁写入共享状态')
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderOpenAIAccountsByClientIpAccountAvoidanceAsync/, '调度准备必须等待 Redis Client-IP 账号回避排序')
-assert.match(source('modules/gateway/response/finalization.ts'), /await confirmClientIpAccountAvoidanceAfterSuccessAsync/, '成功最终化必须等待 Redis Client-IP 账号回避更新')
-assert.match(source('modules/gateway/routes.ts'), /await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure/, '最终失败响应前必须等待 Redis Client-IP 账号回避确认')
+assert.doesNotMatch(source('modules/gateway/response/finalization.ts'), /confirmClientIpAccountAvoidanceAfterSuccessAsync/, '普通成功最终化不得把同请求中的未知失败提升为跨请求 Client-IP 账号回避')
 
 const clientIpErrorCircuitSource = source('modules/gateway/runtime/client-ip-error-circuit.service.ts')
 assert.match(clientIpErrorCircuitSource, /createRuntimeStateStore\('gateway-client-ip-error-circuit'\)/, 'Redis runtime state 下 Client-IP 错误熔断必须写共享运行态')
@@ -411,11 +425,24 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(localSuppressionSource, 'canUseProcessLocalAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*localAccountSuppressions\.clear\(\)[\s\S]*localAccountDegradations\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号本机 suppression/degradation 必须禁用并清空')
 
   const accountApiKeyGuardSource = source('modules/gateway/runtime/account-api-key-failure-guard.service.ts')
-  assert.match(functionBody(accountApiKeyGuardSource, 'canUseProcessLocalApiKeyRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*localApiKeySuppressions\.clear\(\)[\s\S]*apiKeySuccessObservations\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账户内 API Key 本机失败状态必须禁用并清空')
+  assert.match(functionBody(accountApiKeyGuardSource, 'canUseProcessLocalApiKeyRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*localApiKeySuppressions\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账户内 API Key 本机失败状态必须禁用并清空')
+  assert.doesNotMatch(accountApiKeyGuardSource, /ApiKeySuccessObservation|apiKeySuccessObservations|rememberApiKeySuccessObservation/, '账户内 Key 成功热路径不得维护无消费者 Map 并逐请求全表扫描')
 
   const accountApiKeyEffectsSource = source('modules/gateway/runtime/account-api-key-effects.service.ts')
-  assert.match(functionBody(accountApiKeyEffectsSource, 'recordGatewayAccountApiKeySuccess'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*shouldSkipRecentAccountApiKeySuccessWrite[\s\S]*runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*rememberAccountApiKeySuccessWrite[\s\S]*recentAccountApiKeySuccessWrites\.clear\(\)/, 'Redis runtime state 下账户内 API Key 成功写入不能使用本机成功节流 Map，并必须清空旧节流状态')
-  assert.doesNotMatch(functionBody(accountApiKeyEffectsSource, 'recordGatewayAccountApiKeyLocalFailure'), /recordGatewayAccountApiKeyFailure/, 'Redis runtime state 下账户内 API Key local failure 禁止直接升级为全局持久失败')
+  assert.doesNotMatch(accountApiKeyEffectsSource, /accountApiKeySuccessWriteThrottleMs|recentAccountApiKeySuccessWrites|shouldSkipRecentAccountApiKeySuccessWrite/, '账户内 API Key 成功不得被无状态版本证明的本机节流跳过，避免旧 active 快照漏掉恢复写入')
+  assert.match(functionBody(accountApiKeyEffectsSource, 'recordGatewayAccountApiKeySuccess'), /authorizeAccountApiKeyPersistentMutationForTrafficSource[\s\S]*clearGatewayAccountApiKeyTransientFailure\(account\)[\s\S]*!authorization\.allowed[\s\S]*coalesceGatewayAccountApiKeySuccessWrite\([\s\S]*input\.source,[\s\S]*input\.trafficSource,[\s\S]*input\.mutationContext,[\s\S]*observedAt/, 'Redis transient success 必须写 generation tombstone；只有携带授权 trafficSource/context 的持久成功 observation 才能进入尾随写')
+  assert.match(accountApiKeyEffectsSource, /coalesceGatewayAccountApiKeySuccessWrite[\s\S]*entry\.observedAt === observedAt[\s\S]*scheduleAccountApiKeySuccessWrite/, '持久成功风暴必须保留最新 observedAt 做尾随写，不能无界逐请求写或直接丢弃恢复 observation')
+  assert.doesNotMatch(accountApiKeyEffectsSource, /recordGatewayAccountApiKeyLocalFailure/, '未知 HTTP 失败的无证据 Key local failure 写入口必须删除，避免跨请求共享误伤')
+  const accountApiKeyMutationAuthoritySource = source('modules/gateway/runtime/account-api-key-mutation-authority.ts')
+  const accountApiKeyMutationAuthorizationBody = functionBody(accountApiKeyMutationAuthoritySource, 'authorizeAccountApiKeyPersistentMutation')
+  assert.match(accountApiKeyMutationAuthorizationBody, /context\.authority === 'explicit_user_policy'[\s\S]*mutation === 'failure'[\s\S]*context\.authority !== 'automatic_probe'[\s\S]*context\.probeOutcome === 'upstream_failure'[\s\S]*context\.probeOutcome === 'complete_success'/, '账户内 API Key 持久状态只允许用户显式失败策略或独立自动探针的确定结果授权')
+  assert.doesNotMatch(accountApiKeyMutationAuthorizationBody, /statusCode|errorCode|errorType|bodyText|errorMessage/, '账户内 API Key 持久变更授权不得解释不可信状态码、错误码、类型或正文')
+  const accountPreparationSource = source('modules/gateway/dispatch/account-preparation.ts')
+  assert.match(accountPreparationSource, /transientGeneration[\s\S]*selectedApiKeyTransientGeneration/, '账户内 Key 调度必须把 Redis tombstone generation 附着到本次上游 attempt，供成功/失败 mutation fencing')
+  const accountApiKeyUpstreamDispatchSource = source('modules/gateway/dispatch/upstream-dispatch.ts')
+  const confirmedApiKeyFailureBody = functionBody(accountApiKeyUpstreamDispatchSource, 'recordConfirmedSameAccountApiKeyFailures')
+  assert.match(confirmedApiKeyFailureBody, /accountRuntimeSourceId\(failure\.account\) !== successSourceAccountId[\s\S]*failure\.account\.selectedApiKeyFingerprint === successAccount\.selectedApiKeyFingerprint[\s\S]*recordGatewayAccountApiKeyFailure\(failure\.account,[\s\S]*source: 'same_account_api_key_failover_confirmed'/, '网关 Key 短避让只能由同账户不同 Key 的后续成功证据确认，不能由单次失败直接写入')
+  assert.equal((accountApiKeyUpstreamDispatchSource.match(/\brecordGatewayAccountApiKeyFailure\(/g) ?? []).length, 1, 'upstream dispatch 的 Key 失败写入口必须唯一且位于 sibling success 确认路径')
 
   const accountSideEffectsSource = source('modules/gateway/runtime/account-side-effects.service.ts')
   assert.doesNotMatch(accountSideEffectsSource, /gateway-account-recovery-probe-budget|distributedRecoveryProbeBudgetRuntimeStore|acquireDistributedRecoveryProbeBudget|createRuntimeStateStore\('gateway-account-recovery-probe-budget'\)|distributedRecoveryProbeStore\.acquireLock|distributedRecoveryProbeStore\.releaseLock|distributedRecoveryProbeLockTtlMs/, 'Redis 探针不能引入分布式锁或分布式全局/provider/proxy/baseUrl 预算锁，避免高并发恢复被锁残留或跨节点争用限制')

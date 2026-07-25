@@ -305,6 +305,9 @@ function applyTerminal(
       bucket.completedResponses = increment(bucket.completedResponses)
       bucket.lastCompletedAtMs = maximum(bucket.lastCompletedAtMs, now)
       break
+    case 'upstream_response_failure':
+      bucket.upstreamResponseFailures = increment(bucket.upstreamResponseFailures)
+      break
     case 'explicit_policy_failure':
       bucket.explicitPolicyFailures = increment(bucket.explicitPolicyFailures)
       bucket.lastFailureAtMs = maximum(bucket.lastFailureAtMs, now)
@@ -335,7 +338,12 @@ function applyTerminal(
       bucket.clientCancellations = increment(bucket.clientCancellations)
       break
   }
-  if (firstByteMs === undefined || outcomeClass === 'unknown' || outcomeClass === 'client_cancellation') return
+  if (
+    firstByteMs === undefined
+    || outcomeClass === 'upstream_response_failure'
+    || outcomeClass === 'unknown'
+    || outcomeClass === 'client_cancellation'
+  ) return
   const sample = normalizedFirstByteMs(firstByteMs)
   bucket.firstByteSampleCount = increment(bucket.firstByteSampleCount)
   bucket.firstByteSumMs = add(bucket.firstByteSumMs, sample)
@@ -356,6 +364,7 @@ function emptyCounters(): Omit<HotQualityBucketState, 'minuteStartedAtMs'> {
   return {
     attempts: 0,
     completedResponses: 0,
+    upstreamResponseFailures: 0,
     localTransportFailures: 0,
     timeouts: 0,
     readInterruptions: 0,
@@ -387,6 +396,7 @@ function sameTerminal(
 function assertOutcomeClass(value: HotQualityTerminalOutcomeClass): void {
   if (
     value !== 'completed_response'
+    && value !== 'upstream_response_failure'
     && value !== 'explicit_policy_failure'
     && value !== 'transport_failure'
     && value !== 'timeout'
@@ -408,7 +418,7 @@ function assertFailureScope(value: HotQualityFailureScope): void {
 }
 
 function assertTerminalSource(value: HotQualityTerminalSource): void {
-  if (value !== 'gateway_transport' && value !== 'explicit_policy' && value !== 'request_lifecycle') {
+  if (value !== 'gateway_transport' && value !== 'upstream_response' && value !== 'explicit_policy' && value !== 'request_lifecycle') {
     throw new Error('热质量 terminal source 非法')
   }
 }

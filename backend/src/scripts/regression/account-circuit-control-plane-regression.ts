@@ -9,6 +9,8 @@ import {
   claimAccountCircuitOutboxInClient,
   cleanupAccountCircuitControlPlaneInClient,
   compareAndSetAccountCircuitIncidentInClient,
+  getAccountCircuitIncidentByScopeKeyInClient,
+  listAccountCircuitIncidentsByRuntimeKeysInClient,
   listAccountCircuitIncidentsForRebuildInClient,
   listAccountCircuitProjectionGapsInClient,
   releaseAccountCircuitOutboxForReplayInClient
@@ -21,12 +23,16 @@ const client = createSqliteDatabaseClient(database)
 const accountId = 'account-circuit-control-plane-regression'
 const accountRuntimeKey = `${accountId}:sys_admin:group:grant`
 const circuitScopeKey = `7:account|${Buffer.byteLength(accountRuntimeKey, 'utf8')}:${accountRuntimeKey}`
+const confirmationEvidenceA = 'a'.repeat(64)
+const confirmationEvidenceB = 'b'.repeat(64)
+const maximumChildIncidentIds = Array.from({ length: 64 }, (_, index) => `child-${index + 1}`)
 
 insertSchemaFixture()
 insertAccount()
 
 try {
   assertCurrentSchema()
+  assertLegacySqliteSchemaUpgrade()
   assertPostgresSchemaParity()
 
   const firstRevision = await advanceAccountCircuitDispatchRevisionInClient(client, {
@@ -72,6 +78,19 @@ try {
   assert.equal(created.status, 'applied')
   assert.equal(created.incident?.ledgerRevision, 1)
   assert.equal(created.incident?.projectedLedgerRevision, 0)
+  assert.equal(created.incident?.confirmationFailuresRequired, 2)
+  assert.equal(created.incident?.consecutiveFailures, 1)
+  assert.deepEqual(created.incident?.childIncidentIds, maximumChildIncidentIds, 'ledger 必须支持配置允许的 64 个独立 protocol/model child scope')
+  assert.deepEqual(created.incident?.confirmationFailureEvidenceKeys, [confirmationEvidenceA, confirmationEvidenceB])
+
+  const suspectRebuild = await listAccountCircuitIncidentsForRebuildInClient(client, {
+    nowMs: 1_501,
+    limit: 10
+  })
+  assert.equal(suspectRebuild.items.length, 1)
+  assert.equal(suspectRebuild.items[0]?.confirmationFailuresRequired, 2)
+  assert.equal(suspectRebuild.items[0]?.consecutiveFailures, 1)
+  assert.deepEqual(suspectRebuild.items[0]?.confirmationFailureEvidenceKeys, [confirmationEvidenceA, confirmationEvidenceB])
 
   const idempotentCreate = await compareAndSetAccountCircuitIncidentInClient(client, incidentMutation({
     expectedLedgerRevision: null,
@@ -128,11 +147,28 @@ try {
     transitionId: 'incident-transition-3',
     generation: 1,
     dispatchRevision: 3,
-    retainedUntilMs: 20_000
+    retainedUntilMs: 20_000,
+    consecutiveFailures: 0,
+    confirmationFailureEvidenceKeys: []
   }))
   assert.equal(closed.status, 'applied')
   assert.equal(closed.incident?.ledgerRevision, 3)
   assert.equal(closed.incident?.retainedUntilMs, 20_000)
+
+  const delayedOlderGeneration = await compareAndSetAccountCircuitIncidentInClient(client, incidentMutation({
+    expectedLedgerRevision: 3,
+    state: 'RECOVERING',
+    transitionId: 'incident-delayed-older-generation',
+    generation: 0,
+    dispatchRevision: 3,
+    stateUpdatedAtMs: 1_600,
+    nextTransitionAtMs: 4_500,
+    consecutiveFailures: 0,
+    confirmationFailureEvidenceKeys: []
+  }))
+  assert.equal(delayedOlderGeneration.status, 'cas_conflict', '迟到旧 generation 即使带更新时间也不得覆盖 CLOSED')
+  assert.equal(delayedOlderGeneration.incident?.state, 'CLOSED')
+  assert.equal(delayedOlderGeneration.incident?.ledgerRevision, 3)
 
   const rebuild = await listAccountCircuitIncidentsForRebuildInClient(client, {
     nowMs: 10_000,
@@ -140,6 +176,41 @@ try {
   })
   assert.equal(rebuild.items.length, 1, '未过保留期的 CLOSED tombstone 必须参与重建')
   assert.equal(rebuild.items[0]?.state, 'CLOSED')
+  assert.deepEqual(
+    await listAccountCircuitIncidentsByRuntimeKeysInClient(client, [accountRuntimeKey]),
+    [],
+    '管理摘要默认不得返回 CLOSED tombstone'
+  )
+  assert.equal(
+    (await listAccountCircuitIncidentsByRuntimeKeysInClient(client, [accountRuntimeKey], {
+      includeRetainedClosed: true,
+      nowMs: 10_000
+    }))[0]?.state,
+    'CLOSED',
+    '按账户渐进 readiness 必须读取未过保留期的 CLOSED tombstone'
+  )
+  assert.deepEqual(
+    await listAccountCircuitIncidentsByRuntimeKeysInClient(client, [accountRuntimeKey], {
+      includeRetainedClosed: true,
+      nowMs: 20_001
+    }),
+    [],
+    '按账户渐进 readiness 不得加载已经过保留期的 CLOSED tombstone'
+  )
+  assert.equal(
+    (await cleanupAccountCircuitControlPlaneInClient(client, {
+      nowMs: 20_001,
+      outboxAcknowledgedBeforeMs: 20_001,
+      limit: 100
+    })).deletedIncidents,
+    0,
+    '已过期 CLOSED tombstone 在 outbox ACK 前仍必须保留'
+  )
+  assert.equal(
+    (await getAccountCircuitIncidentByScopeKeyInClient(client, circuitScopeKey))?.state,
+    'CLOSED',
+    'outbox 投影直查必须读取已过保留期但尚未 ACK 的 CLOSED tombstone'
+  )
 
   const gapsBeforeAck = await listAccountCircuitProjectionGapsInClient(client, {
     afterAccountId: '',
@@ -269,10 +340,12 @@ function incidentMutation(overrides: Record<string, unknown>): Parameters<typeof
     circuitScopeKey,
     scopeKind: 'account',
     incidentId: 'incident-1',
-    childIncidentIds: ['child-1', 'child-2'],
+    childIncidentIds: maximumChildIncidentIds,
     causedByTerminalOutcomeId: 'terminal-1',
     failureScope: 'account',
     consecutiveFailures: 1,
+    confirmationFailuresRequired: 2,
+    confirmationFailureEvidenceKeys: [confirmationEvidenceA, confirmationEvidenceB],
     backoffLevel: 0,
     recoveringSuccesses: 0,
     upstreamAttemptObserved: true,
@@ -348,13 +421,15 @@ function assertCurrentSchema(): void {
   assert.equal(accountColumns.find((column) => column.name === 'dispatch_revision')?.dflt_value, '1')
   assert.equal(accountColumns.find((column) => column.name === 'circuit_projection_revision')?.dflt_value, '0')
 
-  const incidentColumns = database.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name: string }>
+  const incidentColumns = database.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name: string; dflt_value: string | null }>
   const outboxColumns = database.prepare('PRAGMA table_info(account_circuit_outbox)').all() as Array<{ name: string }>
   assert.equal(incidentColumns.some((column) => /response|payload|body|message/i.test(column.name)), false, 'incident ledger 禁止保存响应内容')
   assert.equal(outboxColumns.some((column) => /response|payload|body|message/i.test(column.name)), false, 'outbox 禁止保存响应内容')
-  for (const required of ['incident_id', 'transition_id', 'dispatch_revision', 'ledger_revision', 'projected_ledger_revision', 'retained_until_ms']) {
+  for (const required of ['incident_id', 'transition_id', 'dispatch_revision', 'ledger_revision', 'projected_ledger_revision', 'retained_until_ms', 'confirmation_failures_required', 'confirmation_failure_evidence_keys_json']) {
     assert.equal(incidentColumns.some((column) => column.name === required), true, `incident ledger 缺少 ${required}`)
   }
+  assert.equal(incidentColumns.find((column) => column.name === 'confirmation_failures_required')?.dflt_value, '1', 'SQLite schema 默认 1 必须兼容升级前 active incident')
+  assert.equal(incidentColumns.find((column) => column.name === 'confirmation_failure_evidence_keys_json')?.dflt_value, "'[]'")
   for (const required of ['projection_key', 'dedupe_key', 'claim_token', 'claim_until_ms', 'acknowledged_at_ms']) {
     assert.equal(outboxColumns.some((column) => column.name === required), true, `outbox 缺少 ${required}`)
   }
@@ -367,6 +442,40 @@ function assertPostgresSchemaParity(): void {
   assert.ok(generatedIncident)
   assert.ok(generatedOutbox)
   assert.match(generatedIncident, /dispatch_revision bigint[\s\S]+ledger_revision bigint[\s\S]+retained_until_ms bigint/)
+  assert.match(generatedIncident, /confirmation_failures_required integer NOT NULL DEFAULT 1/)
+  assert.match(generatedIncident, /jsonb_typeof\(confirmation_failure_evidence_keys_json::jsonb\) = 'array'/)
+  assert.match(generatedIncident, /jsonb_array_length\(confirmation_failure_evidence_keys_json::jsonb\) <= confirmation_failures_required \+ 1/)
+  assert.doesNotMatch(generatedIncident, /\bjson_array_length\(/, 'PostgreSQL fresh schema 不得残留 SQLite JSON 函数')
   assert.match(generatedOutbox, /dispatch_revision bigint[\s\S]+claim_until_ms bigint[\s\S]+acknowledged_at_ms bigint/)
 
+}
+
+function assertLegacySqliteSchemaUpgrade(): void {
+  const legacyDatabase = new DatabaseSync(':memory:')
+  try {
+    applyBusinessSchema(legacyDatabase)
+    const oldColumnNames = (legacyDatabase.prepare('PRAGMA table_info(account_circuit_incidents)').all() as Array<{ name: string }>)
+      .map((column) => column.name)
+      .filter((name) => !['confirmation_failures_required', 'confirmation_failure_evidence_keys_json'].includes(name))
+    const selectedColumns = oldColumnNames.map((name) => `"${name}"`).join(', ')
+    legacyDatabase.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE account_circuit_incidents_legacy AS
+        SELECT ${selectedColumns} FROM account_circuit_incidents WHERE 0;
+      DROP TABLE account_circuit_incidents;
+      ALTER TABLE account_circuit_incidents_legacy RENAME TO account_circuit_incidents;
+      INSERT INTO account_circuit_incidents (circuit_scope_key) VALUES ('legacy-active-incident');
+    `)
+
+    applyBusinessSchema(legacyDatabase)
+    const upgraded = legacyDatabase.prepare(`
+      SELECT confirmation_failures_required, confirmation_failure_evidence_keys_json
+      FROM account_circuit_incidents
+      WHERE circuit_scope_key = 'legacy-active-incident'
+    `).get() as { confirmation_failures_required: number; confirmation_failure_evidence_keys_json: string }
+    assert.equal(upgraded.confirmation_failures_required, 1, 'SQLite 旧表升级必须用旧行为阈值 1 补齐历史 incident')
+    assert.equal(upgraded.confirmation_failure_evidence_keys_json, '[]', 'SQLite 旧表升级必须为空 evidence 补默认值')
+  } finally {
+    legacyDatabase.close()
+  }
 }

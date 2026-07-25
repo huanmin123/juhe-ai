@@ -197,7 +197,13 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
   const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
   setAccountApiKeyCooldownRetestQueueConcurrency(queueConcurrency)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(batchSize)
+  const queueBeforeScan = getAccountApiKeyCooldownRetestQueueSnapshot()
+  const availableQueueSlots = Math.max(
+    0,
+    queueConcurrency - queueBeforeScan.runningCount - queueBeforeScan.pendingCount
+  )
+  if (availableQueueSlots === 0) return
+  const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(Math.min(batchSize, availableQueueSlots))
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0

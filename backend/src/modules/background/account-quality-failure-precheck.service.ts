@@ -6,7 +6,7 @@ import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repos
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -73,7 +73,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
   }
 
   const groupId = account.boundGroupId
-  let upstreamResponseObserved = false
+  let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -82,8 +82,11 @@ async function runAccountQualityFailurePrecheckQueueItem(
     testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     retryAllFailures: true,
+    onDiagnosticAttemptProgress: () => {
+      upstreamAttempt = undefined
+    },
     onUpstreamAttempt: (attempt) => {
-      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
+      upstreamAttempt = attempt
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -93,7 +96,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     }
   })
   rememberQualityFailurePrechecked(item.accountId)
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
 
   if (probeOutcome === 'complete_success') {
     logger.info({
@@ -110,7 +113,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     return true
   }
 
-  if (probeOutcome === 'probe_task_failure') {
+  if (probeOutcome !== 'upstream_failure') {
     logger.warn({
       event: 'background_account_quality_failure_precheck_ineligible_failure_discarded',
       accountId: account.id,
@@ -121,7 +124,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
       message: result.message,
       recentRequestCount: item.recentRequestCount,
       recentErrorCount: item.recentErrorCount
-    }, '账户近期频繁失败但后台探针未形成有效上游尝试，已跳过状态写入')
+    }, '账户近期频繁失败但后台探针未形成传输失败证据，已跳过状态写入')
     return true
   }
 

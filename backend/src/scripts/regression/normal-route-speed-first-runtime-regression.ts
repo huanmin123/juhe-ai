@@ -12,6 +12,7 @@ const {
   clearNormalRouteLatencyDegradationForRouteStrategyAsync,
   clearAllNormalRouteLatencyDegradationAsync,
   clearNormalRouteLatencyDegradationForAccountBindingAsync,
+  deferNormalRouteLatencyProbeCandidateAsync,
   discardNormalRouteLatencyProbeCandidateAsync,
   listNormalRouteLatencyProbeCandidatesAsync,
   recordNormalRouteProbeFailureAsync,
@@ -90,9 +91,14 @@ assert.equal(secondSlow?.slowCount, 2, '第二次慢速样本应达到触发次�
 assert.equal(secondSlow?.degraded, true, '达到触发次数后应进入速度降级')
 const futureProbeAtMs = Date.now() + config.probeIntervalSeconds * 2000
 const futureProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, futureProbeAtMs)
-assert.equal(futureProbeCandidates.length, 1, '速度降级后应产生到期恢复探针候选')
-assert.equal(futureProbeCandidates[0]?.accountId, accounts[0]!.id, '恢复探针候选应指向被降级账号')
-const failedProbe = await recordNormalRouteProbeFailureAsync(futureProbeCandidates[0]!, '回归模拟探针仍然慢')
+  assert.equal(futureProbeCandidates.length, 1, '速度降级后应产生到期恢复探针候选')
+  assert.equal(futureProbeCandidates[0]?.accountId, accounts[0]!.id, '恢复探针候选应指向被降级账号')
+  assert.equal(await deferNormalRouteLatencyProbeCandidateAsync(futureProbeCandidates[0]!), true, '中性恢复探针应只顺延下一次检查')
+  assert.equal((await listNormalRouteLatencyProbeCandidatesAsync(10)).length, 0, '中性恢复探针不得立即重复入队')
+  const neutralDeferredCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10, Date.now() + config.probeIntervalSeconds * 2000)
+  assert.equal(neutralDeferredCandidates.length, 1, '中性恢复探针顺延后应保持原降级候选')
+  assert.equal(neutralDeferredCandidates[0]?.recoverySuccessCount, 0, '中性恢复探针不得增加或清空恢复成功证据')
+  const failedProbe = await recordNormalRouteProbeFailureAsync(neutralDeferredCandidates[0]!, '回归模拟探针仍然慢')
 assert.equal(failedProbe?.degraded, true, '探针未达标后应继续保持速度降级')
 const immediateProbeCandidates = await listNormalRouteLatencyProbeCandidatesAsync(10)
 assert.equal(immediateProbeCandidates.length, 0, '探针未达标后不应立即再次进入候选')

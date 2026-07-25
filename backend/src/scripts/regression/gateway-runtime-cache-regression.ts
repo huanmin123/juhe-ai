@@ -136,42 +136,35 @@ try {
   assert.deepEqual(sortedAccountTypes(second.accounts), ['api_key', 'oauth'], 'server 本地运行配置缓存命中后仍不应按账号类型拆分')
   assert.equal(fakeChild.sentOperationCount, 1, '第二次读取应命中网关 server 本地运行配置缓存')
 
+  const oauthBeforeRefresh = repositories.findAccountForTest(apiKey.oauthAccountId, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert(oauthBeforeRefresh, 'OAuth 运行配置缓存测试账户不存在')
   const updatedCredentials = {
-    api_key: 'sk-runtime-cache-account-updated',
-    base_url: 'https://api.openai.com/v1'
+    ...oauthBeforeRefresh.credentials,
+    access_token: 'access-runtime-cache-oauth-updated',
+    expires_at: '2100-02-01T00:00:00.000Z'
   }
   const updateResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
     type: 'update_openai_oauth_credentials',
-    accountId: apiKey.apiKeyAccountId,
-    credentials: updatedCredentials
+    accountId: apiKey.oauthAccountId,
+    credentials: updatedCredentials,
+    expectedConfigRevision: oauthBeforeRefresh.configRevision ?? 1
   }))
-  assert.equal(updateResult.updated, true, 'DB service 直写账号凭据应成功')
-  const healthResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
-    type: 'record_account_health_check_success',
-    accountId: apiKey.apiKeyAccountId,
-    input: {
-      intervalHours: 24,
-      jitterMinutes: 0,
-      failureThreshold: 3,
-      statusCode: 200
-    }
-  }))
-  assert.equal(healthResult.changed, true, '连接凭据变更后应由后台探针重新激活测试账号')
+  assert.equal(updateResult.updated, true, 'DB service OAuth 窄凭据写回应成功')
   await delay(10)
   const reloadedAfterDbServiceStorageWrite = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
-  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.apiKeyAccountId)?.apiKey, updatedCredentials.api_key, 'DB service 仓储写入后应清掉 server 本地运行配置缓存')
-  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.oauthAccountId)?.apiKey, 'access-runtime-cache-oauth', 'API Key 账号刷新不应影响同一缓存边界内的 OAuth 候选账号')
-  assert.equal(fakeChild.sentOperationCount, 4, 'DB service 凭据写入和探针激活触发失效后应重新请求 DB service')
+  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.apiKeyAccountId)?.apiKey, 'sk-runtime-cache-account', 'OAuth token 刷新不应影响同一缓存边界内的 API Key 候选账号')
+  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.oauthAccountId)?.apiKey, updatedCredentials.access_token, 'DB service OAuth 窄写回后应清掉 server 本地运行配置缓存')
+  assert.equal(fakeChild.sentOperationCount, 3, 'DB service OAuth 凭据写入触发失效后应重新请求 DB service')
 
   await simulateDbServiceRuntimeCacheInvalidation(fakeChild)
   const reloadedAfterDbServiceInvalidation = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(reloadedAfterDbServiceInvalidation.apiKey?.id === apiKey.id, 'DB service 触发失效后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 5, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
+  assert.equal(fakeChild.sentOperationCount, 4, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const third = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(third.apiKey?.id === apiKey.id, '清缓存后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 6, '清缓存后应重新请求 DB service')
+  assert.equal(fakeChild.sentOperationCount, 5, '清缓存后应重新请求 DB service')
 
   const invalidOperationCount = fakeChild.sentOperationCount
   const invalidFirst = await gatewayCache.readCachedGatewayRuntimeAsync('sk-runtime-cache-invalid')
