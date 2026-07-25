@@ -123,8 +123,19 @@ try {
 
   const errorRefresh = await refreshAccountBalance(baseUrl, cookie, `/__aisys__/api/accounts/${errorAccount.id}/balance/refresh`)
   assert.equal(errorRefresh.status, 200, '错误状态的自有账户必须可人工刷新余额并返回诊断结果')
-  assert.equal(errorRefresh.body.data?.status, 'unsupported')
-  assert.match(errorRefresh.body.data?.errorMessage ?? '', /上游鉴权失败（HTTP 401）/)
+  assert.equal(errorRefresh.body.data?.status, 'failed', '上游 HTTP 非 2xx 不得被内部解读为余额能力 unsupported')
+  assert.match(errorRefresh.body.data?.errorMessage ?? '', /HTTP \d{3}/, '诊断可记录观测到的状态码，但不赋予业务语义')
+  const errorAccountAfterRefresh = businessDatabase.prepare(`
+    SELECT status, schedulable, balance_query_enabled, balance_query_config_json
+    FROM accounts
+    WHERE id = ?
+  `).get(errorAccount.id) as Record<string, unknown>
+  assert.equal(errorAccountAfterRefresh.status, 'error', '余额 HTTP 失败不得改写账户状态')
+  assert.equal(errorAccountAfterRefresh.schedulable, 0, '余额 HTTP 失败不得改写账户调度属性')
+  assert.equal(errorAccountAfterRefresh.balance_query_enabled, 1, '余额 HTTP 失败不得关闭用户开关')
+  assert.deepEqual(JSON.parse(String(errorAccountAfterRefresh.balance_query_config_json)), {
+    adapter: 'builtin', intervalMinutes: 7, preferredBuiltinAdapter: 'sub2api'
+  }, '余额 HTTP 失败不得清除用户配置或首选适配器')
 
   const grantee = repositories.createSystemAccount({
     username: `balance_http_grantee_${Date.now()}`,
@@ -171,8 +182,13 @@ try {
   const multiList = await listAccounts(baseUrl, cookie)
   const listedMulti = multiList.find((item) => item.id === account.id)
   assert(listedMulti, '账户列表必须返回刚更新的账户')
-  assert.equal(listedMulti.balanceQueryEnabled, false, '列表必须以业务库关闭状态为准')
+  assert.equal(listedMulti.balanceQueryEnabled, undefined, '轻量列表不应夹带余额配置详情')
   assert.equal(listedMulti.balanceSnapshot, undefined, '即使跨库快照尚未删除，列表也不得回显旧 Key 金额')
+  assert.equal(
+    businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,
+    0,
+    '业务库必须真实关闭多 Key 账户的余额查询'
+  )
 
   const singleResponse = await patchAccount(baseUrl, cookie, account.id, {
     credentials: {
@@ -187,8 +203,13 @@ try {
   const singleList = await listAccounts(baseUrl, cookie)
   const listedSingle = singleList.find((item) => item.id === account.id)
   assert(listedSingle, '恢复单 Key 后账户仍应存在')
-  assert.equal(listedSingle.balanceQueryEnabled, false)
+  assert.equal(listedSingle.balanceQueryEnabled, undefined, '轻量列表仍不返回余额配置详情')
   assert.equal(listedSingle.balanceSnapshot, undefined, '恢复单 Key 但未人工开启时仍不得回显旧快照')
+  assert.equal(
+    businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,
+    0,
+    '恢复单 Key 后不得自动重新开启余额查询'
+  )
 } finally {
   await closeServer(apiServer)
   await closeServer(mockBalanceServer)

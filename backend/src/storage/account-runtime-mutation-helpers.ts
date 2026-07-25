@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import type { AccountStatus } from '../domain/types.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { isCoolingAccountStatus } from './account-status.js'
@@ -35,6 +37,10 @@ export function temporaryUnavailableRuntimeState(nowMs = Date.now()): { cooldown
     cooldownUntil: new Date(nowMs + temporaryUnavailableInitialBackoffSeconds * 1000).toISOString(),
     observationStartedAt: new Date(nowMs).toISOString()
   }
+}
+
+export function newCooldownRetestGeneration(): string {
+  return `cooldown:${randomUUID()}`
 }
 
 export function initialCooldownUntilForStatus(status: AccountStatus, nowMs = Date.now()): string | undefined {

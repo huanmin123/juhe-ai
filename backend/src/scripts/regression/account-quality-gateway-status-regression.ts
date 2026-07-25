@@ -39,8 +39,6 @@ const [
   auditLogQueue,
   usageStatsRepository,
   accountQualityRepository,
-  accountQualityFailurePrecheckService,
-  cooldownRetestService,
   { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -54,14 +52,13 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/account-quality.repository.js'),
-  import('../../modules/background/account-quality-failure-precheck.service.js'),
-  import('../../modules/background/cooldown-account-retest.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface MockUpstreamState {
   mode: 'failure' | 'success' | 'slow_headers'
   hits: number
+  failureStatuses: number[]
 }
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -73,7 +70,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 try {
   let upstreamServer: http.Server | undefined
   let gatewayServer: http.Server | undefined
-  const upstreamState: MockUpstreamState = { mode: 'failure', hits: 0 }
+  const upstreamState: MockUpstreamState = { mode: 'failure', hits: 0, failureStatuses: [400, 401, 429, 500, 503] }
 
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -124,9 +121,10 @@ try {
 
     for (let index = 0; index < 5; index += 1) {
       const hitsBeforeRequest = upstreamState.hits
-      const response = await requestChatCompletion(baseUrl, apiKey.key, `mock upstream 504 ${index}`)
-      assert.equal(response.status, 504, `通用 POST 完整收到上游 504 后应保持不透明响应，实际 HTTP ${response.status}: ${response.text}`)
-      assert.match(response.text, /mock_upstream_504/, `通用 POST 应保留完整上游错误契约：${response.text}`)
+      const response = await requestChatCompletion(baseUrl, apiKey.key, `mock opaque upstream ${index}`)
+      assert.equal(response.status, 503, `通用推理 POST 候选耗尽后应返回稳定可重试状态，实际 HTTP ${response.status}: ${response.text}`)
+      assert.match(response.text, /upstream_retryable_error/, `通用推理 POST 应返回统一脱敏可重试错误：${response.text}`)
+      assert.doesNotMatch(response.text, /upstream_body_interrupted|mock upstream/i, `通用推理 POST 不应泄露上游原始错误类型或文案：${response.text}`)
       assert.equal(upstreamState.hits, hitsBeforeRequest + 1, `第 ${index + 1} 次质量失败请求必须真实命中 mock 上游：${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
@@ -140,6 +138,10 @@ try {
     assert.equal(upstreamState.hits, 6, 'mock 上游应收到 5 次失败和 1 次成功请求')
 
     usageRecordQueue.flushAllUsageRecordQueue()
+    const opaqueUsageRecords = repositories.listUsageRecords(access, { page: 1, pageSize: 50, result: 'failed' }).items
+      .filter((record) => record.accountId === account.id)
+    assert.equal(opaqueUsageRecords.length, 5, '未知完整 HTTP 应保留 5 条中性失败使用记录')
+    assert.equal(opaqueUsageRecords.every((record) => record.failureAttribution === 'opaque_upstream'), true, '未知完整 HTTP 必须使用不参与共享质量的中性归因')
     assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100, usageStatsSafeCreatedBeforeForTest()), 6, '真实网关使用记录应进入统计聚合')
     const qualityResult = accountQualityRepository.refreshAccountQualityFromUsage(10)
     assert.equal(qualityResult.refreshed, 1, '账号质量刷新应处理 mock AI 命中的账户')
@@ -147,12 +149,12 @@ try {
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     const listed = repositories.listAccountsPage(access, { keyword: account.name, page: 1, pageSize: 10 }).items.find((item) => item.id === account.id)
     assert(listed, '账户列表应返回 mock AI 账户')
-    assert.equal(listed.status, 'active', '频繁 504 后恢复成功不应把账户持久状态写死')
+    assert.equal(listed.status, 'active', '任意完整 HTTP 状态互换后恢复成功不应把账户持久状态写死')
     assert.equal(listed.effectiveAvailability.status, 'available', '质量反馈不应改变账户筛选可用性')
-    assert.equal(listed.qualityRecentRequestCount, 6, '账户列表应返回真实聚合的近窗口请求数')
-    assert.equal(listed.qualityRecentErrorCount, 5, '账户列表应返回真实聚合的近窗口失败数')
-    assert.equal(Math.round((listed.qualityRecentSuccessRate ?? 0) * 100), 17, '账户列表应返回真实聚合的近窗口成功率')
-    assert.equal(listed.qualityLastErrorMessage, undefined, '通用不透明上游正文不应复制到账号质量错误文案')
+    assert.equal(listed.qualityRecentRequestCount, 1, '未知完整 HTTP 响应不得进入共享质量请求样本')
+    assert.equal(listed.qualityRecentErrorCount, 0, '未知完整 HTTP 响应不得进入共享质量失败样本')
+    assert.equal(Math.round((listed.qualityRecentSuccessRate ?? 0) * 100), 100, '只有真实协议成功应进入共享质量成功率')
+    assert.equal(listed.qualityLastErrorMessage, undefined, '未知完整 HTTP 响应不得留下共享质量错误语义')
 
     const capacityGroup = repositories.createGroup({
       name: '状态质量本地容量失败 mock AI 分组',
@@ -304,7 +306,8 @@ try {
     const failureHitsBefore = upstreamState.hits
     for (let index = 0; index < 5; index += 1) {
       const response = await requestChatCompletion(baseUrl, failureApiKey.key, `mock precheck failure ${index}`)
-      assert.equal(response.status, 504, `频繁失败确认前置请求应保留完整上游 504，实际 HTTP ${response.status}: ${response.text}`)
+      assert.equal(response.status, 503, `频繁失败确认前置请求应返回统一可重试错误，实际 HTTP ${response.status}: ${response.text}`)
+        assert.match(response.text, /upstream_retryable_error/, `频繁失败确认前置请求不应泄露上游原始状态：${response.text}`)
       accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     }
     assert.equal(upstreamState.hits - failureHitsBefore, 5, '频繁失败确认账号应收到 5 次真实 mock 上游失败请求')
@@ -315,31 +318,12 @@ try {
     const failureCandidate = accountQualityRepository
       .listAccountQualityFailurePrecheckCandidates(10)
       .find((candidate) => candidate.accountId === failureAccount.id)
-    assert(failureCandidate, '真实 mock AI 频繁失败账号应进入质量失败确认候选')
-    assert.equal(accountQualityFailurePrecheckService.enqueueAccountQualityFailurePrecheck(failureCandidate), true, '频繁失败候选应能进入后台确认队列')
+    assert.equal(failureCandidate, undefined, '未知完整 HTTP 响应不得生成质量失败确认候选')
+    const unchangedFailureAccount = repositories.findAccountSummary(failureAccount.id, access)
+    assert.equal(unchangedFailureAccount?.status, 'active', '未知完整 HTTP 响应不得通过质量链路改变账户状态')
+    assert.equal(unchangedFailureAccount?.effectiveAvailability.status, 'available', '未知完整 HTTP 响应不得改变共享可用性')
 
-    const temporaryUnavailable = await waitForAccountStatus(failureAccount.id, 'temporary_unavailable')
-    assert(temporaryUnavailable, '后台确认失败后账号应升级为临时不可调用')
-    assert.equal(temporaryUnavailable.effectiveAvailability.status, 'instance_temporary_unavailable', '临时不可调用应改变实际可用性')
-    assert.match(temporaryUnavailable.lastErrorMessage ?? '', /近期质量频繁失败/, '临时不可调用原因应说明来自近期质量频繁失败确认')
-
-    upstreamState.mode = 'success'
-    databaseModule.getBusinessDatabase()
-      .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
-      .run(new Date(Date.now() - 1000).toISOString(), failureAccount.id)
-    const dueForRecovery = repositories.findAccountSummary(failureAccount.id, access)
-    assert(dueForRecovery, '冷却复测前应能读取临时不可调用账号')
-    assert.equal(cooldownRetestService.enqueueCooldownAccountRetest(dueForRecovery, {
-      maxPauseMinutes: 10,
-      maxRecoveryHours: 1
-    }), true, '临时不可调用账号应能进入冷却复测队列')
-    const recovered = await waitForAccountStatus(failureAccount.id, 'active')
-    assert(recovered, 'mock 上游恢复后冷却复测应把账号恢复正常')
-    assert.equal(recovered.effectiveAvailability.status, 'available', '冷却复测恢复后账号应重新可用')
-    assert.equal(recovered.cooldownUntil, undefined, '冷却复测恢复后应清理冷却时间')
-    assert.equal(recovered.lastErrorMessage, undefined, '冷却复测恢复后应清理错误原因')
-
-    console.log('账号质量状态 mock AI 回归通过：真实网关失败进入质量标签，后台确认失败升级临时不可调用，mock 上游恢复后冷却复测恢复 active')
+    console.log('账号质量状态 mock AI 回归通过：未知完整 HTTP 仅记录中性 usage，不进入共享质量或账户状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
@@ -387,11 +371,12 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       return
     }
     if (state.mode === 'failure') {
-      res.writeHead(504, { 'content-type': 'application/json; charset=utf-8' })
+      const statusCode = state.failureStatuses[(state.hits - 1) % state.failureStatuses.length] ?? 503
+      res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
         error: {
-          message: `mock upstream 504 failure ${state.hits}`,
-          code: 'mock_upstream_504',
+          message: `mock upstream ${statusCode} failure ${state.hits}`,
+          code: 'upstream_body_interrupted',
           type: 'upstream_timeout'
         }
       }))
@@ -523,18 +508,6 @@ async function waitForCondition(predicate: () => boolean, timeoutMs: number, tim
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
   }
   assert.fail(timeoutMessage)
-}
-
-async function waitForAccountStatus(accountId: string, status: string, timeoutMs = 10_000): Promise<ReturnType<typeof repositories.findAccountSummary> | undefined> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const account = repositories.findAccountSummary(accountId, access)
-    if (account?.status === status) {
-      return account
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
-  }
-  return undefined
 }
 
 function updateSystemSettingsForTest(settings: Record<string, unknown>): void {

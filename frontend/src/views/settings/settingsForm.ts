@@ -8,6 +8,7 @@ export interface GlobalForm {
 
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
+  accountCircuitConfirmationFailuresRequired: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -45,6 +46,7 @@ export const defaultGlobalSettings: GlobalForm = {
 
 export const defaultSystemSettings: SystemForm = {
   gatewayTextRawBodyLimitMegabytes: 16,
+  accountCircuitConfirmationFailuresRequired: 2,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
   systemApiRateLimitIpWritePerMinute: 180,
@@ -85,6 +87,7 @@ export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): 
 export function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
     gatewayTextRawBodyLimitMegabytes: integerValue(settings.gatewayTextRawBodyLimitMegabytes, '文本请求体上限', 1, 64),
+    accountCircuitConfirmationFailuresRequired: integerValue(settings.accountCircuitConfirmationFailuresRequired, '账户电路独立确认失败次数', 1, 5),
     systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
     systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),
@@ -92,8 +95,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     systemApiRateLimitUserReadPerMinute: integerValue(settings.systemApiRateLimitUserReadPerMinute, '登录用户读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitUserWritePerMinute: integerValue(settings.systemApiRateLimitUserWritePerMinute, '登录用户写请求每分钟上限', 0, 1_000_000),
     defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
-    temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
-    temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),
+    temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '安全原地重试间隔', 0, 3600),
+    temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '安全原地重试次数', 0, 10),
     textFirstResponseTimeoutSeconds: integerValue(settings.textFirstResponseTimeoutSeconds, '文本首响应等待上限', 10, 3600),
     textStreamIdleTimeoutSeconds: integerValue(settings.textStreamIdleTimeoutSeconds, '文本流式停顿上限', 1, 3600),
     textUncommittedAttemptMaxLifetimeSeconds: integerValue(settings.textUncommittedAttemptMaxLifetimeSeconds, '文本未提交尝试最大存活时间', 60, 86400),

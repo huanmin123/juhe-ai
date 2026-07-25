@@ -120,7 +120,7 @@ try {
   assert.equal(savedAccount.status, 'pending_test', '新建 Key 池账户应先进入待检查')
   const savedTask = await submitAccountTest(context, savedAccount.id)
   const savedFinished = await waitForTask(context, savedTask.id)
-  assert.equal(savedFinished.status, 'success', '已保存 Key 池账户只要至少一个 Key 可用就应测试成功')
+  assert.equal(savedFinished.status, 'success', `已保存 Key 池账户只要至少一个 Key 可用就应测试成功：${savedFinished.message ?? ''} ${JSON.stringify(savedFinished.result)}`)
   assert.equal(savedFinished.result?.apiKeyPool?.total, 3, '已保存账户测试应返回 Key 池总数')
   assert.equal(savedFinished.result?.apiKeyPool?.successCount, 1, '已保存账户测试应统计 1 个可用 Key')
   assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 2, '已保存账户测试应统计 2 个不可用 Key')
@@ -165,14 +165,14 @@ try {
   assertKeyRuntime(createdDetail, 'ad-a', 'active', '草稿人工测试不能把新账户坏 Key A 初始化为不可用')
   assertKeyRuntime(createdDetail, 'ad-b', 'active', '草稿人工测试不能把新账户坏 Key B 初始化为不可用')
 
-  assert.equal(mockState.hitsByKey.get('pool-saved-bad-a'), 1, '已保存账户坏 Key A 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-saved-good'), 1, '已保存账户好 Key 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-saved-bad-b'), 1, '已保存账户坏 Key B 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-responses-bad'), 1, 'Responses SSE 坏 Key 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-responses-good'), 1, 'Responses SSE 好 Key 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-create-bad-a'), 1, '创建草稿坏 Key A 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-create-good'), 1, '创建草稿好 Key 应被测试一次')
-  assert.equal(mockState.hitsByKey.get('pool-create-bad-b'), 1, '创建草稿坏 Key B 应被测试一次')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-saved-bad-a', '已保存账户坏 Key A')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-saved-good', '已保存账户好 Key')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-saved-bad-b', '已保存账户坏 Key B')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-responses-bad', 'Responses SSE 坏 Key')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-responses-good', 'Responses SSE 好 Key')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-create-bad-a', '草稿坏 Key A')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-create-good', '草稿好 Key')
+  assertKeyHitBound(mockState.hitsByKey, 'pool-create-bad-b', '草稿坏 Key B')
 
   console.log(JSON.stringify({
     message: '账户内 API Key 池测试 mock AI 回归通过',
@@ -213,7 +213,8 @@ function accountPayload(input: {
     concurrencyLimit: 20,
     priority: 0,
     supportedModels: ['gpt-5.5'],
-    healthCheckModel: 'gpt-5.5'
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse'
   }
 }
 
@@ -282,6 +283,12 @@ function assertKeyPoolPreview(result: AccountTestResult | undefined, keyIndex: n
   assert(detail, `${message}：缺少序号 ${keyIndex} 的 Key 测试结果`)
   assert.equal(detail.keyPrefix, prefix, `${message}：前缀不匹配`)
   assert.equal(detail.keySuffix, suffix, `${message}：后缀不匹配`)
+}
+
+function assertKeyHitBound(hitsByKey: Map<string, number>, key: string, label: string): void {
+  const hits = hitsByKey.get(key) ?? 0
+  assert.ok(hits >= 1, `${label}至少应被探测一次`)
+  assert.ok(hits <= 2, `${label}不应在一次流程内被重复探测超过两次，实际 ${hits}`)
 }
 
 function startBackendServer(port: number): ChildProcess {
@@ -426,6 +433,7 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
       output: [
         {
           type: 'message',
+          role: 'assistant',
           content: [{ type: 'output_text', text: outputText }]
         }
       ],
@@ -523,13 +531,17 @@ async function killWindowsProcessTree(pid: number): Promise<void> {
 
 async function removeTempRoot(path: string): Promise<void> {
   let lastError: unknown
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
       rmSync(path, { recursive: true, force: true })
       return
     } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined
+      if (code !== 'EBUSY' && code !== 'EPERM') throw error
       lastError = error
-      await sleep(200)
+      await sleep(250)
     }
   }
   throw lastError

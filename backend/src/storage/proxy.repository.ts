@@ -36,6 +36,10 @@ interface ProxyRow {
   last_tested_at: string | null
 }
 
+interface ProxyTestConfigRow extends ProxyRow {
+  config_revision: string
+}
+
 export interface ProxyProfileSummary {
   id: string
   name: string
@@ -77,6 +81,17 @@ export interface ProxyProfileListResult {
 
 export interface ProxyProfileTestConfig extends ProxyProfileSummary {
   proxyUrl: string
+  configUpdatedAt: string
+}
+
+export interface ProxyTestStateUpdateInput {
+  testStatus: string
+  latencyMs?: number | null
+  outboundIp?: string | null
+  outboundRegion?: string | null
+  lastTestMessage?: string | null
+  lastTestedAt: string
+  expectedConfigUpdatedAt: string
 }
 
 export interface ProxyProfileUrlResolution {
@@ -397,7 +412,7 @@ function proxySummarySelectColumns(): string {
   ].join(', ')
 }
 
-function proxyTestConfigSelectColumns(): string {
+function proxyTestConfigSelectColumns(driver: DatabaseClient['driver']): string {
   return [
     'id',
     'name',
@@ -413,8 +428,19 @@ function proxyTestConfigSelectColumns(): string {
     'outbound_ip',
     'outbound_region',
     'last_test_message',
-    'last_tested_at'
+    'last_tested_at',
+    driver === 'postgres'
+      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS config_revision`
+      : 'updated_at AS config_revision'
   ].join(', ')
+}
+
+function proxyTestConfigFromRow(row: ProxyTestConfigRow): ProxyProfileTestConfig {
+  return {
+    ...proxySummaryFromRow(row),
+    proxyUrl: proxyUrlFromRow(row),
+    configUpdatedAt: row.config_revision
+  }
 }
 
 export function createProxy(input: Record<string, unknown>, access: AccessScope): ProxyProfileSummary {
@@ -484,7 +510,7 @@ export async function createProxyAsync(input: Record<string, unknown>, access: A
     await client.execute(`
       INSERT INTO ${proxyProfilesTable(client)} (id, system_account_id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [proxy.id, systemAccountId, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now])
+    `, [proxy.id, systemAccountId, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, password ? encryptJson({ password }) : null, proxy.enabled, proxy.testStatus, now, now])
   } catch (error) {
     if (isDuplicateProxyNameError(error)) {
       throw new Error(`代理名称已存在：${proxy.name}`)
@@ -526,12 +552,17 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const nextPasswordEncrypted = shouldUpdatePassword
     ? encryptJson({ password: nextPassword })
     : currentSecret?.password_encrypted ?? null
+  const updatedAtCandidate = nowIso()
   try {
     getBusinessDatabase()
       .prepare(`
         UPDATE proxy_profiles
         SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
-          test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
+          test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?,
+          updated_at = CASE
+            WHEN updated_at >= ? THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+            ELSE ?
+          END
         WHERE id = ?
       `)
       .run(
@@ -549,7 +580,8 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
         shouldResetTestState ? null : next.outboundRegion ?? null,
         shouldResetTestState ? null : next.lastTestMessage ?? null,
         shouldResetTestState ? null : next.lastTestedAt ?? null,
-        nowIso(),
+        updatedAtCandidate,
+        updatedAtCandidate,
         id
       )
   } catch (error) {
@@ -567,71 +599,93 @@ export async function updateProxyAsync(id: string, input: Record<string, unknown
     return updateProxy(id, input)
   }
   assertKnownInputKeys(input, proxyInputKeys, '代理')
-  const current = await findProxyAsync(id)
-  if (!current) {
-    return undefined
-  }
-  const client = await getProxyDatabaseClient()
-  const currentSecret = await client.one<{ password_encrypted?: string | null }>(`SELECT password_encrypted FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
+  const hasNameInput = Object.prototype.hasOwnProperty.call(input, 'name')
+  const normalizedName = hasNameInput ? normalizedRequiredProxyName(input.name) : undefined
+  const normalizedDescription = input.description === undefined ? undefined : normalizeOptionalText(input.description, '代理描述')
+  const hasTypeInput = Object.prototype.hasOwnProperty.call(input, 'type')
+  const normalizedType = hasTypeInput ? normalizedProxyType(input.type) : undefined
+  const hasHostInput = Object.prototype.hasOwnProperty.call(input, 'host')
+  const normalizedHost = hasHostInput ? normalizedRequiredProxyHost(input.host) : undefined
+  const hasPortInput = Object.prototype.hasOwnProperty.call(input, 'port')
+  const normalizedPort = hasPortInput ? normalizedProxyPort(input.port) : undefined
   const hasPasswordInput = Object.prototype.hasOwnProperty.call(input, 'password')
-  const nextPassword = normalizeProxyPassword(input.password, hasPasswordInput)
-  const shouldUpdatePassword = hasPasswordInput
+  const nextPasswordEncrypted = hasPasswordInput
+    ? encryptJson({ password: normalizeProxyPassword(input.password, true) })
+    : undefined
   const hasUsernameInput = Object.prototype.hasOwnProperty.call(input, 'username')
-  const next: ProxyProfileSummary = {
-    ...current,
-    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedRequiredProxyName(input.name) : current.name,
-    description: input.description === undefined ? current.description : normalizeOptionalText(input.description, '代理描述'),
-    type: Object.prototype.hasOwnProperty.call(input, 'type') ? normalizedProxyType(input.type) : current.type,
-    host: Object.prototype.hasOwnProperty.call(input, 'host') ? normalizedRequiredProxyHost(input.host) : current.host,
-    port: Object.prototype.hasOwnProperty.call(input, 'port') ? normalizedProxyPort(input.port) : current.port,
-    username: hasUsernameInput ? normalizeOptionalText(input.username, '代理用户名') : current.username,
-    enabled: input.enabled === undefined ? current.enabled : normalizeOptionalBoolean(input.enabled, true, '代理启用状态')
-  }
-  const shouldResetTestState = next.type !== current.type ||
-    next.host !== current.host ||
-    next.port !== current.port ||
-    next.username !== current.username ||
-    shouldUpdatePassword
-  const nextPasswordEncrypted = shouldUpdatePassword
-    ? encryptJson({ password: nextPassword })
-    : currentSecret?.password_encrypted ?? null
+  const normalizedUsername = hasUsernameInput ? normalizeOptionalText(input.username, '代理用户名') : undefined
+  const normalizedEnabled = input.enabled === undefined ? undefined : normalizeOptionalBoolean(input.enabled, true, '代理启用状态')
+  const client = await getProxyDatabaseClient()
+  let updated: ProxyProfileSummary | undefined
   try {
-    await client.execute(`
-      UPDATE ${proxyProfilesTable(client)}
-      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
-        test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
-      WHERE id = ?
-    `, [
-      next.name,
-      next.description ?? null,
-      next.type,
-      next.host,
-      next.port,
-      next.username ?? null,
-      nextPasswordEncrypted,
-      next.enabled ? 1 : 0,
-      shouldResetTestState ? 'unknown' : next.testStatus,
-      shouldResetTestState ? null : next.latencyMs ?? null,
-      shouldResetTestState ? null : next.outboundIp ?? null,
-      shouldResetTestState ? null : next.outboundRegion ?? null,
-      shouldResetTestState ? null : next.lastTestMessage ?? null,
-      shouldResetTestState ? null : next.lastTestedAt ?? null,
-      nowIso(),
-      id
-    ])
+    updated = await client.transaction(async (tx) => {
+      // Serialize patch-on-current-row semantics so disjoint management edits cannot overwrite each other.
+      const currentRow = await tx.one<ProxyRow>(`
+        SELECT ${proxySummarySelectColumns()}, password_encrypted
+        FROM ${proxyProfilesTable(tx)}
+        WHERE id = ?
+        FOR UPDATE
+      `, [id])
+      if (!currentRow) return undefined
+
+      const current = proxySummaryFromRow(currentRow)
+      const next: ProxyProfileSummary = {
+        ...current,
+        name: normalizedName ?? current.name,
+        description: input.description === undefined ? current.description : normalizedDescription,
+        type: normalizedType ?? current.type,
+        host: normalizedHost ?? current.host,
+        port: normalizedPort ?? current.port,
+        username: hasUsernameInput ? normalizedUsername : current.username,
+        enabled: normalizedEnabled ?? current.enabled
+      }
+      const shouldResetTestState = next.type !== current.type ||
+        next.host !== current.host ||
+        next.port !== current.port ||
+        next.username !== current.username ||
+        hasPasswordInput
+      const updatedAtCandidate = nowIso()
+      const updatedRow = await tx.one<ProxyRow>(`
+        UPDATE ${proxyProfilesTable(tx)}
+        SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
+          test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?,
+          updated_at = GREATEST(updated_at + INTERVAL '1 millisecond', CAST(? AS timestamptz))
+        WHERE id = ?
+        RETURNING ${proxySummarySelectColumns()}
+      `, [
+        next.name,
+        next.description ?? null,
+        next.type,
+        next.host,
+        next.port,
+        next.username ?? null,
+        hasPasswordInput ? nextPasswordEncrypted ?? null : currentRow.password_encrypted ?? null,
+        next.enabled,
+        shouldResetTestState ? 'unknown' : next.testStatus,
+        shouldResetTestState ? null : next.latencyMs ?? null,
+        shouldResetTestState ? null : next.outboundIp ?? null,
+        shouldResetTestState ? null : next.outboundRegion ?? null,
+        shouldResetTestState ? null : next.lastTestMessage ?? null,
+        shouldResetTestState ? null : next.lastTestedAt ?? null,
+        updatedAtCandidate,
+        id
+      ])
+      return updatedRow ? proxySummaryFromRow(updatedRow) : undefined
+    })
   } catch (error) {
     if (isDuplicateProxyNameError(error)) {
-      throw new Error(`代理名称已存在：${next.name}`)
+      throw new Error(`代理名称已存在：${normalizedName ?? ''}`)
     }
     throw error
   }
+  if (!updated) return undefined
   notifyGatewayRuntimeCacheInvalidation('proxy_updated')
-  return await findProxyAsync(id) ?? next
+  return updated
 }
 
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
-  const row = getBusinessDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
-  return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
+  const row = getBusinessDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns('sqlite')} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyTestConfigRow | undefined
+  return row ? proxyTestConfigFromRow(row) : undefined
 }
 
 export async function getProxyTestConfigAsync(id: string): Promise<ProxyProfileTestConfig | undefined> {
@@ -639,21 +693,21 @@ export async function getProxyTestConfigAsync(id: string): Promise<ProxyProfileT
     return getProxyTestConfig(id)
   }
   const client = await getProxyDatabaseClient()
-  const row = await client.one<ProxyRow>(`SELECT ${proxyTestConfigSelectColumns()} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
-  return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
+  const row = await client.one<ProxyTestConfigRow>(`SELECT ${proxyTestConfigSelectColumns(client.driver)} FROM ${proxyProfilesTable(client)} WHERE id = ?`, [id])
+  return row ? proxyTestConfigFromRow(row) : undefined
 }
 
 export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[] {
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT ${proxyTestConfigSelectColumns()}
+      SELECT ${proxyTestConfigSelectColumns('sqlite')}
       FROM proxy_profiles
       WHERE enabled = 1
       ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
-    .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyRow[]
-  return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))
+    .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyTestConfigRow[]
+  return rows.map(proxyTestConfigFromRow)
 }
 
 export async function listEnabledProxyTestConfigsAsync(limit = 20): Promise<ProxyProfileTestConfig[]> {
@@ -661,21 +715,22 @@ export async function listEnabledProxyTestConfigsAsync(limit = 20): Promise<Prox
     return listEnabledProxyTestConfigs(limit)
   }
   const client = await getProxyDatabaseClient()
-  const rows = await client.query<ProxyRow>(`
-    SELECT ${proxyTestConfigSelectColumns()}
+  const rows = await client.query<ProxyTestConfigRow>(`
+    SELECT ${proxyTestConfigSelectColumns(client.driver)}
     FROM ${proxyProfilesTable(client)}
     WHERE enabled = true
     ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
     LIMIT ?
   `, [Math.max(1, Math.trunc(limit))])
-  return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))
+  return rows.map(proxyTestConfigFromRow)
 }
 
 export function updateProxyTestState(
   id: string,
-  input: { testStatus: string; latencyMs?: number | null; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string | null; lastTestedAt?: string }
+  input: ProxyTestStateUpdateInput
 ): ProxyProfileSummary | undefined {
-  const testedAt = input.lastTestedAt ?? nowIso()
+  const testedAt = normalizeProxyObservationTimestamp(input.lastTestedAt)
+  const expectedConfigUpdatedAt = normalizeProxyConfigRevision(input.expectedConfigUpdatedAt)
   const testStatus = normalizeProxyTestStatus(input.testStatus)
   const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
   const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
@@ -686,8 +741,11 @@ export function updateProxyTestState(
   ].filter(Boolean).join(', ')
   const sql = `
       UPDATE proxy_profiles
-      SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?, updated_at = ?
+      SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?
       WHERE id = ?
+        AND updated_at = ?
+        AND (last_tested_at IS NULL OR last_tested_at <= ?)
+      RETURNING ${proxySummarySelectColumns()}
     `
   const params = [
     testStatus,
@@ -696,24 +754,25 @@ export function updateProxyTestState(
     ...(outboundRegion !== undefined ? [outboundRegion] : []),
     normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
     testedAt,
-    nowIso(),
-    id
+    id,
+    expectedConfigUpdatedAt,
+    testedAt
   ]
-  getBusinessDatabase()
+  const row = getBusinessDatabase()
     .prepare(sql)
-    .run(...params)
-  notifyGatewayRuntimeCacheInvalidation('proxy_test_state_updated')
-  return findProxy(id)
+    .get(...params) as unknown as ProxyRow | undefined
+  return row ? proxySummaryFromRow(row) : undefined
 }
 
 export async function updateProxyTestStateAsync(
   id: string,
-  input: { testStatus: string; latencyMs?: number | null; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string | null; lastTestedAt?: string }
+  input: ProxyTestStateUpdateInput
 ): Promise<ProxyProfileSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateProxyTestState(id, input)
   }
-  const testedAt = input.lastTestedAt ?? nowIso()
+  const testedAt = normalizeProxyObservationTimestamp(input.lastTestedAt)
+  const expectedConfigUpdatedAt = normalizeProxyConfigRevision(input.expectedConfigUpdatedAt)
   const testStatus = normalizeProxyTestStatus(input.testStatus)
   const latencyMs = normalizeProxyTestLatencyMs(input.latencyMs)
   const outboundIp = input.outboundIp === undefined ? undefined : normalizeProxyTestText(input.outboundIp, '代理出口 IP')
@@ -725,8 +784,11 @@ export async function updateProxyTestStateAsync(
   const client = await getProxyDatabaseClient()
   const sql = `
     UPDATE ${proxyProfilesTable(client)}
-    SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?, updated_at = ?
+    SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?
     WHERE id = ?
+      AND updated_at = ?
+      AND (last_tested_at IS NULL OR last_tested_at <= ?)
+    RETURNING ${proxySummarySelectColumns()}
   `
   const params = [
     testStatus,
@@ -735,12 +797,12 @@ export async function updateProxyTestStateAsync(
     ...(outboundRegion !== undefined ? [outboundRegion] : []),
     normalizeProxyTestText(input.lastTestMessage, '代理检测消息'),
     testedAt,
-    nowIso(),
-    id
+    id,
+    expectedConfigUpdatedAt,
+    testedAt
   ]
-  await client.execute(sql, params)
-  notifyGatewayRuntimeCacheInvalidation('proxy_test_state_updated')
-  return await findProxyAsync(id)
+  const row = await client.one<ProxyRow>(sql, params)
+  return row ? proxySummaryFromRow(row) : undefined
 }
 
 export function deleteProxy(id: string): boolean {
@@ -1047,6 +1109,24 @@ function normalizeProxyTestText(value: unknown, label: string): string | null {
   }
   const text = value.trim()
   return text || null
+}
+
+function normalizeProxyObservationTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('代理检测时间无效')
+  }
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    throw new Error('代理检测时间无效')
+  }
+  return new Date(timestamp).toISOString()
+}
+
+function normalizeProxyConfigRevision(value: unknown): string {
+  if (typeof value !== 'string' || !value || !Number.isFinite(Date.parse(value))) {
+    throw new Error('代理配置版本无效')
+  }
+  return value
 }
 
 function assertKnownInputKeys(input: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {

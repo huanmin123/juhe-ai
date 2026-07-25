@@ -254,10 +254,31 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
         onFirstByte: dispatch.markFirstOutput
       })
       dispatch.hotQualityAttempt.markFirstByte(body.firstByteMs)
+      const opaqueUpstreamResponse = !dispatch.response.ok && !body.truncated
+      if (body.truncated) {
+        auditCapture.addGatewayMetadata({
+          label: 'hybrid_auxiliary_response_limit',
+          metadata: {
+            accountId: dispatch.account.id,
+            responseMaxBytes: input.responseMaxBytes,
+            capturedBytes: body.body.byteLength,
+            readBytes: body.readBytes,
+            failureScope: 'none'
+          }
+        })
+      }
       await dispatch.hotQualityAttempt.recordTerminal({
-        outcomeClass: body.truncated ? 'incomplete_response' : 'completed_response',
-        failureScope: body.truncated ? 'protocol_model' : 'none',
-        source: 'gateway_transport',
+        outcomeClass: body.truncated
+          ? 'unknown'
+          : opaqueUpstreamResponse
+            ? 'upstream_response_failure'
+            : 'completed_response',
+        failureScope: 'none',
+        source: body.truncated
+          ? 'request_lifecycle'
+          : opaqueUpstreamResponse
+            ? 'upstream_response'
+            : 'gateway_transport',
         firstByteMs: body.firstByteMs
       })
       release()

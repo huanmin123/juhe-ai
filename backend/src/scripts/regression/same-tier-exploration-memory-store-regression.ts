@@ -142,7 +142,11 @@ await identityStore.settle({
 })
 await identityStore.accrue({ poolKey: 'identity-pool', accrualToken: 'overflow-identity', eligible: true })
 await identityStore.accrue({ poolKey: 'identity-pool', accrualToken: 'overflow-identity', eligible: true })
-assert.equal((await identityStore.get({ poolKey: 'identity-pool' })).credit, 0, 'identity 容量耗尽后不得应用无法幂等追踪的 accrual')
+const rolledIdentityState = await identityStore.get({ poolKey: 'identity-pool' })
+assert.equal(rolledIdentityState.credit, 0.05, '热点 pool 达到 identity 上限后必须滚动去重窗口并继续累积探索 credit')
+assert.equal(rolledIdentityState.accruedTokens.length, SAME_TIER_EXPLORATION_IDENTITY_CAPACITY)
+assert.equal(rolledIdentityState.accruedTokens.includes('identity-0'), false, '滚动窗口必须淘汰最老 identity')
+assert.equal(rolledIdentityState.accruedTokens.includes('overflow-identity'), true)
 
 const capacityStore = new MemorySameTierExplorationStore({ now: () => nowMs, poolCapacity: 1, stateTtlMs: 100 })
 await Promise.all(Array.from({ length: 20 }, (_, index) => capacityStore.accrue({

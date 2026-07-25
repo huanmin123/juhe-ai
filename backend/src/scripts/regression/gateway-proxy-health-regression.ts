@@ -9,6 +9,8 @@ import {
   recordGatewayProxyFailure,
   recordGatewayProxySuccess,
   recordGatewayUpstreamBucketFailure,
+  recordGatewayUpstreamBucketSuccess,
+  suppressGatewayUpstreamBucketLocallyForSeconds,
   setGatewayProxyHealthNowForTest
 } from '../../modules/gateway/runtime/proxy-health.service.js'
 
@@ -18,8 +20,11 @@ clearGatewayProxyHealthForTest()
 testProxyBucket()
 testProxyUrlBucketMetadataRedaction()
 testBaseUrlBucket()
+testProxySuccessDoesNotClearUpstreamBuckets()
 testBaseUrlBucketOwnerIsolation()
+testAuthorizedInstancesDoNotForgeDistinctFailureEvidence()
 testBaseUrlBucketHalfOpen()
+testMemoryAvoidDeadlineAndExpiryDoNotShrink()
 testPriorityBoundary()
 testModelPriorityBoundary()
 
@@ -106,9 +111,39 @@ function testBaseUrlBucket(): void {
   assert.deepEqual(order.accounts.map((item) => item.id), [third.id, first.id, second.id], '可疑 baseUrl 账号应被排到后面')
   assert(order.avoidedBucketKeys.some((key) => key.startsWith('baseUrl:https://shared-upstream.example/v1')), '排序元数据应包含被避让的 baseUrl 桶')
 
-  assert.equal(recordGatewayProxySuccess(first), true, '任一桶内账号成功应清理该账号关联的上游桶')
+  assert.equal(recordGatewayUpstreamBucketSuccess(first), true, '完整上游成功应清理该账号关联的上游桶')
   order = orderOpenAIAccountsByGatewayProxyHealth([first, second, third])
   assert.equal(order.applied, false, '上游桶成功恢复后不应继续避让')
+
+  clearGatewayProxyHealthForTest()
+}
+
+function testProxySuccessDoesNotClearUpstreamBuckets(): void {
+  clearGatewayProxyHealthForTest()
+  const first = account('account-proxy-success-scope-1', 'proxy-success-scope-a', 'https://proxy-success-scope.example/v1')
+  const second = account('account-proxy-success-scope-2', 'proxy-success-scope-b', 'https://proxy-success-scope.example/v1')
+  const fallback = account('account-proxy-success-scope-fallback', 'proxy-success-scope-c', 'https://proxy-success-scope-fallback.example/v1')
+
+  recordGatewayUpstreamBucketFailure(first, 'upstream_response_failed')
+  recordGatewayUpstreamBucketFailure(second, 'upstream_response_failed')
+  assert.equal(
+    orderOpenAIAccountsByGatewayProxyHealth([first, second, fallback]).applied,
+    true,
+    '共享 Base URL 失败证据应先打开上游桶'
+  )
+
+  assert.equal(recordGatewayProxySuccess(first), true, '代理成功应清理该账号的代理桶诊断')
+  assert.equal(
+    orderOpenAIAccountsByGatewayProxyHealth([first, second, fallback]).applied,
+    true,
+    '仅代理成功不得误清 Base URL 或 Provider 失败证据'
+  )
+  assert.equal(recordGatewayUpstreamBucketSuccess(first, { bucketScope: 'upstream' }), true, '完整上游成功才可清理上游桶')
+  assert.equal(
+    orderOpenAIAccountsByGatewayProxyHealth([first, second, fallback]).applied,
+    false,
+    '上游作用域成功后应恢复正常排序'
+  )
 
   clearGatewayProxyHealthForTest()
 }
@@ -133,6 +168,46 @@ function testBaseUrlBucketOwnerIsolation(): void {
     '桶避让只能影响相同物理账户所有者的候选'
   )
   assert(order.accounts.some((item) => item.id === secondOwnerAccount.id), '其他所有者的账户必须保留且不受桶状态影响')
+
+  clearGatewayProxyHealthForTest()
+}
+
+function testAuthorizedInstancesDoNotForgeDistinctFailureEvidence(): void {
+  clearGatewayProxyHealthForTest()
+  const firstAuthorized = account(
+    'account-authorized-instance-a',
+    'proxy-authorized-shared',
+    'https://authorized-shared.example/v1',
+    undefined,
+    { credentialSourceAccountId: 'physical-account-shared' }
+  )
+  const secondAuthorized = account(
+    'account-authorized-instance-b',
+    'proxy-authorized-shared',
+    'https://authorized-shared.example/v1',
+    undefined,
+    { credentialSourceAccountId: 'physical-account-shared' }
+  )
+  const independent = account(
+    'account-authorized-independent',
+    'proxy-authorized-shared',
+    'https://authorized-shared.example/v1',
+    undefined,
+    { credentialSourceAccountId: 'physical-account-independent' }
+  )
+
+  recordGatewayProxyFailure(firstAuthorized, 'first_authorized_failure')
+  const duplicatePhysicalDecision = recordGatewayProxyFailure(secondAuthorized, 'second_authorized_failure')
+  assert.equal(
+    duplicatePhysicalDecision.suspected,
+    false,
+    '同一 credential source 的多个授权实例不能伪造成两个独立物理账号'
+  )
+  assert.equal(duplicatePhysicalDecision.distinctAccountCount, 1, '授权实例失败证据必须按物理凭据源去重')
+
+  const independentDecision = recordGatewayProxyFailure(independent, 'independent_physical_failure')
+  assert.equal(independentDecision.suspected, true, '第二个独立物理凭据源失败后才可达到共享代理阈值')
+  assert.equal(independentDecision.distinctAccountCount, 2, '共享代理应统计两个独立物理凭据源')
 
   clearGatewayProxyHealthForTest()
 }
@@ -167,9 +242,29 @@ function testBaseUrlBucketHalfOpen(): void {
   assert.equal(order.applied, true, '半开失败后应回到避让状态')
   assert.deepEqual(order.accounts.map((item) => item.id), [third.id, first.id, second.id], '半开失败后应再次优先使用其他上游桶')
 
-  assert.equal(recordGatewayProxySuccess(first), true, '半开探测成功路径应能清理上游桶状态')
+  assert.equal(recordGatewayUpstreamBucketSuccess(first), true, '半开探测成功路径应能清理上游桶状态')
   order = orderOpenAIAccountsByGatewayProxyHealth([first, second, third])
   assert.equal(order.applied, false, '成功清理后不应继续避让')
+
+  clearGatewayProxyHealthForTest()
+}
+
+function testMemoryAvoidDeadlineAndExpiryDoNotShrink(): void {
+  clearGatewayProxyHealthForTest()
+  const startedAtMs = 100_000
+  const first = account('account-memory-monotonic', 'proxy-memory-monotonic')
+  const fallback = account('account-memory-monotonic-fallback', 'proxy-memory-monotonic-fallback')
+
+  setGatewayProxyHealthNowForTest(startedAtMs)
+  suppressGatewayUpstreamBucketLocallyForSeconds(first, 600, 'long_explicit_suppression', { bucketScope: 'proxy' })
+  setGatewayProxyHealthNowForTest(startedAtMs + 1)
+  recordGatewayProxyFailure(first, 'short_default_failure')
+  suppressGatewayUpstreamBucketLocallyForSeconds(first, 1, 'short_explicit_suppression', { bucketScope: 'proxy' })
+
+  setGatewayProxyHealthNowForTest(startedAtMs + 180_000)
+  const order = orderOpenAIAccountsByGatewayProxyHealth([first, fallback])
+  assert.equal(order.applied, true, '较短失败或 suppression 不得让长避让期限提前失效')
+  assert.deepEqual(order.accounts.map((item) => item.id), [fallback.id, first.id], '内存 entry TTL 也不得被较短写入提前截断')
 
   clearGatewayProxyHealthForTest()
 }
@@ -224,7 +319,7 @@ function account(
   proxyProfileId: string | undefined,
   baseUrl = 'https://example.invalid/v1',
   proxyUrl?: string,
-  options: { priority?: number; ownerSystemAccountId?: string } = {}
+  options: { priority?: number; ownerSystemAccountId?: string; credentialSourceAccountId?: string } = {}
 ): OpenAIAccountSecret {
   return {
     id,
@@ -249,6 +344,7 @@ function account(
     schedulable: true,
     proxyProfileId,
     proxyUrl,
+    credentialSourceAccountId: options.credentialSourceAccountId,
     accountOwnerSystemAccountId: options.ownerSystemAccountId ?? 'sys_admin',
     groupOwnerSystemAccountId: options.ownerSystemAccountId ?? 'sys_admin',
     accountAccessType: 'owner',

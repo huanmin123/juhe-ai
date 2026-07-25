@@ -45,7 +45,8 @@ export function codexCompactionContractMismatchFrame(
     errorMessage: input.message ?? `Codex Remote Compaction V2 响应结构无效：期望恰好 1 个 compaction output item，实际 ${input.compactionItemCount} 个，output item 总数 ${input.outputItemCount} 个`,
     rawJsonPaths: ['output'],
     rawText: input.transport === 'sse' ? input.eventType : undefined,
-    eventType: input.eventType
+    eventType: input.eventType,
+    provenance: 'gateway_protocol_contract'
   }
 }
 

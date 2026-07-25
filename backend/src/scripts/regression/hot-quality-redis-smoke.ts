@@ -14,6 +14,7 @@ import {
 
 const terminalOutcomeClasses = [
   'completed_response',
+  'upstream_response_failure',
   'explicit_policy_failure',
   'transport_failure',
   'timeout',
@@ -87,12 +88,16 @@ function terminalInput(attemptId: string, scope: HotQualityScope, nowMs: number,
     scope,
     terminalOutcomeId: `terminal-${attemptId}`,
     outcomeClass,
-    failureScope: outcomeClass === 'completed_response' ? 'none' as const : 'protocol_model' as const,
+    failureScope: outcomeClass === 'completed_response' || outcomeClass === 'upstream_response_failure'
+      ? 'none' as const
+      : 'protocol_model' as const,
     source: outcomeClass === 'explicit_policy_failure'
       ? 'explicit_policy' as const
-      : outcomeClass === 'unknown' || outcomeClass === 'client_cancellation'
-        ? 'request_lifecycle' as const
-        : 'gateway_transport' as const,
+      : outcomeClass === 'upstream_response_failure'
+        ? 'upstream_response' as const
+        : outcomeClass === 'unknown' || outcomeClass === 'client_cancellation'
+          ? 'request_lifecycle' as const
+          : 'gateway_transport' as const,
     firstByteMs: firstByteSamples[index % firstByteSamples.length],
     nowMs
   }

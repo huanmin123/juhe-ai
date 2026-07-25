@@ -96,7 +96,7 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     const opened = await assertConfirmedTransportFailureOpensCircuit(baseUrl, scenario)
-    await assertDispatchRevisionFencesStaleRecovery(opened, scenario)
+    await assertDispatchRevisionFencesStaleRecovery(opened, scenario, upstreamBaseUrl)
     const reopened = await assertConfirmedTransportFailureOpensCircuit(baseUrl, scenario)
     await assertControlledRecoverySingleFlightAndCloses(baseUrl, reopened, scenario)
 
@@ -152,21 +152,43 @@ async function assertConfirmedTransportFailureOpensCircuit(
 
   const secondResponse = await postChat(baseUrl, scenario.apiKey, 'second request should confirm transport failure')
   assert(secondResponse.status >= 500, `第二次 Mock AI 连接中断应返回网关失败，实际 HTTP ${secondResponse.status}: ${secondResponse.text}`)
+  const onceConfirmed = await store.get(scope)
+  assert.equal(onceConfirmed.phase, 'SUSPECT', '首次独立 confirmation 失败后必须继续切号并保持 SUSPECT')
+  assert.equal(onceConfirmed.confirmationFailureCount, 1)
+  assert.equal(onceConfirmed.lease, undefined)
+
+  const thirdResponse = await postChat(baseUrl, scenario.apiKey, 'third request should reach confirmation threshold')
+  assert(thirdResponse.status >= 500, `第三次 Mock AI 连接中断应返回网关失败，实际 HTTP ${thirdResponse.status}: ${thirdResponse.text}`)
   const opened = await store.get(scope)
-  assert.equal(opened.phase, 'OPEN', '后续独立请求确认传输失败后必须打开账户电路')
+  assert.equal(opened.phase, 'OPEN', '首次失败加两次独立 confirmation 失败后必须打开账户电路')
+  assert.equal(opened.confirmationFailureCount, 2)
+  assert.equal(opened.failureEvidenceKeys?.length, 3)
   assert.equal(opened.lease, undefined, 'OPEN 状态不得残留 confirmation lease')
-  assert.equal(opened.backoffAttempt, 1, '首次确认失败应进入第一档恢复退避')
+  assert.equal(opened.backoffAttempt, 1, '达到确认阈值后应进入第一档恢复退避')
   assert.equal(opened.dispatchRevision, accountCircuit.accountCircuitDispatchRevision(candidate))
   return { scope, dispatchRevision: opened.dispatchRevision }
 }
 
 async function assertDispatchRevisionFencesStaleRecovery(
   opened: { scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>; dispatchRevision: string },
-  scenario: GatewayScenario
+  scenario: GatewayScenario,
+  upstreamBaseUrl: string
 ): Promise<void> {
   upstreamPhase = 'recovered'
-  const updated = repositories.updateAccount(scenario.accountId, { priority: 2 }, access)
-  assert(updated, '测试应能通过真实账户更新入口推进 dispatch revision')
+  const updated = repositories.updateAccount(scenario.accountId, {
+    credentials: {
+      api_key: 'sk-runtime-recovery-probe',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse', 'chat_json', 'responses_json']
+    }
+  }, access)
+  assert(updated, '测试应能通过真实传输身份更新入口推进 dispatch revision')
+  repositories.recordAccountHealthCheckSuccess(scenario.accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
   const candidate = repositories.findOpenAIAccountForGroup(
     scenario.groupId,
     scenario.accountId,
@@ -175,7 +197,7 @@ async function assertDispatchRevisionFencesStaleRecovery(
   )
   assert(candidate, 'revision 更新后应能重新加载账户候选')
   const nextRevision = accountCircuit.accountCircuitDispatchRevision(candidate)
-  assert.notEqual(nextRevision, opened.dispatchRevision, '调度相关配置变化必须推进 dispatch revision')
+  assert.notEqual(nextRevision, opened.dispatchRevision, '凭据连接身份变化必须推进 dispatch revision')
 
   const store = accountCircuit.getGatewayAccountCircuitStore()
   const beforeHits = upstreamHits.length
@@ -342,6 +364,7 @@ async function postChat(baseUrl: string, apiKey: string, content: string): Promi
     },
     body: JSON.stringify({
       model: 'gpt-5.5',
+      session_id: content,
       messages: [{ role: 'user', content }],
       stream: false
     })

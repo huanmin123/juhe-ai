@@ -60,6 +60,7 @@ const huygensReadOperationTypes = [
   'get_runtime_log_facets',
   'read_codex_context_response_chain',
   'read_codex_context_compact_state',
+  'get_account_circuit_incident_by_scope_key',
   'list_account_circuit_incidents_for_rebuild',
   'list_account_circuit_projection_gaps'
 ] as const

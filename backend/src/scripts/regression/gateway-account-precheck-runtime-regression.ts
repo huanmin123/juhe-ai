@@ -49,6 +49,7 @@ const [
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const gatewaySettings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  accountCircuitConfirmationFailuresRequired: 2,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
@@ -82,6 +83,7 @@ try {
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
+  await testSuccessfulUsageFencesLatePrecheckFailure()
   await testFreshPrecheckStillMarksTemporaryUnavailable()
   await testPrecheckWaitsForInFlightConcurrencyBeforeMarking()
 
@@ -987,7 +989,9 @@ async function testStalePrecheckAfterManualRestoreIsSkipped(): Promise<void> {
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
     reason: '较早预检查失败不应覆盖手动恢复',
-    precheckStartedAt
+    precheckStartedAt,
+    expectedDispatchRevision: gatewayAccount.dispatchRevision ?? 0,
+    expectedStatus: gatewayAccount.status
   })
   assert.equal(result.updated, false, '手动恢复后的过期预检查写回不应再次改状态')
   assert.equal(result.skippedReason, 'stale_account_updated', '过期预检查应被识别为账号状态已更新')
@@ -1022,12 +1026,53 @@ async function testFailedUsageDoesNotMakePrecheckStale(): Promise<void> {
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
     reason: '失败使用记录不能伪装成恢复；HTTP 403；insufficient_quota；余额和订阅额度均不足',
-    precheckStartedAt
+    precheckStartedAt,
+    expectedDispatchRevision: gatewayAccount.dispatchRevision ?? 0,
+    expectedStatus: gatewayAccount.status
   })
   assert.equal(result.updated, true, '仅有失败使用记录时，预检查仍应能写入临时不可调用')
   const afterPrecheck = repositories.findAccountSummary(account.id, adminAccess)
   assert.equal(afterPrecheck?.status, 'temporary_unavailable', '失败使用记录不应阻止预检查降级')
   assert.match(afterPrecheck?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '预检查写库应保留探针传入的真实上游错误摘要')
+}
+
+async function testSuccessfulUsageFencesLatePrecheckFailure(): Promise<void> {
+  const { account, group, gatewayAccount } = createGatewayAccount('真实成功阻断迟到预检查')
+  await delay(5)
+  const precheckStartedAt = new Date().toISOString()
+  await delay(5)
+  repositories.createUsageRecordsBatch([{
+    traceId: 'precheck-concurrent-real-success',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_admin',
+    groupId: group.id,
+    accountId: account.id,
+    endpoint: '/v1/responses',
+    providerCode: 'gpt',
+    model: 'gpt-5.5',
+    stream: false,
+    statusCode: 200,
+    success: true,
+    durationMs: 10,
+    createdAt: new Date().toISOString()
+  }])
+  const afterSuccess = repositories.findAccountSummary(account.id, adminAccess)
+  assert(
+    afterSuccess?.lastHealthSuccessAt && afterSuccess.lastHealthSuccessAt > precheckStartedAt,
+    '探针在途时的真实请求成功应落下更新的 health success watermark'
+  )
+
+  const result = await handleDbServiceOperation({
+    type: 'mark_account_precheck_temporary_unavailable',
+    account: gatewayAccount,
+    reason: '迟到的旧探针失败不应覆盖真实成功',
+    precheckStartedAt,
+    expectedDispatchRevision: gatewayAccount.dispatchRevision ?? 0,
+    expectedStatus: gatewayAccount.status
+  })
+  assert.equal(result.updated, false, '探针开始后已有真实成功时，迟到失败不得再写账户状态')
+  assert.equal(result.skippedReason, 'newer_health_success', '迟到失败应明确识别为已有更新真实成功')
+  assertActiveAccount(account.id, '真实成功必须使迟到预检查失败无副作用')
 }
 
 async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> {
@@ -1039,7 +1084,9 @@ async function testFreshPrecheckStillMarksTemporaryUnavailable(): Promise<void> 
     type: 'mark_account_precheck_temporary_unavailable',
     account: gatewayAccount,
     reason: '模拟当前预检查失败；HTTP 403；insufficient_quota；余额和订阅额度均不足',
-    precheckStartedAt
+    precheckStartedAt,
+    expectedDispatchRevision: gatewayAccount.dispatchRevision ?? 0,
+    expectedStatus: gatewayAccount.status
   })
   assert.equal(result.updated, true, '没有更新状态介入时，预检查仍应写入临时不可调用')
   const afterPrecheck = repositories.findAccountSummary(account.id, adminAccess)

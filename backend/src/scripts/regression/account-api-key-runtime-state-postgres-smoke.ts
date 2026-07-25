@@ -6,6 +6,7 @@ import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { createAccountAsync, createGroupAsync } from '../../storage/repositories.js'
 import {
+  deferAccountApiKeyRuntimeProbeAsync,
   listAccountApiKeyRuntimeStatesDueForProbeAsync,
   recordAccountApiKeyRuntimeFailureAsync,
   recordAccountApiKeyRuntimeSuccessAsync,
@@ -99,12 +100,234 @@ try {
   })
   assert.equal(failure.changed, true, 'PG failure 写回应创建 runtime state')
 
+  const initialPool = await getPostgresPool()
+  await initialPool.query(`
+    INSERT INTO juhe_business.account_api_key_runtime_states (
+      id, system_account_id, account_id, key_fingerprint, key_index,
+      status, failure_count, consecutive_failures, success_count,
+      cooldown_until, next_probe_at, probe_backoff_seconds,
+      created_at, updated_at
+    )
+    SELECT $1 || '-stale-' || series::text, $2, $3, $1 || '-fingerprint-' || series::text, series + 10,
+      'temporary_unavailable', 1, 1, 0,
+      '2026-07-19T00:00:00.000Z', '2026-07-19T00:00:00.000Z', 3,
+      '2026-07-19T00:00:00.000Z', '2026-07-19T00:00:00.000Z'
+    FROM generate_series(1, 64) AS series
+  `, [marker, access.systemAccountId, account.id])
+
   const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(20)
   const candidate = candidates.find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
   assert.ok(candidate, 'PG due-for-probe 读取应返回刚写入的 key')
   assert.equal(candidate.apiKey, selected.key, 'PG due-for-probe 应能从加密凭据恢复目标 API Key')
+  assert(candidate.probeClaimToken, 'PG due-for-probe 必须原子取得数据库 claim')
+  assert(Number.isFinite(Date.parse(candidate.stateUpdatedAt)), 'PG due-for-probe 必须返回精确 state updated_at generation')
   const details = await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])
-  assert.equal(details.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))?.lastTraceId, 'pg-runtime-trace', 'PG runtime state 应返回最近失败 traceId')
+  const detailBeforeNeutralDefer = details.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))
+  assert.equal(detailBeforeNeutralDefer?.lastTraceId, 'pg-runtime-trace', 'PG runtime state 应返回最近失败 traceId')
+
+  const neutralDeferred = await deferAccountApiKeyRuntimeProbeAsync({
+    account: dispatchAccount,
+    expectedStatus: candidate.status,
+    expectedNextProbeAt: candidate.nextProbeAt,
+    expectedStateUpdatedAt: candidate.stateUpdatedAt,
+    expectedProbeClaimToken: candidate.probeClaimToken,
+    expectedAccountConfigRevision: candidate.accountConfigRevision,
+    delaySeconds: 60,
+    observedAt: new Date().toISOString()
+  })
+  assert.equal(neutralDeferred.changed, true, 'PG 中性探针应推进 next_probe_at')
+  const detailAfterNeutralDefer = (await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id]))
+    .get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))
+  assert.equal(detailAfterNeutralDefer?.status, detailBeforeNeutralDefer?.status, 'PG 中性探针不得改变 Key 状态')
+  assert.equal(detailAfterNeutralDefer?.failureCount, detailBeforeNeutralDefer?.failureCount, 'PG 中性探针不得增加 Key 失败次数')
+  assert.equal(detailAfterNeutralDefer?.lastErrorCode, detailBeforeNeutralDefer?.lastErrorCode, 'PG 中性探针不得覆盖诊断')
+  assert.equal((await listAccountApiKeyRuntimeStatesDueForProbeAsync(20)).some((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint), false, 'PG 中性探针顺延后不得立即再次入队')
+  const staleStateFence = {
+    expectedStatus: candidate.status,
+    expectedNextProbeAt: candidate.nextProbeAt,
+    expectedStateUpdatedAt: candidate.stateUpdatedAt,
+    expectedProbeClaimToken: candidate.probeClaimToken,
+    expectedAccountConfigRevision: candidate.accountConfigRevision,
+    observedAt: new Date().toISOString()
+  }
+  assert.equal((await recordAccountApiKeyRuntimeSuccessAsync(dispatchAccount, staleStateFence)).changed, false, 'PG state generation 更新后旧 success 不得恢复 Key')
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_stale_state_generation_failure',
+    ...staleStateFence
+  })).changed, false, 'PG state generation 更新后旧 transport failure 不得覆盖 Key')
+  assert.equal((await deferAccountApiKeyRuntimeProbeAsync({
+    account: dispatchAccount,
+    expectedStatus: candidate.status,
+    expectedNextProbeAt: candidate.nextProbeAt,
+    expectedStateUpdatedAt: candidate.stateUpdatedAt,
+    expectedProbeClaimToken: candidate.probeClaimToken,
+    expectedAccountConfigRevision: candidate.accountConfigRevision,
+    delaySeconds: 60,
+    observedAt: new Date().toISOString()
+  })).changed, false, 'PG state generation 更新后旧 neutral defer 不得覆盖 Key')
+
+  const pool = await getPostgresPool()
+  const explicitPolicyProbeAt = '2030-07-24T00:00:00.000Z'
+  const explicitPolicyUpdatedAt = '2030-07-24T00:00:01.000Z'
+  const dueForConfigFence = new Date(Date.now() - 2_000).toISOString()
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET status = 'rate_limited', next_probe_at = $1,
+        probe_claim_token = NULL, probe_claimed_until = NULL,
+        last_attempt_at = '2026-07-24T00:00:00.000Z', updated_at = '2030-07-24T00:00:00.000Z'
+    WHERE account_id = $2 AND key_fingerprint = $3
+  `, [dueForConfigFence, account.id, selected.fingerprint])
+  const staleCandidate = (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+    .find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
+  assert(staleCandidate, 'PG 配置代次 fencing 测试必须取得新候选')
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET config_revision = config_revision + 1, updated_at = $1
+    WHERE id = $2
+  `, [explicitPolicyUpdatedAt, account.id])
+  const staleFence = {
+    expectedStatus: staleCandidate.status,
+    expectedNextProbeAt: staleCandidate.nextProbeAt,
+    expectedStateUpdatedAt: staleCandidate.stateUpdatedAt,
+    expectedProbeClaimToken: staleCandidate.probeClaimToken,
+    expectedAccountConfigRevision: staleCandidate.accountConfigRevision,
+    observedAt: new Date().toISOString()
+  }
+  assert.equal((await recordAccountApiKeyRuntimeSuccessAsync(dispatchAccount, staleFence)).changed, false, 'PG Key 配置代次更新后旧 success 不得恢复 Key')
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_stale_account_config_failure',
+    ...staleFence
+  })).changed, false, 'PG Key 配置代次更新后旧 transport failure 不得覆盖 Key')
+  assert.equal((await deferAccountApiKeyRuntimeProbeAsync({
+    account: dispatchAccount,
+    expectedStatus: staleCandidate.status,
+    expectedNextProbeAt: staleCandidate.nextProbeAt,
+    expectedStateUpdatedAt: staleCandidate.stateUpdatedAt,
+    expectedProbeClaimToken: staleCandidate.probeClaimToken,
+    expectedAccountConfigRevision: staleCandidate.accountConfigRevision,
+    delaySeconds: 60,
+    observedAt: new Date().toISOString()
+  })).changed, false, 'PG Key 配置代次更新后旧 neutral defer 不得覆盖 Key')
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET status = 'rate_limited', next_probe_at = $1,
+        probe_claim_token = NULL, probe_claimed_until = NULL, updated_at = $2
+    WHERE account_id = $3 AND key_fingerprint = $4
+  `, [explicitPolicyProbeAt, explicitPolicyUpdatedAt, account.id, selected.fingerprint])
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_stale_probe_failure',
+    ...staleFence
+  })).changed, false, 'PG 显式策略更新后旧 transport failure 不得覆盖 Key')
+  assert.equal((await deferAccountApiKeyRuntimeProbeAsync({
+    account: dispatchAccount,
+    expectedStatus: staleCandidate.status,
+    expectedNextProbeAt: staleCandidate.nextProbeAt,
+    expectedStateUpdatedAt: staleCandidate.stateUpdatedAt,
+    expectedProbeClaimToken: staleCandidate.probeClaimToken,
+    expectedAccountConfigRevision: staleCandidate.accountConfigRevision,
+    delaySeconds: 60,
+    observedAt: new Date().toISOString()
+  })).changed, false, 'PG 显式策略更新后旧 neutral defer 不得覆盖 Key')
+  const afterStaleProbe = (await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id]))
+    .get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))
+  assert.equal(afterStaleProbe?.status, 'rate_limited', 'PG 迟到探针不得改变显式策略状态')
+  assert.equal(afterStaleProbe?.nextProbeAt, explicitPolicyProbeAt, 'PG 迟到探针不得改变显式策略计划')
+
+  const dueForFencedSuccess = new Date(Date.now() - 2_000).toISOString()
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET status = 'rate_limited', next_probe_at = $1,
+        probe_claim_token = NULL, probe_claimed_until = NULL,
+        last_attempt_at = '2026-07-24T00:00:00.000Z', updated_at = '2030-07-24T00:00:02.000Z'
+    WHERE account_id = $2 AND key_fingerprint = $3
+  `, [dueForFencedSuccess, account.id, selected.fingerprint])
+  const successCandidate = (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+    .find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
+  assert(successCandidate, 'PG 同代 success 测试必须取得新候选')
+  assert.equal((await recordAccountApiKeyRuntimeSuccessAsync(dispatchAccount, {
+    expectedStatus: successCandidate.status,
+    expectedNextProbeAt: successCandidate.nextProbeAt,
+    expectedStateUpdatedAt: successCandidate.stateUpdatedAt,
+    expectedProbeClaimToken: successCandidate.probeClaimToken,
+    expectedAccountConfigRevision: successCandidate.accountConfigRevision,
+    observedAt: new Date().toISOString()
+  })).changed, true, 'PG 同代 complete_success 必须恢复 Key')
+
+  const dueForFencedFailure = new Date(Date.now() - 2_000).toISOString()
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET status = 'temporary_unavailable', next_probe_at = $1,
+        probe_claim_token = NULL, probe_claimed_until = NULL,
+        last_attempt_at = '2026-07-24T00:00:01.000Z', updated_at = '2030-07-24T00:00:03.000Z'
+    WHERE account_id = $2 AND key_fingerprint = $3
+  `, [dueForFencedFailure, account.id, selected.fingerprint])
+  const failureCandidate = (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+    .find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
+  assert(failureCandidate, 'PG 同代 transport failure 测试必须取得新候选')
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_same_generation_transport_failure',
+    expectedStatus: failureCandidate.status,
+    expectedNextProbeAt: failureCandidate.nextProbeAt,
+    expectedStateUpdatedAt: failureCandidate.stateUpdatedAt,
+    expectedProbeClaimToken: failureCandidate.probeClaimToken,
+    expectedAccountConfigRevision: failureCandidate.accountConfigRevision,
+    observedAt: new Date().toISOString()
+  })).changed, true, 'PG 同代 transport failure 必须继续退避')
+
+  const claimRaceDueAt = new Date(Date.now() - 5_000).toISOString()
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET status = 'temporary_unavailable', next_probe_at = $1,
+        last_attempt_at = '2026-07-24T00:00:02.000Z',
+        probe_claim_token = NULL, probe_claimed_until = NULL,
+        updated_at = $2
+    WHERE account_id = $3 AND key_fingerprint = $4
+  `, [claimRaceDueAt, new Date().toISOString(), account.id, selected.fingerprint])
+  const firstWorkerCandidate = (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+    .find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
+  assert(firstWorkerCandidate, 'PG 第一个 worker 必须取得 claim')
+  assert.equal(
+    (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+      .some((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint),
+    false,
+    'PG 有效 claim 期间第二个 worker 不得重复取得同一 Key'
+  )
+  await pool.query(`
+    UPDATE juhe_business.account_api_key_runtime_states
+    SET probe_claimed_until = $1
+    WHERE account_id = $2 AND key_fingerprint = $3
+  `, [new Date(Date.now() - 1_000).toISOString(), account.id, selected.fingerprint])
+  const secondWorkerCandidate = (await listAccountApiKeyRuntimeStatesDueForProbeAsync(20))
+    .find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
+  assert(secondWorkerCandidate, 'PG claim 租约过期后第二个 worker 必须接管')
+  assert.notEqual(secondWorkerCandidate.probeClaimToken, firstWorkerCandidate.probeClaimToken)
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_expired_worker_failure',
+    expectedStatus: firstWorkerCandidate.status,
+    expectedNextProbeAt: firstWorkerCandidate.nextProbeAt,
+    expectedStateUpdatedAt: firstWorkerCandidate.stateUpdatedAt,
+    expectedAccountConfigRevision: firstWorkerCandidate.accountConfigRevision,
+    expectedProbeClaimToken: firstWorkerCandidate.probeClaimToken,
+    observedAt: new Date().toISOString()
+  })).changed, false, 'PG 被接管的旧 worker failure 不得落库')
+  assert.equal((await recordAccountApiKeyRuntimeSuccessAsync(dispatchAccount, {
+    expectedStatus: secondWorkerCandidate.status,
+    expectedNextProbeAt: secondWorkerCandidate.nextProbeAt,
+    expectedStateUpdatedAt: secondWorkerCandidate.stateUpdatedAt,
+    expectedAccountConfigRevision: secondWorkerCandidate.accountConfigRevision,
+    expectedProbeClaimToken: secondWorkerCandidate.probeClaimToken,
+    observedAt: new Date().toISOString()
+  })).changed, true, 'PG 接管 worker 的 success 必须恢复 Key')
 
   const dirty = await readDirtyReason(group.id)
   assert.equal(dirty, 'account_api_key_runtime', 'PG runtime state 写回应标记分组账号统计 dirty')
@@ -115,6 +338,28 @@ try {
   assert.equal(afterSuccess.some((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint), false, 'PG success 后 key 不应继续进入 probe 候选')
   const detailsAfterSuccess = await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])
   assert.equal(detailsAfterSuccess.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))?.lastTraceId, undefined, 'PG success 后应清空最近失败 traceId')
+
+  await new Promise((resolve) => setTimeout(resolve, 2))
+  const sameMillisecond = new Date().toISOString()
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_same_millisecond_failure',
+    observedAt: sameMillisecond
+  })).changed, true)
+  assert.equal((await recordAccountApiKeyRuntimeSuccessAsync(dispatchAccount, {
+    observedAt: sameMillisecond
+  })).changed, true, 'PG 同毫秒 success 必须覆盖先写入的 failure')
+  assert.equal((await recordAccountApiKeyRuntimeFailureAsync({
+    account: dispatchAccount,
+    status: 'temporary_unavailable',
+    errorCode: 'pg_late_same_millisecond_failure',
+    observedAt: sameMillisecond
+  })).changed, false, 'PG 同毫秒迟到 failure 不得覆盖 success')
+  const detailsAfterRace = await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])
+  const racedState = detailsAfterRace.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))
+  assert.equal(racedState?.status, 'active', 'PG 同毫秒竞态必须稳定收敛为 active')
+  assert.equal(racedState?.lastErrorCode, undefined, 'PG 同毫秒迟到 failure 不得复活错误详情')
 
   await assertProbeExplainUsesIndex(dueAt)
 

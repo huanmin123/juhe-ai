@@ -56,7 +56,7 @@ export interface ResponseInspectionRuntimeContext {
 }
 
 export interface ResponseInspectionDecision {
-  reason: 'configured_response_policy' | 'before_downstream_write_response_failure' | 'cyber_policy_response_failure'
+  reason: 'configured_response_policy' | 'before_downstream_write_response_failure'
   action: 'client_retry' | 'discard_event' | 'discard_response' | 'replace_with_failure' | 'dry_run'
   transport: 'json' | 'sse'
   triggerPhase: 'before_downstream_write' | 'after_downstream_write'
@@ -75,6 +75,7 @@ export interface ResponseInspectionDecision {
   policyId?: string
   policyName?: string
   policySource?: ResponseInspectionPolicySource
+  replayAuthority?: 'explicit_user_policy'
   policyScopeType?: ResponseInspectionPolicyScopeType
   policyProtocolCode?: string
   policyProviderCode?: string
@@ -99,13 +100,7 @@ export interface ResponseInspectionFailurePayload {
 }
 
 const textMatchSnippetChars = 160
-const systemDefaultStreamFailureCodes = new Set([
-  'server_is_overloaded',
-  'slow_down',
-  'cyber_policy',
-  'context_length_exceeded',
-  'internal_server_error'
-])
+const codexCompactionContractPolicyId = 'default_codex_compaction_contract'
 export function resolveRuntimeResponseInspectionPolicies(input: {
   account: UpstreamAccount
   managementPolicies?: ResponseInspectionPolicySummary[]
@@ -179,16 +174,10 @@ export function matchRuntimeResponseInspectionPolicy(
     if (!policy.enabled) continue
     if (
       policy.source === 'system_default'
-      && policy.protocolCode === OPENAI_PROTOCOL_CODE
-      && genericInspectionClientProfile(context?.clientProfile)
-      && !(policy.scopeType === 'provider' && systemDefaultStreamFailureCodes.has(frame.errorCode?.trim().toLowerCase() ?? ''))
-    ) continue
-    if (
-      policy.source === 'system_default'
-      && policy.protocolCode === OPENAI_PROTOCOL_CODE
-      && frame.transport === 'sse'
-      && !policy.match.clientProfiles?.length
-      && !systemDefaultStreamFailureCodes.has(frame.errorCode?.trim().toLowerCase() ?? '')
+      && (
+        policy.id !== codexCompactionContractPolicyId
+        || frame.provenance !== 'gateway_protocol_contract'
+      )
     ) continue
     if (!policyMatchesRuntimeContext(policy, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
@@ -201,14 +190,6 @@ export function matchRuntimeResponseInspectionPolicy(
     }
   }
   return undefined
-}
-
-function preciseInspectionClientProfile(clientProfile: ResponseInspectionPolicyClientProfile | undefined): boolean {
-  return clientProfile === 'codex' || clientProfile === 'claude_code' || clientProfile === 'gemini_cli'
-}
-
-function genericInspectionClientProfile(clientProfile: ResponseInspectionPolicyClientProfile | undefined): boolean {
-  return clientProfile === 'generic_openai' || clientProfile === 'generic_anthropic' || clientProfile === 'generic_gemini'
 }
 
 function firstPositiveMatch(frame: ResponseSemanticFrame, match: ResponseInspectionPolicyMatch): Pick<ResponseInspectionMatchResult, 'matchedField' | 'matchedValue' | 'snippet'> | undefined {
@@ -276,7 +257,7 @@ function buildPolicyDecision(
   const policy = match.policy
   const frame = match.matchedFrame
   return {
-    reason: configuredPolicyReason(policy, frame, downstreamWritten),
+    reason: configuredPolicyReason(policy),
     action,
     transport: frame.transport,
     triggerPhase: downstreamWritten ? 'after_downstream_write' : 'before_downstream_write',
@@ -295,6 +276,9 @@ function buildPolicyDecision(
     policyId: policy.id,
     policyName: policy.name,
     policySource: policy.source,
+    ...(policy.source !== 'system_default' && policy.action === 'retry_next_account'
+      ? { replayAuthority: 'explicit_user_policy' as const }
+      : {}),
     policyScopeType: policy.scopeType,
     policyProtocolCode: policy.protocolCode,
     policyProviderCode: policy.providerCode,
@@ -325,11 +309,10 @@ function policyMatchesRuntimeContext(
   return true
 }
 
-function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame, downstreamWritten: boolean): ResponseInspectionDecision['reason'] {
-  if (policy.source !== 'system_default') return 'configured_response_policy'
-  return downstreamWritten && frame.errorCode === 'cyber_policy'
-    ? 'cyber_policy_response_failure'
-    : 'before_downstream_write_response_failure'
+function configuredPolicyReason(policy: RuntimeResponseInspectionPolicy): ResponseInspectionDecision['reason'] {
+  return policy.source === 'system_default'
+    ? 'before_downstream_write_response_failure'
+    : 'configured_response_policy'
 }
 
 function responseInspectionDecisionAction(
@@ -344,9 +327,6 @@ function responseInspectionDecisionAction(
 }
 
 function rewriteErrorCode(policy: RuntimeResponseInspectionPolicy, frame: ResponseSemanticFrame): string {
-  if (policy.retryEnabled && frame.transport === 'sse' && frame.errorCode === 'cyber_policy') {
-    return gatewayStreamClientRetryErrorCode
-  }
   return frame.errorCode ?? 'response_inspection_matched'
 }
 

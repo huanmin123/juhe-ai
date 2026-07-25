@@ -13,6 +13,7 @@
 - 本文不替代具体业务架构和阶段计划：
   - [../架构总览.md](../架构总览.md)
   - [../../functions/请求处理分层设计.md](../../functions/请求处理分层设计.md)
+  - [../../functions/AI账户错误语义与状态变更边界.md](../../functions/AI账户错误语义与状态变更边界.md)
   - [../../functions/OpenAI账号接入.md](../../functions/OpenAI账号接入.md)
   - [../../functions/Anthropic账号接入.md](../../functions/Anthropic账号接入.md)
   - [../../functions/智谱GLM账号接入.md](../../functions/智谱GLM账号接入.md)
@@ -96,7 +97,7 @@
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
 | API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和路由策略绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
-| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验，以及精确客户端画像下的非 2xx 语义匹配、冷却 / 限流 / 异常目标和切号动作；通用客户端旁路 |
+| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户所有者 / 管理员显式配置的 `credentials.error_handling_rules` 校验；规则只在其声明的客户端、协议和请求范围内匹配，可以覆盖 `generic_*` 的安全推理请求。命中后按 provenance / generation / CAS 直接执行用户配置的状态动作；`retry_next` 仍受请求重放安全门禁，不能让已派发副作用请求再次执行 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
@@ -153,7 +154,7 @@ flowchart LR
 - 模型列表必须先通过 API Key 认证，再读取认证主体可见的供应商目录；未认证请求不得回退公开聚合目录。认证模型列表和 AI 问答从 API Key 路由策略全部 active 分组绑定收集 `provider_code`，并以 Key 所属系统账户读取个人模型。显式空供应商集合返回空列表。网关不按发布时间过滤，`default/codex`、`chat_list:*`、`chat_model:*` 最终发布快照及其预热、重建链路均已退场。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
-- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按账户错误处理策略、响应语义检查策略或默认冷却规则处理。
+- 流式响应需要稳定转发 SSE。完整 HTTP / SSE 的状态码、错误码、类型和正文只作诊断或用户显式策略输入；系统自动负向状态只接受匹配来源的未完成 transport 独立证据，不存在根据普通上游响应执行的“默认冷却规则”。
 - 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态入队；网关请求链路不能同步写审计表。
 - SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以终态记录进入审计队列。
 - 网关错误保持 OpenAI 兼容结构；网关日志、请求快照、原始审计日志和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
@@ -167,7 +168,7 @@ flowchart LR
 - 来源熔断、IP 级账号回避、会话亲和、账号当前并发、高并发分组短队列、本地账号短期屏蔽和上游桶避让都是进程内易失运行态，不落库、不跨分组共享分组级队列，也不能变成阻塞数据库查询。
 - 大 JSON 请求体解析和 OAuth/Codex 请求体归一化可进入 worker thread，避免阻塞事件循环；解析结果只服务本次请求，不写业务库。
 - 使用记录、原始审计、操作日志和账号状态副作用都必须异步投递到 `ingest-worker`、`stats-worker`、`ops-worker` 或 DB service；server 到 worker / DB service 的 IPC、worker 本地落库队列和账号状态副作用本地队列都必须有数量或字节上限。普通运行日志是例外：业务进程只顺序追加完整 JSONL 文件，索引启用时由 `ingest-worker` 按持久化 cursor 有界消费，不得另建 IPC、内存或 Redis 逐行队列。部署可临时关闭审计写入和运行日志数据库索引，但不得借此关闭或清理使用记录。
-- 真实上游派发开始后，网关可以在已选分组内按账号切换和账户级错误处理策略处理；普通上游失败和已写下游输出后的失败不能因为另一个分组可能可用而跨分组透明重放请求。配置化响应语义检查在写下游前命中并耗尽当前号池时，可以按路由策略绑定优先级尝试后续分组。
+- 真实上游派发开始后，只有可安全重放文本在 `semanticCommitted = false` 且共享墙钟 / attempt 预算允许时，才可对 opaque 非 `2xx`、本地 transport failure 或精确协议声明的失败结构按 Key -> 账户 -> 后续分组接管。用户显式状态动作与请求重放分开裁决：即使规则命中 `retry_next`，已派发的图片、音频、文件 / 资源、后台任务、hosted tool 等副作用请求以及已提交响应都不得再次执行。
 
 ## 6. 数据库设计
 
@@ -324,4 +325,4 @@ erDiagram
 
 ## 11. 网关账户运行态专题入口
 
-普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、冷启动 fail-closed 重建、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证。
+普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、单页/总时限和 cursor fence 的冷启动重建、按账户权威查询渐进服务、容量耗尽共享阻塞哨兵、长期退避 jitter、并发 recovery、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证；全量重建失败只阻塞尚未按账户确认的对象，不能留下永久 `rebuilding` 或无限全局 fail-closed。

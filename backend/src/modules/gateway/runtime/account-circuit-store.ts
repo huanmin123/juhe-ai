@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 export type AccountCircuitPhase = 'CLOSED' | 'SUSPECT' | 'OPEN' | 'HALF_OPEN' | 'RECOVERING'
 
 export type AccountCircuitScope =
@@ -28,6 +30,9 @@ export interface AccountCircuitState {
   transitionId: string
   backoffAttempt: number
   recoverySuccessCount: number
+  confirmationFailuresRequired?: number
+  confirmationFailureCount?: number
+  failureEvidenceKeys?: string[]
   openedAtMs?: number
   retryAtMs?: number
   failureReason?: string
@@ -56,6 +61,7 @@ export type AccountCircuitMutationStatus =
 export interface AccountCircuitMutationResult {
   status: AccountCircuitMutationStatus
   state: AccountCircuitState
+  relatedStates?: AccountCircuitState[]
 }
 
 export interface AccountCircuitTransitionIdentity {
@@ -73,16 +79,29 @@ export interface AccountCircuitStore {
     dispatchRevision: string
     transitionId: string
     reason: string
+    confirmationFailuresRequired?: number
+    failureEvidenceKey?: string
     nowMs?: number
   }): Promise<AccountCircuitMutationResult>
   acquireConfirmationLease(input: AccountCircuitTransitionIdentity & {
     leaseId: string
     leaseUntilMs: number
+    expectedFailureEvidenceKey?: string
+    confirmationEvidenceKey?: string
+  }): Promise<AccountCircuitMutationResult>
+  closeSuspectFromObserver(input: AccountCircuitTransitionIdentity & {
+    expectedFailureEvidenceKey: string
+    observerEvidenceKey: string
+  }): Promise<AccountCircuitMutationResult>
+  closeSuspectFromKeyRotation(input: AccountCircuitTransitionIdentity & {
+    expectedFailureEvidenceKey: string
   }): Promise<AccountCircuitMutationResult>
   completeConfirmation(input: AccountCircuitTransitionIdentity & {
     leaseId: string
     outcome: 'framing_complete' | 'transport_failure' | 'unknown'
     reason?: string
+    failureEvidenceKey?: string
+    framingCompleteDisposition?: 'recovering' | 'closed'
   }): Promise<AccountCircuitMutationResult>
   acquireCanaryLease(input: AccountCircuitTransitionIdentity & {
     leaseId: string
@@ -126,6 +145,7 @@ export interface AccountCircuitProtocolModelOpenEvidenceInput {
   accountTransitionId: string
   reason: string
   confirmedFailureCount: number
+  distinctScopeThreshold: number
   windowMs: number
   maxProtocolScopes: number
   nowMs?: number
@@ -147,15 +167,53 @@ export interface AccountCircuitEscalationResult {
   accountState: AccountCircuitState
   protocolScopeCount: number
   confirmedFailureCount: number
+  relatedStates?: AccountCircuitState[]
 }
 
-export const accountCircuitBackoffMs = [3_000, 5_000, 10_000, 30_000, 60_000] as const
+export const accountCircuitBackoffMs = [
+  3_000,
+  5_000,
+  10_000,
+  30_000,
+  60_000,
+  120_000,
+  300_000,
+  600_000,
+  900_000
+] as const
 export const accountCircuitRecoverySuccessThreshold = 3
 export const accountCircuitRecoveryCanaryIntervalMs = 3_000
+export const accountCircuitSuspectConfirmationIntervalMs = 3_000
+export const accountCircuitDefaultConfirmationFailuresRequired = 2
+export const accountCircuitLegacyConfirmationFailuresRequired = 1
+export const accountCircuitConfirmationFailuresRequiredMin = 1
+export const accountCircuitConfirmationFailuresRequiredMax = 5
+export const accountCircuitEscalationDistinctScopeThresholdDefault = 3
+export const accountCircuitEscalationDistinctScopeThresholdMin = 3
+export const accountCircuitEscalationDistinctScopeThresholdMax = 64
+export const accountCircuitEscalationWindowMsDefault = 10 * 60_000
+export const accountCircuitEscalationWindowMsMin = 60_000
+export const accountCircuitEscalationWindowMsMax = 24 * 60 * 60_000
 
-export function accountCircuitBackoffDelayMs(attempt: number): number {
+export function accountCircuitBackoffDelayMs(attempt: number, jitterSeed?: string): number {
   const index = Math.min(accountCircuitBackoffMs.length - 1, Math.max(0, Math.trunc(attempt) - 1))
-  return accountCircuitBackoffMs[index]!
+  const base = accountCircuitBackoffMs[index]!
+  if (index < 4 || !jitterSeed?.trim()) return base
+  const sample = Number.parseInt(createHash('sha1').update(jitterSeed).digest('hex').slice(0, 8), 16) / 0xffff_ffff
+  return Math.max(1, Math.round(base * (0.8 + sample * 0.4)))
+}
+
+export function capacityExhaustedAccountCircuitState(
+  scope: AccountCircuitScope,
+  dispatchRevision = '',
+  nowMs = Date.now()
+): AccountCircuitState {
+  return {
+    ...closedAccountCircuitState(scope, dispatchRevision, 0, 'runtime-capacity-exhausted', nowMs),
+    phase: 'SUSPECT',
+    failureReason: 'runtime_state_capacity_exhausted',
+    retryAtMs: nowMs + 1_000
+  }
 }
 
 export function accountCircuitScopeKey(scope: AccountCircuitScope): string {
@@ -171,6 +229,40 @@ export function accountCircuitScopeKey(scope: AccountCircuitScope): string {
     requiredRequestLane(scope.requestLane),
     requiredScopePart(scope.modelBucket, 'modelBucket')
   ])
+}
+
+export function accountCircuitHierarchyTransitionId(input: {
+  action: 'shadow' | 'unshadow'
+  parentTransitionId: string
+  parentIncidentId: string
+  childScopeKey: string
+  childGeneration: number
+}): string {
+  const parentTransitionId = requiredScopePart(input.parentTransitionId, 'parentTransitionId')
+  const parentIncidentId = requiredScopePart(input.parentIncidentId, 'parentIncidentId')
+  const childScopeKey = requiredScopePart(input.childScopeKey, 'childScopeKey')
+  if (!Number.isSafeInteger(input.childGeneration) || input.childGeneration < 0) {
+    throw new Error('账户电路 hierarchy childGeneration 无效')
+  }
+  const digest = createHash('sha1')
+    .update(input.action)
+    .update('\0')
+    .update(parentTransitionId)
+    .update('\0')
+    .update(parentIncidentId)
+    .update('\0')
+    .update(childScopeKey)
+    .update('\0')
+    .update(String(input.childGeneration))
+    .digest('hex')
+  return `hierarchy:${input.action}:${digest}`
+}
+
+export function assertAccountCircuitStateScopeKey(state: Pick<AccountCircuitState, 'scope' | 'scopeKey'>): void {
+  const expected = accountCircuitScopeKey(state.scope)
+  if (state.scopeKey !== expected) {
+    throw new Error('账户电路 scopeKey 与作用域字段不一致')
+  }
 }
 
 export function closedAccountCircuitState(
@@ -198,11 +290,93 @@ export function cloneAccountCircuitState(state: AccountCircuitState): AccountCir
     ...state,
     scope: cloneAccountCircuitScope(state.scope),
     lease: state.lease ? { ...state.lease } : undefined,
+    failureEvidenceKeys: cloneStringArray(state.failureEvidenceKeys),
     childIncidentIds: cloneStringArray(state.childIncidentIds),
     childScopeKeys: cloneStringArray(state.childScopeKeys),
     requiredRecoveryScopeKeys: cloneStringArray(state.requiredRecoveryScopeKeys),
     recoveryEvidenceScopeKeys: cloneStringArray(state.recoveryEvidenceScopeKeys)
   }
+}
+
+export function normalizeAccountCircuitConfirmationFailuresRequired(
+  value: unknown,
+  fallback = accountCircuitLegacyConfirmationFailuresRequired
+): number {
+  const normalized = value === undefined || value === null ? fallback : value
+  if (
+    typeof normalized !== 'number'
+    || !Number.isSafeInteger(normalized)
+    ||
+    normalized < accountCircuitConfirmationFailuresRequiredMin
+    || normalized > accountCircuitConfirmationFailuresRequiredMax
+  ) {
+    throw new Error(
+      `账户电路 confirmationFailuresRequired 必须是 ${accountCircuitConfirmationFailuresRequiredMin}..${accountCircuitConfirmationFailuresRequiredMax} 的整数`
+    )
+  }
+  return normalized
+}
+
+export function normalizeAccountCircuitEscalationDistinctScopeThreshold(
+  value: unknown,
+  fallback = accountCircuitEscalationDistinctScopeThresholdDefault
+): number {
+  const normalized = value === undefined || value === null ? fallback : value
+  if (
+    typeof normalized !== 'number'
+    || !Number.isSafeInteger(normalized)
+    || normalized < accountCircuitEscalationDistinctScopeThresholdMin
+    || normalized > accountCircuitEscalationDistinctScopeThresholdMax
+  ) {
+    throw new Error(
+      `账户电路 distinctScopeThreshold 必须是 ${accountCircuitEscalationDistinctScopeThresholdMin}..${accountCircuitEscalationDistinctScopeThresholdMax} 的整数`
+    )
+  }
+  return normalized
+}
+
+export function normalizeAccountCircuitEscalationWindowMs(
+  value: unknown,
+  fallback = accountCircuitEscalationWindowMsDefault
+): number {
+  const normalized = value === undefined || value === null ? fallback : value
+  if (
+    typeof normalized !== 'number'
+    || !Number.isSafeInteger(normalized)
+    || normalized < accountCircuitEscalationWindowMsMin
+    || normalized > accountCircuitEscalationWindowMsMax
+  ) {
+    throw new Error(
+      `账户电路 escalationWindowMs 必须是 ${accountCircuitEscalationWindowMsMin}..${accountCircuitEscalationWindowMsMax} 的整数毫秒值`
+    )
+  }
+  return normalized
+}
+
+export function normalizeAccountCircuitFailureEvidenceKey(value: unknown, fallbackSeed: string): string {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (/^[a-f0-9]{64}$/.test(normalized)) return normalized
+  const seed = fallbackSeed.trim()
+  if (!seed) throw new Error('账户电路 failure evidence 缺少 fallbackSeed')
+  return createHash('sha256').update(seed).digest('hex')
+}
+
+export function accountCircuitConfirmationFailureCount(state: AccountCircuitState): number {
+  const value = state.confirmationFailureCount
+  if (value === undefined) return 0
+  if (!Number.isSafeInteger(value) || value < 0 || value > accountCircuitConfirmationFailuresRequiredMax) {
+    throw new Error('账户电路 confirmationFailureCount 无效')
+  }
+  return value
+}
+
+export function accountCircuitFailureEvidenceKeys(state: AccountCircuitState): string[] {
+  const required = normalizeAccountCircuitConfirmationFailuresRequired(state.confirmationFailuresRequired)
+  const values = cloneStringArray(state.failureEvidenceKeys) ?? []
+  const normalized = values
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => /^[a-f0-9]{64}$/.test(value))
+  return [...new Set(normalized)].slice(-(required + 1))
 }
 
 function cloneStringArray(value: unknown): string[] | undefined {

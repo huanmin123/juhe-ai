@@ -145,6 +145,7 @@ function usageFailureAttribution(value: unknown): UsageRecordSummary['failureAtt
   if (
     value === 'account_upstream'
     || value === 'account_dependency'
+    || value === 'opaque_upstream'
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
     || value === 'client_lifecycle'

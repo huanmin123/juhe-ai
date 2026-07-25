@@ -797,6 +797,9 @@ export interface AccountSummary {
   lastErrorTraceId?: string
   cooldownRetestFailureCount?: number
   cooldownRetestObservationStartedAt?: string
+  cooldownRetestGeneration?: string
+  cooldownRetestDispatchRevision?: number
+  cooldownRetestSourceConfigRevision?: number
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   temporaryUnavailableContinuousProbeEnabled?: boolean

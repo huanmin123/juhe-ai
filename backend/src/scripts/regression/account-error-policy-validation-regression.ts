@@ -14,6 +14,7 @@ import {
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
+  accountCircuitConfirmationFailuresRequired: 2,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,

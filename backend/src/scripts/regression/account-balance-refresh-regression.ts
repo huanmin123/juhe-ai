@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -15,6 +17,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-balance-regression-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
+runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -35,6 +38,11 @@ const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
 const balanceRefreshJobSource = readFileSync(resolve('src/modules/background/account-balance-refresh.job.ts'), 'utf8')
 const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
+assert.doesNotMatch(
+  balanceServiceSource,
+  /response\.status\s*===\s*(?:401|403|408|429)|status\s*>=\s*500|HTTP \(\?:401\|403\)/,
+  '余额查询不得按上游 HTTP 状态码推断鉴权、限流或账户能力语义'
+)
 assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
 assert.match(
   balanceServiceSource,
@@ -67,7 +75,31 @@ assert.match(backgroundJobsSource, /task: \(\) => runAccountBalanceRefresh\(\)/,
 assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
 assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
 
+let untrustedStatusServer: Server | undefined
 try {
+  const mockState = { status: 401, requestCount: 0, invalidJson: false, recoverWithNewApi: false }
+  untrustedStatusServer = createServer((request, response) => {
+    mockState.requestCount += 1
+    const requestPath = request.url?.split('?', 1)[0]
+    if (mockState.recoverWithNewApi && requestPath === '/api/usage/token/') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ data: { total_available: 3_655_000 } }))
+      return
+    }
+    if (mockState.recoverWithNewApi && requestPath === '/api/status') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ data: { quota_per_unit: 500_000 } }))
+      return
+    }
+    response.writeHead(mockState.status, { 'content-type': 'application/json; charset=utf-8' })
+    response.end(mockState.invalidJson ? '{not-json' : JSON.stringify({ error: { code: 'provider_defined', message: 'opaque upstream response' } }))
+  })
+  await new Promise<void>((resolveListen, rejectListen) => {
+    untrustedStatusServer?.once('error', rejectListen)
+    untrustedStatusServer?.listen(0, '127.0.0.1', resolveListen)
+  })
+  const mockAddress = untrustedStatusServer.address() as AddressInfo
+  const mockBaseUrl = `http://127.0.0.1:${mockAddress.port}/v1`
   const group = repositories.createGroup({ name: '余额回归分组', providerCode: 'gpt', enabled: true }, access)
   const create = (name: string, type = 'api_key', credentials: Record<string, unknown> = { api_key: `sk-${name}`, base_url: 'https://relay.example/v1' }) =>
     repositories.createAccount({
@@ -83,6 +115,10 @@ try {
   const autoDetect = create('auto-detect')
   const transientFailure = create('transient-failure')
   const deterministicFailure = create('deterministic-failure')
+  const untrustedStatusFailure = create('untrusted-status-failure', 'api_key', {
+    api_key: 'sk-untrusted-status-failure',
+    base_url: mockBaseUrl
+  })
   const manualRefresh = create('manual-refresh')
   const lifecycle = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -503,6 +539,7 @@ try {
   configure.run('active', builtinConfig, futureAt, future.id)
   configure.run('active', builtinConfig, futureAt, transientFailure.id)
   configure.run('active', builtinConfig, futureAt, deterministicFailure.id)
+  configure.run('active', builtinConfig, futureAt, untrustedStatusFailure.id)
   configure.run('active', builtinConfig, futureAt, manualRefresh.id)
   database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(autoDetect.id)
 
@@ -649,17 +686,80 @@ try {
     queryAdapter: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
   })
   assert.equal(unsupportedResult.snapshot.status, 'unsupported', '全部内置适配器不支持时应返回可暂停的能力状态')
-  let authenticationAttempts = 0
+  let opaqueStatusAttempts = 0
   await assert.rejects(
     balanceQueryService.queryBuiltinAccountBalance(candidate, {
       queryAdapter: async () => {
-        authenticationAttempts += 1
+        opaqueStatusAttempts += 1
         throw new Error('上游鉴权失败（HTTP 401）')
       }
     }),
     /上游鉴权失败/
   )
-  assert.equal(authenticationAttempts, 1, '确定性鉴权错误不能继续尝试其他适配器')
+  assert.equal(opaqueStatusAttempts, 4, '上游自称的鉴权状态不可信，必须继续尝试其他余额适配器')
+
+  const untrustedStatuses = [
+    300, 301, 302, 307, 308,
+    400, 401, 403, 404, 408, 409, 418, 422, 429, 451,
+    500, 501, 502, 503, 504, 599
+  ] as const
+  for (const upstreamStatus of untrustedStatuses) {
+    const statusCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(untrustedStatusFailure.id)
+    assert.ok(statusCandidate)
+    const previousSuccessAt = new Date(Date.now() - 60_000).toISOString()
+    balanceRepository.replaceAccountBalanceSnapshot({
+      accountId: untrustedStatusFailure.id,
+      systemAccountId: 'sys_admin',
+      snapshot: {
+        status: 'fresh',
+        remainingUsd: '6.250000',
+        lastAttemptAt: previousSuccessAt,
+        lastSuccessAt: previousSuccessAt
+      },
+      nextRefreshAfter: statusCandidate.nextRefreshAt ?? undefined
+    })
+    mockState.status = upstreamStatus
+    mockState.invalidJson = false
+    mockState.recoverWithNewApi = false
+    const requestCountBefore = mockState.requestCount
+    const statusResult = await balanceQueryService.refreshAccountBalanceCandidate(statusCandidate)
+    assert.equal(
+      mockState.requestCount - requestCountBefore,
+      4,
+      `HTTP ${upstreamStatus} 不得被解读为鉴权或能力结论，应试完四个内置适配器`
+    )
+    assert.equal(statusResult.status, 'fresh', `HTTP ${upstreamStatus} 首次失败应保留最后成功余额`)
+    assert.equal(statusResult.remainingUsd, '6.250000')
+    assert.equal(statusResult.consecutiveTransientFailures, 1)
+    assert.match(statusResult.lastTransientErrorMessage ?? '', new RegExp(`HTTP ${upstreamStatus}`))
+    const storedCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(untrustedStatusFailure.id)
+    assert.deepEqual(
+      storedCandidate?.config,
+      { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api' },
+      `HTTP ${upstreamStatus} 不得清除余额配置或首选适配器`
+    )
+    assertAccountDispatchState(database, untrustedStatusFailure.id, 'active', 1, `HTTP ${upstreamStatus} 余额查询失败后`)
+  }
+
+  const invalidJsonCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(untrustedStatusFailure.id)
+  assert.ok(invalidJsonCandidate)
+  mockState.status = 200
+  mockState.invalidJson = true
+  mockState.recoverWithNewApi = false
+  const invalidJsonRequestCountBefore = mockState.requestCount
+  const invalidJsonResult = await balanceQueryService.queryBuiltinAccountBalance(invalidJsonCandidate)
+  assert.equal(invalidJsonResult.snapshot.status, 'unsupported', '完整 2xx 中的非法 JSON 属于本地可验证结构约束')
+  assert.equal(mockState.requestCount - invalidJsonRequestCountBefore, 4, '结构不匹配仍应尝试全部内置适配器')
+
+  mockState.status = 401
+  mockState.invalidJson = false
+  mockState.recoverWithNewApi = true
+  const recoveredAdapterRequestCountBefore = mockState.requestCount
+  const recoveredAdapterResult = await balanceQueryService.queryBuiltinAccountBalance(invalidJsonCandidate)
+  assert.equal(recoveredAdapterResult.adapter, 'newapi', '前一适配器返回不可信 401 后，后续适配器仍可成功接管')
+  assert.equal(recoveredAdapterResult.snapshot.status, 'fresh')
+  assert.equal(recoveredAdapterResult.snapshot.remainingUsd, '7.310000')
+  assert.equal(mockState.requestCount - recoveredAdapterRequestCountBefore, 3, '应尝试 sub2api 后完成 newapi 的两步查询')
   const tested = await balanceQueryService.testAccountBalanceCandidate(candidate, {
     query: async () => ({ status: 'fresh', remainingUsd: '8.880000', rawRemaining: '8.88', rawUnit: 'usd', basis: 'wallet' })
   })
@@ -745,18 +845,21 @@ try {
   })
   const deterministicCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
   assert.ok(deterministicCandidate)
-  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, 'deterministic 失败前')
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '不可信 HTTP 失败前')
   await balanceQueryService.refreshAccountBalanceCandidate(deterministicCandidate, {
     query: async () => { throw new Error('上游鉴权失败（HTTP 401）') }
   })
-  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, 'deterministic 失败后')
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, '不可信 HTTP 失败后')
   const deterministicSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
   assert.ok(deterministicSnapshot)
-  assert.equal(deterministicSnapshot.status, 'unsupported', '确定性鉴权错误必须保留诊断状态')
-  assert.equal(deterministicSnapshot.remainingUsd, undefined)
-  assert.equal(deterministicSnapshot.consecutiveTransientFailures, undefined)
-  const deterministicRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(deterministicFailure.id) as Record<string, unknown>
+  assert.equal(deterministicSnapshot.status, 'pending', '上游自称的 401 只能作为可重试诊断，不得落为 unsupported')
+  assert.equal(deterministicSnapshot.remainingUsd, undefined, '不属于当前配置代次的旧余额不得复用')
+  assert.equal(deterministicSnapshot.consecutiveTransientFailures, 1)
+  const deterministicRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at, balance_query_config_json FROM accounts WHERE id = ?`).get(deterministicFailure.id) as Record<string, unknown>
   assert.equal(deterministicRow.balance_query_enabled, 1, '能力暂停不能替用户关闭余额开关')
+  assert.deepEqual(JSON.parse(String(deterministicRow.balance_query_config_json)), {
+    adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api'
+  }, '不可信 HTTP 状态不得清除首选余额适配器')
   assertBalanceRetryDelay(database, deterministicFailure.id, deterministicSnapshot.lastAttemptAt, 5)
   const invalidBaseUrlResult = await balanceQueryService.refreshAccountBalanceCandidate({
     ...deterministicCandidate,
@@ -770,13 +873,13 @@ try {
   }, access)
   assert.ok(reactivated)
   const reactivatedRow = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(deterministicFailure.id) as { balance_query_next_refresh_at?: string | null }
-  assert.ok(reactivatedRow.balance_query_next_refresh_at, '保存账户配置必须重新激活已暂停的余额调度')
+  assert.ok(reactivatedRow.balance_query_next_refresh_at, '保存账户配置必须保留余额重试调度')
   const reactivatedCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
   assert.ok(reactivatedCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(reactivatedCandidate, { query: timeoutQuery })
   const snapshotAfterReactivationTimeout = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
-  assert.equal(snapshotAfterReactivationTimeout?.status, 'pending', '暂停账户重新激活后的临时失败必须显示待重试，而不是继续显示已暂停')
-  assert.equal(snapshotAfterReactivationTimeout?.consecutiveTransientFailures, 1)
+  assert.equal(snapshotAfterReactivationTimeout?.status, 'pending', '不可信 HTTP 状态后的临时失败仍必须显示待重试')
+  assert.equal(snapshotAfterReactivationTimeout?.consecutiveTransientFailures, 2)
   assertBalanceRetryDelay(database, deterministicFailure.id, snapshotAfterReactivationTimeout?.lastAttemptAt, 5)
 
   balanceRepository.replaceAccountBalanceSnapshot({
@@ -852,6 +955,11 @@ try {
     '查询期间关闭余额功能后，旧结果不得重新写入快照'
   )
 } finally {
+  if (untrustedStatusServer) {
+    await new Promise<void>((resolveClose, rejectClose) => {
+      untrustedStatusServer?.close((error) => error ? rejectClose(error) : resolveClose())
+    })
+  }
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }

@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
-import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
+import { createRuntimeStateStore, type RuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { preserveGatewayAccountDispatchPriorityTiers } from './account-dispatch-priority-order.js'
@@ -28,6 +28,8 @@ export interface GatewayProxyFailureDecision {
   distinctAccountCount?: number
 }
 
+type GatewayUpstreamBucketScope = 'all' | 'proxy' | 'upstream'
+
 interface GatewayUpstreamBucketFailureEntry {
   key: string
   reason: string
@@ -35,10 +37,21 @@ interface GatewayUpstreamBucketFailureEntry {
   failureCount: number
   firstFailedAtMs: number
   lastFailedAtMs: number
+  lastFailureGeneration?: GatewayUpstreamBucketMutationGeneration
   avoidUntilMs?: number
   halfOpenStartedAtMs?: number
   halfOpenUntilMs?: number
   halfOpenAccountId?: string
+}
+
+interface GatewayUpstreamBucketMutationGeneration {
+  instanceId: string
+  sequence: number
+}
+
+interface GatewayUpstreamBucketMutationObservation {
+  observedAtMs: number
+  generation: GatewayUpstreamBucketMutationGeneration
 }
 
 interface MemoryBucketEntry {
@@ -48,12 +61,21 @@ interface MemoryBucketEntry {
 
 const upstreamBucketFailureMemoryEntries = new Map<string, MemoryBucketEntry>()
 const upstreamBucketFailureStateStore = createRuntimeStateStore('gateway-upstream-bucket-health')
+export type GatewayProxyHealthRuntimeStateStore = Pick<
+  RuntimeStateStore,
+  'getJson' | 'compareSetJson' | 'compareDeleteJson'
+>
+let upstreamBucketFailureStateStoreForTest: GatewayProxyHealthRuntimeStateStore | undefined
 
 const upstreamBucketFailureMaxEntries = 2_000
 const upstreamBucketFailureWindowMs = 60_000
 const upstreamBucketFailureAvoidTtlMs = 60_000
 const upstreamBucketHalfOpenLeaseMs = 60_000
 const upstreamBucketFailureDistinctAccountThreshold = 2
+const upstreamBucketFailureCasMaxAttempts = 1_024
+const upstreamBucketFailureMaxAccountSamples = 256
+const upstreamBucketMutationInstanceId = randomBytes(12).toString('hex')
+let upstreamBucketMutationSequence = 0
 let gatewayUpstreamBucketHealthNowForTest: number | undefined
 
 export function orderGatewayAccountsByUpstreamBucketHealth(
@@ -158,15 +180,25 @@ export async function orderGatewayAccountsByUpstreamBucketHealthAsync(
     }
   }
 
-  const entries = await loadRedisBucketEntriesForAccounts(accounts)
-  const pendingWrites: Promise<void>[] = []
+  const stateStore = gatewayProxyHealthRuntimeStateStore()
+  const now = gatewayUpstreamBucketHealthNow()
+  const entries = await loadRedisBucketEntriesForAccounts(accounts, stateStore)
   const persistEntry = (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => {
     entries.set(entry.key, entry)
-    pendingWrites.push(setRedisBucketFailureEntry(entry.key, entry, ttlMs))
+    void ttlMs
   }
-  const result = orderGatewayAccountsByUpstreamBucketHealthWithEntries(accounts, entries, persistEntry, modelPriority)
-  await Promise.all(pendingWrites)
-  return result
+  await claimRedisHalfOpenLeasesForAccounts(accounts, entries, now, 'specific', stateStore)
+  const specificOrder = orderAccountsByActiveBucketScopeWithEntries(
+    accounts,
+    now,
+    'specific',
+    entries,
+    persistEntry
+  )
+  if (!(specificOrder.avoidedAccounts.length > 0 && specificOrder.freshAccounts.length > 0)) {
+    await claimRedisHalfOpenLeasesForAccounts(accounts, entries, now, 'provider', stateStore)
+  }
+  return orderGatewayAccountsByUpstreamBucketHealthWithEntries(accounts, entries, persistEntry, modelPriority, now)
 }
 
 export async function orderOpenAIAccountsByGatewayProxyHealthAsync(
@@ -180,7 +212,8 @@ function orderGatewayAccountsByUpstreamBucketHealthWithEntries(
   accounts: UpstreamAccount[],
   entries: Map<string, GatewayUpstreamBucketFailureEntry>,
   persistEntry: (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => void | Promise<void>,
-  modelPriority?: GatewayAccountModelPriority
+  modelPriority?: GatewayAccountModelPriority,
+  now = gatewayUpstreamBucketHealthNow()
 ): GatewayProxyHealthOrderResult {
   if (accounts.length === 0) {
     return {
@@ -195,7 +228,6 @@ function orderGatewayAccountsByUpstreamBucketHealthWithEntries(
     }
   }
 
-  const now = gatewayUpstreamBucketHealthNow()
   const specificOrder = orderAccountsByActiveBucketScopeWithEntries(accounts, now, 'specific', entries, persistEntry)
   if (specificOrder.avoidedAccounts.length > 0 && specificOrder.freshAccounts.length > 0) {
     return {
@@ -301,13 +333,12 @@ function orderAccountsByActiveBucketScopeWithEntries(
   const avoidedBucketKeys = new Set<string>()
   const avoidedProxyKeys = new Set<string>()
   const halfOpenBucketKeys = new Set<string>()
-  const candidateAccountIds = new Set(accounts.map((account) => account.id))
   for (const account of accounts) {
     const blockedKeys: string[] = []
     const probeKeys: string[] = []
     for (const key of gatewayUpstreamBucketKeys(account)
       .filter((key) => scope === 'provider' ? isProviderBucketKey(key) : !isProviderBucketKey(key))) {
-      const state = upstreamBucketAccountStateWithEntries(key, account, now, candidateAccountIds, entries, persistEntry)
+      const state = upstreamBucketAccountStateWithEntries(key, account, now, entries, persistEntry)
       if (state === 'blocked') {
         blockedKeys.push(key)
       } else if (state === 'half_open_probe') {
@@ -345,24 +376,10 @@ function orderedAccountsForBucketScope(order: {
   return [...order.freshAccounts, ...order.avoidedAccounts]
 }
 
-function upstreamBucketAccountState(
-  key: string,
-  account: UpstreamAccount,
-  now: number,
-  candidateAccountIds: Set<string>
-): 'normal' | 'blocked' | 'half_open_probe' {
-  const entry = getMemoryBucketFailureEntry(key)
-  const persistEntry = (nextEntry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => {
-    setMemoryBucketFailureEntry(nextEntry.key, nextEntry, ttlMs)
-  }
-  return upstreamBucketAccountStateWithEntries(key, account, now, candidateAccountIds, new Map(entry ? [[key, entry]] : []), persistEntry)
-}
-
 function upstreamBucketAccountStateWithEntries(
   key: string,
   account: UpstreamAccount,
   now: number,
-  candidateAccountIds: Set<string>,
   entries: Map<string, GatewayUpstreamBucketFailureEntry>,
   persistEntry: (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => void
 ): 'normal' | 'blocked' | 'half_open_probe' {
@@ -373,7 +390,7 @@ function upstreamBucketAccountStateWithEntries(
   if (entry.avoidUntilMs > now) {
     return 'blocked'
   }
-  const halfOpenEntry = ensureHalfOpenProbe(entry, account, now, candidateAccountIds, persistEntry)
+  const halfOpenEntry = ensureHalfOpenProbe(entry, account, now, persistEntry)
   return halfOpenEntry.halfOpenAccountId === account.id ? 'half_open_probe' : 'blocked'
 }
 
@@ -381,14 +398,12 @@ function ensureHalfOpenProbe(
   entry: GatewayUpstreamBucketFailureEntry,
   account: UpstreamAccount,
   now: number,
-  candidateAccountIds: Set<string>,
   persistEntry?: (entry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => void
 ): GatewayUpstreamBucketFailureEntry {
   if (
     entry.halfOpenAccountId
     && entry.halfOpenUntilMs
     && entry.halfOpenUntilMs > now
-    && candidateAccountIds.has(entry.halfOpenAccountId)
   ) {
     return entry
   }
@@ -415,10 +430,92 @@ function ensureHalfOpenProbe(
   return nextEntry
 }
 
+async function claimRedisHalfOpenLeasesForAccounts(
+  accounts: UpstreamAccount[],
+  entries: Map<string, GatewayUpstreamBucketFailureEntry>,
+  now: number,
+  scope: 'specific' | 'provider',
+  stateStore: GatewayProxyHealthRuntimeStateStore
+): Promise<void> {
+  const probeAccountByBucketKey = new Map<string, UpstreamAccount>()
+  for (const account of accounts) {
+    for (const key of gatewayUpstreamBucketKeys(account)
+      .filter((key) => scope === 'provider' ? isProviderBucketKey(key) : !isProviderBucketKey(key))) {
+      if (!probeAccountByBucketKey.has(key)) {
+        probeAccountByBucketKey.set(key, account)
+      }
+    }
+  }
+  await Promise.all([...probeAccountByBucketKey.entries()].map(async ([key, account]) => {
+    const current = entries.get(key)
+    if (!current?.avoidUntilMs || current.avoidUntilMs > now) return
+    const claimed = await ensureRedisHalfOpenProbe(
+      key,
+      current,
+      account,
+      now,
+      stateStore
+    )
+    if (claimed) {
+      entries.set(key, claimed)
+    } else {
+      entries.delete(key)
+    }
+  }))
+}
+
+async function ensureRedisHalfOpenProbe(
+  key: string,
+  initialEntry: GatewayUpstreamBucketFailureEntry | undefined,
+  account: UpstreamAccount,
+  now: number,
+  stateStore: GatewayProxyHealthRuntimeStateStore
+): Promise<GatewayUpstreamBucketFailureEntry | undefined> {
+  let current = initialEntry
+  for (let attempt = 0; attempt < upstreamBucketFailureCasMaxAttempts; attempt += 1) {
+    if (!current?.avoidUntilMs || current.avoidUntilMs > now) {
+      return current
+    }
+    if (
+      current.halfOpenAccountId
+      && current.halfOpenUntilMs
+      && current.halfOpenUntilMs > now
+    ) {
+      return current
+    }
+
+    const halfOpenUntilMs = now + upstreamBucketHalfOpenLeaseMs
+    const nextEntry: GatewayUpstreamBucketFailureEntry = {
+      ...current,
+      halfOpenStartedAtMs: now,
+      halfOpenUntilMs,
+      halfOpenAccountId: account.id
+    }
+    const applied = await stateStore.compareSetJson(
+      redisBucketStateKey(key),
+      current,
+      nextEntry,
+      upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs
+    )
+    if (applied) {
+      getRequestLogger().warn({
+        event: 'gateway_upstream_failure_bucket_half_opened',
+        bucketKey: bucketKeyForLog(key),
+        bucketType: upstreamBucketType(key),
+        accountId: account.id,
+        halfOpenUntil: new Date(halfOpenUntilMs).toISOString()
+      }, '上游桶运行态避让 TTL 到期，已放行一个半开探测账号')
+      return nextEntry
+    }
+    current = await getRedisBucketFailureEntry(key, stateStore)
+  }
+  throw redisBucketCasExhaustedError(key, 'half_open_lease')
+}
+
 export function recordGatewayUpstreamBucketFailure(
   account: UpstreamAccount,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): GatewayProxyFailureDecision {
   const bucketKeys = gatewayUpstreamBucketKeys(account, options.bucketScope)
   if (bucketKeys.length === 0) {
@@ -440,7 +537,7 @@ export function recordGatewayUpstreamBucketFailure(
 export async function recordGatewayUpstreamBucketFailureAsync(
   account: UpstreamAccount,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): Promise<GatewayProxyFailureDecision> {
   if (!shouldUseRedisUpstreamBucketHealthState()) {
     return recordGatewayUpstreamBucketFailure(account, reason, options)
@@ -466,7 +563,7 @@ export function suppressGatewayUpstreamBucketLocallyForSeconds(
   account: UpstreamAccount,
   ttlSeconds: number,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): GatewayProxyFailureDecision {
   const bucketKeys = gatewayUpstreamBucketKeys(account, options.bucketScope)
   if (bucketKeys.length === 0) {
@@ -475,18 +572,24 @@ export function suppressGatewayUpstreamBucketLocallyForSeconds(
   const now = gatewayUpstreamBucketHealthNow()
   const ttlMs = Math.max(1, Math.trunc(ttlSeconds)) * 1000
   const avoidUntilMs = now + ttlMs
+  let effectiveAvoidUntilMs = avoidUntilMs
   for (const key of bucketKeys) {
     const current = getMemoryBucketFailureEntry(key)
-    const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
-    setMemoryBucketFailureEntry(key, {
+    const accountSamples = pruneAccountSamples([
+      ...(current?.accountSamples ?? []),
+      [gatewayFailureEvidenceAccountId(account), now]
+    ], now)
+    const entry: GatewayUpstreamBucketFailureEntry = {
       key,
       reason,
       accountSamples,
       failureCount: (current?.failureCount ?? 0) + 1,
       firstFailedAtMs: current?.firstFailedAtMs ?? now,
       lastFailedAtMs: now,
-      avoidUntilMs
-    }, ttlMs + upstreamBucketFailureWindowMs)
+      avoidUntilMs: Math.max(current?.avoidUntilMs ?? 0, avoidUntilMs)
+    }
+    effectiveAvoidUntilMs = Math.max(effectiveAvoidUntilMs, entry.avoidUntilMs ?? avoidUntilMs)
+    setMemoryBucketFailureEntry(key, entry, ttlMs + upstreamBucketFailureWindowMs)
   }
   const proxyKey = bucketKeys.find(isProxyBucketKey)
   const safeBucketKeys = bucketKeysForLog(bucketKeys)
@@ -497,7 +600,7 @@ export function suppressGatewayUpstreamBucketLocallyForSeconds(
     proxyKey: safeProxyKey,
     accountId: account.id,
     ttlSeconds: Math.max(1, Math.trunc(ttlSeconds)),
-    avoidUntil: new Date(avoidUntilMs).toISOString(),
+    avoidUntil: new Date(effectiveAvoidUntilMs).toISOString(),
     reason
   }, '网关按策略短期避让上游桶')
   return {
@@ -514,7 +617,7 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
   account: UpstreamAccount,
   ttlSeconds: number,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): Promise<GatewayProxyFailureDecision> {
   if (!shouldUseRedisUpstreamBucketHealthState()) {
     return suppressGatewayUpstreamBucketLocallyForSeconds(account, ttlSeconds, reason, options)
@@ -524,21 +627,37 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
     return { recorded: false, suspected: false }
   }
   const now = gatewayUpstreamBucketHealthNow()
+  const mutationObservation = nextGatewayUpstreamBucketMutationObservation(now)
   const ttlMs = Math.max(1, Math.trunc(ttlSeconds)) * 1000
   const avoidUntilMs = now + ttlMs
-  await Promise.all(bucketKeys.map(async (key) => {
-    const current = await getRedisBucketFailureEntry(key)
-    const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
-    await setRedisBucketFailureEntry(key, {
-      key,
-      reason,
-      accountSamples,
-      failureCount: (current?.failureCount ?? 0) + 1,
-      firstFailedAtMs: current?.firstFailedAtMs ?? now,
-      lastFailedAtMs: now,
-      avoidUntilMs
-    }, ttlMs + upstreamBucketFailureWindowMs)
-  }))
+  const stateStore = gatewayProxyHealthRuntimeStateStore()
+  const mutations = await Promise.all(bucketKeys.map((key) =>
+    mutateRedisBucketFailureEntry(key, stateStore, (current) => {
+      const latestFailure = latestGatewayUpstreamBucketFailureObservation(current, mutationObservation)
+      const entry: GatewayUpstreamBucketFailureEntry = {
+        key,
+        reason,
+        accountSamples: pruneAccountSamples([
+          ...(current?.accountSamples ?? []),
+          [gatewayFailureEvidenceAccountId(account), now]
+        ], now),
+        failureCount: (current?.failureCount ?? 0) + 1,
+        firstFailedAtMs: current?.firstFailedAtMs ?? now,
+        lastFailedAtMs: latestFailure.observedAtMs,
+        lastFailureGeneration: latestFailure.generation,
+        avoidUntilMs: Math.max(current?.avoidUntilMs ?? 0, avoidUntilMs)
+      }
+      return {
+        entry,
+        ttlMs: redisBucketFailureEntryTtlMs(entry, now, ttlMs + upstreamBucketFailureWindowMs),
+        result: undefined
+      }
+    })
+  ))
+  const effectiveAvoidUntilMs = Math.max(
+    avoidUntilMs,
+    ...mutations.map((mutation) => mutation.entry.avoidUntilMs ?? avoidUntilMs)
+  )
   const proxyKey = bucketKeys.find(isProxyBucketKey)
   const safeBucketKeys = bucketKeysForLog(bucketKeys)
   const safeProxyKey = bucketKeyForLog(proxyKey)
@@ -548,7 +667,7 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
     proxyKey: safeProxyKey,
     accountId: account.id,
     ttlSeconds: Math.max(1, Math.trunc(ttlSeconds)),
-    avoidUntil: new Date(avoidUntilMs).toISOString(),
+    avoidUntil: new Date(effectiveAvoidUntilMs).toISOString(),
     reason
   }, '网关按策略短期避让上游桶')
   return {
@@ -564,7 +683,7 @@ export async function suppressGatewayUpstreamBucketForSecondsAsync(
 export function recordGatewayProxyFailure(
   account: UpstreamAccount,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): GatewayProxyFailureDecision {
   return recordGatewayUpstreamBucketFailure(account, reason, { bucketScope: options.bucketScope ?? 'proxy' })
 }
@@ -572,7 +691,7 @@ export function recordGatewayProxyFailure(
 export async function recordGatewayProxyFailureAsync(
   account: UpstreamAccount,
   reason: string,
-  options: { bucketScope?: 'all' | 'proxy' | 'upstream' } = {}
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
 ): Promise<GatewayProxyFailureDecision> {
   return recordGatewayUpstreamBucketFailureAsync(account, reason, { bucketScope: options.bucketScope ?? 'proxy' })
 }
@@ -588,7 +707,10 @@ function recordGatewayUpstreamBucketFailureKey(
 } {
   const now = gatewayUpstreamBucketHealthNow()
   const current = getMemoryBucketFailureEntry(key)
-  const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
+  const accountSamples = pruneAccountSamples([
+    ...(current?.accountSamples ?? []),
+    [gatewayFailureEvidenceAccountId(account), now]
+  ], now)
   const distinctAccountCount = new Set(accountSamples.map(([accountId]) => accountId)).size
   const halfOpenProbeFailed = isHalfOpenProbeForAccount(current, account.id, now)
   const suspected = halfOpenProbeFailed || distinctAccountCount >= upstreamBucketFailureDistinctAccountThreshold
@@ -599,7 +721,9 @@ function recordGatewayUpstreamBucketFailureKey(
     failureCount: (current?.failureCount ?? 0) + 1,
     firstFailedAtMs: current?.firstFailedAtMs ?? now,
     lastFailedAtMs: now,
-    avoidUntilMs: suspected ? now + upstreamBucketFailureAvoidTtlMs : current?.avoidUntilMs
+    avoidUntilMs: suspected
+      ? Math.max(current?.avoidUntilMs ?? 0, now + upstreamBucketFailureAvoidTtlMs)
+      : current?.avoidUntilMs
   }
   setMemoryBucketFailureEntry(key, entry, upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs)
   if (suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)) {
@@ -631,38 +755,95 @@ async function recordGatewayUpstreamBucketFailureKeyAsync(
   distinctAccountCount: number
 }> {
   const now = gatewayUpstreamBucketHealthNow()
-  const current = await getRedisBucketFailureEntry(key)
-  const accountSamples = pruneAccountSamples([...(current?.accountSamples ?? []), [account.id, now]], now)
-  const distinctAccountCount = new Set(accountSamples.map(([accountId]) => accountId)).size
-  const halfOpenProbeFailed = isHalfOpenProbeForAccount(current, account.id, now)
-  const suspected = halfOpenProbeFailed || distinctAccountCount >= upstreamBucketFailureDistinctAccountThreshold
-  const entry: GatewayUpstreamBucketFailureEntry = {
-    key,
-    reason,
-    accountSamples,
-    failureCount: (current?.failureCount ?? 0) + 1,
-    firstFailedAtMs: current?.firstFailedAtMs ?? now,
-    lastFailedAtMs: now,
-    avoidUntilMs: suspected ? now + upstreamBucketFailureAvoidTtlMs : current?.avoidUntilMs
-  }
-  await setRedisBucketFailureEntry(key, entry, upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs)
-  if (suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)) {
+  const mutationObservation = nextGatewayUpstreamBucketMutationObservation(now)
+  const stateStore = gatewayProxyHealthRuntimeStateStore()
+  const mutation = await mutateRedisBucketFailureEntry(key, stateStore, (current) => {
+    const accountSamples = pruneAccountSamples([
+      ...(current?.accountSamples ?? []),
+      [gatewayFailureEvidenceAccountId(account), now]
+    ], now)
+    const distinctAccountCount = new Set(accountSamples.map(([accountId]) => accountId)).size
+    const halfOpenProbeFailed = isHalfOpenProbeForAccount(current, account.id, now)
+    const suspected = halfOpenProbeFailed || distinctAccountCount >= upstreamBucketFailureDistinctAccountThreshold
+    const latestFailure = latestGatewayUpstreamBucketFailureObservation(current, mutationObservation)
+    const entry: GatewayUpstreamBucketFailureEntry = {
+      key,
+      reason,
+      accountSamples,
+      failureCount: (current?.failureCount ?? 0) + 1,
+      firstFailedAtMs: current?.firstFailedAtMs ?? now,
+      lastFailedAtMs: latestFailure.observedAtMs,
+      lastFailureGeneration: latestFailure.generation,
+      avoidUntilMs: suspected
+        ? Math.max(current?.avoidUntilMs ?? 0, now + upstreamBucketFailureAvoidTtlMs)
+        : current?.avoidUntilMs
+    }
+    return {
+      entry,
+      ttlMs: redisBucketFailureEntryTtlMs(
+        entry,
+        now,
+        upstreamBucketFailureAvoidTtlMs + upstreamBucketFailureWindowMs
+      ),
+      result: {
+        distinctAccountCount,
+        halfOpenProbeFailed,
+        suspected,
+        opened: suspected && (!current?.avoidUntilMs || current.avoidUntilMs <= now)
+      }
+    }
+  })
+  if (mutation.result.opened) {
     getRequestLogger().warn({
       event: 'gateway_upstream_failure_bucket_opened',
       bucketKey: bucketKeyForLog(key),
       bucketType: upstreamBucketType(key),
       accountId: account.id,
-      distinctAccountCount,
+      distinctAccountCount: mutation.result.distinctAccountCount,
       reason,
-      halfOpenProbeFailed,
-      avoidUntil: new Date(entry.avoidUntilMs ?? now).toISOString()
+      halfOpenProbeFailed: mutation.result.halfOpenProbeFailed,
+      avoidUntil: new Date(mutation.entry.avoidUntilMs ?? now).toISOString()
     }, '同上游桶多个账号短窗失败，网关已进入上游桶运行态避让')
   }
   return {
-    suspected,
+    suspected: mutation.result.suspected,
     bucketKey: key,
-    distinctAccountCount
+    distinctAccountCount: mutation.result.distinctAccountCount
   }
+}
+
+async function mutateRedisBucketFailureEntry<TResult>(
+  key: string,
+  stateStore: GatewayProxyHealthRuntimeStateStore,
+  mutation: (current: GatewayUpstreamBucketFailureEntry | undefined) => {
+    entry: GatewayUpstreamBucketFailureEntry
+    ttlMs: number
+    result: TResult
+  }
+): Promise<{
+  previous: GatewayUpstreamBucketFailureEntry | undefined
+  entry: GatewayUpstreamBucketFailureEntry
+  result: TResult
+}> {
+  let current = await getRedisBucketFailureEntry(key, stateStore)
+  for (let attempt = 0; attempt < upstreamBucketFailureCasMaxAttempts; attempt += 1) {
+    const next = mutation(current)
+    const applied = await stateStore.compareSetJson(
+      redisBucketStateKey(key),
+      current,
+      next.entry,
+      next.ttlMs
+    )
+    if (applied) {
+      return {
+        previous: current,
+        entry: next.entry,
+        result: next.result
+      }
+    }
+    current = await getRedisBucketFailureEntry(key, stateStore)
+  }
+  throw redisBucketCasExhaustedError(key, 'mutation')
 }
 
 function isHalfOpenProbeForAccount(
@@ -679,33 +860,72 @@ function isHalfOpenProbeForAccount(
   )
 }
 
-export function recordGatewayUpstreamBucketSuccess(account: UpstreamAccount): boolean {
+export function recordGatewayUpstreamBucketSuccess(
+  account: UpstreamAccount,
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
+): boolean {
   let existed = false
-  for (const key of gatewayUpstreamBucketKeys(account)) {
+  for (const key of gatewayUpstreamBucketKeys(account, options.bucketScope)) {
     existed = Boolean(getMemoryBucketFailureEntry(key)) || existed
     upstreamBucketFailureMemoryEntries.delete(key)
   }
   return existed
 }
 
-export async function recordGatewayUpstreamBucketSuccessAsync(account: UpstreamAccount): Promise<boolean> {
+export async function recordGatewayUpstreamBucketSuccessAsync(
+  account: UpstreamAccount,
+  options: { bucketScope?: GatewayUpstreamBucketScope } = {}
+): Promise<boolean> {
   if (!shouldUseRedisUpstreamBucketHealthState()) {
-    return recordGatewayUpstreamBucketSuccess(account)
+    return recordGatewayUpstreamBucketSuccess(account, options)
   }
-  let existed = false
-  for (const key of gatewayUpstreamBucketKeys(account)) {
-    existed = Boolean(await getRedisBucketFailureEntry(key)) || existed
-    await upstreamBucketFailureStateStore.delete(redisBucketStateKey(key))
+  const successObservation = nextGatewayUpstreamBucketMutationObservation(gatewayUpstreamBucketHealthNow())
+  const stateStore = gatewayProxyHealthRuntimeStateStore()
+  let cleared = false
+  for (const key of gatewayUpstreamBucketKeys(account, options.bucketScope)) {
+    cleared = await clearRedisBucketAfterSuccessObservation(
+      key,
+      successObservation,
+      stateStore
+    ) || cleared
   }
-  return existed
+  return cleared
+}
+
+async function clearRedisBucketAfterSuccessObservation(
+  key: string,
+  successObservation: GatewayUpstreamBucketMutationObservation,
+  stateStore: GatewayProxyHealthRuntimeStateStore
+): Promise<boolean> {
+  let current = await getRedisBucketFailureEntry(key, stateStore)
+  if (!current || gatewayUpstreamBucketFailureOccurredAfterObservation(current, successObservation)) {
+    return false
+  }
+  const observedFailureEvidence = current
+  for (let attempt = 0; attempt < upstreamBucketFailureCasMaxAttempts; attempt += 1) {
+    if (await stateStore.compareDeleteJson(redisBucketStateKey(key), current)) {
+      return true
+    }
+    current = await getRedisBucketFailureEntry(key, stateStore)
+    if (!current) {
+      return false
+    }
+    if (
+      gatewayUpstreamBucketFailureOccurredAfterObservation(current, successObservation)
+      || !sameGatewayUpstreamBucketFailureEvidence(observedFailureEvidence, current)
+    ) {
+      return false
+    }
+  }
+  throw redisBucketCasExhaustedError(key, 'success_cleanup')
 }
 
 export function recordGatewayProxySuccess(account: UpstreamAccount): boolean {
-  return recordGatewayUpstreamBucketSuccess(account)
+  return recordGatewayUpstreamBucketSuccess(account, { bucketScope: 'proxy' })
 }
 
 export async function recordGatewayProxySuccessAsync(account: UpstreamAccount): Promise<boolean> {
-  return recordGatewayUpstreamBucketSuccessAsync(account)
+  return recordGatewayUpstreamBucketSuccessAsync(account, { bucketScope: 'proxy' })
 }
 
 export function clearGatewayProxyHealthForTest(): void {
@@ -717,6 +937,12 @@ export function setGatewayProxyHealthNowForTest(nowMs: number | undefined): void
   gatewayUpstreamBucketHealthNowForTest = typeof nowMs === 'number' && Number.isFinite(nowMs)
     ? Math.max(0, Math.trunc(nowMs))
     : undefined
+}
+
+export function setGatewayProxyHealthRuntimeStateStoreForTest(
+  stateStore: GatewayProxyHealthRuntimeStateStore | undefined
+): void {
+  upstreamBucketFailureStateStoreForTest = stateStore
 }
 
 function getMemoryBucketFailureEntry(key: string): GatewayUpstreamBucketFailureEntry | undefined {
@@ -732,9 +958,12 @@ function getMemoryBucketFailureEntry(key: string): GatewayUpstreamBucketFailureE
 }
 
 function setMemoryBucketFailureEntry(key: string, value: GatewayUpstreamBucketFailureEntry, ttlMs: number): void {
+  const now = gatewayUpstreamBucketHealthNow()
+  const existingExpiresAt = upstreamBucketFailureMemoryEntries.get(key)?.expiresAt ?? 0
+  const effectiveTtlMs = redisBucketFailureEntryTtlMs(value, now, ttlMs)
   upstreamBucketFailureMemoryEntries.set(key, {
     value,
-    expiresAt: gatewayUpstreamBucketHealthNow() + Math.max(1, Math.trunc(ttlMs))
+    expiresAt: Math.max(existingExpiresAt, now + effectiveTtlMs)
   })
   evictOldestBucketFailureEntries()
 }
@@ -750,14 +979,21 @@ function evictOldestBucketFailureEntries(): void {
 }
 
 function shouldUseRedisUpstreamBucketHealthState(): boolean {
-  return runtimeConfig.runtimeStateDriver === 'redis'
+  return Boolean(upstreamBucketFailureStateStoreForTest) || runtimeConfig.runtimeStateDriver === 'redis'
 }
 
-async function loadRedisBucketEntriesForAccounts(accounts: UpstreamAccount[]): Promise<Map<string, GatewayUpstreamBucketFailureEntry>> {
+function gatewayProxyHealthRuntimeStateStore(): GatewayProxyHealthRuntimeStateStore {
+  return upstreamBucketFailureStateStoreForTest ?? upstreamBucketFailureStateStore
+}
+
+async function loadRedisBucketEntriesForAccounts(
+  accounts: UpstreamAccount[],
+  stateStore: GatewayProxyHealthRuntimeStateStore
+): Promise<Map<string, GatewayUpstreamBucketFailureEntry>> {
   const keys = [...new Set(accounts.flatMap((account) => gatewayUpstreamBucketKeys(account)))]
   const entries = new Map<string, GatewayUpstreamBucketFailureEntry>()
   await Promise.all(keys.map(async (key) => {
-    const entry = await getRedisBucketFailureEntry(key)
+    const entry = await getRedisBucketFailureEntry(key, stateStore)
     if (entry) {
       entries.set(key, entry)
     }
@@ -769,16 +1005,135 @@ function redisBucketStateKey(key: string): string {
   return `bucket:${key}`
 }
 
-async function getRedisBucketFailureEntry(key: string): Promise<GatewayUpstreamBucketFailureEntry | undefined> {
-  return upstreamBucketFailureStateStore.getJson<GatewayUpstreamBucketFailureEntry>(redisBucketStateKey(key))
+async function getRedisBucketFailureEntry(
+  key: string,
+  stateStore: GatewayProxyHealthRuntimeStateStore
+): Promise<GatewayUpstreamBucketFailureEntry | undefined> {
+  return stateStore.getJson<GatewayUpstreamBucketFailureEntry>(redisBucketStateKey(key))
 }
 
-async function setRedisBucketFailureEntry(
-  key: string,
+function redisBucketCasExhaustedError(key: string, operation: string): Error {
+  return new Error(
+    `上游桶 Redis CAS 重试耗尽（${upstreamBucketFailureCasMaxAttempts} 次）：${operation}:${bucketKeyForLog(key) ?? 'unknown'}`
+  )
+}
+
+function redisBucketFailureEntryTtlMs(
   entry: GatewayUpstreamBucketFailureEntry,
-  ttlMs: number
-): Promise<void> {
-  await upstreamBucketFailureStateStore.setJson(redisBucketStateKey(key), entry, ttlMs)
+  now: number,
+  minimumTtlMs: number
+): number {
+  const avoidRetentionMs = entry.avoidUntilMs
+    ? Math.max(0, entry.avoidUntilMs - now) + upstreamBucketFailureWindowMs
+    : 0
+  const halfOpenRetentionMs = entry.halfOpenUntilMs
+    ? Math.max(0, entry.halfOpenUntilMs - now) + upstreamBucketFailureWindowMs
+    : 0
+  return Math.max(1, Math.trunc(minimumTtlMs), avoidRetentionMs, halfOpenRetentionMs)
+}
+
+function nextGatewayUpstreamBucketMutationObservation(observedAtMs: number): GatewayUpstreamBucketMutationObservation {
+  upstreamBucketMutationSequence += 1
+  return {
+    observedAtMs,
+    generation: {
+      instanceId: upstreamBucketMutationInstanceId,
+      sequence: upstreamBucketMutationSequence
+    }
+  }
+}
+
+function latestGatewayUpstreamBucketFailureObservation(
+  current: GatewayUpstreamBucketFailureEntry | undefined,
+  incoming: GatewayUpstreamBucketMutationObservation
+): { observedAtMs: number; generation?: GatewayUpstreamBucketMutationGeneration } {
+  if (!current || current.lastFailedAtMs < incoming.observedAtMs) {
+    return incoming
+  }
+  if (current.lastFailedAtMs > incoming.observedAtMs) {
+    return {
+      observedAtMs: current.lastFailedAtMs,
+      generation: validGatewayUpstreamBucketMutationGeneration(current.lastFailureGeneration)
+    }
+  }
+  const currentGeneration = validGatewayUpstreamBucketMutationGeneration(current.lastFailureGeneration)
+  if (
+    currentGeneration?.instanceId === incoming.generation.instanceId
+    && currentGeneration.sequence > incoming.generation.sequence
+  ) {
+    return { observedAtMs: current.lastFailedAtMs, generation: currentGeneration }
+  }
+  return incoming
+}
+
+function gatewayUpstreamBucketFailureOccurredAfterObservation(
+  entry: GatewayUpstreamBucketFailureEntry,
+  observation: GatewayUpstreamBucketMutationObservation
+): boolean {
+  if (entry.lastFailedAtMs > observation.observedAtMs) return true
+  if (entry.lastFailedAtMs < observation.observedAtMs) return false
+  const failureGeneration = validGatewayUpstreamBucketMutationGeneration(entry.lastFailureGeneration)
+  if (!failureGeneration || failureGeneration.instanceId !== observation.generation.instanceId) {
+    return true
+  }
+  return failureGeneration.sequence > observation.generation.sequence
+}
+
+function validGatewayUpstreamBucketMutationGeneration(
+  value: GatewayUpstreamBucketMutationGeneration | undefined
+): GatewayUpstreamBucketMutationGeneration | undefined {
+  if (
+    !value
+    || typeof value.instanceId !== 'string'
+    || !value.instanceId
+    || !Number.isSafeInteger(value.sequence)
+    || value.sequence <= 0
+  ) {
+    return undefined
+  }
+  return value
+}
+
+function sameGatewayUpstreamBucketFailureEvidence(
+  left: GatewayUpstreamBucketFailureEntry,
+  right: GatewayUpstreamBucketFailureEntry
+): boolean {
+  return left.key === right.key
+    && left.reason === right.reason
+    && left.failureCount === right.failureCount
+    && left.firstFailedAtMs === right.firstFailedAtMs
+    && left.lastFailedAtMs === right.lastFailedAtMs
+    && left.avoidUntilMs === right.avoidUntilMs
+    && sameGatewayUpstreamBucketMutationGeneration(left.lastFailureGeneration, right.lastFailureGeneration)
+    && sameGatewayUpstreamBucketAccountSamples(left.accountSamples, right.accountSamples)
+}
+
+function sameGatewayUpstreamBucketMutationGeneration(
+  left: GatewayUpstreamBucketMutationGeneration | undefined,
+  right: GatewayUpstreamBucketMutationGeneration | undefined
+): boolean {
+  if (left === undefined && right === undefined) return true
+  const normalizedLeft = validGatewayUpstreamBucketMutationGeneration(left)
+  const normalizedRight = validGatewayUpstreamBucketMutationGeneration(right)
+  return Boolean(
+    normalizedLeft
+    && normalizedRight
+    && normalizedLeft.instanceId === normalizedRight.instanceId
+    && normalizedLeft.sequence === normalizedRight.sequence
+  )
+}
+
+function sameGatewayUpstreamBucketAccountSamples(
+  left: Array<[string, number]>,
+  right: Array<[string, number]>
+): boolean {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every(([accountId, failedAtMs], index) => {
+      const candidate = right[index]
+      return candidate?.[0] === accountId && candidate[1] === failedAtMs
+    })
 }
 
 export function gatewayProxyKey(account: Pick<UpstreamAccount, 'proxyProfileId' | 'proxyUrl'>): string | undefined {
@@ -797,7 +1152,7 @@ function proxyUrlKeyHash(value: string): string {
 
 export function gatewayUpstreamBucketKeys(
   account: Pick<UpstreamAccount, 'id' | 'systemAccountId' | 'accountOwnerSystemAccountId' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
-  scope: 'all' | 'proxy' | 'upstream' = 'all'
+  scope: GatewayUpstreamBucketScope = 'all'
 ): string[] {
   const keys: string[] = []
   const proxyKey = gatewayProxyKey(account)
@@ -872,7 +1227,23 @@ function bucketKeyForLog(key: string | undefined): string | undefined {
 }
 
 function pruneAccountSamples(samples: Array<[string, number]>, now: number): Array<[string, number]> {
-  return samples.filter(([, failedAtMs]) => now - failedAtMs <= upstreamBucketFailureWindowMs)
+  const latestByAccountId = new Map<string, [string, number]>()
+  for (const [accountId, failedAtMs] of samples) {
+    if (now - failedAtMs > upstreamBucketFailureWindowMs) continue
+    const previous = latestByAccountId.get(accountId)
+    if (!previous || failedAtMs >= previous[1]) {
+      latestByAccountId.set(accountId, [accountId, failedAtMs])
+    }
+  }
+  return [...latestByAccountId.values()]
+    .sort((left, right) => left[1] - right[1])
+    .slice(-upstreamBucketFailureMaxAccountSamples)
+}
+
+function gatewayFailureEvidenceAccountId(
+  account: Pick<UpstreamAccount, 'id' | 'credentialSourceAccountId'>
+): string {
+  return account.credentialSourceAccountId?.trim() || account.id
 }
 
 function gatewayUpstreamBucketHealthNow(): number {

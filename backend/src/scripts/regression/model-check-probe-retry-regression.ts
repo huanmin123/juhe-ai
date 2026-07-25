@@ -24,7 +24,9 @@ const retryState = {
   transientBasicAttempts: 0,
   transientStreamAttempts: 0,
   persistentBasicAttempts: 0,
-  rateLimitedBasicAttempts: 0
+  rateLimitedBasicAttempts: 0,
+  opaque400BasicAttempts: 0,
+  opaque429BasicAttempts: 0
 }
 const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
@@ -103,6 +105,52 @@ try {
   assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [429, 429, 200], '429 basic 探针应记录网关侧状态码')
   assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429, 200], '429 basic 探针应记录真实上游状态码')
 
+  const opaque400Fixture = createMockGatewayFixture({
+    label: 'model-check-retry-opaque-400',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const opaque400Account = opaque400Fixture.accounts[0]
+  assert(opaque400Account, 'mock fixture should create an opaque 400 target account')
+  const opaque400Run = await runModelCheck({
+    targetType: 'account',
+    targetId: opaque400Account.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  const opaque400Basic = requiredCheck(opaque400Run.checks, 'target.responses_basic')
+
+  const opaque429Fixture = createMockGatewayFixture({
+    label: 'model-check-retry-opaque-429',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const opaque429Account = opaque429Fixture.accounts[0]
+  assert(opaque429Account, 'mock fixture should create an opaque 429 target account')
+  const opaque429Run = await runModelCheck({
+    targetType: 'account',
+    targetId: opaque429Account.id,
+    model: 'gpt-5.5',
+    profile: 'full',
+    trustedComparison: false
+  }, access)
+  const opaque429Basic = requiredCheck(opaque429Run.checks, 'target.responses_basic')
+  assert.equal(retryState.opaque400BasicAttempts, 3, '400 + rate_limit 文本与 429 应执行同样的有界重试')
+  assert.equal(retryState.opaque429BasicAttempts, 3, '429 + 任意正文应执行同样的有界重试')
+  assert.equal(opaque400Basic.status, opaque429Basic.status, '400 与 429 的探针动作结果必须等价')
+  assert.equal(opaque400Basic.maxScore, opaque429Basic.maxScore, '400 与 429 不得改变评分分母')
+  assert.equal(opaque400Basic.evidenceSummary.requestFailure, opaque429Basic.evidenceSummary.requestFailure, '400 与 429 请求失败事实必须等价')
+  assert.equal(opaque400Basic.evidenceSummary.excludedFromScoring, opaque429Basic.evidenceSummary.excludedFromScoring, '400 与 429 排除评分事实必须等价')
+  assert.equal(opaque400Basic.evidenceSummary.rateLimited, undefined, '400 正文 rate_limit 不能被内部解释为限流')
+  assert.equal(opaque429Basic.evidenceSummary.rateLimited, undefined, '429 状态码不能被内部解释为限流')
+  assert.deepEqual(opaque400Basic.evidenceSummary.attemptStatusCodes, [400, 400, 400], '400 应保留原始状态码诊断')
+  assert.deepEqual(opaque429Basic.evidenceSummary.attemptStatusCodes, [429, 429, 429], '429 应保留原始状态码诊断')
+
   const persistentFixture = createMockGatewayFixture({
     label: 'model-check-retry-persistent',
     upstreamBaseUrl,
@@ -175,6 +223,16 @@ function createRetryAwareUpstream(): http.Server {
         const authorization = String(req.headers.authorization ?? '').toLowerCase()
         const bodyText = JSON.stringify(body).toUpperCase()
         if (bodyText.includes('OK-MODEL-CHECK')) {
+          if (authorization.includes('model-check-retry-opaque-400')) {
+            retryState.opaque400BasicAttempts += 1
+            sendOpaqueError(res, 400, { error: { message: 'rate_limit text is untrusted', type: 'rate_limit' } })
+            return
+          }
+          if (authorization.includes('model-check-retry-opaque-429')) {
+            retryState.opaque429BasicAttempts += 1
+            sendOpaqueError(res, 429, { error: { message: 'provider returned an opaque response' } })
+            return
+          }
           if (authorization.includes('model-check-retry-rate-limit')) {
             retryState.rateLimitedBasicAttempts += 1
             if (retryState.rateLimitedBasicAttempts <= 2) {
@@ -301,6 +359,11 @@ function sendError(res: http.ServerResponse, message: string): void {
 function sendRateLimit(res: http.ServerResponse): void {
   res.writeHead(429, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ error: { message: 'group requests-per-minute limit exceeded', type: 'rate_limit_exceeded' } }))
+}
+
+function sendOpaqueError(res: http.ServerResponse, statusCode: number, body: unknown): void {
+  res.writeHead(statusCode, { 'content-type': 'application/json' })
+  res.end(JSON.stringify(body))
 }
 
 function parseJson(text: string): Record<string, unknown> {

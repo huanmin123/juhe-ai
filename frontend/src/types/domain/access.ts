@@ -250,7 +250,7 @@ export interface ProxyProfileListResult {
   pageSize: number
 }
 
-export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed'
+export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed' | 'unknown'
 export type ProxyTestOverallStatus = 'passed' | 'warning' | 'failed' | 'unknown'
 
 export interface ProxyTestItem {

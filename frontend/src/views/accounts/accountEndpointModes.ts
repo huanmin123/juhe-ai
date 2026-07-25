@@ -214,14 +214,15 @@ export function accountTestEndpointModesForModel(
   capabilities?: { supportedApiProtocols?: readonly string[] }
 ): AccountSupportedEndpointMode[] {
   const source = { ...account, ...(draftAccount ?? {}) }
+  const type = normalizedAccountType(source.type)
   const accountModes = accountTestEndpointModesForAccount(account, draftAccount)
   const protocols = capabilities?.supportedApiProtocols ?? []
   if (!protocols.length) return accountModes
   const output = accountModes.filter((mode) => protocols.includes(testEndpointModeProtocol(mode)))
   if (
     protocols.includes('images')
-    && normalizedAccountType(source.type) === 'api_key'
-    && accountProviderProtocolKind({ ...source, type: normalizedAccountType(source.type) }) === 'openai_v1'
+    && type === 'api_key'
+    && accountProviderProtocolKind({ ...source, type }) === 'openai_v1'
   ) {
     output.push('images_json')
   }

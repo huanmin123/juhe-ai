@@ -1516,7 +1516,7 @@ async function assertUsageRecordFields(
   groupId: string
 ): Promise<void> {
   const traceId = 'trace-account-model-mapping-regression'
-  recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {
+  await recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {
     traceId,
     trafficSource: 'gateway',
     systemAccountId: 'sys_mapping_grantee',
@@ -1555,7 +1555,7 @@ async function assertUsageRecordFields(
     stream: false
   })
   setGatewayModelMappingSourceEndpointFamilyOverride(compactSummaryReq, 'responses')
-  recordCompletedUpstreamAttempt(compactSummaryReq, {
+  await recordCompletedUpstreamAttempt(compactSummaryReq, {
     traceId: compactTraceId,
     trafficSource: 'gateway',
     systemAccountId: 'sys_mapping_grantee',
@@ -1581,7 +1581,7 @@ async function assertUsageRecordFields(
   assert.equal(compactRecord.modelMappingApplied, true, '内部 compact 摘要请求使用记录应标记命中模型映射')
 
   const unpricedTraceId = 'trace-account-model-mapping-unpriced-upstream-regression'
-  recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {
+  await recordCompletedUpstreamAttempt(jsonRequest({ model: sourceModel, input: 'usage', stream: false }), {
     traceId: unpricedTraceId,
     trafficSource: 'gateway',
     systemAccountId: 'sys_mapping_grantee',

@@ -61,7 +61,7 @@ export function extractAnthropicSseSemanticFrames(
   const frames: ResponseSemanticFrame[] = []
   if (!data) return frames
 
-  const error = extractAnthropicStreamEventError(data)
+  const error = extractAnthropicStreamEventError(data, eventType, event.eventName)
   if (error) {
     frames.push(errorFrame(error, endpointFamily, 'sse', errorRawPaths(data), eventType, rawText))
   }
@@ -91,11 +91,13 @@ export function parseAnthropicSseEventText(rawText: string): ParsedOpenAIStreamE
   return parseOpenAISseEventText(rawText)
 }
 
-export function extractAnthropicStreamEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
-  const error = objectValue(data.error)
-  if (error) return error
-  if (data.type === 'error') return data
-  return undefined
+export function extractAnthropicStreamEventError(
+  data: Record<string, unknown>,
+  eventType: string,
+  eventName = ''
+): Record<string, unknown> | undefined {
+  if (eventType !== 'error' && eventName !== 'error' && data.type !== 'error') return undefined
+  return objectValue(data.error) ?? data
 }
 
 function extractMessageJsonFrames(

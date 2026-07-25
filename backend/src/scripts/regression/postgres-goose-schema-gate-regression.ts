@@ -131,7 +131,7 @@ async function assertAcceptsRolledBackNewerVersion(): Promise<void> {
   })
 
   await enforcePostgresGooseSchemaGate(postgresConfig, () => pool)
-  assert.equal(ended, true, '高版本已回滚时必须允许期望版本启动并关闭连接池')
+  assert.equal(ended, true, '较新版本 up/down 折叠后必须允许期望版本启动并关闭连接池')
 }
 
 function assertRejectsInvalidCurrentStates(): void {

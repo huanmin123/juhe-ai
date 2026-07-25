@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { accountCircuitCredentialOwnerIdentity } from '../../../domain/account-circuit-owner.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 import type { GatewayRoutingCircuitOperation } from '../observability/routing-observability-store.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -10,17 +11,24 @@ import { MemoryAccountCircuitStore } from './account-circuit-memory-store.js'
 import { RedisAccountCircuitStore } from './account-circuit-redis-store.js'
 import { AccountCircuitControlPlaneBridge } from './account-circuit-control-plane-bridge.js'
 import {
+  accountCircuitDefaultConfirmationFailuresRequired,
+  accountCircuitFailureEvidenceKeys,
   accountCircuitScopeKey,
   closedAccountCircuitState,
+  normalizeAccountCircuitConfirmationFailuresRequired,
+  normalizeAccountCircuitEscalationDistinctScopeThreshold,
+  normalizeAccountCircuitEscalationWindowMs,
+  normalizeAccountCircuitFailureEvidenceKey,
   type AccountCircuitMutationResult,
   type AccountCircuitScope,
   type AccountCircuitState,
   type AccountCircuitStore
 } from './account-circuit-store.js'
 
-const gatewayAccountCircuitCapacity = 10_000
+const gatewayAccountCircuitCapacity = runtimeConfig.gateway.accountCircuitCapacity
 const gatewayAccountCircuitKnownModelLimit = 256
 const gatewayAccountCircuitUnknownModelBucket = 'unknown'
+const gatewayAccountCircuitFailureEvidenceMarker = '|request_evidence_sha256='
 
 export type GatewayAccountCircuitTransportFailureKind = 'transport' | 'timeout' | 'read_incomplete'
 
@@ -40,6 +48,8 @@ export interface GatewayAccountCircuitConfirmation {
 
 export type GatewayAccountCircuitFailureDecision =
   | { outcome: 'confirmation_acquired'; confirmation: GatewayAccountCircuitConfirmation; state: AccountCircuitState }
+  | { outcome: 'suspected'; state: AccountCircuitState }
+  | { outcome: 'observer_neutral'; state: AccountCircuitState }
   | { outcome: 'blocked'; state: AccountCircuitState }
 
 export type GatewayAccountCircuitPrepareResult =
@@ -56,8 +66,10 @@ export interface GatewayAccountCircuitServiceOptions {
     operation: GatewayRoutingCircuitOperation
     previousPhase?: AccountCircuitState['phase']
   }) => Promise<void> | void
-  isRuntimeStateReady?: () => boolean
-  ensureRuntimeStateReady?: () => Promise<boolean>
+  isRuntimeStateReady?: (accountRuntimeKey: string) => boolean
+  ensureRuntimeStateReady?: (accountRuntimeKey: string) => Promise<boolean>
+  escalationDistinctScopeThreshold?: number
+  escalationWindowMs?: number
 }
 
 export interface PrepareGatewayAccountCircuitAttemptInput {
@@ -65,49 +77,133 @@ export interface PrepareGatewayAccountCircuitAttemptInput {
   requestLane: OpenAIGatewayRequestLane
   model: string | undefined
   confirmationLeaseDurationMs: number
+  confirmationFailuresRequired?: number
   confirmation?: GatewayAccountCircuitConfirmation
+  failureEvidenceKey?: string
+}
+
+interface GatewayAccountCircuitObserver {
+  generation: number
+  dispatchRevision: string
+  expectedFailureEvidenceKey: string
+  observerEvidenceKey: string
+  state: AccountCircuitState
 }
 
 export class GatewayAccountCircuitAttempt {
-  readonly isConfirmation: boolean
+  readonly isObserver: boolean
+
+  private requestRecoveryGeneration: number | undefined
+  private requestRecoveryEvidenceKey: string | undefined
+  private confirmationKeyRotationFailureObserved = false
 
   constructor(
     private readonly service: GatewayAccountCircuitService,
     readonly scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>,
     readonly dispatchRevision: string,
     readonly confirmationLeaseDurationMs: number,
-    private readonly confirmation?: GatewayAccountCircuitConfirmation
+    readonly confirmationFailuresRequired: number,
+    private confirmation?: GatewayAccountCircuitConfirmation,
+    private readonly failureEvidenceKey?: string,
+    private readonly observer?: GatewayAccountCircuitObserver
   ) {
-    this.isConfirmation = confirmation !== undefined
+    this.isObserver = observer !== undefined
   }
 
-  reportFramingComplete(): Promise<AccountCircuitMutationResult | undefined> {
-    if (!this.confirmation) return Promise.resolve(undefined)
-    return this.service.completeConfirmation(this.confirmation, 'framing_complete')
+  get isConfirmation(): boolean {
+    return this.confirmation !== undefined
+  }
+
+  async reportFramingComplete(): Promise<AccountCircuitMutationResult | undefined> {
+    if (this.confirmation) {
+      const confirmation = this.confirmation
+      this.confirmation = undefined
+      const closeAfterKeyRotation = this.confirmationKeyRotationFailureObserved
+      this.confirmationKeyRotationFailureObserved = false
+      return this.service.completeConfirmation(
+        confirmation,
+        'framing_complete',
+        undefined,
+        undefined,
+        closeAfterKeyRotation ? 'closed' : undefined
+      )
+    }
+    if (this.observer) {
+      return this.service.completeObserverFraming({
+        scope: this.scope,
+        generation: this.observer.generation,
+        dispatchRevision: this.observer.dispatchRevision,
+        expectedFailureEvidenceKey: this.observer.expectedFailureEvidenceKey,
+        observerEvidenceKey: this.observer.observerEvidenceKey
+      })
+    }
+    if (this.requestRecoveryGeneration !== undefined) {
+      const result = await this.service.completeRequestFramingAfterKeyRotation({
+        scope: this.scope,
+        generation: this.requestRecoveryGeneration,
+        dispatchRevision: this.dispatchRevision,
+        failureEvidenceKey: this.requestRecoveryEvidenceKey
+      })
+      this.requestRecoveryGeneration = undefined
+      this.requestRecoveryEvidenceKey = undefined
+      return result
+    }
+    if (this.isConfirmation) return undefined
+    await this.service.clearAccountEscalationEvidenceAfterFramingComplete(
+      this.scope,
+      this.dispatchRevision
+    )
+    return undefined
   }
 
   async reportTransportFailure(
     failure: GatewayAccountCircuitTransportFailure
   ): Promise<GatewayAccountCircuitFailureDecision> {
+    if (this.observer) {
+      return { outcome: 'observer_neutral', state: this.observer.state }
+    }
     if (this.confirmation) {
+      const confirmation = this.confirmation
+      this.confirmation = undefined
+      this.confirmationKeyRotationFailureObserved = false
       const result = await this.service.completeConfirmation(
-        this.confirmation,
+        confirmation,
         'transport_failure',
-        requiredText(failure.reason, 'failure.reason')
+        requiredText(failure.reason, 'failure.reason'),
+        this.failureEvidenceKey
       )
+      if (result.state.phase === 'SUSPECT') {
+        this.requestRecoveryGeneration = result.state.generation
+        this.requestRecoveryEvidenceKey = result.state.failureEvidenceKeys?.at(-1)
+      }
       return { outcome: 'blocked', state: result.state }
     }
-    return this.service.suspectAndAcquireConfirmation({
+    const decision = await this.service.suspectForegroundFailure({
       scope: this.scope,
       dispatchRevision: this.dispatchRevision,
-      confirmationLeaseDurationMs: this.confirmationLeaseDurationMs,
-      reason: `${failure.kind}:${requiredText(failure.reason, 'failure.reason')}`
+      confirmationFailuresRequired: this.confirmationFailuresRequired,
+      reason: `${failure.kind}:${requiredText(failure.reason, 'failure.reason')}`,
+      failureEvidenceKey: this.failureEvidenceKey
     })
+    if (decision.outcome === 'suspected') {
+      this.requestRecoveryGeneration = decision.state.generation
+      this.requestRecoveryEvidenceKey = accountCircuitFailureEvidenceKeys(decision.state).at(-1)
+    }
+    return decision
+  }
+
+  deferConfirmationTransportFailureForKeyRotation(): boolean {
+    if (!this.confirmation) return false
+    this.confirmationKeyRotationFailureObserved = true
+    return true
   }
 
   reportUnknown(): Promise<AccountCircuitMutationResult | undefined> {
     if (!this.confirmation) return Promise.resolve(undefined)
-    return this.service.completeConfirmation(this.confirmation, 'unknown')
+    const confirmation = this.confirmation
+    this.confirmation = undefined
+    this.confirmationKeyRotationFailureObserved = false
+    return this.service.completeConfirmation(confirmation, 'unknown')
   }
 }
 
@@ -115,8 +211,10 @@ export class GatewayAccountCircuitService {
   private readonly now: () => number
   private readonly createId: () => string
   private readonly onMutation?: GatewayAccountCircuitServiceOptions['onMutation']
-  private readonly isRuntimeStateReady: () => boolean
-  private readonly ensureRuntimeStateReady?: () => Promise<boolean>
+  private readonly isRuntimeStateReady: (accountRuntimeKey: string) => boolean
+  private readonly ensureRuntimeStateReady?: (accountRuntimeKey: string) => Promise<boolean>
+  private readonly escalationDistinctScopeThreshold: number
+  private readonly escalationWindowMs: number
 
   constructor(
     private readonly store: AccountCircuitStore,
@@ -127,6 +225,14 @@ export class GatewayAccountCircuitService {
     this.onMutation = options.onMutation
     this.isRuntimeStateReady = options.isRuntimeStateReady ?? (() => true)
     this.ensureRuntimeStateReady = options.ensureRuntimeStateReady
+    this.escalationDistinctScopeThreshold = normalizeAccountCircuitEscalationDistinctScopeThreshold(
+      options.escalationDistinctScopeThreshold,
+      runtimeConfig.gateway.accountCircuitEscalationDistinctScopeThreshold
+    )
+    this.escalationWindowMs = normalizeAccountCircuitEscalationWindowMs(
+      options.escalationWindowMs,
+      runtimeConfig.gateway.accountCircuitEscalationWindowMs
+    )
   }
 
   private async notifyMutation(
@@ -136,6 +242,14 @@ export class GatewayAccountCircuitService {
     previousPhase?: AccountCircuitState['phase']
   ): Promise<void> {
     if (!this.onMutation || result.status === 'not_found') return
+    for (const relatedState of result.relatedStates ?? []) {
+      await this.onMutation({
+        scope: { ...relatedState.scope },
+        state: relatedState,
+        status: 'applied',
+        operation
+      })
+    }
     await this.onMutation({ scope: { ...scope }, state: result.state, status: result.status, operation, previousPhase })
   }
 
@@ -143,10 +257,13 @@ export class GatewayAccountCircuitService {
     const scope = gatewayAccountProtocolModelScope(input.account, input.requestLane, input.model)
     const dispatchRevision = accountCircuitDispatchRevision(input.account)
     const leaseDurationMs = positiveDuration(input.confirmationLeaseDurationMs)
+    const confirmationFailuresRequired = boundedConfirmationFailuresRequired(
+      input.confirmationFailuresRequired ?? accountCircuitDefaultConfirmationFailuresRequired
+    )
     const expectedScopeKey = accountCircuitScopeKey(scope)
 
-    const runtimeStateReady = this.isRuntimeStateReady()
-      || await this.ensureRuntimeStateReady?.()
+    const runtimeStateReady = this.isRuntimeStateReady(scope.accountRuntimeKey)
+      || await this.ensureRuntimeStateReady?.(scope.accountRuntimeKey)
       || false
     if (!runtimeStateReady) {
       observeGatewayRouting({ kind: 'circuit_dispatch', outcome: 'rebuild_blocked', phase: 'SUSPECT' })
@@ -177,6 +294,10 @@ export class GatewayAccountCircuitService {
       })
       await this.notifyMutation('replace_revision', accountScope, replaced, accountState.phase)
       accountState = replaced.state
+      if (replaced.status === 'stale_dispatch_revision') {
+        observeBlockedCircuitDispatch(accountState)
+        return { outcome: 'blocked', state: accountState }
+      }
     }
     if (accountState.phase !== 'CLOSED') {
       observeBlockedCircuitDispatch(accountState)
@@ -194,6 +315,10 @@ export class GatewayAccountCircuitService {
         return { outcome: 'blocked', state }
       }
       const state = await this.store.get(scope, this.now())
+      if (sameRequestFailureEvidence(state, input.failureEvidenceKey)) {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
       if (
         state.phase !== 'SUSPECT'
         || state.generation !== input.confirmation.generation
@@ -211,7 +336,9 @@ export class GatewayAccountCircuitService {
           scope,
           dispatchRevision,
           leaseDurationMs,
-          cloneConfirmation(input.confirmation)
+          confirmationFailuresRequired,
+          cloneConfirmation(input.confirmation),
+          normalizedFailureEvidenceKey(input.failureEvidenceKey)
         )
       }
     }
@@ -226,15 +353,45 @@ export class GatewayAccountCircuitService {
       })
       await this.notifyMutation('replace_revision', scope, replaced, state.phase)
       state = replaced.state
+      if (replaced.status === 'stale_dispatch_revision') {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
     }
     if (state.phase === 'CLOSED') {
       return {
         outcome: 'dispatchable',
-        attempt: new GatewayAccountCircuitAttempt(this, scope, dispatchRevision, leaseDurationMs)
+        attempt: new GatewayAccountCircuitAttempt(
+          this,
+          scope,
+          dispatchRevision,
+          leaseDurationMs,
+          confirmationFailuresRequired,
+          undefined,
+          normalizedFailureEvidenceKey(input.failureEvidenceKey)
+        )
       }
     }
     if (state.phase === 'SUSPECT' && state.dispatchRevision === dispatchRevision) {
-      const decision = await this.acquireConfirmation(scope, state, leaseDurationMs)
+      const confirmationEvidenceKey = normalizedFailureEvidenceKey(input.failureEvidenceKey)
+      if (!confirmationEvidenceKey || sameRequestFailureEvidence(state, confirmationEvidenceKey)) {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
+      const decision = await this.acquireConfirmation(
+        scope,
+        state,
+        leaseDurationMs,
+        confirmationEvidenceKey
+      )
+      const currentParentState = await this.store.get(accountScope, this.now())
+      if (
+        currentParentState.phase !== 'CLOSED'
+        || (currentParentState.dispatchRevision && currentParentState.dispatchRevision !== dispatchRevision)
+      ) {
+        observeBlockedCircuitDispatch(currentParentState)
+        return { outcome: 'blocked', state: currentParentState }
+      }
       if (decision.outcome === 'confirmation_acquired') {
         return {
           outcome: 'dispatchable',
@@ -243,48 +400,91 @@ export class GatewayAccountCircuitService {
             scope,
             dispatchRevision,
             leaseDurationMs,
-            decision.confirmation
+            confirmationFailuresRequired,
+            decision.confirmation,
+            normalizedFailureEvidenceKey(input.failureEvidenceKey)
           )
         }
       }
-      return decision
+      const observerState = decision.state
+      const expectedFailureEvidenceKey = accountCircuitFailureEvidenceKeys(observerState).at(-1)
+      if (
+        observerState.phase === 'SUSPECT'
+        && observerState.dispatchRevision === dispatchRevision
+        && observerState.shadowedByIncidentId === undefined
+        && expectedFailureEvidenceKey
+        && !accountCircuitFailureEvidenceKeys(observerState).includes(confirmationEvidenceKey)
+      ) {
+        return {
+          outcome: 'dispatchable',
+          attempt: new GatewayAccountCircuitAttempt(
+            this,
+            scope,
+            dispatchRevision,
+            leaseDurationMs,
+            confirmationFailuresRequired,
+            undefined,
+            confirmationEvidenceKey,
+            {
+              generation: observerState.generation,
+              dispatchRevision: observerState.dispatchRevision,
+              expectedFailureEvidenceKey,
+              observerEvidenceKey: confirmationEvidenceKey,
+              state: observerState
+            }
+          )
+        }
+      }
+      observeBlockedCircuitDispatch(observerState)
+      return { outcome: 'blocked', state: observerState }
     }
     observeBlockedCircuitDispatch(state)
     return { outcome: 'blocked', state }
   }
 
-  async suspectAndAcquireConfirmation(input: {
+  async suspectForegroundFailure(input: {
     scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>
     dispatchRevision: string
-    confirmationLeaseDurationMs: number
+    confirmationFailuresRequired?: number
     reason: string
+    failureEvidenceKey?: string
   }): Promise<GatewayAccountCircuitFailureDecision> {
     const nowMs = this.now()
+    const suspectTransitionId = this.createId()
     const suspect = await this.store.suspect({
       scope: input.scope,
       dispatchRevision: requiredText(input.dispatchRevision, 'dispatchRevision'),
-      transitionId: this.createId(),
-      reason: requiredText(input.reason, 'reason'),
+      transitionId: suspectTransitionId,
+      reason: failureReasonWithEvidence(input.reason, input.failureEvidenceKey),
+      confirmationFailuresRequired: boundedConfirmationFailuresRequired(
+        input.confirmationFailuresRequired ?? accountCircuitDefaultConfirmationFailuresRequired
+      ),
+      failureEvidenceKey: normalizeAccountCircuitFailureEvidenceKey(
+        input.failureEvidenceKey,
+        `suspect:${suspectTransitionId}`
+      ),
       nowMs
     })
     await this.notifyMutation('suspect', input.scope, suspect, 'CLOSED')
     if (
+      suspect.status === 'capacity_exhausted'
+      ||
       suspect.state.phase !== 'SUSPECT'
       || suspect.state.dispatchRevision !== input.dispatchRevision
     ) {
       return { outcome: 'blocked', state: suspect.state }
     }
-    return this.acquireConfirmation(
-      input.scope,
-      suspect.state,
-      positiveDuration(input.confirmationLeaseDurationMs)
-    )
+    return suspect.status === 'applied'
+      ? { outcome: 'suspected', state: suspect.state }
+      : { outcome: 'blocked', state: suspect.state }
   }
 
   async completeConfirmation(
     confirmation: GatewayAccountCircuitConfirmation,
     outcome: 'framing_complete' | 'transport_failure' | 'unknown',
-    reason?: string
+    reason?: string,
+    failureEvidenceKey?: string,
+    framingCompleteDisposition?: 'recovering' | 'closed'
   ): Promise<AccountCircuitMutationResult> {
     const result = await this.completeAndNotify('complete_confirmation', confirmation.scope, 'SUSPECT', () => this.store.completeConfirmation({
       scope: confirmation.scope,
@@ -294,8 +494,23 @@ export class GatewayAccountCircuitService {
       leaseId: confirmation.leaseId,
       outcome,
       reason,
+      framingCompleteDisposition,
+      ...(outcome === 'transport_failure'
+        ? {
+            failureEvidenceKey: normalizeAccountCircuitFailureEvidenceKey(
+              failureEvidenceKey,
+              `confirmation:${confirmation.leaseId}`
+            )
+          }
+        : {}),
       nowMs: this.now()
     }))
+    if (outcome === 'framing_complete' && result.status === 'applied' && result.state.phase === 'CLOSED') {
+      await this.clearAccountEscalationEvidenceAfterFramingComplete(
+        confirmation.scope,
+        confirmation.dispatchRevision
+      )
+    }
     if (outcome === 'transport_failure' && result.status === 'applied' && result.state.phase === 'OPEN') {
       const escalation = await this.store.recordProtocolModelOpenEvidence({
         scope: confirmation.scope,
@@ -305,10 +520,19 @@ export class GatewayAccountCircuitService {
         accountTransitionId: this.createId(),
         reason: requiredText(reason ?? 'protocol_model_transport_failure', 'reason'),
         confirmedFailureCount: 1,
-        windowMs: 10 * 60_000,
-        maxProtocolScopes: 8,
+        distinctScopeThreshold: this.escalationDistinctScopeThreshold,
+        windowMs: this.escalationWindowMs,
+        maxProtocolScopes: Math.max(8, this.escalationDistinctScopeThreshold),
         nowMs: this.now()
       })
+      for (const relatedState of escalation.relatedStates ?? []) {
+        await this.onMutation?.({
+          scope: { ...relatedState.scope },
+          state: relatedState,
+          status: 'applied',
+          operation: 'record_parent_evidence'
+        })
+      }
       await this.onMutation?.({
         scope: {
           kind: 'account',
@@ -321,6 +545,90 @@ export class GatewayAccountCircuitService {
       })
     }
     return result
+  }
+
+  async clearAccountEscalationEvidenceAfterFramingComplete(
+    scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>,
+    dispatchRevision: string
+  ): Promise<void> {
+    await this.store.clearAccountEscalationEvidence({
+      accountRuntimeKey: scope.accountRuntimeKey,
+      dispatchRevision: requiredText(dispatchRevision, 'dispatchRevision'),
+      evidenceId: this.createId(),
+      nowMs: this.now()
+    })
+  }
+
+  async completeObserverFraming(input: {
+    scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>
+    generation: number
+    dispatchRevision: string
+    expectedFailureEvidenceKey: string
+    observerEvidenceKey: string
+  }): Promise<AccountCircuitMutationResult> {
+    const completed = await this.completeAndNotify(
+      'complete_confirmation',
+      input.scope,
+      'SUSPECT',
+      () => this.store.closeSuspectFromObserver({
+        scope: input.scope,
+        generation: input.generation,
+        dispatchRevision: requiredText(input.dispatchRevision, 'dispatchRevision'),
+        transitionId: this.createId(),
+        expectedFailureEvidenceKey: input.expectedFailureEvidenceKey,
+        observerEvidenceKey: input.observerEvidenceKey,
+        nowMs: this.now()
+      })
+    )
+    if (completed.status === 'applied' && completed.state.phase === 'CLOSED') {
+      await this.clearAccountEscalationEvidenceAfterFramingComplete(input.scope, input.dispatchRevision)
+    }
+    return completed
+  }
+
+  /**
+   * A request may fail on one physical API key and then receive a complete
+   * response from another key of the same account. That proves the account's
+   * protocol/model transport scope is usable. Reclaim only the SUSPECT
+   * incident created by that request, fenced by generation, revision, and
+   * the latest failure evidence. Closing invalidates any concurrent
+   * confirmation lease so a late failure cannot reopen the incident.
+   */
+  async completeRequestFramingAfterKeyRotation(input: {
+    scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>
+    generation: number
+    dispatchRevision: string
+    failureEvidenceKey?: string
+  }): Promise<AccountCircuitMutationResult> {
+    const expectedEvidence = input.failureEvidenceKey
+      ? normalizeAccountCircuitFailureEvidenceKey(input.failureEvidenceKey, 'request-key-rotation')
+      : undefined
+    if (!expectedEvidence) {
+      return {
+        status: 'state_mismatch',
+        state: await this.store.get(input.scope, this.now())
+      }
+    }
+    const completed = await this.completeAndNotify(
+      'complete_confirmation',
+      input.scope,
+      'SUSPECT',
+      () => this.store.closeSuspectFromKeyRotation({
+        scope: input.scope,
+        generation: input.generation,
+        dispatchRevision: requiredText(input.dispatchRevision, 'dispatchRevision'),
+        transitionId: this.createId(),
+        expectedFailureEvidenceKey: expectedEvidence,
+        nowMs: this.now()
+      })
+    )
+    if (completed.status === 'applied' && completed.state.phase === 'CLOSED') {
+      await this.clearAccountEscalationEvidenceAfterFramingComplete(
+        input.scope,
+        input.dispatchRevision
+      )
+    }
+    return completed
   }
 
   private async completeAndNotify(
@@ -337,17 +645,22 @@ export class GatewayAccountCircuitService {
   private async acquireConfirmation(
     scope: Extract<AccountCircuitScope, { kind: 'protocol_model' }>,
     state: AccountCircuitState,
-    leaseDurationMs: number
+    leaseDurationMs: number,
+    confirmationEvidenceKey: string
   ): Promise<GatewayAccountCircuitFailureDecision> {
     const leaseId = this.createId()
+    const nowMs = this.now()
+    const expectedFailureEvidenceKey = accountCircuitFailureEvidenceKeys(state).at(-1)
     const result = await this.store.acquireConfirmationLease({
       scope,
       generation: state.generation,
       dispatchRevision: state.dispatchRevision,
       transitionId: this.createId(),
       leaseId,
-      leaseUntilMs: this.now() + leaseDurationMs,
-      nowMs: this.now()
+      leaseUntilMs: nowMs + leaseDurationMs,
+      expectedFailureEvidenceKey,
+      confirmationEvidenceKey,
+      nowMs
     })
     await this.notifyMutation('acquire_confirmation', scope, result, 'SUSPECT')
     if (result.status !== 'applied') {
@@ -407,16 +720,18 @@ export function getGatewayAccountCircuitStore(): AccountCircuitStore {
 export function getGatewayAccountCircuitService(): GatewayAccountCircuitService {
   if (!gatewayAccountCircuitServiceSingleton) {
     const store = getGatewayAccountCircuitStore()
-    gatewayAccountCircuitBridgeSingleton = new AccountCircuitControlPlaneBridge({ store })
+    gatewayAccountCircuitBridgeSingleton = new AccountCircuitControlPlaneBridge({
+      store,
+      rebuildPageTimeoutMs: runtimeConfig.gateway.accountCircuitRebuildPageTimeoutMs,
+      rebuildTotalTimeoutMs: runtimeConfig.gateway.accountCircuitRebuildTotalTimeoutMs,
+      rebuildMaxPages: runtimeConfig.gateway.accountCircuitRebuildMaxPages
+    })
     void gatewayAccountCircuitBridgeSingleton.rebuild()
     gatewayAccountCircuitServiceSingleton = new GatewayAccountCircuitService(store, {
-      isRuntimeStateReady: () => gatewayAccountCircuitBridgeSingleton?.isReady() === true,
-      ensureRuntimeStateReady: async () => {
-        const result = await gatewayAccountCircuitBridgeSingleton?.rebuild()
-        return result?.blocked === false
-      },
+      isRuntimeStateReady: (accountRuntimeKey) => gatewayAccountCircuitBridgeSingleton?.isAccountReady(accountRuntimeKey) === true,
+      ensureRuntimeStateReady: async (accountRuntimeKey) => await gatewayAccountCircuitBridgeSingleton?.ensureAccountReady(accountRuntimeKey) ?? false,
       onMutation: (input) => {
-        if (input.status === 'applied') gatewayAccountCircuitBridgeSingleton?.observe(input)
+        projectGatewayAccountCircuitRuntimeMutation(input)
         observeGatewayRouting({
           kind: 'circuit_mutation',
           operation: input.operation,
@@ -441,8 +756,20 @@ export function getGatewayAccountCircuitService(): GatewayAccountCircuitService 
   return gatewayAccountCircuitServiceSingleton
 }
 
+export function projectGatewayAccountCircuitRuntimeMutation(input: {
+  scope: AccountCircuitScope
+  state: AccountCircuitState
+  status: AccountCircuitMutationResult['status']
+}): void {
+  if (input.status === 'applied') gatewayAccountCircuitBridgeSingleton?.observe(input)
+}
+
 export async function runGatewayAccountCircuitControlPlaneMaintenance(limit = 100): Promise<number> {
-  if (!await ensureGatewayAccountCircuitRuntimeStateReady()) return 0
+  // Project loaded/pending incidents even when a full rebuild is partial or
+  // one unrelated scope has a persistence failure. Blocking this worker
+  // globally would prevent recovery from releasing the capacity/readiness
+  // condition that caused the partial rebuild.
+  await ensureGatewayAccountCircuitRuntimeStateReady()
   const projected = await gatewayAccountCircuitBridgeSingleton?.projectPending(limit) ?? 0
   const reconciled = await gatewayAccountCircuitBridgeSingleton?.reconcileActive(limit) ?? 0
   return projected + reconciled
@@ -488,7 +815,7 @@ export function accountCircuitDispatchRevision(account: UpstreamAccount): string
     apiKeys: account.apiKeys,
     refreshToken: account.refreshToken,
     clientId: account.clientId,
-    credentials: account.credentials
+    credentials: accountCircuitCredentialOwnerIdentity(account.credentials)
   }))
   const revisionPayload = {
     accountRuntimeKey: gatewayAccountRuntimeKey(account),
@@ -503,8 +830,6 @@ export function accountCircuitDispatchRevision(account: UpstreamAccount): string
     proxyUrl: account.proxyUrl,
     clientCompatibility: account.clientCompatibility,
     supportedEndpointModes: account.supportedEndpointModes,
-    supportedModels: account.supportedModels,
-    modelMappings: account.modelMappings,
     credentialMaterialDigest
   }
   return `v1:${sha256(stableSerialize(revisionPayload))}`
@@ -561,6 +886,34 @@ function requiredText(value: string, name: string): string {
   const normalized = value.trim()
   if (!normalized) throw new Error(`账户电路缺少 ${name}`)
   return normalized
+}
+
+function failureReasonWithEvidence(reason: string, evidenceKey: string | undefined): string {
+  const normalizedReason = requiredText(reason, 'reason')
+  const normalizedEvidence = normalizedFailureEvidenceKey(evidenceKey)
+  return normalizedEvidence
+    ? `${normalizedReason}${gatewayAccountCircuitFailureEvidenceMarker}${normalizedEvidence}`
+    : normalizedReason
+}
+
+function sameRequestFailureEvidence(state: AccountCircuitState, evidenceKey: string | undefined): boolean {
+  const normalizedEvidence = normalizedFailureEvidenceKey(evidenceKey)
+  if (!normalizedEvidence) return false
+  if (accountCircuitFailureEvidenceKeys(state).includes(normalizedEvidence)) return true
+  const failureReason = state.failureReason
+  if (!failureReason) return false
+  const markerIndex = failureReason.lastIndexOf(gatewayAccountCircuitFailureEvidenceMarker)
+  if (markerIndex < 0) return false
+  return failureReason.slice(markerIndex + gatewayAccountCircuitFailureEvidenceMarker.length) === normalizedEvidence
+}
+
+function boundedConfirmationFailuresRequired(value: number): number {
+  return normalizeAccountCircuitConfirmationFailuresRequired(value)
+}
+
+function normalizedFailureEvidenceKey(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase()
+  return normalized && /^[a-f0-9]{64}$/.test(normalized) ? normalized : undefined
 }
 
 function sha256(value: string): string {

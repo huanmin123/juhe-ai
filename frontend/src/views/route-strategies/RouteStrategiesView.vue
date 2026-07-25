@@ -211,7 +211,7 @@
             <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
-            <a-form-item label="首字截止" required tooltip="普通路由两种调度偏好共用；按秒配置，每个上游尝试在截止前仍无可见首字时产生统一首字截止事件。">
+            <a-form-item label="首字截止" required tooltip="只作用于可重放文本，成本优先与速度优先共用；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
               <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
             </a-form-item>
           </div>
@@ -704,7 +704,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
-const normalRoutingConfigTooltip = '成本优先与速度优先共用首字截止；成本优先在截止事件后切换存活候选，速度优先还会累计慢样本、临时降级并按配置探针恢复。'
+const normalRoutingConfigTooltip = '可重放文本由成本优先与速度优先共用首字软截止；速度优先还会累计慢样本、临时降级并按配置探针恢复。图像和其他副作用请求永久排除。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'

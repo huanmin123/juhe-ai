@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-api-key-rotation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -33,6 +34,7 @@ try {
 
   const roundRobinAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户内多 Key 轮询',
     type: 'api_key',
     status: 'active',
@@ -53,8 +55,57 @@ try {
     '轮询策略应在账户内多个 API Key 之间轮转'
   )
 
+  const requestLocalCredentials = {
+    api_keys: ['sk-local-a', 'sk-local-b', 'sk-local-c', 'sk-local-d', 'sk-local-e'],
+    api_key_strategy: 'round_robin'
+  }
+  const requestLocalAccountId = `${roundRobinAccount.id}:request-local`
+  const requestOneFirst = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: requestLocalAccountId,
+    credentials: requestLocalCredentials
+  })
+  const requestTwoFirst = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: requestLocalAccountId,
+    credentials: requestLocalCredentials
+  })
+  assert.equal(requestOneFirst?.key, 'sk-local-a')
+  assert.equal(requestTwoFirst?.key, 'sk-local-b', '并发独立请求只应各推进一次全局轮换游标')
+
+  const requestOneAttempted = new Set([requestOneFirst!.fingerprint])
+  const requestOneSecond = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: requestLocalAccountId,
+    credentials: requestLocalCredentials,
+    excludeFingerprints: requestOneAttempted,
+    continueAfterFingerprint: requestOneFirst!.fingerprint
+  })
+  assert.equal(requestOneSecond?.key, 'sk-local-b', '请求内续选应从刚失败 Key 的池内后继开始')
+  requestOneAttempted.add(requestOneSecond!.fingerprint)
+  const requestOneThird = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: requestLocalAccountId,
+    credentials: requestLocalCredentials,
+    excludeFingerprints: requestOneAttempted,
+    continueAfterFingerprint: requestOneSecond!.fingerprint,
+    runtimeStates: [
+      {
+        keyFingerprint: rotation.fingerprintAccountApiKey('sk-local-b'),
+        status: 'temporary_unavailable'
+      },
+      {
+        keyFingerprint: rotation.fingerprintAccountApiKey('sk-local-c'),
+        status: 'temporary_unavailable'
+      }
+    ]
+  })
+  assert.equal(requestOneThird?.key, 'sk-local-d', '请求中途刚失败 Key 和后继 Key 运行态变化后仍应从原池位置继续，且不得重试已命中 Key')
+  const requestThreeFirst = rotation.selectAccountRuntimeApiKeyEntry({
+    accountId: requestLocalAccountId,
+    credentials: requestLocalCredentials
+  })
+  assert.equal(requestThreeFirst?.key, 'sk-local-c', '请求内续选不得额外推进后续独立请求的全局轮换游标')
+
   const weightedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户内多 Key 权重',
     type: 'api_key',
     status: 'active',

@@ -145,7 +145,7 @@ try {
     const revision = databaseModule.getBusinessDatabase()
       .prepare('SELECT dispatch_revision FROM accounts WHERE id = ?')
       .get(account.id) as unknown as { dispatch_revision: number }
-    assert.equal(revision.dispatch_revision, 3, '批量调度配置变化必须在同一事务推进 dispatch revision')
+    assert.equal(revision.dispatch_revision, 2, '优先级、并发和用户错误策略不得推进传输电路 revision')
   }
   assertCredentialPoliciesMerged(accountA.id, 'sk-account-batch-edit-a')
   assertCredentialPoliciesMerged(accountB.id, 'sk-account-batch-edit-b')

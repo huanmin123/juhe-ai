@@ -123,7 +123,7 @@ export interface UsageRecordSummary {
 export type UsageRecordListItem = Omit<UsageRecordSummary, 'requestSnapshot' | 'responseSnapshot'>
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
-export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
+export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -1849,6 +1849,7 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
   if (
     value === 'account_upstream'
     || value === 'account_dependency'
+    || value === 'opaque_upstream'
     || value === 'gateway_capacity'
     || value === 'gateway_policy'
     || value === 'client_lifecycle'

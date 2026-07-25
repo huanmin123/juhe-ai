@@ -211,6 +211,15 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '通用客户端显式策略未命中时不得写账户运行态')
     return
   }
+  if (scenario === 'codex_incomplete_sse') {
+    assert.equal(response.status, 200, `Codex incomplete 无用户规则时不得被内部改写：${responseText}`)
+    assert.equal(upstreamHits.length, 1, 'Codex incomplete 无用户规则时不得触发内部切号')
+    assert.match(responseText, /response\.incomplete/, `Codex incomplete 应保持协议事件：${responseText}`)
+    assert.match(responseText, /mock incomplete primary/, `Codex incomplete 应保持上游原始协议载荷：${responseText}`)
+    const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
+    assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, 'Codex incomplete 无用户规则时不得写账户运行态')
+    return
+  }
   assert.equal(response.status, 200, `${scenario} 应在显式污染拦截策略命中后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
   assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 第一次请求应命中污染账号`)
@@ -224,11 +233,6 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     assert(!responseText.includes('item_bad_compaction_missing_content'), `${scenario} 坏账号形状不合法的 compaction output item 不应泄露给客户端：${responseText}`)
     assert(responseText.includes('mock-clean-compaction'), `${scenario} 最终响应应来自干净 compact 账号：${responseText}`)
     assert(responseText.includes('"type":"compaction"'), `${scenario} 最终响应必须包含 Codex 可接受的 compaction item：${responseText}`)
-  } else if (scenario === 'codex_incomplete_sse') {
-    assert(!responseText.includes('response.incomplete'), `${scenario} 坏账号 incomplete 事件不应泄露给客户端：${responseText}`)
-    assert(!responseText.includes('mock incomplete primary'), `${scenario} 坏账号 incomplete 原因不应泄露给客户端：${responseText}`)
-    assert(responseText.includes(`clean ${scenario}`), `${scenario} 最终响应应来自干净账号：${responseText}`)
-    assert(responseText.includes('response.completed'), `${scenario} 最终响应应完整完成：${responseText}`)
   } else if (scenario === 'codex_broken_gzip_sse') {
     assert(!responseText.includes('response.failed'), `${scenario} 坏账号破损 gzip 不应转换成失败事件泄露给客户端：${responseText}`)
     assert(!responseText.includes('upstream_retryable_error'), `${scenario} 坏账号破损 gzip 不应泄露客户端重试错误码：${responseText}`)

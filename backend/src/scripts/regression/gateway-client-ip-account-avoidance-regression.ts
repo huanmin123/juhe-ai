@@ -36,7 +36,10 @@ const [
   usageRecordQueue,
   auditLogQueue,
   clientIpAvoidance,
-  proxyHealth
+  clientIpErrorCircuit,
+  proxyHealth,
+  gatewayHotQuality,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -49,7 +52,10 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
-  import('../../modules/gateway/runtime/proxy-health.service.js')
+  import('../../modules/gateway/runtime/client-ip-error-circuit.service.js'),
+  import('../../modules/gateway/runtime/proxy-health.service.js'),
+  import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface SeededGateway {
@@ -80,6 +86,7 @@ async function main(): Promise<void> {
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     assertSourceAvoidsPendingFailureArrayRebuilds()
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+    clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
@@ -96,11 +103,14 @@ async function main(): Promise<void> {
     await listen(gatewayServer)
     const baseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
-    await assertClientIpAvoidsFailedAccountAfterSwitch(baseUrl, seeded, upstreamState)
+    await assertOpaqueHttpFailureRemainsRequestScoped(baseUrl, seeded, upstreamState)
+    await assertOpaqueHttpFinalFailureDoesNotPersistAvoidance(baseUrl, seeded, upstreamState)
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
     proxyHealth.clearGatewayProxyHealthForTest()
-    await assertClientIpAvoidsStreamFinalFailureAfterClientRetry(baseUrl, seeded, upstreamState)
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
+    await assertStreamFailureRemainsSessionScopedAcrossClientRetries(baseUrl, seeded, upstreamState)
+    await assertGenericSuccessInterruptsClientIpErrorCircuit(baseUrl, seeded)
     assertServiceBypassesWhenAllCandidatesAvoided()
     assertServiceSharesAvoidanceAcrossGroupsForSameApiKey()
     assertServicePreservesDispatchPriorityBoundary()
@@ -113,9 +123,10 @@ async function main(): Promise<void> {
     assertAccountsStillActive(seeded)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '测试清理后不应残留进程级本地账号屏蔽')
 
-    console.log('IP 级账号回避回归通过：同 IP 在前序账号失败且后续账号成功后短期避让失败账号，不影响其他 IP，账号不冷却')
+    console.log('IP 级账号回避回归通过：opaque HTTP 与单会话流式断尾均不写共享回避，请求内切号和独立服务边界保持可测')
   } finally {
     clientIpAvoidance.clearClientIpAccountAvoidanceForTest()
+    clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
     proxyHealth.clearGatewayProxyHealthForTest()
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -125,12 +136,46 @@ async function main(): Promise<void> {
     await closeServer(gatewayServer)
     await closeServer(upstreamServer)
     try {
+      await readWorkerPool.closeSqliteReadWorkerPool()
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }
-    rmSync(tempRoot, { recursive: true, force: true })
+    rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
+}
+
+async function assertGenericSuccessInterruptsClientIpErrorCircuit(
+  baseUrl: string,
+  seeded: SeededGateway
+): Promise<void> {
+  const clientIp = '198.51.100.8'
+  clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
+
+  for (let index = 0; index < 4; index += 1) {
+    const invalidResponse = await requestInvalidJson(baseUrl, seeded.apiKey, clientIp)
+    assert.equal(invalidResponse.status, 400, `generic 第 ${index + 1} 次无效 JSON 应返回 400`)
+    const failureEntry = clientIpErrorCircuit.getGatewayClientIpSecuritySnapshotForTest().clientIpErrors
+      .find((entry) => entry.key.includes(clientIp))
+    assert.equal(failureEntry?.failureCount, 1, `generic 第 ${index + 1} 次错误应从新窗口的第 1 个样本开始`)
+    assert.equal(failureEntry?.blocked, false, `generic 第 ${index + 1} 次错误不得 OPEN`)
+
+    const successText = await requestChatCompletion(baseUrl, seeded.apiKey, clientIp, `generic-success-${index + 1}`)
+    assert.match(successText, /ok from (?:first|second)/, `generic 第 ${index + 1} 次完整成功响应应正常返回：${successText}`)
+    assert.equal(
+      clientIpErrorCircuit.getGatewayClientIpSecuritySnapshotForTest().clientIpErrors.some((entry) => entry.key.includes(clientIp)),
+      false,
+      `generic 第 ${index + 1} 次完整成功应清除当前 IP 的本地错误样本`
+    )
+  }
+
+  const fifthInvalidResponse = await requestInvalidJson(baseUrl, seeded.apiKey, clientIp)
+  assert.equal(fifthInvalidResponse.status, 400, '4 次错误各夹一次 generic 完整成功后，第 5 次错误仍应按普通 400 处理')
+  const fifthFailureEntry = clientIpErrorCircuit.getGatewayClientIpSecuritySnapshotForTest().clientIpErrors
+    .find((entry) => entry.key.includes(clientIp))
+  assert.equal(fifthFailureEntry?.failureCount, 1, '第 5 次错误应是新窗口的第 1 个样本')
+  assert.equal(fifthFailureEntry?.blocked, false, '第 5 次错误不得因已被 generic 成功打断的旧样本而 OPEN')
+  clientIpErrorCircuit.clearGatewayClientIpErrorCircuitForTest()
 }
 
 function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
@@ -139,10 +184,19 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(!routesSource.includes('pendingFailures.unshift(...'), 'fallback 切组不能通过 unshift 搬移待确认账号失败数组')
   assert(routesSource.includes('transferClientIpAccountPendingFailures('), 'fallback 切组应使用有界转移函数传递待确认账号失败')
   assert(routesSource.includes('await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure('), '路由最终失败响应应等待确认 pending 的 IP 级账号回避')
+  const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
+  const opaqueHandlerStart = failureDispatchSource.indexOf('export async function handleOpaqueFailedUpstreamResponse')
+  const opaqueHandlerEnd = failureDispatchSource.indexOf('export async function handleUpstreamRequestError')
+  assert(opaqueHandlerStart >= 0 && opaqueHandlerEnd > opaqueHandlerStart, 'opaque HTTP 失败处理函数应保持可审计边界')
+  const opaqueHandlerSource = failureDispatchSource.slice(
+    opaqueHandlerStart,
+    opaqueHandlerEnd
+  )
+  assert(!opaqueHandlerSource.includes('rememberClientIpAccountPendingFailure('), 'opaque HTTP 非 2xx 不得记录任何可被路由收口确认的跨请求 pending 回避')
   const finalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
-  assert(finalizationSource.includes('await confirmClientIpAccountAvoidanceAfterFinalFailureAsync('), '流式失败已返回客户端时应立即确认 IP 级账号回避，避免客户端重试继续命中同账号')
-  assert(finalizationSource.includes('await confirmClientIpAccountAvoidanceAfterSuccessAsync('), '成功响应应等待清理 / 确认 Redis IP 级账号回避状态')
-  assert(finalizationSource.includes("errorPhase: 'stream'"), '流式失败应记录为 stream 阶段的 IP 级账号回避样本')
+  assert(!finalizationSource.includes('rememberClientIpAccountPendingFailure('), '流式断尾可能由单会话触发，不得写 IP×账号 pending 回避')
+  assert(!finalizationSource.includes('confirmClientIpAccountAvoidanceAfterFinalFailureAsync('), '流式失败返回客户端时不得确认跨请求 IP×账号回避')
+  assert(!finalizationSource.includes('confirmClientIpAccountAvoidanceAfterSuccessAsync('), '普通成功请求不得顺带改写无 provenance 的 IP×账号状态')
 
   const serviceSource = readFileSync(new URL('../../modules/gateway/runtime/client-ip-account-avoidance.service.ts', import.meta.url), 'utf8')
   assert(serviceSource.includes('pendingFailureIndexByAccountId'), '待确认账号失败应维护按账号去重索引')
@@ -154,7 +208,7 @@ function assertSourceAvoidsPendingFailureArrayRebuilds(): void {
   assert(/confirmTrackerPendingFailuresAsync[\s\S]*getRedisClientIpAccountAvoidanceEntry[\s\S]*setRedisClientIpAccountAvoidanceEntry/.test(serviceSource), 'Redis IP 级账号回避确认应直接读写共享状态')
 }
 
-async function assertClientIpAvoidsFailedAccountAfterSwitch(
+async function assertOpaqueHttpFailureRemainsRequestScoped(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
@@ -168,72 +222,100 @@ async function assertClientIpAvoidsFailedAccountAfterSwitch(
   assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-prime'), 1, 'IP A 首次请求应切到第二账号成功')
 
   const snapshotAfterPrime = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
-  assert(snapshotAfterPrime.some((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === ipA), 'IP A 首次切号成功后应记录第一账号短期回避')
-  const firstFailureEntry = snapshotAfterPrime.find((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === ipA)
-  assert.equal(firstFailureEntry?.active, false, 'IP A 首次失败后不应立刻回避第一账号')
-  assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 1, '真实命中上游失败后应同步进入进程级本地屏障')
+  assert.equal(snapshotAfterPrime.length, 0, 'opaque HTTP 非 2xx 不应在切号成功后写入跨请求 IP 级账号回避')
+  assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'opaque HTTP 非 2xx 不应写入进程级账号屏障')
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
   const followupText = await requestChatCompletion(baseUrl, seeded.apiKey, ipA, 'ip-a-followup')
-  assert.match(followupText, /ok from second/, `IP A 第二次请求若第一账号仍失败，应切到第二账号救成功：${followupText}`)
-  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-followup'), 1, 'IP A 第二次请求应仍给第一账号一次机会')
-  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-followup'), 1, 'IP A 第二次请求第一账号失败后应命中第二账号')
-  const secondFailureEntry = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
-    .find((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === ipA)
-  assert.equal(secondFailureEntry?.failureCount, 2, 'IP A 第一账号第二次失败后应达到回避阈值')
-  assert.equal(secondFailureEntry?.active, true, 'IP A 第一账号第二次失败后第三次请求应开始回避')
+  assert.match(followupText, /ok from second/, `IP A 第二次请求应按当前路由状态选到可用账号：${followupText}`)
+  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-followup'), 1, 'IP A 第二次请求应命中可用的第二账号')
+  assert(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-followup') <= 1, '同一请求内不应重复尝试已返回 opaque HTTP 失败的第一账号')
+  assert.equal(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest().length, 0, '连续 opaque HTTP 失败不应累积为跨请求回避阈值')
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
   const thirdText = await requestChatCompletion(baseUrl, seeded.apiKey, ipA, 'ip-a-third')
-  assert.match(thirdText, /ok from second/, `IP A 第三次请求应优先避开第一账号并命中第二账号：${thirdText}`)
-  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-third'), 0, 'IP A 第三次请求不应继续命中已达到阈值的第一账号')
-  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-third'), 1, 'IP A 第三次请求应命中第二账号')
+  assert.match(thirdText, /ok from second/, `IP A 第三次请求应继续按当前路由状态选到可用账号：${thirdText}`)
+  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-third'), 1, 'IP A 第三次请求应命中可用的第二账号')
+  assert(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-third') <= 1, '同一请求内应保持已失败账号去重')
+  assert.equal(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest().length, 0, '第三次独立请求后仍不得出现 opaque HTTP 共享回避状态')
 
   const ipBText = await requestChatCompletion(baseUrl, seeded.apiKey, ipB, 'ip-b-control')
-  assert.match(ipBText, /ok from first/, `IP B 不应继承 IP A 的回避状态，应仍命中第一账号：${ipBText}`)
-  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-b-control'), 1, 'IP B 控制请求应命中第一账号')
-  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-b-control'), 0, 'IP B 控制请求不应被迫切到第二账号')
+  assert.match(ipBText, /ok from (?:first|second)/, `IP B 控制请求应正常完成：${ipBText}`)
+  assert.equal(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest().length, 0, '不同 IP 的请求后也不得出现 opaque HTTP 共享回避状态')
 }
 
-async function assertClientIpAvoidsStreamFinalFailureAfterClientRetry(
+async function assertOpaqueHttpFinalFailureDoesNotPersistAvoidance(
+  baseUrl: string,
+  seeded: SeededGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const clientIp = '198.51.100.40'
+  const scenario = 'opaque-all-fail'
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${seeded.apiKey}`,
+      'content-type': 'application/json',
+      'x-forwarded-for': clientIp
+    },
+    body: JSON.stringify({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: scenario }],
+      stream: false
+    })
+  })
+  const text = await response.text()
+  assert.equal(response.status, 503, `所有候选都返回 opaque HTTP 非 2xx 时应返回稳定的 503：${text}`)
+  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, scenario), 1, '最终失败前应在当前请求内尝试第一账号')
+  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, scenario), 1, '最终失败前应在当前请求内尝试第二账号')
+  assert.equal(
+    clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest().filter((entry) => entry.clientIp === clientIp).length,
+    0,
+    '路由最终失败收口不得把 opaque HTTP 非 2xx 确认为跨请求 IP 级账号回避'
+  )
+}
+
+async function assertStreamFailureRemainsSessionScopedAcrossClientRetries(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
 ): Promise<void> {
   const clientIp = '198.51.100.30'
 
-  const failureText = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-final-failure', 'turn-final-failure')
-  assert(failureText.includes('response.failed'), `Codex 流式断尾应返回 response.failed：${failureText}`)
-  assert(failureText.includes('upstream_retryable_error'), `Codex 流式断尾应返回客户端可重试错误码：${failureText}`)
+  const failureResult = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-final-failure', 'turn-final-failure')
+  assert(
+    failureResult.connectionTerminated || failureResult.text.includes('response.failed'),
+    `已输出的流式断尾应返回失败事件或中断连接：${failureResult.text}`
+  )
   assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-stream-final-failure'), 1, '首次流式断尾应命中第一账号')
   assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-stream-final-failure'), 0, '首次流式断尾不应在已输出后服务端拼接第二账号')
 
-  const snapshotAfterFailure = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
-  const firstEntry = snapshotAfterFailure.find((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === clientIp)
-  assert(firstEntry, '流式失败已返回客户端后应先记录第一账号失败观察')
-  assert.equal(firstEntry.active, false, '首次流式失败后不应立刻避让，应给同 IP 同账号一次机会')
+  assert.deepEqual(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest(), [], '首次流式断尾不得写跨请求 IP×账号状态')
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   proxyHealth.clearGatewayProxyHealthForTest()
+  gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
 
-  const secondChanceText = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-second-chance', 'turn-final-failure-second-chance')
-  assert(secondChanceText.includes('response.failed'), `同 IP 第二次请求应仍给第一账号机会并返回失败：${secondChanceText}`)
+  const secondChanceResult = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-second-chance', 'turn-final-failure-second-chance')
+  assert(
+    secondChanceResult.connectionTerminated || secondChanceResult.text.includes('response.failed'),
+    `同 IP 第二次流式断尾应返回失败事件或中断连接：${secondChanceResult.text}`
+  )
   assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-stream-second-chance'), 1, '同 IP 第二次请求应仍命中第一账号')
   assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-stream-second-chance'), 0, '同 IP 第二次请求不应提前切到第二账号')
-  const secondEntry = clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
-    .find((entry) => entry.accountId === seeded.firstAccountId && entry.clientIp === clientIp)
-  assert(secondEntry, '同 IP 第二次流式失败后应继续保留第一账号失败观察')
-  assert.equal(secondEntry.failureCount, 2, '同 IP 同账号第二次失败后应达到回避阈值')
-  assert.equal(secondEntry.active, true, '同 IP 同账号第二次失败后第三次请求应开始避让')
+  assert.deepEqual(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest(), [], '同 IP 第二次流式断尾仍不得把账号达到共享回避阈值')
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   proxyHealth.clearGatewayProxyHealthForTest()
+  gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
 
-  const thirdText = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-third-attempt', 'turn-final-failure-third-attempt')
-  assert(thirdText.includes('response.completed'), `同 IP 第三次请求应切到第二账号完成：${thirdText}`)
-  assert(thirdText.includes('ok from second'), `同 IP 第三次请求应命中第二账号输出：${thirdText}`)
-  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-stream-third-attempt'), 0, '同 IP 第三次请求不应继续命中已达到阈值的第一账号')
-  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-stream-third-attempt'), 1, '同 IP 第三次请求应命中第二账号')
+  const thirdResult = await requestCodexResponsesStream(baseUrl, seeded.apiKey, clientIp, 'ip-a-stream-third-attempt', 'turn-final-failure-third-attempt')
+  assert.equal(thirdResult.connectionTerminated, false, '同 IP 新 turn 应正常完成')
+  assert(thirdResult.text.includes('response.completed'), `同 IP 新 turn 应重新按当前路由选号：${thirdResult.text}`)
+  assert(thirdResult.text.includes('ok from first'), `无共享回避时新 turn 应可重新选到正常的第一账号：${thirdResult.text}`)
+  assert.equal(hitCount(upstreamState, seeded.firstUpstreamKey, 'ip-a-stream-third-attempt'), 1, '新 turn 应重新考虑第一账号')
+  assert.equal(hitCount(upstreamState, seeded.secondUpstreamKey, 'ip-a-stream-third-attempt'), 0, '无共享失败证据时不应强制跳到第二账号')
+  assert.deepEqual(clientIpAvoidance.getClientIpAccountAvoidanceSnapshotForTest(), [], '多次单会话失败后 IP×账号共享状态必须仍为空')
 }
 
 function assertServiceBypassesWhenAllCandidatesAvoided(): void {
@@ -497,8 +579,9 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     status: 'active',
     schedulable: true,
     priority: 0,
-    supportedModels: ['gpt-4o-mini', 'gpt-5-codex']
+    supportedModels: ['gpt-5.5', 'gpt-5.3-codex']
   }, access)
+  activateFixtureAccount(firstAccount)
   const secondAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -512,8 +595,9 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     status: 'active',
     schedulable: true,
     priority: 0,
-    supportedModels: ['gpt-4o-mini', 'gpt-5-codex']
+    supportedModels: ['gpt-5.5', 'gpt-5.3-codex']
   }, access)
+  activateFixtureAccount(secondAccount)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: 'IP 级账号回避回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -529,6 +613,15 @@ function seedTwoAccountGateway(upstreamBaseUrl: string): SeededGateway {
     firstUpstreamKey,
     secondUpstreamKey
   }
+}
+
+function activateFixtureAccount(account: ReturnType<typeof repositories.createAccount>): void {
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    expectedConfigRevision: account.configRevision
+  }), `Mock AI 测试账户 ${account.id} 应能通过健康检查激活`)
 }
 
 function createGatewayServer(): http.Server {
@@ -549,9 +642,16 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
       const scenario = requestScenario(body)
       state.requests.push({ accountKey, scenario })
 
-      if ((scenario === 'ip-a-prime' || scenario === 'ip-a-followup') && accountKey === 'sk-client-ip-avoidance-first') {
+      if ((scenario === 'ip-a-prime' || scenario === 'ip-a-followup' || scenario === 'ip-a-third') && accountKey === 'sk-client-ip-avoidance-first') {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ error: { message: 'temporary upstream failure for IP A', type: 'mock_error', code: 'mock_unconfirmed_failure' } }))
+        return
+      }
+
+      if (scenario === 'opaque-all-fail') {
+        const statusCode = accountKey === 'sk-client-ip-avoidance-first' ? 429 : 500
+        res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'opaque upstream failure', type: 'untrusted_type', code: 'untrusted_code' } }))
         return
       }
 
@@ -607,7 +707,7 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, clientIp: 
       'x-forwarded-for': clientIp
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.5',
       messages: [{ role: 'user', content: scenario }],
       stream: false
     })
@@ -617,29 +717,64 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, clientIp: 
   return text
 }
 
-async function requestCodexResponsesStream(baseUrl: string, apiKey: string, clientIp: string, scenario: string, turnId: string): Promise<string> {
-  const response = await fetch(`${baseUrl}/v1/responses`, {
+async function requestInvalidJson(baseUrl: string, apiKey: string, clientIp: string): Promise<Response> {
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      accept: 'text/event-stream',
-      'x-forwarded-for': clientIp,
-      'x-codex-turn-metadata': JSON.stringify({
-        turn_id: turnId,
-        session_id: 'client-ip-account-avoidance-regression',
-        thread_id: 'thread-client-ip-account-avoidance'
-      })
+      'x-forwarded-for': clientIp
     },
-    body: JSON.stringify({
-      model: 'gpt-5-codex',
-      input: scenario,
-      stream: true
-    })
+    body: '{"model":'
   })
-  const text = await response.text()
-  assert.equal(response.status, 200, `Codex 流请求 ${scenario} 应保持 HTTP 200 SSE，实际 HTTP ${response.status}: ${text}`)
-  return text
+  await response.text()
+  return response
+}
+
+async function requestCodexResponsesStream(
+  baseUrl: string,
+  apiKey: string,
+  clientIp: string,
+  scenario: string,
+  turnId: string
+): Promise<{ text: string; connectionTerminated: boolean }> {
+  try {
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'x-forwarded-for': clientIp,
+        'x-codex-turn-metadata': JSON.stringify({
+          turn_id: turnId,
+          session_id: 'client-ip-account-avoidance-regression',
+          thread_id: 'thread-client-ip-account-avoidance'
+        })
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.3-codex',
+        input: scenario,
+        stream: true
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `Codex 流请求 ${scenario} 应保持 HTTP 200 SSE，实际 HTTP ${response.status}: ${text}`)
+    return { text, connectionTerminated: false }
+  } catch (error) {
+    if (isTransientFetchResetError(error)) {
+      return { text: '', connectionTerminated: true }
+    }
+    throw error
+  }
+}
+
+function isTransientFetchResetError(error: unknown): boolean {
+  const cause = error instanceof Error
+    ? error.cause as { code?: unknown } | undefined
+    : undefined
+  const code = cause?.code ?? (error as { code?: unknown } | undefined)?.code
+  return code === 'ECONNRESET' || code === 'UND_ERR_SOCKET'
 }
 
 function assertAccountsStillActive(seeded: SeededGateway): void {

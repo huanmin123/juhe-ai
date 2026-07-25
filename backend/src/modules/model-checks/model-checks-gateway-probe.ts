@@ -151,6 +151,9 @@ async function runGatewayProbeAttempt(
       identity: target.identity,
       candidateAccounts: target.candidateAccounts,
       disableSessionAffinity: true,
+      // A model check is an account diagnostic. It must expose the sampled HTTP
+      // response verbatim rather than letting normal gateway failover wrap it.
+      trafficSource: 'manual_account_test',
       exposeUpstreamDiagnostics: false,
       disableAccountStateMutation: true,
       settingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs),
@@ -180,8 +183,7 @@ async function runGatewayProbeAttempt(
       headers: hasGatewayResponse ? response.headersObject() : {},
       errorMessage: message,
       upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
-      retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),
-      rateLimited: isRateLimitedProbeFailureEvidence(statusCode, responseBodyText, lastUpstreamAttempt)
+      retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt)
     }
     emitGatewayProbeProgress(progress, {
       type: 'probe_completed',
@@ -256,8 +258,7 @@ async function runGatewayProbeAttempt(
     systemFingerprint: parsed.systemFingerprint,
     errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText),
     upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
-    retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),
-    rateLimited: isRateLimitedProbeFailureEvidence(response.statusCode, bodyText, lastUpstreamAttempt)
+    retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt)
   }
   emitGatewayProbeProgress(progress, {
     type: 'probe_completed',
@@ -370,13 +371,6 @@ function headerValue(headers: Record<string, string> | undefined, name: string):
     if (key.toLowerCase() === wanted) return value
   }
   return undefined
-}
-
-function isRateLimitedProbeFailureEvidence(statusCode: number, bodyText: string, attempt: UpstreamAttempt | undefined): boolean {
-  const upstreamStatusCode = upstreamAttemptStatusCode(attempt)
-  if (statusCode === 429 || upstreamStatusCode === 429) return true
-  const text = `${bodyText}\n${attempt?.message ?? ''}\n${attempt?.responseBodyText ?? ''}`.toLowerCase()
-  return text.includes('rate_limit') || text.includes('rate limit') || text.includes('requests-per-minute')
 }
 
 async function waitForAbortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {

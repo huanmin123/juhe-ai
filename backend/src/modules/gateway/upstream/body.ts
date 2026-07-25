@@ -7,7 +7,13 @@ import {
   UpstreamRequestAbortedError
 } from './request.js'
 import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
-import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
+import {
+  decideFirstByteDeadlineAfterPendingRead,
+  GatewayResponsePrecommitDeadlineError,
+  observeFirstBytePendingRead,
+  type FirstByteDeadlineDecisionResult,
+  type FirstByteDeadlineHandler
+} from './first-byte-deadline.js'
 
 export interface NonStreamPipeResult {
   firstByteMs?: number
@@ -37,6 +43,26 @@ export interface LimitedBodyReadResult {
 export interface ReplayableLimitedBodyReadResult extends LimitedBodyReadResult {
   replayBody: AsyncIterable<Uint8Array> | null
   close: () => Promise<void>
+}
+
+export class UpstreamBodyReadIncompleteError extends Error {
+  readonly code = 'UPSTREAM_BODY_READ_INCOMPLETE'
+
+  constructor(cause: unknown) {
+    const timeout = cause instanceof Error && /timeout|timedout|timed out|etimedout|超时/i.test(cause.message)
+    super(timeout ? '上游响应正文读取超时' : '上游响应正文读取未完成')
+    this.name = 'UpstreamBodyReadIncompleteError'
+    ;(this as Error & { cause?: unknown }).cause = cause
+  }
+}
+
+export class UpstreamBodyReadMaxLifetimeError extends Error {
+  readonly code = 'UPSTREAM_BODY_READ_MAX_LIFETIME'
+
+  constructor(readonly timeoutMs: number) {
+    super(`上游非流式响应正文读取超时（绝对上限 ${Math.ceil(timeoutMs / 1000)}s）`)
+    this.name = 'UpstreamBodyReadMaxLifetimeError'
+  }
 }
 
 export interface ResponseWriteResult {
@@ -81,7 +107,10 @@ export async function pipeNonStreamUpstreamResponse(
     onFirstByte?: () => void
     firstByteTimeoutMs?: number
     firstByteDeadlineMs?: number
+    responsePrecommitDeadlineAtMs?: number
+    maxLifetimeMs?: number
     onFirstByteDeadline?: FirstByteDeadlineHandler
+    onFirstByteDeadlineSuperseded?: () => void
     prepareDownstream?: () => void
     onChunkWritten?: (bytesWritten: number) => void
     onBodyCompleted?: (transferredBytes: number) => void
@@ -90,6 +119,7 @@ export async function pipeNonStreamUpstreamResponse(
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
   const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
+  const maxLifetimeDeadlineAt = nonStreamBodyMaxLifetimeDeadlineAt(input.startedAt, input.maxLifetimeMs)
   let transferredBytes = 0
   let firstByteMs: number | undefined
   let firstByteDeadlineObserved = false
@@ -113,9 +143,23 @@ export async function pipeNonStreamUpstreamResponse(
           firstByteTimeoutMs: input.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           firstByteDeadlineObserved,
-          onFirstByteDeadline: input.onFirstByteDeadline
+          onFirstByteDeadline: input.onFirstByteDeadline,
+          onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
+          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+          pendingReadSupersedesDeadline: true,
+          maxLifetimeDeadlineAt,
+          maxLifetimeMs: input.maxLifetimeMs
         })
-        : { result: await readStreamChunkWithAbort(iterator, input.signal), firstByteDeadlineObserved }
+        : {
+            result: await readNonStreamChunkWithAbsoluteDeadline(
+              iterator,
+              input.signal,
+              maxLifetimeDeadlineAt,
+              input.maxLifetimeMs,
+              input.responsePrecommitDeadlineAtMs
+            ),
+            firstByteDeadlineObserved
+          }
       firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
       const result = readResult.result
       if (result.done) {
@@ -179,7 +223,10 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     onFirstByte?: () => void
     firstByteTimeoutMs?: number
     firstByteDeadlineMs?: number
+    responsePrecommitDeadlineAtMs?: number
+    maxLifetimeMs?: number
     onFirstByteDeadline?: FirstByteDeadlineHandler
+    onFirstByteDeadlineSuperseded?: () => void
     prepareDownstream?: () => void
     onChunkWritten?: (bytesWritten: number) => void
     beforeDownstreamCommit?: (inspectionBody: Buffer) => Promise<void>
@@ -189,6 +236,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
   const inspectBytes = Math.max(0, input.inspectBytes)
   const capture = new LimitedBufferCapture(input.captureBody === false ? -1 : input.captureBytes ?? nonStreamResponseCaptureBytes)
   const usageTailCapture = new RollingBufferCapture(input.usageTailBytes ?? nonStreamUsageTailCaptureBytes)
+  const maxLifetimeDeadlineAt = nonStreamBodyMaxLifetimeDeadlineAt(input.startedAt, input.maxLifetimeMs)
   const inspectionChunks: Buffer[] = []
   let inspectionBytes = 0
   let transferredBytes = 0
@@ -228,9 +276,23 @@ export async function pipeNonStreamUpstreamResponseForInspection(
           firstByteTimeoutMs: input.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           firstByteDeadlineObserved,
-          onFirstByteDeadline: input.onFirstByteDeadline
+          onFirstByteDeadline: input.onFirstByteDeadline,
+          onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
+          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+          pendingReadSupersedesDeadline: false,
+          maxLifetimeDeadlineAt,
+          maxLifetimeMs: input.maxLifetimeMs
         })
-        : { result: await readStreamChunkWithAbort(iterator, input.signal), firstByteDeadlineObserved }
+        : {
+            result: await readNonStreamChunkWithAbsoluteDeadline(
+              iterator,
+              input.signal,
+              maxLifetimeDeadlineAt,
+              input.maxLifetimeMs,
+              input.responsePrecommitDeadlineAtMs
+            ),
+            firstByteDeadlineObserved
+          }
       firstByteDeadlineObserved = readResult.firstByteDeadlineObserved
       const result = readResult.result
       if (result.done) {
@@ -319,16 +381,26 @@ async function readFirstNonStreamChunkWithDeadlines(
     firstByteDeadlineMs?: number
     firstByteDeadlineObserved: boolean
     onFirstByteDeadline?: FirstByteDeadlineHandler
+    onFirstByteDeadlineSuperseded?: () => void
+    responsePrecommitDeadlineAtMs?: number
+    pendingReadSupersedesDeadline: boolean
+    maxLifetimeDeadlineAt?: number
+    maxLifetimeMs?: number
   }
 ): Promise<{ result: IteratorResult<Uint8Array>; firstByteDeadlineObserved: boolean }> {
-  if (input.firstByteTimeoutMs === undefined && input.firstByteDeadlineMs === undefined) {
+  if (
+    input.firstByteTimeoutMs === undefined
+    && input.firstByteDeadlineMs === undefined
+    && input.responsePrecommitDeadlineAtMs === undefined
+    && input.maxLifetimeDeadlineAt === undefined
+  ) {
     return {
       result: await readStreamChunkWithAbort(iterator, input.signal),
       firstByteDeadlineObserved: input.firstByteDeadlineObserved
     }
   }
 
-  const pendingRead = iterator.next()
+  const pendingRead = observeFirstBytePendingRead(iterator.next())
   const hardDeadlineAt = input.firstByteTimeoutMs === undefined
     ? undefined
     : Date.now() + input.firstByteTimeoutMs
@@ -339,17 +411,43 @@ async function readFirstNonStreamChunkWithDeadlines(
 
   while (true) {
     const now = Date.now()
+    const maxLifetimeRemainingMs = input.maxLifetimeDeadlineAt === undefined
+      ? undefined
+      : input.maxLifetimeDeadlineAt - now
+    const responsePrecommitRemainingMs = input.responsePrecommitDeadlineAtMs === undefined
+      ? undefined
+      : input.responsePrecommitDeadlineAtMs - now
+    if (
+      responsePrecommitRemainingMs !== undefined
+      && responsePrecommitRemainingMs <= 0
+      && (
+        maxLifetimeRemainingMs === undefined
+        || (input.responsePrecommitDeadlineAtMs ?? Number.POSITIVE_INFINITY) <= (input.maxLifetimeDeadlineAt ?? Number.POSITIVE_INFINITY)
+      )
+    ) {
+      throw new GatewayResponsePrecommitDeadlineError(input.responsePrecommitDeadlineAtMs ?? 0)
+    }
+    if (maxLifetimeRemainingMs !== undefined && maxLifetimeRemainingMs <= 0) {
+      throw new UpstreamBodyReadMaxLifetimeError(input.maxLifetimeMs ?? 0)
+    }
     const softRemainingMs = softDeadlineAt === undefined || firstByteDeadlineObserved
       ? undefined
       : softDeadlineAt - now
     if (softRemainingMs !== undefined && softRemainingMs <= 0) {
       firstByteDeadlineObserved = true
-      const action = await input.onFirstByteDeadline?.({
+      const decision = await decideFirstByteDeadlineAfterPendingRead(pendingRead, input.onFirstByteDeadline, {
         elapsedMs: Date.now() - startedAt,
         timeoutMs: input.firstByteDeadlineMs ?? 0,
         transport: 'non_stream'
-      }) ?? 'abort'
-      if (action === 'abort') {
+      }, {
+        responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+        onResponsePrecommitDeadline: input.onFirstByteDeadlineSuperseded
+      })
+      if (decision.type === 'response_precommit_deadline') throw decision.error
+      if (decision.type === 'read') {
+        return firstNonStreamReadAfterDeadlineDecision(decision, firstByteDeadlineObserved, input)
+      }
+      if (decision.action === 'abort') {
         throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'configured_deadline')
       }
       continue
@@ -360,12 +458,20 @@ async function readFirstNonStreamChunkWithDeadlines(
       throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0)
     }
 
-    const race = await raceReadWithDeadlines(pendingRead, {
+    const race = await raceReadWithDeadlines(pendingRead.promise, {
       signal: input.signal,
       softTimeoutMs: softRemainingMs,
-      hardTimeoutMs: hardRemainingMs
+      hardTimeoutMs: hardRemainingMs,
+      maxLifetimeTimeoutMs: maxLifetimeRemainingMs,
+      responsePrecommitTimeoutMs: responsePrecommitRemainingMs
     })
     if (race.type === 'read') {
+      if (
+        input.responsePrecommitDeadlineAtMs !== undefined
+        && (pendingRead.settledAtMs() ?? Date.now()) > input.responsePrecommitDeadlineAtMs
+      ) {
+        throw new GatewayResponsePrecommitDeadlineError(input.responsePrecommitDeadlineAtMs)
+      }
       return { result: race.result, firstByteDeadlineObserved }
     }
     if (race.type === 'abort') {
@@ -374,17 +480,54 @@ async function readFirstNonStreamChunkWithDeadlines(
     if (race.type === 'hard_timeout') {
       throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteTimeoutMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteTimeoutMs ?? 0)
     }
+    if (race.type === 'max_lifetime_timeout') {
+      throw new UpstreamBodyReadMaxLifetimeError(input.maxLifetimeMs ?? 0)
+    }
+    if (race.type === 'response_precommit_timeout') {
+      throw new GatewayResponsePrecommitDeadlineError(input.responsePrecommitDeadlineAtMs ?? 0)
+    }
 
     firstByteDeadlineObserved = true
-    const action = await input.onFirstByteDeadline?.({
+    const decision = await decideFirstByteDeadlineAfterPendingRead(pendingRead, input.onFirstByteDeadline, {
       elapsedMs: Date.now() - startedAt,
       timeoutMs: input.firstByteDeadlineMs ?? 0,
       transport: 'non_stream'
-    }) ?? 'abort'
-    if (action === 'abort') {
+    }, {
+      responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+      onResponsePrecommitDeadline: input.onFirstByteDeadlineSuperseded
+    })
+    if (decision.type === 'response_precommit_deadline') throw decision.error
+    if (decision.type === 'read') {
+      return firstNonStreamReadAfterDeadlineDecision(decision, firstByteDeadlineObserved, input)
+    }
+    if (decision.action === 'abort') {
       throw new GatewayFirstByteTimeoutError(`上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回首个字节`, input.firstByteDeadlineMs ?? 0, 'configured_deadline')
     }
   }
+}
+
+function firstNonStreamReadAfterDeadlineDecision(
+  decision: Extract<FirstByteDeadlineDecisionResult<IteratorResult<Uint8Array>>, { type: 'read' }>,
+  firstByteDeadlineObserved: boolean,
+  input: {
+    pendingReadSupersedesDeadline: boolean
+    onFirstByteDeadlineSuperseded?: () => void
+    firstByteDeadlineMs?: number
+  }
+): NonStreamReadWithDeadlineResult {
+  if (input.pendingReadSupersedesDeadline) {
+    input.onFirstByteDeadlineSuperseded?.()
+    return { result: decision.result, firstByteDeadlineObserved }
+  }
+  if (decision.decisionError !== undefined) throw decision.decisionError
+  if (decision.action === 'abort') {
+    throw new GatewayFirstByteTimeoutError(
+      `上游非流式响应 ${Math.ceil((input.firstByteDeadlineMs ?? 0) / 1000)}s 后仍未返回完整语义响应`,
+      input.firstByteDeadlineMs ?? 0,
+      'configured_deadline'
+    )
+  }
+  return { result: decision.result, firstByteDeadlineObserved }
 }
 
 async function raceReadWithDeadlines(
@@ -393,21 +536,29 @@ async function raceReadWithDeadlines(
     signal?: AbortSignal
     softTimeoutMs?: number
     hardTimeoutMs?: number
+    maxLifetimeTimeoutMs?: number
+    responsePrecommitTimeoutMs?: number
   }
 ): Promise<
   | { type: 'read'; result: IteratorResult<Uint8Array> }
   | { type: 'soft_timeout' }
   | { type: 'hard_timeout' }
+  | { type: 'max_lifetime_timeout' }
+  | { type: 'response_precommit_timeout' }
   | { type: 'abort' }
 > {
   let softTimer: NodeJS.Timeout | undefined
   let hardTimer: NodeJS.Timeout | undefined
+  let maxLifetimeTimer: NodeJS.Timeout | undefined
+  let responsePrecommitTimer: NodeJS.Timeout | undefined
   let abortListener: (() => void) | undefined
   try {
     const races: Array<Promise<
       | { type: 'read'; result: IteratorResult<Uint8Array> }
       | { type: 'soft_timeout' }
       | { type: 'hard_timeout' }
+      | { type: 'max_lifetime_timeout' }
+      | { type: 'response_precommit_timeout' }
       | { type: 'abort' }
     >> = [pendingRead.then((result) => ({ type: 'read' as const, result }))]
     const softTimeoutMs = input.softTimeoutMs
@@ -420,6 +571,18 @@ async function raceReadWithDeadlines(
     if (hardTimeoutMs !== undefined) {
       races.push(new Promise((resolve) => {
         hardTimer = setTimeout(() => resolve({ type: 'hard_timeout' as const }), Math.max(1, hardTimeoutMs))
+      }))
+    }
+    const responsePrecommitTimeoutMs = input.responsePrecommitTimeoutMs
+    if (responsePrecommitTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        responsePrecommitTimer = setTimeout(() => resolve({ type: 'response_precommit_timeout' as const }), Math.max(1, responsePrecommitTimeoutMs))
+      }))
+    }
+    const maxLifetimeTimeoutMs = input.maxLifetimeTimeoutMs
+    if (maxLifetimeTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        maxLifetimeTimer = setTimeout(() => resolve({ type: 'max_lifetime_timeout' as const }), Math.max(1, maxLifetimeTimeoutMs))
       }))
     }
     if (input.signal) {
@@ -435,10 +598,70 @@ async function raceReadWithDeadlines(
   } finally {
     if (softTimer) clearTimeout(softTimer)
     if (hardTimer) clearTimeout(hardTimer)
+    if (maxLifetimeTimer) clearTimeout(maxLifetimeTimer)
+    if (responsePrecommitTimer) clearTimeout(responsePrecommitTimer)
     if (input.signal && abortListener) {
       input.signal.removeEventListener('abort', abortListener)
     }
   }
+}
+
+function nonStreamBodyMaxLifetimeDeadlineAt(startedAt: number, maxLifetimeMs: number | undefined): number | undefined {
+  if (maxLifetimeMs === undefined || !Number.isFinite(maxLifetimeMs)) return undefined
+  return startedAt + Math.max(1, Math.floor(maxLifetimeMs))
+}
+
+async function readNonStreamChunkWithAbsoluteDeadline(
+  iterator: AsyncIterator<Uint8Array>,
+  signal: AbortSignal | undefined,
+  maxLifetimeDeadlineAt: number | undefined,
+  maxLifetimeMs: number | undefined,
+  responsePrecommitDeadlineAtMs?: number
+): Promise<IteratorResult<Uint8Array>> {
+  if (maxLifetimeDeadlineAt === undefined && responsePrecommitDeadlineAtMs === undefined) {
+    return readStreamChunkWithAbort(iterator, signal)
+  }
+  const now = Date.now()
+  const maxLifetimeRemainingMs = maxLifetimeDeadlineAt === undefined ? undefined : maxLifetimeDeadlineAt - now
+  const responsePrecommitRemainingMs = responsePrecommitDeadlineAtMs === undefined
+    ? undefined
+    : responsePrecommitDeadlineAtMs - now
+  if (
+    responsePrecommitRemainingMs !== undefined
+    && responsePrecommitRemainingMs <= 0
+    && (
+      maxLifetimeRemainingMs === undefined
+      || (responsePrecommitDeadlineAtMs ?? Number.POSITIVE_INFINITY) <= (maxLifetimeDeadlineAt ?? Number.POSITIVE_INFINITY)
+    )
+  ) {
+    throw new GatewayResponsePrecommitDeadlineError(responsePrecommitDeadlineAtMs ?? 0)
+  }
+  if (maxLifetimeRemainingMs !== undefined && maxLifetimeRemainingMs <= 0) {
+    throw new UpstreamBodyReadMaxLifetimeError(maxLifetimeMs ?? 0)
+  }
+  const pendingRead = observeFirstBytePendingRead(iterator.next())
+  const race = await raceReadWithDeadlines(pendingRead.promise, {
+    signal,
+    maxLifetimeTimeoutMs: maxLifetimeRemainingMs,
+    responsePrecommitTimeoutMs: responsePrecommitRemainingMs
+  })
+  if (race.type === 'read') {
+    if (
+      responsePrecommitDeadlineAtMs !== undefined
+      && (pendingRead.settledAtMs() ?? Date.now()) > responsePrecommitDeadlineAtMs
+    ) {
+      throw new GatewayResponsePrecommitDeadlineError(responsePrecommitDeadlineAtMs)
+    }
+    return race.result
+  }
+  if (race.type === 'abort') throw new UpstreamRequestAbortedError('请求已取消', true)
+  if (race.type === 'max_lifetime_timeout') {
+    throw new UpstreamBodyReadMaxLifetimeError(maxLifetimeMs ?? 0)
+  }
+  if (race.type === 'response_precommit_timeout') {
+    throw new GatewayResponsePrecommitDeadlineError(responsePrecommitDeadlineAtMs ?? 0)
+  }
+  throw new UpstreamBodyReadMaxLifetimeError(maxLifetimeMs ?? 0)
 }
 
 export async function readUpstreamBodyLimited(
@@ -484,7 +707,10 @@ export async function readUpstreamBodyLimited(
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
-    throw error
+    if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+      throw error
+    }
+    throw new UpstreamBodyReadIncompleteError(error)
   }
 
   const body = capture.buffer()
@@ -542,7 +768,10 @@ export async function readUpstreamBodyForPolicyInspection(
     }
   } catch (error) {
     await close()
-    throw error
+    if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+      throw error
+    }
+    throw new UpstreamBodyReadIncompleteError(error)
   }
 
   const replayBody = (async function* (): AsyncGenerator<Uint8Array> {

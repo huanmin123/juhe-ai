@@ -65,11 +65,17 @@ export function testStatusText(status: string): string {
 }
 
 export function testItemStatusColor(status: ProxyTestItemStatus): string {
-  return status === 'passed' ? 'green' : status === 'warning' ? 'gold' : 'red'
+  if (status === 'passed') return 'green'
+  if (status === 'warning') return 'gold'
+  if (status === 'failed') return 'red'
+  return 'default'
 }
 
 export function testItemStatusText(status: ProxyTestItemStatus): string {
-  return status === 'passed' ? '通过' : status === 'warning' ? '告警' : '失败'
+  if (status === 'passed') return '通过'
+  if (status === 'warning') return '告警'
+  if (status === 'failed') return '失败'
+  return '未知'
 }
 
 export function formatLatency(value?: number): string {

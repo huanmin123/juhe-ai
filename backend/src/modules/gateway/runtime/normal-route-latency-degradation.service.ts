@@ -335,6 +335,34 @@ export async function recordNormalRouteProbeFailureAsync(
   )
 }
 
+export async function deferNormalRouteLatencyProbeCandidateAsync(
+  candidate: NormalRouteLatencyProbeCandidate
+): Promise<boolean> {
+  return (await withLatencyStateMutationLock(candidate.stateKey, candidate.generation, async () => {
+    const current = await loadLatencyState(candidate.stateKey, candidate.generation)
+    const now = Date.now()
+    if (!current) return false
+    if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
+      await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
+      return false
+    }
+    const config = current.config ?? candidate.config
+    const state: NormalRouteLatencyState = {
+      ...current,
+      config,
+      nextProbeAtMs: now + nextProbeDelayMs(config, candidate.stateKey)
+    }
+    await writeLatencyStateAndIndexesStrictAsync(
+      candidate.stateKey,
+      current,
+      state,
+      latencyStateTtlMs(config, true),
+      true
+    )
+    return true
+  })) ?? false
+}
+
 async function recordNormalRouteProbeFailureLockedAsync(
   candidate: NormalRouteLatencyProbeCandidate,
   reason: string

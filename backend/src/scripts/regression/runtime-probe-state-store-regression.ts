@@ -207,6 +207,7 @@ assert.equal(await leaseStore.acquireGenerationLease('acct_wrong_phase', wrongPh
 
 const runStore = store as typeof store & {
   acquireGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<ProbeState | undefined>
+  renewGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<boolean>
   commitGenerationRun(state: ProbeState, runId: string, ttlMs: number): Promise<boolean>
   deleteGenerationRun(runtimeKey: string, generation: number, runId: string): Promise<boolean>
 }
@@ -221,6 +222,17 @@ await runStore.set({
 const activeRun = await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-a', now + 10_000, 60_000)
 assert.equal(activeRun?.probeRunId, 'run-a', '到期状态应能按 generation 原子取得后台执行令牌')
 assert.equal(activeRun?.nextProbeAtMs, now + 10_000, '后台执行期间应把内部 due 推迟到 runUntil')
+assert.equal(
+  await runStore.renewGenerationRun('acct_probe_run', runGeneration, 'run-a', now + 15_000, 60_000),
+  true,
+  '当前 generation + runId 应能在最终副作用前原子续租'
+)
+assert.equal((await runStore.get('acct_probe_run'))?.probeRunUntilMs, now + 15_000, '原子续租应推迟 run 的过期时间')
+assert.equal(
+  await runStore.renewGenerationRun('acct_probe_run', runGeneration, 'run-stale', now + 20_000, 60_000),
+  false,
+  '迟到的旧 runId 不得取得最终副作用写入权'
+)
 assert.equal(await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-b', now + 20_000, 60_000), undefined, '有效后台 run 必须拒绝其他节点重复执行')
 assert.equal(await leaseStore.acquireGenerationLease('acct_probe_run', runGeneration, 'lease-during-run', now + 20_000, 60_000), undefined, '有效后台 run 期间必须拒绝用户 half-open 租约')
 assert.equal(await runStore.commitGenerationRun({ ...activeRun!, nextProbeAtMs: now + 30_000, accountId: 'acct_probe_run_committed' }, 'run-wrong', 60_000), false, '非当前 runId 不得提交后台执行结果')
@@ -255,6 +267,11 @@ assert.equal(deletableRun?.probeRunId, 'run-delete', '删除测试前应取得 r
 assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration, 'run-wrong'), false, '错误 runId 不得删除当前状态')
 assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration - 1, 'run-delete'), false, '旧 generation 的 run 不得删除当前状态')
 assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration, 'run-delete'), true, '当前 generation + runId 应能原子删除状态与 due')
+assert.equal(
+  await runStore.renewGenerationRun('acct_probe_run', runGeneration, 'run-delete', now + 20_000, 60_000),
+  false,
+  '真实请求成功清理运行态后，迟到探针失败不得重新获取写入权'
+)
 assert.deepEqual(await runStore.scheduledRuntimeKeys(['acct_probe_run']), new Set(), '按 run 删除后 due membership 不应残留')
 
 console.log('runtime-probe-state-store-regression passed')

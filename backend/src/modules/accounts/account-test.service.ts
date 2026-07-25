@@ -106,6 +106,7 @@ export type AccountTestInput = {
   retryAllFailures?: boolean
   forceProbeKind?: AccountTestProbeKind
   requireCatalogModelEvidence?: boolean
+  shouldRetryFailure?: (result: AccountTestResult, attemptIndex: number) => boolean
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
   findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
@@ -154,7 +155,10 @@ export async function testOpenAIAccountWithDiagnosticRetries(
       gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
     })
     lastResult = result
-    if (result.success || (!input.retryAllFailures && result.accountFailureEligible === false) || input.signal?.aborted) {
+    const shouldRetryFailure = input.shouldRetryFailure
+      ? input.shouldRetryFailure(result, attemptIndex)
+      : input.retryAllFailures || result.accountFailureEligible !== false
+    if (result.success || !shouldRetryFailure || input.signal?.aborted) {
       return accountTestResultWithTotalDuration(result, startedAt)
     }
     if (attemptIndex + 1 < timeoutSchedule.length) {

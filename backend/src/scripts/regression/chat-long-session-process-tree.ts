@@ -182,8 +182,9 @@ export async function stopTrackedWindowsProcessTree(input: StopTrackedWindowsPro
   }
   const withLateDescendants = tracked
   const killErrors: string[] = []
+  const currentBeforeFallbackKill = new Map((await input.listCurrentProcesses()).map((item) => [item.pid, item]))
   for (const identity of sortDescendantsFirst(withLateDescendants)) {
-    const current = new Map((await input.listCurrentProcesses()).map((item) => [item.pid, item])).get(identity.pid)
+    const current = currentBeforeFallbackKill.get(identity.pid)
     if (!current || !sameProcessIdentity(identity, current)) continue
     try { await input.killPid(identity.pid) } catch (error) {
       killErrors.push(error instanceof Error ? error.message : 'kill_failed')

@@ -27,9 +27,9 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。Codex `ModelInfo` 的默认 reasoning、支持级别、服务等级和多代理版本必须由模型目录精确能力驱动，不再给所有模型伪造统一值；OpenAI API wire reasoning 与 Codex `ultra` 分开建模。
 
-单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF 可在 `semanticCommitted = false` 时进入服务端隐藏重试；SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF，只有在当前请求为可安全重放文本、`semanticCommitted = false` 且预算允许时，才可进入服务端隐藏重试；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 一旦派发后保持唯一 attempt。SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`，但不能放宽请求重放语义。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，可按 Codex 精确画像和响应策略在语义提交前切换账号；服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端收到完整非 `2xx` 时原样接收状态和正文，不改写为网关 503，也不因状态切号；只有本地 transport / capacity 耗尽才使用网关统一失败。
+Codex Responses SSE 的可安全重放文本请求如果在建流前遇到上游 HTTP 非 `2xx`，可按 Codex 精确画像的协议结构和用户显式策略在 `semanticCommitted = false` 且预算允许时切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 一旦派发后保持唯一 attempt，不能因 `retry_next` 或尚未输出而重放。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；安全文本推理端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 与副作用 POST 继续按各自透明/at-most-once 边界处理。
 
 ## 协议与供应商定义
 
@@ -134,7 +134,7 @@ OAuth 运行时修复口径：
 
 - API Key 加密存储；单 Key 账户保存 `credentials.api_key`，多 Key 账户额外保存 `credentials.api_keys`、`credentials.api_key_strategy` 和可选 `credentials.api_key_weights`
 - 新增 API Key 账户时默认展示一个 API Key 输入框；可继续添加输入框，也可粘贴多行文本，前端会提取 `sk-` 开头的密钥并生成多条输入。多个密钥只创建一个账户，复用同一 Base URL、分组、代理、支持模型、时间计划和错误处理策略。
-- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。后续 Key 级故障隔离按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 落地：Key 失败后只摘除当前 Key 并让当前请求切后续账户，不在同一请求内遍历账户内全部 Key。
+- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。安全文本推理请求按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 在本请求内唯一尝试当前可执行 Key，再切后续账户；跨账户物理凭据去重，整个请求最多 64 次真实上游 attempt。未知 HTTP 状态/正文只产生请求内排除，不写共享 Key 状态；图片、音频、文件/资源创建和其他副作用 POST 派发后不轮换 Key。
 - 多 Key API Key 账户的人工测试可以诊断账户内所有 Key，账户级结果只要求至少 1 个 Key 可用；测试只返回逐 Key 脱敏结果，不改写、初始化、恢复或摘除 Key 运行态。Key 初始化和恢复由后台激活检查、Key 检查与恢复探针负责。
 - 新建 API Key 账户固定写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；创建请求不接受人工测试任务 ID 作为直接激活凭证。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。
@@ -251,7 +251,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - 网关发现 OAuth Access Token 缺失、过期、过期时间无效或距离过期不超过 5 秒时，会在当前请求内用 `refresh_token` 刷新并写回账户，避免把已不可用 token 发给上游。
 - 网关发现 OAuth Access Token 距离过期小于 60 秒但仍超过 5 秒时，不阻塞当前请求；当前请求继续使用现有 Access Token，同时按账号触发一次后台预热刷新。预热刷新按账号去重，同一账号已有预热任务时不会重复排队；预热成功只写回新凭据并清理运行缓存，预热失败只写运行日志，不把当前请求卡在 token endpoint 上。
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
-- 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 GPT OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`pending_test`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用、非待检查账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
+- 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 GPT OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`pending_test`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做本地 token 生命周期保活，成功时不恢复普通冷却状态、不清理无关错误；失败按本地授权维护任务退避并记录有界诊断，不得从 token endpoint 的 HTTP status/body 推断凭据失效，更不得因任意刷新异常自动写 `status = error`。只有本地可验证的凭据缺失、解密失败或用户明确重新授权流程进入独立授权维护路径；手动停用和用户显式状态不会被后台刷新覆盖。
 - 待检查账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、手动启用和人工账户测试都不能隐式把 `pending_test` 改成 `active`。新建或导入账户由后台激活检查成功后转为正常；关键连接配置编辑同样交由后台复检。只有账户所有者在统一“恢复正常”入口明确确认风险时，服务端才允许精确的待检查账户直接放行；“重新检查”不会直接放行。
 - 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求返回的 Codex rate-limit 响应头被动更新。账户人工测试不更新生产额度快照。测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 临近过期时，真实网关请求会按 5 秒硬阻塞阈值和 60 秒后台预热阈值处理。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
@@ -261,9 +261,10 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - OAuth token 刷新、人工测试和后台系统检查都优先使用账户绑定代理；没有绑定代理时默认直连。账户创建、导入和离线修复不得自动绑定本机固定端口代理，代理必须由用户显式配置。
 - 人工测试复用受控的真实 OpenAI 网关请求执行器并写入使用记录与审计，不能在测试服务里单独直连上游。新增和编辑表单测试固定使用当前表单 `healthCheckModel`，不提供临时模型下拉；列表单项测试打开时按需调用 `test-options`，候选来自账户供应商、协议档案和所有者作用域可见的启用文本模型目录，不受 `supportedModels` 限制，默认选中账户检查模型。完整诊断在网关为普通客户端改写失败响应时，测试结果的 `responseText`、`responseHeaders`、`message` 和 `errorCode` 仍优先使用最后一次真实上游尝试的有界原始诊断，不能把网关生成的 `upstream_retryable_error` 当成上游返回展示；未捕获上游正文时才保留下游兜底响应。人工测试不保存本次模型，不追加支持模型，也不更新 OAuth 生产额度快照。
 - 人工测试成功或失败都不修改账户、授权实例、来源账户、账户内 Key、健康事实、状态、调度、冷却、最近错误、代理桶、客户端 IP / Codex turn 回避或会话亲和。每次单账户测试使用独立 `testSessionId`；账户 A 与账户 B 可并行启动，停止操作只取消当前会话。账户页面不提供多账户批量测试。
-- 后台激活、周期健康、运行态恢复、账号级冷却复测和 Key 恢复探针严格使用账户 `healthCheckModel`。后台冷却复测固定启用，按 `3s -> 6s -> 12s -> 24s -> ...` 退避恢复 `temporary_unavailable` 和 `rate_limited`；成功恢复对应状态，失败继续退避并在长期观察阈值后保持原状态低频复测。恢复探活使用 `traffic_source = cooldown_retest` 写入明细和审计，不进入业务统计或账户质量统计。
+- 后台激活、周期健康、运行态恢复、账号级冷却复测和 Key 恢复探针严格使用账户 `healthCheckModel`。后台冷却复测固定启用，按 `3s -> 6s -> 12s -> 24s -> ...` 退避处理系统自动 transport 来源的 `temporary_unavailable`；`complete_success` 只按匹配 provenance 激活 / 恢复，`framing_complete_neutral` 只诊断、有界顺延并最多关闭同来源 transport 怀疑，`upstream_failure` 仅在 `transport_incomplete` 时继续退避和累计，`probe_task_failure/stale/unknown` 不计数不改状态。用户显式 `temporary_unavailable / rate_limited` 只按其 TTL、匹配恢复动作或人工恢复清理。恢复探活使用 `traffic_source = cooldown_retest` 写入明细和审计，不进入业务统计或账户质量统计。
+- 后台激活和周期健康检查同样不得把完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 解释为凭据死亡、限流或封禁。协议成功可以激活/记录正向健康；完整 framing 但协议未成功保持业务中性并有界延后，transport failure 才进入传输退避，本地配置/解密硬错误才进入对应配置异常路径。
 
-账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。频繁失败确认只由真实网关质量样本触发，按账户所属系统账户和绑定分组上下文执行确认探针；确认成功不改状态，确认失败且属于账号故障时才写入 `temporary_unavailable`。该确认探针使用 `traffic_source = cooldown_retest`，不进入业务统计或账号质量统计。
+账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。系统自动确认只由真实网关 transport sample 首次投递，按账户所属系统账户和绑定分组上下文执行独立探针；通用协议成功可作为正向健康证据，本地 transport failure 才是负向证据，完整 HTTP 业务失败保持中性。该确认探针使用 `traffic_source = cooldown_retest`，不进入业务统计或账号质量统计。
 
 ## 会话亲和调度
 
@@ -287,7 +288,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 - 存储字段保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
 - 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户不触发首次快照刷新，缺失或过期时等待真实网关请求的响应头更新。
 - 后台策略：不再注册 OAuth 额度快照主动探测任务；后台只保留 Access Token 预刷新。
-- 官方限额处理：收到 OpenAI OAuth / Codex 额度响应头时，只更新 OAuth 额度快照和下次刷新参考时间；账号状态仍走统一上游错误处理链路。命中上游账号后发生错误时，先按账户错误处理策略形成待确认目标；未命中策略或策略动作为 `retry_next` 时，统一写当前账号 `temporary_unavailable`，不在代码里内置官方限额、余额不足、状态码、错误码或错误文案判断。
+- 官方限额处理：收到 OpenAI OAuth / Codex 额度响应头时，只更新 OAuth 额度快照和下次刷新参考时间，不改变账号状态。命中用户显式账户错误策略时按配置动作执行；未命中策略或只执行请求级 `retry_next` 时，完整 HTTP/协议结果绝不写当前账号 `temporary_unavailable`。只有本地 transport failure 可以进入系统自动确认，代码不得按官方限额、余额不足、状态码、错误码或错误文案推断共享状态。
 - UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/恢复时间、快照更新时间和快照来源；API Key 行不显示这两条 OAuth 额度进度。
 - 授权展示：OAuth 额度快照是授权实例的非敏感运行态，被授权用户获得该 OAuth 账户使用权后，会在自己的授权实例账户上看到 `5h` / `7d` 额度进度，但仍不能查看 Access Token、Refresh Token 或完整请求内容。
 - UI 限制：更多菜单不提供“刷新用量”按钮；快照缺失或过期时显示“等待真实请求更新”或“暂无快照”，不触发前端即时探测。
@@ -310,7 +311,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 - 到期时间（授权账户优先展示授权到期时间；没有授权到期时间时展示账户到期时间）
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和接口能力限制等配置；客户端兼容只展示账号可承接能力，不提供账号级手工切换，创建、编辑和草稿测试账号 payload 都不得提交 `clientCompatibility`。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认“不影响原账户”，只把已识别且当前命中源账户的客户端会话迁到目标账户；也可把原账户改为临时不可调用或停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接；只有选择临时不可调用或停用时，迁移后当前分组才会在源账号仍不可候选时短期偏向目标账户，目标不可用或并发不可承接时继续按原有候选顺序降级。`待检查` 是新建账户的默认隔离状态，不能参与调度；人工测试成功或失败都保持待检查，不能由测试任务隐式开启调度。后台激活检查失败后固定每 1 小时复检，从首次失败起满 24 小时仍失败则转为 `error`；有失败事实的待检查账户提供“重新检查”，先清空失败窗口并立即重新投递检查。手动启用只针对真正已停用的账户；自有账户在所有非停用状态都允许人工停用。停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。时间计划不再有单独的提前启用/提前关闭状态：计划边界和人工启停都写同一个 `status`；计划只在 `active/disabled` 之间切换，不能覆盖 `pending_test`、`error`、`rate_limited` 或 `temporary_unavailable`。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由后台冷却复测恢复；人工测试只验证当前模型、凭据、代理和上游链路。后台冷却复测固定启用，会在冷却时间到期后复测 `temporary_unavailable` 和 `rate_limited` 账号。复测失败会先短重试确认，再按指数退避延长下一次复测时间；进入长期不可用后固定每 1 小时复测，从观察起点满 7 天仍失败则转为 `error`。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；`oauth_token_refresh_failed` 这类后台刷新异常会在后台刷新成功后自动恢复，其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试、“异常恢复”和停用入口。人工异常恢复只重置到不可调度的 `pending_test` 并立即投递后台激活检查，人工测试成功也不作为恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有上游账号本身触发账户错误处理策略 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
+操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户和恢复正常，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。编辑弹窗只维护名称、凭据、分组、标签、并发、优先级、代理、过期时间、备注、账户错误处理规则、账户响应检查规则和接口能力限制等配置；客户端兼容只展示账号可承接能力，不提供账号级手工切换，创建、编辑和草稿测试账号 payload 都不得提交 `clientCompatibility`。不提供状态修改；保存编辑时也不得提交 `status`，避免覆盖后台自动恢复、错误处理或网关冷却刚写入的状态。迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认“不影响原账户”，只把已识别且当前命中源账户的客户端会话迁到目标账户；也可把原账户改为临时不可调用或停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接；只有选择临时不可调用或停用时，迁移后当前分组才会在源账号仍不可候选时短期偏向目标账户，目标不可用或并发不可承接时继续按原有候选顺序降级。`待检查` 是新建账户的默认隔离状态，不能参与调度；人工测试成功或失败都保持待检查，不能由测试任务隐式开启调度。后台激活检查只有独立 `transport_incomplete` 才增加失败计数并固定每 1 小时复检，从首次 transport 失败起满 24 小时后的再次独立 transport 失败才转为 `error`；完整 framing 中性与任务 unknown 不推进窗口。有 transport 失败事实的待检查账户提供“重新检查”，先清空失败窗口并立即重新投递检查。手动启用只针对真正已停用的账户；自有账户在所有非停用状态都允许人工停用。停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。时间计划不再有单独的提前启用/提前关闭状态：计划边界和人工启停都写同一个 `status`；计划只在 `active/disabled` 之间切换，不能覆盖 `pending_test`、`error`、`rate_limited` 或 `temporary_unavailable`。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度；用户显式状态只由 TTL、匹配来源恢复动作或人工恢复清理。后台冷却复测固定启用，会在冷却时间到期后复测；`complete_success` 只恢复匹配来源，完整 framing 中性只顺延，只有 `transport_incomplete` 才短重试并按指数退避，且从首次独立 transport 失败起满 7 天后的再次独立 transport 失败才转为 `error`。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；OAuth token 刷新失败只进入本地授权维护诊断和退避，不因任意刷新异常自动写账户 `error`。其它显式硬异常仍保留编辑（状态锁定为异常）、删除、测试、“异常恢复”和停用入口。人工异常恢复只重置到不可调度的 `pending_test` 并立即投递后台激活检查，人工测试成功也不作为恢复入口。授权额度耗尽是授权关系的展示层状态，只显示“授权额度已用完”并由网关按授权额度返回 429，不改变物理 AI 账户状态；只有用户显式账户错误策略写入 `rate_limited` 时才显示“限流中”。账户套餐到期显示“账户到期”，授权到期或绑定的稳定授权 ID 失效显示“授权到期 / 授权已失效”。
 
 编辑保存按变更影响分层：凭据、Base URL、协议档案或关键代理变化后进入 `pending_test` 并投递后台激活复检；检查模型变化保持原状态但立即投递后台健康检查；支持模型变化必须保证检查模型仍有效；名称、标签、备注和优先级等非连接配置不改变状态。人工测试结果不参与保存或复检决策。
 
@@ -322,7 +323,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 
 自有账户测试入口不因停用状态隐藏；只要账户仍绑定分组且凭据可读取，待检查、停用、异常、限流、临时不可调用或不可调度账户都可以固定测试当前账号。测试结果只作为诊断，无论成功或失败都不会恢复、降级或改写任何账户、授权实例、Key、健康或调度状态。多 Key API Key 账户测试可返回逐 Key 诊断，但不会把失败 Key 从已保存账户的可调度池摘除。授权账户测试还必须满足授权可用、额度未耗尽、已绑定当前用户分组、账户未到期；授权用户只看到脱敏结果，完整诊断仅对所有者或管理员开放。
 
-新增 / 编辑表单测试固定使用当前表单 `healthCheckModel`；列表测试点击后按需读取 `test-options`，默认选中账户检查模型，可临时选择账户供应商、协议档案和所有者作用域可见的其他启用模型，不受 `supportedModels` 限制。文本模型按协议生成形态测试；OpenAI API Key 图片模型显示 `Images API` 请求形态并通过 `/v1/images/generations` 真实生成单张低质量图片，不能用文本 Responses 或模型目录存在性替代。测试弹窗展示异步任务状态、排队等待、诊断过程、成败、返回内容和总耗时；测试固定命中当前账号，并只等待诊断结果、使用记录和审计落地。
+新增 / 编辑表单测试固定使用当前表单 `healthCheckModel`；列表测试点击后按需读取 `test-options`，默认选中账户检查模型，可临时选择账户供应商、协议档案和所有者作用域可见的其他启用模型，不受 `supportedModels` 限制。文本模型按协议生成形态测试。OpenAI API Key 纯图片模型的后台激活、周期健康、冷却复测和事前确认只使用受控 `GET /v1/models` 目录探针；只有用户在人工测试中明确接受成本时，才显示 `Images API` 请求形态并通过 `/v1/images/generations` at-most-once 生成单张低质量图片，独立真实 E2E 也必须遵守相同次数门禁。测试弹窗展示异步任务状态、排队等待、诊断过程、成败、返回内容和总耗时；测试固定命中当前账号，并只等待诊断结果、使用记录和审计落地。
 
 每次单账户测试使用独立 `testSessionId`，账户 A 的任务不能阻止账户 B 启动，停止操作只取消当前会话；项目不提供多账户批量测试或用户级全局测试锁。人工测试不得推进账户内 Key 轮换，不得写入、确认或清理生产上游桶、客户端 IP 熔断、客户端 IP / Codex turn 账号回避、会话亲和或 OAuth 额度快照。真实网关流量和各类后台系统检查继续独占生产运行态副作用。
 

@@ -1,6 +1,7 @@
 import type { Request } from 'express'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
+import { runtimeConfig } from '../../../config/runtime.js'
 import {
   loadAccountCurrentConcurrencyByIdsAsync,
   tryAcquireAccountConcurrencyAsync,
@@ -46,18 +47,32 @@ import {
   handleUpstreamRequestError,
   type PendingAccountApiKeyFailure
 } from '../response/failure-dispatch.js'
+import {
+  gatewayUpstreamOutcomeUnknownMessage,
+  upstreamAutomaticReplayBlockedAuditLabel
+} from '../response/upstream-replay-blocked.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamUrlsForAccount } from '../../providers/drivers/registry.js'
-import { rememberOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
-import { performUpstreamRequestAttempt } from './upstream-attempts.js'
+import { forgetOpenAIAccountForSessionAsync, rememberOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
+import {
+  isPrimaryStartedGatewayTransportError,
+  performUpstreamRequestAttempt
+} from './upstream-attempts.js'
 import { type UpstreamAttempt } from '../upstream/attempt.js'
 import { recordFailedUpstreamAttempt, type GatewayUsageContext } from '../usage/records.js'
 import { isAccountProbeTrafficSource } from '../usage/traffic-source.js'
 import { type GatewayUpstreamResponse } from '../upstream/request.js'
+import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
-import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
+import {
+  automaticUpstreamReplayAllowedAfterDispatch,
+  type OpenAIGatewayRequestLane
+} from '../protocols/openai-v1/request-lane.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../request/validation-error.js'
-import { recordGatewayAccountApiKeyFailure } from '../runtime/account-api-key-effects.service.js'
+import {
+  captureGatewayAccountApiKeyFailureObservation,
+  recordGatewayAccountApiKeyFailure
+} from '../runtime/account-api-key-effects.service.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import {
   gatewayAccountDispatchPriorityTier,
@@ -75,6 +90,7 @@ import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { requestModel } from '../request/metadata.js'
 import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
 import {
+  defaultGatewayFinalResponseReserveMs,
   gatewayAttemptProtocolModelKey,
   type GatewayRequestAttemptTracker,
   type GatewayRequestWallBudget,
@@ -95,8 +111,58 @@ import {
   type NormalRouteAttemptFirstByteDeadline,
   type NormalRouteFirstByteRuntimeConfig
 } from '../routing/normal-route-first-byte-deadline.js'
+import { normalRouteFirstByteDeadlineAppliesToLane } from '../policy/speed-first-lane.js'
 import type { FirstByteDeadlineDecisionInput, FirstByteDeadlineAction, FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
+
+/**
+ * Owns the optional speed-first reservation for exactly one physical upstream
+ * attempt. A late deadline callback must never touch route-level state because
+ * that state may already belong to the next attempt.
+ */
+export class NormalRouteFirstByteAttemptCoordinator {
+  private state: 'active' | 'superseded' | 'transferred' = 'active'
+  private reservation: SpeedFirstCutoverReservation | undefined
+
+  attachReservation(reservation: SpeedFirstCutoverReservation): boolean {
+    if (this.state !== 'active') {
+      reservation.release()
+      return false
+    }
+    const previous = this.reservation
+    this.reservation = reservation
+    previous?.release()
+    return true
+  }
+
+  releaseReservation(): void {
+    const reservation = this.reservation
+    this.reservation = undefined
+    reservation?.release()
+  }
+
+  supersede(): void {
+    if (this.state !== 'active') return
+    this.state = 'superseded'
+    this.releaseReservation()
+  }
+
+  get canCutover(): boolean {
+    return this.state === 'active' && this.reservation !== undefined
+  }
+
+  get reservedTargetAccountId(): string | undefined {
+    return this.canCutover ? this.reservation?.targetAccountId : undefined
+  }
+
+  transferForCutover(): SpeedFirstCutoverReservation | undefined {
+    if (this.state !== 'active') return undefined
+    this.state = 'transferred'
+    const reservation = this.reservation
+    this.reservation = undefined
+    return reservation
+  }
+}
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -114,7 +180,9 @@ export interface OpenAIUpstreamDispatchResult {
   accountCircuitAttempt?: GatewayAccountCircuitAttempt
   hotQualityAttempt: GatewayHotQualityAttemptLifecycle
   normalRouteFirstByteDeadline?: NormalRouteAttemptFirstByteDeadline
+  responsePrecommitDeadlineAtMs?: number
   onFirstByteDeadline?: FirstByteDeadlineHandler
+  firstByteDeadlineCoordinator?: NormalRouteFirstByteAttemptCoordinator
 }
 
 export interface GatewayUpstreamRequestCoordinationContext {
@@ -124,10 +192,12 @@ export interface GatewayUpstreamRequestCoordinationContext {
   gatewayRequestWallBudget: GatewayRequestWallBudget
   routeCoordinationBudget: RouteCoordinationBudget
   requestAttemptTracker: GatewayRequestAttemptTracker
+  semanticRetryId?: string
   normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
   onNormalRouteFirstByteDeadline?: (input: FirstByteDeadlineDecisionInput & {
     account: UpstreamAccount
     deadline: NormalRouteAttemptFirstByteDeadline
+    coordinator: NormalRouteFirstByteAttemptCoordinator
   }) => FirstByteDeadlineAction | Promise<FirstByteDeadlineAction>
   /** Called once when an account attempt is about to invoke the upstream transport. */
   onUpstreamAttemptStarted?: (account: UpstreamAccount) => void | Promise<void>
@@ -145,6 +215,35 @@ export class UpstreamAttemptError extends Error {
   }
 }
 
+export class UpstreamReplayBlockedError extends UpstreamAttemptError {}
+
+export class NormalRouteFirstByteCutoverError extends Error {
+  readonly code = 'normal_route_first_byte_timeout'
+
+  constructor(
+    readonly accountId: string,
+    readonly accountName: string,
+    readonly deadline: NormalRouteAttemptFirstByteDeadline,
+    message: string,
+    readonly cutoverReservation?: SpeedFirstCutoverReservation
+  ) {
+    super(message)
+    this.name = 'NormalRouteFirstByteCutoverError'
+  }
+}
+
+export class GatewayRequestWallBudgetExhaustedError extends Error {
+  readonly code = 'gateway_request_wall_budget_exhausted'
+
+  constructor(
+    readonly wallRemainingMs: number,
+    readonly minimumMeaningfulAttemptMs = 0
+  ) {
+    super('网关请求墙钟预算已进入最终响应预留区')
+    this.name = 'GatewayRequestWallBudgetExhaustedError'
+  }
+}
+
 interface AccountConcurrencyAcquireResult {
   slot: AccountConcurrencySlot
   retryCount: number
@@ -159,7 +258,9 @@ interface AccountCapacityLimitFailure {
 
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
-const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
+// A route may traverse multiple 50-key account pools. Bound total request fan-out
+// while auditing that untried keys remain, rather than claiming pool exhaustion.
+export const gatewayAccountApiKeyRequestAttemptSafetyLimit = 64
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -189,9 +290,14 @@ export async function fetchFirstAvailableUpstream(
     serverRetryBudget,
     gatewayRequestWallBudget,
     routeCoordinationBudget,
-    requestAttemptTracker
+    requestAttemptTracker,
+    semanticRetryId
   } = requestCoordination
   const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
+  const accountCircuitFailureEvidenceKey = gatewayForegroundAccountCircuitFailureEvidenceKey(
+    req,
+    usageContext
+  )
   // Explicit user policies remain available for gateway clients. Automatic
   // suppression and health state transitions are reserved for background probes.
   const automaticAccountStateMutationAllowed = accountStateMutationEnabled
@@ -224,13 +330,15 @@ export async function fetchFirstAvailableUpstream(
   dispatchAccounts = dispatchAccounts.filter((account) => requestAttemptTracker.canAttemptAccount({
     accountRuntimeKey: gatewayAccountRuntimeKey(account),
     physicalCredentialKey: accountPhysicalCredentialKey(account),
-    matchingConfirmation: accountCircuitConfirmation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
+    matchingConfirmation: accountCircuitConfirmation?.accountRuntimeKey === gatewayAccountRuntimeKey(account),
+    semanticRetryId
   }).allowed)
   const dispatchTierOptions = { modelRankByAccountId: modelPriority?.rankByAccountId }
   const primaryDispatchTier = dispatchAccounts[0]
     ? gatewayAccountDispatchPriorityTier(dispatchAccounts[0], dispatchTierOptions)
     : undefined
   const observedEscapedTiers = new Set<string>()
+  let requestApiKeyAttemptCount = requestAttemptTracker.snapshot().attemptedKeyFingerprints.length
 
   while (dispatchAccounts.length > 0) {
     const cycleRecoverableAccountIds = new Set<string>()
@@ -245,7 +353,10 @@ export async function fetchFirstAvailableUpstream(
           requestLane,
           model: requestModel(req),
           confirmationLeaseDurationMs,
-          confirmation: accountCircuitConfirmation
+          confirmationFailuresRequired: runtimeConfig.gateway.accountCircuitConfirmationFailuresRequired
+            ?? settings.accountCircuitConfirmationFailuresRequired,
+          confirmation: accountCircuitConfirmation,
+          failureEvidenceKey: accountCircuitFailureEvidenceKey
         })
         if (circuitPreparation.outcome === 'blocked') {
           lastAttempt = accountCircuitBlockedAttempt(originalAccount, circuitPreparation.state.phase)
@@ -410,9 +521,10 @@ export async function fetchFirstAvailableUpstream(
         }, '账号并发槽短等后释放，继续使用当前账号')
       }
       let keepConcurrencySlot = false
-      const excludedApiKeyFingerprints = new Set<string>()
+      const excludedApiKeyFingerprints = new Set(requestAttemptTracker.snapshot().attemptedKeyFingerprints)
       const pendingApiKeyFailures: PendingAccountApiKeyFailure[] = []
       let accountApiKeyAttemptCount = 0
+      let previousSelectedApiKeyFingerprint: string | undefined
       try {
         let retryAccountApiKey = false
         do {
@@ -438,8 +550,26 @@ export async function fetchFirstAvailableUpstream(
               }, 'expected_failure', preparationStageStartedAt)
               break
             }
+            if (
+              (account.apiKeys?.length ?? 0) > 1
+              && requestApiKeyAttemptCount >= gatewayAccountApiKeyRequestAttemptSafetyLimit
+            ) {
+              recordAccountApiKeyRequestRetryBudgetExhausted(account, {
+                accountApiKeyAttemptCount,
+                requestApiKeyAttemptCount,
+                remainingConfiguredKeyCount: Math.max(0, (account.apiKeys?.length ?? 0) - accountApiKeyAttemptCount),
+                reason: 'request_safety_limit'
+              }, auditCapture)
+              lastAttempt = accountApiKeyRetryBudgetExhaustedAttempt(
+                account,
+                '请求级 API Key 尝试安全上限已达到，未宣称 Key 池已穷尽'
+              )
+              failedAccountIds.add(account.id)
+              break
+            }
             const selectedAccount = await selectAccountApiKeyForDispatch(account, {
-              excludeFingerprints: excludedApiKeyFingerprints
+              excludeFingerprints: excludedApiKeyFingerprints,
+              continueAfterFingerprint: previousSelectedApiKeyFingerprint
             })
             if (!selectedAccount) {
               logRequestStage('upstream.request_prepare', {
@@ -467,6 +597,7 @@ export async function fetchFirstAvailableUpstream(
             if (account.selectedApiKeyFingerprint) {
               accountApiKeyAttemptCount += 1
               excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
+              previousSelectedApiKeyFingerprint = account.selectedApiKeyFingerprint
             }
             const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal, {
               requestClientCompatibility
@@ -571,18 +702,30 @@ export async function fetchFirstAvailableUpstream(
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
             failedAccountIds.add(account.id)
-            if (halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)) {
+            if (halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(
+              account,
+              requestErrorResult.keyScopedFailure,
+              accountApiKeyAttemptCount,
+              requestApiKeyAttemptCount,
+              auditCapture
+            )) {
               retryAccountApiKey = true
             }
             continue
           }
           for (const upstreamUrl of upstreamUrls) {
-            // A request may switch credentials only through the outer
-            // coordinator. Never silently replay the same account inside one
-            // upstream attempt; confirmation is the sole same-account path.
-            for (let attemptIndex = 0, attemptLimit = 1; attemptIndex < attemptLimit; attemptIndex += 1) {
+            let pendingSameAccountRetryId: string | undefined
+            for (let attemptIndex = 0; ; attemptIndex += 1) {
+              assertGatewayRequestWallBudgetAvailableForAttempt(
+                gatewayRequestWallBudget,
+                requestAttemptTracker,
+                auditCapture,
+                requestCoordination.scope === 'gateway_request' ? defaultGatewayFinalResponseReserveMs : 0
+              )
               const accountRuntimeKey = gatewayAccountRuntimeKey(account)
-              const attemptRegistration = requestAttemptTracker.tryRecordDispatchAttempt({
+              const sameAccountRetryId = pendingSameAccountRetryId
+              pendingSameAccountRetryId = undefined
+              const dispatchAttemptIdentity = {
                 accountRuntimeKey,
                 physicalCredentialKey: accountPhysicalCredentialKey(account),
                 protocolModelKey: gatewayAttemptProtocolModelKey({
@@ -591,10 +734,18 @@ export async function fetchFirstAvailableUpstream(
                   protocolVersion: account.protocolVersion,
                   model: requestModel(req)
                 }),
-                keyFingerprint: account.selectedApiKeyFingerprint,
-                matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
-                allowKeyRotation: accountApiKeyAttemptCount > 1
-              })
+                keyFingerprint: account.selectedApiKeyFingerprint
+              }
+              const attemptRegistration = requestAttemptTracker.tryRecordDispatchAttempt(
+                sameAccountRetryId
+                  ? { ...dispatchAttemptIdentity, sameAccountRetryId }
+                  : {
+                      ...dispatchAttemptIdentity,
+                      matchingConfirmation: accountCircuitAttempt?.isConfirmation === true,
+                      allowKeyRotation: accountApiKeyAttemptCount > 1,
+                      semanticRetryId
+                    }
+              )
               if (!attemptRegistration.allowed) {
                 lastAttempt = requestDeduplicatedAttempt(account, attemptRegistration.reason)
                 failedAccountIds.add(account.id)
@@ -612,16 +763,21 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               }
+              if (account.selectedApiKeyFingerprint && !sameAccountRetryId) {
+                requestApiKeyAttemptCount += 1
+              }
               const attemptTier = gatewayAccountDispatchPriorityTier(account, dispatchTierOptions)
               if (primaryDispatchTier && attemptTier !== primaryDispatchTier && !observedEscapedTiers.has(attemptTier)) {
                 observedEscapedTiers.add(attemptTier)
                 observeGatewayRouting({ kind: 'tier_escape', outcome: 'applied' })
               }
               const attemptStartedAt = Date.now()
-              // Image generation legitimately waits much longer for its first byte.
-              // It uses the image timeout profile instead of the text-oriented
-              // normal-route deadline, which would otherwise abort at 10 seconds.
-              const normalRouteFirstByteDeadline = requestLane === 'text' && requestCoordination.normalRouteFirstByteConfig
+              // Long-running side-effect lanes (for example image generation)
+              // use their own timeout profile and must never enter a deadline
+              // path that can automatically replay the dispatched request.
+              const normalRouteFirstByteDeadline = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+                && automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
+                && requestCoordination.normalRouteFirstByteConfig
                 ? normalRouteAttemptFirstByteDeadline({
                     config: requestCoordination.normalRouteFirstByteConfig,
                     gatewayRequestWallBudget,
@@ -629,6 +785,9 @@ export async function fetchFirstAvailableUpstream(
                     laneFirstByteTimeoutMs: timeoutProfile.firstByteTimeoutMs,
                     uncommittedAttemptMaxLifetimeMs: timeoutProfile.uncommittedAttemptMaxLifetimeMs
                   })
+                : undefined
+              const firstByteDeadlineCoordinator = normalRouteFirstByteDeadline
+                ? new NormalRouteFirstByteAttemptCoordinator()
                 : undefined
               let firstByteDeadlineDecision: Promise<FirstByteDeadlineAction> | undefined
               let firstByteDeadlineTriggered = false
@@ -639,7 +798,8 @@ export async function fetchFirstAvailableUpstream(
                       requestCoordination.onNormalRouteFirstByteDeadline?.({
                         ...deadlineInput,
                         account,
-                        deadline: normalRouteFirstByteDeadline
+                        deadline: normalRouteFirstByteDeadline,
+                        coordinator: firstByteDeadlineCoordinator!
                       }) ?? 'abort'
                     )
                     return firstByteDeadlineDecision
@@ -655,15 +815,21 @@ export async function fetchFirstAvailableUpstream(
                 body,
                 requestForModelAccounting: req
               })
-              const hotQualityAttempt = createGatewayHotQualityAttemptLifecycle({
-                // Audit capture may be disabled and return an empty id. Keep the
-                // runtime attempt identity unique across every actual upstream
-                // attempt so terminal idempotency cannot collapse retries.
-                attemptId: `hotq:${usageContext.traceId}:${attemptIndex}:${auditAttemptIndex}:${randomUUID()}`,
-                account,
-                requestLane,
-                model: requestModel(req)
-              })
+              let hotQualityAttempt: GatewayHotQualityAttemptLifecycle | undefined
+              const getHotQualityAttempt = () => {
+                if (hotQualityAttempt) return hotQualityAttempt
+                const rawAttempt = createGatewayHotQualityAttemptLifecycle({
+                  // Audit capture may be disabled and return an empty id. Keep the
+                  // runtime attempt identity unique across every actual upstream
+                  // attempt so terminal idempotency cannot collapse retries.
+                  attemptId: `hotq:${usageContext.traceId}:${attemptIndex}:${auditAttemptIndex}:${randomUUID()}`,
+                  account,
+                  requestLane,
+                  model: requestModel(req)
+                })
+                hotQualityAttempt = hotQualityAttemptForCircuitMode(rawAttempt, accountCircuitAttempt)
+                return hotQualityAttempt
+              }
               try {
                 // Settlement/observability must not add latency to the upstream
                 // request or turn a successful dispatch into a gateway failure.
@@ -730,14 +896,20 @@ export async function fetchFirstAvailableUpstream(
                       : Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
                     accountCircuitAttempt,
-                    hotQualityAttempt,
+                    hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
-                    onFirstByteDeadline
+                    responsePrecommitDeadlineAtMs: requestLane === 'image'
+                      ? undefined
+                      : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
+                    onFirstByteDeadline,
+                    firstByteDeadlineCoordinator
                   }
                 }
 
+                firstByteDeadlineCoordinator?.supersede()
                 const failedResponseInput = {
                   req,
+                  requestLane,
                   usageContext,
                   auditCapture,
                   auditAttemptId,
@@ -757,14 +929,13 @@ export async function fetchFirstAvailableUpstream(
                   retrySameAccount: false
                 }
                 const failedResponseResult = await handleFailedUpstreamResponse(failedResponseInput)
-                const accountPolicyFailure = failedResponseResult.failureSource === 'account_error_policy'
-                if (accountPolicyFailure) {
-                  await hotQualityAttempt.recordTerminal({
-                    outcomeClass: 'explicit_policy_failure',
-                    // Configured account policies are account-scoped; transport
-                    // failures below remain protocol_model.
-                    failureScope: 'account',
-                    source: 'explicit_policy'
+                const explicitPolicyFailure = failedResponseResult.action !== 'return_response'
+                  && failedResponseResult.failureKind === 'explicit_policy'
+                if (failedResponseResult.action !== 'return_response') {
+                  await getHotQualityAttempt().recordTerminal({
+                    outcomeClass: explicitPolicyFailure ? 'explicit_policy_failure' : 'upstream_response_failure',
+                    failureScope: explicitPolicyFailure ? 'account' : 'none',
+                    source: explicitPolicyFailure ? 'explicit_policy' : 'upstream_response'
                   })
                 }
                 if (failedResponseResult.action === 'return_response') {
@@ -783,27 +954,56 @@ export async function fetchFirstAvailableUpstream(
                     confirmHalfOpenSuccess: () => Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease),
                     accountCircuitAttempt,
-                    hotQualityAttempt,
+                    hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
+                    responsePrecommitDeadlineAtMs: requestLane === 'image'
+                      ? undefined
+                      : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
                     onFirstByteDeadline
                   }
                 }
-                // An explicit user policy is a failure action, not a transport
-                // success; do not close/recover a circuit from the same attempt.
-                if (!accountPolicyFailure) {
-                  await accountCircuitAttempt?.reportFramingComplete()
-                }
+                // A complete HTTP frame is transport evidence even when an
+                // explicit user policy independently applies a business action.
+                await accountCircuitAttempt?.reportFramingComplete()
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
                 recoverableFailedAccountIds.delete(account.id)
                 cycleRecoverableAccountIds.delete(account.id)
+                if (failedResponseResult.action === 'replay_blocked') {
+                  auditCapture.addGatewayMetadata({
+                    label: upstreamAutomaticReplayBlockedAuditLabel,
+                    metadata: {
+                      accountId: account.id,
+                      keyFingerprint: account.selectedApiKeyFingerprint,
+                      phase: 'opaque_upstream_response',
+                      requestLane,
+                      endpoint: usageContext.endpoint
+                    }
+                  })
+                  throw new UpstreamReplayBlockedError(
+                    gatewayUpstreamOutcomeUnknownMessage,
+                    lastAttempt,
+                    [...failedAccountIds]
+                  )
+                }
                 if (
                   !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
                   && (
                     failedResponseResult.tryNextApiKeyForRequest
-                      ? shouldTryAnotherAccountApiKeyForRequest(account, accountApiKeyAttemptCount, auditCapture)
-                      : shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                      ? shouldTryAnotherAccountApiKeyForRequest(
+                          account,
+                          accountApiKeyAttemptCount,
+                          requestApiKeyAttemptCount,
+                          auditCapture
+                        )
+                      : shouldRetryAnotherAccountApiKey(
+                          account,
+                          failedResponseResult.keyScopedFailure,
+                          accountApiKeyAttemptCount,
+                          requestApiKeyAttemptCount,
+                          auditCapture
+                        )
                   )
                 ) {
                   if (failedResponseResult.pendingApiKeyFailure) {
@@ -815,7 +1015,101 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               } catch (error) {
-                await hotQualityAttempt.recordTerminal(hotQualityTerminalForDispatchError(error, signal))
+                if (error instanceof UpstreamReplayBlockedError) {
+                  throw error
+                }
+                const configuredFirstByteDeadline = isGatewayFirstByteTimeoutError(error)
+                  && error.source === 'configured_deadline'
+                const neutralFirstByteDeadline = configuredFirstByteDeadline
+                  && (
+                    normalRouteFirstByteDeadline?.limitingFactor === 'configured'
+                    || normalRouteFirstByteDeadline?.limitingFactor === 'wall_precommit'
+                  )
+                const configuredDeadlineCutover = neutralFirstByteDeadline
+                  && normalRouteFirstByteDeadline?.limitingFactor === 'configured'
+                if (!configuredDeadlineCutover) {
+                  firstByteDeadlineCoordinator?.supersede()
+                }
+                const localRequestFailure = error instanceof GatewayAgentGuidanceResponse
+                  || error instanceof GatewayLocalProtocolResponse
+                  || error instanceof GatewayRequestValidationError
+                  || error instanceof OpenAIOAuthCodexAdapterError
+                const pendingKeyTransportFailure = accountStateMutationEnabled
+                  && usageContext.trafficSource === 'gateway'
+                  && !localRequestFailure
+                  && !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
+                  && !isGatewayFirstByteTimeoutError(error)
+                  && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
+                  && account.selectedApiKeyFingerprint
+                  && !account.apiKeyRuntimeStateDisabled
+                  && (account.apiKeys?.length ?? 0) > accountApiKeyAttemptCount
+                  && requestApiKeyAttemptCount < gatewayAccountApiKeyRequestAttemptSafetyLimit
+                  ? {
+                      account,
+                      status: 'temporary_unavailable' as const,
+                      observationEpoch: captureGatewayAccountApiKeyFailureObservation(account),
+                      errorMessage: error instanceof Error ? error.message : undefined
+                    }
+                  : undefined
+                const automaticReplayAllowed = automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
+                const retryAnotherAccountApiKey = !localRequestFailure
+                  && !neutralFirstByteDeadline
+                  && !signal?.aborted
+                  && automaticReplayAllowed
+                  && !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
+                  && shouldTryAnotherAccountApiKeyForRequest(
+                    account,
+                    accountApiKeyAttemptCount,
+                    requestApiKeyAttemptCount,
+                    auditCapture
+                  )
+                const sameAccountRetryDelayMs = Math.max(
+                  0,
+                  settings.temporaryUnschedulableRetryIntervalSeconds * 1000
+                )
+                const configuredSiblingApiKeyRemaining = Boolean(account.selectedApiKeyFingerprint)
+                  && (account.apiKeys?.length ?? 0) > accountApiKeyAttemptCount
+                const sameAccountRetryCandidate = requestCoordination.scope === 'gateway_request'
+                  && usageContext.trafficSource === 'gateway'
+                  && requestLane === 'text'
+                  && automaticReplayAllowed
+                  && !signal?.aborted
+                  && !localRequestFailure
+                  && isPrimaryStartedGatewayTransportError(error)
+                  && normalRouteFirstByteDeadline === undefined
+                  && !firstByteDeadlineTriggered
+                  && halfOpenLease?.generation === undefined
+                  && accountCircuitAttempt?.isConfirmation !== true
+                  && accountCircuitAttempt?.isObserver !== true
+                  && semanticRetryId === undefined
+                  && !retryAnotherAccountApiKey
+                  && !configuredSiblingApiKeyRemaining
+                  && settings.temporaryUnschedulableRetryAttempts > 0
+                const sameAccountRetryAvailableMs = gatewayRequestWallBudget.availableDecisionMs({
+                    finalResponseReserveMs: defaultGatewayFinalResponseReserveMs
+                  })
+                const sameAccountRetryBlockedByWall = sameAccountRetryCandidate
+                  && sameAccountRetryAvailableMs <= sameAccountRetryDelayMs
+                const sameAccountRetryReservation = sameAccountRetryCandidate
+                  && !sameAccountRetryBlockedByWall
+                  ? requestAttemptTracker.tryReserveSameAccountRetry({
+                      ...dispatchAttemptIdentity,
+                      maxRetries: settings.temporaryUnschedulableRetryAttempts
+                    })
+                  : undefined
+                const deferredConfirmationFailure = retryAnotherAccountApiKey
+                  && accountCircuitAttempt?.deferConfirmationTransportFailureForKeyRotation() === true
+                const confirmedTransportQuality = accountCircuitAttempt?.isConfirmation === true
+                  && !localRequestFailure
+                  && !neutralFirstByteDeadline
+                  && !deferredConfirmationFailure
+                if (sameAccountRetryReservation?.reserved !== true) {
+                  await getHotQualityAttempt().recordTerminal(confirmedTransportQuality
+                    ? hotQualityTerminalForDispatchError(error, signal)
+                    : { outcomeClass: 'unknown', failureScope: 'none', source: 'request_lifecycle' })
+                }
                 if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
                   auditCapture.completeAttempt(auditAttemptId, {
                     success: false,
@@ -841,6 +1135,103 @@ export async function fetchFirstAvailableUpstream(
                   })
                   throw error
                 }
+                if (neutralFirstByteDeadline && normalRouteFirstByteDeadline) {
+                  const message = error instanceof Error ? error.message : String(error)
+                  auditCapture.completeAttempt(auditAttemptId, {
+                    success: false,
+                    errorPhase: 'upstream_request',
+                    errorCode: 'normal_route_first_byte_timeout',
+                    errorMessage: message
+                  })
+                  await recordFailedUpstreamAttempt(req, usageContext, account, {
+                    upstreamUrl,
+                    startedAt: attemptStartedAt,
+                    errorMessage: message,
+                    failureAttribution: 'gateway_policy',
+                    interpretUpstreamSemantics: false
+                  })
+                  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+                  await accountCircuitAttempt?.reportUnknown()
+                  if (!automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)) {
+                    firstByteDeadlineCoordinator?.supersede()
+                    lastAttempt = {
+                      accountId: account.id,
+                      accountName: account.name,
+                      providerCode: account.providerCode,
+                      providerProtocolProfileId: account.providerProtocolProfileId,
+                      protocolCode: account.protocolCode,
+                      protocolVersion: account.protocolVersion,
+                      upstreamUrl,
+                      message
+                    }
+                    failedAccountIds.add(account.id)
+                    auditCapture.addGatewayMetadata({
+                      label: upstreamAutomaticReplayBlockedAuditLabel,
+                      metadata: {
+                        accountId: account.id,
+                        keyFingerprint: account.selectedApiKeyFingerprint,
+                        phase: 'upstream_first_byte_deadline',
+                        requestLane,
+                        endpoint: usageContext.endpoint
+                      }
+                    })
+                    throw new UpstreamReplayBlockedError(
+                      gatewayUpstreamOutcomeUnknownMessage,
+                      lastAttempt,
+                      [...failedAccountIds]
+                    )
+                  }
+                  if (normalRouteFirstByteDeadline.limitingFactor === 'wall_precommit') {
+                    firstByteDeadlineCoordinator?.supersede()
+                    throw new GatewayRequestWallBudgetExhaustedError(gatewayRequestWallBudget.remainingMs())
+                  }
+                  const cutoverReservation = firstByteDeadlineCoordinator?.transferForCutover()
+                  throw new NormalRouteFirstByteCutoverError(
+                    account.id,
+                    account.name,
+                    normalRouteFirstByteDeadline,
+                    message,
+                    cutoverReservation
+                  )
+                }
+                if (sameAccountRetryReservation?.reserved === true) {
+                  const requestErrorResult = await handleUpstreamRequestError({
+                    req,
+                    usageContext,
+                    auditCapture,
+                    auditAttemptId,
+                    account,
+                    upstreamUrl,
+                    attemptStartedAt,
+                    attemptIndex,
+                    auditAttemptIndex,
+                    settings,
+                    sessionAffinityKey,
+                    signal,
+                    lastAttempt,
+                    failedProxyDispatchKeys,
+                    error,
+                    clientIpAccountAvoidanceTracker,
+                    accountStateMutationEnabled: automaticAccountStateMutationAllowed,
+                    retrySameAccount: true
+                  })
+                  lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+                  auditCapture.addGatewayMetadata({
+                    label: 'same_account_retry_scheduled',
+                    metadata: {
+                      accountId: account.id,
+                      keyFingerprint: account.selectedApiKeyFingerprint,
+                      retryNumber: sameAccountRetryReservation.retryNumber,
+                      remainingRetries: sameAccountRetryReservation.remaining,
+                      delayMs: sameAccountRetryDelayMs
+                    }
+                  })
+                  throwIfRequestAborted(signal)
+                  await waitForRetryDelayMs(sameAccountRetryDelayMs, { signal })
+                  throwIfRequestAborted(signal)
+                  pendingSameAccountRetryId = sameAccountRetryReservation.retryId
+                  continue
+                }
                 const requestErrorResult = await handleUpstreamRequestError({
                   req,
                   usageContext,
@@ -862,8 +1253,9 @@ export async function fetchFirstAvailableUpstream(
                   retrySameAccount: false
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
-                failedAccountIds.add(account.id)
                 if (
+                  !retryAnotherAccountApiKey
+                  &&
                   requestErrorResult.action === 'skip_account'
                   && automaticAccountStateMutationAllowed
                   && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
@@ -871,24 +1263,41 @@ export async function fetchFirstAvailableUpstream(
                   recoverableFailedAccountIds.add(account.id)
                   cycleRecoverableAccountIds.add(account.id)
                 }
-                const circuitDecision = accountCircuitAttempt
-                  ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
-                  : undefined
-                if (circuitDecision?.outcome === 'confirmation_acquired' && accountCircuitService) {
-                  // The failing request establishes SUSPECT, but must not consume
-                  // its freshly-created confirmation lease by replaying the same
-                  // physical credential. Release it as unknown so a later request
-                  // can become the single-flight confirmer.
-                  await accountCircuitService.completeConfirmation(circuitDecision.confirmation, 'unknown')
+                if (!retryAnotherAccountApiKey) {
+                  failedAccountIds.add(account.id)
                 }
-                if (
-                  !firstByteDeadlineTriggered
-                  && halfOpenLease?.generation === undefined
-                  && requestErrorResult.keyScopedFailure === true
-                  && shouldRetryAnotherAccountApiKey(account, true, accountApiKeyAttemptCount, auditCapture)
-                ) {
+                if (accountCircuitAttempt && !signal?.aborted && !deferredConfirmationFailure) {
+                  await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
+                }
+                if (!automaticReplayAllowed) {
+                  auditCapture.addGatewayMetadata({
+                    label: upstreamAutomaticReplayBlockedAuditLabel,
+                    metadata: {
+                      accountId: account.id,
+                      keyFingerprint: account.selectedApiKeyFingerprint,
+                      phase: 'upstream_transport',
+                      requestLane,
+                      endpoint: usageContext.endpoint
+                    }
+                  })
+                  throw new UpstreamReplayBlockedError(
+                    gatewayUpstreamOutcomeUnknownMessage,
+                    requestErrorResult.lastAttempt,
+                    [...failedAccountIds]
+                  )
+                }
+                if (retryAnotherAccountApiKey) {
+                  if (pendingKeyTransportFailure) {
+                    pendingApiKeyFailures.push(pendingKeyTransportFailure)
+                  }
                   retryAccountApiKey = true
                   break
+                }
+                if (sameAccountRetryBlockedByWall) {
+                  throw new GatewayRequestWallBudgetExhaustedError(
+                    gatewayRequestWallBudget.remainingMs(),
+                    sameAccountRetryDelayMs
+                  )
                 }
                 skipAccount = true
                 break
@@ -1131,6 +1540,30 @@ function hotQualityTerminalForDispatchError(
   }
 }
 
+function hotQualityAttemptForCircuitMode(
+  attempt: GatewayHotQualityAttemptLifecycle,
+  circuitAttempt: GatewayAccountCircuitAttempt | undefined
+): GatewayHotQualityAttemptLifecycle {
+  if (circuitAttempt?.isConfirmation === true) return attempt
+  return {
+    attemptId: attempt.attemptId,
+    scope: attempt.scope,
+    markFirstByte: (firstByteMs) => attempt.markFirstByte(firstByteMs),
+    recordTerminal: (terminal) => attempt.recordTerminal(isTransportQualityOutcome(terminal.outcomeClass)
+      ? { outcomeClass: 'unknown', failureScope: 'none', source: 'request_lifecycle' }
+      : terminal)
+  }
+}
+
+function isTransportQualityOutcome(
+  outcomeClass: Parameters<GatewayHotQualityAttemptLifecycle['recordTerminal']>[0]['outcomeClass']
+): boolean {
+  return outcomeClass === 'transport_failure'
+    || outcomeClass === 'timeout'
+    || outcomeClass === 'read_interruption'
+    || outcomeClass === 'incomplete_response'
+}
+
 function accountPhysicalCredentialKey(account: UpstreamAccount): string {
   return account.credentialSourceAccountId?.trim() || account.id
 }
@@ -1251,6 +1684,19 @@ function accountApiKeyPoolUnavailableAttempt(account: UpstreamAccount): Upstream
   }
 }
 
+function accountApiKeyRetryBudgetExhaustedAttempt(account: UpstreamAccount, message: string): UpstreamAttempt {
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl: 'account:api_key_request_retry_budget_exhausted',
+    message
+  }
+}
+
 function accountCircuitBlockedAttempt(account: UpstreamAccount, phase: string): UpstreamAttempt {
   return {
     accountId: account.id,
@@ -1322,10 +1768,35 @@ function accountScopedGuidanceAttempt(account: UpstreamAccount, guidance: Gatewa
   }
 }
 
+function assertGatewayRequestWallBudgetAvailableForAttempt(
+  gatewayRequestWallBudget: GatewayRequestWallBudget,
+  requestAttemptTracker: GatewayRequestAttemptTracker,
+  auditCapture: AuditCaptureContext,
+  finalResponseReserveMs: number
+): void {
+  if (!gatewayRequestWallBudget.handoffRequired({
+    finalResponseReserveMs
+  })) {
+    return
+  }
+  const wallRemainingMs = gatewayRequestWallBudget.remainingMs()
+  auditCapture.addGatewayMetadata({
+    label: 'gateway_upstream_attempt_blocked_wall_budget',
+    metadata: {
+      reason: 'gateway_request_wall_budget_exhausted',
+      wallRemainingMs,
+      finalResponseReserveMs,
+      attempts: requestAttemptTracker.snapshot()
+    }
+  })
+  throw new GatewayRequestWallBudgetExhaustedError(wallRemainingMs)
+}
+
 function shouldRetryAnotherAccountApiKey(
   account: UpstreamAccount,
   keyScopedFailure: boolean | undefined,
   accountApiKeyAttemptCount: number,
+  requestApiKeyAttemptCount: number,
   auditCapture: AuditCaptureContext
 ): boolean {
   if (!keyScopedFailure || !account.selectedApiKeyFingerprint) {
@@ -1335,9 +1806,15 @@ function shouldRetryAnotherAccountApiKey(
     return false
   }
   if ((account.apiKeys?.length ?? 0) <= accountApiKeyAttemptCount) {
+    recordAccountApiKeyRequestPoolExhausted(account, accountApiKeyAttemptCount, requestApiKeyAttemptCount, auditCapture)
     return false
   }
-  if (accountApiKeyAttemptCount >= maxAccountApiKeyAttemptsPerAccountPerRequest) {
+  if (!accountApiKeyRequestRetryBudgetAvailable(
+    account,
+    accountApiKeyAttemptCount,
+    requestApiKeyAttemptCount,
+    auditCapture
+  )) {
     return false
   }
   getRequestLogger().warn({
@@ -1346,7 +1823,8 @@ function shouldRetryAnotherAccountApiKey(
     accountName: account.name,
     selectedApiKeyIndex: account.selectedApiKeyIndex,
     accountApiKeyAttemptCount,
-    maxAccountApiKeyAttemptsPerAccountPerRequest
+    requestApiKeyAttemptCount,
+    requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit
   }, '账户内 API Key 请求失败，本次请求尝试同账户下一个 Key')
   auditCapture.addGatewayMetadata({
     label: 'account_api_key_request_failover_scheduled',
@@ -1355,7 +1833,8 @@ function shouldRetryAnotherAccountApiKey(
       accountName: account.name,
       selectedApiKeyIndex: account.selectedApiKeyIndex,
       accountApiKeyAttemptCount,
-      maxAccountApiKeyAttemptsPerAccountPerRequest
+      requestApiKeyAttemptCount,
+      requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit
     }
   })
   return true
@@ -1364,15 +1843,22 @@ function shouldRetryAnotherAccountApiKey(
 function shouldTryAnotherAccountApiKeyForRequest(
   account: UpstreamAccount,
   accountApiKeyAttemptCount: number,
+  requestApiKeyAttemptCount: number,
   auditCapture: AuditCaptureContext
 ): boolean {
   if (!account.selectedApiKeyFingerprint) {
     return false
   }
   if ((account.apiKeys?.length ?? 0) <= accountApiKeyAttemptCount) {
+    recordAccountApiKeyRequestPoolExhausted(account, accountApiKeyAttemptCount, requestApiKeyAttemptCount, auditCapture)
     return false
   }
-  if (accountApiKeyAttemptCount >= maxAccountApiKeyAttemptsPerAccountPerRequest) {
+  if (!accountApiKeyRequestRetryBudgetAvailable(
+    account,
+    accountApiKeyAttemptCount,
+    requestApiKeyAttemptCount,
+    auditCapture
+  )) {
     return false
   }
   getRequestLogger().warn({
@@ -1381,7 +1867,8 @@ function shouldTryAnotherAccountApiKeyForRequest(
     accountName: account.name,
     selectedApiKeyIndex: account.selectedApiKeyIndex,
     accountApiKeyAttemptCount,
-    maxAccountApiKeyAttemptsPerAccountPerRequest
+    requestApiKeyAttemptCount,
+    requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit
   }, '通用上游失败，本次请求尝试同账户下一个 Key')
   auditCapture.addGatewayMetadata({
     label: 'account_api_key_opaque_request_failover_scheduled',
@@ -1389,10 +1876,79 @@ function shouldTryAnotherAccountApiKeyForRequest(
       accountId: account.id,
       selectedApiKeyIndex: account.selectedApiKeyIndex,
       accountApiKeyAttemptCount,
-      maxAccountApiKeyAttemptsPerAccountPerRequest
+      requestApiKeyAttemptCount,
+      requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit
     }
   })
   return true
+}
+
+function accountApiKeyRequestRetryBudgetAvailable(
+  account: UpstreamAccount,
+  accountApiKeyAttemptCount: number,
+  requestApiKeyAttemptCount: number,
+  auditCapture: AuditCaptureContext
+): boolean {
+  const remainingConfiguredKeyCount = Math.max(0, (account.apiKeys?.length ?? 0) - accountApiKeyAttemptCount)
+  if (requestApiKeyAttemptCount >= gatewayAccountApiKeyRequestAttemptSafetyLimit) {
+    recordAccountApiKeyRequestRetryBudgetExhausted(account, {
+      accountApiKeyAttemptCount,
+      requestApiKeyAttemptCount,
+      remainingConfiguredKeyCount,
+      reason: 'request_safety_limit'
+    }, auditCapture)
+    return false
+  }
+  return true
+}
+
+function recordAccountApiKeyRequestPoolExhausted(
+  account: UpstreamAccount,
+  accountApiKeyAttemptCount: number,
+  requestApiKeyAttemptCount: number,
+  auditCapture: AuditCaptureContext
+): void {
+  auditCapture.addGatewayMetadata({
+    label: 'account_api_key_request_pool_exhausted',
+    metadata: {
+      accountId: account.id,
+      accountName: account.name,
+      accountApiKeyAttemptCount,
+      requestApiKeyAttemptCount,
+      configuredKeyCount: account.apiKeys?.length ?? 0,
+      poolExhausted: true
+    }
+  })
+}
+
+function recordAccountApiKeyRequestRetryBudgetExhausted(
+  account: UpstreamAccount,
+  input: {
+    accountApiKeyAttemptCount: number
+    requestApiKeyAttemptCount: number
+    remainingConfiguredKeyCount: number
+    reason: 'request_safety_limit'
+  },
+  auditCapture: AuditCaptureContext
+): void {
+  getRequestLogger().warn({
+    event: 'gateway_account_api_key_request_retry_budget_exhausted',
+    accountId: account.id,
+    accountName: account.name,
+    ...input,
+    requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit,
+    poolExhausted: false
+  }, '账户内仍可能存在未尝试 Key，但本次请求的安全预算已耗尽')
+  auditCapture.addGatewayMetadata({
+    label: 'account_api_key_request_retry_budget_exhausted',
+    metadata: {
+      accountId: account.id,
+      accountName: account.name,
+      ...input,
+      requestAttemptSafetyLimit: gatewayAccountApiKeyRequestAttemptSafetyLimit,
+      poolExhausted: false
+    }
+  })
 }
 
 async function recordConfirmedSameAccountApiKeyFailures(
@@ -1416,6 +1972,7 @@ async function recordConfirmedSameAccountApiKeyFailures(
       statusCode: failure.statusCode,
       errorCode: failure.errorCode,
       errorMessage: failure.errorMessage,
+      observationEpoch: failure.observationEpoch,
       traceId: usageContext.traceId,
       cooldownUntil: failure.cooldownUntil,
       trafficSource: usageContext.trafficSource,
@@ -1500,6 +2057,81 @@ async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSig
   await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
 }
+
+export function gatewayForegroundAccountCircuitFailureEvidenceKey(
+  req: Request,
+  usageContext: Pick<GatewayUsageContext, 'systemAccountId' | 'apiKeyId' | 'clientIp'>
+): string {
+  const session = explicitAccountCircuitSessionIdentity(req)
+  if (session) {
+    return accountCircuitEvidenceDigest({
+      source: 'explicit_session',
+      systemAccountId: usageContext.systemAccountId,
+      session
+    })
+  }
+
+  const clientIp = usageContext.clientIp?.trim().toLowerCase()
+  if (clientIp) {
+    // Circuit scope already isolates protocol, lane and model. Keeping endpoint,
+    // group, body and trace out of this identity prevents one caller from
+    // manufacturing independent confirmations by varying request details.
+    return accountCircuitEvidenceDigest({
+      source: 'gateway_caller',
+      systemAccountId: usageContext.systemAccountId,
+      clientIp
+    })
+  }
+
+  // Without a client address there is no foreground evidence of independence.
+  // Aggregate even across API keys so an unidentified caller cannot self-confirm
+  // an account-wide transport death by rotating keys or request metadata.
+  return accountCircuitEvidenceDigest({
+    source: 'gateway_unknown_caller',
+    systemAccountId: usageContext.systemAccountId
+  })
+}
+
+function explicitAccountCircuitSessionIdentity(req: Request): { source: string; value: string } | undefined {
+  for (const name of accountCircuitSessionHeaderNames) {
+    const value = stringValue(req.header(name))
+    if (value) return { source: `header:${name}`, value }
+  }
+  for (const path of accountCircuitSessionBodyPaths) {
+    const value = stringValue(valueAtPath(req.body, path))
+    if (value) return { source: `body:${path.join('.')}`, value }
+  }
+  return undefined
+}
+
+function valueAtPath(value: unknown, path: readonly string[]): unknown {
+  let current = value
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null) return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+function accountCircuitEvidenceDigest(value: object): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
+const accountCircuitSessionHeaderNames = [
+  'session_id',
+  'session-id',
+  'x-session-id',
+  'conversation_id',
+  'conversation-id',
+  'x-conversation-id'
+] as const
+
+const accountCircuitSessionBodyPaths = [
+  ['session_id'],
+  ['conversation_id'],
+  ['metadata', 'session_id'],
+  ['metadata', 'conversation_id']
+] as const
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''

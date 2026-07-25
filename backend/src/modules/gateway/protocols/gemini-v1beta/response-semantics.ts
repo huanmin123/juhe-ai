@@ -55,7 +55,7 @@ export function extractGeminiSseSemanticFrames(
   const rawText = event.rawText ?? event.dataText
   const frames: ResponseSemanticFrame[] = []
   if (!data) return frames
-  const error = extractGeminiStreamEventError(data)
+  const error = extractGeminiStreamEventError(data, eventType, event.eventName)
   if (error) {
     frames.push(errorFrame(error, endpointFamily, 'sse', ['error'], eventType, rawText))
   }
@@ -133,7 +133,7 @@ function extractInteractionsSseFrames(
   if (eventType === 'interaction.completed' || eventType === 'interaction.failed') {
     const interaction = objectValue(data.interaction)
     const status = stringValue(interaction?.status) ?? eventType.replace(/^interaction\./, '')
-    if (eventType === 'interaction.failed' || status === 'failed') {
+    if (eventType === 'interaction.failed') {
       const error = objectValue(interaction?.error) ?? objectValue(data.error)
       if (error) {
         frames.push(errorFrame(error, endpointFamily, 'sse', ['interaction.error'], eventType, rawText))
@@ -144,10 +144,19 @@ function extractInteractionsSseFrames(
   return frames
 }
 
-export function extractGeminiStreamEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
-  const error = objectValue(data.error)
-  if (error) return error
-  return undefined
+export function extractGeminiStreamEventError(
+  data: Record<string, unknown>,
+  eventType: string,
+  eventName = ''
+): Record<string, unknown> | undefined {
+  const explicitFailure = eventType === 'error'
+    || eventName === 'error'
+    || data.type === 'error'
+    || eventType === 'interaction.failed'
+    || eventName === 'interaction.failed'
+  if (!explicitFailure) return undefined
+  const interaction = objectValue(data.interaction)
+  return objectValue(interaction?.error) ?? objectValue(data.error) ?? interaction ?? data
 }
 
 function extractGenerateContentFrames(

@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountSummary } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -15,7 +16,8 @@ import { gatewayAccountRuntimeKey, runtimeAccountIdFromKey } from '../gateway/ru
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   ensureGatewayAccountCircuitRuntimeStateReady,
-  getGatewayAccountCircuitStore
+  getGatewayAccountCircuitStore,
+  projectGatewayAccountCircuitRuntimeMutation
 } from '../gateway/runtime/account-circuit.service.js'
 import type {
   AccountCircuitMutationResult,
@@ -58,9 +60,15 @@ export interface AccountCircuitRecoveryResolverDependencies {
 
 export interface AccountCircuitRecoveryServiceOptions {
   batchSize?: number
+  concurrency?: number
   leaseDurationMs?: number
   now?: () => number
   createId?: () => string
+  onMutation?: (input: {
+    scope: AccountCircuitState['scope']
+    state: AccountCircuitState
+    status: AccountCircuitMutationResult['status']
+  }) => Promise<void> | void
 }
 
 export interface AccountCircuitRecoverySweepResult {
@@ -80,14 +88,17 @@ type AccountCircuitRecoveryItemOutcome =
   | 'fenced'
   | 'skipped'
 
-const defaultRecoveryBatchSize = 10
+const defaultRecoveryBatchSize = 200
+const defaultRecoveryConcurrency = 1
 const defaultRecoveryLeaseDurationMs = 180_000
 
 export class AccountCircuitRecoveryService {
   private readonly batchSize: number
   private readonly leaseDurationMs: number
+  private readonly concurrency: number
   private readonly now: () => number
   private readonly createId: () => string
+  private readonly onMutation?: AccountCircuitRecoveryServiceOptions['onMutation']
 
   constructor(
     private readonly store: AccountCircuitStore,
@@ -95,9 +106,11 @@ export class AccountCircuitRecoveryService {
     options: AccountCircuitRecoveryServiceOptions = {}
   ) {
     this.batchSize = positiveInteger(options.batchSize ?? defaultRecoveryBatchSize, 'batchSize')
+    this.concurrency = positiveInteger(options.concurrency ?? defaultRecoveryConcurrency, 'concurrency')
     this.leaseDurationMs = positiveInteger(options.leaseDurationMs ?? defaultRecoveryLeaseDurationMs, 'leaseDurationMs')
     this.now = options.now ?? Date.now
     this.createId = options.createId ?? randomUUID
+    this.onMutation = options.onMutation
   }
 
   async sweep(): Promise<AccountCircuitRecoverySweepResult> {
@@ -112,7 +125,7 @@ export class AccountCircuitRecoveryService {
       skippedCount: 0
     }
     const errors: unknown[] = []
-    for (const state of due) {
+    await forEachConcurrent(due, this.concurrency, async (state) => {
       try {
         const outcome = await this.recover(state, result)
         incrementSweepOutcome(result, outcome)
@@ -126,7 +139,7 @@ export class AccountCircuitRecoveryService {
           phase: state.phase
         }), '账户电路后台恢复探针执行失败')
       }
-    }
+    })
     if (errors.length > 0) {
       throw new AggregateError(errors, `账户电路后台恢复失败：${errors.length} 个作用域未完成`)
     }
@@ -137,19 +150,33 @@ export class AccountCircuitRecoveryService {
     dueState: AccountCircuitState,
     sweep: AccountCircuitRecoverySweepResult
   ): Promise<AccountCircuitRecoveryItemOutcome> {
-    if (dueState.phase !== 'OPEN' && dueState.phase !== 'RECOVERING') return 'skipped'
+    if (dueState.phase !== 'SUSPECT' && dueState.phase !== 'OPEN' && dueState.phase !== 'RECOVERING') return 'skipped'
     const nowMs = this.now()
     const leaseId = this.createId()
-    const acquired = await this.store.acquireCanaryLease({
-      scope: dueState.scope,
-      generation: dueState.generation,
-      dispatchRevision: dueState.dispatchRevision,
-      transitionId: this.createId(),
-      leaseId,
-      leaseUntilMs: nowMs + this.leaseDurationMs,
-      nowMs
-    })
-    observeRecoveryCircuitMutation('acquire_canary', acquired, dueState.phase)
+    const acquired = dueState.phase === 'SUSPECT'
+      ? await this.store.acquireConfirmationLease({
+          scope: dueState.scope,
+          generation: dueState.generation,
+          dispatchRevision: dueState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          leaseUntilMs: nowMs + this.leaseDurationMs,
+          nowMs
+        })
+      : await this.store.acquireCanaryLease({
+          scope: dueState.scope,
+          generation: dueState.generation,
+          dispatchRevision: dueState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          leaseUntilMs: nowMs + this.leaseDurationMs,
+          nowMs
+        })
+    await this.observeMutation(
+      dueState.phase === 'SUSPECT' ? 'acquire_confirmation' : 'acquire_canary',
+      acquired,
+      dueState.phase
+    )
     if (acquired.status !== 'applied') {
       return isFencingResult(acquired) ? 'fenced' : 'skipped'
     }
@@ -181,7 +208,7 @@ export class AccountCircuitRecoveryService {
         transitionId: this.createId(),
         nowMs: this.now()
       })
-      observeRecoveryCircuitMutation('replace_revision', replaced, acquired.state.phase)
+      await this.observeMutation('replace_revision', replaced, acquired.state.phase)
       return isAppliedOrIdempotent(replaced) ? 'fenced' : 'skipped'
     }
 
@@ -192,19 +219,46 @@ export class AccountCircuitRecoveryService {
       await this.releaseUnknown(acquired.state, leaseId, controller)
       throw error
     }
-    const completed = await this.store.completeCanary({
-      scope: dueState.scope,
-      generation: dueState.generation,
-      dispatchRevision: dueState.dispatchRevision,
-      transitionId: this.createId(),
-      leaseId,
-      outcome: circuitOutcome(outcome),
-      reason: circuitFailureReason(outcome),
-      nowMs: this.now()
-    })
-    observeRecoveryCircuitMutation('complete_canary', completed, acquired.state.phase)
+    const completed = dueState.phase === 'SUSPECT'
+      ? await this.store.completeConfirmation({
+          scope: dueState.scope,
+          generation: dueState.generation,
+          dispatchRevision: dueState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          outcome: circuitOutcome(outcome),
+          reason: circuitFailureReason(outcome),
+          ...(outcome.kind === 'transport_incomplete'
+            ? { failureEvidenceKey: backgroundConfirmationEvidenceKey(dueState, leaseId) }
+            : {}),
+          framingCompleteDisposition: 'closed',
+          nowMs: this.now()
+        })
+      : await this.store.completeCanary({
+          scope: dueState.scope,
+          generation: dueState.generation,
+          dispatchRevision: dueState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          outcome: circuitOutcome(outcome),
+          reason: circuitFailureReason(outcome),
+          nowMs: this.now()
+        })
+    await this.observeMutation(
+      dueState.phase === 'SUSPECT' ? 'complete_confirmation' : 'complete_canary',
+      completed,
+      acquired.state.phase
+    )
     if (!isAppliedOrIdempotent(completed)) {
       return isFencingResult(completed) ? 'fenced' : 'skipped'
+    }
+    if (outcome.kind === 'framing_complete' && dueState.scope.kind === 'protocol_model') {
+      await this.store.clearAccountEscalationEvidence({
+        accountRuntimeKey: dueState.scope.accountRuntimeKey,
+        dispatchRevision: dueState.dispatchRevision,
+        evidenceId: this.createId(),
+        nowMs: this.now()
+      })
     }
     if (outcome.kind === 'framing_complete') return 'framing_complete'
     if (outcome.kind === 'transport_incomplete') return 'transport_incomplete'
@@ -217,18 +271,47 @@ export class AccountCircuitRecoveryService {
     controller: AbortController
   ): Promise<void> {
     controller.abort('account_circuit_probe_unknown')
-    const released = await this.store.completeCanary({
-      scope: leasedState.scope,
-      generation: leasedState.generation,
-      dispatchRevision: leasedState.dispatchRevision,
-      transitionId: this.createId(),
-      leaseId,
-      outcome: 'unknown',
-      nowMs: this.now()
-    })
-    observeRecoveryCircuitMutation('complete_canary', released, leasedState.phase)
+    const released = leasedState.phase === 'SUSPECT'
+      ? await this.store.completeConfirmation({
+          scope: leasedState.scope,
+          generation: leasedState.generation,
+          dispatchRevision: leasedState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          outcome: 'unknown',
+          nowMs: this.now()
+        })
+      : await this.store.completeCanary({
+          scope: leasedState.scope,
+          generation: leasedState.generation,
+          dispatchRevision: leasedState.dispatchRevision,
+          transitionId: this.createId(),
+          leaseId,
+          outcome: 'unknown',
+          nowMs: this.now()
+        })
+    await this.observeMutation(
+      leasedState.phase === 'SUSPECT' ? 'complete_confirmation' : 'complete_canary',
+      released,
+      leasedState.phase
+    )
     if (!isAppliedOrIdempotent(released) && !isFencingResult(released)) {
       throw new Error(`账户电路未知探针结果释放失败：${released.status}`)
+    }
+  }
+
+  private async observeMutation(
+    operation: GatewayRoutingCircuitOperation,
+    result: AccountCircuitMutationResult,
+    previousPhase: AccountCircuitState['phase']
+  ): Promise<void> {
+    observeRecoveryCircuitMutation(operation, result, previousPhase)
+    if (result.status !== 'not_found') {
+      await this.onMutation?.({
+        scope: result.state.scope,
+        state: result.state,
+        status: result.status
+      })
     }
   }
 }
@@ -380,9 +463,10 @@ export function installScheduledAccountCircuitRecoveryResolver(
 }
 
 export async function runScheduledAccountCircuitRecovery(): Promise<WorkerScheduledJobTaskResult | void> {
-  if (!await ensureGatewayAccountCircuitRuntimeStateReady()) {
-    return { outcome: 'partial', warning: '账户电路运行态重建失败，本轮恢复探针已保守跳过' }
-  }
+  // A partial/capacity-limited rebuild may already contain OPEN incidents.
+  // Continue sweeping those loaded entries so recovery can release capacity;
+  // otherwise the readiness gate and the full store can deadlock each other.
+  const runtimeStateReady = await ensureGatewayAccountCircuitRuntimeStateReady()
   if (!scheduledRecoveryResolver) {
     if (!missingResolverWarningLogged) {
       missingResolverWarningLogged = true
@@ -394,13 +478,24 @@ export async function runScheduledAccountCircuitRecovery(): Promise<WorkerSchedu
   }
   const result = await new AccountCircuitRecoveryService(
     getGatewayAccountCircuitStore(),
-    scheduledRecoveryResolver
+    scheduledRecoveryResolver,
+    {
+      batchSize: runtimeConfig.gateway.accountCircuitRecoveryBatchSize,
+      concurrency: runtimeConfig.gateway.accountCircuitRecoveryConcurrency,
+      onMutation: projectGatewayAccountCircuitRuntimeMutation
+    }
   ).sweep()
   if (result.dueCount > 0) {
     logger.info({
       event: 'gateway_account_circuit_recovery_sweep_completed',
       ...result
     }, '账户电路后台恢复扫描完成')
+  }
+  if (!runtimeStateReady) {
+    return {
+      outcome: 'partial',
+      warning: '账户电路运行态仅部分重建，已对当前加载的到期事故执行恢复探针'
+    }
   }
 }
 
@@ -422,6 +517,22 @@ async function runProbeWithinLease(
   } finally {
     if (timer) clearTimeout(timer)
   }
+}
+
+async function forEachConcurrent<T>(
+  values: T[],
+  concurrency: number,
+  task: (value: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    for (;;) {
+      const index = nextIndex++
+      if (index >= values.length) return
+      await task(values[index]!)
+    }
+  })
+  await Promise.all(workers)
 }
 
 function observeRecoveryCircuitMutation(
@@ -455,6 +566,12 @@ function circuitFailureReason(outcome: TransportProbeOutcome): string | undefine
   if (outcome.kind !== 'transport_incomplete') return undefined
   const status = outcome.statusCode === undefined ? '' : `:http_${outcome.statusCode}`
   return `background_probe:${outcome.failureKind}${status}`
+}
+
+function backgroundConfirmationEvidenceKey(state: AccountCircuitState, leaseId: string): string {
+  return createHash('sha256')
+    .update(`background_confirmation:${state.scopeKey}:${state.generation}:${leaseId}`)
+    .digest('hex')
 }
 
 function isAppliedOrIdempotent(result: AccountCircuitMutationResult): boolean {

@@ -1,10 +1,9 @@
 import type { AccountStatus } from '../../../domain/types.js'
+import {
+  EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+} from '../../../domain/account-runtime-provenance.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import {
-  clearAccountFailureStateResult,
-  clearAccountFailureStateResultAsync,
-  clearAuthorizedAccountBindingFailureStateByContext,
-  clearAuthorizedAccountBindingFailureStateByContextAsync,
   markAccountCooldown,
   markAccountCooldownAsync,
   markAccountDisabledByFailure,
@@ -13,6 +12,9 @@ import {
   markAuthorizedAccountBindingCooldownByContextAsync,
   markAuthorizedAccountBindingDisabledByFailure,
   markAuthorizedAccountBindingDisabledByFailureAsync,
+  recordAccountRuntimeSuccessObservation,
+  recordAccountRuntimeSuccessObservationAsync,
+  type AccountRuntimeFailureObservationGuard,
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../../storage/repositories.js'
 import {
@@ -32,6 +34,7 @@ export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
 export interface GatewaySettings {
   gatewayTextRawBodyLimitMegabytes: number
+  accountCircuitConfirmationFailuresRequired: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -49,6 +52,7 @@ export interface GatewaySettings {
 
 export interface AccountErrorPolicyAccount {
   id: string
+  dispatchRevision?: number
   providerCode: string
   protocolCode?: string
   protocolVersion?: string
@@ -61,6 +65,7 @@ export interface AccountErrorPolicyAccount {
   accountAuthorizationId?: string
   status?: AccountStatus
   cooldownUntil?: string
+  lastErrorCode?: string
   lastErrorMessage?: string
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
@@ -93,6 +98,7 @@ export function readGatewaySettingsReadOnly(): GatewaySettings {
 function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): GatewaySettings {
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
+    accountCircuitConfirmationFailuresRequired: numberSetting(settings.accountCircuitConfirmationFailuresRequired, 'accountCircuitConfirmationFailuresRequired', 1, 5),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -116,6 +122,7 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
   const settings = await getSettingsAsync()
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
+    accountCircuitConfirmationFailuresRequired: numberSetting(settings.accountCircuitConfirmationFailuresRequired, 'accountCircuitConfirmationFailuresRequired', 1, 5),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -154,6 +161,8 @@ export function applyAccountErrorHandling(
     bodyText?: string
     errorMessage?: string
     traceId?: string
+    observedAt?: string
+    dispatchRevision?: number
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
     policyDecision?: AccountErrorPolicyDecision
@@ -165,22 +174,12 @@ export function applyAccountErrorHandling(
   }
 
   if (input.success) {
-    if (account.status === 'rate_limited' && input.trafficSource === 'gateway') {
-      return { action: 'none', changed: false, accountStatus: account.status }
+    const observation = accountRuntimeSuccessObservationInput(account, input)
+    if (observation) {
+      const result = recordAccountRuntimeSuccessObservation(observation)
+      return { action: 'none', changed: result.changed, accountStatus: result.accountStatus ?? account.status }
     }
-    const shouldClear = (account.status !== undefined && account.status !== 'active')
-      || Boolean(account.cooldownUntil)
-      || Boolean(account.lastErrorMessage)
-      || Boolean(account.streamFailureCount)
-      || Boolean(account.streamFailureWindowStartedAt)
-    if (!shouldClear) {
-      return { action: 'none', changed: false, accountStatus: account.status }
-    }
-    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
-    const result = authorizedTarget
-      ? clearAuthorizedAccountBindingFailureStateByContext(authorizedTarget, { allowErrorRestore: false })
-      : clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
-    return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
+    return { action: 'none', changed: false, accountStatus: account.status }
   }
 
   if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
@@ -196,6 +195,8 @@ export async function applyAccountErrorHandlingAsync(
     bodyText?: string
     errorMessage?: string
     traceId?: string
+    observedAt?: string
+    dispatchRevision?: number
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
     policyDecision?: AccountErrorPolicyDecision
@@ -209,22 +210,12 @@ export async function applyAccountErrorHandlingAsync(
   }
 
   if (input.success) {
-    if (account.status === 'rate_limited' && input.trafficSource === 'gateway') {
-      return { action: 'none', changed: false, accountStatus: account.status }
+    const observation = accountRuntimeSuccessObservationInput(account, input)
+    if (observation) {
+      const result = await recordAccountRuntimeSuccessObservationAsync(observation)
+      return { action: 'none', changed: result.changed, accountStatus: result.accountStatus ?? account.status }
     }
-    const shouldClear = (account.status !== undefined && account.status !== 'active')
-      || Boolean(account.cooldownUntil)
-      || Boolean(account.lastErrorMessage)
-      || Boolean(account.streamFailureCount)
-      || Boolean(account.streamFailureWindowStartedAt)
-    if (!shouldClear) {
-      return { action: 'none', changed: false, accountStatus: account.status }
-    }
-    const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
-    const result = authorizedTarget
-      ? await clearAuthorizedAccountBindingFailureStateByContextAsync(authorizedTarget, { allowErrorRestore: false })
-      : await clearAccountFailureStateResultAsync(account.id, undefined, { allowErrorRestore: false })
-    return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
+    return { action: 'none', changed: false, accountStatus: account.status }
   }
 
   if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
@@ -321,6 +312,8 @@ function applyExplicitAccountErrorPolicyDecision(
     bodyText?: string
     errorMessage?: string
     traceId?: string
+    observedAt?: string
+    dispatchRevision?: number
   },
   decision: AccountErrorPolicyDecision
 ): AccountErrorHandlingResult {
@@ -329,17 +322,20 @@ function applyExplicitAccountErrorPolicyDecision(
   }
   const reason = explicitAccountErrorPolicyReason(account, input, decision)
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  const runtimeFailureGuard = accountRuntimeFailureObservationGuard(account, input)
   const updated = decision.action === 'disable'
     ? authorizedTarget
-      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason })
-      : markAccountDisabledByFailure(account.id, reason)
+      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason, runtimeFailureGuard })
+      : markAccountDisabledByFailure(account.id, reason, runtimeFailureGuard)
     : authorizedTarget
       ? markAuthorizedAccountBindingCooldownByContext({
           ...authorizedTarget,
           status: decision.cooldownStatus,
           cooldownUntil: decision.cooldownUntil,
           reason,
-          traceId: input.traceId
+          traceId: input.traceId,
+          failureCode: EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+          runtimeFailureGuard
         })
       : markAccountCooldown(
           account.id,
@@ -347,7 +343,10 @@ function applyExplicitAccountErrorPolicyDecision(
           reason,
           decision.cooldownStatus,
           undefined,
-          input.traceId
+          input.traceId,
+          undefined,
+          runtimeFailureGuard,
+          EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
         )
   return {
     action: decision.action,
@@ -365,6 +364,8 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
     bodyText?: string
     errorMessage?: string
     traceId?: string
+    observedAt?: string
+    dispatchRevision?: number
   },
   decision: AccountErrorPolicyDecision
 ): Promise<AccountErrorHandlingResult> {
@@ -373,17 +374,20 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
   }
   const reason = explicitAccountErrorPolicyReason(account, input, decision)
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  const runtimeFailureGuard = accountRuntimeFailureObservationGuard(account, input)
   const updated = decision.action === 'disable'
     ? authorizedTarget
-      ? await markAuthorizedAccountBindingDisabledByFailureAsync({ ...authorizedTarget, reason })
-      : await markAccountDisabledByFailureAsync(account.id, reason)
+      ? await markAuthorizedAccountBindingDisabledByFailureAsync({ ...authorizedTarget, reason, runtimeFailureGuard })
+      : await markAccountDisabledByFailureAsync(account.id, reason, runtimeFailureGuard)
     : authorizedTarget
       ? await markAuthorizedAccountBindingCooldownByContextAsync({
           ...authorizedTarget,
           status: decision.cooldownStatus,
           cooldownUntil: decision.cooldownUntil,
           reason,
-          traceId: input.traceId
+          traceId: input.traceId,
+          failureCode: EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE,
+          runtimeFailureGuard
         })
       : await markAccountCooldownAsync(
           account.id,
@@ -391,7 +395,10 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
           reason,
           decision.cooldownStatus,
           undefined,
-          input.traceId
+          input.traceId,
+          undefined,
+          runtimeFailureGuard,
+          EXPLICIT_ACCOUNT_ERROR_POLICY_COOLDOWN_CODE
         )
   return {
     action: decision.action,
@@ -434,6 +441,45 @@ function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccoun
     groupId: account.boundGroupId,
     accountAuthorizationId: account.accountAuthorizationId
   }
+}
+
+function accountRuntimeSuccessObservationInput(
+  account: AccountErrorPolicyAccount,
+  input: {
+    observedAt?: string
+    dispatchRevision?: number
+    trafficSource?: OpenAIGatewayTrafficSource
+  }
+) {
+  const observedAt = normalizedRuntimeObservationAt(input.observedAt)
+  const expectedDispatchRevision = normalizedRuntimeDispatchRevision(input.dispatchRevision ?? account.dispatchRevision)
+  if (!observedAt || !expectedDispatchRevision) return undefined
+  return {
+    accountId: account.id,
+    expectedDispatchRevision,
+    observedAt,
+    authorizedBinding: authorizedAccountBindingRuntimeTarget(account)
+  }
+}
+
+function accountRuntimeFailureObservationGuard(
+  account: AccountErrorPolicyAccount,
+  input: { observedAt?: string; dispatchRevision?: number }
+): AccountRuntimeFailureObservationGuard | undefined {
+  const observedAt = normalizedRuntimeObservationAt(input.observedAt)
+  const expectedDispatchRevision = normalizedRuntimeDispatchRevision(input.dispatchRevision ?? account.dispatchRevision)
+  if (!observedAt || !expectedDispatchRevision) return undefined
+  return { expectedDispatchRevision, observedAt }
+}
+
+function normalizedRuntimeObservationAt(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
+}
+
+function normalizedRuntimeDispatchRevision(value: number | undefined): number | undefined {
+  return Number.isSafeInteger(value) && (value ?? 0) > 0 ? value : undefined
 }
 
 export function parseErrorPayload(

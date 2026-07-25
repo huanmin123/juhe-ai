@@ -33,6 +33,15 @@ try {
   assert.match(routesSource, /await recordKnownClientIpRequestError/, '网关已知请求错误采样必须等待 Redis 共享状态')
   assert.match(routesSource, /await recordClientIpErrorCircuitSampleAsync/, '网关已知请求错误应使用 Redis-aware 采样 API')
   assert.match(finalizationSource, /await recordClientIpErrorCircuitSuccessAsync/, '成功响应最终化必须等待 Redis 共享熔断状态清理')
+  const responseFinalizerStart = finalizationSource.indexOf('export async function finalizeHandledUpstreamResponse')
+  assert(responseFinalizerStart >= 0, '应能定位响应最终化函数')
+  const responseFinalizerSource = finalizationSource.slice(responseFinalizerStart)
+  const completeSuccessGateIndex = responseFinalizerSource.indexOf('if (protocolValidatedSuccess && !isAccountDiagnosticTrafficSource(usageContext.trafficSource))')
+  const clientIpSuccessIndex = responseFinalizerSource.indexOf('await recordClientIpErrorCircuitSuccessAsync')
+  const semanticInterpretationGateIndex = responseFinalizerSource.indexOf('if (interpretUpstreamResponseSemantics && protocolValidatedSuccess)')
+  assert(completeSuccessGateIndex >= 0, '完整成功事实应有独立的本地 IP 熔断恢复 gate')
+  assert(clientIpSuccessIndex > completeSuccessGateIndex, '本地 IP 熔断恢复必须位于完整成功 gate 内')
+  assert(semanticInterpretationGateIndex > clientIpSuccessIndex, 'generic 客户端的本地 IP 熔断恢复不得被上游业务语义解释 gate 拦截')
 
   assert.equal(inspectGatewayPreAuthCircuit({
     clientIp: undefined,
@@ -159,6 +168,35 @@ try {
 
   const snapshot = getGatewayClientIpSecuritySnapshotForTest()
   assert.equal(snapshot.clientIpErrors.length, 0, '成功恢复后认证后错误运行态应清空')
+
+  const genericInterleavedScope = {
+    systemAccountId: 'sys_generic_success',
+    apiKeyId: 'key_generic_success',
+    groupId: 'grp_generic_success',
+    clientIp: '203.0.113.62',
+    endpoint: 'POST /v1/chat/completions'
+  }
+  for (let index = 0; index < 4; index += 1) {
+    const failureDecision = recordClientIpErrorCircuitSample({
+      ...genericInterleavedScope,
+      reason: 'invalid_json',
+      signature: 'invalid_json'
+    })
+    assert.equal(failureDecision.blocked, false, `generic 第 ${index + 1} 次本地错误不应立即 OPEN`)
+    assert.equal(
+      recordClientIpErrorCircuitSuccess(genericInterleavedScope),
+      true,
+      `generic 第 ${index + 1} 次完整成功应清除已累积的本地错误`
+    )
+  }
+  const fifthFailureAfterInterleavedSuccesses = recordClientIpErrorCircuitSample({
+    ...genericInterleavedScope,
+    reason: 'invalid_json',
+    signature: 'invalid_json'
+  })
+  assert.equal(fifthFailureAfterInterleavedSuccesses.blocked, false, '4 次错误各夹一次 generic 完整成功后，第 5 次错误仍不得 OPEN')
+  assert.equal(fifthFailureAfterInterleavedSuccesses.failureCount, 1, '第 5 次错误应开启新计数窗口，不得沿用已被成功清除的旧样本')
+  assert.equal(inspectClientIpErrorCircuit(genericInterleavedScope).blocked, false, 'generic 成功打断错误风暴后不得误熔断正常请求')
   const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
   assert.equal(gatewayRoutesSource.includes('request_failure_signature'), false, '未知上游账号池失败不应作为来源错误熔断采样原因')
 

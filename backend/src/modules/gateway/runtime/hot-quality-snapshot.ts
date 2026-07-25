@@ -15,6 +15,7 @@ export interface HotQualityBucketState {
   minuteStartedAtMs: number
   attempts: number
   completedResponses: number
+  upstreamResponseFailures: number
   localTransportFailures: number
   timeouts: number
   readInterruptions: number
@@ -128,6 +129,7 @@ function reliabilityLevel(
 function mergeCounters(target: HotQualityBucketState, source: HotQualityBucketState): void {
   target.attempts = add(target.attempts, source.attempts)
   target.completedResponses = add(target.completedResponses, source.completedResponses)
+  target.upstreamResponseFailures = add(target.upstreamResponseFailures, source.upstreamResponseFailures ?? 0)
   target.localTransportFailures = add(target.localTransportFailures, source.localTransportFailures)
   target.timeouts = add(target.timeouts, source.timeouts)
   target.readInterruptions = add(target.readInterruptions, source.readInterruptions)
@@ -157,6 +159,7 @@ function emptyCounters(): HotQualityBucketState {
     minuteStartedAtMs: 0,
     attempts: 0,
     completedResponses: 0,
+    upstreamResponseFailures: 0,
     localTransportFailures: 0,
     timeouts: 0,
     readInterruptions: 0,

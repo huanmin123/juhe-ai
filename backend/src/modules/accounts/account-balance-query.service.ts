@@ -233,10 +233,12 @@ async function queryAccountBalanceResolution(
     }
   }
   const context = await accountBalanceRequestContext(candidate, resolvedProxyUrl)
-  if (!candidate.config.custom) throw deterministicBalanceError('自定义余额查询配置缺失')
-  const target = new URL(candidate.config.custom.path, context.baseUrl)
+  const customConfig = candidate.config.custom
+  if (!customConfig) throw deterministicBalanceError('自定义余额查询配置缺失')
+  const target = new URL(customConfig.path, context.baseUrl)
   if (target.origin !== context.baseUrl.origin) throw deterministicBalanceError('自定义余额查询必须与账户 Base URL 同源')
-  return { snapshot: parseCustomBalance(await requestJson(target, context), candidate.config.custom) }
+  const response = await requestJson(target, context)
+  return { snapshot: parseBalanceResponse(() => parseCustomBalance(response, customConfig)) }
 }
 
 export async function queryBuiltinAccountBalance(
@@ -265,7 +267,6 @@ export async function queryBuiltinAccountBalance(
       if (context && Date.now() >= context.deadlineAtMs) {
         throw new UpstreamRequestTimeoutError('上游余额查询超时')
       }
-      if (isBalanceAuthenticationError(error)) throw error
       if (accountBalanceFailureKind(error) === 'transient') transientError = error
       else deterministicError = error
       // A saved preference can become stale when the relay, key, or proxy changes.
@@ -314,15 +315,16 @@ async function accountBalanceRequestContext(
 async function queryBuiltinAdapter(context: AccountBalanceRequestContext, adapter: AccountBalanceBuiltinAdapter): Promise<AccountBalanceSnapshot> {
   const { baseUrl } = context
   if (adapter === 'sub2api') {
-    return parseSub2ApiBalance(await requestJson(new URL('/v1/usage', baseUrl.origin), context))
+    const response = await requestJson(new URL('/v1/usage', baseUrl.origin), context)
+    return parseBalanceResponse(() => parseSub2ApiBalance(response))
   }
   if (adapter === 'newapi') {
     const usage = await requestJson(new URL('/api/usage/token/', baseUrl.origin), context)
     const usageData = objectValue(objectValue(usage).data)
-    if (usageData.unlimited_quota === true) return parseNewApiBalance(usage, { quotaPerUnit: 1 })
+    if (usageData.unlimited_quota === true) return parseBalanceResponse(() => parseNewApiBalance(usage, { quotaPerUnit: 1 }))
     const status = objectValue(await requestJson(new URL('/api/status', baseUrl.origin), context))
     const statusData = objectValue(status.data)
-    return parseNewApiBalance(usage, { quotaPerUnit: statusData.quota_per_unit })
+    return parseBalanceResponse(() => parseNewApiBalance(usage, { quotaPerUnit: statusData.quota_per_unit }))
   }
   if (adapter === 'openai_billing') {
     const billingOptions = parseOpenAiCompatibleBillingStatus(await requestJson(new URL('/api/status', baseUrl.origin), context))
@@ -332,9 +334,11 @@ async function queryBuiltinAdapter(context: AccountBalanceRequestContext, adapte
     return parseOpenAiCompatibleBillingBalance(subscription, usage, billingOptions)
   }
   if (adapter === 'litellm') {
-    return parseLiteLlmBalance(await requestJson(new URL('/key/info', baseUrl.origin), context))
+    const response = await requestJson(new URL('/key/info', baseUrl.origin), context)
+    return parseBalanceResponse(() => parseLiteLlmBalance(response))
   }
-  return parseUserBalance(await requestJson(new URL('/user/balance', baseUrl.origin), context))
+  const response = await requestJson(new URL('/user/balance', baseUrl.origin), context)
+  return parseBalanceResponse(() => parseUserBalance(response))
 }
 
 function preferredBuiltinAdapterOrder(preferred: AccountBalanceBuiltinAdapter | undefined): AccountBalanceBuiltinAdapter[] {
@@ -444,9 +448,7 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
     requestTimeoutMs: remainingMs,
     signal: AbortSignal.timeout(remainingMs)
   })
-  if (response.status === 401 || response.status === 403) throw deterministicBalanceError(`上游鉴权失败（HTTP ${response.status}）`)
-  if (response.status >= 300 && response.status < 400) throw deterministicBalanceError(`上游余额接口禁止重定向（HTTP ${response.status}）`)
-  if (!response.ok) throw new Error(`上游余额接口请求失败（HTTP ${response.status}）`)
+  if (!response.ok) throw transientBalanceError(`上游余额接口返回非成功响应（HTTP ${response.status}）`)
   if (!response.body) throw deterministicBalanceError('上游余额接口响应为空')
   const chunks: Buffer[] = []
   let totalBytes = 0
@@ -458,7 +460,7 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
   try {
     return JSON.parse(Buffer.concat(chunks, totalBytes).toString('utf8'))
   } catch {
-    throw new Error('上游余额接口返回的 JSON 无效')
+    throw deterministicBalanceError('上游余额接口返回的 JSON 无效')
   }
 }
 
@@ -470,8 +472,18 @@ function accountApiKey(credentials: Record<string, unknown>): string {
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('上游余额接口响应结构无效')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw deterministicBalanceError('上游余额接口响应结构无效')
   return value as Record<string, unknown>
+}
+
+function parseBalanceResponse(parse: () => AccountBalanceSnapshot): AccountBalanceSnapshot {
+  try {
+    return parse()
+  } catch (error) {
+    if (error instanceof AccountBalanceQueryFailure) throw error
+    const message = error instanceof Error ? error.message : '上游余额接口响应结构无效'
+    throw deterministicBalanceError(message)
+  }
 }
 
 function accountBalanceErrorMessage(error: unknown): string {
@@ -479,10 +491,6 @@ function accountBalanceErrorMessage(error: unknown): string {
     return '上游余额查询超时'
   }
   if (error instanceof AccountBalanceQueryFailure) return error.message.slice(0, 200)
-  const message = error instanceof Error ? error.message : '上游余额查询失败'
-  if (/上游鉴权失败|禁止重定向|HTTP \d{3}|响应超过|JSON 无效|响应为空|配置缺失|同源|字段|余额|预算|quota/i.test(message)) {
-    return message.slice(0, 200)
-  }
   return '上游余额查询失败'
 }
 
@@ -537,25 +545,14 @@ function deterministicBalanceError(message: string): AccountBalanceQueryFailure 
   return new AccountBalanceQueryFailure('deterministic', message)
 }
 
+function transientBalanceError(message: string): AccountBalanceQueryFailure {
+  return new AccountBalanceQueryFailure('transient', message)
+}
+
 function accountBalanceFailureKind(error: unknown): AccountBalanceFailureKind {
   if (error instanceof AccountBalanceQueryFailure) return error.kind
   if (error instanceof UpstreamRequestTimeoutError || error instanceof UpstreamRequestAbortedError || (error instanceof DOMException && error.name === 'TimeoutError')) {
     return 'transient'
   }
-  const message = error instanceof Error ? error.message : ''
-  const statusMatch = /HTTP (\d{3})/i.exec(message)
-  if (statusMatch) {
-    const status = Number(statusMatch[1])
-    if (status === 408 || status === 429 || status >= 500) return 'transient'
-    if (status >= 300 && status < 500) return 'deterministic'
-  }
-  if (/Base URL|单 API Key|配置缺失|同源|响应为空|响应超过|响应结构|字段|必须是|余额不能|JSON Pointer|quota_per_unit|max_budget|remaining|total_available/i.test(message)) {
-    return 'deterministic'
-  }
   return 'transient'
-}
-
-function isBalanceAuthenticationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : ''
-  return /上游鉴权失败|HTTP (?:401|403)/i.test(message)
 }

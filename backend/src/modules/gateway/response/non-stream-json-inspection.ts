@@ -33,11 +33,6 @@ import {
   forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
 import {
-  recordGatewayAccountFailureForPrecheck,
-  suppressGatewayAccountLocally
-} from '../runtime/account-side-effects.service.js'
-import { requestEndpoint } from '../request/metadata.js'
-import {
   isEffectiveOpenAIStreamRequest,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
@@ -445,29 +440,10 @@ async function finalizeBufferedJsonProtocolFailure(
     }),
     errorMessage: failure.message
   })
-  if (input.accountStateMutationEnabled && input.usageContext.trafficSource === 'gateway' && !hasAlternativeAccountApiKeys(input.account)) {
-    const localSuppression = suppressGatewayAccountLocally(input.account, input.settings, failure.message)
-    recordGatewayAccountFailureForPrecheck(input.account, input.settings, {
-      systemAccountId: input.usageContext.systemAccountId,
-      groupId: input.usageContext.groupId,
-      apiKeyId: input.usageContext.apiKeyId,
-      clientIp: input.usageContext.clientIp,
-      endpoint: requestEndpoint(input.req),
-      reason: failure.message,
-      statusCode: input.upstreamResponse.status,
-      forcePrecheck: localSuppression.action === 'precheck_required',
-      localSuppressionDelayMs: localSuppression.delayMs
-    })
-    input.auditCapture.addGatewayMetadata({
-      label: 'upstream_protocol_runtime_avoidance',
-      metadata: {
-        accountId: input.account.id,
-        errorCode: failure.errorCode,
-        localFailureCount: localSuppression.localFailureCount,
-        delayMs: localSuppression.delayMs
-      }
-    })
-  }
+  // A complete 2xx response with an invalid protocol shape is request-local
+  // evidence. A bad session or provider-specific payload must not suppress the
+  // account or schedule a shared precheck; the caller may still try another
+  // account before committing the downstream response.
   if (!input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
     input.auditCapture.addGatewayMetadata({
       label: 'upstream_protocol_server_retry',
@@ -502,10 +478,6 @@ async function finalizeBufferedJsonProtocolFailure(
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
-}
-
-function hasAlternativeAccountApiKeys(account: UpstreamAccount): boolean {
-  return Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
 }
 
 function plainObject(value: unknown): Record<string, unknown> | undefined {

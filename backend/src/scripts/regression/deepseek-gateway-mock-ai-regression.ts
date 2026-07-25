@@ -349,6 +349,7 @@ try {
     await assertModelsWithoutApiKeyRejected(baseUrl)
     await assertInvalidModelsApiKeyRejected(baseUrl)
     await assertDeepSeekChatJson(baseUrl, apiKey.key)
+    await assertDeepSeekOpaqueFinishReasonPassThrough(baseUrl, apiKey.key)
     await assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(baseUrl, bodyInterruptedApiKey.key)
     await assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl, retryApiKey.key)
     await assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl, allBadApiKey.key)
@@ -364,7 +365,7 @@ try {
     await assertDeepSeekCodexResponsesBridgeFallbackUsage(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnTruncatedStream(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl, codexBridgeApiKey.key)
-    await assertDeepSeekCodexResponsesBridgeFailsOnInsufficientResourceFinishReason(baseUrl, codexBridgeApiKey.key)
+    await assertDeepSeekCodexResponsesBridgeTreatsInsufficientResourceFinishReasonAsOpaque(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekExplicitResponsesBridgeAllowsStandardClient(baseUrl, codexBridgeApiKey.key)
     await assertDeepSeekRejectsNonChatRoutes(baseUrl, apiKey.key)
     assertDeepSeekSemanticParsing()
@@ -1184,12 +1185,37 @@ async function assertDeepSeekCodexResponsesBridgeFailsOnErrorEvent(baseUrl: stri
   assert(!text.includes('event: response.completed'), '上游 Chat SSE error 事件时 DeepSeek bridge 不应输出 completed 事件')
 }
 
-async function assertDeepSeekCodexResponsesBridgeFailsOnInsufficientResourceFinishReason(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekCodexResponsesBridgeTreatsInsufficientResourceFinishReasonAsOpaque(baseUrl: string, localApiKey: string): Promise<void> {
   const text = await requestDeepSeekCodexBridgeFailure(baseUrl, localApiKey, 'hello deepseek codex bridge insufficient resource')
-  assert.match(text, /event: response\.failed/, 'DeepSeek insufficient_system_resource finish_reason 应转换为 Responses failed 事件')
-  assert.match(text, /upstream_retryable_error/, 'DeepSeek insufficient_system_resource finish_reason 应标记为可重试上游错误')
-  assert.match(text, /上游流式响应在输出前失败，请重试/, 'DeepSeek insufficient_system_resource finish_reason 应返回 Codex 可重试文案')
-  assert(!text.includes('event: response.completed'), 'DeepSeek insufficient_system_resource finish_reason 不应输出 completed 事件')
+  assert.match(text, /event: response\.completed/, 'DeepSeek 特殊 finish_reason 只表示流结束，不应由系统解释成业务失败')
+  assert(!text.includes('event: response.failed'), 'DeepSeek insufficient_system_resource 不应合成 Responses failed 事件')
+  assert(!text.includes('upstream_retryable_error'), 'DeepSeek insufficient_system_resource 不应合成可重试错误码')
+  assert(!text.includes('content_filter'), 'DeepSeek insufficient_system_resource 不应合成内容过滤错误码')
+}
+
+async function assertDeepSeekOpaqueFinishReasonPassThrough(baseUrl: string, localApiKey: string): Promise<void> {
+  const finishReason = 'insufficient_system_resource'
+  for (const stream of [false, true]) {
+    upstreamHits.length = 0
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4-pro',
+        messages: [{ role: 'user', content: `hello deepseek opaque finish ${stream ? 'sse' : 'json'}` }],
+        stream
+      })
+    })
+    const text = await response.text()
+    assert.equal(response.status, 200, `DeepSeek ${stream ? 'SSE' : 'JSON'} 特殊 finish_reason 应保持完整响应：${text}`)
+    assert.match(text, new RegExp(`"finish_reason"\\s*:\\s*"${finishReason}"`), `DeepSeek ${stream ? 'SSE' : 'JSON'} 应原样透传 finish_reason`)
+    assert(!text.includes('response.failed'), `DeepSeek ${stream ? 'SSE' : 'JSON'} 特殊 finish_reason 不应合成失败事件`)
+    assert(!text.includes('upstream_retryable_error'), `DeepSeek ${stream ? 'SSE' : 'JSON'} 特殊 finish_reason 不应合成可重试错误`)
+    assert.equal(upstreamHits.length, 1, `DeepSeek ${stream ? 'SSE' : 'JSON'} 特殊 finish_reason 应只命中一次上游`)
+  }
 }
 
 async function requestDeepSeekCodexBridgeFailure(baseUrl: string, localApiKey: string, marker: string): Promise<string> {
@@ -1475,6 +1501,17 @@ function createDeepSeekMockUpstream(): http.Server {
           res.end('data: [DONE]\n\n')
           return
         }
+        if (bodyText.includes('hello deepseek opaque finish sse')) {
+          res.write(`data: ${JSON.stringify({
+            id: 'chatcmpl-deepseek-opaque-sse',
+            object: 'chat.completion.chunk',
+            choices: [
+              { index: 0, delta: {}, finish_reason: 'insufficient_system_resource' }
+            ]
+          })}\n\n`)
+          res.end('data: [DONE]\n\n')
+          return
+        }
         if (bodyText.includes('hello deepseek codex bridge string usage')) {
           res.write(`data: ${JSON.stringify({
             id: 'chatcmpl-deepseek-sse-string-usage',
@@ -1582,6 +1619,21 @@ function createDeepSeekMockUpstream(): http.Server {
             completion_tokens: 0,
             total_tokens: 11
           }
+        }))
+        return
+      }
+      if (bodyText.includes('hello deepseek opaque finish json')) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'chatcmpl-deepseek-opaque-json',
+          object: 'chat.completion',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: '' },
+              finish_reason: 'insufficient_system_resource'
+            }
+          ]
         }))
         return
       }

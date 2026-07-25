@@ -7,6 +7,8 @@ import type { CodexResponsesGuardSnapshot } from '../codex-responses/response-gu
 
 export interface StreamPipeResult {
   completed: boolean
+  /** True only when the protocol inspector observed a complete, valid frame sequence. */
+  protocolValidated: boolean
   message: string
   errorCode?: string
   firstTokenMs?: number
@@ -20,6 +22,8 @@ export interface StreamPipeResult {
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   downstreamBytesWritten: number
+  /** Bytes from this upstream response that were actually forwarded downstream. */
+  upstreamResponseBytesWritten: number
   transportCommitted: boolean
   semanticCommitted: boolean
   uncommittedResponseBody?: Buffer
@@ -76,11 +80,13 @@ export function streamResult(
   responseInspectionObservations: ResponseInspectionDecision[] = [],
   responseInspectionObservationOmittedCount = 0,
   downstreamBytesWritten = 0,
+  upstreamResponseBytesWritten = downstreamBytesWritten,
   transportCommitted = downstreamBytesWritten > 0,
   semanticCommitted = outputReceived || imageOutputReceived,
   uncommittedResponseBody?: Buffer,
   responseResourceId?: string,
-  codexResponsesGuard?: CodexResponsesGuardSnapshot
+  codexResponsesGuard?: CodexResponsesGuardSnapshot,
+  protocolValidated = false
 ): StreamPipeResult {
   const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
     ? undefined
@@ -92,6 +98,7 @@ export function streamResult(
       : completed ? undefined : diagnosticCapture.completeBuffer()
   return {
     completed,
+    protocolValidated,
     message,
     errorCode,
     firstTokenMs,
@@ -105,6 +112,7 @@ export function streamResult(
     auditResponseBody,
     auditUpstreamBody: auditUpstreamBodyForResult(upstreamCapture, completed, captureSuccessPayloads, bodyOmission),
     downstreamBytesWritten,
+    upstreamResponseBytesWritten,
     transportCommitted,
     semanticCommitted,
     uncommittedResponseBody,

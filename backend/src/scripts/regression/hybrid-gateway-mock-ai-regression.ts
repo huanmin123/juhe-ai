@@ -95,6 +95,7 @@ const [
   auditLogQueue,
   hybridAffinity,
   hybridScoring,
+  hotQualityRuntime,
   usageRecordShards,
   redisClientModule
 ] = await Promise.all([
@@ -109,6 +110,7 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
   import('../../modules/gateway/hybrid/scoring.service.js'),
+  import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../storage/usage-record-shards.js'),
   import('../../shared/redis-client.js')
 ])
@@ -151,7 +153,7 @@ try {
       baseUrl: upstreamRootUrl,
       supportedModel: scoringModel
     })
-    createHybridAdditionalAccount({
+    const scoringBackupAccountId = createHybridAdditionalAccount({
       groupId: scoring.groupId,
       accountName: 'Hybrid Mock GLM 评分备用账户',
       providerCode: GLM_PROVIDER_CODE,
@@ -346,6 +348,29 @@ try {
       expectedQualityScoringHits: 0,
       sessionId: 'invalid-scoring'
     })
+    hotQualityRuntime.resetGatewayHotQualityRuntimeForTest()
+    await assertHybridRequest({
+      baseUrl,
+      localApiKey: apiKey.key,
+      marker: 'HYBRID_SCORE_OVERSIZED',
+      expectedModel: deepseekModel,
+      expectedQualityScoringHits: 0,
+      sessionId: 'oversized-scoring-response'
+    })
+    const scoringQualitySnapshots = await Promise.all([scoring.accountId, scoringBackupAccountId].map((accountRuntimeKey) => (
+      hotQualityRuntime.getGatewayHotQualityRuntime().hotQualityStore.get({
+        accountRuntimeKey,
+        protocolProfile: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
+        requestLane: 'text',
+        modelFamily: hotQualityRuntime.gatewayHotQualityModelFamily(scoringModel)
+      })
+    )))
+    const scoringQualityWindows = scoringQualitySnapshots.flatMap((snapshot) => snapshot ? [snapshot.window5m] : [])
+    assert.equal(scoringQualityWindows.length, 1, '评分响应本地截断应只命中一个评分账户并留下中性诊断')
+    assert.equal(sumQualityCounter(scoringQualityWindows, 'qualityAttempts'), 0, '评分响应超过本地读取上限不得进入质量分母')
+    assert.equal(sumQualityCounter(scoringQualityWindows, 'localTransportFailures'), 0, '评分响应本地截断不得记为 gateway transport failure')
+    assert.equal(sumQualityCounter(scoringQualityWindows, 'incompleteResponses'), 0, '评分响应本地截断不得污染 protocol-model incomplete 质量')
+    assert.equal(sumQualityCounter(scoringQualityWindows, 'unknownOutcomes'), 1, '评分响应本地截断只应增加 response-limit 中性诊断')
     await assertHybridRequest({
       baseUrl,
       localApiKey: apiKey.key,
@@ -410,7 +435,7 @@ try {
 
     usageRecordQueue.flushAllUsageRecordQueue()
     const scoringUsageCount = scoringUsageRecordCount()
-    const expectedRequests = basicCases.length + 1 + 1 + 2 + 3 + 2 + bulkExperimentCount
+    const expectedRequests = basicCases.length + 1 + 2 + 2 + 3 + 2 + bulkExperimentCount
     const expectedScoringUsageCount = expectedRequests - 1
     assert(scoringUsageCount >= expectedScoringUsageCount, `评分使用记录数量不足，期望至少 ${expectedScoringUsageCount}，实际 ${scoringUsageCount}`)
     assertHybridScoringLargeBodyGuard()
@@ -843,6 +868,18 @@ function qualityScoringUsageRecordCount(): number {
   return usageTrafficSourceRecordCount('hybrid_quality_scoring')
 }
 
+function sumQualityCounter(
+  windows: ReadonlyArray<{
+    qualityAttempts: number
+    localTransportFailures: number
+    incompleteResponses: number
+    unknownOutcomes: number
+  }>,
+  key: 'qualityAttempts' | 'localTransportFailures' | 'incompleteResponses' | 'unknownOutcomes'
+): number {
+  return windows.reduce((total, window) => total + window[key], 0)
+}
+
 function assertHybridGatewayFailureUsageMetadata(input: {
   apiKeyId: string
   expectedErrorCode: string
@@ -919,6 +956,18 @@ function createHybridMockUpstream(): http.Server {
         rawUrl: req.url ?? ''
       })
       if (model === scoringModel) {
+        if (marker === 'HYBRID_SCORE_OVERSIZED') {
+          writeJson(res, {
+            id: 'chatcmpl-hybrid-scoring-oversized',
+            object: 'chat.completion',
+            choices: [{
+              index: 0,
+              message: { role: 'assistant', content: 'x'.repeat(2 * 1024 * 1024 + 1024) },
+              finish_reason: 'stop'
+            }]
+          })
+          return
+        }
         if (
           marker === 'HYBRID_LEVEL_5_SCORING_FAILOVER'
           && !scoringFailoverFailureConsumed

@@ -1249,11 +1249,6 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
   }
   const data = event.data
   if (!data) return []
-  const error = objectValue(data.error)
-  if (error) {
-    const failure = upstreamChatSseErrorFailure(error)
-    return failResponsesStream(state, failure.message, failure.code)
-  }
   const output: string[] = []
   const appendOutput = (events: string[]): void => {
     if (events.length === 0) return

@@ -18,9 +18,10 @@ import {
   getSettingsAsync,
   listOpenAIOAuthAccountsDueForAccessTokenRefresh,
   listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync,
-  markAccountException,
-  resolveProxyUrlForProfile,
-  updateAccount
+  markOpenAIOAuthLocalConfigurationExceptionIfCurrent,
+  resolveProxyUrlsForProfiles,
+  type OpenAIOAuthRefreshCandidateResult,
+  updateOpenAIOAuthCredentialsIfCurrent
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
@@ -60,11 +61,32 @@ export interface RefreshedOpenAIOAuthAccount {
 
 const oauthTokenRefreshFailureThreshold = 3
 export const OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE = 'oauth_token_refresh_failed'
+export const OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE = 'oauth_token_refresh_local_configuration_invalid'
+export const openAIOAuthRefreshManagedErrorCodes = [
+  OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
+  OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE
+] as const
 const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
 const internalOpenAIOAuthRefreshAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 interface OpenAIOAuthRefreshFailureState {
   count: number
+  localConfigurationCount: number
   backoffUntil: number
+  configRevision: number
+  applied: boolean
+  mutationId: string
+  snapshot?: string
+}
+
+export class OpenAIOAuthRefreshLocalConfigurationError extends Error {
+  readonly failureKind = 'local_configuration' as const
+  readonly expectedConfigRevision?: number
+
+  constructor(message: string, options: { cause?: unknown; expectedConfigRevision?: number } = {}) {
+    super(message, options)
+    this.name = 'OpenAIOAuthRefreshLocalConfigurationError'
+    this.expectedConfigRevision = normalizedConfigRevision(options.expectedConfigRevision)
+  }
 }
 
 const refreshFailureStateByAccountId = new Map<string, OpenAIOAuthRefreshFailureState>()
@@ -80,11 +102,13 @@ const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccoun
 })
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
-type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode'>> & {
+type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'proxyProfileId' | 'status' | 'name' | 'lastErrorCode' | 'configRevision'>> & {
   proxyUrl?: string
+  localConfigurationError?: OpenAIOAuthRefreshLocalConfigurationMarker
 }
 type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
   proxyUrl?: string
+  localConfigurationError?: OpenAIOAuthRefreshLocalConfigurationMarker
 }
 type OpenAIOAuthTokenRefresher = (input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }) => Promise<OpenAITokenInfo>
 type OpenAIOAuthDbServiceRequester = <T extends DbServiceOperation>(
@@ -100,14 +124,49 @@ type OpenAIOAuthAccountRefreshCallOptions = {
   restoreFailureState?: boolean
 }
 
+type OpenAIOAuthRefreshLocalConfigurationMarker = {
+  code: 'oauth_proxy_configuration_invalid'
+  message: string
+}
+
+type OpenAIOAuthRefreshBatchCandidate =
+  | {
+      kind: 'account'
+      account: AccountSummary
+      observedFailureState?: OpenAIOAuthRefreshFailureState
+    }
+  | {
+      kind: 'local_configuration_error'
+      accountId: string
+      accountName: string
+      accountStatus: string
+      configRevision: number
+      errorMessage: string
+      accountLocalEvidenceConfirmed: boolean
+      observedFailureState?: OpenAIOAuthRefreshFailureState
+    }
+
+export interface OpenAIOAuthRefreshFailureRedisClientForTest {
+  get(key: string): Promise<string | null>
+  eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>
+}
+
 export function setOpenAIOAuthTokenRefresherForTest(refresher?: OpenAIOAuthTokenRefresher): void {
   openAIOAuthTokenRefresher = refresher ?? refreshOpenAIOAuthToken
 }
 
 let openAIOAuthDbServiceRequesterForTest: OpenAIOAuthDbServiceRequester | undefined
+let openAIOAuthRefreshFailureRedisClientForTest: OpenAIOAuthRefreshFailureRedisClientForTest | undefined
 
 export function setOpenAIOAuthDbServiceRequesterForTest(requester?: OpenAIOAuthDbServiceRequester): void {
   openAIOAuthDbServiceRequesterForTest = requester
+}
+
+export function setOpenAIOAuthRefreshFailureRedisClientForTest(
+  client?: OpenAIOAuthRefreshFailureRedisClientForTest
+): void {
+  openAIOAuthRefreshFailureRedisClientForTest = client
+  refreshFailureStateByAccountId.clear()
 }
 
 export function clearOpenAIOAuthRecentRefreshCache(): void {
@@ -144,7 +203,9 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
     const credentials = current.credentials
     const refreshToken = stringCredential(credentials, 'refresh_token')
     if (!refreshToken) {
-      throw new Error('OpenAI OAuth 账户缺少刷新令牌')
+      throw new OpenAIOAuthRefreshLocalConfigurationError('OpenAI OAuth 账户缺少刷新令牌', {
+        expectedConfigRevision: current.configRevision
+      })
     }
 
     if (credentialsChanged(account.credentials, credentials) && !isAccessTokenExpiredOrMissing(credentials, Date.now())) {
@@ -164,34 +225,43 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       const tokenInfo = await openAIOAuthTokenRefresher({
         refreshToken,
         clientId: stringCredential(credentials, 'client_id'),
-        proxyUrl: resolveRefreshProxyUrl(current, persistMode)
+        proxyUrl: resolveRefreshProxyUrlOrThrow(current, persistMode)
       })
       const nextCredentials = {
         ...credentials,
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
       if (persistMode === 'db-service') {
-        const updated = await persistOpenAIOAuthCredentialsViaDbService(current.id, nextCredentials, persistMode)
+        const updated = await persistOpenAIOAuthCredentialsViaDbService(
+          current.id,
+          nextCredentials,
+          current.configRevision ?? 1,
+          persistMode
+        )
         if (!updated) {
           throw new Error('OpenAI OAuth 账户不存在或无法更新')
         }
-        const refreshed = {
+        const refreshed: OpenAIOAuthRefreshAccount = {
           ...current,
-          credentials: nextCredentials
+          credentials: nextCredentials,
+          configRevision: (current.configRevision ?? 1) + 1
         }
         rememberRecentOpenAIOAuthRefresh(refreshed, persistMode)
         return refreshed
       }
-      const updated = updateAccount(current.id, {
-        credentials: nextCredentials
-      }, options.access ?? internalOpenAIOAuthRefreshAccess)
+      const updated = updateOpenAIOAuthCredentialsIfCurrent(
+        current.id,
+        nextCredentials,
+        current.configRevision ?? 1,
+        options.access ?? internalOpenAIOAuthRefreshAccess
+      )
       if (!updated) {
         throw new Error('OpenAI OAuth 账户不存在或无法更新')
       }
       return finalizeSuccessfulTokenRefresh(updated, options)
     } catch (error) {
       const recovered = await tryRecoverOpenAIOAuthRefreshRace(current, options, persistMode)
-      if (isRecoverableOpenAIOAuthRefreshRaceError(error) && recovered.result === 'fresh') {
+      if (recovered.result === 'fresh') {
         logger.info({
           event: 'openai_oauth_access_token_refresh_race_recovered',
           accountId: recovered.account.id
@@ -201,8 +271,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
         return finalizeSuccessfulTokenRefresh(recovered.account, options)
       }
       if (
-        isRecoverableOpenAIOAuthRefreshRaceError(error)
-        && recovered.result === 'retry'
+        recovered.result === 'retry'
         && shouldRetryPolicyAttempt(attempt, openAIOAuthRefreshRaceRetryPolicy)
       ) {
         logger.info({
@@ -213,18 +282,24 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
         retryWithLatestRefreshToken = true
         continue
       }
-      throw error
+      throw withOpenAIOAuthRefreshAttemptContext(error, current)
     }
   }
 
   throw new Error('OpenAI OAuth 访问令牌刷新失败')
 }
 
-async function persistOpenAIOAuthCredentialsViaDbService(accountId: string, credentials: Record<string, unknown>, persistMode: 'sync' | 'db-service'): Promise<boolean> {
+async function persistOpenAIOAuthCredentialsViaDbService(
+  accountId: string,
+  credentials: Record<string, unknown>,
+  expectedConfigRevision: number,
+  persistMode: 'sync' | 'db-service'
+): Promise<boolean> {
   const result = await requestOpenAIOAuthDbService({
     type: 'update_openai_oauth_credentials',
     accountId,
-    credentials
+    credentials,
+    expectedConfigRevision
   }, persistMode)
   if (result.updated) {
     clearGatewayRuntimeCache()
@@ -256,21 +331,28 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const accountIdFilter = normalizedRefreshAccountIdSet(options.accountIds)
   const candidateFetchLimit = refreshCandidateFetchLimit(batchSize)
 
-  const dueAccounts = (runtimeConfig.databaseDriver === 'postgres'
+  const listedCandidates = runtimeConfig.databaseDriver === 'postgres'
     ? await listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync({
       leadSeconds,
       limit: candidateFetchLimit,
-      stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+      stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE
     })
     : listOpenAIOAuthAccountsDueForAccessTokenRefresh({
     leadSeconds,
     limit: candidateFetchLimit,
-    stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
-    })).filter((account) =>
-    (!accountIdFilter || accountIdFilter.has(account.id)) &&
-    isExistingOpenAIOAuthAccountWithRefreshToken(account) &&
-    shouldPreRefreshAccessToken(account.credentials, now, leadMs)
-  )
+    stoppedErrorCode: OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE
+    })
+  // A decryptable sibling proves the local keyring can read this batch. Without
+  // that proof, treating every decrypt failure as an account-local defect could
+  // turn a process-wide secret/keyring outage into a full-pool account outage.
+  const accountLocalCredentialEvidenceConfirmed = listedCandidates.some((candidate) => candidate.kind === 'account')
+  const dueAccounts = listedCandidates.filter((candidate) => {
+    const accountId = openAIOAuthRefreshCandidateAccountId(candidate)
+    if (accountIdFilter && !accountIdFilter.has(accountId)) return false
+    if (candidate.kind === 'local_configuration_error') return true
+    return isExistingOpenAIOAuthAccountForRefresh(candidate.account)
+      && shouldPreRefreshAccessToken(candidate.account.credentials, now, leadMs)
+  })
 
   const result: OpenAIOAuthAccessTokenRefreshResult = {
     scanned: dueAccounts.length,
@@ -282,47 +364,92 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     skippedBackoff: 0
   }
 
-  const candidates: AccountSummary[] = []
-  for (const account of dueAccounts) {
-    const failureState = await readRefreshFailureState(account.id, now)
+  const candidates: OpenAIOAuthRefreshBatchCandidate[] = []
+  for (const candidate of dueAccounts) {
+    const accountId = openAIOAuthRefreshCandidateAccountId(candidate)
+    const configRevision = openAIOAuthRefreshCandidateConfigRevision(candidate)
+    const failureState = await readRefreshFailureState(accountId, now, configRevision)
     if (failureState?.backoffUntil !== undefined && failureState.backoffUntil > now) {
       result.skippedBackoff += 1
       continue
     }
-    candidates.push(account)
+    candidates.push(candidate.kind === 'account'
+      ? { kind: 'account', account: candidate.account, observedFailureState: failureState }
+      : {
+          kind: 'local_configuration_error',
+          accountId: candidate.accountId,
+          accountName: candidate.accountName,
+          accountStatus: candidate.accountStatus,
+          configRevision: candidate.configRevision,
+          errorMessage: candidate.errorMessage,
+          accountLocalEvidenceConfirmed: accountLocalCredentialEvidenceConfirmed,
+          observedFailureState: failureState
+        })
     if (candidates.length >= batchSize) {
       break
     }
   }
-  for (const account of candidates) {
+  for (const candidate of candidates) {
+    const accountId = openAIOAuthRefreshBatchCandidateAccountId(candidate)
+    const accountName = openAIOAuthRefreshBatchCandidateAccountName(candidate)
+    const accountStatus = openAIOAuthRefreshBatchCandidateAccountStatus(candidate)
+    const attemptConfigRevision = openAIOAuthRefreshBatchCandidateConfigRevision(candidate)
     try {
-      await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false, persistMode })
-      await clearRefreshFailureState(account.id)
-      await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account, persistMode)
+      if (candidate.kind === 'local_configuration_error') {
+        if (candidate.accountLocalEvidenceConfirmed) {
+          throw new OpenAIOAuthRefreshLocalConfigurationError(candidate.errorMessage, {
+            expectedConfigRevision: candidate.configRevision
+          })
+        }
+        throw new Error('OpenAI OAuth 凭据存储当前不可验证，未改变账户调度状态')
+      }
+      await refreshOpenAIOAuthAccountAccessToken(candidate.account, { force: false, leadSeconds, restoreFailureState: false, persistMode })
+      await clearRefreshFailureState(accountId, candidate.observedFailureState)
+      await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(candidate.account, persistMode)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
-      const expiredOrMissing = isAccessTokenExpiredOrMissing(account.credentials, Date.now())
+      const expiredOrMissing = candidate.kind === 'account'
+        ? isAccessTokenExpiredOrMissing(candidate.account.credentials, Date.now())
+        : true
       const message = errorMessage(error)
-      const failureState = await recordRefreshFailure(account.id, retryDueAtMs(retryBackoffPolicy))
+      const failureKind = isOpenAIOAuthRefreshLocalConfigurationError(error) ? 'local_configuration' : 'untrusted_upstream_or_runtime'
+      const errorConfigRevision = isOpenAIOAuthRefreshLocalConfigurationError(error)
+        ? error.expectedConfigRevision ?? attemptConfigRevision
+        : attemptConfigRevision
+      const failureState = await recordRefreshFailure(
+        accountId,
+        retryDueAtMs(retryBackoffPolicy),
+        failureKind,
+        errorConfigRevision
+      )
       logger.warn(errorLogFields(error, {
         event: 'openai_oauth_access_token_refresh_account_failed',
-        accountId: account.id,
-        accountName: account.name,
+        accountId,
+        accountName,
         failureCount: failureState.count,
+        localConfigurationFailureCount: failureState.localConfigurationCount,
+        failureKind,
+        failureStateApplied: failureState.applied,
         accessTokenExpiredOrMissing: expiredOrMissing
       }), 'OpenAI OAuth 访问令牌刷新失败')
 
-      if (failureState.count >= oauthTokenRefreshFailureThreshold && account.status !== 'pending_test') {
+      if (
+        failureState.applied
+        && failureState.localConfigurationCount >= oauthTokenRefreshFailureThreshold
+        && accountStatus === 'active'
+      ) {
         const updated = await requestOpenAIOAuthDbService({
-          type: 'mark_account_exception',
-          accountId: account.id,
-          errorCode: OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE,
-          reason: openAIOAuthTokenRefreshStoppedMessage(failureState.count, message)
+          type: 'mark_openai_oauth_local_configuration_exception',
+          accountId,
+          errorCode: OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE,
+          reason: openAIOAuthTokenRefreshLocalConfigurationStoppedMessage(failureState.localConfigurationCount, message),
+          expectedConfigRevision: failureState.configRevision,
+          expectedStatus: 'active'
         }, persistMode)
         if (updated.updated) {
           clearGatewayRuntimeCache()
-          await clearRefreshFailureState(account.id)
+          await clearRefreshFailureState(accountId, failureState)
           result.exceptioned += 1
         }
       }
@@ -332,11 +459,34 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   return result
 }
 
-function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): boolean {
+function isExistingOpenAIOAuthAccountForRefresh(account: AccountSummary): boolean {
   return isOpenAIOAuthRefreshAccount(account)
     && account.accessType !== 'authorized'
     && !shouldStopOpenAIOAuthBackgroundRefresh(account)
-    && Boolean(stringCredential(account.credentials, 'refresh_token'))
+}
+
+function openAIOAuthRefreshCandidateAccountId(candidate: OpenAIOAuthRefreshCandidateResult): string {
+  return candidate.kind === 'account' ? candidate.account.id : candidate.accountId
+}
+
+function openAIOAuthRefreshCandidateConfigRevision(candidate: OpenAIOAuthRefreshCandidateResult): number {
+  return candidate.kind === 'account' ? candidate.account.configRevision ?? 1 : candidate.configRevision
+}
+
+function openAIOAuthRefreshBatchCandidateAccountId(candidate: OpenAIOAuthRefreshBatchCandidate): string {
+  return candidate.kind === 'account' ? candidate.account.id : candidate.accountId
+}
+
+function openAIOAuthRefreshBatchCandidateAccountName(candidate: OpenAIOAuthRefreshBatchCandidate): string {
+  return candidate.kind === 'account' ? candidate.account.name : candidate.accountName
+}
+
+function openAIOAuthRefreshBatchCandidateAccountStatus(candidate: OpenAIOAuthRefreshBatchCandidate): string | undefined {
+  return candidate.kind === 'account' ? candidate.account.status : candidate.accountStatus
+}
+
+function openAIOAuthRefreshBatchCandidateConfigRevision(candidate: OpenAIOAuthRefreshBatchCandidate): number {
+  return candidate.kind === 'account' ? candidate.account.configRevision ?? 1 : candidate.configRevision
 }
 
 function isOpenAIOAuthRefreshAccount(account: RefreshableOpenAIOAuthAccount | AccountSummary | undefined): boolean {
@@ -348,7 +498,7 @@ function isOpenAIOAuthRefreshAccount(account: RefreshableOpenAIOAuthAccount | Ac
 
 function shouldStopOpenAIOAuthBackgroundRefresh(account: AccountSummary): boolean {
   return account.status === 'error'
-    && account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE
+    && account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_LOCAL_CONFIGURATION_ERROR_CODE
 }
 
 function shouldPreRefreshAccessToken(credentials: Record<string, unknown>, now: number, leadMs: number): boolean {
@@ -379,70 +529,147 @@ function parseCredentialExpiresAt(credentials: Record<string, unknown>): number 
   return Number.isFinite(expiresAt) ? expiresAt : undefined
 }
 
-async function recordRefreshFailure(accountId: string, backoffUntil: number): Promise<OpenAIOAuthRefreshFailureState> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
+async function recordRefreshFailure(
+  accountId: string,
+  backoffUntil: number,
+  failureKind: 'local_configuration' | 'untrusted_upstream_or_runtime',
+  configRevision: number
+): Promise<OpenAIOAuthRefreshFailureState> {
+  const normalizedRevision = normalizedConfigRevision(configRevision) ?? 1
+  const mutationId = randomBytes(12).toString('hex')
+  if (usesRedisRefreshFailureState()) {
     const result = await (await redisStateClient()).eval(redisRecordRefreshFailureScript, {
       keys: [redisRefreshFailureStateKey(accountId)],
       arguments: [
         String(Math.max(0, Math.trunc(backoffUntil))),
-        String(openAIOAuthRefreshFailureStateTtlMs)
+        String(openAIOAuthRefreshFailureStateTtlMs),
+        failureKind === 'local_configuration' ? '1' : '0',
+        String(normalizedRevision),
+        mutationId
       ]
     })
-    const values = numericRedisArray(result)
+    const values = redisResultArray(result)
+    const applied = numericRedisResult(values[4]) === 1
+    const storedMutationId = stringRedisResult(values[5]) ?? mutationId
+    const snapshot = stringRedisResult(values[6])
     return {
-      count: Math.max(1, Math.trunc(values[0] ?? 1)),
-      backoffUntil: Math.max(0, Math.trunc(values[1] ?? backoffUntil))
+      count: Math.max(1, Math.trunc(numericRedisResult(values[0]) || 1)),
+      backoffUntil: Math.max(0, Math.trunc(numericRedisResult(values[1]) || backoffUntil)),
+      localConfigurationCount: Math.max(0, Math.trunc(numericRedisResult(values[2]) || (failureKind === 'local_configuration' ? 1 : 0))),
+      configRevision: Math.max(1, Math.trunc(numericRedisResult(values[3]) || normalizedRevision)),
+      applied,
+      mutationId: storedMutationId,
+      snapshot
     }
   }
   const previous = refreshFailureStateByAccountId.get(accountId)
+  if (previous && previous.configRevision > normalizedRevision) {
+    return { ...previous, applied: false }
+  }
+  const previousForRevision = previous?.configRevision === normalizedRevision ? previous : undefined
   const next = {
-    count: (previous?.count ?? 0) + 1,
-    backoffUntil
+    count: (previousForRevision?.count ?? 0) + 1,
+    localConfigurationCount: failureKind === 'local_configuration'
+      ? (previousForRevision?.localConfigurationCount ?? 0) + 1
+      : 0,
+    backoffUntil: Math.max(previousForRevision?.backoffUntil ?? 0, backoffUntil),
+    configRevision: normalizedRevision,
+    applied: true,
+    mutationId
   }
   refreshFailureStateByAccountId.set(accountId, next)
   return next
 }
 
-async function readRefreshFailureState(accountId: string, now: number): Promise<OpenAIOAuthRefreshFailureState | undefined> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
+async function readRefreshFailureState(accountId: string, now: number, configRevision: number): Promise<OpenAIOAuthRefreshFailureState | undefined> {
+  const normalizedRevision = normalizedConfigRevision(configRevision) ?? 1
+  if (usesRedisRefreshFailureState()) {
     const rawValue = await (await redisStateClient()).get(redisRefreshFailureStateKey(accountId))
     if (!rawValue) return undefined
     try {
       const parsed = JSON.parse(rawValue) as Partial<OpenAIOAuthRefreshFailureState>
       const count = typeof parsed.count === 'number' && Number.isFinite(parsed.count) ? Math.max(0, Math.trunc(parsed.count)) : 0
+      const localConfigurationCount = typeof parsed.localConfigurationCount === 'number' && Number.isFinite(parsed.localConfigurationCount)
+        ? Math.max(0, Math.trunc(parsed.localConfigurationCount))
+        : 0
       const backoffUntil = typeof parsed.backoffUntil === 'number' && Number.isFinite(parsed.backoffUntil) ? Math.max(0, Math.trunc(parsed.backoffUntil)) : 0
+      const storedConfigRevision = normalizedConfigRevision(parsed.configRevision)
+      const mutationId = typeof parsed.mutationId === 'string' ? parsed.mutationId : ''
+      if (!storedConfigRevision) {
+        await clearRefreshFailureState(accountId, { snapshot: rawValue })
+        return undefined
+      }
+      if (storedConfigRevision > normalizedRevision) return undefined
+      if (storedConfigRevision < normalizedRevision) {
+        await clearRefreshFailureState(accountId, { snapshot: rawValue, configRevision: storedConfigRevision })
+        return undefined
+      }
       return {
         count,
-        backoffUntil: backoffUntil > now ? backoffUntil : 0
+        localConfigurationCount,
+        backoffUntil: backoffUntil > now ? backoffUntil : 0,
+        configRevision: storedConfigRevision,
+        applied: true,
+        mutationId,
+        snapshot: rawValue
       }
     } catch {
-      await clearRefreshFailureState(accountId)
+      await clearRefreshFailureState(accountId, { snapshot: rawValue })
       return undefined
     }
   }
   const failureState = refreshFailureStateByAccountId.get(accountId)
   if (!failureState) return undefined
+  if (failureState.configRevision > normalizedRevision) return undefined
+  if (failureState.configRevision < normalizedRevision) {
+    await clearRefreshFailureState(accountId, failureState)
+    return undefined
+  }
   return {
     count: failureState.count,
-    backoffUntil: failureState.backoffUntil > now ? failureState.backoffUntil : 0
+    localConfigurationCount: failureState.localConfigurationCount,
+    backoffUntil: failureState.backoffUntil > now ? failureState.backoffUntil : 0,
+    configRevision: failureState.configRevision,
+    applied: true,
+    mutationId: failureState.mutationId,
+    snapshot: failureState.snapshot
   }
 }
 
-async function clearRefreshFailureState(accountId: string): Promise<void> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    await (await redisStateClient()).del(redisRefreshFailureStateKey(accountId))
+type OpenAIOAuthRefreshFailureStateGuard = {
+  configRevision?: number
+  mutationId?: string
+  snapshot?: string
+}
+
+async function clearRefreshFailureState(accountId: string, expected?: OpenAIOAuthRefreshFailureStateGuard): Promise<void> {
+  if (!expected) return
+  if (usesRedisRefreshFailureState()) {
+    if (!expected.snapshot) return
+    await (await redisStateClient()).eval(redisCompareDeleteRefreshFailureScript, {
+      keys: [redisRefreshFailureStateKey(accountId)],
+      arguments: [expected.snapshot, String(expected.configRevision ?? 0)]
+    })
     return
   }
+  const current = refreshFailureStateByAccountId.get(accountId)
+  if (!current) return
+  if (expected.mutationId && current.mutationId !== expected.mutationId) return
+  if (expected.configRevision !== undefined && current.configRevision !== expected.configRevision) return
   refreshFailureStateByAccountId.delete(accountId)
 }
 
 function cleanupRefreshFailureBackoff(now: number): void {
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
+  if (usesRedisRefreshFailureState()) {
     return
   }
   for (const [accountId, failureState] of refreshFailureStateByAccountId.entries()) {
     if (failureState.backoffUntil <= now) {
-      refreshFailureStateByAccountId.set(accountId, { ...failureState, backoffUntil: 0 })
+      refreshFailureStateByAccountId.set(accountId, {
+        ...failureState,
+        backoffUntil: 0,
+        mutationId: randomBytes(12).toString('hex')
+      })
     }
   }
 }
@@ -468,12 +695,13 @@ async function findLatestRefreshableOpenAIOAuthAccount(
 }
 
 async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: AccountSummary, persistMode: 'sync' | 'db-service'): Promise<void> {
-  if (account.status !== 'error' || account.lastErrorCode !== OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE) {
+  if (account.status !== 'error' || !isManagedOpenAIOAuthRefreshErrorCode(account.lastErrorCode)) {
     return
   }
   const restored = await requestOpenAIOAuthDbService({
     type: 'clear_account_failure_state',
-    accountId: account.id
+    accountId: account.id,
+    expectedLastErrorCodes: [...openAIOAuthRefreshManagedErrorCodes]
   }, persistMode)
   if (restored.changed && restored.accountStatus === 'active') {
     clearGatewayRuntimeCache()
@@ -538,8 +766,10 @@ function finalizeSuccessfulTokenRefresh(account: OpenAIOAuthRefreshAccount, opti
     clearGatewayRuntimeCache()
     return account
   }
-  const updated = account.status !== 'pending_test' && account.status !== 'disabled' && (account.status !== 'error' || account.lastErrorCode === OPENAI_OAUTH_TOKEN_REFRESH_FAILED_ERROR_CODE)
-    ? clearAccountFailureState(account.id, options.access) ?? account as AccountSummary
+  const updated = account.status === 'error' && isManagedOpenAIOAuthRefreshErrorCode(account.lastErrorCode)
+    ? clearAccountFailureState(account.id, options.access, {
+      expectedLastErrorCodes: openAIOAuthRefreshManagedErrorCodes
+    }) ?? account as AccountSummary
     : account
   clearGatewayRuntimeCache()
   return updated
@@ -610,11 +840,23 @@ function cloneOpenAIOAuthRefreshAccount(account: OpenAIOAuthRefreshAccount): Ope
   }
 }
 
-function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode: 'sync' | 'db-service'): string | undefined {
-  if (account.proxyUrl || persistMode === 'db-service') {
+function resolveRefreshProxyUrlOrThrow(account: OpenAIOAuthRefreshAccount, persistMode: 'sync' | 'db-service'): string | undefined {
+  if (account.localConfigurationError) {
+    throw new OpenAIOAuthRefreshLocalConfigurationError(account.localConfigurationError.message, {
+      expectedConfigRevision: account.configRevision
+    })
+  }
+  if (account.proxyUrl || persistMode === 'db-service' || !account.proxyProfileId) {
     return account.proxyUrl
   }
-  return account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+  const resolution = resolveProxyUrlsForProfiles([account.proxyProfileId]).get(account.proxyProfileId)
+  if (!resolution?.proxyUrl) {
+    throw new OpenAIOAuthRefreshLocalConfigurationError(
+      resolution?.errorMessage ?? 'OpenAI OAuth 账户配置的代理不可用，请检查代理配置',
+      { expectedConfigRevision: account.configRevision }
+    )
+  }
+  return resolution.proxyUrl
 }
 
 function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
@@ -660,44 +902,47 @@ function runLocalOpenAIOAuthDbServiceOperation<T extends DbServiceOperation>(ope
     }
     const result = clearAccountFailureStateResult(operation.accountId, internalOpenAIOAuthRefreshAccess, {
       allowPendingTestRestore: operation.allowPendingTestRestore,
-      allowErrorRestore: operation.allowErrorRestore
+      allowErrorRestore: operation.allowErrorRestore,
+      expectedLastErrorCodes: operation.expectedLastErrorCodes
     })
     if (result.changed) {
       clearGatewayRuntimeCache()
     }
     return { changed: result.changed, accountStatus: result.account?.status } as DbServiceOperationResult<T>
   }
-  if (operation.type === 'mark_account_exception') {
-    const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
-      preserveDisabled: operation.preserveDisabled
-    })
+  if (operation.type === 'mark_openai_oauth_local_configuration_exception') {
+    const updated = markOpenAIOAuthLocalConfigurationExceptionIfCurrent(operation)
     if (updated) {
       clearGatewayRuntimeCache()
     }
-    return { updated: Boolean(updated), accountStatus: updated?.status } as DbServiceOperationResult<T>
+    return { updated } as DbServiceOperationResult<T>
   }
   throw new Error(`单进程 worker 回归不支持 DB service 操作：${operation.type}`)
 }
 
-function isRecoverableOpenAIOAuthRefreshRaceError(error: unknown): boolean {
-  const message = errorText(error).toLowerCase()
-  return message.includes('refresh_token_reused')
-    || message.includes('refresh token has already been used')
-    || message.includes('already been used to generate a new access token')
-    || message.includes('invalid_grant')
+export function isOpenAIOAuthRefreshLocalConfigurationError(error: unknown): error is OpenAIOAuthRefreshLocalConfigurationError {
+  return error instanceof OpenAIOAuthRefreshLocalConfigurationError
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof Error) {
-    const cause = 'cause' in error ? (error as Error & { cause?: unknown }).cause : undefined
-    return `${error.message} ${cause ? errorText(cause) : ''}`
-  }
-  if (typeof error === 'string') return error
-  try {
-    return JSON.stringify(error)
-  } catch {
-    return ''
-  }
+function withOpenAIOAuthRefreshAttemptContext(
+  error: unknown,
+  account: OpenAIOAuthRefreshAccount
+): unknown {
+  if (!isOpenAIOAuthRefreshLocalConfigurationError(error)) return error
+  const expectedConfigRevision = normalizedConfigRevision(account.configRevision)
+  if (error.expectedConfigRevision === expectedConfigRevision) return error
+  return new OpenAIOAuthRefreshLocalConfigurationError(error.message, {
+    cause: error,
+    expectedConfigRevision
+  })
+}
+
+function normalizedConfigRevision(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+export function isManagedOpenAIOAuthRefreshErrorCode(errorCode: string | undefined): boolean {
+  return Boolean(errorCode && openAIOAuthRefreshManagedErrorCodes.includes(errorCode as typeof openAIOAuthRefreshManagedErrorCodes[number]))
 }
 
 function refreshLeadMs(leadSeconds: unknown): number {
@@ -726,12 +971,12 @@ function errorMessage(error: unknown): string {
   return message.length > 240 ? `${message.slice(0, 237)}...` : message
 }
 
-function openAIOAuthTokenRefreshStoppedMessage(failureCount: number, lastError: string): string {
+function openAIOAuthTokenRefreshLocalConfigurationStoppedMessage(failureCount: number, lastError: string): string {
   return [
-    `OpenAI OAuth 访问令牌连续 ${failureCount} 次后台刷新失败，已停止自动刷新。`,
-    '该 Refresh Token 可能已失效、被重复使用，或账号授权已被上游撤销。',
-    '请在账户页手动刷新、重新登录/重新授权该 OAuth 账号；如果不再使用，建议禁用或删除该账号。',
-    `最后错误：${lastError}`
+    `OpenAI OAuth 访问令牌连续 ${failureCount} 次因本地配置错误无法启动刷新，已停止自动刷新。`,
+    '该结论只来自本地可验证的凭据、代理配置解析或解密失败，不使用上游 HTTP 状态、错误码或响应正文推断账户状态。',
+    '请在账户页检查并修正 OAuth 凭据或代理配置，然后重新检查账户。',
+    `最后本地错误：${lastError}`
   ].join(' ').slice(0, 1000)
 }
 
@@ -756,18 +1001,25 @@ function optionInteger(value: unknown, label: string, min: number, max: number):
 registerGatewayRuntimeCacheInvalidator(clearOpenAIOAuthRecentRefreshCache)
 
 function refreshCandidateFetchLimit(batchSize: number): number {
-  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+  if (!usesRedisRefreshFailureState()) {
     return batchSize + refreshFailureStateByAccountId.size
   }
   return 500
 }
 
-function redisStateClient(): Promise<RedisCommandClient> {
+function usesRedisRefreshFailureState(): boolean {
+  return Boolean(openAIOAuthRefreshFailureRedisClientForTest) || runtimeConfig.runtimeStateDriver === 'redis'
+}
+
+function redisStateClient(): Promise<OpenAIOAuthRefreshFailureRedisClientForTest> {
+  if (openAIOAuthRefreshFailureRedisClientForTest) {
+    return Promise.resolve(openAIOAuthRefreshFailureRedisClientForTest)
+  }
   const redisUrl = runtimeConfig.redis.stateUrl
   if (!redisUrl) {
     throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
   }
-  return getRedisClient(redisUrl)
+  return getRedisClient(redisUrl) as Promise<RedisCommandClient>
 }
 
 function redisRefreshFailureStateKey(accountId: string): string {
@@ -778,11 +1030,17 @@ function redisKeyHash(value: string): string {
   return createHash('sha256').update(value).digest('base64url')
 }
 
-function numericRedisArray(value: unknown): number[] {
+function redisResultArray(value: unknown): unknown[] {
   if (Array.isArray(value)) {
-    return value.map(numericRedisResult)
+    return value
   }
   return []
+}
+
+function stringRedisResult(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value
+  if (Buffer.isBuffer(value)) return value.toString('utf8')
+  return value === undefined || value === null ? undefined : String(value)
 }
 
 function numericRedisResult(value: unknown): number {
@@ -799,16 +1057,59 @@ function delay(ms: number): Promise<void> {
 const redisRecordRefreshFailureScript = `
 local raw = redis.call('GET', KEYS[1])
 local count = 0
+local local_configuration_count = 0
+local config_revision = tonumber(ARGV[4])
+local stored_revision = 0
+local stored_backoff_until = 0
+local stored_mutation_id = ''
 if raw then
   local ok, decoded = pcall(cjson.decode, raw)
   if ok and decoded then
-    count = tonumber(decoded['count']) or 0
+    stored_revision = tonumber(decoded['configRevision']) or 0
+    stored_backoff_until = tonumber(decoded['backoffUntil']) or 0
+    stored_mutation_id = tostring(decoded['mutationId'] or '')
+    if stored_revision > config_revision then
+      return {
+        tonumber(decoded['count']) or 0,
+        stored_backoff_until,
+        tonumber(decoded['localConfigurationCount']) or 0,
+        stored_revision,
+        0,
+        stored_mutation_id,
+        raw
+      }
+    end
+    if stored_revision == config_revision then
+      count = tonumber(decoded['count']) or 0
+      local_configuration_count = tonumber(decoded['localConfigurationCount']) or 0
+    else
+      stored_backoff_until = 0
+    end
   end
 end
 count = count + 1
-local backoff_until = tonumber(ARGV[1])
+local backoff_until = math.max(stored_backoff_until, tonumber(ARGV[1]) or 0)
 local ttl_ms = tonumber(ARGV[2])
-local payload = cjson.encode({ count = count, backoffUntil = backoff_until })
+local is_local_configuration = tonumber(ARGV[3]) or 0
+if is_local_configuration == 1 then
+  local_configuration_count = local_configuration_count + 1
+else
+  local_configuration_count = 0
+end
+local mutation_id = ARGV[5]
+local payload = cjson.encode({ count = count, localConfigurationCount = local_configuration_count, backoffUntil = backoff_until, configRevision = config_revision, mutationId = mutation_id })
 redis.call('SET', KEYS[1], payload, 'PX', ttl_ms)
-return {count, backoff_until}
+return {count, backoff_until, local_configuration_count, config_revision, 1, mutation_id, payload}
+`
+
+const redisCompareDeleteRefreshFailureScript = `
+local raw = redis.call('GET', KEYS[1])
+if raw and raw == ARGV[1] then
+  local ok, decoded = pcall(cjson.decode, raw)
+  if ok and decoded and tonumber(ARGV[2]) > 0 and tonumber(decoded['configRevision']) ~= tonumber(ARGV[2]) then
+    return 0
+  end
+  return redis.call('DEL', KEYS[1])
+end
+return 0
 `

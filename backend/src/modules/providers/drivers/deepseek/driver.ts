@@ -169,12 +169,6 @@ export const deepSeekProviderDriver: ProviderDriver = {
       defaultModel: DEEPSEEK_CODEX_BRIDGE_DEFAULT_MODEL,
       enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
-      finishReasonFailures: {
-        insufficient_system_resource: {
-          code: 'upstream_retryable_error',
-          message: '上游模型资源不足，请重试'
-        }
-      },
       idPrefix: 'deepseek_bridge',
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,

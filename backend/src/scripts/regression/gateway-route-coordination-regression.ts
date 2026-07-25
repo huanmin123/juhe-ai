@@ -177,6 +177,284 @@ assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
   keyFingerprint: 'key-a',
   matchingConfirmation: true
 }), { allowed: false, reason: 'confirmation_already_attempted' })
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-c',
+  matchingConfirmation: true,
+  allowKeyRotation: true
+}), { allowed: true }, '同一 confirmation 必须允许轮换到同物理凭据下未尝试的新 Key')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-c',
+  matchingConfirmation: true,
+  allowKeyRotation: true
+}), { allowed: false, reason: 'key_fingerprint_already_attempted' }, '同一 confirmation 不得重复轮换到已尝试 Key')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-other',
+  keyFingerprint: 'key-d',
+  matchingConfirmation: true,
+  allowKeyRotation: true
+}), { allowed: false, reason: 'physical_credential_already_attempted' }, 'confirmation Key 轮换不得跨物理凭据')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-other',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-e',
+  matchingConfirmation: true,
+  allowKeyRotation: true
+}), { allowed: false, reason: 'physical_credential_already_attempted' }, 'confirmation Key 轮换不得跨账户运行身份')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-a',
+  semanticRetryId: 'hybrid-quality-repair-1'
+}), { allowed: true }, '显式语义修复应允许同一物理凭据进入新的有界重试代次')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-a',
+  semanticRetryId: 'hybrid-quality-repair-1'
+}), { allowed: false, reason: 'semantic_retry_already_attempted' }, '同一语义重试代次仍不得重复命中物理凭据')
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-a',
+  semanticRetryId: 'hybrid-quality-repair-2'
+}), { allowed: true }, '下一次用户策略授权的语义修复应使用新的独立代次')
+
+const zeroRetryTracker = new GatewayRequestAttemptTracker()
+const zeroRetryIdentity = {
+  protocolModelKey: gatewayAttemptProtocolModelKey({
+    accountRuntimeKey: 'runtime-zero-retry',
+    protocolCode: 'openai-v1',
+    protocolVersion: '1',
+    model: 'gpt-5'
+  }),
+  accountRuntimeKey: 'runtime-zero-retry',
+  physicalCredentialKey: 'physical-zero-retry',
+  keyFingerprint: 'key-zero-retry'
+}
+assert.deepEqual(zeroRetryTracker.tryRecordDispatchAttempt(zeroRetryIdentity), { allowed: true })
+const zeroRetrySnapshot = zeroRetryTracker.snapshot()
+assert.deepEqual(zeroRetryTracker.tryReserveSameAccountRetry({
+  ...zeroRetryIdentity,
+  maxRetries: 0
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, 'maxRetries=0 必须禁用请求内原地重试')
+assert.deepEqual(zeroRetryTracker.tryReserveSameAccountRetry({
+  ...zeroRetryIdentity,
+  maxRetries: 3
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, '首次见到 0 后，后续分组配置不得把请求级预算扩容到 3')
+assert.deepEqual(zeroRetryTracker.snapshot(), zeroRetrySnapshot, '读取和拒绝原地重试预算不得污染尝试快照')
+assert.throws(() => zeroRetryTracker.tryReserveSameAccountRetry({ ...zeroRetryIdentity, maxRetries: -1 }), /0 and 10/)
+assert.throws(() => zeroRetryTracker.tryReserveSameAccountRetry({ ...zeroRetryIdentity, maxRetries: 11 }), /0 and 10/)
+assert.throws(() => zeroRetryTracker.tryReserveSameAccountRetry({ ...zeroRetryIdentity, maxRetries: 1.5 }), /0 and 10/)
+
+const oneRetryTracker = new GatewayRequestAttemptTracker()
+const oneRetryIdentity = {
+  protocolModelKey: gatewayAttemptProtocolModelKey({
+    accountRuntimeKey: 'runtime-one-retry',
+    protocolCode: 'openai-v1',
+    protocolVersion: '1',
+    model: 'gpt-5'
+  }),
+  accountRuntimeKey: 'runtime-one-retry',
+  physicalCredentialKey: 'physical-one-retry',
+  keyFingerprint: 'key-one-retry'
+}
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt(oneRetryIdentity), { allowed: true })
+const oneRetrySnapshot = oneRetryTracker.snapshot()
+const oneRetryReservation = oneRetryTracker.tryReserveSameAccountRetry({
+  ...oneRetryIdentity,
+  maxRetries: 1
+})
+assert(oneRetryReservation.reserved, 'maxRetries=1 必须预留一次原地重试')
+assert.equal(oneRetryReservation.retryNumber, 1)
+assert.equal(oneRetryReservation.remaining, 0)
+assert.match(oneRetryReservation.retryId, /^same-account-retry:/)
+assert.deepEqual(oneRetryTracker.canAttemptAccount(oneRetryIdentity), {
+  allowed: false,
+  reason: 'physical_credential_already_attempted'
+}, '普通 canAttemptAccount 不得因存在原地重试 token 而放行')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  sameAccountRetryId: 'same-account-retry:forged'
+}), { allowed: false, reason: 'same_account_retry_not_registered' }, '伪造 retryId 必须被拒绝')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  accountRuntimeKey: 'runtime-new-account',
+  physicalCredentialKey: 'physical-new-account',
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_identity_mismatch' }, '原地重试 token 不得放行新账户')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  accountRuntimeKey: 'runtime-shared-credential-alias',
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_identity_mismatch' }, '原地重试 token 不得放行共享物理凭据别名')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  keyFingerprint: 'key-one-retry-rotated',
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_identity_mismatch' }, '原地重试 token 不得绕过 Key rotation 更换指纹')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  matchingConfirmation: true,
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_mode_conflict' }, '原地重试不得与 confirmation 模式叠加')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  allowKeyRotation: true,
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_mode_conflict' }, '原地重试不得与 Key rotation 模式叠加')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  semanticRetryId: 'semantic-conflict',
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_mode_conflict' }, '原地重试不得与 semantic retry 模式叠加')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: true }, '匹配已登记账户和物理凭据的 retryId 必须恰好放行一次')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  sameAccountRetryId: oneRetryReservation.retryId
+}), { allowed: false, reason: 'same_account_retry_already_attempted' }, '已消费 retryId 不得重复使用')
+assert.deepEqual(oneRetryTracker.tryReserveSameAccountRetry({
+  ...oneRetryIdentity,
+  maxRetries: 3
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, '首次 maxRetries=1 后，后续更大的配置不得扩容')
+assert.deepEqual(oneRetryTracker.snapshot(), oneRetrySnapshot, '预留、拒绝和成功的原地重试均不得污染普通尝试快照')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  matchingConfirmation: true
+}), { allowed: true }, '原地重试不得预先消耗 confirmation 的独立登记')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  matchingConfirmation: true
+}), { allowed: false, reason: 'confirmation_already_attempted' }, '原地重试后 confirmation 仍必须保持单次隔离')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  semanticRetryId: 'semantic-after-same-account-retry'
+}), { allowed: true }, '原地重试不得预先消耗 semantic retry 的独立登记')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  semanticRetryId: 'semantic-after-same-account-retry'
+}), { allowed: false, reason: 'semantic_retry_already_attempted' }, '原地重试后 semantic retry 仍必须保持同代次隔离')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  keyFingerprint: 'key-one-retry-rotated',
+  allowKeyRotation: true
+}), { allowed: true }, '原地重试不得阻断合法的新物理 Key rotation')
+assert.deepEqual(oneRetryTracker.tryRecordDispatchAttempt({
+  ...oneRetryIdentity,
+  keyFingerprint: 'key-one-retry-rotated',
+  allowKeyRotation: true
+}), { allowed: false, reason: 'key_fingerprint_already_attempted' }, '原地重试后 Key rotation 仍必须按指纹隔离')
+
+const sharedRetryTracker = new GatewayRequestAttemptTracker()
+const sharedRetryIdentities = ['a', 'b', 'c'].map((suffix) => ({
+  protocolModelKey: gatewayAttemptProtocolModelKey({
+    accountRuntimeKey: `runtime-shared-retry-${suffix}`,
+    protocolCode: 'openai-v1',
+    protocolVersion: '1',
+    model: 'gpt-5'
+  }),
+  accountRuntimeKey: `runtime-shared-retry-${suffix}`,
+  physicalCredentialKey: `physical-shared-retry-${suffix}`,
+  keyFingerprint: `key-shared-retry-${suffix}`
+}))
+for (const identity of sharedRetryIdentities) {
+  assert.deepEqual(sharedRetryTracker.tryRecordDispatchAttempt(identity), { allowed: true })
+}
+const sharedRetrySnapshot = sharedRetryTracker.snapshot()
+const sharedReservations = sharedRetryIdentities.map((identity) => sharedRetryTracker.tryReserveSameAccountRetry({
+  ...identity,
+  maxRetries: 3
+}))
+for (const [index, reservation] of sharedReservations.entries()) {
+  assert(reservation.reserved, `第 ${index + 1} 次共享原地重试必须成功预留`)
+  assert.equal(reservation.retryNumber, index + 1, '跨账户/分组不得重置请求级 retryNumber')
+  assert.equal(reservation.remaining, 2 - index)
+}
+const sharedRetryIds = sharedReservations.map((reservation) => {
+  assert(reservation.reserved)
+  return reservation.retryId
+})
+assert.equal(new Set(sharedRetryIds).size, 3, '每次原地重试预留必须返回唯一 retryId')
+for (const [index, identity] of sharedRetryIdentities.entries()) {
+  assert.deepEqual(sharedRetryTracker.tryRecordDispatchAttempt({
+    ...identity,
+    sameAccountRetryId: sharedRetryIds[index]
+  }), { allowed: true })
+}
+assert.deepEqual(sharedRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[0]!,
+  maxRetries: 10
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, '跨账户用完首次锁定的 3 次预算后，更大的后续配置不得重新发放额度')
+assert.deepEqual(sharedRetryTracker.snapshot(), sharedRetrySnapshot, '跨账户共享重试也不得扩充普通尝试快照')
+
+const conservativeRetryTracker = new GatewayRequestAttemptTracker()
+for (const identity of sharedRetryIdentities.slice(0, 2)) {
+  assert.deepEqual(conservativeRetryTracker.tryRecordDispatchAttempt(identity), { allowed: true })
+}
+const firstConservativeReservation = conservativeRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[0]!,
+  maxRetries: 3
+})
+assert(firstConservativeReservation.reserved)
+assert.equal(firstConservativeReservation.remaining, 2)
+assert.deepEqual(conservativeRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[1]!,
+  maxRetries: 1
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, '后续分组看到更小 maxRetries 时必须立即采用更保守的请求级上限')
+assert.deepEqual(conservativeRetryTracker.tryReserveSameAccountRetry({
+  ...sharedRetryIdentities[1]!,
+  maxRetries: 10
+}), {
+  reserved: false,
+  reason: 'same_account_retry_budget_exhausted',
+  remaining: 0
+}, '预算收紧后不得再被更大配置扩容')
+
+const aliasRetryTracker = new GatewayRequestAttemptTracker()
+assert.deepEqual(aliasRetryTracker.tryRecordDispatchAttempt(oneRetryIdentity), { allowed: true })
+assert.deepEqual(aliasRetryTracker.tryReserveSameAccountRetry({
+  ...oneRetryIdentity,
+  accountRuntimeKey: 'runtime-shared-credential-alias',
+  maxRetries: 1
+}), {
+  reserved: false,
+  reason: 'same_account_retry_not_applicable',
+  remaining: 1
+}, '共享同一物理凭据的别名账户不得自行取得原地重试 token')
 
 const targets = [{ groupId: 'group-a' }, { groupId: 'group-b' }] as const
 const plan = createGatewayRoutePlanSnapshot({

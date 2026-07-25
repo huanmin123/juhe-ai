@@ -4,6 +4,7 @@ import { isCompletedRealUpstreamAttempt, isRealUpstreamAttempt, type UpstreamAtt
 
 export type AutomaticAccountProbeOutcome =
   | 'complete_success'
+  | 'framing_complete_neutral'
   | 'upstream_failure'
   | 'probe_task_failure'
   | 'stale'
@@ -37,7 +38,7 @@ interface TransportProbeAccountTestResult {
   message?: string
 }
 
-type TransportProbeUpstreamAttempt = Pick<UpstreamAttempt, 'upstreamUrl' | 'status' | 'message'>
+type TransportProbeUpstreamAttempt = Pick<UpstreamAttempt, 'upstreamUrl' | 'status' | 'message' | 'transportFailureKind'>
 
 export function transportProbeOutcomeFromAccountTestResult(
   result: TransportProbeAccountTestResult,
@@ -81,46 +82,38 @@ export function transportProbeMeetsFirstByteTarget(
   outcome: TransportProbeOutcome,
   firstByteThresholdMs: number
 ): boolean {
-  return outcome.kind === 'framing_complete'
+  return result.success === true
+    && outcome.kind === 'framing_complete'
     && result.firstTokenMs !== undefined
     && result.firstTokenMs <= firstByteThresholdMs
 }
 
 function transportProbeLocalFailureKind(
-  result: TransportProbeAccountTestResult,
+  _result: TransportProbeAccountTestResult,
   upstreamAttempt: TransportProbeUpstreamAttempt | undefined,
   statusCode: number | undefined,
   timedOut: boolean
 ): 'timeout' | 'connection' | 'read' | undefined {
   if (timedOut) return 'timeout'
-  const errorCode = result.errorCode?.trim().toLowerCase()
-  if (errorCode === 'upstream_body_interrupted' || errorCode === 'upstream_read_interrupted') {
-    return 'read'
-  }
-  if (errorCode === 'first_byte_timeout' || errorCode === 'upstream_timeout') {
-    return 'timeout'
-  }
+  if (upstreamAttempt?.transportFailureKind === 'timeout') return 'timeout'
+  if (upstreamAttempt?.transportFailureKind === 'read_incomplete') return 'read'
+  if (upstreamAttempt?.transportFailureKind === 'connection') return 'connection'
   if (statusCode !== undefined) return undefined
-  const diagnostic = [result.errorCode, upstreamAttempt?.message]
-    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    .join(' ')
-    .toLowerCase()
-  if (!diagnostic) return undefined
-  if (/(?:timeout|timed out|deadline|etimedout|aborterror)/.test(diagnostic)) {
-    return 'timeout'
-  }
-  if (/(?:econnrefused|econnreset|enotfound|eai_again|und_err_connect|connect error|connection refused|socket hang up|proxy connect)/.test(diagnostic)) {
-    return 'connection'
-  }
-  return undefined
+  return upstreamAttempt ? 'connection' : undefined
 }
 
 export function automaticAccountProbeOutcome(
-  result: { success: boolean; accountFailureEligible?: boolean },
-  upstreamResponseObserved: boolean
+  result: TransportProbeAccountTestResult & { accountFailureEligible?: boolean },
+  evidence: {
+    upstreamAttempt?: TransportProbeUpstreamAttempt
+    canceled?: boolean
+    timeout?: boolean
+  } = {}
 ): Exclude<AutomaticAccountProbeOutcome, 'stale'> {
-  if (result.success) return 'complete_success'
-  return upstreamResponseObserved ? 'upstream_failure' : 'probe_task_failure'
+  const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, evidence)
+  if (transportOutcome.kind === 'transport_incomplete') return 'upstream_failure'
+  if (transportOutcome.kind === 'unknown') return 'probe_task_failure'
+  return result.success ? 'complete_success' : 'framing_complete_neutral'
 }
 
 export function automaticAccountProbeObservation(input: {

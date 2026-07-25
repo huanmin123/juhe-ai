@@ -4,7 +4,7 @@
 
 当前网关已经具备两类客户端 IP 相关保护：
 
-- **IP 级账号回避**：当前序账号未确认失败、后续账号成功后，让同一 `clientIp + API Key` 短期优先避让前序失败账号。
+- **IP 级账号回避**：当前序账号形成本地可验证 transport failure、后续账号形成完整 framing 后，让同一 `clientIp + API Key` 短期优先避让前序传输失败账号；opaque HTTP/协议失败不进入。
 - **单 IP 并发保护**：高并发分组可按同一 `系统账户 + 分组 + API Key + 客户端 IP` 限制同时进入调度的请求数量。
 
 这两类能力都不是“错误频率拦截”。如果某个客户端 IP 使用有效 API Key 持续构造错误请求，或者在认证前反复缺少 Bearer / 使用无效 API Key 探测，当前系统会通过 IP 级错误熔断按短 TTL 自动短路高置信来源错误风暴；API Key 额度、账号并发、高并发分组队列和可选单 IP 并发限制只负责各自的授权或容量边界。
@@ -146,8 +146,8 @@ clientIp + invalid_token_spray
 | 本地 JSON 非法 | 是 | 请求体无法解析，属于高置信请求问题 |
 | 本地模型不支持或模型过滤失败 | 是 | 当前 API Key 路由无法承接该请求，重复高频会消耗本地链路 |
 | OAuth / Codex adapter 本地校验失败 | 是 | 请求在进入上游前已被确认不可转发 |
-| 多账号返回相同或相似上游错误 | 否 | 仍可能是上游公共故障、容量波动或账号池共同问题；普通上游失败只进入账号本地屏蔽、切号、等待和统一网关错误，不作为来源错误熔断样本 |
-| 未知失败后续账号成功 | 否，交给 IP 级账号回避 | 这是账号候选排序问题，不是来源错误熔断依据 |
+| 多账号返回相同或相似完整上游错误 | 否 | 上游状态码、正文和协议字段不可信；安全文本请求只能做请求级 opaque 接管，不建立来源熔断、账号屏蔽或跨请求 IP 回避 |
+| 本地 transport failure 后续账号形成完整 framing | 否，交给 IP 级账号回避 | 这是已确认可绕开的来源传输排序事实，不是来源错误熔断依据；其他失败类别不得混入 |
 | 未知失败所有账号都失败 | 否 | 可能是账号池、代理、网络或上游公共问题 |
 | 账户错误处理策略命中 | 否 | 已归属账户状态处理，不能重复处罚来源 |
 | 账号并发满、分组队列满、单 IP 并发满 | 否 | 本地容量问题，不代表请求错误 |
@@ -254,7 +254,7 @@ flowchart TD
 | 高并发单 IP 并发保护 | 同 IP 同时进入调度的请求数量 | 并发保护挡瞬时并发；错误熔断挡连续错误 |
 | IP 级账号回避 | 同来源对单账号的候选排序 | 回避负责切号救请求；错误熔断负责错误过多时短路 |
 | 账户错误处理策略 | 账户级上游错误规则 | 优先归属账号状态处理，不计入来源熔断 |
-| 本地账号屏蔽 | 单账号普通上游失败后的短 TTL 避让 | 后续成功时可交给 IP 级账号回避；不直接熔断来源 |
+| 本地 transport 屏蔽 | 单账号本地 transport failure 后的有界保护 | 后续完整 framing 时可交给 IP 级账号回避；opaque HTTP/协议失败不进入，也不直接熔断来源 |
 | 流熔断 | 账号流式失败计数 | 流熔断处理账号稳定性；来源错误熔断不处理已输出后的流失败 |
 
 ## 观测与审计
@@ -292,7 +292,7 @@ flowchart TD
 - `request/preflight.ts`：认证后、账号调度前检查当前来源是否已熔断；命中后返回本地 `429`。
 - `request/preflight.ts` / `routes.ts`：本地校验失败和 OAuth/Codex adapter 本地请求校验失败收口时记录来源错误样本。
 - `response/finalization.ts`：完整成功后降低或清理当前来源错误态。
-- `dispatch/upstream-dispatch.ts` / `response/failure-dispatch.ts`：账号级、容量级和未知账号池失败都不计入来源错误熔断；普通上游失败必须先走本地账号屏蔽、切号、等待和统一网关错误，不复用 IP 级错误熔断的本地 429。
+- `dispatch/upstream-dispatch.ts` / `response/failure-dispatch.ts`：账号级、容量级和未知账号池结果都不计入来源错误熔断；opaque HTTP/协议失败只处理当前安全文本请求，本地 transport failure 才能走传输屏蔽、IP 回避和后台核实，二者都不复用 IP 级错误熔断的本地 429。
 - `audit/capture.service.ts`、`upstream/headers.ts`、`usage/snapshots.ts`、`usage/record-queue.service.ts`：审计 payload 和使用记录 snapshot 入队 / 落库前不再统一脱敏凭据类 headers、敏感字段和 URL 敏感查询参数；只保留容量和结构边界，不影响真实转发 headers。
 - 回归脚本：新增 `client-ip-error-circuit-regression.ts`，覆盖认证前缺失 Bearer 熔断、重复无效 token 熔断、随机无效 token 不挡有效 token、本地高置信错误熔断、成功恢复、同一 API Key 不同分组共享熔断、不同 IP / API Key / 系统账户隔离、未知上游账号池失败不采样、账号失败不触发、容量失败不触发；在审计保全回归中覆盖审计 payload、审计 queryString 和使用记录 snapshot 的原文保存。
 

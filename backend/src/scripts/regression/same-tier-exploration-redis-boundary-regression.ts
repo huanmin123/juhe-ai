@@ -8,7 +8,7 @@ assert.match(source, /class RedisSameTierExplorationStore implements SameTierExp
 assert.match(source, /eval\(sameTierExplorationMutationScript/, 'credit、reservation 与 settlement 必须进入单次 Lua')
 assert.match(source, /ZREMRANGEBYSCORE[\s\S]*ZCARD[\s\S]*capacity_exhausted/, 'Redis pool registry 必须原子清理 TTL 并限制容量')
 assert.match(source, /decoded\['expiresAtMs'\][\s\S]*now_ms[\s\S]*if not state then/, 'Redis 必须同时尊重逻辑 expiresAtMs，避免自定义时钟下复活过期 pool')
-assert.match(source, /not has_value\(state\['accruedTokens'\], token\)[\s\S]*identity_capacity/, 'accrual token 幂等集合必须有界')
+assert.match(source, /not has_value\(state\['accruedTokens'\], token\)[\s\S]*while #\(state\['accruedTokens'\] or \{\}\) >= identity_capacity[\s\S]*table\.remove\(state\['accruedTokens'\], 1\)/, 'accrual token 必须使用有界滚动去重窗口，容量满后不得冻结探索')
 assert.match(source, /state\['credit'\] = math\.min\(1,[\s\S]*\+ 0\.05\)/, 'credit 必须按 1\/20 原子累积')
 assert.match(source, /#state\['reservations'\] > 0[\s\S]*status = 'pool_busy'/, 'peer-pool 必须以同一 Lua 保证 reservation 单飞')
 assert.match(source, /has_value\(state\['settledReservationIds'\], reservation_id\)[\s\S]*status = 'reservation_conflict'/, '已过期或已结算 reservation ID 必须 fencing，禁止复用')

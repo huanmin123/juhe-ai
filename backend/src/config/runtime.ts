@@ -101,6 +101,15 @@ export interface RuntimeConfig {
     upstreamAgentMaxSockets: number
     upstreamAgentMaxFreeSockets: number
     upstreamAgentMaxTotalSockets: number
+    accountCircuitConfirmationFailuresRequired?: number
+    accountCircuitEscalationDistinctScopeThreshold: number
+    accountCircuitEscalationWindowMs: number
+    accountCircuitCapacity: number
+    accountCircuitRebuildPageTimeoutMs: number
+    accountCircuitRebuildTotalTimeoutMs: number
+    accountCircuitRebuildMaxPages: number
+    accountCircuitRecoveryBatchSize: number
+    accountCircuitRecoveryConcurrency: number
   }
   modelCheck: {
     probeRetryDelayMs: number
@@ -350,7 +359,40 @@ export const runtimeConfig: RuntimeConfig = {
     bodyInFlightMaxBytes: numberConfig('JUHE_AI_GATEWAY_BODY_IN_FLIGHT_MAX_MB', 256, 16, 4096) * 1024 * 1024,
     upstreamAgentMaxSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_SOCKETS', 2048, 64, 20000),
     upstreamAgentMaxFreeSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_FREE_SOCKETS', 512, 16, 5000),
-    upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000)
+    upstreamAgentMaxTotalSockets: numberConfig('JUHE_AI_GATEWAY_UPSTREAM_AGENT_MAX_TOTAL_SOCKETS', 8192, 64, 50000),
+    accountCircuitConfirmationFailuresRequired: optionalIntegerConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CONFIRMATION_FAILURES_REQUIRED',
+      1,
+      5
+    ),
+    accountCircuitEscalationDistinctScopeThreshold: integerConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD',
+      3,
+      3,
+      64
+    ),
+    accountCircuitEscalationWindowMs: integerConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS',
+      10 * 60_000,
+      60_000,
+      24 * 60 * 60_000
+    ),
+    accountCircuitCapacity: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_CAPACITY', 50_000, 1_000, 1_000_000),
+    accountCircuitRebuildPageTimeoutMs: integerConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_REBUILD_PAGE_TIMEOUT_MS',
+      2_000,
+      100,
+      30_000
+    ),
+    accountCircuitRebuildTotalTimeoutMs: integerConfig(
+      'JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_REBUILD_TOTAL_TIMEOUT_MS',
+      15_000,
+      500,
+      300_000
+    ),
+    accountCircuitRebuildMaxPages: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_REBUILD_MAX_PAGES', 200, 1, 2_000),
+    accountCircuitRecoveryBatchSize: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_BATCH_SIZE', 200, 1, 2_000),
+    accountCircuitRecoveryConcurrency: integerConfig('JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_RECOVERY_CONCURRENCY', 16, 1, 128)
   },
   modelCheck: {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
@@ -671,6 +713,15 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
 function integerConfig(name: string, fallback: number, min: number, max: number): number {
   const rawValue = rawStringConfig(name)
   if (!rawValue) return fallback
+  const value = Number(rawValue)
+  if (!Number.isInteger(value)) throw new Error(`${name} 必须配置为整数`)
+  if (value < min || value > max) throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
+  return value
+}
+
+function optionalIntegerConfig(name: string, min: number, max: number): number | undefined {
+  const rawValue = rawStringConfig(name)
+  if (!rawValue) return undefined
   const value = Number(rawValue)
   if (!Number.isInteger(value)) throw new Error(`${name} 必须配置为整数`)
   if (value < min || value > max) throw new Error(`${name} 必须在 ${min}-${max} 范围内`)

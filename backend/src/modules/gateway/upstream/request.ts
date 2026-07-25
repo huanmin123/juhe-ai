@@ -75,6 +75,20 @@ export class UpstreamRequestAbortedError extends Error {
   }
 }
 
+const startedUpstreamTransportErrors = new WeakSet<object>()
+
+export function isStartedUpstreamTransportError(error: unknown): boolean {
+  return isWeakSetValue(error) && startedUpstreamTransportErrors.has(error)
+}
+
+function markStartedUpstreamTransportError(error: unknown): void {
+  if (isWeakSetValue(error)) startedUpstreamTransportErrors.add(error)
+}
+
+function isWeakSetValue(value: unknown): value is object {
+  return (typeof value === 'object' && value !== null) || typeof value === 'function'
+}
+
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
   keepAlive: true,
   maxSockets: runtimeConfig.gateway.upstreamAgentMaxSockets,
@@ -116,7 +130,10 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
     if (this.decodedBody !== undefined) {
       return this.decodedBody
     }
-    this.decodedBody = decodeUpstreamResponseBody(this.message)
+    const decodedBody = decodeUpstreamResponseBody(this.message)
+    this.decodedBody = decodedBody
+      ? cancellableNodeUpstreamResponseBody(decodedBody, this.message)
+      : null
     return this.decodedBody
   }
 
@@ -124,7 +141,8 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
 
 export async function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
   const safeRequest = await prepareSafeUpstreamRequestUrl(upstreamUrl)
-  if (options.transport === 'fetch') {
+  // Global fetch cannot consume the existing HTTP/SOCKS Agent cache.
+  if (options.transport === 'fetch' && !options.proxyUrl) {
     return requestUpstreamWithFetch(safeRequest.url, options)
   }
   return new Promise((resolve, reject) => {
@@ -188,19 +206,24 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
       const deadlineMs = options.firstByteDeadlineMs
       const deadlineStartedAtMs = Date.now()
       firstByteDeadlineTimer = setTimeout(() => {
-        void Promise.resolve(options.onFirstByteDeadline?.({
+        if (settled) return
+        void Promise.resolve().then(() => options.onFirstByteDeadline?.({
           elapsedMs: Date.now() - deadlineStartedAtMs,
           timeoutMs: deadlineMs,
           transport: options.firstByteDeadlineTransport ?? 'non_stream'
         }) ?? 'abort').then((action) => {
-          if (action === 'abort') {
+          if (!settled && action === 'abort') {
             request.destroy(new GatewayFirstByteTimeoutError(
               `上游请求 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个响应`,
               deadlineMs,
               'configured_deadline'
             ))
           }
-        }).catch((error: unknown) => request.destroy(error instanceof Error ? error : new Error(String(error))))
+        }).catch((error: unknown) => {
+          if (!settled) {
+            request.destroy(error instanceof Error ? error : new Error(String(error)))
+          }
+        })
       }, deadlineMs)
     }
     request.setTimeout(options.timeoutMs ?? 120000, abort)
@@ -209,6 +232,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     request.on('error', (error) => {
       clearRequestTimeout()
       cleanupAbortSignal()
+      if (upstreamRequestStarted) markStartedUpstreamTransportError(error)
       settleReject(error)
     })
     request.on('response', cleanupAbortSignal)
@@ -267,6 +291,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
   let requestTimeout: NodeJS.Timeout | undefined
   let firstByteDeadlineTimer: NodeJS.Timeout | undefined
   let socketTimeout: NodeJS.Timeout | undefined
+  let responseReceived = false
   const abortBySignal = () => controller.abort(new UpstreamRequestAbortedError('请求已取消', true))
   if (options.signal?.aborted) {
     throw new UpstreamRequestAbortedError('请求已取消')
@@ -283,19 +308,24 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
       const deadlineMs = options.firstByteDeadlineMs
       const deadlineStartedAtMs = Date.now()
       firstByteDeadlineTimer = setTimeout(() => {
-        void Promise.resolve(options.onFirstByteDeadline?.({
+        if (responseReceived) return
+        void Promise.resolve().then(() => options.onFirstByteDeadline?.({
           elapsedMs: Date.now() - deadlineStartedAtMs,
           timeoutMs: deadlineMs,
           transport: options.firstByteDeadlineTransport ?? 'non_stream'
         }) ?? 'abort').then((action) => {
-          if (action === 'abort') {
+          if (!responseReceived && action === 'abort') {
             controller.abort(new GatewayFirstByteTimeoutError(
               `上游请求 ${Math.ceil(deadlineMs / 1000)}s 后仍未返回首个响应`,
               deadlineMs,
               'configured_deadline'
             ))
           }
-        }).catch((error: unknown) => controller.abort(error))
+        }).catch((error: unknown) => {
+          if (!responseReceived) {
+            controller.abort(error)
+          }
+        })
       }, deadlineMs)
     }
     if (options.timeoutMs !== undefined) {
@@ -311,6 +341,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
       signal: controller.signal,
       redirect: 'manual'
     })
+    responseReceived = true
     if (requestTimeout) {
       clearTimeout(requestTimeout)
       requestTimeout = undefined
@@ -321,10 +352,9 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
     })
   } catch (error) {
     const reason = controller.signal.reason
-    if (reason instanceof Error) {
-      throw reason
-    }
-    throw error
+    const failure = reason instanceof Error ? reason : error
+    if (!responseReceived) markStartedUpstreamTransportError(failure)
+    throw failure
   } finally {
     if (requestTimeout) clearTimeout(requestTimeout)
     if (firstByteDeadlineTimer) clearTimeout(firstByteDeadlineTimer)
@@ -671,6 +701,56 @@ function decodeUpstreamResponseBody(message: IncomingMessage): AsyncIterable<Uin
     stream = stream.pipe(decoder)
   }
   return stream as AsyncIterable<Uint8Array>
+}
+
+function cancellableNodeUpstreamResponseBody(
+  body: AsyncIterable<Uint8Array>,
+  message: IncomingMessage
+): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      const iterator = body[Symbol.asyncIterator]()
+      let closed = false
+      const cancel = async (): Promise<void> => {
+        if (closed) return
+        closed = true
+        destroyNodeUpstreamResponseBody(body, message)
+        try {
+          await iterator.return?.()
+        } catch {
+        }
+      }
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (closed) return { done: true, value: undefined }
+          try {
+            const result = await iterator.next()
+            if (result.done) closed = true
+            return result
+          } catch (error) {
+            closed = true
+            destroyNodeUpstreamResponseBody(body, message)
+            throw error
+          }
+        },
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          await cancel()
+          return { done: true, value: undefined }
+        }
+      }
+    }
+  }
+}
+
+function destroyNodeUpstreamResponseBody(
+  body: AsyncIterable<Uint8Array>,
+  message: IncomingMessage
+): void {
+  if (!message.destroyed) message.destroy()
+  const decodedStream = body as Partial<Readable>
+  if (decodedStream !== message && decodedStream.destroyed !== true) {
+    decodedStream.destroy?.()
+  }
 }
 
 function parseContentEncodings(value: string | string[] | undefined): string[] {

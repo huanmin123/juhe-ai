@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import type { RouteStrategyMode } from '../../../domain/types.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
 
@@ -30,11 +32,33 @@ export type GatewayDispatchAttemptRejectionReason =
   | 'key_fingerprint_already_attempted'
   | 'protocol_model_already_attempted'
   | 'confirmation_already_attempted'
+  | 'semantic_retry_already_attempted'
+  | 'same_account_retry_not_registered'
+  | 'same_account_retry_already_attempted'
+  | 'same_account_retry_identity_mismatch'
+  | 'same_account_retry_mode_conflict'
   | 'key_rotation_not_applicable'
 
 export type GatewayDispatchAttemptRegistration =
   | { allowed: true }
   | { allowed: false; reason: GatewayDispatchAttemptRejectionReason }
+
+export type GatewaySameAccountRetryReservation =
+  | {
+      reserved: true
+      retryId: string
+      retryNumber: number
+      remaining: number
+    }
+  | {
+      reserved: false
+      reason: 'same_account_retry_budget_exhausted' | 'same_account_retry_not_applicable'
+      remaining: number
+    }
+
+export interface GatewaySameAccountRetryReservationInput extends GatewayDispatchAttemptIdentity {
+  maxRetries: number
+}
 
 export type RouteCoordinationResult<TAccount> =
   | {
@@ -294,6 +318,12 @@ export class RouteCoordinationBudget {
   }
 }
 
+interface GatewaySameAccountRetryReservationRecord {
+  readonly identity: GatewayDispatchAttemptIdentity
+  readonly retryNumber: number
+  consumed: boolean
+}
+
 export class GatewayRequestAttemptTracker {
   private readonly accountRuntimeKeys: Set<string>
   private readonly physicalCredentialKeys: Set<string>
@@ -301,6 +331,12 @@ export class GatewayRequestAttemptTracker {
   private readonly protocolModelKeys: Set<string>
   private readonly physicalCredentialRuntimeKeys = new Map<string, Set<string>>()
   private readonly confirmationAttemptKeys = new Set<string>()
+  private readonly confirmationPhysicalCredentialKeys = new Map<string, string>()
+  private readonly semanticRetryAttemptKeys = new Set<string>()
+  private readonly registeredDispatchIdentities = new Map<string, GatewayDispatchAttemptIdentity>()
+  private readonly sameAccountRetryReservations = new Map<string, GatewaySameAccountRetryReservationRecord>()
+  private sameAccountRetryLimit: number | undefined
+  private sameAccountRetryReservationCount = 0
 
   constructor(initial?: Partial<GatewayRequestAttemptSnapshot>) {
     this.accountRuntimeKeys = normalizedKeySet(initial?.attemptedAccountRuntimeKeys)
@@ -341,8 +377,43 @@ export class GatewayRequestAttemptTracker {
     return hasKey(this.protocolModelKeys, key)
   }
 
+  tryReserveSameAccountRetry(
+    input: GatewaySameAccountRetryReservationInput
+  ): GatewaySameAccountRetryReservation {
+    const maxRetries = normalizedSameAccountRetryMaxRetries(input.maxRetries)
+    this.sameAccountRetryLimit = this.sameAccountRetryLimit === undefined
+      ? maxRetries
+      : Math.min(this.sameAccountRetryLimit, maxRetries)
+
+    const identity = normalizedDispatchAttemptIdentity(input)
+    const registeredIdentity = this.registeredDispatchIdentities.get(dispatchAttemptIdentityKey(identity))
+    const remaining = this.sameAccountRetryRemaining()
+    if (!registeredIdentity || !sameDispatchAttemptIdentity(registeredIdentity, identity)) {
+      return { reserved: false, reason: 'same_account_retry_not_applicable', remaining }
+    }
+    if (remaining <= 0) {
+      return { reserved: false, reason: 'same_account_retry_budget_exhausted', remaining: 0 }
+    }
+
+    const retryNumber = this.sameAccountRetryReservationCount + 1
+    const retryId = `same-account-retry:${randomUUID()}`
+    this.sameAccountRetryReservationCount = retryNumber
+    this.sameAccountRetryReservations.set(retryId, {
+      identity,
+      retryNumber,
+      consumed: false
+    })
+    return {
+      reserved: true,
+      retryId,
+      retryNumber,
+      remaining: this.sameAccountRetryRemaining()
+    }
+  }
+
   canAttemptAccount(input: Pick<GatewayDispatchAttemptIdentity, 'accountRuntimeKey' | 'physicalCredentialKey'> & {
     matchingConfirmation?: boolean
+    semanticRetryId?: string
   }): GatewayDispatchAttemptRegistration {
     const accountRuntimeKey = normalizedRequiredKey(input.accountRuntimeKey)
     const physicalCredentialKey = normalizedRequiredKey(input.physicalCredentialKey)
@@ -353,7 +424,19 @@ export class GatewayRequestAttemptTracker {
     if (physicalAttemptedByAnotherRuntime) {
       return { allowed: false, reason: 'physical_credential_already_attempted' }
     }
+    if (input.semanticRetryId) {
+      return this.semanticRetryAttemptKeys.has(semanticRetryAttemptKey(input.semanticRetryId, accountRuntimeKey, physicalCredentialKey))
+        ? { allowed: false, reason: 'semantic_retry_already_attempted' }
+        : { allowed: true }
+    }
     if (input.matchingConfirmation) {
+      const confirmationPhysicalCredentialKey = this.confirmationPhysicalCredentialKeys.get(accountRuntimeKey)
+      if (
+        confirmationPhysicalCredentialKey !== undefined
+        && confirmationPhysicalCredentialKey !== physicalCredentialKey
+      ) {
+        return { allowed: false, reason: 'physical_credential_already_attempted' }
+      }
       return this.confirmationAttemptKeys.has(confirmationAttemptKey(accountRuntimeKey, physicalCredentialKey))
         ? { allowed: false, reason: 'confirmation_already_attempted' }
         : { allowed: true }
@@ -370,32 +453,43 @@ export class GatewayRequestAttemptTracker {
   tryRecordDispatchAttempt(input: GatewayDispatchAttemptIdentity & {
     matchingConfirmation?: boolean
     allowKeyRotation?: boolean
+    semanticRetryId?: string
+    sameAccountRetryId?: string
   }): GatewayDispatchAttemptRegistration {
     const identity = normalizedDispatchAttemptIdentity(input)
+    if (input.sameAccountRetryId !== undefined) {
+      return this.tryRecordSameAccountRetry(identity, input)
+    }
     const accountDecision = this.canAttemptAccount({
       accountRuntimeKey: identity.accountRuntimeKey,
       physicalCredentialKey: identity.physicalCredentialKey,
-      matchingConfirmation: input.matchingConfirmation
+      matchingConfirmation: input.matchingConfirmation,
+      semanticRetryId: input.semanticRetryId
     })
-    if (!accountDecision.allowed && !input.allowKeyRotation) return accountDecision
 
-    if (input.matchingConfirmation) {
+    if (input.semanticRetryId) {
       if (!accountDecision.allowed) return accountDecision
-      this.confirmationAttemptKeys.add(confirmationAttemptKey(identity.accountRuntimeKey, identity.physicalCredentialKey))
+      this.semanticRetryAttemptKeys.add(semanticRetryAttemptKey(
+        input.semanticRetryId,
+        identity.accountRuntimeKey,
+        identity.physicalCredentialKey
+      ))
+    } else if (input.matchingConfirmation) {
+      if (accountDecision.allowed) {
+        this.confirmationAttemptKeys.add(confirmationAttemptKey(identity.accountRuntimeKey, identity.physicalCredentialKey))
+        this.confirmationPhysicalCredentialKeys.set(identity.accountRuntimeKey, identity.physicalCredentialKey)
+      } else {
+        if (!input.allowKeyRotation || accountDecision.reason !== 'confirmation_already_attempted') {
+          return accountDecision
+        }
+        const keyRotationDecision = this.canRotateKey(identity)
+        if (!keyRotationDecision.allowed) return keyRotationDecision
+      }
     } else if (input.allowKeyRotation) {
-      const runtimeKeys = this.physicalCredentialRuntimeKeys.get(identity.physicalCredentialKey)
-      if (
-        !identity.keyFingerprint
-        || !this.accountRuntimeKeys.has(identity.accountRuntimeKey)
-        || !this.physicalCredentialKeys.has(identity.physicalCredentialKey)
-        || !runtimeKeys?.has(identity.accountRuntimeKey)
-      ) {
-        return { allowed: false, reason: 'key_rotation_not_applicable' }
-      }
-      if (this.keyFingerprints.has(identity.keyFingerprint)) {
-        return { allowed: false, reason: 'key_fingerprint_already_attempted' }
-      }
+      const keyRotationDecision = this.canRotateKey(identity)
+      if (!keyRotationDecision.allowed) return keyRotationDecision
     } else {
+      if (!accountDecision.allowed) return accountDecision
       if (this.protocolModelKeys.has(identity.protocolModelKey)) {
         return { allowed: false, reason: 'protocol_model_already_attempted' }
       }
@@ -411,6 +505,7 @@ export class GatewayRequestAttemptTracker {
     const runtimeKeys = this.physicalCredentialRuntimeKeys.get(identity.physicalCredentialKey) ?? new Set<string>()
     runtimeKeys.add(identity.accountRuntimeKey)
     this.physicalCredentialRuntimeKeys.set(identity.physicalCredentialKey, runtimeKeys)
+    this.registeredDispatchIdentities.set(dispatchAttemptIdentityKey(identity), identity)
     return { allowed: true }
   }
 
@@ -421,6 +516,53 @@ export class GatewayRequestAttemptTracker {
       attemptedKeyFingerprints: Object.freeze([...this.keyFingerprints]),
       attemptedProtocolModelKeys: Object.freeze([...this.protocolModelKeys])
     })
+  }
+
+  private sameAccountRetryRemaining(): number {
+    return Math.max(0, (this.sameAccountRetryLimit ?? 0) - this.sameAccountRetryReservationCount)
+  }
+
+  private canRotateKey(identity: GatewayDispatchAttemptIdentity): GatewayDispatchAttemptRegistration {
+    const runtimeKeys = this.physicalCredentialRuntimeKeys.get(identity.physicalCredentialKey)
+    if (
+      !identity.keyFingerprint
+      || !this.accountRuntimeKeys.has(identity.accountRuntimeKey)
+      || !this.physicalCredentialKeys.has(identity.physicalCredentialKey)
+      || !runtimeKeys?.has(identity.accountRuntimeKey)
+    ) {
+      return { allowed: false, reason: 'key_rotation_not_applicable' }
+    }
+    if (this.keyFingerprints.has(identity.keyFingerprint)) {
+      return { allowed: false, reason: 'key_fingerprint_already_attempted' }
+    }
+    return { allowed: true }
+  }
+
+  private tryRecordSameAccountRetry(
+    identity: GatewayDispatchAttemptIdentity,
+    input: {
+      matchingConfirmation?: boolean
+      allowKeyRotation?: boolean
+      semanticRetryId?: string
+      sameAccountRetryId?: string
+    }
+  ): GatewayDispatchAttemptRegistration {
+    if (input.matchingConfirmation || input.allowKeyRotation || input.semanticRetryId !== undefined) {
+      return { allowed: false, reason: 'same_account_retry_mode_conflict' }
+    }
+    const retryId = normalizedRequiredKey(input.sameAccountRetryId ?? '')
+    const reservation = this.sameAccountRetryReservations.get(retryId)
+    if (!reservation) {
+      return { allowed: false, reason: 'same_account_retry_not_registered' }
+    }
+    if (reservation.consumed) {
+      return { allowed: false, reason: 'same_account_retry_already_attempted' }
+    }
+    if (!sameDispatchAttemptIdentity(reservation.identity, identity)) {
+      return { allowed: false, reason: 'same_account_retry_identity_mismatch' }
+    }
+    reservation.consumed = true
+    return { allowed: true }
   }
 }
 
@@ -543,8 +685,37 @@ function normalizedDispatchAttemptIdentity(input: GatewayDispatchAttemptIdentity
   }
 }
 
+function dispatchAttemptIdentityKey(identity: GatewayDispatchAttemptIdentity): string {
+  return JSON.stringify([identity.accountRuntimeKey, identity.physicalCredentialKey])
+}
+
+function sameDispatchAttemptIdentity(
+  left: GatewayDispatchAttemptIdentity,
+  right: GatewayDispatchAttemptIdentity
+): boolean {
+  return left.protocolModelKey === right.protocolModelKey
+    && left.accountRuntimeKey === right.accountRuntimeKey
+    && left.physicalCredentialKey === right.physicalCredentialKey
+    && left.keyFingerprint === right.keyFingerprint
+}
+
+function normalizedSameAccountRetryMaxRetries(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 10) {
+    throw new RangeError('same-account retry maxRetries must be an integer between 0 and 10')
+  }
+  return value
+}
+
 function confirmationAttemptKey(accountRuntimeKey: string, physicalCredentialKey: string): string {
   return JSON.stringify([accountRuntimeKey, physicalCredentialKey])
+}
+
+function semanticRetryAttemptKey(
+  semanticRetryId: string,
+  accountRuntimeKey: string,
+  physicalCredentialKey: string
+): string {
+  return JSON.stringify([normalizedRequiredKey(semanticRetryId), accountRuntimeKey, physicalCredentialKey])
 }
 
 function recordKey(keys: Set<string>, key: string): boolean {

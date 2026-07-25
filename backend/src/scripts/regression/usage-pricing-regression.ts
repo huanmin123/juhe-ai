@@ -1054,7 +1054,11 @@ assert.doesNotMatch(gatewayResponseFinalizationSource, /parseErrorPayload/)
 assert.doesNotMatch(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
 assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsageFallback/)
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
-assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
+assert.match(
+  gatewayResponseFinalizationSource,
+  /const downstreamBodyText = codexGuardedCompleteBodyText \?\? completeBodyText[\s\S]*responseSemanticText = downstreamBodyText/,
+  '非流式完整 JSON 响应语义文本必须来自完整检查窗口（允许 Codex guard 规范化），不能依赖成功审计正文捕获开关'
+)
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
 assert.match(
   gatewayResponseFinalizationSource,
@@ -1096,9 +1100,9 @@ assert.match(modelPricingProviderDriverRegistrySource, /buildAnthropicModelCandi
 
 const gatewayFailureDispatchSource = readSource('modules/gateway/response/failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
-assert.match(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/)
-assert.match(gatewayFailureDispatchSource, /parseGatewayProtocolErrorPayload/)
+assert.match(gatewayFailureDispatchSource, /automaticUpstreamReplayAllowedAfterDispatch/)
 assert.match(gatewayFailureDispatchSource, /recordFailedDispatchAttempt/, '账号准备等未创建 upstream attempt 的失败分支必须补审计 attempt')
+assert.doesNotMatch(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/, '通用失败不得写跨请求本地账户屏蔽')
 assert.doesNotMatch(gatewayFailureDispatchSource, /parseErrorPayload/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryPolicyAttempt/)
 assert.doesNotMatch(gatewayFailureDispatchSource, /shouldRetryAttempt\(/)
@@ -1112,11 +1116,11 @@ assert.doesNotMatch(gatewayDispatchHelpersSource, /temporaryUnschedulableRetryPo
 assert.doesNotMatch(gatewayDispatchHelpersSource, /gateway_temporary_unschedulable_same_account_retry/)
 
 const gatewayUpstreamDispatchSource = readSource('modules/gateway/dispatch/upstream-dispatch.ts')
-assert.match(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
 assert.doesNotMatch(gatewayUpstreamDispatchSource, /temporaryUnschedulableRetryPolicy/)
-assert.match(gatewayUpstreamDispatchSource, /retryAttemptCount\(sameAccountRetryPolicy\)/)
-assert.match(gatewayUpstreamDispatchSource, /shouldRetryPolicyAttempt\(attemptIndex, sameAccountRetryPolicy\)/)
-assert.match(gatewayUpstreamDispatchSource, /waitForSameAccountRetry/)
+assert.doesNotMatch(gatewayUpstreamDispatchSource, /gateway_temporary_unschedulable_same_account_retry/)
+assert.match(gatewayUpstreamDispatchSource, /requestAttemptTracker\.tryReserveSameAccountRetry/)
+assert.match(gatewayUpstreamDispatchSource, /pendingSameAccountRetryId/)
+assert.match(gatewayUpstreamDispatchSource, /waitForRetryDelayMs\(sameAccountRetryDelayMs, \{ signal \}\)/)
 assert.match(gatewayUpstreamDispatchSource, /recordAccountCapacityLimitFailure\([\s\S]*auditCapture[\s\S]*auditAttemptIndex/, '账号容量失败写使用记录时也必须补审计 attempt')
 
 const oauthAccessTokenRefreshSource = readSource('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
@@ -1284,6 +1288,7 @@ assert.match(codexSwitchProbeSource, /diagnosticAttemptSignal\(input\.signal,\s*
 assert.match(codexSwitchProbeSource, /isDiagnosticTimeoutSignal\(attemptSignal\)/)
 assert.match(codexSwitchProbeSource, /result\.success\s*\|\|\s*!shouldRetryCodexSwitchProbeSameAccount/, 'Codex 切号探针拿到明确失败后应立即换候选账号，只在本地超时时同账号递进等待')
 assert.match(codexSwitchProbeSource, /codexSwitchProbeGatewayTimeoutMs\(timeoutMs\)/)
+assert.doesNotMatch(codexSwitchProbeSource, /recordGatewayUpstreamBucketFailureAsync/, 'Codex 切号人工诊断不得把任意状态码或协议失败写入共享 proxy/upstream 健康桶')
 assert.doesNotMatch(codexSwitchProbeSource, /8_000|codexSwitchProbeTimeoutMs|testOpenAIAccountWithDiagnosticRetries/, 'Codex 切号探针不能保留 8s 专用超时，也不能使用普通账号测试的全失败原地重试包装器')
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')

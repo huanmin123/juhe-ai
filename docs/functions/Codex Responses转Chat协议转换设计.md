@@ -126,10 +126,9 @@ usage 策略：
 
 finish_reason 策略：
 
-- 标准 `stop` / `tool_calls` / `length` 按正常完成处理。
+- 任意完整 Chat JSON / SSE `finish_reason` 都是不可信的供应商协议字段；直通 Chat 响应原样保留，Responses-to-Chat bridge 只把它视为流终止，不按具体字符串合成业务失败。
 - `tool_calls` 按普通 function/custom 输出给下游；`web_search` 等 Responses 原生托管工具会在请求转换前按 agent guidance 分类，不进入网关工具执行循环。
-- GLM `network_error` 与 DeepSeek `insufficient_system_resource` 转为 `response.failed`，由网关流式外层统一给 Codex 可重试错误。
-- GLM `sensitive` 转为内容安全失败，`model_context_window_exceeded` 转为上下文超限失败。
+- DeepSeek `insufficient_system_resource`、GLM `sensitive` / `network_error` / `model_context_window_exceeded` 与其他未知值等价，系统不把它们解释成可重试、内容过滤或上下文错误。只有用户显式响应检查策略命中时，才按用户配置执行对应动作；状态变更边界以 [AI 账户错误语义与状态变更边界](AI账户错误语义与状态变更边界.md) 为准。
 
 ## 供应商自定义点
 
@@ -139,7 +138,7 @@ finish_reason 策略：
 - 默认模型，例如 GLM 使用 `glm-5.2`。
 - 模型映射后的上游模型。
 - Base URL 和路径拼接，例如 `/responses` 改为 `/chat/completions` 时是否追加 `/v1`。
-- 供应商特有 role、参数、usage 和错误语义。
+- 供应商特有 role、参数、usage 和响应结构；不得在 driver 内写死错误业务语义。
 - 是否需要额外清理或保留特定请求头。
 
 不要为每个供应商复制一份完整 Responses-to-Chat 转换代码。
@@ -217,7 +216,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 已用 Codex 源码确认：普通 function call 应通过最终 `response.output_item.done` 的 `type=function_call` item 交给 Codex；`response.function_call_arguments.delta` 当前不被普通 function call 路径消费。
 - 已用 Codex 源码确认：Codex input / output item 覆盖 `function_call_output`、`custom_tool_call_output`、`input_image`、`reasoning`、`web_search_call`、`image_generation_call`、`compaction` 等多个形态；Chat bridge 只覆盖其中能无损或低风险映射到 Chat Completions 的子集。
 - 当前 mock AI 覆盖未配置映射的普通 Chat-only 账号拒绝 `/v1/responses`、普通 OpenAI v1 账号显式 `responses -> chat_completions` bridge、旧显式混合映射不会把 Responses 改写到 Chat；共享 bridge 的请求 / 响应转换细节也保留为混合供应商账户复用能力，包括 `stream_options.include_usage`、function tools、历史 `reasoning` / `function_call` 归一化、`previous_response_id`、`/responses/compact`、Chat reasoning/text delta 到 Responses 事件和错误事件转换。
-- DeepSeek mock AI 已覆盖 bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、auto `web_search` guidance 且不命中上游、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射和 `insufficient_system_resource` finish_reason 转可重试失败。
+- DeepSeek mock AI 已覆盖 bridge 的文本、`stream_options.include_usage`、request history `reasoning` -> DeepSeek `reasoning_content`、历史 `function_call/function_call_output` 成组归一化、交错工具输出保留、裸 `message role=tool` / dangling / orphan 工具历史丢弃、auto `web_search` guidance 且不命中上游、`previous_response_id` 成功续链、未知 previous 受控拒绝、`/responses/compact` 走内部 Chat Completions 摘要并返回 `compaction_summary`、compact item 后续回灌、function tool、input_image data URL、usage 映射，以及 `insufficient_system_resource` 在 Chat JSON / SSE 原样透传、在 bridge 中中性完成且不合成失败。
 - 本地真实 CLI 回归已覆盖 Claude Code、Codex CLI、opencode -> 本地网关 -> 上游 mock 的基础链路。2026-06-24 新增 Codex CLI -> 本地网关 `/v1/responses` -> DeepSeek driver -> vsllm `deepseek-v4-flash` 的真实 marker 链路，Codex 携带 `x-codex-turn-metadata`，下游模型保留为 `gpt-5.3-codex`，上游映射到 Chat Completions 后成功返回并被 Codex 消费。
 - 2026-06-24 真实 Codex CLI 工具链路验证：DeepSeek `deepseek-v4-flash` 编程任务中，Codex 成功识别 bridge 输出的 function call，并进入 `command_execution` 工具调用；最终任务失败是因为模型生成的 PowerShell 写文件命令被本地 Codex policy 拒绝，临时项目测试仍停留在 TODO。这证明协议层工具调用可被 Codex 识别，但不证明该上游模型具备稳定完成 Codex 编程任务的质量。
 - 2026-06-24 真实 vsllm.com 调研：`/v1/models` 可列出 `glm-5.2`、`glm-5-turbo`、`glm-4.7-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-ai-v4-flash` 等模型。第一组通道下 `glm-5.2` / `glm-5-turbo` 返回上游鉴权失败，`deepseek-v4-flash` 返回欠费类错误，`deepseek-v4-pro` 返回无可用 provider 或限流；可用成功样本为 `glm-4.7-flash` 和 `deepseek-ai-v4-flash`。第二组通道下 `glm-5.2` / `glm-5-turbo` 仍返回上游鉴权失败，`deepseek-v4-flash` 基础 Chat 成功并返回 `content` + `reasoning_content`，流式工具调用成功且按多个 `delta.tool_calls[index].function.arguments` 分片输出参数，最终 `finish_reason=stop`；`deepseek-v4-pro` / `deepseek-ai-v4-flash` 返回当天额度耗尽。GLM `glm-4.7-flash` Chat JSON 返回 `reasoning_content` 和 `tool_calls`，GLM SSE 在默认 thinking 下先输出 `delta.reasoning_content`，补 `thinking.disabled + tool_stream=true` 后返回 `delta.tool_calls` 与 `finish_reason=tool_calls`。本次补充用第二组通道直连 `glm-4.7-flash` 强制 `custom__apply_patch`，真实 SSE 返回 `delta.tool_calls[0].function.name=custom__apply_patch`、arguments 为 `{"input":"print(\"vsllm custom bridge\")"}`、`finish_reason=tool_calls` 和 usage；同一账号下 `deepseek-v4-flash` 返回 Arrearage，`deepseek-ai-v4-flash` / `deepseek-v4-pro` 返回当天额度耗尽。

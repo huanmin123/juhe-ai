@@ -448,6 +448,8 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   routeStrategyId?: string
   clientIp?: string
   requestLane: OpenAIGatewayRequestLane
+  serverRetryBudget: ServerRetryBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
   signal?: AbortSignal
   dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
   routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
@@ -540,6 +542,12 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       eligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch
     })
     accounts = hotQualityOrder.accounts
+    if (input.hotQualityMode === 'speed_first' && input.latencyDegradedAccountIds.size > 0) {
+      accounts = [
+        ...accounts.filter((account) => !input.latencyDegradedAccountIds.has(account.id)),
+        ...accounts.filter((account) => input.latencyDegradedAccountIds.has(account.id))
+      ]
+    }
     hotQualityExplorationReservation = hotQualityOrder.explorationReservation
     settleHotQualityExplorationAfterDispatch = hotQualityOrder.settleExplorationAfterDispatch
     if (hotQualityOrder.dispatchIntent === 'same_tier_exploration' || hotQualityOrder.qualityReorderedTierKeys.length > 0) {
@@ -568,6 +576,16 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   if (input.dispatchOrderingOptions.groupType !== 'high_concurrency') {
+    if (await areGatewayAccountsCapacityBusyForLaneAsync(
+      accounts,
+      input.requestLane,
+      input.groupAccess.schedulingPolicy
+    )) {
+      const fallback = await requestRouteFallback(input, 'group_capacity_busy')
+      if (fallback.attempted) {
+        return { outcome: 'fallback', reason: 'group_capacity_busy', context: fallback.context }
+      }
+    }
     accounts = await orderGatewayAccountsByLaneCapacityAvailabilityAsync(
       accounts,
       input.requestLane,
@@ -653,16 +671,31 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
 
     if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-      const queueWait = await waitForHighConcurrencyGroupCapacity({
-        systemAccountId: input.systemAccountId,
-        groupId: input.groupId,
-        apiKeyId: input.apiKeyId,
-        accountIds: gatewayAccountConcurrencyAccountIds(accounts),
-        accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
-        lane: input.requestLane,
-        policy: input.groupAccess.schedulingPolicy,
-        signal: input.signal
-      })
+      const queueWaitStartedAtMs = Date.now()
+      input.serverRetryBudget.beginNoAvailableWait(queueWaitStartedAtMs)
+      let queueWait: Awaited<ReturnType<typeof waitForHighConcurrencyGroupCapacity>>
+      try {
+        const serverRetryRemainingMs = input.serverRetryBudget.remainingMs(queueWaitStartedAtMs)
+        const maxWaitMs = input.requestLane === 'image'
+          ? serverRetryRemainingMs
+          : Math.min(
+              serverRetryRemainingMs,
+              input.gatewayRequestWallBudget.availableDecisionMs({ nowMs: queueWaitStartedAtMs })
+            )
+        queueWait = await waitForHighConcurrencyGroupCapacity({
+          systemAccountId: input.systemAccountId,
+          groupId: input.groupId,
+          apiKeyId: input.apiKeyId,
+          accountIds: gatewayAccountConcurrencyAccountIds(accounts),
+          accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
+          lane: input.requestLane,
+          policy: input.groupAccess.schedulingPolicy,
+          maxWaitMs,
+          signal: input.signal
+        })
+      } finally {
+        input.serverRetryBudget.pauseNoAvailableWait()
+      }
       input.auditCapture.addGatewayMetadata({
         label: 'high_concurrency_group_queue',
         metadata: {

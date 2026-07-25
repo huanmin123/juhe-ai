@@ -523,13 +523,13 @@ try {
     await assertGeminiInteractionsAccountAffinity(baseUrl, interactionsApiKey.key, interactionsForeignApiKey.key)
     await assertGeminiInteractionsAffinityPersistenceFailures(baseUrl, interactionsApiKey.key)
     await assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl, apiKey.key)
-    await assertGeminiCliRetryableErrorSwitchesAccount(baseUrl, apiKey.key)
+    await assertGeminiCliUpstreamErrorTypeDoesNotSwitchAccount(baseUrl, apiKey.key)
     await assertGeminiUpstreamError(baseUrl, apiKey.key)
     await assertGeminiLocalAuthError(baseUrl)
     await assertGeminiOpenAIChatPathRejected(baseUrl, apiKey.key)
     await assertGeminiOpenAIChatDirect(baseUrl, openAIChatApiKey.key)
     await assertGeminiOpenAIChatRootBaseUrl(baseUrl, openAIChatRootApiKey.key)
-    assertGeminiPolicyDefaults()
+    assertGeminiPolicyBoundary()
 
     console.log('gemini gateway mock ai regression passed')
   } finally {
@@ -1074,13 +1074,12 @@ async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): 
       ]
     })
   })
-  assert.equal(response.status, 429)
-  const body = await response.json() as { error?: { status?: string; message?: string; code?: number } }
-  assert.equal(body.error?.status, 'RESOURCE_EXHAUSTED')
-  assert.equal(body.error?.message, 'quota exhausted')
-  assert.equal(body.error?.code, 429)
-  assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端的完整非 2xx 响应必须原样转发，不触发换号')
-  assert(upstreamHits[0]?.rawUrl.includes('case=quota'), 'Gemini 通用错误转发必须保持原始查询参数')
+  const responseText = await response.text()
+  assert.equal(response.status, 503, responseText)
+  assert.match(responseText, /upstream_retryable_error/, '完整非 2xx 候选耗尽后应返回稳定网关错误码')
+  assert.doesNotMatch(responseText, /RESOURCE_EXHAUSTED|quota exhausted/, '客户端不得收到供应商自报错误类型或文案')
+  assert.equal(upstreamHits.length, 2, '完整非 2xx 只作为请求内失败事实，应扫完两个候选但不写共享状态')
+  assert(upstreamHits.every((hit) => hit.rawUrl.includes('case=quota')), '请求内候选切换必须保持原始查询参数')
 }
 
 async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1109,7 +1108,7 @@ async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: st
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
 }
 
-async function assertGeminiCliRetryableErrorSwitchesAccount(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertGeminiCliUpstreamErrorTypeDoesNotSwitchAccount(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=cli-retryable-json', baseUrl), {
     method: 'POST',
@@ -1121,19 +1120,19 @@ async function assertGeminiCliRetryableErrorSwitchesAccount(baseUrl: string, loc
     },
     body: JSON.stringify({
       contents: [
-        { role: 'user', parts: [{ text: 'gemini cli should switch account' }] }
+        { role: 'user', parts: [{ text: 'gemini cli upstream error type must remain opaque' }] }
       ]
     })
   })
   const responseText = await response.text()
   assert.equal(response.status, 200, responseText)
-  const body = JSON.parse(responseText) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
-  assert.equal(body.candidates?.[0]?.content?.parts?.[0]?.text, 'gemini cli retry ok')
-  assert.deepEqual(
-    upstreamHits.map((hit) => hit.xGoogApiKey),
-    ['sk-gemini-upstream', 'sk-gemini-upstream-fallback'],
-    'Gemini CLI 专属可重试错误应先命中主账号，再由服务端切到下一个账号'
-  )
+  const body = JSON.parse(responseText) as { error?: { code?: number; message?: string; status?: string } }
+  assert.deepEqual(body.error, {
+    code: 503,
+    message: 'primary account temporarily unavailable',
+    status: 'UNAVAILABLE'
+  })
+  assert.deepEqual(upstreamHits.map((hit) => hit.xGoogApiKey), ['sk-gemini-upstream'], 'Gemini CLI 画像不得把 UNAVAILABLE 解释为内部换号授权')
 }
 
 async function assertGeminiLocalAuthError(baseUrl: string): Promise<void> {
@@ -1768,10 +1767,10 @@ async function assertOpenAIResponsesToGeminiNativeGuidance(baseUrl: string, loca
   assert.equal(upstreamHits.length, 0, 'Responses -> Gemini native guidance 不应命中上游')
 }
 
-function assertGeminiPolicyDefaults(): void {
+function assertGeminiPolicyBoundary(): void {
   const defaultRules = listResponseInspectionPolicyDefaultRules()
-  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_error_object'), 'Gemini 默认响应检查策略必须存在')
-  assert(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE && rule.id === 'default_gemini_cli_retryable_error' && rule.match.clientProfiles?.includes('gemini_cli')), 'Gemini CLI 专属默认响应检查策略必须存在')
+  assert.equal(defaultRules.some((rule) => rule.protocolCode === GEMINI_PROTOCOL_CODE), false, 'Gemini 不得内置任何上游错误语义处置规则')
+  assert.equal(defaultRules.some((rule) => rule.id === 'default_gemini_cli_retryable_error'), false, 'Gemini CLI 画像不得按供应商错误类型自动获得切号规则')
 }
 
 function createGeminiMockUpstream(): http.Server {

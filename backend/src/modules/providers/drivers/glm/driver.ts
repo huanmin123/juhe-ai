@@ -169,20 +169,6 @@ export const glmProviderDriver: ProviderDriver = {
       defaultModel: GLM_CODEX_BRIDGE_DEFAULT_MODEL,
       enabled: isOpenAIResponsesToChatCompletionsModelMapping(modelMapping),
       explicitMappingBridge: true,
-      finishReasonFailures: {
-        sensitive: {
-          code: 'content_filter',
-          message: '上游模型触发内容安全拦截'
-        },
-        network_error: {
-          code: 'upstream_retryable_error',
-          message: '上游模型返回网络错误，请重试'
-        },
-        model_context_window_exceeded: {
-          code: 'context_length_exceeded',
-          message: '上游模型上下文窗口超限'
-        }
-      },
       idPrefix: 'glm_bridge',
       model: modelMapping?.upstreamModel,
       previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
