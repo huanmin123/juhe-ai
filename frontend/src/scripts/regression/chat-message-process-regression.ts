@@ -104,6 +104,23 @@ const failedPriority = projectChatMessageProcess(message([
 ]))
 assert.equal(failedPriority.toolGroups[0]?.status, 'failed', '任一调用失败时整组必须显示失败')
 
+const imagePermissionFailure = projectChatMessageProcess({
+  contentBlocks: [{
+    type: 'tool_call',
+    blockId: 'image-permission-failure',
+    order: 1,
+    callId: 'image-permission-failure',
+    toolType: 'generate_image',
+    status: 'failed',
+    item: { type: 'generate_image', errorCode: 'image_generation_not_enabled' }
+  }]
+} as ChatMessage)
+assert.deepEqual(
+  imagePermissionFailure.toolGroups[0]?.summaries,
+  ['图片生成失败：可用上游分组未开通图片生成功能'],
+  '图片工具失败必须把稳定错误码映射成可见原因，不能只显示“图片生成失败”'
+)
+
 const canceledOnly = projectChatMessageProcess(message([
   { id: 'canceled_1', type: 'web_search_call', status: 'canceled', item: { query: '已取消' } }
 ]))

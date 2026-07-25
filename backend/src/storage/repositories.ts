@@ -1769,7 +1769,10 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   })
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
-  const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
+  const skipInitialHealthCheck = normalizeOptionalBooleanInput(input, 'skipInitialHealthCheck', false, '跳过初始健康检查')
+  const initialStatus: AccountStatus = requestedStatus === 'disabled'
+    ? 'disabled'
+    : requestedStatus === 'active' && skipInitialHealthCheck ? 'active' : 'pending_test'
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
     requestedStatus: initialStatus,
@@ -2030,7 +2033,10 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   })
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
-  const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
+  const skipInitialHealthCheck = normalizeOptionalBooleanInput(input, 'skipInitialHealthCheck', false, '跳过初始健康检查')
+  const initialStatus: AccountStatus = requestedStatus === 'disabled'
+    ? 'disabled'
+    : requestedStatus === 'active' && skipInitialHealthCheck ? 'active' : 'pending_test'
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : accountStatusForScheduleMutation({
     requestedStatus: initialStatus,

@@ -78,6 +78,8 @@ assert.equal(createSavedAccountApiKeyRuntimeSnapshot({
 }), undefined, '配置版本不一致时不得接受并行返回的旧运行状态')
 
 const form = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+assert.equal(form.privilege, 'normal', '新建账户默认不启用任何特权')
+assert.equal(form.status, 'pending_test', '新建账户默认应进入待检查状态')
 form.name = '检查模型保存回归账户'
 form.groupId = 'group_health_check'
 form.group = { id: form.groupId, name: '检查模型回归分组' }
@@ -113,8 +115,16 @@ const draftPayload = buildAccountDraftTestPayload({
   providers: FALLBACK_PROVIDERS
 })
 assert.equal(savePayload.healthCheckModel, 'gpt-5.4', '账户保存必须持久化表单检查模型')
+assert.equal(savePayload.status, 'pending_test', '默认保存请求必须保持待检查状态')
 assert.equal(draftPayload.healthCheckModel, 'gpt-5.4', '新增和编辑人工测试草稿必须携带表单检查模型')
 assert.deepEqual(savePayload.supportedModels, ['gpt-5.5', 'gpt-5.4'], '账户保存必须保留支持模型')
+form.status = 'active'
+assert.equal(buildAccountSavePayload({
+  accounts: [],
+  form,
+  errorPolicyRules: [],
+  responseInspectionRules: []
+}).status, 'active', '用户选择可调度时保存请求必须保留显式状态')
 
 form.healthCheckModel = 'gpt-unknown'
 assert.equal(

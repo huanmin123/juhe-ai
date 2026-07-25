@@ -16,6 +16,7 @@ import type {
   AccountTrafficMigrationSourceStatus,
   AccountSupportedEndpointMode
 } from '@/types/domain'
+import type { ProviderModelApiProtocol } from '@/types/domain/providers'
 import type {
   AccountBalanceDraftTestPayload,
   AccountDraftTestPayload,
@@ -33,16 +34,21 @@ import { accountListParams, accountOptionsParams } from '../params'
 export interface AccountTestModelOption {
   label: string
   value: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountManualTestModelOption {
   id: string
   name: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountTestModelCapabilities {
   id: string
   name: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 

@@ -208,6 +208,7 @@ type JuheBusinessCustomProviderModel struct {
 	ServiceTierPricesJson         string
 	MaxInputTokens                pgtype.Int4
 	CatalogVisible                bool
+	CacheStorageUsdPer1mPerHour   pgtype.Float8
 }
 
 type JuheBusinessExternalIntegrationSource struct {
@@ -391,6 +392,8 @@ type JuheBusinessProviderModelCatalog struct {
 	LongContextOutputCostMultiplier         pgtype.Float8
 	ServiceTierPricesJson                   string
 	LongContextInputTokenThresholdInclusive bool
+	CacheStorageUsdPer1mPerHour             pgtype.Float8
+	CachedImageInputUsdPer1m                pgtype.Float8
 }
 
 type JuheBusinessProviderProtocolProfile struct {

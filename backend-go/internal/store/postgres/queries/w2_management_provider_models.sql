@@ -57,6 +57,7 @@ SELECT
   long_context_input_cost_multiplier,
   long_context_output_cost_multiplier,
   image_input_usd_per_1m,
+  cached_image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
   audio_output_usd_per_1m,
@@ -116,6 +117,7 @@ SELECT
   NULL::double precision AS long_context_input_cost_multiplier,
   NULL::double precision AS long_context_output_cost_multiplier,
   image_input_usd_per_1m,
+  NULL::double precision AS cached_image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
   audio_output_usd_per_1m,
@@ -150,6 +152,12 @@ WITH built_in_ranked AS (
     built_in.id,
     built_in.provider_code,
     built_in.model,
+    built_in.mode,
+    built_in.release_date,
+    built_in.supported_api_protocols_json,
+    built_in.supported_service_tiers_json,
+    built_in.supported_reasoning_efforts_json,
+    built_in.default_reasoning_effort,
     ROW_NUMBER() OVER (
       PARTITION BY built_in.model
       ORDER BY built_in.provider_code ASC, built_in.id ASC
@@ -170,11 +178,15 @@ WITH built_in_ranked AS (
     )
 ),
 built_in_options AS (
-  SELECT id, provider_code, model, 'built_in'::text AS scope
+  SELECT id, provider_code, model, 'built_in'::text AS scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
   FROM built_in_ranked
   WHERE option_rank = 1
   ORDER BY
     CASE WHEN model = ANY(sqlc.arg(selected_ids)::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+    release_date DESC,
     lower(model) ASC,
     provider_code ASC,
     id ASC
@@ -186,6 +198,12 @@ custom_ranked AS (
     custom.provider_code,
     custom.model,
     custom.scope,
+    custom.mode,
+    custom.release_date,
+    custom.supported_api_protocols_json,
+    custom.supported_service_tiers_json,
+    custom.supported_reasoning_efforts_json,
+    custom.default_reasoning_effort,
     ROW_NUMBER() OVER (
       PARTITION BY custom.model
       ORDER BY CASE custom.scope WHEN 'personal' THEN 0 ELSE 1 END, custom.provider_code ASC, custom.id ASC
@@ -193,7 +211,6 @@ custom_ranked AS (
   FROM juhe_business.custom_provider_models AS custom
   WHERE custom.provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
     AND custom.status = 'active'
-    AND custom.catalog_visible = true
     AND (
       custom.shutdown_date IS NULL
       OR btrim(custom.shutdown_date) = ''
@@ -214,20 +231,43 @@ custom_ranked AS (
     )
 ),
 custom_options AS (
-  SELECT id, provider_code, model, scope
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
   FROM custom_ranked
   WHERE option_rank = 1
   ORDER BY
     CASE WHEN model = ANY(sqlc.arg(selected_ids)::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+    release_date DESC,
     lower(model) ASC,
     provider_code ASC,
     scope ASC,
     id ASC
   LIMIT sqlc.arg(result_limit)
 )
-SELECT id, provider_code, model, scope FROM built_in_options
-UNION ALL
-SELECT id, provider_code, model, scope FROM custom_options;
+SELECT id, provider_code, model, scope, mode, release_date,
+  supported_api_protocols_json, supported_service_tiers_json,
+  supported_reasoning_efforts_json, default_reasoning_effort
+FROM (
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
+  FROM built_in_options
+  UNION ALL
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
+  FROM custom_options
+) AS combined_options
+ORDER BY
+  CASE WHEN model = ANY(sqlc.arg(selected_ids)::text[]) THEN 0 ELSE 1 END,
+  CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+  release_date DESC,
+  lower(model) ASC,
+  provider_code ASC,
+  scope ASC,
+  id ASC;
 
 -- name: ListManagementProviderModelCapabilityCandidates :many
 SELECT

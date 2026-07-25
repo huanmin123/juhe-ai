@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
+import { loadGroupOptionsResource } from '../../src/composables/useGroupOptionsResource'
+import { loadRouteStrategyOptionsResource } from '../../src/composables/useRouteStrategyOptionsResource'
+import type { GroupOptionSummary, RouteStrategyOptionSummary } from '../../src/types/domain'
+
 const repoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 
 const apiKeyModalSource = readSource('frontend/src/views/api-keys/ApiKeyEditModal.vue')
@@ -18,12 +22,14 @@ const routerSource = readSource('frontend/src/router/index.ts')
 const accessTypesSource = readSource('frontend/src/types/domain/access.ts')
 const accountEndpointModesSource = readSource('frontend/src/views/accounts/accountEndpointModes.ts')
 
+await assertRouteStrategySelectedOptionMerge()
+await assertGroupSelectedOptionMerge()
+
 assert(apiKeyModalSource.includes('routeStrategyOptions'), 'API Key 表单必须通过策略路由选项选择调度入口')
 assert(apiKeyModalSource.includes('routeStrategyId'), 'API Key 表单必须保存 routeStrategyId')
 assert(apiKeyModalSource.includes('routeStrategyOptionsRequestToken'), 'API Key 表单策略路由下拉必须防止编辑回填、打开下拉和远程搜索请求互相覆盖')
 assert(apiKeyModalSource.includes('loadRouteStrategyOptionsResource'), 'API Key 表单策略路由下拉应复用统一持久资源缓存')
 assert(routeStrategyOptionsResourceSource.includes('missingIds'), 'API Key 表单策略路由下拉应在主窗口请求后单独补齐缺失的已选策略')
-assert(routeStrategyOptionsResourceSource.includes('mergeRouteStrategyOptionsById(selectedOptions, windowOptions)'), 'API Key 表单策略路由下拉必须合并已选策略和完整候选窗口')
 assert(routeStrategyOptionsResourceSource.includes('activeOnly: false'), 'API Key 表单策略路由下拉必须能回显停用的已绑定策略，并由前端禁用停用选项')
 assert(!/ids,\s*limit:\s*100/.test(apiKeyModalSource), 'API Key 表单策略路由主窗口请求不能用已选 ID 过滤，否则编辑时下拉只剩当前策略')
 assert(apiKeysViewSource.includes('routeStrategyOptionsRequestToken'), 'API Key 列表策略路由筛选必须防止旧搜索结果覆盖新选项')
@@ -50,7 +56,6 @@ assert(routeStrategiesViewSource.includes('groupOptionsLoadingKey === requestKey
 assert(routeStrategiesViewSource.includes('clearGroupOptionsSearchTimer'), '策略路由分组选项远程搜索必须防抖并在页面卸载时清理')
 assert(!routeStrategiesViewSource.includes('ids: selectedIds'), '策略路由分组选项主窗口请求不能用已选 ID 过滤，否则编辑时下拉只剩当前分组')
 assert(groupOptionsResourceSource.includes('missingIds'), '策略路由分组选项应在主窗口请求后单独补齐缺失的已选分组')
-assert(groupOptionsResourceSource.includes('mergeGroupOptionsById(selectedGroups, windowGroups)'), '策略路由分组选项必须合并已选分组和完整候选窗口')
 assert(routeStrategiesViewSource.includes('form.groupBindings'), '策略路由表单必须维护分组绑定行')
 assert(routeStrategiesViewSource.includes('groupBindings = form.groupBindings.map'), '策略路由保存必须归一化分组绑定 payload')
 assert(routeStrategiesViewSource.includes('请选择分组'), '策略路由表单必须校验分组不能为空')
@@ -102,4 +107,78 @@ console.log('策略路由前端分组绑定回归通过：API Key 只选择路�
 
 function readSource(path: string): string {
   return readFileSync(resolve(repoRoot, path), 'utf8')
+}
+
+async function assertRouteStrategySelectedOptionMerge(): Promise<void> {
+  const selected = routeStrategyOption('selected-route')
+  const windowOption = routeStrategyOption('window-route')
+  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; activeOnly?: boolean; systemAccountId?: string }> = []
+  let applied: RouteStrategyOptionSummary[] = []
+  const result = await loadRouteStrategyOptionsResource({
+    api: {
+      options: async (params) => {
+        requests.push(params ?? {})
+        return params?.ids?.length ? [selected] : [windowOption]
+      }
+    },
+    apply: (options) => {
+      applied = options
+    },
+    isManagementView: false,
+    selectedIds: [selected.id]
+  })
+
+  assert.deepEqual(requests, [
+    { keyword: undefined, limit: 50, activeOnly: false, systemAccountId: undefined },
+    { ids: [selected.id], limit: 1, activeOnly: false, systemAccountId: undefined }
+  ], '策略路由选项必须先加载候选窗口，再只补齐缺失的已选项')
+  assert.deepEqual(result.map((item) => item.id), [selected.id, windowOption.id], '策略路由选项必须合并已选项和完整候选窗口')
+  assert.deepEqual(applied, result, '策略路由选项必须把合并结果交给页面')
+}
+
+async function assertGroupSelectedOptionMerge(): Promise<void> {
+  const selected = groupOption('selected-group')
+  const windowOption = groupOption('window-group')
+  const requests: Array<{ ids?: string[]; keyword?: string; limit?: number; manageableOnly?: boolean; providerCode?: string; systemAccountId?: string }> = []
+  let applied: GroupOptionSummary[] = []
+  const result = await loadGroupOptionsResource({
+    api: {
+      options: async (params) => {
+        requests.push(params ?? {})
+        return params?.ids?.length ? [selected] : [windowOption]
+      }
+    },
+    apply: (groups) => {
+      applied = groups
+    },
+    isManagementView: false,
+    selectedIds: [selected.id]
+  })
+
+  assert.deepEqual(requests, [
+    { keyword: undefined, limit: 50, manageableOnly: true, systemAccountId: undefined },
+    { ids: [selected.id], limit: 1, manageableOnly: true, systemAccountId: undefined }
+  ], '分组选项必须先加载候选窗口，再只补齐缺失的已选项')
+  assert.deepEqual(result.map((item) => item.id), [selected.id, windowOption.id], '分组选项必须合并已选项和完整候选窗口')
+  assert.deepEqual(applied, result, '分组选项必须把合并结果交给页面')
+}
+
+function routeStrategyOption(id: string): RouteStrategyOptionSummary {
+  return {
+    id,
+    name: id,
+    mode: 'normal',
+    status: 'active',
+    isDefault: false
+  }
+}
+
+function groupOption(id: string): GroupOptionSummary {
+  return {
+    id,
+    name: id,
+    providerCode: 'gpt',
+    enabled: true,
+    isDefault: false
+  }
 }

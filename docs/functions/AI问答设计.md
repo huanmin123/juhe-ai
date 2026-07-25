@@ -273,7 +273,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 用户选择 reasoning effort 时，Responses 请求发送 `reasoning: { effort, summary: "auto" }`；前端只展示上游公开的 reasoning summary 事件，不展示或伪造隐藏思维链。
 - Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
 - 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。
-- 文本模型明确需要位图时调用本站 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器固定 `gpt-image-2`，文本模型根据用户意图填写尺寸、质量和格式；执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败，不读取用户原话做关键词放行、静默缩放或提示词优化。工具循环对 Chat/Responses 都可用，不依赖上游 `image_generation` 托管工具；通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
+- 文本模型明确需要位图时调用本站 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器固定 `gpt-image-2`，文本模型根据用户意图填写尺寸、质量和格式；执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败，不读取用户原话做关键词放行、静默缩放或提示词优化。工具循环对 Chat/Responses 都可用，不依赖上游 `image_generation` 托管工具。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照，不能与网关 image lane 的单账户首响应超时混为一个字段。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
 - 对话模型与图像模型职责严格分离：`gpt-5.5`、GPT-5.6 等普通模型只负责回答和选择 `generate_image` / 编辑工具，工具适配器才使用当前会话默认图像模型，当前固定为 `gpt-image-2`。图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求，也不得用文本 `/v1/responses` 探测纯图像模型；真实生成和编辑仍分别走 Images generations / edits。
 - `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`，下载通过 fetch + blob 保存本地文件，避免普通链接把当前聊天页导航到图片 URL。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
 - Images、Chat Completions、Responses 和前端 SSE 的 body reader 在协议错误、大小拒绝、回调异常或消费者提前结束时必须调用 `cancel()`；只有自然读到 `done` 才直接释放 reader lock，避免旧连接在重附着或失败后继续占用资源。
@@ -289,7 +289,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 用户消息保留轻量浅灰内容块。桌面端悬浮、键盘聚焦时显示发送时间、复制和编辑；触屏设备必须提供可触达入口，不能只依赖 hover。
 - 助手消息不使用气泡、卡片、边框或背景，正文占用消息列可用宽度；长代码、表格和图表不再被窄气泡二次压缩。
 - 最终回答始终是视觉主体。列表、表格、代码、公式和 Mermaid 按正文语义渲染，不降级为纯文本。
-- 思考摘要默认折叠、低强调显示；过程块在执行时渐进展开，完成或失败后自动折叠，不能把完整内部推理当正文展示。
+- 思考摘要默认折叠、低强调显示；过程块在执行时渐进展开，完成后自动折叠，失败后默认展开诊断详情，不能把完整内部推理当正文展示。
 - 助手按照 `content_blocks_json` 的首次观察顺序渲染思考、联网搜索 1、联网搜索 2、正文、其他工具和图片；同一工具 ID 的 updated/completed 只更新原位置。只有相邻工具块进入同一投影段，正文、思考或图片会切断聚合边界，禁止为去重而全局重排时间线。
 - 实际助手消息树必须挂载低噪工具投影；展开工具过程只显示去重后的查询摘要、重复次数和失败状态，不直接展示 call ID 或原始 JSON。未知工具没有可读摘要时只显示不可展开状态行，完整事实保存在有界结构化内容和审计链路中。
 - 流式工具和思考事件直接更新当前助手消息，不刷新整个消息列表；完成后保持折叠状态。
@@ -523,7 +523,7 @@ data: {"messageId":"msg_xxx","code":"upstream_stream_failed","message":"模型�
 - 非 SSE 的模型目录响应最大 `4 MiB`，上游错误响应最大 `64 KiB`；必须边读流边计数并在超限时取消 reader，不能先完整 `response.text()` 后再截断。
 - 用户主动取消后浏览器连接已经关闭，不依赖 `message.canceled` 送达；服务端落库状态为 `canceled`，页面刷新后以存储状态为准。
 - 工具过程只持久化有界、可展示的结构化投影；原始上游 payload 不进入浏览器缓存或普通消息正文，审计链路按现有权限保留必要排障事实。
-- 不把上游堆栈、内部 URL、账号凭据或完整内部错误返回前端；失败重载和状态查询只返回白名单错误码映射出的安全中文文案。
+- 模型、内部工具、流式解析、编排和持久化失败都必须把真实 `Error.message` 或上游错误消息经过统一脱敏、单行化和长度限制后返回前端；API Key、Authorization、Cookie、Token、URL 凭据参数和服务端绝对路径必须替换。服务端日志继续记录完整异常对象，并携带 conversation/turn/trace 定位字段。
 
 ### 11.2 解析要求
 
@@ -588,6 +588,7 @@ PostgreSQL 中 `chat_conversations` 不分区；它是小型元数据表。会�
 | `trace_id` | 关联网关使用记录和审计 |
 | `finish_reason` | 正常完成原因，可空 |
 | `error_code` | 失败摘要码，可空 |
+| `error_message` | 统一脱敏后的可诊断失败详情，可空；失败终态应写入，刷新后继续展示 |
 | `created_at`、`completed_at` | UTC 时间 |
 | `content_bytes` | `content_text` 与已序列化 `content_blocks_json` 的实际 UTF-8 字节数 |
 | `storage_reserved_bytes` | 仅 `streaming` 助手消息非 0，记录本轮已原子占用的助手持久化上界；任何终态必须为 0 |
@@ -794,6 +795,8 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - `finish_reason=length` 显示“回答达到长度限制”。
 - 内容策略终止显示明确中文状态，但不暴露上游敏感正文。
 - 助手失败消息优先显示服务端白名单 `errorMessage`，缺失时才回退错误码映射。未被服务端接受的乐观失败轮次使用新 `clientMessageId` 重新提交，不发送本地 `optimistic-turn`；只有已接受的失败或停止尾轮才携带真实 `replaceTurnId` 原位替换。模型目录仍在加载时隐藏并拒绝重试。
+- 内部工具不得把具体失败统一压成“工具执行失败”或“图片生成失败”。稳定错误码负责分类，统一脱敏后的真实错误消息负责诊断；工具事件、模型纠错续答、聊天终态、SSE、提交状态查询和持久化消息必须沿用同一诊断文本。例如图片候选耗尽时使用 `image_generation_not_enabled`，并保留脱敏后的上游说明。未知失败也展示脱敏后的 `Error.message`，只有完全无法提取详情时才回退通用文案。
+- 图片请求仍先完整经过网关账户切换。单个账户返回可切换失败时不得由 Chat 模块提前终止；只有网关耗尽候选并返回最终失败后，Chat 模块才归类和展示该终态原因。
 
 ## 18. 性能与容量边界
 

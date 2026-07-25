@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -23,6 +24,8 @@ func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.
 	service := &managementProviderModelServiceStub{
 		selectionOptions: []managementprovidermodels.ModelSelectionOption{{
 			ID: "gpt-5.5", Name: "gpt-5.5",
+			SupportedAPIProtocols: []string{"responses"}, SupportedServiceTiers: []string{"priority"},
+			SupportedReasoningEfforts: []string{"low", "high"}, DefaultReasoningEffort: "high",
 		}},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -53,8 +56,10 @@ func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.
 	if len(body.Data) != 1 || body.Data[0]["id"] != "gpt-5.5" || body.Data[0]["name"] != "gpt-5.5" {
 		t.Fatalf("body = %+v", body)
 	}
-	if len(body.Data[0]) != 2 {
-		t.Fatalf("model option keys = %+v, want id/name only", body.Data[0])
+	if len(body.Data[0]) != 6 || !reflect.DeepEqual(body.Data[0]["supportedApiProtocols"], []any{"responses"}) ||
+		!reflect.DeepEqual(body.Data[0]["supportedServiceTiers"], []any{"priority"}) ||
+		!reflect.DeepEqual(body.Data[0]["supportedReasoningEfforts"], []any{"low", "high"}) || body.Data[0]["defaultReasoningEffort"] != "high" {
+		t.Fatalf("model option keys = %+v, want capability-aware contract", body.Data[0])
 	}
 }
 

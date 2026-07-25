@@ -4,7 +4,14 @@ import type { AccountTestTask } from '@/types/domain'
 
 export const accountTestPollIntervalMs = 3000
 export const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
-export const accountTestTaskMaxWaitMs = accountDiagnosticAttemptTimeoutsMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
+export const accountImageDiagnosticAttemptTimeoutsMs = [120_000] as const
+
+export function accountTestTaskMaxWaitMs(testEndpointMode?: AccountTestTask['testEndpointMode']): number {
+  const timeouts = testEndpointMode === 'images_json'
+    ? accountImageDiagnosticAttemptTimeoutsMs
+    : accountDiagnosticAttemptTimeoutsMs
+  return timeouts.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
+}
 
 export function accountTestTaskRemainingWaitMs(task: AccountTestTask, nowMs = Date.now()): number {
   if (task.status !== 'running') {
@@ -14,7 +21,7 @@ export function accountTestTaskRemainingWaitMs(task: AccountTestTask, nowMs = Da
   if (startedAt === undefined) {
     return accountTestPollIntervalMs
   }
-  return Math.max(0, accountTestTaskMaxWaitMs - (nowMs - startedAt))
+  return Math.max(0, accountTestTaskMaxWaitMs(task.testEndpointMode) - (nowMs - startedAt))
 }
 
 export function parseTaskTime(value?: string): number | undefined {

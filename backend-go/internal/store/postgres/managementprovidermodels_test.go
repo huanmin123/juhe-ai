@@ -49,15 +49,24 @@ func TestManagementProviderModelReadQueriesStayPointAndWindowBounded(t *testing.
 		"lower(built_in.model) LIKE",
 		"LIMIT sqlc.arg(result_limit)",
 		"custom.scope = 'personal'",
+		"supported_api_protocols_json",
+		"supported_service_tiers_json",
+		"supported_reasoning_efforts_json",
+		"default_reasoning_effort",
+		"release_date DESC",
 	} {
 		if !strings.Contains(optionsSQL, want) {
 			t.Fatalf("provider model options SQL missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"input_usd_per_1m", "supported_service_tiers_json", "capability_notes"} {
+	for _, forbidden := range []string{"input_usd_per_1m", "capability_notes"} {
 		if strings.Contains(optionsSQL, forbidden) {
 			t.Fatalf("provider model options SQL must stay lightweight, found %q", forbidden)
 		}
+	}
+	customOptionsStart := strings.Index(optionsSQL, "custom_ranked AS")
+	if customOptionsStart < 0 || strings.Contains(optionsSQL[customOptionsStart:], "custom.catalog_visible = true") {
+		t.Fatal("custom provider model options must not retain the legacy catalog_visible filter")
 	}
 	for _, want := range []string{
 		"built_in.model = sqlc.arg(model)",

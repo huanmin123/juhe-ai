@@ -49,6 +49,7 @@ type PriceSet struct {
 type CatalogFacts struct {
 	PriceSet
 	Mode                               string
+	CachedImageInputUSDPer1M           *float64
 	ServiceTierPrices                  map[string]PriceSet
 	SupportedServiceTiers              []string
 	SupportedReasoningEfforts          []string
@@ -73,45 +74,47 @@ func BuildCatalogDisplay(providerCode string, facts CatalogFacts) []CatalogDispl
 	switch provider {
 	case "openai", "gpt":
 		sections = append(sections,
-			priceSection("token_pricing", "Token 计费",
-				price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
-				price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
-				price("cache_read", "缓存命中", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens)),
-			mediaSection(facts.PriceSet), imageUnitSection(facts.PriceSet))
+			priceSection("token_pricing", "Token 计费", openAITokenCandidates(facts)...),
+			imageUnitSection(facts.PriceSet))
 		sections = appendCommon(sections, facts, true, true)
 	case "anthropic":
 		sections = append(sections, priceSection("token_pricing", "Token 计费",
 			price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
 			price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
-			price("cache_read", "缓存读取", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_read", "缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
 			price("cache_write_5m", "5m 缓存写入", facts.CacheWriteUSDPer1M, FormatUSDPer1MTokens),
 			price("cache_write_1h", "1h 缓存写入", facts.CacheWrite1hUSDPer1M, FormatUSDPer1MTokens)))
 		sections = appendCommon(sections, facts, false, true)
 	case "gemini":
-		sections = append(sections,
-			priceSection("token_pricing", "Token 计费",
-				price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
-				price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
-				price("cache_read", "缓存命中", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
-				price("cache_storage", "缓存存储", facts.CacheStorageUSDPer1MPerHour, FormatUSDPer1MTokenHour)),
-			mediaSection(facts.PriceSet))
-		sections = appendCommon(sections, facts, true, true)
+		candidates := []itemCandidate{
+			price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
+			price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_read", "缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_storage", "缓存存储", facts.CacheStorageUSDPer1MPerHour, FormatUSDPer1MTokenHour),
+		}
+		candidates = append(candidates, mediaTokenCandidates(facts.PriceSet)...)
+		candidates = append(candidates, longContextTokenCandidates(facts, "缓存读")...)
+		sections = append(sections, priceSection("token_pricing", "Token 计费", candidates...))
+		sections = appendCommon(sections, facts, false, true)
 	case "xai":
 		title := "Token 计费"
 		if strings.EqualFold(strings.TrimSpace(facts.Mode), "image") {
 			title = "图像输入"
 		}
+		candidates := []itemCandidate{
+			price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_read", "缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+			price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
+		}
+		candidates = append(candidates, longContextTokenCandidates(facts, "缓存读")...)
 		sections = append(sections,
-			priceSection("token_pricing", title,
-				price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
-				price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
-				price("cache_read", "缓存命中", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens)),
+			priceSection("token_pricing", title, candidates...),
 			imageUnitSection(facts.PriceSet))
-		sections = appendCommon(sections, facts, true, true)
+		sections = appendCommon(sections, facts, false, true)
 	case "deepseek":
 		sections = append(sections, priceSection("token_pricing", "Token 计费",
-			price("cache_miss", "Cache miss", facts.InputUSDPer1M, FormatUSDPer1MTokens),
-			price("cache_hit", "Cache hit", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_miss", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_hit", "缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
 			price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens)))
 		sections = append(sections, reasoningSection(facts), capacitySection(facts), sourceConversionSection(facts))
 	case "glm":
@@ -120,7 +123,7 @@ func BuildCatalogDisplay(providerCode string, facts CatalogFacts) []CatalogDispl
 		} else {
 			sections = append(sections, priceSection("token_pricing", "Token 计费",
 				price("input", "输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
-				price("cache_hit", "缓存命中", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+				price("cache_hit", "缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
 				price("output", "输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens)))
 		}
 		sections = append(sections, reasoningSection(facts), capacitySection(facts))
@@ -191,12 +194,36 @@ func section(key, label string, candidates ...itemCandidate) CatalogDisplaySecti
 	return CatalogDisplaySection{Key: key, Label: label, Items: items}
 }
 
-func mediaSection(prices PriceSet) CatalogDisplaySection {
-	return priceSection("multimodal_pricing", "多模态计费",
+func openAITokenCandidates(facts CatalogFacts) []itemCandidate {
+	hasModalityPrices := validPrice(facts.ImageInputUSDPer1M) ||
+		validPrice(facts.CachedImageInputUSDPer1M) ||
+		validPrice(facts.ImageOutputUSDPer1M) ||
+		validPrice(facts.AudioInputUSDPer1M) ||
+		validPrice(facts.AudioOutputUSDPer1M)
+	prefix := ""
+	if hasModalityPrices {
+		prefix = "文本"
+	}
+	return []itemCandidate{
+		price("input", prefix+"输入", facts.InputUSDPer1M, FormatUSDPer1MTokens),
+		price("cache_read", prefix+"缓存读", facts.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+		price("cache_write", prefix+"缓存写入", facts.CacheWriteUSDPer1M, FormatUSDPer1MTokens),
+		price("output", prefix+"输出", facts.OutputUSDPer1M, FormatUSDPer1MTokens),
+		price("image_input", "图片输入", facts.ImageInputUSDPer1M, FormatUSDPer1MTokens),
+		price("image_cache_read", "图片缓存读", facts.CachedImageInputUSDPer1M, FormatUSDPer1MTokens),
+		price("image_output", "图片输出", facts.ImageOutputUSDPer1M, FormatUSDPer1MTokens),
+		price("audio_input", "音频输入", facts.AudioInputUSDPer1M, FormatUSDPer1MTokens),
+		price("audio_output", "音频输出", facts.AudioOutputUSDPer1M, FormatUSDPer1MTokens),
+	}
+}
+
+func mediaTokenCandidates(prices PriceSet) []itemCandidate {
+	return []itemCandidate{
 		price("image_input", "图片输入", prices.ImageInputUSDPer1M, FormatUSDPer1MTokens),
 		price("image_output", "图片输出", prices.ImageOutputUSDPer1M, FormatUSDPer1MTokens),
 		price("audio_input", "音频输入", prices.AudioInputUSDPer1M, FormatUSDPer1MTokens),
-		price("audio_output", "音频输出", prices.AudioOutputUSDPer1M, FormatUSDPer1MTokens))
+		price("audio_output", "音频输出", prices.AudioOutputUSDPer1M, FormatUSDPer1MTokens),
+	}
 }
 
 func imageUnitSection(prices PriceSet) CatalogDisplaySection {
@@ -221,11 +248,11 @@ func serviceTierSections(facts CatalogFacts) []CatalogDisplaySection {
 		}
 		candidate := priceSection("tier_"+tier, tierLabel(tier),
 			price("input", "输入", rates.InputUSDPer1M, FormatUSDPer1MTokens),
-			price("output", "输出", rates.OutputUSDPer1M, FormatUSDPer1MTokens),
-			price("cache_read", "缓存命中", rates.CachedInputUSDPer1M, FormatUSDPer1MTokens),
+			price("cache_read", "缓存读", rates.CachedInputUSDPer1M, FormatUSDPer1MTokens),
 			price("cache_write", "缓存写入", rates.CacheWriteUSDPer1M, FormatUSDPer1MTokens),
 			price("cache_write_1h", "1h 缓存写入", rates.CacheWrite1hUSDPer1M, FormatUSDPer1MTokens),
 			price("cache_storage", "缓存存储", rates.CacheStorageUSDPer1MPerHour, FormatUSDPer1MTokenHour),
+			price("output", "输出", rates.OutputUSDPer1M, FormatUSDPer1MTokens),
 			price("audio_input", "音频输入", rates.AudioInputUSDPer1M, FormatUSDPer1MTokens))
 		if len(candidate.Items) > 0 {
 			sections = append(sections, candidate)
@@ -263,6 +290,45 @@ func longContextSection(facts CatalogFacts) CatalogDisplaySection {
 		textItem("output_multiplier", "输出倍率", facts.LongContextOutputCostMultiplier, FormatMultiplier))
 }
 
+func longContextTokenCandidates(facts CatalogFacts, cacheReadLabel string) []itemCandidate {
+	threshold := facts.LongContextInputTokenThreshold
+	if threshold == nil || *threshold < 0 {
+		return nil
+	}
+	comparison := ">"
+	if facts.LongContextInputThresholdInclusive {
+		comparison = ">="
+	}
+	prefix := "长上下文（" + comparison + " " + formatTokenThreshold(*threshold) + "）"
+	return []itemCandidate{
+		price("long_context_input", prefix+"输入", multipliedPrice(facts.InputUSDPer1M, facts.LongContextInputCostMultiplier), FormatUSDPer1MTokens),
+		price("long_context_cache_read", prefix+cacheReadLabel, multipliedPrice(facts.CachedInputUSDPer1M, facts.LongContextInputCostMultiplier), FormatUSDPer1MTokens),
+		price("long_context_output", prefix+"输出", multipliedPrice(facts.OutputUSDPer1M, facts.LongContextOutputCostMultiplier), FormatUSDPer1MTokens),
+	}
+}
+
+func multipliedPrice(value, multiplier *float64) *float64 {
+	if !validPrice(value) {
+		return nil
+	}
+	resolvedMultiplier := 1.0
+	if multiplier != nil && !math.IsNaN(*multiplier) && !math.IsInf(*multiplier, 0) && *multiplier > 0 {
+		resolvedMultiplier = *multiplier
+	}
+	result := *value * resolvedMultiplier
+	if math.IsNaN(result) || math.IsInf(result, 0) || result < 0 {
+		return nil
+	}
+	return &result
+}
+
+func formatTokenThreshold(value int64) string {
+	if value >= 1000 && value%1000 == 0 {
+		return strconv.FormatInt(value/1000, 10) + "K"
+	}
+	return strconv.FormatInt(value, 10)
+}
+
 func sourceConversionSection(facts CatalogFacts) CatalogDisplaySection {
 	currency := strings.TrimSpace(facts.SourcePricingCurrency)
 	if currency == "" || strings.EqualFold(currency, "USD") {
@@ -294,7 +360,7 @@ func compactStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value == "" {
+		if value == "" || value == "none" {
 			continue
 		}
 		if _, exists := seen[value]; exists {

@@ -18,9 +18,16 @@
     <a-form-item
       label="检查请求形态"
       required
-      tooltip="系统检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
+      :tooltip="endpointModeTooltip"
     >
       <a-select
+        v-if="imageOnlyModel"
+        value="images_json"
+        disabled
+        :options="imageEndpointModeOptions"
+      />
+      <a-select
+        v-else
         v-model:value="form.healthCheckEndpointMode"
         :disabled="!endpointModeOptions.length"
         :options="endpointModeOptions"
@@ -31,15 +38,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
+import { accountTestEndpointModesForModel } from './accountEndpointModes'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 
 const props = defineProps<{
   form: AccountFormModel
-  modelOptions: Array<{ label: string; value: string }>
+  modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
+  protocolCode?: string
+  protocolVersion?: string
 }>()
 
 const options = computed(() => {
@@ -51,7 +62,37 @@ const options = computed(() => {
     }))
 })
 
-const endpointModeOptions = computed(() => accountHealthCheckEndpointModeOptions(props.form.supportedEndpointModes))
+const selectedModelOption = computed(() => (
+  props.modelOptions.find((option) => option.value === props.form.healthCheckModel)
+))
+const selectedModelEndpointModes = computed(() => accountTestEndpointModesForModel({
+  providerCode: props.form.providerCode,
+  providerProtocolProfileId: props.form.providerProtocolProfileId,
+  protocolCode: props.protocolCode,
+  protocolVersion: props.protocolVersion,
+  type: props.form.type,
+  clientCompatibility: props.form.clientCompatibility,
+  healthCheckEndpointMode: props.form.healthCheckEndpointMode,
+  credentials: { supported_endpoint_modes: props.form.supportedEndpointModes }
+}, undefined, selectedModelOption.value))
+const imageOnlyModel = computed(() => (
+  selectedModelEndpointModes.value.length === 1
+  && selectedModelEndpointModes.value[0] === 'images_json'
+))
+const endpointModeOptions = computed(() => (
+  accountHealthCheckEndpointModeOptions(selectedModelEndpointModes.value)
+))
+const imageEndpointModeOptions = [{ label: 'Images API', value: 'images_json' }]
+const endpointModeTooltip = computed(() => imageOnlyModel.value
+  ? '所选模型仅支持 Images API，系统检查会自动使用图片生成请求。'
+  : '系统检查直接使用所选模型支持的请求形态；GPT 建议使用 Responses API（Streaming）。')
+
+watch(endpointModeOptions, (next) => {
+  if (imageOnlyModel.value || !next.length) return
+  if (!next.some((option) => option.value === props.form.healthCheckEndpointMode)) {
+    props.form.healthCheckEndpointMode = next[0].value
+  }
+}, { immediate: true })
 </script>
 
 <style scoped>

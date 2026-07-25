@@ -308,11 +308,11 @@ try {
   })
   catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
-    model: 'gpt-regression-audio',
+    model: 'gpt-regression-multimodal',
     scope: 'personal',
     systemAccountId: 'sys_admin',
-    mode: 'audio',
-    supportedApiProtocols: ['audio'],
+    mode: 'text',
+    supportedApiProtocols: ['responses'],
     audioInputUsdPer1M: 4,
     audioOutputUsdPer1M: 12,
     actorSystemAccountId: 'sys_admin'
@@ -407,7 +407,7 @@ try {
   assert(publicModels.has('gpt-regression-tier-only'), '只有精确档位价格的模型也应进入公开模型目录')
   assert(publicModels.has('gpt-regression-case-model'), '仅大小写不同的小写自定义模型应进入模型目录')
   assert(publicModels.has('GPT-regression-case-model'), '仅大小写不同的大写自定义模型应进入模型目录')
-  assert(publicModels.has('gpt-regression-audio'), '只有音频价格的自定义模型应进入公开模型目录')
+  assert(publicModels.has('gpt-regression-multimodal'), '带音频 Token 价格的多模态文本模型应进入公开模型目录')
   assert(publicModels.has('gpt-regression-image-unit'), '只有按张图片价格的自定义模型应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-draft'), false, '草稿模型不应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, '无价自定义模型不应进入公开模型目录')
@@ -478,7 +478,7 @@ try {
   }), /服务档位价格必须属于模型支持的服务等级/)
   assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
-    model: 'gpt-regression-audio-invalid-capabilities',
+    model: 'gpt-regression-audio-unsupported',
     scope: 'personal',
     systemAccountId: 'sys_admin',
     mode: 'audio',
@@ -487,7 +487,7 @@ try {
     audioInputUsdPer1M: 1,
     audioOutputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /只有文本自定义模型支持服务等级和思考能力配置/)
+  }), /当前只支持文本和图像自定义模型/)
   const openAIProviderCapabilities = customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'openai',
     model: 'openai-regression-invalid-capabilities',
@@ -585,9 +585,21 @@ try {
     { id: 'blank-model', providerCode: 'glm', model: ' ', scope: 'built_in' }
   ], { limit: 50, selectedIds: [] })
   assert.deepEqual(dedupedProviderModelOptions, [
-    { id: 'shared-model', name: 'shared-model' },
-    { id: 'Shared-Model', name: 'Shared-Model' }
-  ], '跨供应商模型选项必须稳定地按大小写敏感 model 去重，并只返回 id/name')
+    {
+      id: 'shared-model',
+      name: 'shared-model',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    },
+    {
+      id: 'Shared-Model',
+      name: 'Shared-Model',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
+  ], '跨供应商模型选项必须稳定地按大小写敏感 model 去重，并携带能力数组')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'deepseek',
@@ -995,7 +1007,7 @@ try {
   const audioCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
-    model: 'gpt-regression-audio',
+    model: 'gpt-regression-multimodal',
     inputAudioTokens: 1_000_000,
     outputAudioTokens: 2_000_000
   })
@@ -1003,7 +1015,7 @@ try {
   const audioBreakdown = catalogService.buildCatalogCostBreakdown({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
-    model: 'gpt-regression-audio',
+    model: 'gpt-regression-multimodal',
     inputAudioTokens: 1_000_000,
     outputAudioTokens: 1_000_000
   })
@@ -1014,7 +1026,7 @@ try {
   const audioBreakdownAsync = await catalogService.buildCatalogCostBreakdownAsync({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
-    model: 'gpt-regression-audio',
+    model: 'gpt-regression-multimodal',
     inputAudioTokens: 1_000_000,
     outputAudioTokens: 1_000_000
   })
@@ -1496,7 +1508,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         audioOutputUsdPer1M: 2
       },
       400,
-      'GPT 音频自定义模型 API 必须拒绝非空思考能力'
+      'GPT 音频自定义模型 API 必须整体拒绝'
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models`,
@@ -1864,9 +1876,12 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert.deepEqual(userAGptModelOptions.find((item) => item.id === 'gpt-http-user-a-gpt'), {
       id: 'gpt-http-user-a-gpt',
-      name: 'gpt-http-user-a-gpt'
-    }, '单供应商模型选项应包含个人模型且只返回 id/name')
-    assert(userAGptModelOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name'), '单供应商模型选项不得返回能力、价格或供应商详情')
+      name: 'gpt-http-user-a-gpt',
+      supportedApiProtocols: ['responses'],
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['low', 'high']
+    }, '单供应商模型选项应包含个人模型及目录能力')
+    assert(userAGptModelOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name,supportedApiProtocols,supportedReasoningEfforts,supportedServiceTiers'), '单供应商模型选项应返回能力且不得返回价格或供应商详情')
 
     const selectedWithWindow = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
@@ -1897,7 +1912,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       userACookie
     )
     assert(userACrossProviderOptions.some((item) => item.id === 'gpt-http-admin-global'), '跨供应商模型选项应包含管理员全局模型')
-    assert(userACrossProviderOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name'), '跨供应商模型选项也只能返回 id/name')
+    assert(userACrossProviderOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name,supportedApiProtocols,supportedReasoningEfforts,supportedServiceTiers'), '跨供应商模型选项也必须返回目录能力')
 
     const userAHybridVisible = await getEnvelope<Array<{ model: string; providerCode: string }>>(
       baseUrl,

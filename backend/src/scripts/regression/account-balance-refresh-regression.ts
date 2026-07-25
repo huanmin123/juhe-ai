@@ -644,7 +644,7 @@ try {
   })
   assert.equal(fallbackResult.adapter, 'user_balance', '内置适配器返回 unsupported 后必须继续回退')
   assert.equal(fallbackResult.snapshot.remainingUsd, '4.790000')
-  assert.deepEqual(fallbackAttempts, ['sub2api', 'newapi', 'litellm', 'user_balance'])
+  assert.deepEqual(fallbackAttempts, ['sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance'])
   const unsupportedResult = await balanceQueryService.queryBuiltinAccountBalance(candidate, {
     queryAdapter: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
   })

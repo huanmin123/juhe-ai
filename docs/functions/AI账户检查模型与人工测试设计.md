@@ -9,7 +9,7 @@
 - 人工测试只作为用户主动发起的诊断工具，不再承担账户激活、状态恢复、健康事实维护或默认模型保存职责。
 - 后台系统检查统一使用账户保存的检查模型，并独占账户激活、健康确认和自动恢复职责。
 - 模型目录中的默认机制只负责初始化账户检查模型，不能在运行时动态改变已有账户。
-- 列表保持轻量；打开测试弹窗只使用账户行已有默认值，候选模型和单模型能力在用户展开或切换选择时按需获取。
+- 列表保持轻量；打开测试弹窗时一次加载候选模型、目录协议和账户可测试请求形态，切换选择不再追加单模型能力请求。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
 ## 健康检查请求形态
@@ -160,23 +160,23 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 
 账户列表只返回展示和筛选所需的摘要字段，不为了测试提前加载完整支持模型、检查模型详情、endpoint modes 或凭据。
 
-用户首次展开“选择测试模型”时调用专用最小接口：
+用户打开测试弹窗时调用专用模型选项接口；后续搜索继续复用同一接口：
 
 ```text
 GET /__aisys__/api/accounts/:id/test-options
 GET /__aisys__/api/my-accounts/:id/test-options
 ```
 
-响应直接为 `Array<{ id, name }>`，支持 `keyword`、`limit` 和 `selectedIds`。默认模型和默认请求形态直接使用账户列表行的 `healthCheckModel` 与 `healthCheckEndpointMode`，不由 `test-options` 重复返回。
+响应直接为 `Array<{ id, name, supportedApiProtocols, testEndpointModes }>`，支持 `keyword`、`limit` 和 `selectedIds`。`supportedApiProtocols` 来自模型目录；`testEndpointModes` 是账户上游能力、模型协议和有效模型映射的交集。默认模型仍使用账户列表行的 `healthCheckModel`，其请求形态从返回的对应模型选项直接绑定。
 
-切换到非默认模型时调用管理端或个人端镜像能力接口：
+以下管理端或个人端镜像能力接口保留用于旧客户端兼容和定点诊断，当前前端正常切换模型不调用：
 
 ```text
 GET /__aisys__/api/accounts/:id/test-options/models/:modelId
 GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 ```
 
-能力响应只包含 `{ id, name, testEndpointModes }`。列表和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
+能力响应包含 `{ id, name, supportedApiProtocols, testEndpointModes }`。列表和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
 
 `testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个普通生成模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
@@ -304,7 +304,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 新增、编辑和列表人工测试成功或失败后，账户、授权实例、Key、健康事实和运行态均不变化。
 - 新增 / 编辑测试只能使用表单检查模型；列表测试关闭重开后仍默认使用账户检查模型。
 - A 账户测试运行时可以打开和启动 B 账户测试，旧结果不能覆盖新弹窗。
-- 列表接口不返回完整交互信息；打开测试弹窗不读取候选模型，首次展开选择器后才读取 `test-options`。
+- 列表接口不返回完整交互信息；打开测试弹窗只读取一次带协议能力的 `test-options`，切换模型不追加单模型能力请求。
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户。

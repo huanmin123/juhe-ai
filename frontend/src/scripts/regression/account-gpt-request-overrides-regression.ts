@@ -19,6 +19,7 @@ import {
 import {
   applyConfigurationTemplateToCustomModelForm,
   availableCustomModelStatusOptions,
+  buildCustomModelCapabilityOptions,
   buildCustomModelPayload,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
@@ -26,8 +27,11 @@ import {
   reconcileCustomModelServiceTierPrices
 } from '../../views/providers/customProviderModelForm'
 import {
+  customModelPriceFields,
+  customModelTierPriceFields,
   formatModelReasoningCapabilities,
-  formatModelRequestCapabilities
+  formatModelRequestCapabilities,
+  formatTokens
 } from '../../views/providers/providerModelFormatters'
 import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import type {
@@ -49,6 +53,8 @@ assert(declaredTextColumnKeys.includes('catalogDisplay:tier_priority'), '模型�
 assert(declaredTextColumnKeys.includes('catalogDisplay:reasoning'), '模型目录必须按后端 descriptor 展示思考能力')
 assert.equal(declaredTextColumnKeys.includes('serviceTiers'), false, '模型目录不能保留固定服务等级列')
 assert.equal(declaredTextColumnKeys.includes('reasoningEfforts'), false, '模型目录不能保留固定思考级别列')
+assert.equal(formatTokens(131_072), '128K', '模型容量只显示 K，不追加精确括号数字')
+assert.equal(formatTokens(1_048_576), '1M', '模型容量只显示 M，不追加精确括号数字')
 const modelCatalogModalSource = readFileSync(new URL('../../views/providers/ProviderModelCatalogModal.vue', import.meta.url), 'utf8')
 assert.match(modelCatalogModalSource, /modelCatalogDisplaySections\(record\)/, '移动端模型目录必须循环当前模型的动态 section')
 assert.doesNotMatch(modelCatalogModalSource, /column\.key === '(?:serviceTiers|reasoningEfforts|prices|cacheWrite|context)'/, '模型目录不能继续渲染固定计费或能力列')
@@ -271,12 +277,12 @@ const customModelForm = {
   ...emptyCustomModelForm,
   model: 'gpt-custom-capabilities',
   supportedServiceTiers: ['priority', 'priority', 'flex'],
-  supportedReasoningEfforts: ['high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[]
+  supportedReasoningEfforts: ['none', 'high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[]
 }
 const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
-assert.equal(customPayload?.catalogVisible, true, '自定义模型默认必须发布到模型接口')
-assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
+assert.equal(Object.hasOwn(customPayload ?? {}, 'catalogVisible'), false, '自定义模型不再提交发布到模型接口字段')
+assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], 'none 表示关闭思考，不应作为思考能力级别提交')
 assert.equal(customPayload?.defaultReasoningEffort, null, '未选择默认思考级别时应显式清空')
 customModelForm.defaultReasoningEffort = 'high'
 assert.equal(buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })?.defaultReasoningEffort, null, '自定义模型即使表单残留默认值也必须清空，不能替上游做客户端决策')
@@ -305,6 +311,32 @@ applyConfigurationTemplateToCustomModelForm(customModelForm, [providerModel({
 assert.equal(customModelForm.defaultReasoningEffort, undefined, '配置模板不能把内置默认思考级别继承到新自定义模型')
 assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
 assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当前档位必须补空行，避免渲染访问 undefined')
+assert.equal(
+  buildCustomModelCapabilityOptions('gpt', [], ['none', 'low']).reasoningEfforts.some((option) => option.value === 'none'),
+  false,
+  '新增自定义模型的思考能力选项不得包含 none'
+)
+assert.deepEqual(
+  customModelPriceFields('anthropic', 'text').map((field) => [field.key, field.label]),
+  [
+    ['inputUsdPer1M', '输入'],
+    ['cachedInputUsdPer1M', '缓存读'],
+    ['cacheWriteUsdPer1M', '5m 缓存写入'],
+    ['cacheWrite1hUsdPer1M', '1h 缓存写入'],
+    ['outputUsdPer1M', '输出']
+  ],
+  'Anthropic 自定义模型必须使用厂商自己的缓存计费字段'
+)
+assert.deepEqual(
+  customModelPriceFields('gemini', 'text').map((field) => field.key),
+  ['inputUsdPer1M', 'cachedInputUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'audioInputUsdPer1M', 'outputUsdPer1M'],
+  'Gemini 文本模型必须补充缓存存储和音频输入价格'
+)
+assert.deepEqual(
+  customModelTierPriceFields('xai').map((field) => field.key),
+  ['inputUsdPer1M', 'cachedInputUsdPer1M', 'outputUsdPer1M'],
+  'xAI 服务档位不能显示未公布的缓存写入字段'
+)
 clearCustomModelPricesOutsideCategory(customModelForm, 'image')
 assert.deepEqual(customModelForm.serviceTierPrices, {}, '切换到非文本模型必须清空服务档位价格')
 assert(availableCustomModelStatusOptions(false, 'active').some((option) => option.value === 'active'), '普通用户编辑原 active 模型时必须稳定保留 active 选项')

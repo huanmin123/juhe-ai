@@ -35,6 +35,35 @@ func TestManagementProviderModelCatalogUsesPostgresBooleanVisibility(t *testing.
 	}
 }
 
+func TestManagementProviderModelOptionsReturnCapabilityContract(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	start := strings.Index(sql, "-- name: ListManagementProviderModelOptions :many")
+	end := strings.Index(sql, "-- name: ListManagementProviderModelCapabilityCandidates :many")
+	if start < 0 || end <= start {
+		t.Fatal("provider model options query boundaries missing")
+	}
+	optionsSQL := sql[start:end]
+	for _, column := range []string{
+		"mode", "release_date", "supported_api_protocols_json", "supported_service_tiers_json",
+		"supported_reasoning_efforts_json", "default_reasoning_effort",
+	} {
+		if !strings.Contains(optionsSQL, column) {
+			t.Fatalf("provider model options must return %s", column)
+		}
+	}
+	if !strings.Contains(optionsSQL, "release_date DESC") {
+		t.Fatal("provider model options must prioritize newest release_date")
+	}
+	customStart := strings.Index(optionsSQL, "custom_ranked AS")
+	if customStart < 0 || strings.Contains(optionsSQL[customStart:], "custom.catalog_visible = true") {
+		t.Fatal("custom provider model options must ignore legacy catalog visibility")
+	}
+}
+
 func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *testing.T) {
 	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
 	if err != nil {

@@ -8,7 +8,7 @@ import type {
 
 const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
-const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'litellm', 'user_balance'])
+const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'openai_billing', 'litellm', 'user_balance'])
 
 export const MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE = '多 Key 账户不支持余额查询，保存后将自动关闭余额查询'
 

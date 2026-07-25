@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatToolEvent, ChatToolStatus } from '@/types/domain/chat'
+import { chatErrorMessage } from './chatErrorMessage'
 
 export interface ChatToolProcessGroup {
   key: string
@@ -79,6 +80,14 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
 
 function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
   const item = tool.item ?? {}
+  const errorCode = readString(item.errorCode)
+  const errorMessage = readString(item.errorMessage)
+  if (tool.status === 'failed' && (errorMessage || errorCode)) {
+    return {
+      key: stableJson([tool.type, { errorCode, errorMessage }]),
+      summaries: [errorMessage || chatErrorMessage(errorCode)]
+    }
+  }
   if (tool.type === 'web_search_call' || tool.type === 'file_search_call') {
     const action = canonicalizeSearchAction(item)
     if (action) return { key: stableJson([tool.type, action]), summaries: describeSearchAction(tool.type, action) }

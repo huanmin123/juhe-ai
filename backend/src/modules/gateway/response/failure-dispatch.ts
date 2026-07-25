@@ -152,7 +152,8 @@ export async function handleFailedUpstreamResponse(
     clientIpAccountAvoidanceTracker
   } = input
 
-  if (!accountErrorPolicyCouldMatchStatus(account, response.status)) {
+  const explicitPolicyCouldMatch = accountErrorPolicyCouldMatchStatus(account, response.status)
+  if (!explicitPolicyCouldMatch) {
     return { action: 'return_response', response }
   }
 
@@ -167,7 +168,8 @@ export async function handleFailedUpstreamResponse(
   if (!responseBodyRead.truncated) {
     parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
   }
-  const explicitPolicyDecision = input.accountStateMutationEnabled !== false && usageContext.trafficSource === 'gateway'
+  const explicitPolicyDecision = input.accountStateMutationEnabled !== false
+    && usageContext.trafficSource === 'gateway'
     ? decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
     : undefined
   if (!explicitPolicyDecision) {
@@ -265,7 +267,6 @@ export async function handleFailedUpstreamResponse(
     settings,
     trafficSource: usageContext.trafficSource
   }
-  const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 

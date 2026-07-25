@@ -15,6 +15,7 @@ export interface SystemSettings {
   imageFirstResponseTimeoutSeconds: number
   imageStreamIdleTimeoutSeconds: number
   imageUncommittedAttemptMaxLifetimeSeconds: number
+  chatImageGenerationTotalTimeoutSeconds: number
   noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number

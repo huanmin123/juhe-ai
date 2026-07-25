@@ -2,7 +2,7 @@ import type { GatewaySettings } from '../gateway/policy/account-error-policy.ser
 
 export const accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000] as const
 export const accountDiagnosticRetryMaxTotalTimeoutMs = accountDiagnosticRetryTimeoutMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
-export const accountImageDiagnosticRetryTimeoutMs = [60_000] as const
+export const accountImageDiagnosticRetryTimeoutMs = [120_000] as const
 
 export function accountDiagnosticRetryTimeouts(probeKind: 'generation' | 'image_generation' | 'models_catalog'): readonly number[] {
   return probeKind === 'image_generation'

@@ -115,6 +115,7 @@ catalog AS (
     built_in.cache_write_1h_usd_per_1m,
     built_in.cache_storage_usd_per_1m_per_hour,
     built_in.image_input_usd_per_1m,
+    built_in.cached_image_input_usd_per_1m,
     built_in.image_output_usd_per_1m,
     built_in.audio_input_usd_per_1m,
     built_in.audio_output_usd_per_1m,
@@ -142,6 +143,7 @@ catalog AS (
       OR built_in.cache_write_1h_usd_per_1m IS NOT NULL
       OR built_in.cache_storage_usd_per_1m_per_hour IS NOT NULL
       OR built_in.image_input_usd_per_1m IS NOT NULL
+      OR built_in.cached_image_input_usd_per_1m IS NOT NULL
       OR built_in.image_output_usd_per_1m IS NOT NULL
       OR built_in.audio_input_usd_per_1m IS NOT NULL
       OR built_in.audio_output_usd_per_1m IS NOT NULL
@@ -176,6 +178,7 @@ catalog AS (
     custom.cache_write_1h_usd_per_1m,
     custom.cache_storage_usd_per_1m_per_hour,
     custom.image_input_usd_per_1m,
+    NULL::double precision AS cached_image_input_usd_per_1m,
     custom.image_output_usd_per_1m,
     custom.audio_input_usd_per_1m,
     custom.audio_output_usd_per_1m,
@@ -237,6 +240,7 @@ SELECT
   cache_write_1h_usd_per_1m,
   cache_storage_usd_per_1m_per_hour,
   image_input_usd_per_1m,
+  cached_image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
   audio_output_usd_per_1m,

@@ -20,6 +20,7 @@ const finalizationSource = readFileSync(new URL('../../modules/gateway/response/
 const auxiliarySource = readFileSync(new URL('../../modules/gateway/hybrid/auxiliary-dispatch.service.ts', import.meta.url), 'utf8')
 const hybridScoringSource = readFileSync(new URL('../../modules/gateway/hybrid/scoring.service.ts', import.meta.url), 'utf8')
 const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/quality-inspection.service.ts', import.meta.url), 'utf8')
+const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
 assert.match(
   dispatchSource,
   /failedResponseResult\.action === 'return_response'[\s\S]*response: failedResponseResult\.response/,
@@ -28,12 +29,22 @@ assert.match(
 assert.match(
   dispatchSource,
   /const failedResponseResult = await handleFailedUpstreamResponse/,
-  'HTTP 失败只能由用户显式账户错误策略决定是否切号，不得按客户端画像分流默认动作'
+  'HTTP 失败必须由统一失败派发决定是否切号，不得按客户端画像分流默认动作'
 )
 assert.doesNotMatch(
   dispatchSource,
   /isOpaqueUpstreamFailoverAllowed/,
   '完整 HTTP 非成功响应不得按端点建立默认接管白名单'
+)
+assert.doesNotMatch(
+  failureDispatchSource,
+  /builtInImagePermission|isBuiltInImageAccountPermissionFailure|Image generation is not enabled/,
+  '通用失败派发不得写死图片状态码、错误类型或供应商文案'
+)
+assert.match(
+  failureDispatchSource,
+  /if \(!explicitPolicyCouldMatch\) \{\s*return \{ action: 'return_response', response \}/,
+  '未配置可能命中的账户错误策略时，完整 HTTP 错误必须原样返回'
 )
 assert.doesNotMatch(
   finalizationSource,

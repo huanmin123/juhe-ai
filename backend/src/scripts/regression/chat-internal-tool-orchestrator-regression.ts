@@ -188,6 +188,51 @@ assert.equal(correctionResult.content, '工具参数无效，已向用户说明�
 assert.deepEqual(correctionEvents, ['started:bad-args:', 'failed:bad-args:tool_arguments_invalid'])
 assert.match(correctionContinuations[1] ?? '', /tool_arguments_invalid/u, '首次可修正工具错误必须作为受控结果回灌模型')
 
+const imageFailureRegistry = new ChatInternalToolRegistry({ environment: 'test', internalToolsEnabled: true })
+imageFailureRegistry.register({
+  id: 'image.failure.fixture', version: '1.0.0', modelName: 'generate_image', title: '图片失败 fixture', description: '测试结构化图片错误',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  executionKind: 'network_adapter', executionOwner: 'application',
+  limits: { maxArgumentBytes: 1024, maxResultBytes: 1024, timeoutMs: 1000 },
+  availability: {}, duplicatePolicy: 'reuse_exact',
+  execute: async () => { throw Object.assign(new Error('raw upstream body: image capability disabled; api_key=sk-tool-secret-value'), { code: 'image_generation_not_enabled' }) },
+  projectResult: () => undefined
+})
+const imageFailureContinuations: string[] = []
+const imageFailureEvents: Array<{ status: string; errorCode?: string; errorMessage?: string }> = []
+const reportedImageFailures: Array<{ errorCode: string; errorMessage: string }> = []
+const imageFailureResult = await new ChatInternalToolOrchestrator({
+  registry: imageFailureRegistry,
+  tools: imageFailureRegistry.resolve({ functionCalling: true }),
+  context: {
+    environment: 'test', ownerId: 'owner-1', conversationId: 'conversation-image-failure',
+    turnId: 'turn-image-failure', assistantMessageId: 'assistant-image-failure', signal: new AbortController().signal
+  },
+  limits: { maxModelRounds: 4, maxToolCalls: 8, maxImageCalls: 2 },
+  publish: (event) => imageFailureEvents.push(event),
+  reportError: (_error, failure) => reportedImageFailures.push(failure)
+}).run({
+  protocol: 'responses',
+  invokeModel: async (request) => {
+    imageFailureContinuations.push(JSON.stringify(request.continuation))
+    return request.round === 1
+      ? {
+          content: '', finishReason: 'tool_calls',
+          continuationItems: [{ type: 'function_call', call_id: 'image-failed', name: 'generate_image', arguments: '{}' }],
+          toolCalls: [{ callId: 'image-failed', toolName: 'generate_image', argumentsJson: '{}', sourceOrder: 0 }]
+        }
+      : { content: '图片上游未开通，已向用户说明。', finishReason: 'stop', continuationItems: [], toolCalls: [] }
+  }
+})
+assert.equal(imageFailureResult.content, '图片上游未开通，已向用户说明。')
+assert.match(imageFailureContinuations[1] ?? '', /image_generation_not_enabled/u, '结构化图片错误码必须回灌模型')
+assert.match(imageFailureContinuations[1] ?? '', /可用上游分组未开通图片生成功能/u, '模型必须收到可操作的安全图片失败原因')
+assert.match(imageFailureContinuations[1] ?? '', /raw upstream body: image capability disabled/u, '工具回灌必须保留脱敏后的真实错误详情')
+assert.doesNotMatch(imageFailureContinuations[1] ?? '', /sk-tool-secret-value/u, '工具回灌不得泄露上游凭据')
+assert.match(imageFailureEvents.find((event) => event.status === 'failed')?.errorMessage ?? '', /raw upstream body: image capability disabled/u, '工具失败事件必须携带前端可见诊断详情')
+assert.doesNotMatch(imageFailureEvents.find((event) => event.status === 'failed')?.errorMessage ?? '', /sk-tool-secret-value/u, '工具失败事件不得泄露凭据')
+assert.equal(reportedImageFailures.length, 1, '每次内部工具失败必须进入服务端日志回调')
+
 const repeatedFailureRegistry = registry()
 await assert.rejects(new ChatInternalToolOrchestrator({
   registry: repeatedFailureRegistry,

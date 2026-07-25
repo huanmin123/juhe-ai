@@ -34,7 +34,12 @@ assert.match(timeline, /output_image/)
 assert.match(runner, /output_image/)
 assert.match(repository, /output_image|insertChatAssetReference/)
 
-const { buildChatImageGenerationRequest, generateChatImage } = await import('../../modules/chat/chat-image-generation-transport.js')
+const { ChatImageGenerationRequestError, buildChatImageGenerationRequest, generateChatImage } = await import('../../modules/chat/chat-image-generation-transport.js')
+const { createGenerateImageTool, defaultChatImageGenerationTotalTimeoutSeconds } = await import('../../modules/chat/tools/executors/generate-image.js')
+assert.equal(defaultChatImageGenerationTotalTimeoutSeconds, 900, 'AI 对话生图总超时默认值必须为 15 分钟')
+assert.equal(createGenerateImageTool().limits.timeoutMs, 900_000, '默认图片工具总超时必须为 900 秒')
+assert.equal(createGenerateImageTool({ totalTimeoutSeconds: 1200 }).limits.timeoutMs, 1_200_000, '图片工具必须使用系统设置快照创建总超时')
+assert.throws(() => createGenerateImageTool({ totalTimeoutSeconds: 59 }), /60 到 86400/, '图片工具必须拒绝越界总超时')
 assert.deepEqual(buildChatImageGenerationRequest({ model: 'gpt-image-2', prompt: '生成验收图' }), {
   path: '/v1/images/generations',
   body: { model: 'gpt-image-2', prompt: '生成验收图', n: 1, size: 'auto', quality: 'auto', output_format: 'webp' }
@@ -51,14 +56,20 @@ const providerPng = await sharp({
 }).png().toBuffer()
 const providerFormatTempDir = await mkdtemp(join(tmpdir(), 'juhe-chat-image-provider-format-'))
 try {
+  let forwardedTraceId = ''
   const providerFormatResult = await generateChatImage({
     gatewayBaseUrl: 'http://127.0.0.1:1',
     apiKey: 'test-only',
     model: 'gpt-image-2',
     prompt: '上游未遵循 WebP 请求而返回 PNG',
+    traceId: 'trace_chat_image_fixture',
     tempDir: providerFormatTempDir,
-    fetchImpl: async () => Response.json({ data: [{ b64_json: providerPng.toString('base64') }] }, { status: 200 })
+    fetchImpl: async (_url, init) => {
+      forwardedTraceId = new Headers(init?.headers).get('x-trace-id') ?? ''
+      return Response.json({ data: [{ b64_json: providerPng.toString('base64') }] }, { status: 200 })
+    }
   })
+  assert.equal(forwardedTraceId, 'trace_chat_image_fixture', '内部生图请求必须沿用聊天 Trace ID，便于由前端诊断信息直接定位网关 attempt')
   assert.equal(providerFormatResult.mimeType, 'image/png', '必须接受上游实际返回的受支持 MIME，不能把请求格式当成硬校验')
   await rm(providerFormatResult.path, { force: true, maxRetries: 10, retryDelay: 100 })
 } finally {
@@ -114,5 +125,23 @@ assert.equal(editRequestBody?.get('size'), '1024x1024')
 assert.equal(editRequestBody?.get('quality'), 'high')
 assert.equal(editRequestBody?.get('output_format'), 'webp')
 assert.equal(editRequestBody?.getAll('image[]').length, 2, '每张来源图片必须使用重复 image[] 字段')
+
+await assert.rejects(generateChatImage({
+  gatewayBaseUrl: 'http://127.0.0.1:9999',
+  apiKey: 'test-only',
+  model: 'gpt-image-2',
+  prompt: '验证图片权限失败可见',
+  fetchImpl: async () => Response.json({
+    error: {
+      message: 'Image generation is not enabled for this group',
+      type: 'permission_error'
+    }
+  }, { status: 403 })
+}), (error: unknown) => {
+  assert.ok(error instanceof ChatImageGenerationRequestError)
+  assert.equal(error.statusCode, 403)
+  assert.equal(error.code, 'image_generation_not_enabled')
+  return true
+}, '明确的图片分组权限失败必须转换为可持久化、可展示的稳定错误码')
 
 console.log('AI 问答 Images 生图 transport 回归通过')

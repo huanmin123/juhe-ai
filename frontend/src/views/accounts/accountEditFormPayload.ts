@@ -1,4 +1,5 @@
 import type {
+  AccountType,
   AccountSummary,
   ProviderProtocolProfileDefinition,
   ProviderModelApiProtocol,
@@ -6,6 +7,7 @@ import type {
   ProviderModelReasoningEffort,
   ProviderModelServiceTier
 } from '@/types/domain'
+import { isGptVendorCode } from '@/shared/providerProtocol'
 import { asString } from './accountBasicFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 
@@ -31,9 +33,13 @@ export function providerModelsToOptions(models: ProviderModelPricing[]): Account
 
 export function providerModelsForProtocolProfile(
   models: AccountModelSelectOption[],
-  profile?: ProviderProtocolProfileDefinition
+  profile?: ProviderProtocolProfileDefinition,
+  accountType?: AccountType
 ): AccountModelSelectOption[] {
   const allowedProtocols = providerProfileModelProtocols(profile)
+  if (accountType === 'api_key' && isGptVendorCode(profile?.providerCode)) {
+    allowedProtocols.add('images')
+  }
   if (!allowedProtocols.size) return models
   return models.filter((item) => {
     const protocols = item.supportedApiProtocols ?? []

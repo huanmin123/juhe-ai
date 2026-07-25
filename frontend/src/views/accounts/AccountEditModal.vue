@@ -43,7 +43,6 @@
           @delete-tag="$emit('delete-tag', $event)"
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
-          @model-capabilities-load="$emit('model-capabilities-load', $event)"
           @group-options-dropdown="$emit('group-options-dropdown', $event)"
           @group-options-search="$emit('group-options-search', $event)"
         />
@@ -58,6 +57,8 @@
           :form="form"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
+          :protocol-code="selectedProtocolProfile?.protocolCode"
+          :protocol-version="selectedProtocolProfile?.protocolVersion"
           :tag-options="tagOptions"
           :tag-options-loading="tagOptionsLoading"
           :title="credentialTitle"
@@ -75,13 +76,14 @@
           :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
+          :protocol-code="selectedProtocolProfile?.protocolCode"
+          :protocol-version="selectedProtocolProfile?.protocolVersion"
           :title="credentialTitle"
           @copy-auth-url="$emit('copy-auth-url', $event)"
           @generate-auth-url="$emit('generate-auth-url')"
           @open-auth-url="$emit('open-auth-url')"
           @model-options-open="$emit('model-options-open', $event)"
           @model-options-search="$emit('model-options-search', $event)"
-          @model-capabilities-load="$emit('model-capabilities-load', $event)"
         />
 
         <section v-if="authorizedEditing" class="form-section readonly-config-section">
@@ -286,6 +288,7 @@ import type { AccountFormModel } from './accountFormTypes'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountTypeChoice } from './accountEditFormDisplay'
+import type { AccountModelSelectOption } from './accountEditFormPayload'
 
 interface SelectOption<T = string> {
   label: string
@@ -331,7 +334,7 @@ const props = withDefaults(defineProps<{
   mappingAnthropicSourceModelOptions: SelectOption[]
   mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
-  modelOptions: SelectOption[]
+  modelOptions: AccountModelSelectOption[]
   modelsLoading: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
@@ -452,7 +455,6 @@ const emit = defineEmits<{
   (event: 'group-options-search', value: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
-  (event: 'model-capabilities-load', modelIds: string[]): void
   (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
   (event: 'proxyOptionsDropdown', open: boolean): void

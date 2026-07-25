@@ -137,6 +137,7 @@ func gatewayClientCatalogModelFromRow(row postgresqueries.ListGatewayClientCatal
 		CacheWrite1hUSDPer1M:          float8Ptr(row.CacheWrite1hUsdPer1m),
 		CacheStorageUSDPer1MPerHour:   float8Ptr(row.CacheStorageUsdPer1mPerHour),
 		ImageInputUSDPer1M:            float8Ptr(row.ImageInputUsdPer1m),
+		CachedImageInputUSDPer1M:      float8Ptr(row.CachedImageInputUsdPer1m),
 		ImageOutputUSDPer1M:           float8Ptr(row.ImageOutputUsdPer1m),
 		AudioInputUSDPer1M:            float8Ptr(row.AudioInputUsdPer1m),
 		AudioOutputUSDPer1M:           float8Ptr(row.AudioOutputUsdPer1m),

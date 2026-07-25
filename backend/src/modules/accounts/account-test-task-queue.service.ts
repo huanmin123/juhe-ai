@@ -219,7 +219,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   }
   const controller = new AbortController()
   runningAccountTestControllers.set(task.id, controller)
-  const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id)
+  const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id, task.testEndpointMode)
 
   try {
     if (task.draftAccount) {
@@ -337,9 +337,12 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   }
 }
 
-function accountTestTaskProgressReporter(taskId: string): (progress: AccountDiagnosticAttemptProgress) => void {
+function accountTestTaskProgressReporter(
+  taskId: string,
+  testEndpointMode: AccountSupportedEndpointMode | undefined
+): (progress: AccountDiagnosticAttemptProgress) => void {
   return (progress) => {
-    void updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress))
+    void updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress, testEndpointMode))
   }
 }
 
@@ -417,8 +420,12 @@ async function updateAccountTestTaskMessageViaDbService(taskId: string, message:
   })
 }
 
-function accountDiagnosticAttemptMessage(progress: AccountDiagnosticAttemptProgress): string {
-  return `真实请求测试中：第 ${progress.attemptNumber}/${progress.totalAttempts} 次，本次最多等待 ${formatDiagnosticTimeout(progress.timeoutMs)}，总上限 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
+function accountDiagnosticAttemptMessage(
+  progress: AccountDiagnosticAttemptProgress,
+  testEndpointMode?: AccountSupportedEndpointMode
+): string {
+  const action = testEndpointMode === 'images_json' ? '图像生成测试中' : '真实请求测试中'
+  return `${action}：第 ${progress.attemptNumber}/${progress.totalAttempts} 次，本次最多等待 ${formatDiagnosticTimeout(progress.timeoutMs)}，总上限 ${formatDiagnosticTimeout(progress.maxTotalTimeoutMs)}`
 }
 
 function formatDiagnosticTimeout(timeoutMs: number): string {

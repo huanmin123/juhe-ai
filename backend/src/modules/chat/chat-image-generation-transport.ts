@@ -16,6 +16,7 @@ export interface ChatImageGenerationRequestInput {
   quality?: string
   outputFormat?: string
   references?: readonly ChatImageEditReference[]
+  traceId?: string
   signal?: AbortSignal
   fetchImpl?: typeof fetch
   tempDir?: string
@@ -23,6 +24,17 @@ export interface ChatImageGenerationRequestInput {
 
 export interface ChatImageGenerationResult extends ChatImageResultTempFile {
   revisedPrompt?: string
+}
+
+export class ChatImageGenerationRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly code: 'image_generation_not_enabled' | 'image_generation_permission_denied' | 'image_generation_rate_limited' | 'image_generation_request_rejected' | 'image_generation_failed'
+  ) {
+    super(message)
+    this.name = 'ChatImageGenerationRequestError'
+  }
 }
 
 export function buildChatImageGenerationRequest(input: Pick<ChatImageGenerationRequestInput, 'model' | 'prompt'> & Partial<Pick<ChatImageGenerationRequestInput, 'size' | 'quality' | 'outputFormat'>>): {
@@ -51,7 +63,8 @@ export async function generateChatImage(input: ChatImageGenerationRequestInput):
         method: 'POST',
         headers: {
           authorization: `Bearer ${input.apiKey}`,
-          accept: 'application/json'
+          accept: 'application/json',
+          ...(input.traceId ? { 'x-trace-id': input.traceId } : {})
         },
         body: await buildChatImageEditForm(request.body, references, input.signal),
         signal: input.signal
@@ -61,14 +74,16 @@ export async function generateChatImage(input: ChatImageGenerationRequestInput):
         headers: {
           authorization: `Bearer ${input.apiKey}`,
           'content-type': 'application/json',
-          accept: 'application/json'
+          accept: 'application/json',
+          ...(input.traceId ? { 'x-trace-id': input.traceId } : {})
         },
         body: JSON.stringify(request.body),
         signal: input.signal
       })
   if (!response.ok || !response.body) {
     const payload = await readChatJsonResponse(response, 64 * 1024)
-    throw new Error(readImageGenerationError(payload, `图像生成请求失败（HTTP ${response.status}）`))
+    const upstream = readImageGenerationError(payload, `图像生成请求失败（HTTP ${response.status}）`)
+    throw new ChatImageGenerationRequestError(upstream.message, response.status, imageGenerationPublicErrorCode(response.status, upstream))
   }
   return await decodeBase64FieldToTempFile(readUtf8Chunks(response.body), {
     field: 'b64_json',
@@ -123,10 +138,28 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${normalized}${path}`
 }
 
-function readImageGenerationError(payload: unknown, fallback: string): string {
+function readImageGenerationError(payload: unknown, fallback: string): { message: string; type?: string } {
   const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : {}
   const error = record.error && typeof record.error === 'object' && !Array.isArray(record.error) ? record.error as Record<string, unknown> : {}
-  return typeof error.message === 'string' && error.message.trim() ? error.message : fallback
+  return {
+    message: typeof error.message === 'string' && error.message.trim() ? error.message.trim() : fallback,
+    ...(typeof error.type === 'string' && error.type.trim() ? { type: error.type.trim() } : {})
+  }
+}
+
+function imageGenerationPublicErrorCode(
+  statusCode: number,
+  upstream: { message: string; type?: string }
+): ChatImageGenerationRequestError['code'] {
+  if (
+    statusCode === 403
+    && upstream.type?.toLowerCase() === 'permission_error'
+    && /\bimage generation is not enabled for (?:this|the) group\b/i.test(upstream.message)
+  ) return 'image_generation_not_enabled'
+  if (statusCode === 401 || statusCode === 403) return 'image_generation_permission_denied'
+  if (statusCode === 429) return 'image_generation_rate_limited'
+  if (statusCode === 400 || statusCode === 422) return 'image_generation_request_rejected'
+  return 'image_generation_failed'
 }
 
 async function* readUtf8Chunks(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {

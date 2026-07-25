@@ -669,8 +669,23 @@ func listManagementProviderModelOptions(
 	}
 	items := make([]port.ManagementProviderModelCatalogItem, 0, len(rows))
 	for _, row := range rows {
+		protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "provider model options supported_api_protocols_json")
+		if err != nil {
+			return nil, err
+		}
+		serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "provider model options supported_service_tiers_json")
+		if err != nil {
+			return nil, err
+		}
+		reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "provider model options supported_reasoning_efforts_json")
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, port.ManagementProviderModelCatalogItem{
 			ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope,
+			Mode: textValue(row.Mode), ReleaseDate: textValue(row.ReleaseDate),
+			SupportedAPIProtocols: protocols, SupportedServiceTiers: serviceTiers,
+			SupportedReasoningEfforts: reasoningEfforts, DefaultReasoningEffort: textValue(row.DefaultReasoningEffort),
 		})
 	}
 	return items, nil
@@ -1017,6 +1032,7 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 		LongContextInputCostMultiplier:          float8Ptr(row.LongContextInputCostMultiplier),
 		LongContextOutputCostMultiplier:         float8Ptr(row.LongContextOutputCostMultiplier),
 		ImageInputUSDPer1M:                      float8Ptr(row.ImageInputUsdPer1m),
+		CachedImageInputUSDPer1M:                float8Ptr(row.CachedImageInputUsdPer1m),
 		ImageOutputUSDPer1M:                     float8Ptr(row.ImageOutputUsdPer1m),
 		AudioInputUSDPer1M:                      float8Ptr(row.AudioInputUsdPer1m),
 		AudioOutputUSDPer1M:                     float8Ptr(row.AudioOutputUsdPer1m),

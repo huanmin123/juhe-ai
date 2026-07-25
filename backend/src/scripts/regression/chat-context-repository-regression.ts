@@ -357,7 +357,7 @@ const failed = await acceptChatTurn(client, {
 })
 await failChatTurn(client, {
   conversationId: failureConversationId, systemAccountId: failureOwnerId, turnId: failed.turnId,
-  assistantContent: '', errorCode: 'mock_failed', traceId: 'failed_trace', now: '2026-07-14T00:01:30.000Z'
+  assistantContent: '', errorCode: 'mock_failed', errorMessage: 'Mock 上下文失败', traceId: 'failed_trace', now: '2026-07-14T00:01:30.000Z'
 })
 for (let index = 2; index <= 3; index += 1) {
   const accepted = await acceptChatTurn(client, {

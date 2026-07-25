@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -38,6 +39,8 @@ var gptProviderModelServiceTiers = map[string]struct{}{"priority": {}, "flex": {
 var gptProviderModelReasoningEfforts = map[string]struct{}{
 	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
 }
+
+var unsupportedCatalogModelTokenPattern = regexp.MustCompile(`(^|[-_.])(audio|realtime|transcribe|tts|whisper)($|[-_.])`)
 
 type Store interface {
 	port.ManagementProviderModelCatalogReader
@@ -78,8 +81,12 @@ type ModelSelectionOptionListInput struct {
 }
 
 type ModelSelectionOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID                        string   `json:"id"`
+	Name                      string   `json:"name"`
+	SupportedAPIProtocols     []string `json:"supportedApiProtocols"`
+	SupportedServiceTiers     []string `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort    string   `json:"defaultReasoningEffort,omitempty"`
 }
 
 type ModelListInput struct {
@@ -341,6 +348,7 @@ type ModelCatalogItem struct {
 	LongContextInputCostMultiplier          *float64                                        `json:"longContextInputCostMultiplier,omitempty"`
 	LongContextOutputCostMultiplier         *float64                                        `json:"longContextOutputCostMultiplier,omitempty"`
 	ImageInputUSDPer1M                      *float64                                        `json:"imageInputUsdPer1M,omitempty"`
+	CachedImageInputUSDPer1M                *float64                                        `json:"cachedImageInputUsdPer1M,omitempty"`
 	ImageOutputUSDPer1M                     *float64                                        `json:"imageOutputUsdPer1M,omitempty"`
 	AudioInputUSDPer1M                      *float64                                        `json:"audioInputUsdPer1M,omitempty"`
 	AudioOutputUSDPer1M                     *float64                                        `json:"audioOutputUsdPer1M,omitempty"`
@@ -507,30 +515,30 @@ func (s *Service) ModelSelectionOptions(ctx context.Context, input ModelSelectio
 		filtered = append(filtered, item)
 	}
 	sort.SliceStable(filtered, func(i, j int) bool {
-		_, leftSelected := selectedSet[filtered[i].Model]
-		_, rightSelected := selectedSet[filtered[j].Model]
-		if leftSelected != rightSelected {
-			return leftSelected
-		}
-		if filtered[i].Model != filtered[j].Model {
-			return filtered[i].Model < filtered[j].Model
-		}
-		return strings.TrimSpace(filtered[i].ProviderCode) < strings.TrimSpace(filtered[j].ProviderCode)
+		return compareCatalogItems(filtered[i], filtered[j]) < 0
 	})
-	selected := make([]port.ManagementProviderModelCatalogItem, 0, len(selectedIDs))
-	window := make([]port.ManagementProviderModelCatalogItem, 0, limit)
+	visible := make([]port.ManagementProviderModelCatalogItem, 0, limit+len(selectedIDs))
+	nonSelectedCount := 0
 	for _, item := range filtered {
 		if _, ok := selectedSet[item.Model]; ok {
-			selected = append(selected, item)
+			visible = append(visible, item)
 			continue
 		}
-		if len(window) < limit {
-			window = append(window, item)
+		if nonSelectedCount < limit {
+			visible = append(visible, item)
+			nonSelectedCount++
 		}
 	}
-	output := make([]ModelSelectionOption, 0, len(selected)+len(window))
-	for _, item := range append(selected, window...) {
-		output = append(output, ModelSelectionOption{ID: item.Model, Name: item.Model})
+	output := make([]ModelSelectionOption, 0, len(visible))
+	for _, item := range visible {
+		output = append(output, ModelSelectionOption{
+			ID:                        item.Model,
+			Name:                      item.Model,
+			SupportedAPIProtocols:     dedupeStrings(item.SupportedAPIProtocols),
+			SupportedServiceTiers:     normalizeCatalogCapabilityList(item.SupportedServiceTiers),
+			SupportedReasoningEfforts: normalizeCatalogCapabilityList(item.SupportedReasoningEfforts),
+			DefaultReasoningEffort:    strings.TrimSpace(item.DefaultReasoningEffort),
+		})
 	}
 	return output, nil
 }
@@ -564,10 +572,11 @@ func (s *Service) Models(ctx context.Context, input ModelListInput) ([]ModelCata
 	if provider.Code == hybridProviderCode {
 		mergeKey = mergeKeyProviderModel
 	}
-	items := sortCatalogItems(mergeCatalogItems(rows, mergeKey))
+	items := mergeCatalogItems(filterSupportedCatalogItems(rows), mergeKey)
 	if !input.IncludeUnpriced {
 		items = filterPricedCatalogItems(items)
 	}
+	items = sortCatalogItems(items)
 	output := make([]ModelCatalogItem, 0, len(items))
 	for _, item := range items {
 		output = append(output, catalogItemFromPort(item))
@@ -830,7 +839,7 @@ func customProviderModelUpdateInput(input CustomModelUpdateInput) port.Managemen
 		ID: strings.TrimSpace(input.ID), ProviderCode: strings.TrimSpace(input.ProviderCode),
 		ActorSystemAccountID: strings.TrimSpace(input.ActorSystemAccountID), ActorRole: input.ActorRole,
 		Status:                    optionalProviderModelString(fields.Status),
-		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: fields.CatalogVisible.Set, Value: fields.CatalogVisible.Value},
+		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: true, Value: true},
 		Mode:                      optionalProviderModelString(fields.Mode),
 		SupportedAPIProtocols:     optionalProviderModelStringList(fields.SupportedAPIProtocols, false),
 		SupportedServiceTiers:     optionalProviderModelStringList(fields.SupportedServiceTiers, true),
@@ -1275,8 +1284,6 @@ var customProviderModelAPIProtocols = map[string]struct{}{
 	"embed_content":           {},
 	"completions":             {},
 	"images":                  {},
-	"audio":                   {},
-	"realtime":                {},
 }
 
 func createCustomModelScope(scope OptionalString) (string, error) {
@@ -1327,6 +1334,7 @@ func customModelSaveInputFromCreate(
 	if err := applyCustomModelMutableFields(&saveInput, fields, template == nil); err != nil {
 		return port.ManagementCustomProviderModelSaveInput{}, err
 	}
+	saveInput.CatalogVisible = true
 	return saveInput, nil
 }
 
@@ -1362,7 +1370,7 @@ func (s *Service) resolveConfigurationTemplate(ctx context.Context, providerCode
 
 func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInput, template port.ManagementProviderModelCatalogItem) {
 	input.Mode = customModelModeFromCatalog(template)
-	input.SupportedAPIProtocols = append([]string(nil), template.SupportedAPIProtocols...)
+	input.SupportedAPIProtocols = supportedCustomModelProtocolsFromTemplate(template.SupportedAPIProtocols)
 	input.SupportedServiceTiers = append([]string(nil), template.SupportedServiceTiers...)
 	input.SupportedReasoningEfforts = append([]string(nil), template.SupportedReasoningEfforts...)
 	input.DefaultReasoningEffort = template.DefaultReasoningEffort
@@ -1390,18 +1398,29 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 
 func customModelModeFromCatalog(item port.ManagementProviderModelCatalogItem) string {
 	mode := strings.TrimSpace(item.Mode)
-	if mode == "image" || mode == "audio" {
-		return mode
+	if mode == "image" {
+		return "image"
 	}
 	for _, protocol := range item.SupportedAPIProtocols {
-		switch protocol {
-		case "images":
+		if strings.TrimSpace(protocol) == "images" {
 			return "image"
-		case "audio":
-			return "audio"
 		}
 	}
 	return "text"
+}
+
+func supportedCustomModelProtocolsFromTemplate(protocols []string) []string {
+	output := make([]string, 0, len(protocols))
+	for _, protocol := range protocols {
+		normalized := strings.TrimSpace(protocol)
+		if normalized == "audio" || normalized == "realtime" {
+			continue
+		}
+		if _, ok := customProviderModelAPIProtocols[normalized]; ok {
+			output = append(output, normalized)
+		}
+	}
+	return output
 }
 
 func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogItem, actorSystemAccountID string) port.ManagementCustomProviderModelSaveInput {
@@ -1480,7 +1499,7 @@ func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomPro
 	}
 	if fields.Mode.Set {
 		mode := strings.TrimSpace(fields.Mode.Value)
-		if fields.Mode.Value != mode || (mode != "" && mode != "text" && mode != "image" && mode != "audio") {
+		if fields.Mode.Value != mode || (mode != "" && mode != "text" && mode != "image") {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Mode = mode
@@ -1782,8 +1801,6 @@ func customModelSaveInputHasDirectPrice(input port.ManagementCustomProviderModel
 	switch strings.TrimSpace(input.Mode) {
 	case "image":
 		return input.ImageInputUSDPer1M != nil || input.ImageOutputUSDPer1M != nil || input.OutputUSDPerImage != nil
-	case "audio":
-		return input.AudioInputUSDPer1M != nil || input.AudioOutputUSDPer1M != nil
 	default:
 		return input.InputUSDPer1M != nil || input.OutputUSDPer1M != nil || input.CachedInputUSDPer1M != nil ||
 			input.CacheWriteUSDPer1M != nil || input.CacheWrite1hUSDPer1M != nil || input.CacheStorageUSDPer1MPerHour != nil || providerModelPriceMapHasAnyPrice(input.ServiceTierPrices)
@@ -1794,7 +1811,7 @@ func validateServiceTierPriceKeys(mode string, supported []string, prices map[st
 	if len(prices) == 0 {
 		return nil
 	}
-	if strings.TrimSpace(mode) == "image" || strings.TrimSpace(mode) == "audio" {
+	if strings.TrimSpace(mode) == "image" {
 		return &CustomModelValidationError{Message: "只有文本自定义模型支持服务档位价格"}
 	}
 	supportedSet := stringSet(supported)
@@ -2026,6 +2043,50 @@ func filterPricedCatalogItems(items []port.ManagementProviderModelCatalogItem) [
 	return output
 }
 
+func filterSupportedCatalogItems(items []port.ManagementProviderModelCatalogItem) []port.ManagementProviderModelCatalogItem {
+	output := make([]port.ManagementProviderModelCatalogItem, 0, len(items))
+	for _, item := range items {
+		if isSupportedCatalogModel(item) {
+			output = append(output, item)
+		}
+	}
+	return output
+}
+
+func isSupportedCatalogModel(item port.ManagementProviderModelCatalogItem) bool {
+	mode := strings.ToLower(strings.TrimSpace(item.Mode))
+	if mode == "audio" || mode == "audio_speech" || mode == "audio_transcription" {
+		return false
+	}
+	protocols := item.SupportedAPIProtocols
+	onlyAudio := len(protocols) == 1 && strings.TrimSpace(protocols[0]) == "audio"
+	for _, protocol := range protocols {
+		if strings.TrimSpace(protocol) == "realtime" {
+			return false
+		}
+	}
+	if onlyAudio {
+		return false
+	}
+	if item.Scope != "built_in" && catalogItemHasExplicitSupportedGenerationMetadata(item, mode) {
+		return true
+	}
+	return !unsupportedCatalogModelTokenPattern.MatchString(strings.ToLower(strings.TrimSpace(item.Model)))
+}
+
+func catalogItemHasExplicitSupportedGenerationMetadata(item port.ManagementProviderModelCatalogItem, mode string) bool {
+	if mode == "text" || mode == "image" || mode == "embedding" {
+		return true
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		switch strings.TrimSpace(protocol) {
+		case "chat_completions", "responses", "messages", "message_token_counting", "generate_content", "stream_generate_content", "count_tokens", "embed_content", "interactions", "completions", "images":
+			return true
+		}
+	}
+	return false
+}
+
 func hasResolvablePrice(item port.ManagementProviderModelCatalogItem, all []port.ManagementProviderModelCatalogItem) bool {
 	_ = all
 	return hasDirectPrice(item)
@@ -2039,6 +2100,7 @@ func hasDirectPrice(item port.ManagementProviderModelCatalogItem) bool {
 		item.CacheWrite1hUSDPer1M != nil ||
 		item.CacheStorageUSDPer1MPerHour != nil ||
 		item.ImageInputUSDPer1M != nil ||
+		item.CachedImageInputUSDPer1M != nil ||
 		item.ImageOutputUSDPer1M != nil ||
 		item.AudioInputUSDPer1M != nil ||
 		item.AudioOutputUSDPer1M != nil ||
@@ -2166,6 +2228,7 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		LongContextInputCostMultiplier:          cloneFloatPtr(item.LongContextInputCostMultiplier),
 		LongContextOutputCostMultiplier:         cloneFloatPtr(item.LongContextOutputCostMultiplier),
 		ImageInputUSDPer1M:                      cloneFloatPtr(item.ImageInputUSDPer1M),
+		CachedImageInputUSDPer1M:                cloneFloatPtr(item.CachedImageInputUSDPer1M),
 		ImageOutputUSDPer1M:                     cloneFloatPtr(item.ImageOutputUSDPer1M),
 		AudioInputUSDPer1M:                      cloneFloatPtr(item.AudioInputUSDPer1M),
 		AudioOutputUSDPer1M:                     cloneFloatPtr(item.AudioOutputUSDPer1M),
@@ -2204,6 +2267,7 @@ func providerCatalogDisplay(item port.ManagementProviderModelCatalogItem) []prov
 	return providerbilling.BuildCatalogDisplay(item.ProviderCode, providerbilling.CatalogFacts{
 		PriceSet:                           providerBillingPriceSetFromCatalog(item),
 		Mode:                               item.Mode,
+		CachedImageInputUSDPer1M:           item.CachedImageInputUSDPer1M,
 		ServiceTierPrices:                  tierPrices,
 		SupportedServiceTiers:              item.SupportedServiceTiers,
 		SupportedReasoningEfforts:          item.SupportedReasoningEfforts,

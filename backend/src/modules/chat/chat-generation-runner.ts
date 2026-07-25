@@ -89,6 +89,7 @@ export interface ChatGenerationRunnerOptions {
   identity: ChatGenerationIdentity
   execute(context: ChatGenerationExecutionContext): Promise<ChatGenerationTerminalResult>
   onUnexpectedError?(error: PublicChatGenerationError): Promise<void>
+  unexpectedErrorTraceId?: string
   reportUnexpectedError?(error: unknown, stage: 'execute' | 'finalizer'): unknown
   reportCleanupError?(error: unknown): void
   now?(): string
@@ -106,6 +107,7 @@ export class ChatGenerationRunner {
 
   private readonly execute: ChatGenerationRunnerOptions['execute']
   private readonly onUnexpectedError?: ChatGenerationRunnerOptions['onUnexpectedError']
+  private readonly unexpectedErrorTraceId?: string
   private readonly reportUnexpectedError?: ChatGenerationRunnerOptions['reportUnexpectedError']
   private readonly reportCleanupError?: ChatGenerationRunnerOptions['reportCleanupError']
   private readonly now: NonNullable<ChatGenerationRunnerOptions['now']>
@@ -122,6 +124,7 @@ export class ChatGenerationRunner {
     this.identity = Object.freeze({ ...options.identity })
     this.execute = options.execute
     this.onUnexpectedError = options.onUnexpectedError
+    this.unexpectedErrorTraceId = options.unexpectedErrorTraceId
     this.reportUnexpectedError = options.reportUnexpectedError
     this.reportCleanupError = options.reportCleanupError
     this.now = options.now ?? (() => new Date().toISOString())
@@ -212,7 +215,8 @@ export class ChatGenerationRunner {
           this.emitEvent('message.failed', {
             messageId: this.identity.assistantMessageId,
             code: publicError.code,
-            message: publicError.message
+            message: publicError.message,
+            ...(this.unexpectedErrorTraceId ? { traceId: this.unexpectedErrorTraceId } : {})
           })
         } else {
           this.timeline.finalize('failed')

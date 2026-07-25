@@ -119,7 +119,8 @@
     >
       <a-form layout="vertical" class="custom-model-form">
         <div class="custom-model-grid">
-          <a-form-item v-if="!customModelEditing" label="配置模板" class="custom-model-grid-wide">
+          <a-divider class="custom-model-grid-wide" orientation="left">基本信息</a-divider>
+          <a-form-item v-if="!customModelEditing" label="配置模板" class="custom-model-grid-wide" extra="复制同一供应商已有模型的用途、协议、能力、容量和价格；模型 ID 不会被复制。">
             <a-select
               v-model:value="customModelForm.configurationTemplateId"
               show-search
@@ -129,28 +130,23 @@
               @change="handleConfigurationTemplateChange"
             />
           </a-form-item>
-          <a-form-item v-if="isManagementView && !editingBuiltInModel" label="作用域" class="custom-model-grid-wide">
+          <a-form-item v-if="isManagementView && !editingBuiltInModel" label="作用域" class="custom-model-grid-wide" extra="个人模型只对所选用户可见；全局模型对所有用户可见。">
             <a-radio-group v-model:value="customModelForm.scope" :disabled="customModelEditing" button-style="solid" @change="handleCustomModelScopeChange">
               <a-radio-button value="personal">{{ selectedModelOwnerLabel }}个人模型</a-radio-button>
               <a-radio-button value="global">全局模型</a-radio-button>
             </a-radio-group>
           </a-form-item>
-          <a-form-item label="模型 ID" required>
+          <a-form-item label="模型 ID" required extra="必须与上游接口要求的 model 完全一致，创建后不可修改。">
             <a-input v-model:value="customModelForm.model" :disabled="customModelEditing" placeholder="例如 gpt-5.5-pro" />
           </a-form-item>
-          <a-form-item label="状态">
+          <a-form-item label="状态" extra="启用后进入可用模型目录；草稿和停用状态不会参与正常调用。">
             <a-select v-model:value="customModelForm.status" :options="customModelStatusOptions" />
           </a-form-item>
-          <a-form-item label="发布到模型接口" class="custom-model-grid-wide">
-            <div class="custom-model-switch-row">
-              <span class="custom-model-switch-label">在 /v1/models 和 AI Chat 模型选择中显示</span>
-              <a-switch v-model:checked="customModelForm.catalogVisible" />
-            </div>
-          </a-form-item>
-          <a-form-item label="用途">
+          <a-form-item label="用途" extra="决定模型所在目录分类、默认接口协议和可填写的计费字段。">
             <a-select v-model:value="customModelForm.mode" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
           </a-form-item>
-          <a-form-item label="接口协议" class="custom-model-grid-wide">
+          <a-divider class="custom-model-grid-wide" orientation="left">接口与能力</a-divider>
+          <a-form-item label="接口协议" class="custom-model-grid-wide" extra="只选择上游模型真实支持的接口；该配置会影响账号、映射和路由的可选范围。">
             <a-select
               v-model:value="customModelForm.supportedApiProtocols"
               mode="multiple"
@@ -159,25 +155,25 @@
             />
           </a-form-item>
           <template v-if="showCustomModelRequestCapabilities">
-            <a-form-item label="服务等级" class="custom-model-grid-wide">
+            <a-form-item v-if="showCustomModelServiceTiers" label="服务等级" class="custom-model-grid-wide" extra="只选择供应商真实支持且已配置独立价格的请求档位；不同供应商的可选值不强行统一。">
               <a-select
                 v-model:value="customModelForm.supportedServiceTiers"
-                mode="multiple"
+                :mode="customModelCapabilitySelectMode"
                 :options="customModelServiceTierOptions"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
                 @change="handleCustomModelServiceTiersChange"
               />
             </a-form-item>
-            <a-form-item label="思考级别" class="custom-model-grid-wide">
+            <a-form-item v-if="showCustomModelReasoningEfforts" label="思考能力" class="custom-model-grid-wide" extra="只填写上游支持的思考强度值；关闭思考不属于级别，因此不显示 none。">
               <a-select
                 v-model:value="customModelForm.supportedReasoningEfforts"
-                mode="multiple"
+                :mode="customModelCapabilitySelectMode"
                 :options="customModelReasoningEffortOptions"
-                placeholder="仅配置上游 wire 支持的思考级别"
+                placeholder="仅选择上游真实支持的思考强度"
                 @change="normalizeCustomModelRequestCapabilities(customModelForm)"
               />
             </a-form-item>
-          <a-form-item v-if="editingBuiltInModel && activeProvider?.code !== 'gpt'" label="默认思考级别" class="custom-model-grid-wide">
+            <a-form-item v-if="editingBuiltInModel && activeProvider?.code !== 'gpt'" label="默认思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.defaultReasoningEffort"
                 allow-clear
@@ -187,82 +183,40 @@
               />
             </a-form-item>
           </template>
-          <a-form-item label="发布时间">
+          <a-divider class="custom-model-grid-wide" orientation="left">生命周期与容量</a-divider>
+          <a-form-item label="发布时间" extra="模型首次公开可用的日期，用于模型目录排序。">
             <a-input v-model:value="customModelForm.releaseDate" placeholder="YYYY-MM-DD" />
           </a-form-item>
-          <a-form-item label="停用时间">
+          <a-form-item label="停用日期" extra="供应商计划停止提供该模型的日期；没有明确日期时留空。">
             <a-input v-model:value="customModelForm.shutdownDate" placeholder="YYYY-MM-DD" />
           </a-form-item>
-          <a-form-item label="上下文 token">
+          <a-form-item label="上下文" extra="一次请求可使用的输入与输出 Token 总上限。">
             <a-input-number v-model:value="customModelForm.contextWindowTokens" :min="0" style="width: 100%" />
           </a-form-item>
-          <a-form-item label="最大输入 token">
+          <a-form-item label="最大输入" extra="单次请求允许的最大输入 Token；供应商未单独公布时留空。">
             <a-input-number v-model:value="customModelForm.maxInputTokens" :min="0" style="width: 100%" />
           </a-form-item>
-          <a-form-item label="最大输出 token">
+          <a-form-item label="最大输出" extra="单次请求允许生成的最大输出 Token。">
             <a-input-number v-model:value="customModelForm.maxOutputTokens" :min="0" style="width: 100%" />
           </a-form-item>
           <template v-if="canManageModelPrices">
-          <template v-if="customModelPricingCategory === 'text'">
-            <a-form-item label="输入价格">
-              <a-input-number v-model:value="customModelForm.inputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="输出价格">
-              <a-input-number v-model:value="customModelForm.outputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="缓存读取价格">
-              <a-input-number v-model:value="customModelForm.cachedInputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="缓存写入价格">
-              <a-input-number v-model:value="customModelForm.cacheWriteUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="1h 缓存写入价格">
-              <a-input-number v-model:value="customModelForm.cacheWrite1hUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="缓存存储价格 / 小时">
-              <a-input-number v-model:value="customModelForm.cacheStorageUsdPer1MPerHour" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <template v-for="tier in customModelForm.supportedServiceTiers" :key="tier">
-              <a-divider class="custom-model-grid-wide" orientation="left">{{ formatModelServiceTier(tier) }} 档位价格</a-divider>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 输入价格`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].inputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
+            <a-divider class="custom-model-grid-wide" orientation="left">{{ customModelPriceSectionTitle }}</a-divider>
+            <template v-if="customModelPricingCategory === 'text'">
+              <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
+                <a-input-number v-model:value="customModelForm[field.key]" :min="0" :precision="8" style="width: 100%" />
               </a-form-item>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 输出价格`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].outputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-              </a-form-item>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 缓存读取价格`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cachedInputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-              </a-form-item>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 缓存写入价格`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheWriteUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-              </a-form-item>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 1h 缓存写入价格`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheWrite1hUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-              </a-form-item>
-              <a-form-item :label="`${formatModelServiceTier(tier)} 缓存存储价格 / 小时`">
-                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheStorageUsdPer1MPerHour" :min="0" :precision="8" style="width: 100%" />
+              <template v-for="tier in customModelForm.supportedServiceTiers" :key="tier">
+                <a-divider class="custom-model-grid-wide" orientation="left">{{ formatModelServiceTier(tier) }} · USD / 1M Token</a-divider>
+                <a-form-item v-for="field in customModelTierPriceFieldOptions" :key="`${tier}-${field.key}`" :label="field.label" :extra="field.description">
+                  <a-input-number v-model:value="customModelForm.serviceTierPrices[tier][field.key]" :min="0" :precision="8" style="width: 100%" />
+                </a-form-item>
+              </template>
+            </template>
+            <template v-else>
+              <a-form-item v-for="field in customModelDirectPriceFields" :key="field.key" :label="field.label" :extra="field.description">
+                <a-input-number v-model:value="customModelForm[field.key]" :min="0" :precision="8" style="width: 100%" />
               </a-form-item>
             </template>
-          </template>
-          <template v-else-if="customModelPricingCategory === 'image'">
-            <a-form-item label="图片输入价格">
-              <a-input-number v-model:value="customModelForm.imageInputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="图片输出价格">
-              <a-input-number v-model:value="customModelForm.imageOutputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="每张图片价格">
-              <a-input-number v-model:value="customModelForm.outputUsdPerImage" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-          </template>
-          <template v-else-if="customModelPricingCategory === 'audio'">
-            <a-form-item label="音频输入价格">
-              <a-input-number v-model:value="customModelForm.audioInputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="音频输出价格">
-              <a-input-number v-model:value="customModelForm.audioOutputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
-            </a-form-item>
-          </template>
           </template>
         </div>
       </a-form>
@@ -305,6 +259,8 @@ import {
 import {
   apiProtocolOptions,
   categoryFromModeOrModel,
+  customModelPriceFields,
+  customModelTierPriceFields,
   defaultProtocolsForProviderModelCategory,
   findFirstModelCategory,
   formatCapabilitiesSummary,
@@ -390,6 +346,13 @@ const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.
 const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑内置模型' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
+const customModelTargetProviderCode = computed(() => editingCustomModelProviderCode.value ?? activeProvider.value?.code ?? '')
+const customModelDirectPriceFields = computed(() => customModelPriceFields(customModelTargetProviderCode.value, customModelPricingCategory.value))
+const customModelTierPriceFieldOptions = computed(() => customModelTierPriceFields(customModelTargetProviderCode.value))
+const customModelPriceSectionTitle = computed(() => {
+  if (customModelPricingCategory.value === 'image') return '图像计费 · USD'
+  return 'Token 计费 · USD / 1M Token'
+})
 const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))
 const customModelCapabilityOptions = computed(() => buildCustomModelCapabilityOptions(
   activeProvider.value?.code ?? '',
@@ -398,10 +361,13 @@ const customModelCapabilityOptions = computed(() => buildCustomModelCapabilityOp
 ))
 const customModelServiceTierOptions = computed(() => customModelCapabilityOptions.value.serviceTiers)
 const customModelReasoningEffortOptions = computed(() => customModelCapabilityOptions.value.reasoningEfforts)
+const customModelCapabilitySelectMode = computed(() => customModelTargetProviderCode.value === 'gpt' ? 'multiple' : 'tags')
 const customModelDefaultReasoningEffortOptions = computed(() => customModelReasoningEffortOptions.value.filter((option) => (
   customModelForm.supportedReasoningEfforts.includes(option.value)
 )))
-const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
+const showCustomModelServiceTiers = computed(() => customModelPricingCategory.value === 'text' && customModelServiceTierOptions.value.length > 0)
+const showCustomModelReasoningEfforts = computed(() => customModelPricingCategory.value === 'text' && customModelReasoningEffortOptions.value.length > 0)
+const showCustomModelRequestCapabilities = computed(() => showCustomModelServiceTiers.value || showCustomModelReasoningEfforts.value)
 const customModelStatusOptions = computed(() => {
   const options = availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value)
   return editingBuiltInModel.value ? options.filter((option) => option.value !== 'draft') : options
@@ -668,7 +634,12 @@ function buildBuiltInModelPayload(): Partial<ProviderModelUpsertPayload> | undef
     includeDefaultReasoningEffort: true
   })
   if (!payload) return undefined
-  const { model: _model, scope: _scope, configurationTemplateId: _configurationTemplateId, ...configuration } = payload
+  const {
+    model: _model,
+    scope: _scope,
+    configurationTemplateId: _configurationTemplateId,
+    ...configuration
+  } = payload
   return configuration
 }
 

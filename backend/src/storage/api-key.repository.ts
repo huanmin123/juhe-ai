@@ -537,6 +537,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false })[0] : undefined
   if (!current || !currentRow) return undefined
 
+  const nextName = Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name
+  assertApiKeyNameChangeAllowed(current, nextName)
   const hasRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'routeStrategyId')
   let nextRouteStrategyId = hasRouteStrategyInput
     ? assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
@@ -555,7 +557,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     : requestedStatus
   const next: ApiKeySummary = {
     ...current,
-    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
+    name: nextName,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextStatus,
     routeStrategyId: nextRouteStrategyId,
@@ -625,6 +627,8 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
   const current = currentRow ? (await apiKeySummariesFromRowsAsync([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false }))[0] : undefined
   if (!current || !currentRow) return undefined
 
+  const nextName = Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name
+  assertApiKeyNameChangeAllowed(current, nextName)
   const hasRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'routeStrategyId')
   let nextRouteStrategyId = hasRouteStrategyInput
     ? await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
@@ -643,7 +647,7 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
     : requestedStatus
   const next: ApiKeySummary = {
     ...current,
-    name: Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name,
+    name: nextName,
     description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
     status: nextStatus,
     routeStrategyId: nextRouteStrategyId,
@@ -1152,6 +1156,16 @@ function assertApiKeyNotDefault(row: Pick<ApiKeyDeleteRow, 'is_default' | 'purpo
   }
   if (normalizeApiKeyDefaultFlag(row.is_default)) {
     throw new Error('默认 API Key 不允许删除')
+  }
+}
+
+function assertApiKeyNameChangeAllowed(current: Pick<ApiKeySummary, 'name' | 'isDefault' | 'purpose'>, nextName: string): void {
+  if (nextName === current.name) return
+  if (current.purpose === 'chat') {
+    throw new Error('AI 对话 API Key 不允许修改名称')
+  }
+  if (current.isDefault) {
+    throw new Error('默认 API Key 不允许修改名称')
   }
 }
 

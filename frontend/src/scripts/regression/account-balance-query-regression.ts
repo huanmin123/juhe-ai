@@ -14,6 +14,12 @@ import type { AccountSummary } from '@/types/domain'
 assert.deepEqual(formatAccountBalance({ status: 'fresh', remainingUsd: '7.310000' }), {
   text: '$7.31', tone: 'fresh', tooltip: undefined, refreshing: false, visible: true
 })
+assert.deepEqual(formatAccountBalance({ status: 'fresh', remainingUsd: '0.000000' }), {
+  text: '$0.00', tone: 'fresh', tooltip: undefined, refreshing: false, visible: true
+}, '成功的零余额必须展示为 $0.00，而不是查询失败')
+assert.deepEqual(formatAccountBalance({ status: 'fresh', remainingUsd: '-0.250037' }), {
+  text: '-$0.25', tone: 'fresh', tooltip: undefined, refreshing: false, visible: true
+}, '成功的透支余额必须展示实际负值，而不是查询失败')
 assert.deepEqual(formatAccountBalance({ status: 'failed', remainingUsd: '7.31', errorMessage: '上游超时' }), {
   text: '余额查询失败', tone: 'failed', tooltip: '上游超时', refreshing: false, visible: true
 })

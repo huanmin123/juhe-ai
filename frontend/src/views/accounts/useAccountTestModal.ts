@@ -119,11 +119,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const viewToken = beginTestView(account)
     initializeSavedAccountTestOptions(
       account,
-      account.healthCheckModel,
-      account.healthCheckEndpointMode
+      account.healthCheckModel
     )
     testModalOpen.value = true
-    void updateSelectableTestModel(account.healthCheckModel).catch(() => undefined)
+    void loadTestModelOptions(account).catch((error) => {
+      if (isAbortError(error)) return
+      console.error(error)
+    })
     void restoreSavedAccountTestRun(account, viewToken)
   }
 
@@ -268,10 +270,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function updateAccountTestModel(model: string): void {
-    void updateSelectableTestModel(model).catch((error) => {
-      if (isAbortError(error)) return
-      console.error(error)
-    })
+    updateSelectableTestModel(model)
   }
 
   function terminateAttachedTestRun(notify: boolean): boolean {

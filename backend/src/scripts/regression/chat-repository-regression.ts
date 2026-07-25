@@ -141,7 +141,7 @@ const failedLimitedTurn = await acceptChatTurn(client, {
 })
 await failChatTurn(client, {
   conversationId: turnLimitConversation.id, systemAccountId: turnLimitAccountId, turnId: failedLimitedTurn.turnId,
-  assistantContent: '', errorCode: 'mock_failed', traceId: 'trace_turn_limit_2', now: '2026-07-10T02:03:30.000Z'
+  assistantContent: '', errorCode: 'mock_failed', errorMessage: 'Mock 轮次失败', traceId: 'trace_turn_limit_2', now: '2026-07-10T02:03:30.000Z'
 })
 assert.equal((await getChatConversation(client, turnLimitConversation.id, turnLimitAccountId))?.userTurnCount, 2, '已接受后失败的轮次仍必须计数')
 const duplicateLimitedTurn = await acceptChatTurn(client, {
@@ -1091,7 +1091,7 @@ const failedReplaceTurn = await acceptChatTurn(client, {
   conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_failed', userContent: '失败轮次', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T02:01:00.000Z', storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
 await failChatTurn(client, {
-  conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', turnId: failedReplaceTurn.turnId, assistantContent: '失败回答', errorCode: 'mock_failed', now: '2026-07-13T02:02:00.000Z'
+  conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', turnId: failedReplaceTurn.turnId, assistantContent: '失败回答', errorCode: 'mock_failed', errorMessage: 'Mock 替换失败', now: '2026-07-13T02:02:00.000Z'
 })
 const failedReplacement = await acceptChatTurn(client, {
   conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_failed_new', userContent: '失败后重新生成', contentBlocks: [{ type: 'input_text', text: '失败后重新生成' }], model: 'mock-model', now: '2026-07-13T02:03:00.000Z', storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000, replaceTurnId: failedReplaceTurn.turnId
@@ -1383,6 +1383,7 @@ await failChatTurn(client, {
   turnId: failedTurn.turnId,
   assistantContent: '部分回答',
   errorCode: 'mock_interrupted',
+  errorMessage: 'Mock 流式响应中断',
   traceId: 'trace_chat_failed',
   now: '2026-07-12T00:05:00.000Z'
 })
@@ -1395,6 +1396,7 @@ assert.deepEqual(await findChatTurnByClientMessageId(client, {
   assistantMessageId: failedTurn.assistantMessage.id,
   assistantStatus: 'failed',
   errorCode: 'mock_interrupted',
+  errorMessage: 'Mock 流式响应中断',
   completedAt: '2026-07-12T00:05:00.000Z',
   traceId: 'trace_chat_failed'
 }, '失败提交必须返回可用于权威恢复的安全事实')
@@ -1571,6 +1573,7 @@ await assert.rejects((async () => {
         turnId: initializationTurn.turnId,
         assistantContent: '',
         errorCode: 'chat_initialization_failed',
+        errorMessage: '受控历史读取失败',
         traceId: 'trace_initialization_failure',
         now: '2026-07-12T01:00:02.000Z'
       })

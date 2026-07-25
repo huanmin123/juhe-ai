@@ -190,7 +190,7 @@ func catalogScopeRank(scope string) int {
 func hasClientVisiblePrice(item port.GatewayClientCatalogModel) bool {
 	if item.InputUSDPer1M != nil || item.OutputUSDPer1M != nil || item.CachedInputUSDPer1M != nil ||
 		item.CacheWriteUSDPer1M != nil || item.CacheWrite1hUSDPer1M != nil || item.CacheStorageUSDPer1MPerHour != nil ||
-		item.ImageInputUSDPer1M != nil || item.ImageOutputUSDPer1M != nil ||
+		item.ImageInputUSDPer1M != nil || item.CachedImageInputUSDPer1M != nil || item.ImageOutputUSDPer1M != nil ||
 		item.AudioInputUSDPer1M != nil || item.AudioOutputUSDPer1M != nil || item.OutputUSDPerImage != nil {
 		return true
 	}

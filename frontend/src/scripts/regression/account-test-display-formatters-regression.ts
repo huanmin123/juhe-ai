@@ -170,6 +170,43 @@ assertLineIncludes(runningLines, '后台任务：task_account_test_display_oauth
 assertLineIncludes(runningLines, '当前窗口估计：第 1/3 次', '运行输出应展示当前等待窗口')
 assertLineIncludes(runningLines, 'OAuth Token 刷新也包含在当前等待窗口内', 'OAuth 运行输出应展示 token 刷新提示')
 
+const imageRunningLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  activeTask: taskFixture(apiKeyAccount, {
+    status: 'running',
+    startedAt: new Date(Date.now() - 1500).toISOString(),
+    message: '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s',
+    testEndpointMode: 'images_json'
+  }),
+  testEndpointMode: 'images_json',
+  selectedEndpointModeText: 'Images API',
+  model: 'gpt-image-2',
+  providerLabel: () => 'OpenAI',
+  running: true
+})
+assertLineIncludes(imageRunningLines, '当前窗口估计：第 1/1 次', '图片测试运行中应展示单次 120 秒窗口')
+assertLineIncludes(imageRunningLines, '图像生成测试中：第 1/1 次，本次最多等待 120s，总上限 120s', '图片测试运行中必须明确等待真实生图')
+
+const imageSuccessLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  testEndpointMode: 'images_json',
+  selectedEndpointModeText: 'Images API',
+  model: 'gpt-image-2',
+  providerLabel: () => 'OpenAI',
+  result: resultFixture(apiKeyAccount, {
+    success: true,
+    statusCode: 200,
+    message: '测试成功',
+    model: 'gpt-image-2',
+    responseText: '{"data":[{"b64_json":"image-data-must-not-be-displayed"}]}',
+    testEndpointMode: 'images_json'
+  }),
+  running: false
+})
+assertLineIncludes(imageSuccessLines, '图像生成响应有效，测试通过。', '图片测试成功只应展示图片生成结论')
+assertLineExcludes(imageSuccessLines, 'b64_json', '图片测试终端不得渲染 Base64 响应')
+assertLineExcludes(imageSuccessLines, '响应：', '图片测试终端不得展示原始响应区块')
+
 const anthropicRunningLines = accountTestSingleOutputLines({
   account: anthropicAccount,
   testEndpointMode: 'account_default',

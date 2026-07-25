@@ -816,6 +816,18 @@ for (const id of [
   'davinci-002',
   'gpt-3.5-turbo-instruct',
   'gpt-4o-transcribe-diarize',
+  'gpt-4o-transcribe',
+  'gpt-4o-mini-transcribe',
+  'gpt-4o-mini-transcribe-2025-12-15',
+  'gpt-4o-mini-tts',
+  'gpt-4o-mini-tts-2025-12-15',
+  'gpt-audio',
+  'gpt-audio-1.5',
+  'gpt-audio-mini',
+  'gpt-realtime',
+  'gpt-realtime-1.5',
+  'gpt-realtime-mini',
+  'gpt-realtime-mini-2025-12-15',
   'codex-auto-review'
 ]) {
   assert.equal(availableOpenAIModels.has(id), false, `${id} should not be exposed`)
@@ -827,7 +839,7 @@ assert.deepEqual(openAIModelPricingById.get('gpt-5.2-2025-12-11')?.supportedApiP
 assert.deepEqual(openAIModelPricingById.get('gpt-5.3-codex')?.supportedApiProtocols, ['responses'])
 assert.equal(openAIModelPricingById.has('gpt-5.2-codex'), false)
 assert.deepEqual(openAIModelPricingById.get('gpt-image-1')?.supportedApiProtocols, ['images', 'responses'])
-assert.deepEqual(openAIModelPricingById.get('gpt-4o-mini-tts')?.supportedApiProtocols, ['audio'])
+assert.equal(openAIModelPricingById.has('gpt-4o-mini-tts'), false)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.releaseDate, '2026-06-26')
@@ -848,10 +860,10 @@ assert.equal(openAIModelPricingById.get('o3')?.maxInputTokens, undefined)
 assert.equal(openAIModelPricingById.get('o3')?.contextWindowTokens, 200_000)
 assert.deepEqual(openAIModelPricingById.get('gpt-5.6-sol')?.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.defaultReasoningEffort, undefined)
-assert.deepEqual(openAIModelPricingById.get('gpt-5.5-pro')?.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.5-pro')?.supportedServiceTiers, ['flex'])
 assert.equal(openAIModelPricingById.get('gpt-5.5-pro')?.defaultReasoningEffort, undefined)
-assert.deepEqual(openAIModelPricingById.get('gpt-5.4-nano')?.supportedServiceTiers, ['priority', 'flex'])
-assert.deepEqual(openAIModelPricingById.get('gpt-5.4-pro')?.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.4-nano')?.supportedServiceTiers, ['flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.4-pro')?.supportedServiceTiers, ['flex'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedServiceTiers, ['priority'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-pro')?.supportedServiceTiers, ['priority'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5-pro')?.supportedReasoningEfforts, ['high'])

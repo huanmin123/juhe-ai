@@ -52,11 +52,17 @@ interface ApiEnvelope<T> {
   message?: string
 }
 
-type TestOptions = Array<{ id: string; name: string }>
+type TestOptions = Array<{
+  id: string
+  name: string
+  supportedApiProtocols: string[]
+  testEndpointModes: string[]
+}>
 
 interface ModelCapabilities {
   id: string
   name: string
+  supportedApiProtocols: string[]
   testEndpointModes: string[]
 }
 
@@ -104,7 +110,7 @@ try {
     scope: 'personal',
     systemAccountId: user.id,
     status: 'active',
-    mode: 'image_generation',
+    mode: 'image',
     supportedApiProtocols: ['images'],
     actorSystemAccountId: user.id
   })
@@ -114,7 +120,7 @@ try {
     scope: 'personal',
     systemAccountId: user.id,
     status: 'active',
-    mode: 'image_generation',
+    mode: 'image',
     supportedApiProtocols: ['responses', 'images'],
     actorSystemAccountId: user.id
   })
@@ -225,7 +231,13 @@ try {
     assert(Array.isArray(options), `${target.label}测试选项响应数据必须直接是模型数组`)
     const selected = options.find((item) => item.id === encodedModelId)
     assert(selected, `${target.label}模型摘要必须保留请求模型 ID`)
-    assert.deepEqual(Object.keys(selected).sort(), ['id', 'name'], `${target.label}模型摘要只能返回 id/name`)
+    assert.deepEqual(
+      Object.keys(selected).sort(),
+      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
+      `${target.label}模型选项必须直接返回协议与可测试请求形态`
+    )
+    assert.deepEqual(selected.supportedApiProtocols, ['responses'], `${target.label}模型选项必须携带目录协议`)
+    assert.deepEqual([...selected.testEndpointModes].sort(), ['responses_json', 'responses_sse'], `${target.label}模型选项必须携带账户能力交集`)
     assert(selected.name.trim(), `${target.label}模型摘要展示名称不得为空`)
     assert(options.some((item) => item.id === responsesOnlyModelId), `${target.label}已选模型不得被 keyword/limit 窗口截断`)
     assert(options.length <= 2, `${target.label}limit=1 时除已选补齐外最多返回一条搜索结果`)
@@ -256,6 +268,9 @@ try {
     assert.equal(protocolEligibleOptions.some((item) => item.id === imageModelId), true, `${target.label}模型候选应包含可使用 Images API 测试的图片模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === mixedImageResponsesModelId), true, `${target.label}模型候选应包含同时支持 Images 与 Responses 的模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === messagesOnlyModelId), false, `${target.label}OpenAI 档案模型候选不得包含仅支持 Messages 的模型`)
+    const imageOption = protocolEligibleOptions.find((item) => item.id === imageModelId)
+    assert.deepEqual(imageOption?.supportedApiProtocols, ['images'], `${target.label}图片模型选项必须返回 Images 协议`)
+    assert.deepEqual(imageOption?.testEndpointModes, ['images_json'], `${target.label}图片模型选项必须直接绑定 Images API`)
 
     await requestEnvelope(
       baseUrl,
@@ -274,7 +289,7 @@ try {
     )
     assert.deepEqual(
       Object.keys(capabilities).sort(),
-      ['id', 'name', 'testEndpointModes'],
+      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
       `${target.label}模型能力字段集合必须稳定`
     )
     assert.equal(capabilities.id, encodedModelId, `${target.label}路由必须解码包含斜杠的模型 ID`)
@@ -338,8 +353,9 @@ try {
 function assertListQueryBoundary(sqlList: string[], label: string): void {
   const contextQueries = sqlList.filter((sql) => sql.includes('AS view_account_id'))
   assert.equal(contextQueries.length, 1, `${label}模型列表只能读取一次最小账户上下文`)
-  assert.doesNotMatch(contextQueries[0] ?? '', /credentials_encrypted|SELECT\s+\*/i, `${label}模型列表不得读取账户密文或完整行`)
-  assert.equal(sqlList.some((sql) => /account_model_mappings/i.test(sql)), false, `${label}模型列表不得读取模型映射`)
+  assert.match(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型列表必须读取接口能力以计算模型交集`)
+  assert.doesNotMatch(contextQueries[0] ?? '', /SELECT\s+\*/i, `${label}模型列表不得读取完整账户行`)
+  assert.equal(sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql)).length, 1, `${label}模型列表必须一次读取当前账户模型映射`)
   assertLightweightCatalogQueries(sqlList, label, false)
 }
 
@@ -360,8 +376,8 @@ function assertLightweightCatalogQueries(sqlList: string[], label: string, targe
   for (const sql of catalogQueries) {
     assert.doesNotMatch(
       sql,
-      /input_usd_per_1m|output_usd_per_1m|service_tier_prices_json|supported_service_tiers_json|supported_reasoning_efforts_json|default_reasoning_effort|capability_notes|pricing_notes|notes/i,
-      `${label}轻量模型目录不得读取定价或说明字段`
+      /input_usd_per_1m|output_usd_per_1m|service_tier_prices_json|capability_notes|pricing_notes|notes/i,
+      `${label}模型选项目录不得读取定价或说明字段`
     )
     if (targeted) {
       assert.match(sql, /model\s*=\s*\?/i, `${label}模型能力目录查询必须按 modelId 定点过滤`)

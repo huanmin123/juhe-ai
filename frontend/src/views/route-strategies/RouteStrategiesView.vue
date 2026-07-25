@@ -181,8 +181,8 @@
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑策略路由' : '新建策略路由'" width="760px" :confirm-loading="saving" destroy-on-close @ok="saveRouteStrategy">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical" class="route-strategy-modal-form">
-        <a-form-item label="名称" required tooltip="用于在 API Key 中识别这套路由策略，建议写清楚业务场景或使用方。">
-          <a-input v-model:value="form.name" placeholder="请输入策略路由名称" />
+        <a-form-item label="名称" required :tooltip="editingIsDefault ? '默认策略路由的名称不可修改。' : '用于在 API Key 中识别这套路由策略，建议写清楚业务场景或使用方。'">
+          <a-input v-model:value="form.name" :disabled="editingIsDefault" placeholder="请输入策略路由名称" />
         </a-form-item>
         <a-form-item label="说明" tooltip="补充这套路由策略的用途、适用范围或注意事项，只用于后台识别。">
           <a-textarea v-model:value="form.description" :rows="2" placeholder="可选" />
@@ -585,6 +585,7 @@ const loading = ref(false)
 const saving = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
+const editingIsDefault = ref(false)
 const editingSystemAccountId = ref<string>()
 let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
@@ -981,6 +982,7 @@ function openCreate() {
     return
   }
   editingId.value = undefined
+  editingIsDefault.value = false
   editingSystemAccountId.value = undefined
   form.name = ''
   form.description = ''
@@ -1014,6 +1016,7 @@ async function openEdit(record: RouteStrategyListItem) {
 
 function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: string) {
   editingId.value = record.id
+  editingIsDefault.value = record.isDefault
   editingSystemAccountId.value = record.systemAccountId ?? fallbackSystemAccountId
   form.name = record.name
   form.description = record.description ?? ''

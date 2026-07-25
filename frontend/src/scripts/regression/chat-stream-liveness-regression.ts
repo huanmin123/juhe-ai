@@ -17,11 +17,12 @@ function user(turnId = 'turn'): ChatMessage {
   return { ...assistant('user', turnId), sequenceNo: 1, role: 'user', status: 'completed', contentText: 'hello', clientMessageId: 'client' }
 }
 
-function accepted(runnerState: 'running' | 'missing' | 'terminal', assistantStatus: 'streaming' | 'completed' = 'streaming', eventVersion?: number): ChatSubmissionStatus {
+function accepted(runnerState: 'running' | 'missing' | 'terminal', assistantStatus: 'streaming' | 'completed' = 'streaming', eventVersion?: number, traceId?: string): ChatSubmissionStatus {
   return {
     state: 'accepted', turnId: 'turn', assistantMessageId: 'assistant', assistantStatus,
     runnerState, serverTime: '2026-07-18T00:00:10.000Z',
-    ...(eventVersion === undefined ? {} : { eventVersion })
+    ...(eventVersion === undefined ? {} : { eventVersion }),
+    ...(traceId ? { traceId } : {})
   }
 }
 
@@ -187,12 +188,13 @@ await Promise.resolve()
 assert.equal(boundedRunning.attaches.length, 2, '只有更高事件版本的权威进展才允许开启新的有界探活周期')
 assert.equal(boundedRunning.activeWatchdogs(), 1)
 
-const terminal = createHarness(accepted('terminal', 'completed'))
+const terminal = createHarness(accepted('terminal', 'completed', undefined, 'trace_terminal_status'))
 terminal.runtime.start({ systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', content: 'hello', model: 'model' })
 terminal.posts[0]!.onEvent({ type: 'message.started', data: { turnId: 'turn', userMessage: user(), assistantMessage: assistant() } })
 await terminal.advance(10_000)
 assert.deepEqual(terminal.reconciliations, ['runner_terminal'])
 assert.equal(terminal.runtime.get('account', 'conversation')?.status, 'running', '状态查询只触发权威同步，不直接伪造 terminal 消息')
+assert.equal(terminal.runtime.get('account', 'conversation')?.projection.traceId, 'trace_terminal_status', '状态查询返回的 Trace ID 必须进入当前投影，供失败定位信息即时展示')
 
 const missing = createHarness(accepted('missing'))
 missing.setAttachFailure(new ChatStreamHttpError(409, 'chat_stream_runner_missing', '生成任务已中断'))

@@ -979,6 +979,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 流式超时检测固定启用，不写入系统设置；真实网关流式失败先进入短暂避让和后台探针，确认失败且当前账号并发归零后才写持久账号状态。
 - `textFirstResponseTimeoutSeconds = 120`、`textStreamIdleTimeoutSeconds = 30`、`textUncommittedAttemptMaxLifetimeSeconds = 1800`：文本 lane 的首响应 / 首字节、流式 raw chunk 停顿和未提交单次尝试寿命。
 - `imageFirstResponseTimeoutSeconds = 600`、`imageStreamIdleTimeoutSeconds = 120`、`imageUncommittedAttemptMaxLifetimeSeconds = 3600`：图像 lane 的对应超时档位；Images、图像模型和保留图像工具的 Responses 请求使用该档位。
+- `chatImageGenerationTotalTimeoutSeconds = 900`：AI 对话单次 `generate_image` 的整体执行时限，范围 `60..86400` 秒；新任务读取系统设置快照，包含内部网关和资产落盘全过程。
 - `noAvailableAccountWaitTimeoutSeconds = 270`：只累计零可派发账号或并发槽等待阶段；真实上游 attempt、可立即派发账号扫描和活跃读取不计入。SSE 等待时可以发送注释心跳，非流式请求不发送非法 JSON 心跳。
 - 活跃且已提交语义的 SSE 不受未提交 attempt 寿命机械中断；`transportCommitted` 与 `semanticCommitted` 分开记录，SSE 注释只提交传输。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 5`：历史流失败诊断计数参数；真实网关流式失败不再依赖该阈值或窗口写账号状态。

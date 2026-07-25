@@ -110,6 +110,16 @@
         <a-descriptions-item label="API Key">{{ detailConversation.apiKeyNameSnapshot }}</a-descriptions-item>
         <a-descriptions-item label="最近模型">{{ detailConversation.lastModel || '未使用' }}</a-descriptions-item>
         <a-descriptions-item label="默认图像模型">{{ imageModelLabel(detailConversation.defaultImageModel) }}</a-descriptions-item>
+        <a-descriptions-item label="工具能力">
+          <a-spin v-if="detailLoading" size="small" />
+          <div v-else-if="detailConversation.toolCapabilities" class="conversation-tool-capabilities">
+            <div v-for="tool in detailConversation.toolCapabilities.tools" :key="tool.id" class="conversation-tool-capability">
+              <a-tag :color="tool.available ? 'success' : 'default'">{{ tool.label }}：{{ tool.available ? '可用' : '不可用' }}</a-tag>
+              <span v-if="!tool.available && tool.reason" class="conversation-tool-capability-reason">{{ tool.reason }}</span>
+            </div>
+          </div>
+          <span v-else class="conversation-tool-capability-reason">暂无能力信息</span>
+        </a-descriptions-item>
         <a-descriptions-item label="状态">{{ detailConversation.activeTurnId ? '生成中' : '空闲' }}</a-descriptions-item>
         <a-descriptions-item label="置顶">{{ detailConversation.isPinned ? '是' : '否' }}</a-descriptions-item>
         <a-descriptions-item label="创建时间">{{ formatDetailTime(detailConversation.createdAt) }}</a-descriptions-item>
@@ -241,6 +251,7 @@ const conversationMenu = ref<{ item: ChatConversation; x: number; y: number }>()
 const conversationMenuElement = ref<HTMLElement>()
 const renameDialogOpen = ref(false)
 const detailsDialogOpen = ref(false)
+const detailLoading = ref(false)
 const deleteDialogOpen = ref(false)
 const imageModelDialogOpen = ref(false)
 const imageModelUpdating = ref(false)
@@ -1469,7 +1480,22 @@ function closeConversationMenu(restoreFocus = false): void {
 }
 function handleWindowConversationMenuDismiss(): void { closeConversationMenu() }
 function openRenameDialog(item: ChatConversation): void { pendingConversation.value = item; renameTitle.value = item.title; renameDialogOpen.value = true; closeConversationMenu() }
-function openDetails(item: ChatConversation): void { detailConversation.value = item; detailsDialogOpen.value = true; closeConversationMenu() }
+async function openDetails(item: ChatConversation): Promise<void> {
+  detailConversation.value = item
+  detailsDialogOpen.value = true
+  detailLoading.value = true
+  closeConversationMenu()
+  try {
+    const loaded = await chatApi.getConversation(item.id)
+    if (detailsDialogOpen.value && detailConversation.value?.id === item.id) detailConversation.value = loaded
+  } catch (error) {
+    if (detailsDialogOpen.value && detailConversation.value?.id === item.id) {
+      message.error(extractApiErrorMessage(error, '加载会话工具能力失败'))
+    }
+  } finally {
+    if (detailConversation.value?.id === item.id) detailLoading.value = false
+  }
+}
 function openDeleteDialog(item: ChatConversation): void { pendingConversation.value = item; deleteDialogOpen.value = true; closeConversationMenu() }
 async function renameConversation(): Promise<void> {
   const item = pendingConversation.value
@@ -1652,6 +1678,9 @@ onBeforeUnmount(() => {
 .conversation-context-menu button.is-danger { color: #dc2626; }
 .conversation-detail-id { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .conversation-detail-id code { flex: 1; min-width: 0; color: #334155; overflow-wrap: anywhere; }
+.conversation-tool-capabilities { display: grid; gap: 7px; }
+.conversation-tool-capability { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.conversation-tool-capability-reason { color: #64748b; font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 991px) and (min-width: 821px) { :deep(.conversation-pane-toolbar) { padding-left: 56px; } }
 @media (max-width: 820px) { .chat-workspace { grid-template-columns: minmax(0, 1fr); } .composer-shell { padding: 9px calc(9px + env(safe-area-inset-right)) calc(9px + env(safe-area-inset-bottom)) calc(9px + env(safe-area-inset-left)); } }
 @media (pointer: coarse) {

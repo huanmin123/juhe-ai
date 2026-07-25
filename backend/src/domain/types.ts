@@ -303,6 +303,7 @@ export interface ProviderModelPricing {
   cacheStorageUsdPer1MPerHour?: number
   serviceTierPrices?: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
+  cachedImageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number

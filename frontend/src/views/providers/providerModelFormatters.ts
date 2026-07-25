@@ -30,6 +30,12 @@ export type DirectPriceFieldKey =
   | 'audioOutputUsdPer1M'
   | 'outputUsdPerImage'
 
+export interface ModelPriceFieldDefinition {
+  key: DirectPriceFieldKey
+  label: string
+  description: string
+}
+
 export {
   categoryFromModeOrModel,
   isModelCategoryKey,
@@ -49,9 +55,7 @@ export const apiProtocolLabels: Record<string, string> = {
   embed_content: 'Embed Content',
   interactions: 'Interactions',
   completions: 'Completions',
-  images: 'Images API',
-  audio: 'Audio API',
-  realtime: 'Realtime API'
+  images: 'Images API'
 }
 
 export const modelStatusOptions: Array<{ label: string; value: ProviderModelStatus }> = [
@@ -62,8 +66,7 @@ export const modelStatusOptions: Array<{ label: string; value: ProviderModelStat
 
 export const modelModeOptions: Array<{ label: string; value: ProviderModelMode }> = [
   { label: '对话 / 编码', value: 'text' },
-  { label: '图像', value: 'image' },
-  { label: '音频', value: 'audio' }
+  { label: '图像', value: 'image' }
 ]
 
 export const apiProtocolOptions: Array<{ label: string; value: ProviderModelApiProtocol }> = Object.entries(apiProtocolLabels)
@@ -84,9 +87,49 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
 ]
 
 export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
-  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour'],
-  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
-  audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
+  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'audioInputUsdPer1M'],
+  image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage']
+}
+
+const priceFieldDefinitions: Record<DirectPriceFieldKey, ModelPriceFieldDefinition> = {
+  inputUsdPer1M: { key: 'inputUsdPer1M', label: '输入', description: '每 100 万输入 Token 的美元价格。' },
+  outputUsdPer1M: { key: 'outputUsdPer1M', label: '输出', description: '每 100 万输出 Token 的美元价格。' },
+  cachedInputUsdPer1M: { key: 'cachedInputUsdPer1M', label: '缓存读', description: '每 100 万缓存读取 Token 的美元价格。' },
+  cacheWriteUsdPer1M: { key: 'cacheWriteUsdPer1M', label: '缓存写入', description: '每 100 万缓存写入 Token 的美元价格；供应商未单独收费时留空。' },
+  cacheWrite1hUsdPer1M: { key: 'cacheWrite1hUsdPer1M', label: '1h 缓存写入', description: '每 100 万写入并保留 1 小时的缓存 Token 美元价格。' },
+  cacheStorageUsdPer1MPerHour: { key: 'cacheStorageUsdPer1MPerHour', label: '缓存存储', description: '每 100 万缓存 Token、每小时的美元存储价格。' },
+  imageInputUsdPer1M: { key: 'imageInputUsdPer1M', label: '图片输入', description: '每 100 万图片输入 Token 的美元价格。' },
+  imageOutputUsdPer1M: { key: 'imageOutputUsdPer1M', label: '图片输出', description: '每 100 万图片输出 Token 的美元价格。' },
+  audioInputUsdPer1M: { key: 'audioInputUsdPer1M', label: '音频输入', description: '每 100 万音频输入 Token 的美元价格。' },
+  audioOutputUsdPer1M: { key: 'audioOutputUsdPer1M', label: '音频输出', description: '每 100 万音频输出 Token 的美元价格。' },
+  outputUsdPerImage: { key: 'outputUsdPerImage', label: '每张图片', description: '每生成一张图片的美元价格。' }
+}
+
+const textPriceFieldsByProvider: Record<string, DirectPriceFieldKey[]> = {
+  anthropic: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'outputUsdPer1M'],
+  deepseek: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'outputUsdPer1M'],
+  gemini: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'audioInputUsdPer1M', 'outputUsdPer1M'],
+  glm: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'outputUsdPer1M'],
+  gpt: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'outputUsdPer1M'],
+  openai: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'outputUsdPer1M'],
+  xai: ['inputUsdPer1M', 'cachedInputUsdPer1M', 'outputUsdPer1M']
+}
+
+export function customModelPriceFields(providerCode: string, category: ModelCategoryKey): ModelPriceFieldDefinition[] {
+  const code = providerCode.trim().toLowerCase()
+  const keys = category === 'text'
+    ? textPriceFieldsByProvider[code] ?? directPriceFieldsByCategory.text
+    : directPriceFieldsByCategory[category]
+  return keys.map((key) => {
+    if (code === 'anthropic' && key === 'cacheWriteUsdPer1M') {
+      return { ...priceFieldDefinitions[key], label: '5m 缓存写入', description: '每 100 万写入并保留 5 分钟的缓存 Token 美元价格。' }
+    }
+    return priceFieldDefinitions[key]
+  })
+}
+
+export function customModelTierPriceFields(providerCode: string): ModelPriceFieldDefinition[] {
+  return customModelPriceFields(providerCode, 'text')
 }
 
 const hiddenProviderCapabilities = new Set(['models', 'passthrough', 'stream'])
@@ -123,7 +166,6 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
 
 export function defaultProtocolsForModelCategory(category: ModelCategoryKey): ProviderModelApiProtocol[] {
   if (category === 'image') return ['images']
-  if (category === 'audio') return ['audio']
   return ['responses', 'chat_completions']
 }
 
@@ -243,10 +285,6 @@ export function getApiProtocolTagColor(protocol?: string): string {
       return 'lime'
     case 'images':
       return 'cyan'
-    case 'audio':
-      return 'green'
-    case 'realtime':
-      return 'orange'
     default:
       return 'default'
   }
@@ -311,7 +349,6 @@ function apiProtocolForEndpointFamily(code: string): ProviderModelApiProtocol | 
 
 function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, category: ModelCategoryKey): boolean {
   if (category === 'image') return protocol === 'images'
-  if (category === 'audio') return protocol === 'audio'
   return protocol === 'responses'
     || protocol === 'chat_completions'
     || protocol === 'messages'
@@ -355,11 +392,11 @@ export function formatModelCatalogDisplayValue(item: ProviderModelCatalogDisplay
 export function formatTokens(value?: number): string {
   if (typeof value !== 'number') return '-'
   if (value >= 1_048_576 && value % 1_048_576 === 0) {
-    return `${trimNumber(value / 1_048_576)}M（${value.toLocaleString('en-US')}）`
+    return `${trimNumber(value / 1_048_576)}M`
   }
   if (value >= 1_000_000) return `${trimNumber(value / 1_000_000)}M`
   if ((value < 100_000 && value % 1_024 === 0) || value % 16_384 === 0) {
-    return `${trimNumber(value / 1_024)}K（${value.toLocaleString('en-US')}）`
+    return `${trimNumber(value / 1_024)}K`
   }
   if (value >= 1_000) return `${trimNumber(value / 1_000)}K`
   return String(value)

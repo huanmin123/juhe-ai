@@ -108,7 +108,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const allProviderModelScopeParams = computed<AccountScopeParams>(() => editingId.value ? editingAccountScopeParams() : createScopeParams.value)
   const {
     loadProviderModelOptions,
-    loadSelectedModelCapabilities,
     providerModelOptions: loadedProviderModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
@@ -182,7 +181,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     : undefined)
   const providerModelOptions = computed(() => providerModelsForProtocolProfile(
     loadedProviderModelOptions.value,
-    selectedProtocolProfile.value
+    selectedProtocolProfile.value,
+    form.type
   ))
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
@@ -540,7 +540,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function loadAdvancedAccountDetail(): Promise<boolean> {
     if (!editingId.value) {
       await loadProviderModelOptions(form.providerCode, { selectedIds: form.supportedModels })
-      await loadSelectedModelCapabilities(form.providerCode, form.supportedModels)
       return true
     }
     if (editingAuthorizedAccount.value) return accountAdvancedDetailLoaded.value
@@ -562,9 +561,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return false
     }
     if (applyLoadedAccountDetailToEditForm(sourceAccount, scopeParams, '账户高级配置结构异常，请清理后再编辑', true)) {
-      await loadProviderModelOptions(form.providerCode)
-      if (!isCurrentFormOpenRequest(requestToken)) return false
-      await loadSelectedModelCapabilities(form.providerCode, form.supportedModels)
+      await loadProviderModelOptions(form.providerCode, { selectedIds: form.supportedModels })
       if (!isCurrentFormOpenRequest(requestToken)) return false
       accountAdvancedDetailLoaded.value = true
     }
@@ -577,10 +574,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       keyword,
       selectedIds: form.supportedModels
     })
-  }
-
-  async function loadCurrentProviderModelCapabilities(modelIds: string[]): Promise<void> {
-    await loadSelectedModelCapabilities(form.providerCode, modelIds)
   }
 
   async function loadMappingSourceModelOptions(protocol: 'openai' | 'anthropic' | 'gemini', keyword = ''): Promise<void> {
@@ -851,7 +844,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     ensureAccountEditDetailLoaded,
     loadAdvancedAccountDetail,
     loadCurrentProviderModelOptions,
-    loadCurrentProviderModelCapabilities,
     loadMappingSourceModelOptions,
     providerName,
     providerModelOptions,

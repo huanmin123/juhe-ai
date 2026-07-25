@@ -334,7 +334,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
       items.push({ key: 'reauthorize-oauth', label: '重新授权' })
     }
-    if (account.status !== 'pending_test' && (hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account))) {
+    if (account.status === 'pending_test' || hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account)) {
       items.push({ key: 'restore-normal', label: '恢复可调度' })
     }
     pushDispatchFlagItems(items, account)

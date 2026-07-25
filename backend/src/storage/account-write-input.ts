@@ -13,6 +13,7 @@ export const accountCreateInputKeys = new Set([
   'modelMappings',
   'tags',
   'status',
+  'skipInitialHealthCheck',
   'concurrencyLimit',
   'priority',
   'superPriorityEnabled',

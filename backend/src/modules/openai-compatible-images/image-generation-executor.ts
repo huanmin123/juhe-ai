@@ -1,3 +1,5 @@
+import type { Request } from 'express'
+
 import { runtimeConfig } from '../../config/runtime.js'
 import { GatewayRequestValidationError } from '../gateway/request/validation-error.js'
 import type {
@@ -14,6 +16,24 @@ interface ImageGenerationProviderRequest {
   timeoutController: AbortController
   dispose(): void
 }
+
+interface ImageGenerationProviderRuntime {
+  endpoint: string
+  authorization: string
+  model: string
+  timeoutMs: number
+  maxBodyBytes: number
+}
+
+interface ImageGenerationProviderTestOverrides {
+  endpoint?: string
+  timeoutMs?: number
+  maxBodyBytes?: number
+}
+
+const imageGenerationProviderModel = 'gpt-image-2'
+const imageGenerationProviderTimeoutMs = 600_000
+const imageGenerationProviderMaxBodyBytes = 64 * 1024 * 1024
 
 export class OpenAICompatibleImageGenerationProviderError extends Error {
   readonly statusCode: number
@@ -36,15 +56,25 @@ export class OpenAICompatibleImageGenerationProviderError extends Error {
   }
 }
 
-export function openAICompatibleImageGenerationExecutorForGatewayRequest(): OpenAIToAnthropicImageGenerationExecutor | undefined {
-  const endpoint = runtimeConfig.imageGenerationProvider.endpoint
-  if (!endpoint) return undefined
+export function openAICompatibleImageGenerationExecutorForGatewayRequest(
+  req: Pick<Request, 'headers'>,
+  overrides: ImageGenerationProviderTestOverrides = {}
+): OpenAIToAnthropicImageGenerationExecutor | undefined {
+  const authorization = requestAuthorization(req)
+  if (!authorization) return undefined
+  const provider: ImageGenerationProviderRuntime = {
+    endpoint: overrides.endpoint ?? `http://127.0.0.1:${runtimeConfig.port}/v1/images/generations`,
+    authorization,
+    model: imageGenerationProviderModel,
+    timeoutMs: overrides.timeoutMs ?? imageGenerationProviderTimeoutMs,
+    maxBodyBytes: overrides.maxBodyBytes ?? imageGenerationProviderMaxBodyBytes
+  }
   return {
     async generate(input) {
-      const providerBody = imageGenerationProviderRequestBody(input.prompt, input.tool)
-      const request = await requestImageGenerationProvider(endpoint, providerBody, 'application/json', input.signal)
+      const providerBody = imageGenerationProviderRequestBody(provider, input.prompt, input.tool)
+      const request = await requestImageGenerationProvider(provider, providerBody, 'application/json', input.signal)
       try {
-        const text = await readResponseTextWithLimit(request.response, runtimeConfig.imageGenerationProvider.maxBodyBytes)
+        const text = await readResponseTextWithLimit(request.response, provider.maxBodyBytes)
         const parsed = safeParseJson(text)
         if (!request.response.ok) {
           throw imageGenerationProviderErrorFromResponse(request.response, parsed)
@@ -57,19 +87,19 @@ export function openAICompatibleImageGenerationExecutorForGatewayRequest(): Open
       }
     },
     async * generateStream(input) {
-      const providerBody = imageGenerationProviderRequestBody(input.prompt, input.tool, { stream: true })
-      const request = await requestImageGenerationProvider(endpoint, providerBody, 'text/event-stream', input.signal)
+      const providerBody = imageGenerationProviderRequestBody(provider, input.prompt, input.tool, { stream: true })
+      const request = await requestImageGenerationProvider(provider, providerBody, 'text/event-stream', input.signal)
       try {
         if (!request.response.ok) {
-          const text = await readResponseTextWithLimit(request.response, runtimeConfig.imageGenerationProvider.maxBodyBytes)
+          const text = await readResponseTextWithLimit(request.response, provider.maxBodyBytes)
           throw imageGenerationProviderErrorFromResponse(request.response, safeParseJson(text))
         }
         if (!request.response.body || !isTextEventStream(request.response)) {
-          const text = await readResponseTextWithLimit(request.response, runtimeConfig.imageGenerationProvider.maxBodyBytes)
+          const text = await readResponseTextWithLimit(request.response, provider.maxBodyBytes)
           yield { type: 'completed', result: imageGenerationResultFromJson(safeParseJson(text), input.tool.outputFormat) }
           return
         }
-        yield * iterateImageGenerationProviderSse(request.response, input)
+        yield * iterateImageGenerationProviderSse(provider, request.response, input)
       } catch (error) {
         throw imageGenerationProviderRequestError(error, request.timeoutController)
       } finally {
@@ -79,7 +109,7 @@ export function openAICompatibleImageGenerationExecutorForGatewayRequest(): Open
   }
 }
 
-function imageGenerationProviderRequestBody(prompt: string, tool: {
+function imageGenerationProviderRequestBody(provider: ImageGenerationProviderRuntime, prompt: string, tool: {
   size?: string
   quality?: string
   outputFormat?: string
@@ -88,13 +118,10 @@ function imageGenerationProviderRequestBody(prompt: string, tool: {
   moderation?: string
   background?: string
 }, options: { stream?: boolean } = {}): JsonRecord {
-  if (runtimeConfig.imageGenerationProvider.api === 'responses') {
-    return imageGenerationResponsesProviderRequestBody(prompt, tool, options)
-  }
-  return imageGenerationImagesProviderRequestBody(prompt, tool, options)
+  return imageGenerationImagesProviderRequestBody(provider, prompt, tool, options)
 }
 
-function imageGenerationImagesProviderRequestBody(prompt: string, tool: {
+function imageGenerationImagesProviderRequestBody(provider: ImageGenerationProviderRuntime, prompt: string, tool: {
   size?: string
   quality?: string
   outputFormat?: string
@@ -104,7 +131,7 @@ function imageGenerationImagesProviderRequestBody(prompt: string, tool: {
   background?: string
 }, options: { stream?: boolean } = {}): JsonRecord {
   const body: JsonRecord = {
-    model: runtimeConfig.imageGenerationProvider.model,
+    model: provider.model,
     prompt,
     n: 1
   }
@@ -121,52 +148,8 @@ function imageGenerationImagesProviderRequestBody(prompt: string, tool: {
   return body
 }
 
-function imageGenerationResponsesProviderRequestBody(prompt: string, tool: {
-  size?: string
-  quality?: string
-  outputFormat?: string
-  outputCompression?: number
-  partialImages?: number
-  moderation?: string
-  background?: string
-}, options: { stream?: boolean } = {}): JsonRecord {
-  const body: JsonRecord = {
-    model: runtimeConfig.imageGenerationProvider.model,
-    input: prompt,
-    tools: [imageGenerationResponsesProviderTool(tool, options)],
-    tool_choice: { type: 'image_generation' }
-  }
-  if (options.stream) body.stream = true
-  return body
-}
-
-function imageGenerationResponsesProviderTool(tool: {
-  size?: string
-  quality?: string
-  outputFormat?: string
-  outputCompression?: number
-  partialImages?: number
-  moderation?: string
-  background?: string
-}, options: { stream?: boolean } = {}): JsonRecord {
-  const body: JsonRecord = {
-    type: 'image_generation',
-    action: 'generate'
-  }
-  setOptionalString(body, 'size', tool.size)
-  setOptionalString(body, 'quality', tool.quality)
-  setOptionalString(body, 'output_format', tool.outputFormat)
-  if (typeof tool.outputCompression === 'number') body.output_compression = tool.outputCompression
-  setOptionalString(body, 'moderation', tool.moderation)
-  setOptionalString(body, 'background', tool.background)
-  if (options.stream && typeof tool.partialImages === 'number') {
-    body.partial_images = Math.max(0, Math.min(3, Math.trunc(tool.partialImages)))
-  }
-  return body
-}
-
 async function requestImageGenerationProvider(
-  endpoint: string,
+  provider: ImageGenerationProviderRuntime,
   providerBody: JsonRecord,
   accept: string,
   signal: AbortSignal | undefined
@@ -174,16 +157,14 @@ async function requestImageGenerationProvider(
   const headers = new Headers()
   headers.set('accept', accept)
   headers.set('content-type', 'application/json')
-  if (runtimeConfig.imageGenerationProvider.apiKey) {
-    headers.set('authorization', `Bearer ${runtimeConfig.imageGenerationProvider.apiKey}`)
-  }
+  headers.set('authorization', provider.authorization)
   const timeoutController = new AbortController()
-  const timeout = setTimeout(() => timeoutController.abort(), runtimeConfig.imageGenerationProvider.timeoutMs)
+  const timeout = setTimeout(() => timeoutController.abort(), provider.timeoutMs)
   const requestSignal = signal
     ? AbortSignal.any([signal, timeoutController.signal])
     : timeoutController.signal
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(provider.endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify(providerBody),
@@ -219,6 +200,7 @@ function imageGenerationProviderRequestError(error: unknown, timeoutController: 
 }
 
 async function * iterateImageGenerationProviderSse(
+  provider: ImageGenerationProviderRuntime,
   response: Response,
   input: OpenAIToAnthropicImageGenerationInput
 ): AsyncIterable<OpenAIToAnthropicImageGenerationStreamEvent> {
@@ -234,7 +216,7 @@ async function * iterateImageGenerationProviderSse(
     if (done) break
     if (!value) continue
     total += value.byteLength
-    if (total > runtimeConfig.imageGenerationProvider.maxBodyBytes) {
+    if (total > provider.maxBodyBytes) {
       await reader.cancel()
       throw new GatewayRequestValidationError(
         '图像生成 provider 响应体超过读取上限',
@@ -432,6 +414,12 @@ function invalidProviderResponse(message: string): GatewayRequestValidationError
 
 function setOptionalString(target: JsonRecord, key: string, value: string | undefined): void {
   if (value) target[key] = value
+}
+
+function requestAuthorization(req: Pick<Request, 'headers'>): string | undefined {
+  const value = req.headers.authorization
+  const authorization = Array.isArray(value) ? value[0] : value
+  return typeof authorization === 'string' && authorization.trim() ? authorization.trim() : undefined
 }
 
 function safeParseJson(text: string): unknown {

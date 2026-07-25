@@ -2215,7 +2215,7 @@ async function applyOpenAIToAnthropicImageGenerationEmulation(
   if (!tool) return
   if (!executor) {
     throw bridgeValidationError(
-      'Responses image_generation 需要配置本地图像生成 provider，当前不能桥接到 Anthropic Messages',
+      'Responses image_generation 需要携带当前 API Key 授权返回本机 Images 网关路由',
       'openai_anthropic_bridge_image_generation_provider_unavailable'
     )
   }
@@ -4953,7 +4953,7 @@ async function * completeResponsesImageGenerationStream(state: AnthropicStreamSt
   const imageGeneration = state.requestPlan?.imageGeneration
   if (!imageGeneration) {
     yield * failResponsesStream(state, {
-      message: '图像生成请求缺少本地 provider 计划',
+      message: '图像生成请求缺少本机 Images 网关执行计划',
       type: 'invalid_request_error',
       code: 'openai_anthropic_bridge_image_generation_plan_missing'
     })

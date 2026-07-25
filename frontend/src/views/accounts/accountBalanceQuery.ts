@@ -30,7 +30,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   if (snapshot.status === 'refreshing') {
     const amount = Number(snapshot.remainingUsd)
     return snapshot.remainingUsd !== undefined && Number.isFinite(amount)
-      ? { text: `$${amount.toFixed(2)}`, tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
+      ? { text: formatUsdAmount(amount), tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
       : hiddenBalanceDisplay('refreshing', true)
   }
   const retryTooltip = transientFailureTooltip(snapshot, true)
@@ -38,7 +38,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   if (snapshot.status === 'fresh' && snapshot.remainingUsd !== undefined) {
     const amount = Number(snapshot.remainingUsd)
     return {
-      text: Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '余额查询失败',
+      text: Number.isFinite(amount) ? formatUsdAmount(amount) : '余额查询失败',
       tone: Number.isFinite(amount) ? 'fresh' : 'failed',
       tooltip: Number.isFinite(amount) ? retryTooltip : '上游返回的余额金额无效',
       refreshing: false,
@@ -55,6 +55,10 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
     }
   }
   return hiddenBalanceDisplay('pending')
+}
+
+function formatUsdAmount(amount: number): string {
+  return `${amount < 0 ? '-' : ''}$${Math.abs(amount).toFixed(2)}`
 }
 
 function hiddenBalanceDisplay(

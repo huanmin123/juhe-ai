@@ -63,14 +63,14 @@ assert.equal(estimateProviderCostUsd({
   serviceTier: 'priority',
   inputTokens: 100_000,
   outputTokens: 100_000
-}), undefined, '缺少档位专用价时必须标记未定价，不能套用 Priority 通用倍率')
+}), undefined, '官方未公布 GPT-5.4 Nano Priority 价格时必须标记未定价')
 assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4',
   serviceTier: 'flex',
   inputTokens: 100_000,
   outputTokens: 100_000
-}), undefined, '缺少档位专用价时必须标记未定价，不能套用 Flex 通用倍率')
+}), 0.875, 'GPT-5.4 Flex 必须使用官方独立输入与输出价格')
 assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.6-sol',

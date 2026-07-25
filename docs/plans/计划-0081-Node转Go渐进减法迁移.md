@@ -23,7 +23,7 @@
 
 - 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
-- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family tombstone、失败退避、worker fail-fast、incident ledger/generation fence、idempotent due/closed 修复、capacity 顺序和 ACK watermark。downstream commit、typed store metadata、account policy writer、dispatch-revision/incident projector，以及 runtime transition/escalation/listDue/ready-index 集中 normal/race/vet/diff check 通过。供应商目录/usage reader 漂移同步后，当前进度口径更新为：代码迁移约 `80%`，可独立验证 Go 能力约 `77%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family tombstone、失败退避、worker fail-fast、incident ledger/generation fence、idempotent due/closed 修复、capacity 顺序和 ACK watermark。downstream commit、typed store metadata、account policy writer、dispatch-revision/incident projector，以及 runtime transition/escalation/listDue/ready-index 集中 normal/race/vet/diff check 通过。最新 master 的图片缓存输入价、目录展示和 audio/realtime 目录收敛同步后，当前进度口径更新为：代码迁移约 `81%`，可独立验证 Go 能力约 `78%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
 - 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、parent-child durable transition receipt、incident CAS writer、gap/reconcile/cleanup/quarantine、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；现有 runtime/index/projector worker 仍默认关闭且未挂 CLI/supervisor，不据此改变 owner manifest 或删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
@@ -1045,8 +1045,11 @@
 ## 2026-07-24 Node 供应商计费与目录展示漂移同步批次
 
 - [x] 审计 Node `ab5f37c9e` / `69e63109d`，确认管理模型目录、gateway client catalog 和 usage snapshot reader 命中已迁移 Go 契约；account-circuit runtime 不依赖这些字段，因此独立成批而不改写上一批提交。
-- [x] migration `000077` 为 custom model 增加 `cache_storage_usd_per_1m_per_hour`；built-in 列继续由已发布 `000076` 提供。direct/tier price、nullable create/patch、模板复制、priced filter、PostgreSQL/sqlc、HTTP response 全链保真。
-- [x] 新增 Go-native `providerbilling` display builder，并由 management model response 返回前端当前依赖的 `catalogDisplay`；按六供应商语义输出 token、多模态、图片、tier、长上下文、思考和容量 section，无事实不展示，非法数值 fail-closed。
-- [x] gateway client catalog 保留 direct/tier cache storage 并纳入 priced 判定，标准 `/models` wire 不增加非标准价格；usage reader 兼容 `currency/billingPolicy/lineItems`，不再静默丢 Node 新快照字段。
+- [x] migration `000079` 为 custom model 增加 `cache_storage_usd_per_1m_per_hour`，并为 built-in catalog 增加只读 `cached_image_input_usd_per_1m`，按 Node 图片价格快照 seed 五个 GPT image model；最新 master 已占用 `000077/000078`，本批顺延而不复用版本，已发布 `000076` 不回写。cache storage 继续贯通 direct/tier、nullable create/patch、模板复制、priced filter；cached image 只贯通 built-in PostgreSQL/sqlc、management/gateway response 和 priced 判定，不扩张自定义写契约。
+- [x] 新增 Go-native `providerbilling` display builder，并由 management model response 返回前端当前依赖的 `catalogDisplay`；OpenAI 单 token section 合并文本/图片/图片缓存读/音频，Gemini/xAI 展示长上下文实际价格，六供应商缓存标签、tier 顺序和 reasoning `none` 过滤对齐。无事实不展示，负数/NaN/Inf/溢出/负阈值 fail-closed，非法 multiplier 按 Node 回退 1 倍。
+- [x] gateway client catalog 保留 direct/tier cache storage 与 cached image price 并纳入 priced 判定，标准 `/models` wire 不增加非标准价格；usage reader 兼容 `currency/billingPolicy/lineItems`，不再静默丢 Node 新快照字段。
+- [x] 同步并修正 Node 普通目录减法：按 mode/protocol 在 scope 合并前排除 audio/audio_speech/audio_transcription、realtime 和仅 audio 候选，避免高优先不支持项遮掉同名可用 built-in；名称启发式只作用于 built-in/元数据缺失 legacy，自定义显式 text/image/正常协议不因合法名称误删。自定义模型 mode 收敛为 text/image、协议删除 audio/realtime，模板复制过滤退休协议并按图片能力决定 image/text；底层内置音频价格事实继续保留。
+- [x] `providers/models/options` 补齐三组能力数组、可选默认思考级别和 release-date 排序，custom options 取消 legacy `catalog_visible` 过滤；custom create/patch 继续兼容接收 `catalogVisible`，但最终强制持久化 true，防止产生不可重新选择的隐身模型。built-in 可见性配置不受影响。
+- [x] 审计最新 master 的账户余额适配、健康检查、Chat 错误可见性和图片生成总超时；这些属于尚未迁移的账户测试/Chat/worker owner，不在本批机械复制，只记录为后续对应波次漂移入口。
 - [x] 复查 Node source currency/exchange metadata：当前 provider pricing data 没有实际非 USD 值，Go 不新增空 schema、不伪造 `currency_conversion`；后续 Node 出现真实源价事实时，必须新增 W2 schema/port/SQL 同步。
 - [ ] 六供应商实际费用计算、真实 PostgreSQL migration/CRUD、真实前端 listener、生产 billing owner、切流、回滚和 Node 删除仍待后续；本批只同步已迁移读写契约，不把展示兼容误记为网关计费接管。

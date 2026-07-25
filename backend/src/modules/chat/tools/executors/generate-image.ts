@@ -31,8 +31,10 @@ const generateImageInputSchema = {
 } as const
 
 export const chatImageGenerationGatewayModel = 'gpt-image-2'
+export const defaultChatImageGenerationTotalTimeoutSeconds = 900
 
-export function createGenerateImageTool(): ChatInternalToolDefinition {
+export function createGenerateImageTool(options: { totalTimeoutSeconds?: number } = {}): ChatInternalToolDefinition {
+  const totalTimeoutSeconds = normalizeTotalTimeoutSeconds(options.totalTimeoutSeconds)
   return {
     id: 'image.generate',
     version: '2.0.0',
@@ -45,7 +47,7 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
     limits: {
       maxArgumentBytes: 96 * 1024,
       maxResultBytes: 16 * 1024,
-      timeoutMs: 600_000
+      timeoutMs: totalTimeoutSeconds * 1000
     },
     availability: { requiresImageGenerationEnabled: true },
     duplicatePolicy: 'reuse_exact',
@@ -124,6 +126,14 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
     },
     projectResult: (result) => result.publicResult
   }
+}
+
+function normalizeTotalTimeoutSeconds(value: number | undefined): number {
+  const normalized = value ?? defaultChatImageGenerationTotalTimeoutSeconds
+  if (!Number.isSafeInteger(normalized) || normalized < 60 || normalized > 86_400) {
+    throw new Error('AI 对话生图总超时必须在 60 到 86400 秒之间')
+  }
+  return normalized
 }
 
 function normalizeReferenceAssetIds(value: unknown): string[] {

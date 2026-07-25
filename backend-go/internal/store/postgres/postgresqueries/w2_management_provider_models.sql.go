@@ -664,6 +664,7 @@ SELECT
   long_context_input_cost_multiplier,
   long_context_output_cost_multiplier,
   image_input_usd_per_1m,
+  cached_image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
   audio_output_usd_per_1m,
@@ -723,6 +724,7 @@ SELECT
   NULL::double precision AS long_context_input_cost_multiplier,
   NULL::double precision AS long_context_output_cost_multiplier,
   image_input_usd_per_1m,
+  NULL::double precision AS cached_image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
   audio_output_usd_per_1m,
@@ -793,6 +795,7 @@ type ListManagementProviderModelCatalogRow struct {
 	LongContextInputCostMultiplier          pgtype.Float8
 	LongContextOutputCostMultiplier         pgtype.Float8
 	ImageInputUsdPer1m                      pgtype.Float8
+	CachedImageInputUsdPer1m                pgtype.Float8
 	ImageOutputUsdPer1m                     pgtype.Float8
 	AudioInputUsdPer1m                      pgtype.Float8
 	AudioOutputUsdPer1m                     pgtype.Float8
@@ -858,6 +861,7 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.LongContextInputCostMultiplier,
 			&i.LongContextOutputCostMultiplier,
 			&i.ImageInputUsdPer1m,
+			&i.CachedImageInputUsdPer1m,
 			&i.ImageOutputUsdPer1m,
 			&i.AudioInputUsdPer1m,
 			&i.AudioOutputUsdPer1m,
@@ -890,12 +894,18 @@ WITH built_in_ranked AS (
     built_in.id,
     built_in.provider_code,
     built_in.model,
+    built_in.mode,
+    built_in.release_date,
+    built_in.supported_api_protocols_json,
+    built_in.supported_service_tiers_json,
+    built_in.supported_reasoning_efforts_json,
+    built_in.default_reasoning_effort,
     ROW_NUMBER() OVER (
       PARTITION BY built_in.model
       ORDER BY built_in.provider_code ASC, built_in.id ASC
     ) AS option_rank
   FROM juhe_business.provider_model_catalog AS built_in
-  WHERE built_in.provider_code = ANY($1::text[])
+  WHERE built_in.provider_code = ANY($2::text[])
     AND built_in.status = 'active'
     AND built_in.catalog_visible = true
     AND (
@@ -904,17 +914,21 @@ WITH built_in_ranked AS (
       OR built_in.shutdown_date > CURRENT_DATE::text
     )
     AND (
-      btrim($2::text) = ''
-      OR built_in.model = ANY($3::text[])
-      OR lower(built_in.model) LIKE '%' || lower($2::text) || '%'
+      btrim($3::text) = ''
+      OR built_in.model = ANY($1::text[])
+      OR lower(built_in.model) LIKE '%' || lower($3::text) || '%'
     )
 ),
 built_in_options AS (
-  SELECT id, provider_code, model, 'built_in'::text AS scope
+  SELECT id, provider_code, model, 'built_in'::text AS scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
   FROM built_in_ranked
   WHERE option_rank = 1
   ORDER BY
-    CASE WHEN model = ANY($3::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN model = ANY($1::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+    release_date DESC,
     lower(model) ASC,
     provider_code ASC,
     id ASC
@@ -926,6 +940,12 @@ custom_ranked AS (
     custom.provider_code,
     custom.model,
     custom.scope,
+    custom.mode,
+    custom.release_date,
+    custom.supported_api_protocols_json,
+    custom.supported_service_tiers_json,
+    custom.supported_reasoning_efforts_json,
+    custom.default_reasoning_effort,
     ROW_NUMBER() OVER (
       PARTITION BY custom.model
       ORDER BY CASE custom.scope WHEN 'personal' THEN 0 ELSE 1 END, custom.provider_code ASC, custom.id ASC
@@ -933,7 +953,6 @@ custom_ranked AS (
   FROM juhe_business.custom_provider_models AS custom
   WHERE custom.provider_code = ANY($5::text[])
     AND custom.status = 'active'
-    AND custom.catalog_visible = true
     AND (
       custom.shutdown_date IS NULL
       OR btrim(custom.shutdown_date) = ''
@@ -948,49 +967,78 @@ custom_ranked AS (
       )
     )
     AND (
-      btrim($2::text) = ''
-      OR custom.model = ANY($3::text[])
-      OR lower(custom.model) LIKE '%' || lower($2::text) || '%'
+      btrim($3::text) = ''
+      OR custom.model = ANY($1::text[])
+      OR lower(custom.model) LIKE '%' || lower($3::text) || '%'
     )
 ),
 custom_options AS (
-  SELECT id, provider_code, model, scope
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
   FROM custom_ranked
   WHERE option_rank = 1
   ORDER BY
-    CASE WHEN model = ANY($3::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN model = ANY($1::text[]) THEN 0 ELSE 1 END,
+    CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+    release_date DESC,
     lower(model) ASC,
     provider_code ASC,
     scope ASC,
     id ASC
   LIMIT $4
 )
-SELECT id, provider_code, model, scope FROM built_in_options
-UNION ALL
-SELECT id, provider_code, model, scope FROM custom_options
+SELECT id, provider_code, model, scope, mode, release_date,
+  supported_api_protocols_json, supported_service_tiers_json,
+  supported_reasoning_efforts_json, default_reasoning_effort
+FROM (
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
+  FROM built_in_options
+  UNION ALL
+  SELECT id, provider_code, model, scope, mode, release_date,
+    supported_api_protocols_json, supported_service_tiers_json,
+    supported_reasoning_efforts_json, default_reasoning_effort
+  FROM custom_options
+) AS combined_options
+ORDER BY
+  CASE WHEN model = ANY($1::text[]) THEN 0 ELSE 1 END,
+  CASE WHEN release_date IS NULL OR btrim(release_date) = '' THEN 1 ELSE 0 END ASC,
+  release_date DESC,
+  lower(model) ASC,
+  provider_code ASC,
+  scope ASC,
+  id ASC
 `
 
 type ListManagementProviderModelOptionsParams struct {
+	SelectedIds          []string
 	BuiltInProviderCodes []string
 	Keyword              string
-	SelectedIds          []string
 	ResultLimit          int32
 	CustomProviderCodes  []string
 	SystemAccountID      string
 }
 
 type ListManagementProviderModelOptionsRow struct {
-	ID           string
-	ProviderCode string
-	Model        string
-	Scope        string
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	Mode                          pgtype.Text
+	ReleaseDate                   pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
 }
 
 func (q *Queries) ListManagementProviderModelOptions(ctx context.Context, arg ListManagementProviderModelOptionsParams) ([]ListManagementProviderModelOptionsRow, error) {
 	rows, err := q.db.Query(ctx, listManagementProviderModelOptions,
+		arg.SelectedIds,
 		arg.BuiltInProviderCodes,
 		arg.Keyword,
-		arg.SelectedIds,
 		arg.ResultLimit,
 		arg.CustomProviderCodes,
 		arg.SystemAccountID,
@@ -1007,6 +1055,12 @@ func (q *Queries) ListManagementProviderModelOptions(ctx context.Context, arg Li
 			&i.ProviderCode,
 			&i.Model,
 			&i.Scope,
+			&i.Mode,
+			&i.ReleaseDate,
+			&i.SupportedApiProtocolsJson,
+			&i.SupportedServiceTiersJson,
+			&i.SupportedReasoningEffortsJson,
+			&i.DefaultReasoningEffort,
 		); err != nil {
 			return nil, err
 		}

@@ -26,7 +26,6 @@ export interface CustomModelForm {
   scope: CustomProviderModelScope
   model: string
   status: ProviderModelStatus
-  catalogVisible: boolean
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]
@@ -56,7 +55,6 @@ export const emptyCustomModelForm: CustomModelForm = {
   scope: 'personal',
   model: '',
   status: 'active',
-  catalogVisible: true,
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
   supportedServiceTiers: [],
@@ -73,7 +71,6 @@ export function createCustomModelFormFromPricing(
     scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
-    catalogVisible: record.catalogVisible !== false,
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
@@ -114,7 +111,6 @@ export function buildCustomModelPayload(
     scope: form.scope,
     model,
     status: form.status,
-    catalogVisible: form.catalogVisible,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
     releaseDate: trimToNull(form.releaseDate),
@@ -200,7 +196,7 @@ export function availableCustomModelStatusOptions(_canManagePrices: boolean, _or
 }
 
 const gptServiceTierValues: ProviderModelServiceTier[] = ['priority', 'flex']
-const gptReasoningEffortValues: ProviderModelReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const gptReasoningEffortValues: ProviderModelReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 export function buildCustomModelCapabilityOptions(
   providerCode: string,
@@ -210,7 +206,10 @@ export function buildCustomModelCapabilityOptions(
   const isGpt = providerCode.trim().toLowerCase() === 'gpt'
   return {
     serviceTiers: capabilityOptions([...(isGpt ? gptServiceTierValues : []), ...serviceTiers], formatServiceTier),
-    reasoningEfforts: capabilityOptions([...(isGpt ? gptReasoningEffortValues : []), ...reasoningEfforts], formatReasoningEffort)
+    reasoningEfforts: capabilityOptions(
+      [...(isGpt ? gptReasoningEffortValues : []), ...reasoningEfforts].filter((value) => value !== 'none'),
+      formatReasoningEffort
+    )
   }
 }
 
@@ -226,7 +225,6 @@ export function availableCustomModelModeOptions(providerCode: string, providerMo
   for (const item of providerModels) categories.add(getModelCategory(item))
   if (code === 'gpt' || code === 'openai' || code === 'hybrid') {
     categories.add('image')
-    categories.add('audio')
   }
   return modelModeOptions.filter((option) => categories.has(option.value))
 }
@@ -275,7 +273,7 @@ function normalizeServiceTiers(value: unknown): ProviderModelServiceTier[] {
 
 function normalizeReasoningEfforts(value: unknown): ProviderModelReasoningEffort[] {
   if (!Array.isArray(value)) return []
-  return uniqueCapabilityTokens(value)
+  return uniqueCapabilityTokens<ProviderModelReasoningEffort>(value).filter((effort) => effort !== 'none')
 }
 
 function uniqueCapabilityTokens<TValue extends string>(values: unknown[]): TValue[] {

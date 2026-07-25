@@ -55,6 +55,7 @@ export interface RawModelPricing {
   cache_read_input_token_cost?: number
   cache_read_input_token_cost_priority?: number
   cache_read_input_token_cost_flex?: number
+  cache_read_input_image_token_cost?: number
   input_cost_per_image_token?: number
   output_cost_per_image?: number
   output_cost_per_image_token?: number

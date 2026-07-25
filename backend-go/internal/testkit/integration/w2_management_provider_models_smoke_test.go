@@ -275,24 +275,24 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		t.Fatalf("options status = %d, body = %s", optionsRec.Code, optionsRec.Body.String())
 	}
 	var optionsBody struct {
-		Data []managementprovidermodels.ModelOption `json:"data"`
+		Data []managementprovidermodels.ModelSelectionOption `json:"data"`
 	}
 	optionsResponseBody := optionsRec.Body.Bytes()
 	if err := json.Unmarshal(optionsResponseBody, &optionsBody); err != nil {
 		t.Fatalf("decode model options response: %v", err)
 	}
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "o3"), priorityFlexTiers, []string{}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "o4-mini"), priorityFlexTiers, []string{}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-sol", "supportedServiceTiers", "supportedReasoningEfforts")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-terra", "supportedServiceTiers", "supportedReasoningEfforts")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-luna", "supportedServiceTiers", "supportedReasoningEfforts")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o3", "supportedServiceTiers")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o4-mini", "supportedServiceTiers")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "w2-personal-model", "supportedServiceTiers", "supportedReasoningEfforts", "defaultReasoningEffort")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "o3"), priorityFlexTiers, []string{}, "")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "o4-mini"), priorityFlexTiers, []string{}, "")
+	assertW2ProviderModelSelectionOptionRequestCapabilities(t, findW2ProviderModelSelectionOption(optionsBody.Data, "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt-5.6-sol", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt-5.6-terra", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt-5.6-luna", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "o3", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "o4-mini", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "w2-personal-model", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts", "defaultReasoningEffort")
 
 	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	putReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -380,6 +380,15 @@ func findW2ProviderModel(items []managementprovidermodels.ModelCatalogItem, mode
 func findW2ProviderModelOption(items []managementprovidermodels.ModelOption, providerCode string, model string) *managementprovidermodels.ModelOption {
 	for index := range items {
 		if items[index].ProviderCode == providerCode && items[index].Model == model {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func findW2ProviderModelSelectionOption(items []managementprovidermodels.ModelSelectionOption, model string) *managementprovidermodels.ModelSelectionOption {
+	for index := range items {
+		if items[index].ID == model && items[index].Name == model {
 			return &items[index]
 		}
 	}
@@ -540,7 +549,29 @@ func assertW2ProviderModelOptionRequestCapabilities(
 	}
 }
 
-func assertW2ProviderModelOptionWireFields(t *testing.T, body []byte, providerCode string, model string, fields ...string) {
+func assertW2ProviderModelSelectionOptionRequestCapabilities(
+	t *testing.T,
+	item *managementprovidermodels.ModelSelectionOption,
+	serviceTiers []string,
+	reasoningEfforts []string,
+	defaultReasoningEffort string,
+) {
+	t.Helper()
+	if item == nil {
+		t.Fatalf("provider model option missing")
+	}
+	if strings.Join(item.SupportedServiceTiers, ",") != strings.Join(serviceTiers, ",") {
+		t.Fatalf("%s option service tiers = %v, want %v", item.ID, item.SupportedServiceTiers, serviceTiers)
+	}
+	if strings.Join(item.SupportedReasoningEfforts, ",") != strings.Join(reasoningEfforts, ",") {
+		t.Fatalf("%s option reasoning efforts = %v, want %v", item.ID, item.SupportedReasoningEfforts, reasoningEfforts)
+	}
+	if item.DefaultReasoningEffort != defaultReasoningEffort {
+		t.Fatalf("%s option default reasoning effort = %q, want %q", item.ID, item.DefaultReasoningEffort, defaultReasoningEffort)
+	}
+}
+
+func assertW2ProviderModelOptionWireFields(t *testing.T, body []byte, model string, fields ...string) {
 	t.Helper()
 	var payload struct {
 		Data []map[string]json.RawMessage `json:"data"`
@@ -549,25 +580,21 @@ func assertW2ProviderModelOptionWireFields(t *testing.T, body []byte, providerCo
 		t.Fatalf("decode provider model option wire payload: %v", err)
 	}
 	for _, item := range payload.Data {
-		var actualProviderCode string
 		var actualModel string
-		if err := json.Unmarshal(item["providerCode"], &actualProviderCode); err != nil {
+		if err := json.Unmarshal(item["id"], &actualModel); err != nil {
 			continue
 		}
-		if err := json.Unmarshal(item["model"], &actualModel); err != nil {
-			continue
-		}
-		if actualProviderCode != providerCode || actualModel != model {
+		if actualModel != model {
 			continue
 		}
 		for _, field := range fields {
 			if _, ok := item[field]; !ok {
-				t.Fatalf("%s/%s option wire field %q missing: %s", providerCode, model, field, string(body))
+				t.Fatalf("%s option wire field %q missing: %s", model, field, string(body))
 			}
 		}
 		return
 	}
-	t.Fatalf("%s/%s option missing from wire payload: %s", providerCode, model, string(body))
+	t.Fatalf("%s option missing from wire payload: %s", model, string(body))
 }
 
 func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db *sql.DB) {

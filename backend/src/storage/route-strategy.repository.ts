@@ -522,8 +522,10 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
       ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
       : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
   }, mode)
+  const nextName = normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
+  assertRouteStrategyNameChangeAllowed(current, nextName)
   const next = {
-    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称'),
+    name: nextName,
     description: hasOwnInput(input, 'description') ? normalizeNullableTextInput(input.description, '策略路由说明') : current.description,
     mode,
     status: hasOwnInput(input, 'status') ? normalizeRouteStrategyStatus(input.status, current.status) : current.status,
@@ -578,8 +580,10 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
       ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
       : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
   }, mode)
+  const nextName = normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
+  assertRouteStrategyNameChangeAllowed(current, nextName)
   const next = {
-    name: normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称'),
+    name: nextName,
     description: hasOwnInput(input, 'description') ? normalizeNullableTextInput(input.description, '策略路由说明') : current.description,
     mode,
     status: hasOwnInput(input, 'status') ? normalizeRouteStrategyStatus(input.status, current.status) : current.status,
@@ -1712,6 +1716,12 @@ function assertRouteStrategyNotDefault(database: DatabaseSync, routeStrategyId: 
     .get(routeStrategyId, systemAccountId) as { is_default?: unknown } | undefined
   if (normalizeRouteStrategyDefaultFlag(row?.is_default)) {
     throw new Error('默认策略路由不允许删除')
+  }
+}
+
+function assertRouteStrategyNameChangeAllowed(current: Pick<RouteStrategySummary, 'name' | 'isDefault'>, nextName: string): void {
+  if (current.isDefault && nextName !== current.name) {
+    throw new Error('默认策略路由不允许修改名称')
   }
 }
 

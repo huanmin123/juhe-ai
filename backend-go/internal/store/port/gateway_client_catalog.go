@@ -56,6 +56,7 @@ type GatewayClientCatalogModel struct {
 	CacheWrite1hUSDPer1M        *float64
 	CacheStorageUSDPer1MPerHour *float64
 	ImageInputUSDPer1M          *float64
+	CachedImageInputUSDPer1M    *float64
 	ImageOutputUSDPer1M         *float64
 	AudioInputUSDPer1M          *float64
 	AudioOutputUSDPer1M         *float64

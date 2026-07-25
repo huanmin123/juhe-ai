@@ -34,14 +34,14 @@ assert.match(
 )
 assert.match(
   dispatchRoutes,
-  /findAccountManualTestListContextAsync\(req\.params\.id, requestAccess\)/,
-  '列表测试选项必须读取最小可见账户上下文'
+  /findAccountManualTestCapabilitiesContextAsync\(req\.params\.id, requestAccess\)/,
+  '列表测试选项必须一次读取账户能力上下文'
 )
 const listRouteSource = dispatchRoutes.slice(
   dispatchRoutes.indexOf("router.get('/:id/test-options'"),
   dispatchRoutes.indexOf("router.get('/:id/test-options/models/:modelId'")
 )
-assert.doesNotMatch(listRouteSource, /findAccountForTestAsync|credentials/, '列表测试选项不得读取或解密完整账户凭据')
+assert.doesNotMatch(listRouteSource, /findAccountForTestAsync/, '列表测试选项不得构造完整账户摘要')
 assert.match(
   listRouteSource,
   /accountManualTestOptionsAsync\(account,\s*optionQuery\)/,
@@ -54,13 +54,14 @@ const listOptionsFunctionSource = testOptionsService.slice(
 assert.match(listOptionsFunctionSource, /listProviderModelOptionRowsAsync/, '模型列表必须读取带窗口和已选项补齐的轻量模型目录投影')
 assert.doesNotMatch(
   listOptionsFunctionSource,
-  /listProviderModelCatalogAsync|accountManualTestEndpointModesForModel|accountManualTestEndpointModes\(/,
-  '模型列表不得克隆完整目录或逐模型计算账户请求形态'
+  /listProviderModelCatalogAsync|accountManualTestEndpointModesForModel/,
+  '模型列表不得克隆完整目录或使用完整目录计算请求形态'
 )
+assert.match(listOptionsFunctionSource, /testEndpointModes:[\s\S]*accountManualTestEndpointModesForTargetModelAsync/, '模型列表必须随选项返回账户与模型能力交集')
 assert.match(
   dispatchRoutes,
   /router\.get\('\/:id\/test-options\/models\/:modelId'/,
-  '切换测试模型时必须按模型 ID 独立加载请求形态'
+  '兼容能力端点必须保留，供服务端校验和旧客户端使用'
 )
 assert.match(
   dispatchRoutes,
@@ -166,11 +167,12 @@ assert.match(
   /loadTestModelOptions/,
   '列表测试弹窗必须提供候选模型按需加载入口'
 )
-assert.doesNotMatch(
+assert.match(
   section(accountTestModal, 'function openTestModal', 'function openDraftTestModal'),
-  /loadSavedAccountTestOptions|loadTestModelOptions/,
-  '打开列表测试弹窗时不得请求候选模型列表'
+  /loadTestModelOptions\(account\)/,
+  '打开列表测试弹窗时必须一次加载带协议能力的候选模型列表'
 )
+assert.doesNotMatch(accountTestModels, /testModelCapabilities\(/, '模型切换不得再发起独立能力请求')
 assert.match(
   accountTestModalComponent,
   /@dropdown-visible-change/,

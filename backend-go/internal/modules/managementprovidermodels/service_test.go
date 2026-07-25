@@ -151,8 +151,8 @@ func TestServiceModelSelectionOptionsUsesBoundedQueryAndLightweightDTO(t *testin
 		optionCandidates: []port.ManagementProviderModelCatalogItem{
 			{ID: "built-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "built_in"},
 			{ID: "global-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "global"},
-			{ID: "personal-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "personal"},
-			{ID: "selected", ProviderCode: "gpt", Model: "selected/model", Scope: "built_in"},
+			{ID: "personal-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "personal", ReleaseDate: "2026-01-01", SupportedAPIProtocols: []string{"responses"}, SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "high"},
+			{ID: "selected", ProviderCode: "gpt", Model: "selected/model", Scope: "built_in", ReleaseDate: "2026-07-01"},
 			{ID: "ignored", ProviderCode: "gpt", Model: "ignored", Scope: "built_in"},
 		},
 	}
@@ -165,8 +165,8 @@ func TestServiceModelSelectionOptionsUsesBoundedQueryAndLightweightDTO(t *testin
 		t.Fatalf("ModelSelectionOptions() error = %v", err)
 	}
 	if !reflect.DeepEqual(options, []ModelSelectionOption{
-		{ID: "selected/model", Name: "selected/model"},
-		{ID: "alpha", Name: "alpha"},
+		{ID: "selected/model", Name: "selected/model", SupportedAPIProtocols: []string{}, SupportedServiceTiers: []string{}, SupportedReasoningEfforts: []string{}},
+		{ID: "alpha", Name: "alpha", SupportedAPIProtocols: []string{"responses"}, SupportedServiceTiers: []string{"priority"}, SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "high"},
 	}) {
 		t.Fatalf("options = %+v", options)
 	}
@@ -505,6 +505,40 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 	}
 }
 
+func TestServiceModelsFiltersUnsupportedAudioAndRealtimeCatalogEntries(t *testing.T) {
+	price := 1.5
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "text", ProviderCode: "gpt", Model: "gpt-5.6", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price},
+			{ID: "supported-built-in", ProviderCode: "gpt", Model: "shared-model", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price},
+			{ID: "unsupported-shadow", ProviderCode: "gpt", Model: "shared-model", Scope: "personal", Status: "active", Mode: "audio", SupportedAPIProtocols: []string{"audio"}, AudioInputUSDPer1M: &price},
+			{ID: "audio-mode", ProviderCode: "gpt", Model: "speech-model", Scope: "built_in", Status: "active", Mode: "audio", SupportedAPIProtocols: []string{"audio"}, AudioInputUSDPer1M: &price},
+			{ID: "realtime-protocol", ProviderCode: "gpt", Model: "live-model", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses", "realtime"}, InputUSDPer1M: &price},
+			{ID: "audio-protocol", ProviderCode: "gpt", Model: "voice-model", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"audio"}, AudioInputUSDPer1M: &price},
+			{ID: "name-token", ProviderCode: "gpt", Model: "gpt-4o-mini-tts", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price},
+			{ID: "name-substring", ProviderCode: "gpt", Model: "audiophile-chat", Scope: "built_in", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price},
+			{ID: "explicit-custom", ProviderCode: "gpt", Model: "audio-analysis", Scope: "global", Status: "active", Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price},
+		},
+	}
+
+	models, err := NewService(store).Models(context.Background(), ModelListInput{
+		ProviderCode: "gpt", IncludeInactive: true, IncludeUnpriced: true,
+	})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 4 || findModelCatalogItem(models, "gpt-5.6") == nil || findModelCatalogItem(models, "audiophile-chat") == nil ||
+		findModelCatalogItem(models, "audio-analysis") == nil || findModelCatalogItem(models, "shared-model") == nil {
+		t.Fatalf("models = %+v, want only supported text entries", models)
+	}
+	if shared := findModelCatalogItem(models, "shared-model"); shared == nil || shared.Scope != "built_in" {
+		t.Fatalf("shared model = %+v, want supported built-in after filtering unsupported personal shadow", shared)
+	}
+}
+
 func TestServiceModelsIncludesTierOnlyPricedModel(t *testing.T) {
 	price := 1.5
 	zeroPrice := 0.0
@@ -639,7 +673,7 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		builtIn.CatalogDisplay[1].Key != "long_context" || builtIn.CatalogDisplay[2].Key != "reasoning" {
 		t.Fatalf("built-in catalog display = %+v", builtIn.CatalogDisplay)
 	}
-	if items := builtIn.CatalogDisplay[0].Items; len(items) != 3 || items[2].Key != "cache_storage" {
+	if items := builtIn.CatalogDisplay[0].Items; len(items) != 3 || items[1].Key != "cache_storage" {
 		t.Fatalf("built-in priority display items = %+v", items)
 	}
 
@@ -1034,7 +1068,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		store.saveInput.Scope != "personal" ||
 		store.saveInput.SystemAccountID != "sys_user" ||
 		store.saveInput.Status != "active" ||
-		store.saveInput.CatalogVisible ||
+		!store.saveInput.CatalogVisible ||
 		len(store.saveInput.SupportedAPIProtocols) != 1 ||
 		store.saveInput.SupportedAPIProtocols[0] != "responses" ||
 		len(store.saveInput.SupportedServiceTiers) != 2 ||
@@ -1242,7 +1276,6 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 	}{
 		{name: "non gpt", providerCode: "anthropic"},
 		{name: "gpt image", providerCode: "gpt", mode: "image"},
-		{name: "gpt audio", providerCode: "gpt", mode: "audio"},
 	} {
 		t.Run(input.name, func(t *testing.T) {
 			store := &providerModelStoreStub{
@@ -1274,6 +1307,61 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 				t.Fatalf("result=%+v save=%+v", result, store.saveInput)
 			}
 		})
+	}
+}
+
+func TestServiceCreateCustomModelRejectsRetiredAudioAndRealtimeContracts(t *testing.T) {
+	price := 1.25
+	tests := []struct {
+		name      string
+		mode      OptionalString
+		protocols OptionalStringList
+	}{
+		{name: "audio mode", mode: OptionalString{Set: true, Value: "audio"}},
+		{name: "audio protocol", protocols: OptionalStringList{Set: true, Value: []string{"audio"}}},
+		{name: "realtime protocol", protocols: OptionalStringList{Set: true, Value: []string{"realtime"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{
+				"gpt": {Code: "gpt", Enabled: true},
+			}}
+			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+				ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", TargetSystemAccountID: "sys_user",
+				Fields: CustomModelMutation{
+					Model: OptionalString{Set: true, Value: "custom-model"}, Status: OptionalString{Set: true, Value: "draft"},
+					Mode: tt.mode, SupportedAPIProtocols: tt.protocols, InputUSDPer1M: OptionalFloat{Set: true, Value: &price},
+				},
+			})
+			message, ok := CustomModelValidationMessage(err)
+			if !ok || message != "自定义模型参数无效" {
+				t.Fatalf("error = %v, message = %q", err, message)
+			}
+		})
+	}
+}
+
+func TestCustomModelTemplateAndPatchRetireAudioRealtimeContracts(t *testing.T) {
+	price := 2.0
+	input := port.ManagementCustomProviderModelSaveInput{}
+	applyConfigurationTemplate(&input, port.ManagementProviderModelCatalogItem{
+		Mode: "audio", SupportedAPIProtocols: []string{"audio", "responses", "realtime"}, InputUSDPer1M: &price,
+	})
+	if input.Mode != "text" || !slices.Equal(input.SupportedAPIProtocols, []string{"responses"}) {
+		t.Fatalf("template result = %+v", input)
+	}
+
+	existing := port.ManagementProviderModelCatalogItem{ID: "custom_1", ProviderCode: "gpt", Model: "custom", Scope: "personal", Mode: "text"}
+	patchInput := customModelSaveInputFromExisting(existing, "sys_user")
+	for _, fields := range []CustomModelMutation{
+		{Mode: OptionalString{Set: true, Value: "audio"}},
+		{SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{"realtime"}}},
+	} {
+		err := applyCustomModelPatch(&patchInput, fields)
+		message, ok := CustomModelValidationMessage(err)
+		if !ok || message != "自定义模型参数无效" {
+			t.Fatalf("patch error = %v, message = %q", err, message)
+		}
 	}
 }
 
@@ -1312,7 +1400,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
 	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
-		!store.customUpdateInput.CatalogVisible.Present || store.customUpdateInput.CatalogVisible.Value ||
+		!store.customUpdateInput.CatalogVisible.Present || !store.customUpdateInput.CatalogVisible.Value ||
 		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present ||
 		!store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
 		t.Fatalf("atomic update input = %+v", store.customUpdateInput)

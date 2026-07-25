@@ -48,7 +48,7 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
-  status: 'active' | 'disabled'
+  status: AccountFormModel['status']
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   supportedModels: string[]
@@ -76,7 +76,7 @@ export type AccountOAuthCreateCommonPayload = {
   groupId?: string
   concurrencyLimit: number
   priority: number
-  status: 'active' | 'disabled'
+  status: AccountFormModel['status']
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   supportedModels: string[]
@@ -246,7 +246,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, currentSt
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
-    ...(payload.status === 'disabled' || currentStatus === 'disabled' || currentStatus === 'active' ? { status: payload.status } : {}),
+    ...(payload.status === 'active' || payload.status === 'disabled' ? { status: payload.status } : {}),
     superPriorityEnabled: payload.superPriorityEnabled,
     fallbackEnabled: payload.fallbackEnabled,
     supportedModels: payload.supportedModels,

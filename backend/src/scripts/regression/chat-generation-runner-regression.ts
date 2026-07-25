@@ -334,6 +334,7 @@ async function unexpectedFailureWaitsForAuthoritativeFinalizer(): Promise<void> 
   const order: string[] = []
   const runner = new ChatGenerationRunner({
     identity: identity('turn_unexpected_failure', 'conv_unexpected_failure'),
+    unexpectedErrorTraceId: 'trace_unexpected_failure',
     execute: async () => {
       order.push('execute')
       throw new Error(`unexpected upstream failure: ${rawSecret}`)
@@ -358,8 +359,8 @@ async function unexpectedFailureWaitsForAuthoritativeFinalizer(): Promise<void> 
   assert.deepEqual(reportedErrors, [{ stage: 'execute', message: `unexpected upstream failure: ${rawSecret}` }], 'execute cause 必须单独报告一次')
   assert.deepEqual(finalizerErrors, [{
     code: 'internal_generation_failed',
-    message: '生成任务异常结束，请重新发送'
-  }], 'unexpected finalizer 只接收公开安全错误')
+    message: '生成任务异常结束，请重新发送；详情：unexpected upstream failure: sk-[REDACTED]'
+  }], 'unexpected finalizer 必须接收可诊断且已脱敏的公开错误')
   assert.doesNotMatch(JSON.stringify(finalizerErrors), /sk-runner-secret/u)
 
   finalization.resolve()
@@ -374,7 +375,8 @@ async function unexpectedFailureWaitsForAuthoritativeFinalizer(): Promise<void> 
     data: {
       messageId: runner.identity.assistantMessageId,
       code: 'internal_generation_failed',
-      message: '生成任务异常结束，请重新发送'
+      message: '生成任务异常结束，请重新发送；详情：unexpected upstream failure: sk-[REDACTED]',
+      traceId: 'trace_unexpected_failure'
     }
   })
 }

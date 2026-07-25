@@ -16,5 +16,13 @@ assert.match(
   /copyTextToClipboard\(detailConversation\.id,\s*'会话 ID 已复制'\)/,
   '复制会话 ID 必须复用公共剪贴板能力并提供成功反馈'
 )
+assert.match(source, /<a-descriptions-item label="工具能力">/, '会话详情必须展示工具能力')
+assert.match(source, /tool\.available \? '可用' : '不可用'/, '工具能力必须明确展示可用或不可用')
+assert.match(source, /!tool\.available && tool\.reason/, '工具不可用时必须展示后端返回的原因')
+assert.match(
+  source,
+  /async function openDetails[\s\S]{0,500}chatApi\.getConversation\(item\.id\)/,
+  '打开会话详情时必须重新读取当前工具能力，不能只使用列表快照'
+)
 
 console.log('AI 问答会话详情回归通过')

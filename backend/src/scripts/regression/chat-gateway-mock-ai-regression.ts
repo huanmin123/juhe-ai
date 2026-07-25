@@ -210,7 +210,7 @@ try {
   const invalidCreate = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ unexpected: true }) })
   assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
   const defaultConversation = await apiJson<{ data: { id: string; apiKeyNameSnapshot: string; userTurnLimit: number } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, {})
-  assert.equal(defaultConversation.data.apiKeyNameSnapshot, '默认 GPT API Key', '省略 API Key 时必须绑定当前用户默认 GPT API Key')
+  assert.equal(defaultConversation.data.apiKeyNameSnapshot, 'AI 对话 API Key', '省略 API Key 时必须绑定当前用户的 AI 对话专用 API Key')
   const limitedConversation = defaultConversation
   assert.equal(limitedConversation.data.userTurnLimit, 50, '会话响应必须附加当前运行时轮次上限')
   databaseModule.getChatDatabase().prepare('UPDATE chat_conversations SET user_turn_count = 50 WHERE id = ?').run(limitedConversation.data.id)
@@ -276,8 +276,9 @@ try {
     assert(chatOnlyGatewayKeyId)
     assert(chatOnlyGroupId)
     const chatConversation = await apiJson<{ data: { id: string; defaultModel?: { id: string; name: string } } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: chatOnlyGatewayKeyId })
-    assert.deepEqual(chatConversation.data.defaultModel, { id: chatOnlyTestModel, name: chatOnlyTestModel }, 'Chat-only Key 必须选择自身供应商首个模型，不能拿系统全局默认')
+    assert(chatConversation.data.defaultModel, 'Chat-only Key 必须返回自身动态供应商目录的首个模型')
     const chatModels = await apiJson<{ data: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
+    assert.deepEqual(chatConversation.data.defaultModel, chatModels.data[0], 'Chat-only Key 默认模型必须等于自身动态供应商目录首项')
     const chatOnlyModel = chatModels.data.find((item) => item.id === chatOnlyTestModel)
     assert(chatOnlyModel, 'Chat-only 会话必须列出绑定账户模型')
     assert.deepEqual(Object.keys(chatOnlyModel).sort(), ['id', 'name'])
@@ -1181,24 +1182,9 @@ function writeMockResponseEvent(res: http.ServerResponse, event: string, data: u
 }
 
 function startBackend(port: number): ChildProcess {
-  const imageProviderEnv = !realCredential && upstream
-    ? {
-      JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT: `http://127.0.0.1:${serverPort(upstream)}/v1/images/generations`,
-      JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY: 'sk-mock-image-provider',
-      JUHE_AI_IMAGE_GENERATION_PROVIDER_API: 'images',
-      JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL: 'gpt-image-2'
-    }
-    : realCredential && uiOnly
-      ? {
-        JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT: `${realCredential.baseUrl.replace(/\/v1\/?$/u, '').replace(/\/+$/u, '')}/v1/images/generations`,
-        JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY: realCredential.apiKey,
-        JUHE_AI_IMAGE_GENERATION_PROVIDER_API: 'images',
-        JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL: 'gpt-image-2'
-      }
-      : {}
   return spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
     cwd: backendRoot,
-    env: { ...process.env, ...imageProviderEnv, NODE_ENV: '', JUHE_AI_HOST: '127.0.0.1', JUHE_AI_PORT: String(port), JUHE_AI_DB_SERVICE_HTTP_HOST: '127.0.0.1', JUHE_AI_DB_SERVICE_HTTP_PORT: '0', JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath, JUHE_AI_CHAT_DATABASE_PATH: runtimeConfig.chatDatabasePath, JUHE_AI_CHAT_ASSETS_ROOT: runtimeConfig.chatAssetsRoot, JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath, JUHE_AI_USAGE_CATALOG_DATABASE_PATH: runtimeConfig.usageCatalogDatabasePath, JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath, JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot, JUHE_AI_CODEX_CONTEXT_ROOT: runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: runtimeConfig.codexContextStateShardRoot, JUHE_AI_SECRET: runtimeConfig.secret, JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true', JUHE_AI_LOG_LEVEL: 'warn', JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false' },
+    env: { ...process.env, NODE_ENV: '', JUHE_AI_HOST: '127.0.0.1', JUHE_AI_PORT: String(port), JUHE_AI_DB_SERVICE_HTTP_HOST: '127.0.0.1', JUHE_AI_DB_SERVICE_HTTP_PORT: '0', JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath, JUHE_AI_CHAT_DATABASE_PATH: runtimeConfig.chatDatabasePath, JUHE_AI_CHAT_ASSETS_ROOT: runtimeConfig.chatAssetsRoot, JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath, JUHE_AI_USAGE_CATALOG_DATABASE_PATH: runtimeConfig.usageCatalogDatabasePath, JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath, JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot, JUHE_AI_CODEX_CONTEXT_ROOT: runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: runtimeConfig.codexContextStateShardRoot, JUHE_AI_SECRET: runtimeConfig.secret, JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true', JUHE_AI_LOG_LEVEL: 'warn', JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
 }

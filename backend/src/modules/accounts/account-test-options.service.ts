@@ -28,11 +28,11 @@ import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1
 export interface AccountManualTestOption {
   id: string
   name: string
-}
-
-export interface AccountManualTestModelCapabilities extends AccountManualTestOption {
+  supportedApiProtocols: ProviderModelApiProtocol[]
   testEndpointModes: AccountSupportedEndpointMode[]
 }
+
+export type AccountManualTestModelCapabilities = AccountManualTestOption
 
 export type AccountManualTestOptionsQuery = Pick<ProviderModelOptionQuery, 'keyword' | 'limit' | 'selectedIds'>
 
@@ -45,20 +45,12 @@ export function normalizeAccountManualTestOptionsQuery(query: Record<string, unk
   }
 }
 
-type AccountManualTestCatalogContext = Pick<
-  AccountSummary,
-  'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'
-> & {
-  ownerSystemAccountId?: string
-  systemAccountId?: string
-  healthCheckModel?: string
-}
-
 export async function accountManualTestOptionsAsync(
-  account: AccountManualTestCatalogContext,
+  account: AccountSummary | AccountManualTestCapabilitiesContext,
   query: AccountManualTestOptionsQuery = { limit: 50, selectedIds: [] }
 ): Promise<AccountManualTestOption[]> {
-  const systemAccountId = account.ownerSystemAccountId ?? account.systemAccountId
+  const systemAccountId = account.ownerSystemAccountId
+    ?? ('systemAccountId' in account ? account.systemAccountId : undefined)
   if (!systemAccountId) throw new Error('账户归属数据异常，无法读取测试模型')
   const selectedIds = [...new Set([
     ...query.selectedIds,
@@ -71,12 +63,25 @@ export async function accountManualTestOptionsAsync(
     selectedIds
   })
   const eligible = catalog.filter((item) => isAccountManualTestModel(item, account))
-  return mergeProviderModelOptionRows(eligible, {
+  const options = mergeProviderModelOptionRows(eligible, {
     providerCode: account.providerCode,
     ...(query.keyword ? { keyword: query.keyword } : {}),
     limit: query.limit,
     selectedIds
   })
+  const upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
+  const resolvedOptions = await Promise.all(options.map(async (option) => ({
+    id: option.id,
+    name: option.name,
+    supportedApiProtocols: option.supportedApiProtocols as ProviderModelApiProtocol[],
+    testEndpointModes: await accountManualTestEndpointModesForTargetModelAsync(
+      account,
+      { model: option.id, supportedApiProtocols: option.supportedApiProtocols as ProviderModelApiProtocol[] },
+      systemAccountId,
+      upstreamModels
+    )
+  })))
+  return resolvedOptions.filter((option) => option.testEndpointModes.length > 0)
 }
 
 export async function resolveAccountManualTestSelectionAsync(
@@ -139,13 +144,19 @@ export async function accountManualTestModelCapabilitiesAsync(
   if (!testEndpointModes.length) {
     throw new Error('账户上游接口能力中没有可用于连接测试的请求形态')
   }
-  return { id: item.model, name: item.model, testEndpointModes }
+  return {
+    id: item.model,
+    name: item.model,
+    supportedApiProtocols: item.supportedApiProtocols ?? [],
+    testEndpointModes
+  }
 }
 
 async function accountManualTestEndpointModesForTargetModelAsync(
   account: AccountSummary | AccountManualTestCapabilitiesContext,
-  model: ProviderModelTestCatalogItem,
-  systemAccountId: string
+  model: Pick<ProviderModelTestCatalogItem, 'model' | 'supportedApiProtocols'>,
+  systemAccountId: string,
+  upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
 ): Promise<AccountSupportedEndpointMode[]> {
   const accountEndpointModes = accountManualTestEndpointModes({
     providerCode: account.providerCode,
@@ -161,7 +172,6 @@ async function accountManualTestEndpointModesForTargetModelAsync(
         : account.credentials.supported_endpoint_modes
     }
   })
-  const upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
   const output: AccountSupportedEndpointMode[] = []
   for (const mode of accountEndpointModes) {
     if (mode === 'interactions_json' || mode === 'interactions_sse') {
@@ -236,9 +246,9 @@ function isAccountManualTestModel(
   item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
   account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
 ): boolean {
-  if (item.mode === 'image' || item.mode === 'audio') return false
+  if (item.mode === 'audio') return false
   const protocols = item.supportedApiProtocols ?? []
-  if (!protocols.length) return item.mode !== 'image_generation'
+  if (!protocols.length) return item.mode !== 'image_generation' && item.mode !== 'image'
   if (isHybridProviderCode(account.providerCode)) {
     return protocols.some((protocol) => (
       protocol === 'chat_completions'

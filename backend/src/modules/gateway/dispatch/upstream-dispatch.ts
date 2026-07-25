@@ -618,7 +618,10 @@ export async function fetchFirstAvailableUpstream(
                 observeGatewayRouting({ kind: 'tier_escape', outcome: 'applied' })
               }
               const attemptStartedAt = Date.now()
-              const normalRouteFirstByteDeadline = requestCoordination.normalRouteFirstByteConfig
+              // Image generation legitimately waits much longer for its first byte.
+              // It uses the image timeout profile instead of the text-oriented
+              // normal-route deadline, which would otherwise abort at 10 seconds.
+              const normalRouteFirstByteDeadline = requestLane === 'text' && requestCoordination.normalRouteFirstByteConfig
                 ? normalRouteAttemptFirstByteDeadline({
                     config: requestCoordination.normalRouteFirstByteConfig,
                     gatewayRequestWallBudget,
@@ -758,8 +761,8 @@ export async function fetchFirstAvailableUpstream(
                 if (explicitPolicyFailure) {
                   await hotQualityAttempt.recordTerminal({
                     outcomeClass: 'explicit_policy_failure',
-                    // A matched account error policy is an explicit user-authorized
-                    // account action; transport failures below remain protocol_model.
+                    // Configured account policies are account-scoped; transport
+                    // failures below remain protocol_model.
                     failureScope: 'account',
                     source: 'explicit_policy'
                   })

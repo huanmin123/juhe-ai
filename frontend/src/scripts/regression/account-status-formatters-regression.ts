@@ -23,8 +23,16 @@ const pendingAccount = accountFixture({
 })
 assertStatus('待检查账户', pendingAccount, '待检查', 'blue')
 assertTrue(
-  !accountMenuItems(pendingAccount).some((item) => item.key === 'restore-normal' || item.key === 'recheck-health'),
-  '未失败的待检查账户不应显示恢复或重新检查操作'
+  accountMenuItems(pendingAccount).some((item) => item.key === 'restore-normal' && item.label === '恢复可调度'),
+  '待检查账户应显示恢复可调度操作'
+)
+assertTrue(
+  !accountMenuItems(pendingAccount).some((item) => item.key === 'recheck-health'),
+  '未失败的待检查账户不应显示重新检查操作'
+)
+assertTrue(
+  !accountMenuItems(accountFixture({ status: 'pending_test', accessType: 'authorized' })).some((item) => item.key === 'restore-normal'),
+  '待检查授权账户不应显示恢复可调度操作'
 )
 assertTrue(
   accountMenuItems(pendingAccount).some((item) => item.key === 'super-priority-on')
@@ -84,8 +92,8 @@ assertTrue(
   '检查失败的自有待检查账户应显示重新检查'
 )
 assertTrue(
-  !accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'restore-normal'),
-  '检查失败的待检查账户不应显示跳过检查的恢复正常操作'
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'restore-normal' && item.label === '恢复可调度'),
+  '检查失败的待检查账户应显示恢复可调度操作'
 )
 assertTrue(
   !accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate'),
@@ -95,6 +103,10 @@ const accountMenuActionsSource = readFileSync(resolve('../frontend/src/views/acc
 assertTrue(
   !/if \(key === 'force-activate'\)/.test(accountMenuActionsSource),
   '账户菜单处理器不应保留独立的人工恢复分支'
+)
+assertTrue(
+  /account\.status === 'pending_test'[\s\S]+api\.accounts\.forceActivate[\s\S]+api\.myAccounts\.forceActivate/.test(accountMenuActionsSource),
+  '待检查账户的恢复可调度操作应调用强制恢复接口'
 )
 assertTrue(
   /updateLoadedAccount: \(account: AccountSummary\) => boolean/.test(accountMenuActionsSource),

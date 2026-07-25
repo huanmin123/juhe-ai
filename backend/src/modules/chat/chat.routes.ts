@@ -67,7 +67,7 @@ import { countChatTextTokens } from './chat-token-count.js'
 import { chatImageInputPolicy, isChatImageGenerationAccount } from './chat-image-policy.js'
 import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
-import { chatGenerationErrorMessage, classifyChatGenerationError, type PublicChatGenerationErrorCode } from './chat-generation-error.js'
+import { classifyChatGenerationError, type PublicChatGenerationErrorCode } from './chat-generation-error.js'
 import { createChatSseSubscriber, startChatSseHeartbeat, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
 import { createChatModelOptionsSnapshotCache } from './chat-model-availability.js'
@@ -75,12 +75,13 @@ import { type ChatHostedTool } from './chat-tools.js'
 import { ChatInternalToolRegistry } from './tools/registry.js'
 import { ChatInternalToolOrchestrator } from './tools/orchestrator.js'
 import { createDiagnosticEchoTool } from './tools/executors/diagnostic-echo.js'
-import { chatImageGenerationGatewayModel, createGenerateImageTool } from './tools/executors/generate-image.js'
+import { chatImageGenerationGatewayModel, createGenerateImageTool, defaultChatImageGenerationTotalTimeoutSeconds } from './tools/executors/generate-image.js'
 import { createChatGeneratedImageArtifactSink } from './tools/artifact-sink.js'
 import { loadChatImageEditReferences } from './chat-image-edit-references.js'
 import type { ChatToolExecutionEvent, ChatToolRuntimeEnvironment } from './tools/contracts.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { listClientModelCatalogAsync } from '../model-pricing/client-model-catalog.service.js'
+import { getSettingsAsync } from '../../storage/settings.repository.js'
 
 export const chatRouter = Router()
 export { isActiveChatGeneration, shutdownChatGenerationRegistry }
@@ -189,7 +190,7 @@ chatRouter.get('/conversations', async (req, res, next) => {
       limit: integerQuery(req.query.limit, 30, 1, 50)
     })
     res.json(ok(conversations.map((conversation) => chatConversationResponse(conversation))))
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.post('/conversations', async (req, res, next) => {
@@ -290,7 +291,8 @@ chatRouter.get('/conversations/:conversationId/submissions/:clientMessageId', as
         assistantStatus: accepted.assistantStatus,
         runnerState,
         ...(snapshotMatches ? { eventVersion: snapshot.eventVersion, lastSemanticActivityAt: snapshot.lastSemanticActivityAt } : {}),
-        ...(publicError ? { errorCode: publicError.code, errorMessage: chatGenerationErrorMessage(publicError.code) } : {}),
+        ...(publicError ? { errorCode: publicError.code, errorMessage: accepted.errorMessage ?? publicError.message } : {}),
+        ...(accepted.traceId ? { traceId: accepted.traceId } : {}),
         ...(accepted.completedAt ? { completedAt: accepted.completedAt } : {}),
         serverTime
       }))
@@ -418,8 +420,9 @@ chatRouter.get('/conversations/:conversationId', async (req, res, next) => {
     const auth = requireChatAuth()
     const conversation = await getChatConversation(await getChatDatabaseClient(), req.params.conversationId, auth.systemAccountId)
     if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
-    res.json(ok(chatConversationResponse(conversation)))
-  } catch (error) { next(error) }
+    const toolCapabilities = await loadChatConversationToolCapabilities(conversation, auth.systemAccountId)
+    res.json(ok({ ...chatConversationResponse(conversation), toolCapabilities }))
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.patch('/conversations/:conversationId', async (req, res, next) => {
@@ -497,8 +500,16 @@ chatRouter.get('/conversations/:conversationId/assets/:assetId/content', async (
     res.setHeader('Content-Type', mimeType)
     res.setHeader('Content-Length', String(object.bytes))
     object.stream.once('error', (error) => {
-      if (!res.headersSent) next(error)
-      else res.destroy(error)
+      if (!res.headersSent) handleChatRouteError(error, res, next)
+      else {
+        logger.error(errorLogFields(error, {
+          event: 'chat_asset_stream_failed',
+          traceId: getTraceId(),
+          conversationId: req.params.conversationId,
+          assetId: req.params.assetId
+        }), 'AI 问答资产响应流失败')
+        res.destroy(error)
+      }
     })
     res.once('close', () => object.stream.destroy())
     object.stream.pipe(res)
@@ -681,15 +692,20 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       ? [...(supportsWebSearch ? ['web_search' as const] : [])]
       : []
     const imageGenerationEnabled = gatewayKey?.system_account_image_generation_enabled === 1
-      && Boolean(runtimeConfig.imageGenerationProvider.endpoint)
       && await hasChatImageGenerationRoute(groupIds, ownerId)
+    const chatImageGenerationTotalTimeoutSeconds = imageGenerationEnabled
+      ? Number((await getSettingsAsync()).chatImageGenerationTotalTimeoutSeconds)
+      : defaultChatImageGenerationTotalTimeoutSeconds
+    assertChatPreparationActive(preparationClaim)
     const internalToolRegistry = new ChatInternalToolRegistry({
       environment: chatToolRuntimeEnvironment(),
       internalToolsEnabled: runtimeConfig.chat.diagnosticToolEnabled,
       imageGenerationEnabled
     })
     internalToolRegistry.register(createDiagnosticEchoTool())
-    internalToolRegistry.register(createGenerateImageTool())
+    internalToolRegistry.register(createGenerateImageTool({
+      totalTimeoutSeconds: chatImageGenerationTotalTimeoutSeconds
+    }))
     const internalTools = internalToolRegistry.resolve({
       functionCalling: modelOption.supportedTools.includes('function_calling')
     })
@@ -929,6 +945,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
                   quality: imageRequest.quality,
                   outputFormat: imageRequest.outputFormat,
                   references: imageRequest.references,
+                  traceId,
                   signal: imageRequest.signal
                 })
                 if (!generated.mimeType || !generated.width || !generated.height) throw new Error('生成图片缺少有效 MIME 或尺寸')
@@ -936,6 +953,17 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               }
             },
             limits: { maxModelRounds: 4, maxToolCalls: 8, maxImageCalls: 2 },
+            reportError: (error, toolFailure) => {
+              logger.error(errorLogFields(error, {
+                event: 'chat_internal_tool_failed',
+                traceId,
+                conversationId: conversation.id,
+                turnId: accepted!.turnId,
+                callId: toolFailure.callId,
+                toolName: toolFailure.toolName,
+                errorCode: toolFailure.errorCode
+              }), 'AI 问答内部工具执行失败')
+            },
             publish: (event) => publishApplicationToolEvent(publish, accepted!.assistantMessage.id, event)
           })
           const result = await orchestrator.run({
@@ -1062,13 +1090,23 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         } catch (error) {
           const canceled = signal.aborted || error instanceof ChatPreparationCanceledError
           const publicError = classifyChatGenerationError(error, failureCode)
+          if (!canceled) {
+            logger.error(errorLogFields(error, {
+              event: 'chat_generation_failed',
+              traceId,
+              conversationId: conversation.id,
+              turnId: accepted!.turnId,
+              errorCode: publicError.code,
+              publicErrorMessage: publicError.message
+            }), 'AI 问答生成失败')
+          }
           let finalizedStatus: 'completed' | 'failed' | 'canceled' = canceled ? 'canceled' : 'failed'
           const persistedContentBlocks = terminalizeChatContentBlocksForPersistence(runner.snapshotContentBlocks(), finalizedStatus)
           try {
             if (canceled) {
               await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
             } else {
-              await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: publicError.code, traceId, now: new Date().toISOString() })
+              await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: publicError.code, errorMessage: publicError.message, traceId, now: new Date().toISOString() })
             }
           } catch (finalizeError) {
             finalizedStatus = await recoverChatTurnFinalization({
@@ -1084,7 +1122,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
             ? { status: 'canceled', data: { messageId: accepted!.assistantMessage.id } }
             : finalizedStatus === 'completed'
               ? { status: 'completed', data: { messageId: accepted!.assistantMessage.id } }
-              : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: publicError.code, message: publicError.message } }
+              : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: publicError.code, message: publicError.message, traceId } }
         }
       },
       onUnexpectedError: async (publicError) => {
@@ -1095,10 +1133,12 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           assistantContent: partialContent,
           contentBlocks: terminalizeChatContentBlocksForPersistence(runner.snapshotContentBlocks(), 'failed'),
           errorCode: publicError.code,
+          errorMessage: publicError.message,
           traceId,
           now: new Date().toISOString()
         })
       },
+      unexpectedErrorTraceId: traceId,
       reportUnexpectedError: (error, stage) => {
         logger.error(errorLogFields(error, {
           event: 'chat_generation_runner_unexpected_error',
@@ -1112,7 +1152,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     if (!registry.start(runner)) {
       await failChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: '', contentBlocks: [], errorCode: 'internal_generation_failed', traceId, now: new Date().toISOString()
+        assistantContent: '', contentBlocks: [], errorCode: 'internal_generation_failed',
+        errorMessage: '当前会话生成任务冲突', traceId, now: new Date().toISOString()
       })
       res.status(409).json({ message: '当前会话生成任务冲突', code: 'chat_stream_conflict' })
       return
@@ -1299,7 +1340,7 @@ chatRouter.delete('/conversations/:conversationId', async (req, res, next) => {
     const deleted = await deleteChatConversation(await getChatDatabaseClient(), req.params.conversationId, auth.systemAccountId)
     if (!deleted) { res.status(404).json({ message: '会话不存在' }); return }
     res.status(204).end()
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 async function requireOwnedConversation(conversationId: string, ownerId: string) {
@@ -1405,7 +1446,7 @@ function requireChatAuth() {
   return auth
 }
 
-function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFunction): void {
+function handleChatRouteError(error: unknown, res: ExpressResponse, _next: NextFunction): void {
   if (error instanceof z.ZodError) {
     res.status(400).json({ message: error.issues[0]?.message || '请求参数无效', code: 'chat_invalid_request' })
     return
@@ -1426,7 +1467,14 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
     res.status(422).json({ message: error.message, code: 'chat_model_capability_unavailable' })
     return
   }
-  next(error)
+  const publicError = classifyChatGenerationError(error)
+  logger.error(errorLogFields(error, {
+    event: 'chat_route_failed',
+    traceId: getTraceId(),
+    errorCode: publicError.code,
+    publicErrorMessage: publicError.message
+  }), 'AI 问答路由异常')
+  res.status(500).json({ message: publicError.message, code: publicError.code })
 }
 
 function chatConversationResponse(
@@ -1434,6 +1482,86 @@ function chatConversationResponse(
   defaultModel?: ChatModelListOption
 ) {
   return { ...conversation, ...(defaultModel ? { defaultModel } : {}), userTurnLimit: runtimeConfig.chat.maxTurnsPerConversation }
+}
+
+async function loadChatConversationToolCapabilities(
+  conversation: Awaited<ReturnType<typeof getChatConversation>> extends infer T ? Exclude<T, undefined> : never,
+  systemAccountId: string
+) {
+  const model = conversation.lastModel?.trim()
+  const unavailable = (reason: string) => ({
+    model,
+    tools: [
+      { id: 'web_search' as const, label: '网页搜索', available: false, reason },
+      { id: 'generate_image' as const, label: '图片生成', available: false, reason }
+    ]
+  })
+  if (!model) return unavailable('当前会话尚未选择对话模型')
+
+  try {
+    const apiKey = await requireOwnedApiKey(conversation.apiKeyId, systemAccountId)
+    const gatewayKey = await validateGatewayApiKeyAsync(String(apiKey.key))
+    if (!gatewayKey) return unavailable('会话绑定的 API Key 不可用')
+    const groupIds = gatewayKey.group_bindings?.map((binding) => binding.group_id) ?? []
+    const catalog = await listChatModelCatalog({ groupIds, systemAccountId, requestedModel: model })
+    const modelOption = buildChatModelOptions([model], catalog)[0]
+    if (!modelOption) return unavailable('当前模型能力信息不可用')
+
+    const supportedProtocols = await resolveChatSupportedProtocols({
+      groupIds,
+      model,
+      loadAccounts: (groupId, requestedModel, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, {
+        requestedModel,
+        requestedEndpointFamily: endpointFamily
+      })
+    })
+    const supportsWebSearch = modelOption.supportedTools.includes('web_search')
+    const protocol = supportedProtocols.length
+      ? selectChatTransport({ supportedProtocols, preferResponses: supportsWebSearch })
+      : undefined
+    const webSearchAvailable = supportsWebSearch && protocol === 'responses'
+    const imagePermissionEnabled = gatewayKey.system_account_image_generation_enabled === 1
+    const functionCallingAvailable = modelOption.supportedTools.includes('function_calling')
+    const imageRouteAvailable = await hasChatImageGenerationRoute(groupIds, systemAccountId)
+    const imageGenerationAvailable = supportedProtocols.length > 0
+      && imagePermissionEnabled
+      && functionCallingAvailable
+      && imageRouteAvailable
+
+    return {
+      model,
+      tools: [
+        {
+          id: 'web_search' as const,
+          label: '网页搜索',
+          available: webSearchAvailable,
+          ...(!webSearchAvailable ? {
+            reason: !supportedProtocols.length
+              ? '当前 API Key 没有可用的对话路由'
+              : !supportsWebSearch
+                ? '当前模型不支持网页搜索'
+                : '当前路由不支持 Responses 网页搜索'
+          } : {})
+        },
+        {
+          id: 'generate_image' as const,
+          label: '图片生成',
+          available: imageGenerationAvailable,
+          ...(!imageGenerationAvailable ? {
+            reason: !supportedProtocols.length
+              ? '当前 API Key 没有可用的对话路由'
+              : !imagePermissionEnabled
+                ? '当前用户未开启图片生成'
+                : !functionCallingAvailable
+                  ? '当前模型不支持函数工具调用'
+                  : '当前 API Key 路由没有可用的 gpt-image-2 API Key 账户'
+          } : {})
+        }
+      ]
+    }
+  } catch {
+    return unavailable('工具能力状态暂时无法读取')
+  }
 }
 
 async function loadOwnedChatModelListAsync(conversationId: string, systemAccountId: string): Promise<ChatModelListOption[]> {
@@ -1609,7 +1737,8 @@ function publishApplicationToolEvent(
     executionOwner: 'application',
     ...(event.publicResult ?? {}),
     ...(event.reused ? { reused: true } : {}),
-    ...(event.errorCode ? { errorCode: event.errorCode } : {})
+    ...(event.errorCode ? { errorCode: event.errorCode } : {}),
+    ...(event.errorMessage ? { errorMessage: event.errorMessage } : {})
   }
   const assetId = typeof event.publicResult?.assetId === 'string' ? event.publicResult.assetId : undefined
   const projection = {

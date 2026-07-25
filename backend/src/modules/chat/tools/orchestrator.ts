@@ -7,6 +7,7 @@ import {
 } from './contracts.js'
 import { ChatInternalToolError, ChatInternalToolRegistry } from './registry.js'
 import { ChatToolSchemaError } from './schema.js'
+import { publicChatDiagnosticMessage } from '../chat-generation-error.js'
 import {
   buildChatToolContinuation,
   compileChatInternalTools,
@@ -50,6 +51,7 @@ export class ChatInternalToolOrchestrator {
     context: ChatToolExecutionContext
     limits: { maxModelRounds: number; maxToolCalls: number; maxImageCalls: number }
     publish?: (event: ChatToolExecutionEvent) => void
+    reportError?: (error: unknown, context: { callId: string; toolName: string; errorCode: string; errorMessage: string }) => void
   }) {}
 
   async run(input: {
@@ -133,14 +135,18 @@ export class ChatInternalToolOrchestrator {
       } catch (error) {
         const canceled = this.options.context.signal.aborted || isAbortError(error)
         const errorCode = canceled ? 'canceled' : chatToolErrorCode(error)
-        this.publish({ status: canceled ? 'canceled' : 'failed', ...eventBase, errorCode })
+        const errorMessage = canceled
+          ? '工具执行已取消'
+          : publicChatDiagnosticMessage(error, chatToolErrorMessage(errorCode))
+        this.publish({ status: canceled ? 'canceled' : 'failed', ...eventBase, errorCode, errorMessage })
         if (canceled) throw error
+        try { this.options.reportError?.(error, { callId: call.callId, toolName: call.toolName, errorCode, errorMessage }) } catch {}
         if (this.correctableFailures >= 1) throw error
         this.correctableFailures += 1
         outputs.push({
           callId: call.callId,
           toolName: call.toolName,
-          modelOutput: JSON.stringify({ ok: false, error: { code: errorCode, message: chatToolErrorMessage(errorCode) } }),
+          modelOutput: JSON.stringify({ ok: false, error: { code: errorCode, message: errorMessage } }),
           reused: false
         })
       }
@@ -165,11 +171,18 @@ function isAbortError(error: unknown): boolean {
 
 function chatToolErrorCode(error: unknown): string {
   if (error instanceof ChatInternalToolError || error instanceof ChatToolSchemaError) return error.code
+  const code = error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : ''
+  if (Object.prototype.hasOwnProperty.call(publicToolErrorMessages, code)) return code
   return 'tool_execution_failed'
 }
 
 function chatToolErrorMessage(code: string): string {
-  return ({
+  return publicToolErrorMessages[code] ?? '工具执行失败'
+}
+
+const publicToolErrorMessages: Readonly<Record<string, string>> = Object.freeze({
     tool_not_available: '请求的工具当前不可用',
     tool_arguments_too_large: '工具参数超过允许上限',
     tool_arguments_invalid_json: '工具参数不是有效 JSON',
@@ -177,6 +190,10 @@ function chatToolErrorMessage(code: string): string {
     tool_timeout: '工具执行超时',
     tool_result_too_large: '工具结果超过允许上限',
     tool_call_limit_exceeded: '本轮工具调用次数已达到上限',
-    image_tool_call_limit_exceeded: '本轮图片生成次数已达到上限'
-  } as Record<string, string>)[code] ?? '工具执行失败'
-}
+    image_tool_call_limit_exceeded: '本轮图片生成次数已达到上限',
+    image_generation_not_enabled: '可用上游分组未开通图片生成功能',
+    image_generation_permission_denied: '上游拒绝了图片生成权限',
+    image_generation_rate_limited: '上游图片生成请求过于频繁，请稍后重试',
+    image_generation_request_rejected: '上游拒绝了本次图片参数或内容',
+    image_generation_failed: '图片生成失败'
+})

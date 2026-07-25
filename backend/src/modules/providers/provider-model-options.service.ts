@@ -28,12 +28,19 @@ export interface ProviderModelOptionRow {
   mode?: string
   releaseDate?: string
   supportedApiProtocols?: string[]
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string
 }
 
 export interface ProviderModelSelectionOption {
   id: string
   name: string
   providerCode?: string
+  supportedApiProtocols: string[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
 }
 
 export function normalizeProviderModelOptionQuery(query: Record<string, unknown>): ProviderModelOptionQuery {
@@ -125,6 +132,10 @@ export function mergeProviderModelOptionRows(
   return ordered.filter((row) => visibleModels.has(row.model)).map((row) => ({
     id: row.model,
     name: row.model,
+    supportedApiProtocols: [...(row.supportedApiProtocols ?? [])],
+    supportedServiceTiers: [...(row.supportedServiceTiers ?? [])],
+    supportedReasoningEfforts: [...(row.supportedReasoningEfforts ?? [])],
+    ...(row.defaultReasoningEffort ? { defaultReasoningEffort: row.defaultReasoningEffort } : {})
   }))
 }
 

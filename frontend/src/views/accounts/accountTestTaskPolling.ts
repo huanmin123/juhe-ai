@@ -81,10 +81,13 @@ export function accountTestTaskTimeoutResult(input: {
     return undefined
   }
   const startedAt = parseTaskTime(input.task.startedAt)
-  if (startedAt === undefined || Date.now() - startedAt < accountTestTaskMaxWaitMs) {
+  const testEndpointMode = input.task.testEndpointMode
+    ?? (input.testEndpointMode === 'account_default' ? undefined : input.testEndpointMode)
+  const maxWaitMs = accountTestTaskMaxWaitMs(testEndpointMode)
+  if (startedAt === undefined || Date.now() - startedAt < maxWaitMs) {
     return undefined
   }
-  const maxWaitText = `${Math.ceil(accountTestTaskMaxWaitMs / 1000)}s`
+  const maxWaitText = `${Math.ceil(maxWaitMs / 1000)}s`
   const message = `账号测试运行超过 ${maxWaitText} 未完成，已自动停止`
   return failedAccountTestResult({
     account: input.account,

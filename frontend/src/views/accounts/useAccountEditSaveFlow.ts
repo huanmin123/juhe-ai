@@ -244,7 +244,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       name: options.form.name.trim(),
       concurrencyLimit: Math.trunc(concurrencyLimit),
       priority: Math.trunc(priority),
-      ...(options.form.status === 'disabled' || options.editingAccountDetail.value?.status === 'disabled' || options.editingAccountDetail.value?.status === 'active'
+      ...(options.form.status === 'active' || options.form.status === 'disabled'
         ? { status: options.form.status }
         : {}),
       superPriorityEnabled: options.form.privilege === 'super_priority',
