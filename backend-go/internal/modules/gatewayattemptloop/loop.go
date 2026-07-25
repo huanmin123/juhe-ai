@@ -122,6 +122,7 @@ type Input struct {
 	Candidates []gatewaycandidatewindow.Candidate
 	Request    protocolgateway.RequestShape
 	Profile    *protocolgateway.Profile
+	Tracker    *AttemptTracker
 }
 
 type Result struct {
@@ -192,6 +193,10 @@ func (s *Service) Run(input Input) (Result, error) {
 	ctx, cancel := context.WithDeadline(input.Context, deadline)
 	defer cancel()
 	result := Result{StartedAt: startedAt, WallDeadline: deadline, Attempts: make([]AttemptSummary, 0, min(s.config.MaxAttempts, len(input.Candidates)))}
+	tracker := input.Tracker
+	if tracker == nil {
+		tracker = NewAttemptTracker()
+	}
 	if err := ctx.Err(); err != nil {
 		return s.finish(result, contextOutcome(err), nil, err), nil
 	}
@@ -203,16 +208,26 @@ func (s *Service) Run(input Input) (Result, error) {
 		if len(keyIndices) == 0 {
 			continue
 		}
-		if candidateAttempts >= MaxCandidateAttemptsPerRequest {
-			return s.finish(result, OutcomeMaxAttempts, result.LastAttempt, nil), nil
-		}
-		candidateAttempts++
+		claimedCandidate := false
 		for keyOffset, keyIndex := range keyIndices {
+			if !tracker.CanClaim(candidate, keyIndex, input.Request) {
+				continue
+			}
 			if attemptIndex >= s.config.MaxAttempts {
 				return s.finish(result, OutcomeMaxAttempts, nil, nil), nil
 			}
 			if err := ctx.Err(); err != nil {
 				return s.finish(result, contextOutcome(err), nil, err), nil
+			}
+			if !tracker.Claim(candidate, keyIndex, input.Request) {
+				continue
+			}
+			if !claimedCandidate {
+				if candidateAttempts >= MaxCandidateAttemptsPerRequest {
+					return s.finish(result, OutcomeMaxAttempts, result.LastAttempt, nil), nil
+				}
+				candidateAttempts++
+				claimedCandidate = true
 			}
 			attemptStartedAt := s.now()
 			firstByteDeadline := attemptStartedAt.Add(s.config.FirstByteTimeout)
@@ -221,7 +236,7 @@ func (s *Service) Run(input Input) (Result, error) {
 			}
 			attempt := Attempt{
 				Index: attemptIndex, CandidateIndex: candidateIndex, Candidate: candidate,
-				APIKeyIndex: keyIndex, HasAlternativeKeys: keyOffset+1 < len(keyIndices),
+				APIKeyIndex: keyIndex, HasAlternativeKeys: hasClaimableKey(tracker, candidate, keyIndices[keyOffset+1:], input.Request),
 				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout, FirstByteDeadline: firstByteDeadline},
 				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: replayPolicy.Allowed,
 			}
@@ -372,6 +387,15 @@ func eligibleKeyIndices(candidate gatewaycandidatewindow.Candidate, now time.Tim
 	return result
 }
 
+func hasClaimableKey(tracker *AttemptTracker, candidate gatewaycandidatewindow.Candidate, indices []int, request protocolgateway.RequestShape) bool {
+	for _, index := range indices {
+		if tracker.CanClaim(candidate, index, request) {
+			return true
+		}
+	}
+	return false
+}
+
 func keyRuntimeAvailable(state gatewaycandidatewindow.APIKeyRuntime, now time.Time) bool {
 	if strings.EqualFold(strings.TrimSpace(state.Status), "active") || strings.TrimSpace(state.Status) == "" {
 		return true
@@ -384,7 +408,7 @@ func keyRuntimeAvailable(state gatewaycandidatewindow.APIKeyRuntime, now time.Ti
 }
 
 func effectiveCandidateType(candidate gatewaycandidatewindow.Candidate) string {
-	if candidate.Projection.ResourceAccountID != "" {
+	if candidate.Projection.ResourceAccountID != "" && strings.TrimSpace(candidate.Projection.ResourceType) != "" {
 		return candidate.Projection.ResourceType
 	}
 	return candidate.Projection.Type

@@ -273,7 +273,7 @@ func newTestService(t *testing.T, executor AttemptExecutor, applier PolicyApplie
 func apiKeyCandidate(id string, indices []int) gatewaycandidatewindow.Candidate {
 	runtime := make([]gatewaycandidatewindow.APIKeyRuntime, 0, len(indices))
 	for _, index := range indices {
-		runtime = append(runtime, gatewaycandidatewindow.APIKeyRuntime{KeyIndex: index, Status: "active"})
+		runtime = append(runtime, gatewaycandidatewindow.APIKeyRuntime{KeyIndex: index, KeyFingerprint: strings.Repeat(string(rune('a'+index)), 64), Status: "active"})
 	}
 	return gatewaycandidatewindow.Candidate{Projection: testProjection(id, "api_key"), APIKeyRuntime: runtime}
 }
