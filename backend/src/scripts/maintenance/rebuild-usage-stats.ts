@@ -91,6 +91,7 @@ async function main(): Promise<void> {
 function resetUsageStatsCache(database: ReturnType<typeof getStatsDatabase>): void {
   const updatedAt = nowIso()
   const usageStatsTables = [
+    'account_health_hourly',
     'usage_stats_totals',
     'usage_stats_minute',
     'usage_stats_hourly',
@@ -150,6 +151,7 @@ async function resetUsageStatsCacheAsync(): Promise<void> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const updatedAt = nowIso()
   const usageStatsTables = [
+    'account_health_hourly',
     'usage_stats_totals',
     'usage_stats_minute',
     'usage_stats_hourly',

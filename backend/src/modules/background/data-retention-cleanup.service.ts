@@ -80,6 +80,7 @@ export interface DataRetentionCleanupResult {
   modelCheckItems: number
   usageRecords: number
   accountQualityMinuteStats: number
+  accountHealthHourly: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -510,6 +511,7 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     modelCheckItems: 0,
     usageRecords: 0,
     accountQualityMinuteStats: 0,
+    accountHealthHourly: 0,
     usageStatsMinute: 0,
     usageModelMinute: 0,
     usageErrorMinute: 0,

@@ -55,7 +55,7 @@ function account(id: string, supportedModels?: string[], modelMappings?: Account
   } as UpstreamAccount
 }
 
-const noSupportedModels = account('no-supported-models', [])
+const emptySupportedModels = account('empty-supported-models', [])
 const gpt55Only = account('gpt55-only', ['gpt-5.5'])
 const gpt54Only = account('gpt54-only', ['gpt-5.4'])
 const mappedByUpstream = account('mapped-by-upstream', ['gpt-5.5-private'], [
@@ -68,27 +68,27 @@ const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['
   { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
 ])
 
-const matched = filterGatewayAccountsByRequestedModel([gpt55Only, noSupportedModels, gpt54Only], 'gpt-5.5')
-assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only', 'no-supported-models'])
-assert.equal(matched.skippedCount, 1)
-assert.equal(matched.unrestrictedAccountCount, 1)
+const matched = filterGatewayAccountsByRequestedModel([gpt55Only, emptySupportedModels, gpt54Only], 'gpt-5.5')
+assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only'])
+assert.equal(matched.skippedCount, 2)
+assert.equal(matched.invalidModelConstraintCount, 1)
 assert.equal(matched.directMatchedCount, 1)
 assert.equal(matched.mappingMatchedCount, 0)
 assert.equal(matched.reason, undefined)
 
-const prioritized = filterGatewayAccountsByRequestedModel([noSupportedModels, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
+const prioritized = filterGatewayAccountsByRequestedModel([emptySupportedModels, mappedByUpstream, gpt55Only], 'gpt-5.5', 'chat_completions')
 assert.deepEqual(
   prioritized.accounts.map((item) => item.id),
-  ['gpt55-only', 'mapped-by-upstream', 'no-supported-models'],
-  '模型过滤应优先保留直接命中、映射命中账户，并把未配置模型限制的账户作为兜底候选'
+  ['gpt55-only', 'mapped-by-upstream'],
+  '模型过滤应优先保留直接命中和映射命中账户，并跳过没有支持模型的异常账户'
 )
-assert.equal(prioritized.skippedCount, 0)
+assert.equal(prioritized.skippedCount, 1)
 assert.equal(prioritized.directMatchedCount, 1)
 assert.equal(prioritized.mappingMatchedCount, 1)
-assert.equal(prioritized.unrestrictedAccountCount, 1)
+assert.equal(prioritized.invalidModelConstraintCount, 1)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('gpt55-only'), 0)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 1)
-assert.equal(prioritized.modelPriority.rankByAccountId.get('no-supported-models'), 2)
+assert.equal(prioritized.modelPriority.rankByAccountId.get('empty-supported-models'), 2)
 
 const mapped = filterGatewayAccountsByRequestedModel([
   mappedByUpstream,
@@ -102,12 +102,13 @@ assert.equal(mapped.directMatchedCount, 0)
 assert.equal(mapped.mappingMatchedCount, 1)
 assert.equal(mapped.reason, undefined)
 
-const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, noSupportedModels], undefined)
-assert.deepEqual(missingModel.accounts.map((item) => item.id), ['no-supported-models'])
-assert.equal(missingModel.skippedCount, 1)
+const missingModel = filterGatewayAccountsByRequestedModel([gpt55Only, emptySupportedModels], undefined)
+assert.deepEqual(missingModel.accounts, [])
+assert.equal(missingModel.skippedCount, 2)
 assert.equal(missingModel.directMatchedCount, 0)
 assert.equal(missingModel.mappingMatchedCount, 0)
-assert.equal(missingModel.reason, undefined)
+assert.equal(missingModel.invalidModelConstraintCount, 1)
+assert.equal(missingModel.reason, 'missing_model')
 
 const allRestrictedMissingModel = filterGatewayAccountsByRequestedModel([gpt55Only, gpt54Only], undefined)
 assert.deepEqual(allRestrictedMissingModel.accounts, [])
@@ -320,7 +321,7 @@ async function assertCandidateFilterLoadsModelAwareCandidates(): Promise<void> {
     } as unknown as AuditCaptureContext,
     usageContext: {} as never,
     startedAt: Date.now(),
-    rawCandidateAccounts: [gpt54Only],
+    rawCandidateAccounts: [emptySupportedModels],
     clientStrategy: {
       requestClientCompatibility: 'openai_standard'
     } as OpenAIGatewayClientStrategyContext,
@@ -340,7 +341,7 @@ async function assertCandidateFilterLoadsModelAwareCandidates(): Promise<void> {
     }
   })
 
-  assert.equal(loaderCalls, 1, '候选窗口内只有不匹配限制账号时，应按请求模型补读模型感知候选')
+  assert.equal(loaderCalls, 1, '候选窗口内只有缺失支持模型的异常账号时，应按请求模型补读模型感知候选')
   assert.equal(result.outcome, 'accounts')
   if (result.outcome === 'accounts') {
     assert.deepEqual(result.accounts.map((item) => item.id), ['gpt55-only'])

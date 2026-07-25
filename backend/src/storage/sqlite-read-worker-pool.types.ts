@@ -39,6 +39,7 @@ import type {
   PublicAnnouncementDetail,
   PublicAnnouncementListItem,
   AiPerformanceBase,
+  AiHealthListResult,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
   AiPerformanceSeries,
@@ -498,6 +499,11 @@ export type SqliteReadWorkerOperation =
     options?: { keyword?: string; accountIds?: string[]; limit?: number }
   }
   | {
+    type: 'get_ai_health_list_read_only'
+    access?: AccessScope
+    options?: { hours?: number; keyword?: string; page?: number; pageSize?: number }
+  }
+  | {
     type: 'get_account_usage_stats_overview_page_read_only'
     access?: AccessScope
     options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }
@@ -874,6 +880,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_ai_performance_series_read_only' } ? AiPerformanceSeries :
   T extends { type: 'get_ai_performance_overview_read_only' } ? AiPerformanceOverview :
   T extends { type: 'list_ai_performance_account_options_read_only' } ? AiPerformanceAccountOption[] :
+  T extends { type: 'get_ai_health_list_read_only' } ? AiHealthListResult :
   T extends { type: 'get_account_usage_stats_overview_page_read_only' } ? AccountUsageStatsListResult :
   T extends { type: 'get_system_metrics_overview_read_only' } ? SystemMetricsOverview :
   T extends { type: 'resolve_group_usage_access_read_only' } ? GroupUsageAccessMetadata | undefined :

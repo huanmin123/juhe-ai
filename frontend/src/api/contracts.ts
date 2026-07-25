@@ -99,6 +99,13 @@ export interface AiPerformanceSeriesParams extends AiPerformanceParams {
   accountIds: string[]
 }
 
+export interface AiHealthParams extends ListParams {
+  hours?: number
+  keyword?: string
+  page?: number
+  pageSize?: number
+}
+
 export interface AiPerformanceAccountOptionsParams extends ListParams {
   keyword?: string
   accountIds?: string[]

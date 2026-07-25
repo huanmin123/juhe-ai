@@ -5,6 +5,7 @@ import type {
   AiPerformanceAccountOption,
   AiPerformanceBaseResult,
   AiPerformanceSeriesResult,
+  AiHealthListResult,
   DatabaseStorageHistoryPoint,
   NonBusinessDataCleanupResult,
   SystemMetricsOverview,
@@ -23,6 +24,7 @@ import type {
   AiPerformanceAccountOptionsParams,
   AiPerformanceParams,
   AiPerformanceSeriesParams,
+  AiHealthParams,
   NonBusinessDataCleanupPayload,
   TableMonitorDatabaseHistoryParams,
   TableMonitorOverviewParams,
@@ -44,6 +46,7 @@ export const statsApi = {
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/stats/ai-performance', { params: aiPerformanceParams(params) })),
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/stats/ai-performance/series', { params: aiPerformanceSeriesParams(params) })),
+  aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/stats/ai-health', { params })),
   systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params })),
   systemMetricsTrend: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsTrendOverview>(http.get('/stats/system-metrics/trend', { params })),
   systemMetricsRuntime: () => unwrap<SystemMetricsRuntimeOverview>(http.get('/stats/system-metrics/runtime'))
@@ -68,4 +71,5 @@ export const myStatsApi = {
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) })),
   aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/my-stats/ai-performance/series', { params: aiPerformanceSeriesParams(params, false) }))
+  ,aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/my-stats/ai-health', { params: stripSystemAccountParam(params) }))
 }

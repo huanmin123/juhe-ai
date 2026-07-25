@@ -58,6 +58,26 @@ assert.match(
 )
 assert.match(
   accountsViewSource,
+  /function modelCatalogDiscoveryRequestKey\([\s\S]*?JSON\.stringify\(payload\.account\)/,
+  '上游模型同步必须基于完整的当前账户连接草稿生成请求标识'
+)
+assert.match(
+  accountsViewSource,
+  /requestKey !== currentModelCatalogDiscoveryRequestKey\(\)/,
+  '上游模型目录响应返回时必须确认代理、分组和凭据等连接草稿没有变更'
+)
+assert.match(
+  accountsViewSource,
+  /watch\(\s*\[[\s\S]*?currentModelCatalogDiscoveryRequestKey\s*\],\s*\(\) =>/,
+  '代理、分组或 OAuth 凭据变更时必须取消正在进行的上游模型同步'
+)
+assert.match(
+  accountsViewSource,
+  /if \(!form\.healthCheckModel\.trim\(\) && result\.recommendedHealthCheckModel\) form\.healthCheckModel = result\.recommendedHealthCheckModel/,
+  '同步上游目录只可在检查模型为空时采用推荐值，不能覆盖用户手动选择'
+)
+assert.match(
+  accountsViewSource,
   /onBeforeUnmount\(cancelAccountModelCatalogSync\)/,
   '离开账户页面时必须清理上游模型同步请求与延迟任务'
 )
@@ -65,9 +85,9 @@ for (const [sectionName, source] of [['API Key', apiKeySectionSource], ['OAuth',
   assert.doesNotMatch(source, /<a-form-item required tooltip=/, `${sectionName} 支持模型说明不得由表单标签尾部自动渲染`)
   assert.match(source, /<span>支持模型<\/span>\s*<a-tooltip[^>]*>\s*<QuestionCircleOutlined class="supported-models-help"/s, `${sectionName} 支持模型说明图标必须紧跟标题`)
   assert.match(source, /class="supported-models-refresh-button"[\s\S]*?<SyncOutlined\s*\/>/, `${sectionName} 支持模型刷新必须使用轻量同步图标`)
-  assert.match(source, /\.supported-models-label\s*\{[\s\S]*?flex:\s*1/, `${sectionName} 支持模型标签必须铺满表单标签的可用宽度`)
-  assert.doesNotMatch(source, /\.supported-models-label\s*\{[\s\S]*?width:\s*100%/, `${sectionName} 支持模型标签不得强制溢出其可用宽度`)
-  assert.doesNotMatch(source, /\.supported-models-label\s*:deep\(\.ant-btn\)\s*\{[\s\S]*?margin-right:\s*-/, `${sectionName} 刷新按钮不得使用负右边距而裁切`)
+  assert.match(source, /\.supported-models-label\s*\{[^}]*flex:\s*1/, `${sectionName} 支持模型标签必须铺满表单标签的可用宽度`)
+  assert.doesNotMatch(source, /\.supported-models-label\s*\{[^}]*width:\s*100%/, `${sectionName} 支持模型标签不得强制溢出其可用宽度`)
+  assert.doesNotMatch(source, /\.supported-models-label\s*:deep\(\.ant-btn\)\s*\{[^}]*margin-right:\s*-/, `${sectionName} 刷新按钮不得使用负右边距而裁切`)
 }
 
 const savedRuntimeResponse = {

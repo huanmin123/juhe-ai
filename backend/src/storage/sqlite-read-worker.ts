@@ -11,6 +11,7 @@ import { orderGatewayApiKeyGroupBindingsForDispatch } from '../modules/gateway/r
 import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../shared/logger.js'
 import { findAccountSummary, listAccountItemsPageReadOnly, listAccountsPageReadOnly } from './account-summary.repository.js'
+import { getAiHealthList } from './account-health-monitor.repository.js'
 import { listAccountStatusProjectionsReadOnly } from './account-status-snapshot.repository.js'
 import { listAccountOptions, listModelCheckAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
@@ -331,6 +332,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getAiPerformanceOverview(operation.access, operation.range, operation.accountIds)
     case 'list_ai_performance_account_options_read_only':
       return listAiPerformanceAccountOptions(operation.access, operation.options)
+    case 'get_ai_health_list_read_only':
+      return getAiHealthList(operation.access, operation.options)
     case 'get_account_usage_stats_overview_page_read_only':
       return getAccountUsageStatsOverviewPage(operation.access, operation.options)
     case 'get_system_metrics_overview_read_only':

@@ -24,6 +24,21 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (account_id, stat_minute)
         );
 
+    CREATE TABLE IF NOT EXISTS account_health_hourly (
+          account_id TEXT NOT NULL,
+          system_account_id TEXT NOT NULL,
+          provider_code TEXT NOT NULL,
+          stat_hour TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('success', 'failure')),
+          last_observed_at TEXT NOT NULL,
+          last_record_id TEXT NOT NULL,
+          status_code INTEGER,
+          error_code TEXT,
+          error_message TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, stat_hour)
+        );
+
     CREATE TABLE IF NOT EXISTS group_account_stats (
           system_account_id TEXT NOT NULL,
           group_id TEXT NOT NULL,
@@ -1455,6 +1470,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
         );
 
     CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_account_health_hourly_scope
+      ON account_health_hourly(system_account_id, stat_hour, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);
 

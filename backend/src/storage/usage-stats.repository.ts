@@ -341,6 +341,19 @@ interface PostgresAggregatedAccountQualityEntry {
   lastErrorMessage?: string
 }
 
+interface PostgresAggregatedAccountHealthEntry {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
+  statHour: string
+  status: 'success' | 'failure'
+  lastObservedAt: string
+  lastRecordId: string
+  statusCode?: number
+  errorCode?: string
+  errorMessage?: string
+}
+
 async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: UsageStatsRecordRow[], updatedAt: string, timezone: string): Promise<void> {
   if (rows.length === 0) return
   const lookup = await createPostgresUsageStatsAuthorizationLookup(client, rows)
@@ -350,6 +363,7 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   const modelEntries = new Map<string, PostgresAggregatedUsageModelEntry>()
   const errorEntries = new Map<string, PostgresAggregatedUsageErrorEntry>()
   const accountQualityEntries = new Map<string, PostgresAggregatedAccountQualityEntry>()
+  const accountHealthEntries = new Map<string, PostgresAggregatedAccountHealthEntry>()
 
   for (const row of rows) {
     if (!shouldAggregateUsageStatsRecord(row)) {
@@ -366,6 +380,7 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
     }
     addPostgresAggregatedUsageModelEntries(modelEntries, row, timeKeys)
     addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    addPostgresAggregatedAccountHealthEntry(accountHealthEntries, row, timeKeys.statHour)
     if (row.account_authorization_id || row.group_authorization_id) {
       await upsertAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
     }
@@ -387,6 +402,7 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   await upsertPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
   await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
   await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
+  await upsertPostgresAccountHealthEntries(client, [...accountHealthEntries.values()], updatedAt)
 }
 
 export async function subtractPostgresUsageStatsRows(
@@ -405,6 +421,7 @@ export async function subtractPostgresUsageStatsRows(
   const modelEntries = new Map<string, PostgresAggregatedUsageModelEntry>()
   const errorEntries = new Map<string, PostgresAggregatedUsageErrorEntry>()
   const accountQualityEntries = new Map<string, PostgresAggregatedAccountQualityEntry>()
+  const accountHealthRecordIds: Array<{ accountId: string; recordId: string }> = []
 
   for (const row of rows) {
     if (!shouldAggregateUsageStatsRecord(row)) {
@@ -421,6 +438,9 @@ export async function subtractPostgresUsageStatsRows(
     }
     addPostgresAggregatedUsageModelEntries(modelEntries, row, timeKeys)
     addPostgresAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    if (row.traffic_source === 'account_health_check' && row.account_id) {
+      accountHealthRecordIds.push({ accountId: row.account_id, recordId: row.id })
+    }
     if (row.account_authorization_id || row.group_authorization_id) {
       await subtractAuthorizationUsageReportRowsAsync(client, row, timeKeys.statDate, updatedAt, lookup)
     }
@@ -442,6 +462,7 @@ export async function subtractPostgresUsageStatsRows(
   await subtractPostgresUsageModelEntries(client, [...modelEntries.values()], updatedAt)
   await subtractPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
   await subtractPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
+  await deletePostgresAccountHealthRecords(client, accountHealthRecordIds)
 }
 
 async function createPostgresUsageStatsAuthorizationLookup(
@@ -631,6 +652,29 @@ function addPostgresAggregatedAccountQualityEntry(
     existing.lastErrorAt = row.created_at
     existing.lastErrorMessage = row.error_message ?? undefined
   }
+}
+
+function addPostgresAggregatedAccountHealthEntry(
+  target: Map<string, PostgresAggregatedAccountHealthEntry>,
+  row: UsageStatsRecordRow,
+  statHour: string
+): void {
+  if (row.traffic_source !== 'account_health_check' || !row.account_id) return
+  const key = `${row.account_id}\u0000${statHour}`
+  const existing = target.get(key)
+  if (existing && (existing.lastObservedAt > row.created_at || (existing.lastObservedAt === row.created_at && existing.lastRecordId >= row.id))) return
+  target.set(key, {
+    accountId: row.account_id,
+    systemAccountId: row.system_account_id,
+    providerCode: row.provider_code ?? 'unknown',
+    statHour,
+    status: row.success === 1 ? 'success' : 'failure',
+    lastObservedAt: row.created_at,
+    lastRecordId: row.id,
+    statusCode: row.status_code ?? undefined,
+    errorCode: row.error_code ?? undefined,
+    errorMessage: row.error_message ?? undefined
+  })
 }
 
 async function upsertPostgresUsageStatsTotals(client: DatabaseClient, entries: PostgresAggregatedUsageStatsEntry[], updatedAt: string): Promise<void> {
@@ -991,6 +1035,50 @@ async function upsertPostgresAccountQualityEntries(client: DatabaseClient, entri
       updatedAt,
       updatedAt
     ]))
+  }
+}
+
+async function upsertPostgresAccountHealthEntries(client: DatabaseClient, entries: PostgresAggregatedAccountHealthEntry[], updatedAt: string): Promise<void> {
+  if (entries.length === 0) return
+  const columns = [
+    'account_id', 'system_account_id', 'provider_code', 'stat_hour', 'status',
+    'last_observed_at', 'last_record_id', 'status_code', 'error_code', 'error_message', 'updated_at'
+  ]
+  for (const chunk of chunkValues(entries, 600)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.account_health_hourly (${columns.join(', ')})
+      VALUES ${postgresMultiRowPlaceholders(chunk.length, columns.length)}
+      ON CONFLICT(account_id, stat_hour) DO UPDATE SET
+        system_account_id = EXCLUDED.system_account_id,
+        provider_code = EXCLUDED.provider_code,
+        status = EXCLUDED.status,
+        last_observed_at = EXCLUDED.last_observed_at,
+        last_record_id = EXCLUDED.last_record_id,
+        status_code = EXCLUDED.status_code,
+        error_code = EXCLUDED.error_code,
+        error_message = EXCLUDED.error_message,
+        updated_at = EXCLUDED.updated_at
+      WHERE EXCLUDED.last_observed_at > juhe_stats.account_health_hourly.last_observed_at
+         OR (EXCLUDED.last_observed_at = juhe_stats.account_health_hourly.last_observed_at AND EXCLUDED.last_record_id > juhe_stats.account_health_hourly.last_record_id)
+    `, chunk.flatMap((entry) => [
+      entry.accountId,
+      entry.systemAccountId,
+      entry.providerCode,
+      entry.statHour,
+      entry.status,
+      entry.lastObservedAt,
+      entry.lastRecordId,
+      entry.statusCode ?? null,
+      entry.errorCode ?? null,
+      entry.errorMessage ?? null,
+      updatedAt
+    ]))
+  }
+}
+
+async function deletePostgresAccountHealthRecords(client: DatabaseClient, entries: Array<{ accountId: string; recordId: string }>): Promise<void> {
+  for (const entry of entries) {
+    await client.execute('DELETE FROM juhe_stats.account_health_hourly WHERE account_id = ? AND last_record_id = ?', [entry.accountId, entry.recordId])
   }
 }
 

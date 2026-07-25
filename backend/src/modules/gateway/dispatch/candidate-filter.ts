@@ -117,7 +117,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
             sourceEndpointFamily: modelAwareModelFilter.sourceEndpointFamily,
             directMatchedCount: modelAwareModelFilter.directMatchedCount,
             mappingMatchedCount: modelAwareModelFilter.mappingMatchedCount,
-            unrestrictedAccountCount: modelAwareModelFilter.unrestrictedAccountCount,
+            invalidModelConstraintCount: modelAwareModelFilter.invalidModelConstraintCount,
             remainingCount: modelAwareModelFilter.accounts.length
           }
         })
@@ -132,7 +132,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
         sourceEndpointFamily: modelFilter.sourceEndpointFamily,
         skippedCount: modelFilter.skippedCount,
         limitedAccountCount: modelFilter.limitedAccountCount,
-        unrestrictedAccountCount: modelFilter.unrestrictedAccountCount,
+        invalidModelConstraintCount: modelFilter.invalidModelConstraintCount,
         directMatchedCount: modelFilter.directMatchedCount,
         mappingMatchedCount: modelFilter.mappingMatchedCount,
         remainingCount: modelFilter.accounts.length,
@@ -180,7 +180,7 @@ function bypassGatewayModelFilter(
     accounts,
     skippedCount: 0,
     limitedAccountCount: accounts.filter((account) => (account.supportedModels?.length ?? 0) > 0).length,
-    unrestrictedAccountCount: accounts.filter((account) => (account.supportedModels?.length ?? 0) === 0).length,
+    invalidModelConstraintCount: 0,
     directMatchedCount: accounts.length,
     mappingMatchedCount: 0,
     sourceEndpointFamily,
@@ -194,7 +194,6 @@ function bypassGatewayModelFilter(
 function shouldReloadModelAwareCandidates(
   requestedModel: string | undefined,
   modelFilter: {
-    limitedAccountCount: number
     directMatchedCount: number
     mappingMatchedCount: number
   },
@@ -203,7 +202,6 @@ function shouldReloadModelAwareCandidates(
   return Boolean(
     requestedModel
     && loader
-    && modelFilter.limitedAccountCount > 0
     && modelFilter.directMatchedCount === 0
     && modelFilter.mappingMatchedCount === 0
   )

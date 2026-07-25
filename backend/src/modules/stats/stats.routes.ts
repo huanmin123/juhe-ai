@@ -10,6 +10,7 @@ import {
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
 import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { getAiHealthListAsync } from '../../storage/account-health-monitor.repository.js'
 import {
   getAiPerformanceBaseAsync,
   getAiPerformanceSeriesAsync,
@@ -49,6 +50,13 @@ const usageOverviewQuerySchema = z.object({
 const aiPerformanceAccountOptionsQuerySchema = z.object({
   keyword: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(50).optional()
+})
+
+const aiHealthQuerySchema = z.object({
+  hours: z.coerce.number().int().min(1).max(31 * 24).optional(),
+  keyword: z.string().trim().max(200).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(10).max(50).optional()
 })
 
 async function handleUsageOverviewSectionRequest<T>(
@@ -223,6 +231,20 @@ statsRouter.get('/ai-performance/accounts', async (req, res, next) => {
     }
     const options = await listAiPerformanceAccountOptionsAsync(access, query)
     res.json(ok(options))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/ai-health', async (req, res, next) => {
+  const parsed = aiHealthQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'AI 健康监控参数不合法')))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    res.json(ok(await getAiHealthListAsync(access, parsed.data)))
   } catch (error) {
     next(error)
   }

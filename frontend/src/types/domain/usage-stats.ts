@@ -122,6 +122,49 @@ export interface AiPerformanceSeriesResult {
 
 export type AiPerformanceOverview = AiPerformanceBaseResult
 
+export type AiHealthHourStatus = 'success' | 'failure' | 'unknown'
+
+export interface AiHealthHourPoint {
+  statHour: string
+  status: AiHealthHourStatus
+  lastObservedAt?: string
+  statusCode?: number
+  errorCode?: string
+  errorMessage?: string
+}
+
+export interface AiHealthAccountRow {
+  id: string
+  name: string
+  providerCode: ProviderCode
+  status: AccountStatus
+  systemAccountId?: string
+  systemAccountName?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  accessType?: ResourceAccessType
+  lastHealthCheckAt?: string
+  nextHealthCheckAt?: string
+  latestStatus: AiHealthHourStatus
+  successHours: number
+  failureHours: number
+  unknownHours: number
+  healthRate?: number
+  hours: AiHealthHourPoint[]
+}
+
+export interface AiHealthListResult {
+  timezone: string
+  rangeHours: number
+  startHour: string
+  endHour: string
+  items: AiHealthAccountRow[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
   summary: AccountUsageSummary & {

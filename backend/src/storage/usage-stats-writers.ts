@@ -64,6 +64,19 @@ interface AggregatedAccountQualityEntry {
   lastErrorMessage?: string
 }
 
+interface AggregatedAccountHealthEntry {
+  accountId: string
+  systemAccountId: string
+  providerCode: string
+  statHour: string
+  status: 'success' | 'failure'
+  lastObservedAt: string
+  lastRecordId: string
+  statusCode?: number
+  errorCode?: string
+  errorMessage?: string
+}
+
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
   const context: UsageStatsAggregationContext = {
     accountAuthorizationResourceIds: new Map(),
@@ -155,6 +168,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   if (shouldRecordAccountQualityStats(row)) {
     upsertAccountQualityMinuteStats(database, row, updatedAt)
   }
+  upsertAccountHealthHour(database, row, timeKeys.statHour, updatedAt)
 }
 
 export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageStatsRecordRow[], updatedAt: string, context?: UsageStatsAggregationContext): void {
@@ -164,6 +178,7 @@ export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageSt
   const latencyEntries = new Map<string, AggregatedLatencyEntry>()
   const modelEntries = new Map<string, AggregatedModelEntry>()
   const accountQualityEntries = new Map<string, AggregatedAccountQualityEntry>()
+  const accountHealthEntries = new Map<string, AggregatedAccountHealthEntry>()
 
   for (const row of rows) {
     if (!shouldAggregateUsageStatsRecord(row)) {
@@ -180,6 +195,7 @@ export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageSt
     }
     addAggregatedUsageModelEntries(modelEntries, row, timeKeys)
     addAggregatedAccountQualityEntry(accountQualityEntries, row, timeKeys)
+    addAggregatedAccountHealthEntry(accountHealthEntries, row, timeKeys.statHour)
     if (row.account_authorization_id || row.group_authorization_id) {
       upsertAuthorizationUsageReportRows(database, row, timeKeys.statDate, updatedAt, context)
     }
@@ -198,6 +214,7 @@ export function aggregateUsageStatsRecords(database: DatabaseSync, rows: UsageSt
   upsertAggregatedLatencyEntries(database, latencyEntries, updatedAt)
   upsertAggregatedModelEntries(database, modelEntries, updatedAt)
   upsertAggregatedAccountQualityEntries(database, accountQualityEntries, updatedAt)
+  upsertAggregatedAccountHealthEntries(database, accountHealthEntries, updatedAt)
 }
 
 export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
@@ -219,6 +236,81 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
   if (shouldRecordAccountQualityStats(row)) {
     subtractAccountQualityMinuteStats(database, row, updatedAt)
   }
+  deleteAccountHealthHourForRecord(database, row)
+}
+
+function addAggregatedAccountHealthEntry(target: Map<string, AggregatedAccountHealthEntry>, row: UsageStatsRecordRow, statHour: string): void {
+  if (row.traffic_source !== 'account_health_check' || !row.account_id) return
+  const key = `${row.account_id}\u0000${statHour}`
+  const existing = target.get(key)
+  if (existing && compareHealthObservation(existing.lastObservedAt, existing.lastRecordId, row.created_at, row.id) >= 0) return
+  target.set(key, accountHealthEntry(row, statHour))
+}
+
+function upsertAccountHealthHour(database: DatabaseSync, row: UsageStatsRecordRow, statHour: string, updatedAt: string): void {
+  if (row.traffic_source !== 'account_health_check' || !row.account_id) return
+  upsertAggregatedAccountHealthEntries(database, new Map([[`${row.account_id}\u0000${statHour}`, accountHealthEntry(row, statHour)]]), updatedAt)
+}
+
+function upsertAggregatedAccountHealthEntries(database: DatabaseSync, entries: Map<string, AggregatedAccountHealthEntry>, updatedAt: string): void {
+  if (entries.size === 0) return
+  const statement = database.prepare(`
+    INSERT INTO account_health_hourly (
+      account_id, system_account_id, provider_code, stat_hour, status,
+      last_observed_at, last_record_id, status_code, error_code, error_message, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, stat_hour) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      provider_code = excluded.provider_code,
+      status = excluded.status,
+      last_observed_at = excluded.last_observed_at,
+      last_record_id = excluded.last_record_id,
+      status_code = excluded.status_code,
+      error_code = excluded.error_code,
+      error_message = excluded.error_message,
+      updated_at = excluded.updated_at
+    WHERE excluded.last_observed_at > account_health_hourly.last_observed_at
+       OR (excluded.last_observed_at = account_health_hourly.last_observed_at AND excluded.last_record_id > account_health_hourly.last_record_id)
+  `)
+  for (const entry of entries.values()) {
+    statement.run(
+      entry.accountId,
+      entry.systemAccountId,
+      entry.providerCode,
+      entry.statHour,
+      entry.status,
+      entry.lastObservedAt,
+      entry.lastRecordId,
+      entry.statusCode ?? null,
+      entry.errorCode ?? null,
+      entry.errorMessage ?? null,
+      updatedAt
+    )
+  }
+}
+
+function deleteAccountHealthHourForRecord(database: DatabaseSync, row: UsageStatsRecordRow): void {
+  if (row.traffic_source !== 'account_health_check' || !row.account_id) return
+  database.prepare('DELETE FROM account_health_hourly WHERE account_id = ? AND last_record_id = ?').run(row.account_id, row.id)
+}
+
+function accountHealthEntry(row: UsageStatsRecordRow, statHour: string): AggregatedAccountHealthEntry {
+  return {
+    accountId: row.account_id ?? '',
+    systemAccountId: row.system_account_id,
+    providerCode: row.provider_code ?? '',
+    statHour,
+    status: row.success === 1 ? 'success' : 'failure',
+    lastObservedAt: row.created_at,
+    lastRecordId: row.id,
+    statusCode: row.status_code ?? undefined,
+    errorCode: row.error_code ?? undefined,
+    errorMessage: row.error_message ?? undefined
+  }
+}
+
+function compareHealthObservation(leftAt: string, leftId: string, rightAt: string, rightId: string): number {
+  return leftAt.localeCompare(rightAt) || leftId.localeCompare(rightId)
 }
 
 function shouldRecordAccountQualityStats(row: UsageStatsRecordRow): boolean {

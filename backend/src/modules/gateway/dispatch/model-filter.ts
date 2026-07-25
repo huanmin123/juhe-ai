@@ -6,7 +6,7 @@ export interface GatewayModelAccountFilterResult {
   accounts: UpstreamAccount[]
   skippedCount: number
   limitedAccountCount: number
-  unrestrictedAccountCount: number
+  invalidModelConstraintCount: number
   directMatchedCount: number
   mappingMatchedCount: number
   requestedModel?: string
@@ -24,8 +24,7 @@ export interface GatewayAccountModelPriority {
 export const gatewayAccountModelPriorityRank = {
   direct: 0,
   mapping: 1,
-  unrestricted: 2,
-  unsupported: 3
+  unsupported: 2
 } as const
 
 export function filterGatewayAccountsByRequestedModel(
@@ -36,20 +35,19 @@ export function filterGatewayAccountsByRequestedModel(
   const model = requestedModel?.trim()
   let skippedCount = 0
   let limitedAccountCount = 0
-  let unrestrictedAccountCount = 0
+  let invalidModelConstraintCount = 0
   let directMatchedCount = 0
   let mappingMatchedCount = 0
   const directMatchedAccounts: UpstreamAccount[] = []
   const mappingMatchedAccounts: UpstreamAccount[] = []
-  const unrestrictedAccounts: UpstreamAccount[] = []
   const rankByAccountId = new Map<string, number>()
 
   for (const account of accounts) {
     const supportedModels = account.supportedModels ?? []
     if (!supportedModels.length) {
-      unrestrictedAccountCount += 1
-      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unrestricted)
-      unrestrictedAccounts.push(account)
+      invalidModelConstraintCount += 1
+      skippedCount += 1
+      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
       continue
     }
     limitedAccountCount += 1
@@ -72,15 +70,14 @@ export function filterGatewayAccountsByRequestedModel(
   }
   const filtered = [
     ...directMatchedAccounts,
-    ...mappingMatchedAccounts,
-    ...unrestrictedAccounts
+    ...mappingMatchedAccounts
   ]
 
   return {
     accounts: filtered,
     skippedCount,
     limitedAccountCount,
-    unrestrictedAccountCount,
+    invalidModelConstraintCount,
     directMatchedCount,
     mappingMatchedCount,
     requestedModel: model || undefined,

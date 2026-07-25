@@ -713,12 +713,21 @@ function currentModelCatalogDiscoveryPayload(): { account: AccountModelCatalogDi
   }
 }
 
+function modelCatalogDiscoveryRequestKey(payload: { account: AccountModelCatalogDiscoveryAccountPayload } | undefined): string {
+  return payload ? JSON.stringify(payload.account) : ''
+}
+
+function currentModelCatalogDiscoveryRequestKey(): string {
+  return modelCatalogDiscoveryRequestKey(currentModelCatalogDiscoveryPayload())
+}
+
 async function refreshAccountModelCatalog(options: { automatic?: boolean } = {}): Promise<void> {
   const payload = currentModelCatalogDiscoveryPayload()
   if (!payload) {
     if (!options.automatic) message.error('请先填写 Base URL 和 API Key 后再同步')
     return
   }
+  const requestKey = modelCatalogDiscoveryRequestKey(payload)
   const requestId = ++modelCatalogSyncRequestId
   modelCatalogSyncController?.abort()
   const controller = new AbortController()
@@ -728,12 +737,12 @@ async function refreshAccountModelCatalog(options: { automatic?: boolean } = {})
     const result = isManagementView.value
       ? await api.accounts.refreshModelCatalog(payload, accountScopeParams.value, { signal: controller.signal })
       : await api.myAccounts.refreshModelCatalog(payload, { signal: controller.signal })
-    if (requestId !== modelCatalogSyncRequestId) return
+    if (requestId !== modelCatalogSyncRequestId || requestKey !== currentModelCatalogDiscoveryRequestKey()) return
     form.supportedModels = [...new Set([
       ...form.supportedModels.map((model) => model.trim()).filter(Boolean),
       ...result.addedModels
     ])]
-    if (result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
+    if (!form.healthCheckModel.trim() && result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
     if (!options.automatic) {
       message.success(result.addedModels.length
         ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
@@ -754,8 +763,7 @@ watch(
     () => form.providerCode,
     () => form.providerProtocolProfileId,
     () => form.type,
-    () => form.baseUrl,
-    () => form.apiKeys.join('\n')
+    currentModelCatalogDiscoveryRequestKey
   ],
   () => {
     cancelAccountModelCatalogSync()
