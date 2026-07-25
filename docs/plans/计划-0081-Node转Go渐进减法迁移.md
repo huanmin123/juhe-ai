@@ -1053,3 +1053,17 @@
 - [x] 审计最新 master 的账户余额适配、健康检查、Chat 错误可见性和图片生成总超时；这些属于尚未迁移的账户测试/Chat/worker owner，不在本批机械复制，只记录为后续对应波次漂移入口。
 - [x] 复查 Node source currency/exchange metadata：当前 provider pricing data 没有实际非 USD 值，Go 不新增空 schema、不伪造 `currency_conversion`；后续 Node 出现真实源价事实时，必须新增 W2 schema/port/SQL 同步。
 - [ ] 六供应商实际费用计算、真实 PostgreSQL migration/CRUD、真实前端 listener、生产 billing owner、切流、回滚和 Node 删除仍待后续；本批只同步已迁移读写契约，不把展示兼容误记为网关计费接管。
+
+## 2026-07-25 最新 master 安全与只读契约同步批次
+
+- [x] 合并并审计 `origin/master` 的 `1c945c827`、`6d04fb47e` 与 `4c2eca221`：Node 已把 `/models`、`/v1/models`、`/v1beta/models` 收紧为强制 API Key；Go 三条已注册的只读模型目录路径同步移除 public catalog fallback，缺失、畸形或无效凭据均按各协议返回私有缓存的 `401`，目录只在授权后的 API Key scope 查询。该项是已迁移读路径的安全修复，不是 W10 gateway 生产接管。
+- [x] W2 账户 `test-options` 列表与保留的单模型 capability 兼容端点补齐 `supportedApiProtocols` 与 `testEndpointModes`。列表复用一次账户/映射读取、一次凭据解密和一次分页目录查询计算真实交集，过滤无可测试形态模型，避免逐模型 N+1；不改变任务派发、上游诊断或账户状态。
+- [x] W6 管理审计 `GET /audit-logs/search-hot` 接入现有有界 Go 扫描器，仍是管理 API opt-in 只读路径。仅显式配置 `JUHE_AI_AUDIT_HOT_SEARCH_ROOT` 时扫描部署提供的只读 NDJSON 镜像；默认空 root 返回 `available=false`，绝不猜测或读取 Node SQLite 路径。扫描和 PostgreSQL 摘要回填不启动 writer、Redis/IPC consumer、保留清理或 owner 切换。
+- [x] 不机械复制本轮 Node 的 active-create/skip-initial-health、上游模型刷新、健康监控、Chat generation parameters 或图片失败切换：前两类仍需随账户测试/health worker 的真实任务与 revision fence 迁移，后两类分别需要 Chat、真实 listener、attempt-loop、审计与 circuit owner 接线。将无消费者 helper 伪装成迁移会形成第二份业务规则，故记录为后续 owner 波次输入。
+- [ ] 本批尚未进行真实 PostgreSQL/Redis、上游、浏览器、反向代理或生产 owner 验收；Node 路由、writer、worker 和删除门禁保持不变。
+
+## 2026-07-25 account routing lifecycle 漂移首轮裁决
+
+- [x] 合并并审计 `origin/master` 到 `cbcbe49c7`。Node 的 route lifecycle、API Key runtime mutation、circuit Redis/index、gateway retry/response 与真实健康/代理 worker 改动大多仍依赖 Node listener、Redis writer、PostgreSQL writer、queue consumer 和生产 owner；不以无消费者的 Go helper 机械复制。
+- [x] 对已存在 Go `accounthealth` 纯状态机同步 Node automatic probe 的确定语义：失败但已完整 protocol framing 为 `framing_complete_neutral`，优先于“已观察到响应”的上游失败归因，禁止未来 worker 将这类诊断失败误写为账户健康状态。
+- [ ] 首字节 deadline、route fallback、API Key observation fence、circuit confirmation evidence、容量饱和和 proxy/OAuth runtime 的完整同步，需要随 W10 请求循环与 W7 worker owner 进行；目前 Go 默认不接管这些生产写入，真实 Node/Go interop、drain、canary、rollback 与删除门禁不变。

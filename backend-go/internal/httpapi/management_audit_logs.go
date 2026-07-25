@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,6 +18,7 @@ const managementAuditLogRequestTimeout = 120 * time.Second
 
 type managementAuditLogService interface {
 	List(*http.Request, managementauditlogs.ListInput) (managementauditlogs.ListResult, error)
+	HotSearch(*http.Request, managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error)
 	ListErrorGroups(*http.Request, managementauditlogs.ErrorGroupListInput) (managementauditlogs.ErrorGroupListResult, error)
 	ListErrorGroupEvents(*http.Request, string, managementauditlogs.ListInput) (managementauditlogs.ListResult, error)
 	Detail(*http.Request, string) (managementauditlogs.Detail, bool, error)
@@ -25,6 +27,9 @@ type managementAuditLogServiceAdapter struct{ service *managementauditlogs.Servi
 
 func (a managementAuditLogServiceAdapter) List(r *http.Request, input managementauditlogs.ListInput) (managementauditlogs.ListResult, error) {
 	return a.service.List(r.Context(), input)
+}
+func (a managementAuditLogServiceAdapter) HotSearch(r *http.Request, input managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error) {
+	return a.service.HotSearch(r.Context(), input)
 }
 func (a managementAuditLogServiceAdapter) Detail(r *http.Request, id string) (managementauditlogs.Detail, bool, error) {
 	return a.service.Detail(r.Context(), id)
@@ -45,6 +50,16 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 	readHandler := managementAuditReadHandler{service: service}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readHandler.handle(w, r, func(service managementAuditLogService, r *http.Request) {
+			path := strings.TrimRight(r.URL.Path, "/")
+			if chi.URLParam(r, "id") == "" && path == "/__aisys__/api/audit-logs/search-hot" {
+				result, err := service.HotSearch(r, parseManagementAuditHotSearchQuery(r.URL.Query()))
+				if err != nil {
+					writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+					return
+				}
+				writeData(w, http.StatusOK, result)
+				return
+			}
 			if id := chi.URLParam(r, "id"); id != "" {
 				switch id {
 				case "search-hot", "runtime", "error-groups":
@@ -170,4 +185,43 @@ func parseManagementAuditErrorGroupListQuery(values url.Values) managementauditl
 		GroupID: q("groupId"), AccountID: q("accountId"),
 		Page: page, PageSize: pageSize, PageSizeProvided: provided,
 	}
+}
+
+func parseManagementAuditHotSearchQuery(values url.Values) managementauditlogs.HotSearchInput {
+	limit, limitProvided := managementAuditHotSearchLimitQueryValue(values, "limit")
+	return managementauditlogs.HotSearchInput{
+		Keywords:      append([]string(nil), values["keywords"]...),
+		Limit:         limit,
+		LimitProvided: limitProvided,
+		StartAt:       managementAuditHotSearchQueryText(values, "startAt"),
+		EndAt:         managementAuditHotSearchQueryText(values, "endAt"),
+	}
+}
+
+func managementAuditHotSearchQueryText(values url.Values, key string) string {
+	if len(values[key]) == 0 {
+		return ""
+	}
+	return strings.TrimFunc(values[key][0], managementGroupListECMAScriptWhitespace)
+}
+
+func managementAuditHotSearchLimitQueryValue(values url.Values, key string) (int, bool) {
+	text := managementAuditHotSearchQueryText(values, key)
+	if text == "" {
+		return 0, false
+	}
+	value, ok := managementGroupListNumber(text)
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	value = math.Trunc(value)
+	maxInt := int(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	if value >= float64(maxInt) {
+		return maxInt, true
+	}
+	if value <= float64(minInt) {
+		return minInt, true
+	}
+	return int(value), true
 }

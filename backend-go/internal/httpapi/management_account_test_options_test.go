@@ -185,7 +185,12 @@ func TestManagementAccountTestOptionsHandlerReturnsExactDTO(t *testing.T) {
 	}
 	var want any
 	if err := json.Unmarshal([]byte(`{
-		"data": [{"id": "gpt-5.2", "name": "gpt-5.2"}]
+		"data": [{
+			"id": "gpt-5.2",
+			"name": "gpt-5.2",
+			"supportedApiProtocols": ["responses", "chat_completions"],
+			"testEndpointModes": ["responses_sse", "chat_sse"]
+		}]
 	}`), &want); err != nil {
 		t.Fatalf("decode expected response: %v", err)
 	}
@@ -226,7 +231,7 @@ func TestManagementAccountTestModelCapabilitiesHandlerReturnsExactDTO(t *testing
 	service := &managementAccountTestOptionsServiceStub{
 		result: managementaccounttestoptions.Result{
 			Models: []managementaccounttestoptions.ModelOption{
-				{Model: "vendor/model", TestEndpointModes: []string{"responses_json", "responses_sse"}},
+				{Model: "vendor/model", SupportedAPIProtocols: []string{"responses"}, TestEndpointModes: []string{"responses_json", "responses_sse"}},
 			},
 		},
 		found: true,
@@ -254,7 +259,12 @@ func TestManagementAccountTestModelCapabilitiesHandlerReturnsExactDTO(t *testing
 	}
 	var want any
 	if err := json.Unmarshal([]byte(`{
-		"data": {"id": "vendor/model", "name": "vendor/model", "testEndpointModes": ["responses_json", "responses_sse"]}
+		"data": {
+			"id": "vendor/model",
+			"name": "vendor/model",
+			"supportedApiProtocols": ["responses"],
+			"testEndpointModes": ["responses_json", "responses_sse"]
+		}
 	}`), &want); err != nil {
 		t.Fatalf("decode expected response: %v", err)
 	}
@@ -386,7 +396,12 @@ func (s *managementAccountTestOptionsServiceStub) Options(
 	s.optionsInput = input
 	result := make([]managementaccounttestoptions.SelectionOption, 0, len(s.result.Models))
 	for _, model := range s.result.Models {
-		result = append(result, managementaccounttestoptions.SelectionOption{ID: model.Model, Name: model.Model})
+		result = append(result, managementaccounttestoptions.SelectionOption{
+			ID:                    model.Model,
+			Name:                  model.Model,
+			SupportedAPIProtocols: model.SupportedAPIProtocols,
+			TestEndpointModes:     model.TestEndpointModes,
+		})
 	}
 	return result, s.found, s.err
 }
@@ -401,7 +416,10 @@ func (s *managementAccountTestOptionsServiceStub) ModelCapabilities(
 	for _, model := range s.result.Models {
 		if model.Model == input.Model {
 			return managementaccounttestoptions.ModelCapabilities{
-				ID: model.Model, Name: model.Model, TestEndpointModes: model.TestEndpointModes,
+				ID:                    model.Model,
+				Name:                  model.Model,
+				SupportedAPIProtocols: model.SupportedAPIProtocols,
+				TestEndpointModes:     model.TestEndpointModes,
 			}, s.found, s.err
 		}
 	}

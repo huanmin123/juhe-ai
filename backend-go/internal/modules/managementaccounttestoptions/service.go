@@ -128,14 +128,17 @@ type ModelCapabilitiesInput struct {
 }
 
 type SelectionOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
+	TestEndpointModes     []string `json:"testEndpointModes"`
 }
 
 type ModelCapabilities struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	TestEndpointModes []string `json:"testEndpointModes"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
+	TestEndpointModes     []string `json:"testEndpointModes"`
 }
 
 type ModelOption struct {
@@ -181,8 +184,8 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 }
 
 func (s *Service) Options(ctx context.Context, input OptionsInput) ([]SelectionOption, bool, error) {
-	if s.optionReader == nil {
-		return nil, false, fmt.Errorf("management account test option reader is required")
+	if s.reader == nil || s.optionReader == nil || s.credentialCodec == nil {
+		return nil, false, fmt.Errorf("management account test options dependencies are required")
 	}
 	limit := input.Limit
 	if limit == 0 {
@@ -191,23 +194,27 @@ func (s *Service) Options(ctx context.Context, input OptionsInput) ([]SelectionO
 	if limit < 1 || limit > 50 {
 		return nil, false, &ValidationError{Message: "limit 必须是 1 到 50 的整数"}
 	}
-	source, found, err := s.optionReader.GetManagementAccountTestOptionListSource(ctx, port.ManagementAccountTestOptionsInput{
+	account, found, err := s.reader.GetManagementAccountTestOptionsSource(ctx, port.ManagementAccountTestOptionsInput{
 		AccountID:       trimAccountTestText(input.AccountID),
 		SystemAccountID: trimAccountTestText(input.SystemAccountID),
 	})
 	if err != nil || !found {
 		return nil, found, err
 	}
-	ownerSystemAccountID := trimAccountTestText(source.OwnerSystemAccountID)
+	ownerSystemAccountID := trimAccountTestText(account.OwnerSystemAccountID)
 	if ownerSystemAccountID == "" {
 		return nil, false, fmt.Errorf("账户归属数据异常，无法读取测试模型")
 	}
+	credentials, err := s.credentialCodec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		return nil, false, err
+	}
 	selectedIDs := normalizeModelIDs(input.SelectedIDs, 50)
-	if healthCheckModel := trimAccountTestText(source.HealthCheckModel); healthCheckModel != "" {
+	if healthCheckModel := trimAccountTestText(account.HealthCheckModel); healthCheckModel != "" {
 		selectedIDs = appendUniqueModelID(selectedIDs, healthCheckModel, 51)
 	}
 	rows, err := s.optionReader.ListManagementAccountTestModelCatalog(ctx, port.ManagementAccountTestModelCatalogInput{
-		ProviderCode:    trimAccountTestText(source.ProviderCode),
+		ProviderCode:    trimAccountTestText(account.ProviderCode),
 		SystemAccountID: ownerSystemAccountID,
 		Keyword:         trimAccountTestText(input.Keyword),
 		Limit:           limit,
@@ -216,14 +223,22 @@ func (s *Service) Options(ctx context.Context, input OptionsInput) ([]SelectionO
 	if err != nil {
 		return nil, false, err
 	}
-	account := testOptionsSourceFromListSource(source)
 	eligible := make([]port.ManagementAccountTestModelCatalogItem, 0, len(rows))
 	for _, row := range rows {
 		if isAccountManualTestModel(modelCatalogItemFromOption(row), account) {
 			eligible = append(eligible, row)
 		}
 	}
-	return mergeSelectionOptions(eligible, trimAccountTestText(input.Keyword), limit, selectedIDs), true, nil
+	catalog := mergeTestCatalogItems(eligible, isHybridProvider(account.ProviderCode))
+	return mergeSelectionOptions(
+		eligible,
+		trimAccountTestText(input.Keyword),
+		limit,
+		selectedIDs,
+		account,
+		catalog,
+		accountManualTestEndpointModes(account, credentials),
+	), true, nil
 }
 
 func (s *Service) ModelCapabilities(
@@ -286,7 +301,12 @@ func (s *Service) ModelCapabilities(
 	if len(modes) == 0 {
 		return ModelCapabilities{}, false, &ValidationError{Message: "账户上游接口能力中没有可用于连接测试的请求形态"}
 	}
-	return ModelCapabilities{ID: selected.Model, Name: selected.Model, TestEndpointModes: modes}, true, nil
+	return ModelCapabilities{
+		ID:                    selected.Model,
+		Name:                  selected.Model,
+		SupportedAPIProtocols: append([]string{}, selected.SupportedAPIProtocols...),
+		TestEndpointModes:     modes,
+	}, true, nil
 }
 
 func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
@@ -757,6 +777,9 @@ func mergeSelectionOptions(
 	keyword string,
 	limit int,
 	selectedIDs []string,
+	account port.ManagementAccountTestOptionsSource,
+	catalog []managementprovidermodels.ModelCatalogItem,
+	accountEndpointModes []string,
 ) []SelectionOption {
 	selected := stringSet(selectedIDs...)
 	byModel := make(map[string]port.ManagementAccountTestModelCatalogItem, len(rows))
@@ -799,9 +822,21 @@ func mergeSelectionOptions(
 			if nonSelectedCount >= limit {
 				continue
 			}
+		}
+		model := modelCatalogItemFromOption(row)
+		modes := accountManualTestEndpointModesForModel(account, model, catalog, accountEndpointModes)
+		if len(modes) == 0 {
+			continue
+		}
+		if !isSelected {
 			nonSelectedCount++
 		}
-		output = append(output, SelectionOption{ID: row.Model, Name: row.Model})
+		output = append(output, SelectionOption{
+			ID:                    row.Model,
+			Name:                  row.Model,
+			SupportedAPIProtocols: append([]string{}, row.SupportedAPIProtocols...),
+			TestEndpointModes:     modes,
+		})
 	}
 	return output
 }

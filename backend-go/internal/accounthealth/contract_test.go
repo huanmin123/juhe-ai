@@ -24,6 +24,11 @@ func TestClassifyAutomaticProbeOutcome(t *testing.T) {
 			want:     ProbeOutcomeUpstreamFailure,
 		},
 		{
+			name:     "framed diagnostic failure is neutral before response attribution",
+			evidence: ProbeEvidence{UpstreamURL: "https://api.openai.com/v1/responses", ResponseObserved: true, FramingComplete: true},
+			want:     ProbeOutcomeFramingCompleteNeutral,
+		},
+		{
 			name:     "completed HTTP response is account attributable",
 			evidence: ProbeEvidence{UpstreamURL: "http://localhost:8080/v1/chat/completions", ResponseObserved: true},
 			want:     ProbeOutcomeUpstreamFailure,
