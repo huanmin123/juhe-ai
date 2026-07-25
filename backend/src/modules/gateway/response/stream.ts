@@ -1,7 +1,10 @@
 import type { Response } from 'express'
 
 import { getRequestLogger, markRequestProtocolTerminalOutcome } from '../../../shared/request-context.js'
-import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
+import type {
+  GatewayCommittedFailureSignal,
+  OpenAIGatewayDownstreamProtocol
+} from '../client-profiles/strategy.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
@@ -22,6 +25,8 @@ import {
   type FirstByteDeadlineHandler
 } from '../upstream/first-byte-deadline.js'
 import {
+  gatewayStreamClientRetryErrorCode,
+  gatewayStreamClientRetryMessage,
   gatewayStreamFailureCode,
   type GatewayErrorProtocol,
   writeGatewayStreamFailureEvent
@@ -58,8 +63,10 @@ import { requireGatewayProtocolDriverForResponseProtocol } from '../protocols/re
 import {
   appendStreamPreCommitChunk,
   canKeepStreamPreCommitChunk,
+  clearStreamPreCommitChunks,
   createStreamPreCommitBufferState,
   shouldFailBeforeStreamDownstreamCommit,
+  StreamPreCommitSseEvidence,
   takeStreamPreCommitChunks,
   uncommittedStreamResponseBody
 } from './stream-pre-commit-buffer.js'
@@ -89,6 +96,7 @@ export interface StreamFailureContext {
 
 export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
+  committedFailureSignal?: GatewayCommittedFailureSignal
   interpretProtocolFailures?: boolean
   onFirstOutput?: () => void
   captureSuccessPayloads?: boolean
@@ -151,6 +159,10 @@ export async function pipeUpstreamStream(
   const responseProtocol = options.responseProtocol ?? 'openai_v1'
   const protocolDriver = requireGatewayProtocolDriverForResponseProtocol(responseProtocol)
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
+  const committedProtocolFailureEventEnabled = (
+    options.committedFailureSignal
+      ?? (options.clientRetryEnabled === true ? 'protocol_error_event' : 'disconnect')
+  ) === 'protocol_error_event'
   const inspector = protocolDriver.createStreamInspector()
   const codexResponsesGuard = options.codexResponsesGuard
   const codexSafeRepairEnabled = codexResponsesGuard?.mode === 'safe_repair'
@@ -249,6 +261,7 @@ export async function pipeUpstreamStream(
   const downstreamCommit = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
   let downstreamCommitPrepared = false
   const preCommitBuffer = createStreamPreCommitBufferState(options.retryBeforeDownstreamWriteUntilOutput === true)
+  const preCommitSseEvidence = new StreamPreCommitSseEvidence()
   const responseInspectionObservations: ResponseInspectionDecision[] = []
   let responseInspectionObservationOmittedCount = 0
   const prepareDownstreamForWrite = () => {
@@ -292,13 +305,21 @@ export async function pipeUpstreamStream(
       response: res
     })
   }
+  const appendPreCommitChunk = (chunk: Buffer) => {
+    if (preCommitSseEvidence.onlyNonSemanticFramingObserved) {
+      clearStreamPreCommitChunks(preCommitBuffer)
+      return
+    }
+    appendStreamPreCommitChunk(preCommitBuffer, chunk)
+  }
   const flushPreCommitChunks = async () => {
     const chunks = takeStreamPreCommitChunks(preCommitBuffer)
     if (chunks.length === 0) {
       return
     }
-    for (const buffered of chunks) {
-      await writeDownstreamChunk(buffered)
+    const semantic = preCommitSseEvidence.dataPayloadStarted || preCommitSseEvidence.dataEventObserved
+    for (let index = 0; index < chunks.length; index += 1) {
+      await writeDownstreamChunk(chunks[index]!, semantic && index === chunks.length - 1)
     }
   }
   const discardPreCommitChunks = () => {
@@ -309,6 +330,14 @@ export async function pipeUpstreamStream(
       totalResponseBytes,
       response: res
     })
+  }
+  const shouldKeepNonSemanticSseFramingPrivate = () => {
+    return preCommitBuffer.buffering
+      && preCommitSseEvidence.onlyNonSemanticFramingObserved
+      && totalResponseBytes === 0
+      && !res.writableEnded
+      && !res.destroyed
+      && !downstreamCommit.semanticCommitted
   }
   const recordResponseInspectionObservations = (observations: ResponseInspectionDecision[] | undefined) => {
     if (!observations?.length) return
@@ -625,6 +654,9 @@ export async function pipeUpstreamStream(
       let chunkWroteDownstream = false
       for (let outboundIndex = 0; outboundIndex < interceptResult.chunks.length; outboundIndex += 1) {
         const outbound = interceptResult.chunks[outboundIndex]!
+        if (!preCommitSseEvidence.dataEventObserved && !downstreamCommit.semanticCommitted) {
+          preCommitSseEvidence.push(outbound)
+        }
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
@@ -654,12 +686,15 @@ export async function pipeUpstreamStream(
           } else {
             // Keep all transformed fragments from the same raw read private
             // until we know whether that read contains a semantic result.
-            appendStreamPreCommitChunk(preCommitBuffer, outbound)
+            appendPreCommitChunk(outbound)
             continue
           }
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
-          appendStreamPreCommitChunk(preCommitBuffer, outbound)
+          appendPreCommitChunk(outbound)
+          continue
+        }
+        if (shouldKeepNonSemanticSseFramingPrivate()) {
           continue
         }
         if (interpretedProtocolFailure(latestInspection)) {
@@ -669,11 +704,40 @@ export async function pipeUpstreamStream(
           const errorCode = 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           await closeAsyncIterator(iterator)
-          if (!beforeDownstreamCommit) endResponse(res)
+          if (!beforeDownstreamCommit) {
+            if (!committedProtocolFailureEventEnabled) {
+              interruptResponse(res)
+            } else {
+              const clientMessage = latestInspection.outputReceived
+                ? '上游流式响应在输出后中断'
+                : gatewayStreamClientRetryMessage
+              const clientErrorCode = latestInspection.outputReceived
+                ? gatewayStreamFailureCode(clientMessage)
+                : gatewayStreamClientRetryErrorCode
+              const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
+                res,
+                clientMessage,
+                clientErrorCode,
+                gatewayErrorProtocol,
+                options.downstreamProtocol
+              )
+              if (failureEvent) {
+                if (!bodyCaptureOmitted) {
+                  responseCapture.push(failureEvent)
+                  diagnosticCapture.push(failureEvent)
+                }
+                totalResponseBytes += failureEvent.length
+                downstreamCommit.markSemanticCommitted(failureEvent.length)
+              }
+              endResponse(res)
+            }
+          }
           streamLogger.warn({
             event: beforeDownstreamCommit
               ? 'gateway_stream_failure_before_downstream_commit'
-              : 'gateway_stream_failure_after_downstream_commit',
+              : committedProtocolFailureEventEnabled
+                ? 'gateway_stream_failure_after_downstream_commit_signaled'
+                : 'gateway_stream_failure_after_downstream_commit_interrupted',
             message,
             errorCode,
             totalUpstreamBytes,
@@ -683,12 +747,17 @@ export async function pipeUpstreamStream(
             recentSseEventTypes: latestInspection.recentEventTypes
           }, beforeDownstreamCommit
             ? '网关在下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
-            : '网关在下游提交后解析到流式失败，已丢弃供应商失败事件并稳定结束当前流')
+            : committedProtocolFailureEventEnabled
+              ? '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并补发受控协议失败事件'
+              : '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并中断连接')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         const writeStartedAt = Date.now()
         await flushPreCommitChunks()
-        const writeResult = await writeDownstreamChunk(outbound, streamSemanticResultReceived(latestInspection))
+        const writeResult = await writeDownstreamChunk(
+          outbound,
+          streamSemanticResultReceived(latestInspection) || preCommitSseEvidence.dataPayloadStarted
+        )
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
         chunkWroteDownstream = true
@@ -851,6 +920,9 @@ export async function pipeUpstreamStream(
       let eofCanEndAfterTerminal = false
       let eofWroteDownstream = false
       for (const outbound of eofInterceptResult.chunks) {
+        if (!preCommitSseEvidence.dataEventObserved && !downstreamCommit.semanticCommitted) {
+          preCommitSseEvidence.push(outbound)
+        }
         latestInspection = inspector.pushChunk(outbound, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
@@ -872,7 +944,10 @@ export async function pipeUpstreamStream(
           lastSseEventActivityAt = lastUpstreamActivityAt
         }
         if (canKeepPreCommitBuffered(latestInspection, outbound)) {
-          appendStreamPreCommitChunk(preCommitBuffer, outbound)
+          appendPreCommitChunk(outbound)
+          continue
+        }
+        if (shouldKeepNonSemanticSseFramingPrivate()) {
           continue
         }
         if (interpretedProtocolFailure(latestInspection)) {
@@ -900,7 +975,10 @@ export async function pipeUpstreamStream(
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await flushPreCommitChunks()
-        const writeResult = await writeDownstreamChunk(outbound, streamSemanticResultReceived(latestInspection))
+        const writeResult = await writeDownstreamChunk(
+          outbound,
+          streamSemanticResultReceived(latestInspection) || preCommitSseEvidence.dataPayloadStarted
+        )
         eofWroteDownstream = true
         const writeNow = Date.now()
         if (
@@ -1136,7 +1214,7 @@ export async function pipeUpstreamStream(
         message
       )
     }
-    if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
+    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
       streamLogger.warn({
         event: 'gateway_stream_failure_committed_generic_interrupted',
         message,
@@ -1194,6 +1272,7 @@ export async function pipeUpstreamStream(
     res.off('close', closeIterator)
   }
 
+  preCommitSseEvidence.finish()
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
   // Generic clients keep opaque upstream SSE semantics: once at least one real
@@ -1202,12 +1281,12 @@ export async function pipeUpstreamStream(
   // Comments/heartbeats are transport-only and must remain pre-commit so an
   // empty or keep-alive-only stream can still be retried by the server.
   // Precise clients use interpretProtocolFailures and still require framing.
-  if (!interpretProtocolFailures && completed && inspection.eventCount > 0) {
+  if (!interpretProtocolFailures && completed && preCommitSseEvidence.dataEventObserved) {
     await flushPreCommitChunks()
     endResponse(res)
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
-  if (inspection.skipped) {
+  if (inspection.skipped && preCommitSseEvidence.dataEventObserved) {
     endResponse(res)
     const success = completed && !interpretedProtocolFailure(inspection)
     const message = success ? '已完成' : '上游流式响应已中断'
@@ -1262,7 +1341,7 @@ export async function pipeUpstreamStream(
       }, '网关在下游提交前发现上游缺少终止事件，交由上层决定是否服务端换号重试')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
+    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
       streamLogger.warn({
         event: 'gateway_stream_missing_terminal_committed_generic_interrupted',
         errorCode,
@@ -1324,7 +1403,7 @@ export async function pipeUpstreamStream(
       }, '网关在 EOF pending 收尾后识别到失败，交由上层决定是否服务端换号重试')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
+    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
       streamLogger.warn({
         event: 'gateway_stream_finished_failed_committed_generic_interrupted',
         completed,

@@ -125,6 +125,7 @@
       :proxy="proxyById"
       :refreshing="mobileRefreshing"
       :row-selection="rowSelection"
+      :save-priority="saveAccountPriority"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
       :balance-refreshing-ids="balanceRefreshingIds"
@@ -296,6 +297,7 @@ import {
 import {
   accountDisplayName
 } from './accountBasicFormatters'
+import { isAuthorizedAccount } from './accountFormatters'
 import {
   accountTableScrollX,
   accountTableScrollY,
@@ -322,7 +324,7 @@ import { useAccountEditGroupOptions } from './useAccountEditGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountProxyOptions } from './useAccountProxyOptions'
 import { useAccountMenuActions } from './useAccountMenuActions'
-import { accountOperationSystemAccountId } from './accountOperationScope'
+import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
 import { buildAccountBalancePayload, formatAccountBalance } from './accountBalanceQuery'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
@@ -342,6 +344,7 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
+const prioritySavingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
 const modelCatalogSyncing = ref(false)
 const batchDisableConfirmOpen = ref(false)
@@ -472,6 +475,41 @@ async function refreshAccountBalance(accountId: string) {
     const next = new Set(balanceRefreshingIds.value)
     next.delete(accountId)
     balanceRefreshingIds.value = next
+  }
+}
+
+async function saveAccountPriority(account: AccountSummary, priority: number): Promise<boolean> {
+  if (!canEditAccount(account)) {
+    message.warning('当前账户无权修改调度优先级')
+    return false
+  }
+  if (!Number.isInteger(priority) || priority < 0) {
+    message.warning('优先级必须是大于等于 0 的整数')
+    return false
+  }
+  if (priority === account.priority) return true
+  if (prioritySavingIds.value.has(account.id)) return false
+
+  prioritySavingIds.value = new Set(prioritySavingIds.value).add(account.id)
+  const scopeParams = accountOperationScopeParams(account, accountScopeParams.value)
+  try {
+    const updated = isManagementView.value
+      ? isAuthorizedAccount(account)
+        ? await api.accounts.updateAuthorizedDispatch(account.id, { priority }, scopeParams)
+        : await api.accounts.update(account.id, { priority }, scopeParams)
+      : isAuthorizedAccount(account)
+        ? await api.myAccounts.updateAuthorizedDispatch(account.id, { priority })
+        : await api.myAccounts.update(account.id, { priority })
+    updateLoadedAccount(updated)
+    message.success('调度优先级已更新')
+    return true
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '更新调度优先级失败'))
+    return false
+  } finally {
+    const next = new Set(prioritySavingIds.value)
+    next.delete(account.id)
+    prioritySavingIds.value = next
   }
 }
 

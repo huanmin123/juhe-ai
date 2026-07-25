@@ -371,7 +371,8 @@ try {
     await assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl, allBadApiKey.key, allBadAccounts)
     if (!protocolShapeOnly) {
       await assertDeepSeekChatSse(baseUrl, apiKey.key)
-      await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
+      await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key, account.id)
+      await assertDeepSeekChatSse(baseUrl, apiKey.key)
       await assertDeepSeekRejectsResponses(baseUrl, apiKey.key)
       await assertDeepSeekCodexResponsesBridge(baseUrl, codexBridgeApiKey.key)
       await assertDeepSeekCodexResponsesBridgeContinuesWithUnsupportedHostedToolGuidance(baseUrl, codexBridgeApiKey.key)
@@ -691,7 +692,11 @@ async function assertDeepSeekChatSse(baseUrl: string, localApiKey: string): Prom
   assert.equal(upstreamHits[0]?.path, '/v1/chat/completions')
 }
 
-async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl: string, localApiKey: string): Promise<void> {
+async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(
+  baseUrl: string,
+  localApiKey: string,
+  accountId: string
+): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -712,6 +717,16 @@ async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl: strin
   assert(!text.includes('response.failed'), '普通 Chat SSE 客户端不应收到 Responses SSE failed 事件')
   assert.equal(upstreamHits.length, 1, 'DeepSeek Chat SSE 建流前失败应只命中一次上游')
   assert.equal(upstreamHits[0]?.path, '/v1/chat/completions')
+  const accountAfterFailure = repositories.findAccountForTest(accountId, access)
+  assert(accountAfterFailure, 'DeepSeek Chat SSE 建流前失败后账户仍应存在')
+  assert.equal(accountAfterFailure.status, 'active', 'DeepSeek Chat SSE 建流前失败不得写死业务账户')
+  const runtimeFilter = await accountSideEffects.filterGatewayAccountRuntimeSuppressionsAsync([accountAfterFailure])
+  assert.deepEqual(runtimeFilter.suppressedAccountIds, [], '只有 keep-alive 的建流失败不得留下账户运行态抑制')
+  assert.deepEqual(
+    accountApiKeyFailureGuard.getGatewayAccountApiKeyFailureGuardSnapshotForTest().filter((item) => item.accountId === accountId),
+    [],
+    '只有 keep-alive 的建流失败不得写入 API Key 失败态'
+  )
 }
 
 async function assertDeepSeekRejectsResponses(baseUrl: string, localApiKey: string): Promise<void> {
@@ -1063,7 +1078,7 @@ async function assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseI
     },
     body: JSON.stringify({
       model: 'deepseek-v4-flash',
-      previous_response_id: 'resp_previous_not_available_in_chat_bridge',
+      previous_response_id: 'resp_deepseek_bridge_previous_not_available_in_chat_bridge',
       input: [
         {
           type: 'function_call_output',

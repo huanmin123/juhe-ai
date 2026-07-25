@@ -67,7 +67,11 @@ try {
   }, access)
   const transientBasic = requiredCheck(transientRun.checks, 'target.responses_basic')
   const transientStream = requiredCheck(transientRun.checks, 'target.responses_stream')
-  assert.equal(transientRun.level, 'high_confidence', '瞬态上游异常恢复后不应误判失败')
+  assert.equal(
+    transientRun.level,
+    'high_confidence',
+    `瞬态上游异常恢复后不应误判失败：${JSON.stringify(checkStatusSummary(transientRun.checks))}`
+  )
   assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
   assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
   assert(Date.now() - transientStartedAt >= 35, '普通瞬态错误也应执行统一等待，不能贴着重打')

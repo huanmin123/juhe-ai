@@ -6,7 +6,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { promisify } from 'node:util'
 import { createGunzip, gzip, gzipSync } from 'node:zlib'
 
-import { backendRoot, runtimeConfig } from '../config/runtime.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, newId } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
@@ -69,7 +69,6 @@ export interface AuditPayloadBlobCleanupResult {
   deletedFiles: number
 }
 
-const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
 const auditPayloadDefaultReadLimitBytes = 256 * 1024
 const auditPayloadMaxReadLimitBytes = 1024 * 1024
@@ -630,6 +629,10 @@ function storageKeyForBlob(id: string, compression: StoredAuditPayloadCompressio
 }
 
 function blobFilePath(storageKey: string): string {
+  // Keep audit payload files beside the configured dataset store. This keeps
+  // isolated development instances self-contained instead of writing under
+  // the repository's default backend/data directory.
+  const auditBlobRoot = resolve(dirname(runtimeConfig.datasetDatabasePath), 'audit', 'blobs')
   const target = resolve(auditBlobRoot, storageKey)
   const relativePath = relative(auditBlobRoot, target)
   if (relativePath.startsWith('..') || isAbsolute(relativePath)) {

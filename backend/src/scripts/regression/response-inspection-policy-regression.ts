@@ -213,6 +213,7 @@ async function assertStructuralFailureIsCodeAgnosticBeforeOutput(errorCode: stri
 async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: string): Promise<void> {
   const writes: Buffer[] = []
   const response = {
+    locals: {},
     headersSent: false,
     writableEnded: false,
     destroyed: false,
@@ -229,6 +230,10 @@ async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: 
     },
     end() {
       this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyed = true
       return this
     }
   }
@@ -262,7 +267,8 @@ async function assertStructuralFailureAfterOutputDoesNotReplayOrLeak(errorCode: 
   const downstreamText = Buffer.concat(writes).toString('utf8')
   assert.equal(result.completed, false, `${errorCode} 输出后结构失败必须按失败终态收口`)
   assert.equal(result.errorCode, 'upstream_protocol_failure', `${errorCode} 输出后也不得改变网关结构失败码`)
-  assert.equal(response.writableEnded, true, `${errorCode} 输出后不得重放，只能稳定结束已有响应`)
+  assert.equal(response.writableEnded, false, `${errorCode} 通用客户端输出后不得伪装成正常 EOF`)
+  assert.equal(response.destroyed, true, `${errorCode} 通用客户端输出后必须断开连接提示客户端当前流不完整`)
   assert.match(downstreamText, /visible_output_before_failure/, `${errorCode} 失败前已提交的输出必须保留`)
   assert.doesNotMatch(downstreamText, /response\.failed/, `${errorCode} 供应商失败事件不得继续写给客户端`)
   assert(!downstreamText.includes(errorCode), `${errorCode} 供应商错误码不得泄露给客户端`)
@@ -1555,7 +1561,8 @@ assert.equal(validateAccountResponseInspectionRules([
     {
       endpointFamily: 'responses',
       responseInspectionPolicies: [responsePolicy({ match: { errorCodes: ['server_overloaded'] } })],
-      responseInspectionContext: { clientProfile: 'codex' }
+      responseInspectionContext: { clientProfile: 'codex' },
+      committedFailureSignal: 'protocol_error_event'
     }
   )
   assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
@@ -1611,7 +1618,8 @@ assert.equal(validateAccountResponseInspectionRules([
     {
       endpointFamily: 'responses',
       responseInspectionPolicies: [responsePolicy({ match: { errorCodes: ['server_overloaded'] } })],
-      responseInspectionContext: { clientProfile: 'codex' }
+      responseInspectionContext: { clientProfile: 'codex' },
+      committedFailureSignal: 'protocol_error_event'
     }
   )
   assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')

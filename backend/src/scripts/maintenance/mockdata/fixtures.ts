@@ -50,7 +50,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
         base_url: options.upstreamBaseUrl
       },
       groupId: group.id,
-      supportedModels: ['gpt-5.5'],
+      supportedModels: ['gpt-5.5', 'gpt-5.4'],
       status: 'active',
       schedulable: true,
       concurrencyLimit,

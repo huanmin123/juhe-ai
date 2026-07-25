@@ -12,7 +12,7 @@ import {
   listUsageRecordShardLocations,
   getUsageRecordShardDatabase
 } from '../../storage/usage-record-shards.js'
-import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
+import { chunks, idPrefix, type CreatedMockdata, type MockdataOptions } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
@@ -21,13 +21,55 @@ const allowedEmptyTables = new Set([
   'stats.usage_range_window_requests'
 ])
 
-export function assertMockdataCoverage(created: CreatedMockdata): void {
+export function assertMockdataCoverage(created: CreatedMockdata, options: MockdataOptions): void {
   const database = getBusinessDatabase()
   assertBusinessCoverage(database, created)
   assertUsageCoverage()
+  assertAccountHealthMonitorCoverage(created, options)
   assertCreatedShape(created)
   assertModelTrustCoverage()
   assertApplicationTablesHaveRows()
+}
+
+function assertAccountHealthMonitorCoverage(created: CreatedMockdata, options: MockdataOptions): void {
+  const database = getStatsDatabase()
+  const summary = database.prepare(`
+    SELECT
+      COUNT(*) AS total_rows,
+      COUNT(DISTINCT account_id) AS account_count,
+      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_rows,
+      SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END) AS failure_rows,
+      MIN(stat_hour) AS first_hour,
+      MAX(stat_hour) AS last_hour
+    FROM account_health_hourly
+    WHERE last_record_id LIKE 'mockdata_usage_health_%'
+  `).get() as {
+    total_rows?: number
+    account_count?: number
+    success_rows?: number
+    failure_rows?: number
+    first_hour?: string
+    last_hour?: string
+  } | undefined
+  const expectedAccounts = Object.keys(created.accounts).length
+  const expectedHours = Math.min(options.days * 24, 31 * 24)
+  const totalRows = Number(summary?.total_rows ?? 0)
+  assertMinimum('AI 健康监控账户样本不足，无法验证分页', Number(summary?.account_count ?? 0), expectedAccounts)
+  assertMinimum('AI 健康监控成功小时样本缺失', Number(summary?.success_rows ?? 0), 1)
+  assertMinimum('AI 健康监控失败小时样本缺失', Number(summary?.failure_rows ?? 0), 1)
+  assertMinimum('AI 健康监控小时样本密度不足', totalRows, Math.floor(expectedAccounts * expectedHours * 0.9))
+  if (expectedHours > 2 && totalRows >= expectedAccounts * expectedHours) {
+    throw new Error('AI 健康监控无记录小时样本缺失')
+  }
+  if (expectedHours >= 31 * 24) {
+    const firstAt = Date.parse(`${summary?.first_hour ?? ''}:00:00Z`)
+    const lastAt = Date.parse(`${summary?.last_hour ?? ''}:00:00Z`)
+    if (!Number.isFinite(firstAt) || !Number.isFinite(lastAt)) {
+      throw new Error('AI 健康监控小时范围格式无效')
+    }
+    const spanHours = (lastAt - firstAt) / (60 * 60 * 1000)
+    assertMinimum('AI 健康监控近 31 天时间跨度不足', spanHours, 31 * 24 - 2)
+  }
 }
 
 function assertModelTrustCoverage(): void {

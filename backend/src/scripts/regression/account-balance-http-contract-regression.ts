@@ -184,7 +184,8 @@ try {
   const multiList = await listAccounts(baseUrl, cookie)
   const listedMulti = multiList.find((item) => item.id === account.id)
   assert(listedMulti, '账户列表必须返回刚更新的账户')
-  assert.equal(listedMulti.balanceQueryEnabled, undefined, '轻量列表不应夹带余额配置详情')
+  assert.equal(listedMulti.balanceQueryEnabled, false, '轻量列表必须返回当前余额开关状态')
+  assert.equal(Object.hasOwn(listedMulti, 'balanceQueryConfig'), false, '轻量列表不应夹带余额配置详情')
   assert.equal(listedMulti.balanceSnapshot, undefined, '即使跨库快照尚未删除，列表也不得回显旧 Key 金额')
   assert.equal(
     businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,
@@ -205,7 +206,8 @@ try {
   const singleList = await listAccounts(baseUrl, cookie)
   const listedSingle = singleList.find((item) => item.id === account.id)
   assert(listedSingle, '恢复单 Key 后账户仍应存在')
-  assert.equal(listedSingle.balanceQueryEnabled, undefined, '轻量列表仍不返回余额配置详情')
+  assert.equal(listedSingle.balanceQueryEnabled, false, '轻量列表必须返回恢复单 Key 后的余额开关状态')
+  assert.equal(Object.hasOwn(listedSingle, 'balanceQueryConfig'), false, '轻量列表仍不返回余额配置详情')
   assert.equal(listedSingle.balanceSnapshot, undefined, '恢复单 Key 但未人工开启时仍不得回显旧快照')
   assert.equal(
     businessDatabase.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(account.id)?.balance_query_enabled,

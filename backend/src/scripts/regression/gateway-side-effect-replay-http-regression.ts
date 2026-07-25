@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import express from 'express'
+import express, { type ErrorRequestHandler } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
@@ -21,6 +21,8 @@ interface ReplayScenario {
   id: string
   requestKind: RequestKind
   failureMode: FailureMode
+  failureStatusCode?: number
+  failureErrorCode?: string
   policyAction?: AccountErrorHandlingRuleAction
   expectedAccountStatus: 'active' | 'temporary_unavailable' | 'error'
   replayExpected: boolean
@@ -42,6 +44,22 @@ interface UpstreamHit {
   bodyAccepted: boolean
 }
 
+interface GatewayMiddlewareErrorDiagnostic {
+  scenarioId?: string
+  traceId?: string
+  errorName: string
+  errorMessage: string
+  headersSent: boolean
+  writableEnded: boolean
+  destroyed: boolean
+}
+
+interface RawGatewayResponse {
+  statusCode: number
+  text: string
+  socketLocalPort?: number
+}
+
 const scenarios: ReplayScenario[] = [
   {
     id: 'background_transport_reset',
@@ -54,6 +72,24 @@ const scenarios: ReplayScenario[] = [
     id: 'background_no_policy_http_failure',
     requestKind: 'responses_background',
     failureMode: 'complete_http_failure',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
+    id: 'background_untrusted_401_model_not_found',
+    requestKind: 'responses_background',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 401,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
+    id: 'background_untrusted_model_not_supported',
+    requestKind: 'responses_background',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 400,
+    failureErrorCode: 'model_not_supported',
     expectedAccountStatus: 'active',
     replayExpected: false
   },
@@ -88,6 +124,24 @@ const scenarios: ReplayScenario[] = [
     replayExpected: false
   },
   {
+    id: 'hosted_tool_untrusted_401_model_not_found',
+    requestKind: 'responses_hosted_tool',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 401,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
+    id: 'hosted_tool_untrusted_model_not_supported',
+    requestKind: 'responses_hosted_tool',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 400,
+    failureErrorCode: 'model_not_supported',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
     id: 'hosted_tool_explicit_disable',
     requestKind: 'responses_hosted_tool',
     failureMode: 'complete_http_failure',
@@ -118,6 +172,24 @@ const scenarios: ReplayScenario[] = [
     replayExpected: false
   },
   {
+    id: 'audio_untrusted_401_model_not_found',
+    requestKind: 'audio_speech',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 401,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
+    id: 'audio_untrusted_model_not_supported',
+    requestKind: 'audio_speech',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 400,
+    failureErrorCode: 'model_not_supported',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
     id: 'audio_explicit_cooldown',
     requestKind: 'audio_speech',
     failureMode: 'complete_http_failure',
@@ -134,9 +206,26 @@ const scenarios: ReplayScenario[] = [
     replayExpected: false
   }
 ]
-assert.equal(scenarios.length, 12, '副作用真实 HTTP 回归必须保留三类请求各四个场景')
+assert.equal(scenarios.length, 18, '副作用真实 HTTP 回归必须保留三类请求各六个场景')
 
-const scenarioById = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
+const keepAliveScenarios: ReplayScenario[] = [
+  {
+    id: 'keep_alive_background_transport_reset',
+    requestKind: 'responses_background',
+    failureMode: 'transport_reset',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  },
+  {
+    id: 'keep_alive_hosted_tool_http_failure',
+    requestKind: 'responses_hosted_tool',
+    failureMode: 'complete_http_failure',
+    expectedAccountStatus: 'active',
+    replayExpected: false
+  }
+]
+
+const scenarioById = new Map([...scenarios, ...keepAliveScenarios].map((scenario) => [scenario.id, scenario]))
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-side-effect-replay-http-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -179,9 +268,23 @@ const [
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+const gatewayMiddlewareErrors: GatewayMiddlewareErrorDiagnostic[] = []
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+const captureGatewayMiddlewareError: ErrorRequestHandler = (error, req, res, next) => {
+  gatewayMiddlewareErrors.push({
+    scenarioId: typeof req.query.scenario === 'string' ? req.query.scenario : undefined,
+    traceId: typeof req.headers['x-trace-id'] === 'string' ? req.headers['x-trace-id'] : undefined,
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    headersSent: res.headersSent,
+    writableEnded: res.writableEnded,
+    destroyed: res.destroyed
+  })
+  next(error)
+}
+app.use(captureGatewayMiddlewareError)
 
 async function main(): Promise<void> {
   let upstreamServer: http.Server | undefined
@@ -196,6 +299,7 @@ async function main(): Promise<void> {
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
     const fixtures = scenarios.map((scenario) => createScenarioFixture(scenario, upstreamBaseUrl))
+    const keepAliveFixtures = keepAliveScenarios.map((scenario) => createScenarioFixture(scenario, upstreamBaseUrl))
 
     gatewayCache.clearGatewayRuntimeCache()
     appServer = http.createServer(app)
@@ -205,8 +309,9 @@ async function main(): Promise<void> {
     for (const fixture of fixtures) {
       await exerciseScenario(gatewayBaseUrl, fixture, hits)
     }
+    await exerciseKeepAliveTransportResetSequence(gatewayBaseUrl, keepAliveFixtures, hits)
 
-    console.log('副作用请求真实 HTTP 重放回归通过：background、hosted tool、audio 在 transport、完整 HTTP 与任意显式策略下均保持 at-most-once')
+    console.log('副作用请求真实 HTTP 重放回归通过：background、hosted tool、audio 在 transport、完整 HTTP、显式策略与同 socket keep-alive 下均保持 at-most-once')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -252,15 +357,15 @@ function createUpstreamServer(hits: UpstreamHit[]): http.Server {
           res.destroy()
           return
         }
-        res.writeHead(471, {
+        res.writeHead(scenario.failureStatusCode ?? 471, {
           'content-type': 'application/json; charset=utf-8',
           'x-vendor-secret': `vendor-header-${scenario.id}`
         })
         res.end(JSON.stringify({
           error: {
             type: `vendor_type_${scenario.id}`,
-            code: `vendor_code_${scenario.id}`,
-            message: `${policyMarker(scenario)} vendor-private-error-${scenario.id}`
+            code: scenario.failureErrorCode ?? `vendor_code_${scenario.id}`,
+            message: `${policyMarker(scenario)} vendor-private-error-${scenario.id}; provider claims request never started`
           }
         }))
         return
@@ -393,6 +498,7 @@ async function exerciseScenario(
 ): Promise<void> {
   const { scenario } = fixture
   const traceId = `side-effect-replay-${scenario.id}-${Date.now()}`
+  const middlewareErrorOffset = gatewayMiddlewareErrors.length
   const requestUrl = `${gatewayBaseUrl}${scenarioPath(scenario)}?scenario=${encodeURIComponent(scenario.id)}`
   let response: Response
   try {
@@ -407,11 +513,27 @@ async function exerciseScenario(
       body: JSON.stringify(scenarioBody(scenario))
     })
   } catch (error) {
-    throw new Error(`${scenario.id} 网关请求在响应头前失败：${requestUrl}`, { cause: error })
+    throw new Error(
+      `${scenario.id} 网关请求在响应头前失败：${requestUrl}；middleware=${gatewayMiddlewareDiagnostics(middlewareErrorOffset)}`,
+      { cause: error }
+    )
   }
-  const responseText = await response.text()
+  let responseText: string
+  try {
+    responseText = await response.text()
+  } catch (error) {
+    throw new Error(
+      `${scenario.id} 网关已返回 HTTP ${response.status}，但响应正文读取中断；middleware=${gatewayMiddlewareDiagnostics(middlewareErrorOffset)}`,
+      { cause: error }
+    )
+  }
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   await auditLogQueue.flushAllAuditLogQueueAsync()
+  assert.deepEqual(
+    gatewayMiddlewareErrors.slice(middlewareErrorOffset),
+    [],
+    `${scenario.id} 网关不得把内部异常交给 Express finalhandler 销毁客户端 socket`
+  )
 
   const hits = allHits.filter((hit) => hit.scenarioId === scenario.id)
   const firstHits = hits.filter((hit) => hit.authorization === fixture.firstAuthorization)
@@ -459,6 +581,105 @@ async function exerciseScenario(
   const fallbackAccount = repositories.findAccountForTest(fixture.fallbackAccountId, access)
   assert.equal(firstAccount?.status, scenario.expectedAccountStatus, `${scenario.id} 首账户状态动作未落地`)
   assert.equal(fallbackAccount?.status, 'active', `${scenario.id} 未命中的后备账户必须保持 active`)
+}
+
+async function exerciseKeepAliveTransportResetSequence(
+  gatewayBaseUrl: string,
+  fixtures: ScenarioFixture[],
+  allHits: UpstreamHit[]
+): Promise<void> {
+  assert.equal(fixtures.length, 2, 'keep-alive 专项必须使用两组全新隔离 fixture')
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 })
+  let firstSocketLocalPort: number | undefined
+  try {
+    for (const fixture of fixtures) {
+      const { scenario } = fixture
+      const traceId = `side-effect-keep-alive-${scenario.id}-${Date.now()}`
+      const middlewareErrorOffset = gatewayMiddlewareErrors.length
+      const hitOffset = allHits.length
+      const response = await rawGatewayPost(
+        `${gatewayBaseUrl}${scenarioPath(scenario)}?scenario=${encodeURIComponent(scenario.id)}`,
+        JSON.stringify(scenarioBody(scenario)),
+        {
+          authorization: `Bearer ${fixture.apiKey}`,
+          'content-type': 'application/json',
+          'x-trace-id': traceId
+        },
+        agent
+      )
+      assert.equal(response.statusCode, 503, `${scenario.id} keep-alive 请求必须返回稳定 503：${response.text}`)
+      const errorPayload = parseJsonObject(response.text).error
+      assert(isRecord(errorPayload), `${scenario.id} keep-alive 请求必须返回结构化网关错误`)
+      assert.equal(errorPayload.code, 'upstream_outcome_unknown')
+      const newHits = allHits.slice(hitOffset).filter((hit) => hit.scenarioId === scenario.id)
+      assert.deepEqual(
+        newHits.map((hit) => hit.authorization),
+        [fixture.firstAuthorization],
+        `${scenario.id} keep-alive 请求仍必须且只能执行首账户一次`
+      )
+      assert.equal(newHits[0]?.bodyAccepted, true, `${scenario.id} keep-alive 请求体必须已被上游完整接收`)
+      assert.deepEqual(
+        gatewayMiddlewareErrors.slice(middlewareErrorOffset),
+        [],
+        `${scenario.id} keep-alive 请求不得产生 Express 末端异常`
+      )
+      if (firstSocketLocalPort === undefined) {
+        firstSocketLocalPort = response.socketLocalPort
+        assert(firstSocketLocalPort, '首个 keep-alive 请求必须记录客户端 socket 端口')
+      } else {
+        assert.equal(response.socketLocalPort, firstSocketLocalPort, '连续副作用请求必须复用同一个 keep-alive socket')
+      }
+    }
+  } finally {
+    agent.destroy()
+  }
+}
+
+function rawGatewayPost(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  agent: http.Agent
+): Promise<RawGatewayResponse> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false
+    const request = http.request(url, {
+      method: 'POST',
+      agent,
+      headers: {
+        ...headers,
+        'content-length': String(Buffer.byteLength(body))
+      }
+    })
+    const finishError = (error: Error) => {
+      if (settled) return
+      settled = true
+      request.destroy()
+      rejectPromise(error)
+    }
+    request.setTimeout(5_000, () => finishError(new Error(`keep-alive 网关请求超时：${url}`)))
+    request.once('error', finishError)
+    request.once('response', (response) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+      response.once('aborted', () => finishError(new Error(`keep-alive 网关响应正文中断：${url}`)))
+      response.once('error', finishError)
+      response.once('end', () => {
+        if (settled) return
+        settled = true
+        resolvePromise({
+          statusCode: response.statusCode ?? 0,
+          text: Buffer.concat(chunks).toString('utf8'),
+          socketLocalPort: request.socket?.localPort
+        })
+      })
+    })
+    request.end(body)
+  })
+}
+
+function gatewayMiddlewareDiagnostics(offset: number): string {
+  return JSON.stringify(gatewayMiddlewareErrors.slice(offset))
 }
 
 function scenarioPath(scenario: ReplayScenario): string {
@@ -545,7 +766,9 @@ async function listen(server: http.Server): Promise<void> {
 
 async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return
-  await new Promise<void>((resolveClose) => server.close(() => resolveClose()))
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.close((error) => error ? rejectClose(error) : resolveClose())
+  })
 }
 
 function serverPort(server: http.Server): number {

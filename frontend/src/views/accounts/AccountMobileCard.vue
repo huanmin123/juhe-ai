@@ -56,7 +56,15 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>优先级</span>
-        <strong>{{ priorityText }}</strong>
+        <div class="account-mobile-priority-row">
+          <AccountPriorityEditor
+            :editable="canEdit"
+            mobile
+            :priority="account.priority"
+            :save-priority="(priority) => savePriority(account, priority)"
+          />
+          <span v-if="prioritySuffix" class="account-mobile-priority-suffix">{{ prioritySuffix }}</span>
+        </div>
       </div>
       <div class="account-mobile-meta-item">
         <span>用量(日)</span>
@@ -86,6 +94,7 @@ import { computed } from 'vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
@@ -111,6 +120,7 @@ const props = defineProps<{
   menuItems: AccountMenuItem[]
   providerName: string
   proxy?: ProxyProfileOptionSummary
+  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
   selected: boolean
   balanceRefreshing?: boolean
 }>()
@@ -141,9 +151,9 @@ const proxyTooltip = computed(() => {
   return '代理配置不存在或当前不可见'
 })
 const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || currentProxy.value?.enabled === false ? 'proxy-error' : ''))
-const priorityText = computed(() => {
-  if (!props.account.fallbackEnabled) return String(props.account.priority)
-  return `${props.account.priority} / ${props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'}`
+const prioritySuffix = computed(() => {
+  if (!props.account.fallbackEnabled) return ''
+  return props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'
 })
 const concurrencyText = computed(() => `${Math.max(0, props.account.currentConcurrency ?? 0)}/${props.account.concurrencyLimit}`)
 const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, props.account.currentConcurrency ?? 0)} 个请求，配置上限 ${props.account.concurrencyLimit}`)
@@ -331,6 +341,22 @@ function handleActionClick(key: string) {
   color: #0f172a;
   font-size: 13px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-mobile-priority-row {
+  display: flex;
+  min-width: 0;
+  gap: 4px;
+  align-items: center;
+}
+
+.account-mobile-priority-suffix {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

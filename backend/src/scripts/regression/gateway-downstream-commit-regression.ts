@@ -121,13 +121,36 @@ assert.equal(keepAliveOnlyResult.downstreamBytesWritten, 0)
 assert.equal(keepAliveOnlyResult.upstreamResponseBytesWritten, 0)
 assert.equal(keepAliveOnlyResponse.headersSent, false, '上游 keep-alive 不得提前写出下游响应头')
 assert.equal(keepAliveOnlyResponse.writableEnded, false, '建流前失败必须交回上层接管 HTTP 错误或切号')
-assert.equal(keepAliveOnlyResult.uncommittedResponseBody?.toString('utf8'), ': keep-alive\n\n')
+assert.equal(keepAliveOnlyResult.uncommittedResponseBody, undefined, '纯 SSE comment 不属于语义正文，不应占用预提交缓冲')
 assert.equal(shouldRetryPreCommitStreamFailureOnServer(keepAliveOnlyResult, keepAliveOnlyResponse), true)
 
+await assertTransportOnlySseRemainsPreCommit(
+  '单个超过预提交上限的 SSE comment',
+  singleChunkBody(`: ${'x'.repeat(300 * 1024)}\n\n`)
+)
+await assertTransportOnlySseRemainsPreCommit(
+  '累计超过预提交上限的 SSE comments',
+  chunkSequenceBody(Array.from({ length: 20 }, (_, index) => `: ${index}-${'x'.repeat(20 * 1024)}\n\n`))
+)
+await assertTransportOnlySseRemainsPreCommit(
+  '跨 chunk 和 CRLF 分片的 SSE comment',
+  chunkSequenceBody([': keep', '-alive\r', '\n\r', '\n'])
+)
+await assertTransportOnlySseRemainsPreCommit(
+  '只有 event 字段但没有 data 的 SSE 帧',
+  singleChunkBody('event: vendor.progress\n\n')
+)
+await assertTransportOnlySseRemainsPreCommit(
+  '只有空 data 字段的 SSE 帧',
+  chunkSequenceBody(['data:', '\r\n', '\r\n'])
+)
+
 const opaqueDataState = new GatewayDownstreamCommitState()
-const opaqueDataResponse = fakeResponse()
+const opaqueDataChunks: Buffer[] = []
+const opaqueDataBody = 'event: vendor.progress\ndata: not-json-but-client-visible\n\n'
+const opaqueDataResponse = fakeResponse({ writtenChunks: opaqueDataChunks })
 const opaqueDataResult = await pipeUpstreamStream(
-  singleChunkBody('event: vendor.progress\ndata: not-json-but-client-visible\n\n'),
+  singleChunkBody(opaqueDataBody),
   opaqueDataResponse,
   streamTimeoutProfile,
   Date.now(),
@@ -143,7 +166,10 @@ const opaqueDataResult = await pipeUpstreamStream(
 )
 assert.equal(opaqueDataResult.completed, true, 'generic 客户端的普通不透明 data 事件仍应在干净 EOF 后成功透传')
 assert.equal(opaqueDataResult.transportCommitted, true)
+assert.equal(opaqueDataResult.semanticCommitted, true, '真实不透明 data 事件一旦写出必须锁定语义提交')
+assert.equal(opaqueDataState.canRetryUpstream(), false, '普通不透明 data 事件写出后不得拼接第二个账户')
 assert.equal(opaqueDataResponse.writableEnded, true)
+assert.equal(Buffer.concat(opaqueDataChunks).toString('utf8'), opaqueDataBody, '普通不透明 data 事件正文必须保持原样')
 
 const visibleOutputState = new GatewayDownstreamCommitState()
 const visibleOutputResponse = fakeResponse()
@@ -177,13 +203,48 @@ async function* emptyBody(): AsyncGenerator<Uint8Array> {
   return
 }
 
+async function* chunkSequenceBody(chunks: string[]): AsyncGenerator<Uint8Array> {
+  for (const chunk of chunks) yield Buffer.from(chunk)
+}
+
 async function* visibleOutputThenFailureBody(): AsyncGenerator<Uint8Array> {
   yield Buffer.from(': keep-alive\n\n')
   yield Buffer.from('data: {"choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}\n\n')
   throw new Error('semantic stream interrupted')
 }
 
-function fakeResponse(input: { throwOnWrite?: boolean } = {}): Response {
+async function assertTransportOnlySseRemainsPreCommit(
+  label: string,
+  body: AsyncIterable<Uint8Array>,
+  expectedUncommittedBody?: string
+): Promise<void> {
+  const commitState = new GatewayDownstreamCommitState()
+  const response = fakeResponse()
+  const result = await pipeUpstreamStream(
+    body,
+    response,
+    streamTimeoutProfile,
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'chat_completions',
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      downstreamCommitState: commitState
+    }
+  )
+  assert.equal(result.completed, false, `${label} 不得伪装成协议完成`)
+  assert.equal(result.transportCommitted, false, `${label} 不得提交下游传输`)
+  assert.equal(result.semanticCommitted, false, `${label} 不得提交下游语义`)
+  assert.equal(response.headersSent, false, `${label} 不得提前写出响应头`)
+  assert.equal(response.writableEnded, false, `${label} 必须交回上层接管`)
+  assert.equal(result.uncommittedResponseBody?.toString('utf8'), expectedUncommittedBody)
+  assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), true, `${label} 应允许服务端安全切号`)
+}
+
+function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[] } = {}): Response {
   const response = new EventEmitter() as EventEmitter & Record<string, unknown>
   response.headersSent = false
   response.writableEnded = false
@@ -196,8 +257,9 @@ function fakeResponse(input: { throwOnWrite?: boolean } = {}): Response {
   response.setHeader = function setHeader() {
     return this
   }
-  response.write = function write() {
+  response.write = function write(chunk?: Buffer | string) {
     if (input.throwOnWrite) throw new Error('downstream write failed')
+    if (chunk !== undefined) input.writtenChunks?.push(Buffer.from(chunk))
     this.headersSent = true
     return true
   }

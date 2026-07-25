@@ -9,7 +9,7 @@
 - 覆盖系统账户、团队、授权、代理、带账户级错误处理规则的 AI 账户、分组、API Key、公告、使用记录、模型检测、模型可信 observation 与派生结果、审计日志、操作日志、运行日志、公开接口日志、外部来源系统、响应检查策略、IP 统计与封禁策略、后台记录清理目标、账号质量、用量统计、系统监控和表空间监控。
 - 覆盖 OpenAI OAuth、OpenAI API Key、Anthropic API Key、标准 OpenAI 兼容客户端、Anthropic native Messages 客户端、Codex Responses 兼容客户端、多上游 Key 账号、图像生成账号、自定义模型目录、模型映射、账号调度停用、时间计划停用、待检查、停用、限流、冷却和错误等状态 / 类型样本。
 - 覆盖 API Key 的优先级故障转移、轮询、加权轮询、绑定禁用、额度窗口、过期、停用和时间计划样本，保证调度、筛选、详情和统计页面都有可见数据。
-- 默认生成近 31 天数据，并重建所有用量统计窗口、排行窗口、额度窗口、授权统计、账号质量缓存、运行日志分面和系统监控窗口。
+- 默认生成近 31 天数据，并重建所有用量统计窗口、排行窗口、额度窗口、授权统计、账号质量缓存、AI 健康监控小时状态、运行日志分面和系统监控窗口。
 - 脚本可重复执行；每次先清理上一批 `造数-` / `mockdata_` 数据，再重新插入。
 
 ## 2. 职责边界
@@ -78,8 +78,9 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权调用方的 Mock API Key 会选择混合绑定有效授权分组和该调用方自己默认分组的路由策略；admin 也会生成一个绑定有效授权分组的 Mock 路由策略和 API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证路由策略命中授权分组后的统计和审计口径。
 - AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、Anthropic OAuth、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；GPT 造数显式保存 `healthCheckEndpointMode=responses_sse`，通用 OpenAI-compatible 造数显式保存 `chat_json`，用于检查配置回显和后台精确请求形态；Anthropic OAuth 样本使用 Bearer Token 模拟值，不生成站内浏览器授权或订阅代理链路。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
-- 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
-- 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本；GPT 文本记录还必须包含 Priority、Flex 实际计费档位、请求 / 最终思考强度及写入时计价快照样本。
+- 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本和图像能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
+- 使用记录必须覆盖 gateway、manual_account_test、account_health_check 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本；GPT 文本记录还必须包含 Priority、Flex 实际计费档位、请求 / 最终思考强度及写入时计价快照样本。
+- AI 健康监控默认给全部 26 个基础 Mock AI 账户生成最多近 31 天的逐小时检查记录，约 1.9 万条；每个基础账户包含稳定的成功、失败和无记录间隔，并通过真实用量聚合器写入 `account_health_hourly`。列表连同授权账户实例大于默认每页 20 条，可直接验证分页、搜索、7 / 14 / 31 天切换和绿 / 红 / 灰状态条；调小 `--days` 时健康历史随之缩短，最大仍限制为 31 天。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求 OpenAI。
 - 统计数据来自脚本写入的 `usage_records`，再通过现有聚合器重建预聚合表；页面读取路径仍然和真实数据一致。
@@ -107,11 +108,12 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - `AI 账户` 与 `API Key` 列表应能看到时间计划样本，并同时覆盖当前可用和计划外不可用展示。
 - 授权列表中应出现普通用户授权给 admin 的分组和 AI 账户记录，用于超级管理员被授权资源验收；不应出现资源归属人给自己授权的记录。
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 检索。
-- 公开接口日志、外部来源系统、响应检查策略、IP 统计、IP 封禁策略、后台清理目标、用量统计、AI 性能监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。
+- 公开接口日志、外部来源系统、响应检查策略、IP 统计、IP 封禁策略、后台清理目标、用量统计、AI 性能监控、AI 健康监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。
 - AI 账户列表应能看到待检查、停用、限流、临时不可用、错误、不可调度、时间计划不生效、多 Key、图像生成、模型映射和不同客户端兼容能力样本；多 Key 样本创建时故意携带余额开启配置，用于验证最终状态自动关闭、列表不展示旧余额且编辑页保留配置。
 - API Key 列表和详情应能看到优先级故障转移、轮询、加权轮询、路由策略绑定禁用、停用、过期、时间计划和额度窗口样本。
 - 自定义模型目录应能看到全局模型、个人模型、草稿模型、停用模型和图像模型样本；当前不生成专用音频模型样本。
 - 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成、模型映射命中、Priority / Flex 实际档位和最终思考强度样本；悬浮成本应读取写入时计价快照并展示档位计价来源与最终单价。
+- `AI 健康监控` 默认应有至少两页账户列表和近 31 天小时状态；搜索 `造数-` 可命中账户，状态条同时可见成功、失败和无记录颜色。
 - 模型检测历史会覆盖管理端与用户侧可见路径，包含快速 / 深度、运行中、已完成、失败、已取消和深度可信对比样本；受控 observation 只绑定深度样本，并通过真实游标聚合器生成 Token 完整轮次、身份来源、基线、配对窗口和账户最新可信结果，用于模型检测与可信度详情验收。
 - `usage_range_window_requests` 只在用户请求尚未生成的自定义范围时登记，未发生请求或处理完成后允许为空；Mockdata 不为满足表非空断言伪造瞬时队列任务。
 - `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和路由策略授权分组绑定。

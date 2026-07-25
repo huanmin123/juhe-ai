@@ -97,7 +97,9 @@ export class NonStreamUpstreamBodyPipeError extends Error {
  */
 export function isProvenUpstreamBodyTransportError(error: unknown): boolean {
   if (isStartedUpstreamBodyTransportError(error)) return true
-  if (error instanceof UpstreamBodyReadIncompleteError) return true
+  if (error instanceof UpstreamBodyReadIncompleteError) {
+    return isProvenUpstreamBodyTransportError((error as Error & { cause?: unknown }).cause)
+  }
   if (error instanceof NonStreamUpstreamBodyPipeError) {
     return isProvenUpstreamBodyTransportError(error.originalError)
   }

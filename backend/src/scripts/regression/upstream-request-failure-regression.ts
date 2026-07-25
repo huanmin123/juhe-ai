@@ -79,8 +79,8 @@ try {
 } catch (error) {
   assert.equal(
     gatewayBody.isProvenUpstreamBodyTransportError(error),
-    true,
-    '正文读取边界包装后的 incomplete error 必须保留已开始上游 body transport 证据'
+    false,
+    '仅由本地假 iterable 包装出的 incomplete error 不得自行制造已开始上游 body transport 证据'
   )
 }
 
@@ -107,7 +107,24 @@ async function main(): Promise<void> {
 
     const upstreamAuthorizations: string[] = []
     upstreamServer = http.createServer((req, res) => {
-      upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      const authorization = String(req.headers.authorization ?? '')
+      upstreamAuthorizations.push(authorization)
+      if (req.url?.includes('mock_truncated_error_body=1')) {
+        if (authorization.includes('sk-truncated-body-backup')) {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end('{"choices":[{"message":{"role":"assistant","content":"truncated body backup success"},"finish_reason":"stop"}]}')
+          return
+        }
+        res.writeHead(400, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-length': '4096',
+          connection: 'close'
+        })
+        res.flushHeaders()
+        res.write('{"error":{"message":"partial body must never reach client"')
+        setTimeout(() => res.destroy(), 5)
+        return
+      }
       if (req.url?.includes('mock_unsupported_content_encoding=1')) {
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
@@ -154,6 +171,13 @@ async function main(): Promise<void> {
       createAccount(transportGroup.id, '02-传输失败后备账户', 'sk-transport-failure-fallback', closedTransportBaseUrl)
     ]
     const transportApiKey = createRegressionApiKey(transportGroup.id, 'sk-opaque-transport-failure-regression')
+
+    const truncatedBodyGroup = repositories.createGroup({ name: '响应正文客观截断隐藏切号分组', providerCode: 'gpt', enabled: true }, access)
+    const truncatedBodyAccounts = [
+      createAccount(truncatedBodyGroup.id, '01-正文截断账户', 'sk-truncated-body-primary', upstreamBaseUrl, false, 0),
+      createAccount(truncatedBodyGroup.id, '02-正文截断健康后备账户', 'sk-truncated-body-backup', upstreamBaseUrl, false, 100)
+    ]
+    const truncatedBodyApiKey = createRegressionApiKey(truncatedBodyGroup.id, 'sk-truncated-body-regression')
 
     const localDispatchFailureGroup = repositories.createGroup({ name: '本地派发异常不得切号分组', providerCode: 'gpt', enabled: true }, access)
     const localDispatchFailureAccounts = [
@@ -261,6 +285,32 @@ async function main(): Promise<void> {
       '真实已经派发的连接失败仍必须进入账户传输电路'
     )
     assertAccountsRemainAvailable(transportAccounts, '不透明传输失败')
+
+    const truncatedBodyCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
+    const truncatedBodyOffset = upstreamAuthorizations.length
+    const truncatedBodyResponse = await fetch(`${baseUrl}/v1/chat/completions?mock_truncated_error_body=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${truncatedBodyApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'partial 400 body must fail over before downstream commit' }],
+        stream: false
+      })
+    })
+    const truncatedBodyText = await truncatedBodyResponse.text()
+    assert.equal(truncatedBodyResponse.status, 200, `正文客观截断应在下游提交前切到健康后备：${truncatedBodyText}`)
+    assert.match(truncatedBodyText, /truncated body backup success/)
+    assert.doesNotMatch(truncatedBodyText, /partial body must never reach client/)
+    assert.deepEqual(
+      upstreamAuthorizations.slice(truncatedBodyOffset),
+      ['Bearer sk-truncated-body-primary', 'Bearer sk-truncated-body-backup'],
+      '正文客观截断只能触发一次失败主账户 attempt 和一次健康后备 attempt'
+    )
+    assert.ok(
+      await accountCircuit.getGatewayAccountCircuitStore().size() > truncatedBodyCircuitSizeBefore,
+      'content-length 未满足的真实正文 framing failure 必须保留 transport circuit 证据'
+    )
+    assertAccountsRemainAvailable(truncatedBodyAccounts, '正文客观截断')
 
     const localDispatchFailureCircuitSizeBefore = await accountCircuit.getGatewayAccountCircuitStore().size()
     const localDispatchFailureOffset = upstreamAuthorizations.length

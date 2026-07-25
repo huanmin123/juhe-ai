@@ -321,6 +321,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       signal,
       {
         clientRetryEnabled: false,
+        committedFailureSignal: clientStrategy?.retryCoordination.committedFailureSignal,
         // Enable the policy interceptor for precise clients. Unmatched vendor
         // events remain opaque in pipeUpstreamStream.
         interpretProtocolFailures: interpretUpstreamResponseSemantics,

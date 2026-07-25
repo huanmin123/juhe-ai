@@ -187,7 +187,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
         fallbackEnabled: parsed.data.fallbackEnabled,
-        supportedModels: parsed.data.supportedModels,
+        supportedModels: parsed.data.supportedModels ?? providerProfile.provider.defaultSupportedModels,
         healthCheckModel: parsed.data.healthCheckModel,
         healthCheckEndpointMode: parsed.data.healthCheckEndpointMode,
         temporaryUnavailableContinuousProbeEnabled: parsed.data.temporaryUnavailableContinuousProbeEnabled,
@@ -228,7 +228,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
-    status: normalizedText(bodyField(req, 'status')) || 'pending_test'
+    status: 'pending_test'
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -282,7 +282,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
         fallbackEnabled: parsed.data.fallbackEnabled,
-        supportedModels: parsed.data.supportedModels,
+        supportedModels: parsed.data.supportedModels ?? providerProfile.provider.defaultSupportedModels,
         healthCheckModel: parsed.data.healthCheckModel,
         healthCheckEndpointMode: parsed.data.healthCheckEndpointMode,
         temporaryUnavailableContinuousProbeEnabled: parsed.data.temporaryUnavailableContinuousProbeEnabled,

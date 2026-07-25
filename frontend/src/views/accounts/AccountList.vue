@@ -35,6 +35,7 @@
         :menu-items="menuItems"
         :provider-name="providerName"
         :proxy="proxy"
+        :save-priority="savePriority"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
         @bind-group="$emit('bind-group', $event)"
         @clone="$emit('clone', $event)"
@@ -58,6 +59,7 @@
         :menu-items="menuItems(record)"
         :provider-name="providerName(record.providerCode)"
         :proxy="proxy(record.proxyProfileId)"
+        :save-priority="savePriority"
         :selected="isSelected(record.id)"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
         @delete="$emit('delete', record.id)"
@@ -103,6 +105,7 @@ defineProps<{
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   refreshing: boolean
   rowSelection: Record<string, unknown>
+  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
   tableScrollX: number
   tableScrollY: string
   balanceRefreshingIds: Set<string>

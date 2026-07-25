@@ -150,15 +150,32 @@ async function assertConfirmedTransportFailureOpensCircuit(
   assert.equal(suspected.phase, 'SUSPECT', '首次独立传输失败只能建立 SUSPECT，不能由同一请求自我确认')
   assert.equal(suspected.lease, undefined, '首次请求结束后必须释放 confirmation lease，留给后续请求确认')
 
+  const beforeObserverHits = upstreamHits.length
+  const observerResponse = await postChat(baseUrl, scenario.apiKey, 'independent observer before confirmation due')
+  assert(observerResponse.status >= 500, `未到期 observer 的 Mock AI 连接中断应返回网关失败，实际 HTTP ${observerResponse.status}: ${observerResponse.text}`)
+  assert.equal(upstreamHits.length - beforeObserverHits, 1, '未到期的独立 observer 必须仍可真实命中 Mock AI，避免坏会话饿死其他会话')
+  const observerNeutral = await store.get(scope)
+  assert.equal(observerNeutral.phase, 'SUSPECT', '未到期 observer 失败不得提前打开账户电路')
+  assert.equal(observerNeutral.confirmationFailureCount, 0, '未到期 observer 失败不得绕过 confirmation 时间门禁累计阈值')
+  assert.equal(observerNeutral.failureEvidenceKeys?.length, 1, '未到期 observer 失败不得追加共享熔断 evidence')
+  assert.equal(observerNeutral.lease, undefined, '未到期 observer 失败不得占用 confirmation lease')
+  await forceSuspectRetryAt(scope, 'first-confirmation')
+
+  const beforeSecondHits = upstreamHits.length
   const secondResponse = await postChat(baseUrl, scenario.apiKey, 'second request should confirm transport failure')
   assert(secondResponse.status >= 500, `第二次 Mock AI 连接中断应返回网关失败，实际 HTTP ${secondResponse.status}: ${secondResponse.text}`)
+  assert.equal(upstreamHits.length - beforeSecondHits, 1, '到期后的第一次独立 confirmation 必须真实命中一次 Mock AI 上游')
   const onceConfirmed = await store.get(scope)
   assert.equal(onceConfirmed.phase, 'SUSPECT', '首次独立 confirmation 失败后必须继续切号并保持 SUSPECT')
   assert.equal(onceConfirmed.confirmationFailureCount, 1)
+  assert.equal(onceConfirmed.failureEvidenceKeys?.length, 2, '首次独立 confirmation 必须追加且仅追加一个 evidence')
   assert.equal(onceConfirmed.lease, undefined)
+  await forceSuspectRetryAt(scope, 'second-confirmation')
 
+  const beforeThirdHits = upstreamHits.length
   const thirdResponse = await postChat(baseUrl, scenario.apiKey, 'third request should reach confirmation threshold')
   assert(thirdResponse.status >= 500, `第三次 Mock AI 连接中断应返回网关失败，实际 HTTP ${thirdResponse.status}: ${thirdResponse.text}`)
+  assert.equal(upstreamHits.length - beforeThirdHits, 1, '到期后的第二次独立 confirmation 必须真实命中一次 Mock AI 上游')
   const opened = await store.get(scope)
   assert.equal(opened.phase, 'OPEN', '首次失败加两次独立 confirmation 失败后必须打开账户电路')
   assert.equal(opened.confirmationFailureCount, 2)
@@ -167,6 +184,25 @@ async function assertConfirmedTransportFailureOpensCircuit(
   assert.equal(opened.backoffAttempt, 1, '达到确认阈值后应进入第一档恢复退避')
   assert.equal(opened.dispatchRevision, accountCircuit.accountCircuitDispatchRevision(candidate))
   return { scope, dispatchRevision: opened.dispatchRevision }
+}
+
+async function forceSuspectRetryAt(
+  scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>,
+  transitionLabel: string
+): Promise<void> {
+  const store = accountCircuit.getGatewayAccountCircuitStore()
+  const state = await store.get(scope)
+  assert.equal(state.phase, 'SUSPECT', `${transitionLabel} 只能推进 SUSPECT 测试夹具`)
+  assert.equal(state.lease, undefined, `${transitionLabel} 推进前不得残留 confirmation lease`)
+  const nowMs = Date.now()
+  const updatedAtMs = Math.max(nowMs, state.updatedAtMs + 1)
+  const restored = await store.restore({
+    ...state,
+    transitionId: `test:${transitionLabel}:${updatedAtMs}`,
+    retryAtMs: nowMs - 1,
+    updatedAtMs
+  }, updatedAtMs)
+  assert.equal(restored.status, 'applied', `${transitionLabel} 必须确定性推进到 confirmation 到期窗口`)
 }
 
 async function assertDispatchRevisionFencesStaleRecovery(

@@ -35,7 +35,12 @@
   </a-tooltip>
   <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance', $event)" />
   <AccountTagsCell v-else-if="columnKey === 'tags'" :account="account" />
-  <span v-else-if="columnKey === 'priority'">{{ account.priority }}</span>
+  <AccountPriorityEditor
+    v-else-if="columnKey === 'priority'"
+    :editable="canEdit(account)"
+    :priority="account.priority"
+    :save-priority="(priority) => savePriority(account, priority)"
+  />
   <template v-else-if="columnKey === 'lastUsedAt'">
     {{ formatDateTime(accountLastUsedAt(account)) }}
   </template>
@@ -72,6 +77,7 @@ import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountTagsCell from './AccountTagsCell.vue'
@@ -110,6 +116,7 @@ const props = defineProps<{
   menuItems: (account: AccountSummary) => AccountMenuItem[]
   providerName: (providerCode?: string) => string
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
+  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean
 }>()
 

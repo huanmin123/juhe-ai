@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto'
 
 import type { AccountSummary, AccountTestResult } from '../../../../domain/types.js'
 import {
+  compareAndSetAccountCircuitIncident,
+  getAccountCircuitDispatchRevision
+} from '../../../../storage/account-circuit-control-plane.repository.js'
+import {
   cancelAccountTestSession,
   completeAccountTestTask,
   createAccountTestSession,
@@ -38,7 +42,7 @@ type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 type DatasetDatabase = ReturnType<typeof getDatasetDatabase>
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
 
-export function createBusinessTableCoverageMockdata(created: CreatedMockdata): void {
+export async function createBusinessTableCoverageMockdata(created: CreatedMockdata): Promise<void> {
   createSystemSessionCoverage(created)
   createProviderDefaultHealthCheckModelCoverage(created)
   createAccountTestCoverage(created)
@@ -46,6 +50,7 @@ export function createBusinessTableCoverageMockdata(created: CreatedMockdata): v
   createOpenAICompatibleStorageCoverage(created)
   createAvailabilityScheduleEventCoverage(created)
   createCodexContextStateCoverage(created)
+  await createAccountCircuitIncidentCoverage(created)
 }
 
 export function createDatasetTableCoverageMockdata(): void {
@@ -108,6 +113,36 @@ function createSystemSessionCoverage(created: CreatedMockdata): void {
     now,
     now
   )
+}
+
+async function createAccountCircuitIncidentCoverage(created: CreatedMockdata): Promise<void> {
+  const nowMs = Date.now()
+  const account = created.accounts.primary
+  const dispatchRevision = await getAccountCircuitDispatchRevision(account.id)
+  const result = await compareAndSetAccountCircuitIncident({
+    accountId: account.id,
+    accountRuntimeKey: account.id,
+    circuitScopeKey: `${idPrefix}circuit_scope_${account.id}`,
+    scopeKind: 'account',
+    incidentId: `${idPrefix}circuit_incident_${account.id}`,
+    state: 'SUSPECT',
+    failureScope: 'account',
+    generation: 1,
+    dispatchRevision,
+    expectedLedgerRevision: null,
+    transitionId: `${idPrefix}circuit_transition_${account.id}`,
+    nextTransitionAtMs: nowMs + 5 * minuteMs,
+    upstreamAttemptObserved: true,
+    backoffLevel: 1,
+    consecutiveFailures: 1,
+    confirmationFailuresRequired: 2,
+    confirmationFailureEvidenceKeys: ['a'.repeat(64)],
+    lastFailureClass: 'timeout_before_complete',
+    nowMs
+  })
+  if (result.status !== 'applied' && result.status !== 'idempotent') {
+    throw new Error(`Mockdata 账户熔断事件创建失败：${result.status}`)
+  }
 }
 
 function createProviderDefaultHealthCheckModelCoverage(created: CreatedMockdata): void {

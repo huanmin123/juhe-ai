@@ -340,12 +340,110 @@ export function createUsageMockdata(created: CreatedMockdata, options: MockdataO
     }
   }
 
+  appendAccountHealthMonitorUsageRecords(records, created, scenarios, options, endAt)
   appendCoverageUsageRecords(records, created, endAt)
 
   for (const chunk of chunks(records, 500)) {
     repositories.createUsageRecordsBatch(chunk)
   }
   return records
+}
+
+function appendAccountHealthMonitorUsageRecords(
+  records: UsageRecordSeed[],
+  created: CreatedMockdata,
+  scenarios: KeyScenario[],
+  options: MockdataOptions,
+  endAt: Date
+): void {
+  const actualAccountIds = new Set(Object.values(created.accounts).map((account) => account.id))
+  const extraScenarios: KeyScenario[] = [
+    {
+      key: created.apiKeys.adminMain,
+      owner: created.users.admin,
+      group: created.groups.openaiCompatible,
+      accounts: [created.accounts.openaiStandard],
+      label: 'admin-openai-standard-health',
+      clientIpBase: '10.30.22.',
+      trafficSource: 'account_health_check'
+    },
+    {
+      key: created.apiKeys.adminMain,
+      owner: created.users.admin,
+      group: created.groups.experiment,
+      accounts: [created.accounts.expired],
+      label: 'admin-expired-health',
+      clientIpBase: '10.30.23.',
+      trafficSource: 'account_health_check'
+    },
+    {
+      key: created.apiKeys.opsAccountAuthorized,
+      owner: created.users.ops,
+      group: created.groups.adminGrantedOps,
+      accounts: [created.accounts.opsShared],
+      label: 'ops-shared-health',
+      clientIpBase: '10.30.24.',
+      trafficSource: 'account_health_check'
+    },
+    {
+      key: created.apiKeys.testerTeamAuthorized,
+      owner: created.users.tester,
+      group: created.groups.adminGrantedTester,
+      accounts: [created.accounts.testerShared],
+      label: 'tester-shared-health',
+      clientIpBase: '10.30.25.',
+      trafficSource: 'account_health_check'
+    }
+  ]
+  const targets: Array<{ scenario: KeyScenario; account: AccountSummary }> = []
+  const seenAccountIds = new Set<string>()
+  for (const scenario of [...scenarios, ...extraScenarios]) {
+    for (const account of scenario.accounts) {
+      if (!actualAccountIds.has(account.id) || seenAccountIds.has(account.id)) continue
+      seenAccountIds.add(account.id)
+      targets.push({
+        scenario: {
+          ...scenario,
+          clientIpBase: `10.30.${targets.length}.`,
+          trafficSource: 'account_health_check'
+        },
+        account
+      })
+    }
+  }
+  if (seenAccountIds.size !== actualAccountIds.size) {
+    const missing = Object.values(created.accounts)
+      .filter((account) => !seenAccountIds.has(account.id))
+      .map((account) => account.name)
+    throw new Error(`AI 健康监控 Mockdata 账户映射不完整：${missing.join('、')}`)
+  }
+
+  const rangeHours = Math.min(options.days * 24, 31 * 24)
+  const hourMs = 60 * minuteMs
+  const ordinalBase = records.length + 10_000
+  for (const [accountIndex, target] of targets.entries()) {
+    const gapOffset = rangeHours > 2 ? 1 + (accountIndex % (rangeHours - 1)) : -1
+    const failureOffset = rangeHours > 2 ? 1 + ((gapOffset + 7) % (rangeHours - 1)) : 0
+    for (let hourOffset = 0; hourOffset < rangeHours; hourOffset += 1) {
+      const failure = rangeHours === 1
+        ? accountIndex % 5 === 0
+        : hourOffset === failureOffset || (hourOffset + accountIndex * 11) % 47 === 0
+      const gap = hourOffset > 0
+        && !failure
+        && (hourOffset === gapOffset || (hourOffset + accountIndex * 5) % 29 === 0)
+      if (gap) continue
+      const ordinal = ordinalBase + accountIndex * rangeHours + hourOffset
+      records.push(buildUsageRecord({
+        ordinal,
+        idSuffix: `health_${String(accountIndex + 1).padStart(3, '0')}_${String(hourOffset).padStart(4, '0')}`,
+        modelOverride: target.account.healthCheckModel || target.account.supportedModels?.[0] || 'gpt-5.4-mini',
+        successOverride: !failure,
+        createdAt: new Date(endAt.getTime() - hourOffset * hourMs),
+        scenario: target.scenario,
+        account: target.account
+      }))
+    }
+  }
 }
 
 function appendCoverageUsageRecords(records: UsageRecordSeed[], created: CreatedMockdata, endAt: Date): void {

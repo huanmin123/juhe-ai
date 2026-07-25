@@ -47,6 +47,6 @@ function isServerRetryableSystemDefaultResponseInspectionDecision(
     && serverRetryableSystemDefaultResponseInspectionPolicyIds.has(decision.policyId ?? '')
 }
 
-export function shouldInterruptCommittedGenericStream(clientRetryEnabled: boolean, downstreamBytesWritten: number): boolean {
-  return !clientRetryEnabled && downstreamBytesWritten > 0
+export function shouldInterruptCommittedGenericStream(protocolFailureEventEnabled: boolean, downstreamBytesWritten: number): boolean {
+  return !protocolFailureEventEnabled && downstreamBytesWritten > 0
 }

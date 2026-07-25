@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   console.log(`开始生成 Mockdata：${options.days} 天，每天 ${options.dailyRequests} 条使用记录，资源归属 ${admin.username}`)
   cleanupMockdata(businessDatabase, datasetDatabase, statsDatabase, admin.id)
 
-  const created = createBusinessMockdata(admin, adminAccess)
+  const created = await createBusinessMockdata(admin, adminAccess)
   syncAvailabilityScheduleStatuses()
   const usageRecords = createUsageMockdata(created, options)
   createAuditMockdata(usageRecords)
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   createStatsTableCoverageMockdata(created, usageRecords)
   createStorageMockdata(created, options)
   updateApiKeyLastUsedAt(usageRecords)
-  assertMockdataCoverage(created)
+  assertMockdataCoverage(created, options)
   writeSummary(
     created,
     usageRecords,
@@ -169,7 +169,7 @@ function assertSqliteMockdataCli(): void {
   }
 }
 
-function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): CreatedMockdata {
+async function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: AccessScope): Promise<CreatedMockdata> {
   const unscopedAdminAccess: AccessScope = { systemAccountId: admin.id, role: adminAccess.role }
   const users = createMockUsers(admin)
   const customProviderModels = createCustomProviderModels(admin.id, users)
@@ -186,7 +186,7 @@ function createBusinessMockdata(admin: SystemAccountSummary, adminAccess: Access
   createAnnouncements(admin.id, users)
   seedOauthUsageSnapshots(accounts)
   tuneGroupAccountBindings(groups, accounts)
-  createBusinessTableCoverageMockdata({
+  await createBusinessTableCoverageMockdata({
     users,
     groups,
     accounts,

@@ -510,8 +510,14 @@ async function assertCodexPostOutputFailureTerminatesWithoutReplay(
   })
   assert(streamText.includes('partial output'), `已有语义输出必须保留，不得回滚或用备用账号覆盖：${streamText}`)
   assert(!streamText.includes('response.completed'), `输出后失败不得拼接备用账号完成事件：${streamText}`)
-  assert(!streamText.includes('response.failed'), `输出后必须丢弃供应商原始失败事件：${streamText}`)
-  assert(!streamText.includes('upstream_retryable_error'), `输出后稳定结束不得伪造新的可重试事件：${streamText}`)
+  assert.equal(
+    (streamText.match(/event: response\.failed/g) ?? []).length,
+    1,
+    `Codex 精确客户端在输出后失败时必须收到且只收到一个网关受控失败事件：${streamText}`
+  )
+  assert(streamText.includes('upstream_stream_interrupted'), `输出后受控失败事件必须使用稳定的网关中断码：${streamText}`)
+  assert(streamText.includes('上游流式响应在输出后中断'), `输出后受控失败事件必须使用网关脱敏文案：${streamText}`)
+  assert(!streamText.includes('upstream_retryable_error'), `输出后不得伪造成尚未产生语义输出的客户端重试事件：${streamText}`)
   assert(!streamText.includes('cyber_policy'), `输出后不得透出供应商自造错误码：${streamText}`)
   assert(!streamText.includes('possible cybersecurity risk'), `输出后不得透出供应商错误文案：${streamText}`)
 

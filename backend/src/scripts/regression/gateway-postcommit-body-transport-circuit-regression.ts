@@ -111,6 +111,7 @@ interface PartialResponseResult {
   text: string
   terminated: boolean
   durationMs: number
+  responseLifetimeMs: number
 }
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -338,9 +339,14 @@ function sendCommittedThenTruncate(
     'x-provider-private-error': 'must-not-drive-state'
   })
   res.flushHeaders()
+  const socket = res.socket
   res.write(event, () => {
     hit.partialWriteFlushed = true
-    setTimeout(() => res.destroy(), 20)
+    if (socket && !socket.destroyed) {
+      socket.end()
+      return
+    }
+    res.destroy()
   })
 }
 
@@ -421,6 +427,7 @@ function rawHttpPost(
     })
     request.once('response', (response) => {
       responseStarted = true
+      const responseStartedAtMs = Date.now()
       const chunks: Buffer[] = []
       let ended = false
       const finish = (terminated: boolean) => {
@@ -432,7 +439,8 @@ function rawHttpPost(
           headers: response.headers,
           text: Buffer.concat(chunks).toString('utf8'),
           terminated,
-          durationMs: Date.now() - startedAtMs
+          durationMs: Date.now() - startedAtMs,
+          responseLifetimeMs: Date.now() - responseStartedAtMs
         })
       }
       response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
@@ -457,7 +465,10 @@ function assertCommittedClientBoundary(
 ): void {
   const label = `${scenario.responseKind}/${attemptKind}`
   assert.equal(result.statusCode, 200, `${label} 必须先向客户端提交上游 200 header`)
-  assert(result.durationMs < 2_000, `${label} 必须由真实正文 socket truncation 快速终止，不能等待墙钟/idle timeout：${result.durationMs}ms`)
+  assert(
+    result.responseLifetimeMs < 2_000,
+    `${label} 响应头提交后必须由真实正文 socket truncation 快速终止，不能等待墙钟/idle timeout：response=${result.responseLifetimeMs}ms total=${result.durationMs}ms`
+  )
   assert.match(
     String(result.headers['content-type'] ?? ''),
     scenario.responseKind === 'sse' ? /text\/event-stream/i : /text\/plain/i,
