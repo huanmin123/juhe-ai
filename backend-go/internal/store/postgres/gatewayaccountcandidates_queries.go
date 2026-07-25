@@ -118,7 +118,7 @@ LEFT JOIN juhe_business.accounts AS source_accounts
   ON source_accounts.id = accounts.authorization_instance_source_account_id
 CROSS JOIN LATERAL (
   SELECT CASE
-    WHEN $9::text = '' THEN 0
+    WHEN $9::text = '' THEN 3
     WHEN EXISTS (
       SELECT 1 FROM juhe_business.account_supported_models AS supported_models
       WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
@@ -137,23 +137,13 @@ CROSS JOIN LATERAL (
           model_mappings.upstream_model <> model_mappings.source_model
           OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
         )
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
-            WHERE limited_models.account_id = model_mappings.account_id
-          )
-          OR EXISTS (
-            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
-            WHERE mapped_models.account_id = model_mappings.account_id
-              AND mapped_models.provider_code = model_mappings.provider_code
-              AND mapped_models.model = model_mappings.upstream_model
-          )
+        AND EXISTS (
+          SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+          WHERE mapped_models.account_id = model_mappings.account_id
+            AND mapped_models.provider_code = model_mappings.provider_code
+            AND mapped_models.model = model_mappings.upstream_model
         )
     ) THEN 1
-    WHEN NOT EXISTS (
-      SELECT 1 FROM juhe_business.account_supported_models AS limited_models
-      WHERE limited_models.account_id = COALESCE(source_accounts.id, accounts.id)
-    ) THEN 2
     ELSE 3
   END AS model_rank
 ) AS model_ranking

@@ -238,8 +238,8 @@ func (s *Service) testProvider(ctx context.Context, proxyURL string, provider po
 	if ctx.Err() != nil {
 		return ProxyTestItem{
 			Name:      name,
-			Status:    "failed",
-			Message:   "代理检测总耗时已达到上限",
+			Status:    "unknown",
+			Message:   "未发起目标请求：代理检测总耗时已达到上限",
 			TargetURL: &targetURLValue,
 		}
 	}
@@ -251,24 +251,36 @@ func (s *Service) testProvider(ctx context.Context, proxyURL string, provider po
 	if err != nil {
 		message := safeProxyProbeError(err, proxyURL)
 		if errors.Is(err, context.DeadlineExceeded) {
-			message = "代理检测请求超时"
+			return ProxyTestItem{
+				Name:      name,
+				Status:    "failed",
+				Message:   "代理检测请求超时",
+				TargetURL: &targetURLValue,
+			}
+		}
+		if isTransportProxyProbeFailure(err) {
+			return ProxyTestItem{
+				Name:      name,
+				Status:    "failed",
+				Message:   message,
+				TargetURL: &targetURLValue,
+			}
 		}
 		return ProxyTestItem{
 			Name:      name,
-			Status:    "failed",
-			Message:   message,
+			Status:    "unknown",
+			Message:   "未形成真实代理检测请求：" + message,
 			TargetURL: &targetURLValue,
 		}
 	}
-	status := proxyProviderStatus(result.StatusCode)
 	statusCode := result.StatusCode
 	latencyMs := result.LatencyMs
 	return ProxyTestItem{
 		Name:       name,
-		Status:     status,
+		Status:     "passed",
 		HTTPStatus: &statusCode,
 		LatencyMs:  &latencyMs,
-		Message:    proxyProviderMessage(status, result.StatusCode),
+		Message:    proxyProviderMessage(result.StatusCode),
 		TargetURL:  &targetURLValue,
 	}
 }
@@ -312,36 +324,47 @@ func baseConnectivityItem(items []ProxyTestItem, providerCount int) ProxyTestIte
 	if providerCount <= 0 {
 		return ProxyTestItem{
 			Name:    "基础连通性",
-			Status:  "failed",
-			Message: "没有启用的供应商默认地址",
+			Status:  "unknown",
+			Message: "没有启用的供应商默认地址，未形成代理传输检测",
 		}
 	}
 	failedCount := 0
+	unknownCount := 0
+	passedCount := 0
 	latencyTotal := 0
 	latencyCount := 0
 	for _, item := range items {
 		if item.Status == "failed" {
 			failedCount++
 		}
+		if item.Status == "unknown" {
+			unknownCount++
+		}
+		if item.Status == "passed" {
+			passedCount++
+		}
 		if item.LatencyMs != nil {
 			latencyTotal += *item.LatencyMs
 			latencyCount++
 		}
 	}
-	reachableCount := len(items) - failedCount
 	var latencyMs *int
 	if latencyCount > 0 {
 		average := int(math.Round(float64(latencyTotal) / float64(latencyCount)))
 		latencyMs = &average
 	}
-	status := "failed"
-	message := "供应商默认地址全部不可达"
-	if failedCount == 0 {
+	status := "unknown"
+	message := "供应商默认地址均未形成真实传输检测"
+	switch {
+	case failedCount == 0 && unknownCount == 0:
 		status = "passed"
 		message = "全部供应商默认地址可达"
-	} else if reachableCount > 0 {
+	case passedCount > 0:
 		status = "warning"
-		message = fmt.Sprintf("部分供应商默认地址可达（%d/%d）", reachableCount, providerCount)
+		message = fmt.Sprintf("部分供应商默认地址完成传输检测（%d/%d）", passedCount, providerCount)
+	case failedCount > 0:
+		status = "failed"
+		message = "供应商默认地址全部发生传输失败"
 	}
 	return ProxyTestItem{
 		Name:      "基础连通性",
@@ -372,7 +395,27 @@ func summarizeProxyTestItems(items []ProxyTestItem) proxyTestSummary {
 			summary.FailedCount++
 		}
 	}
-	summary.Score = max(0, int(math.Round(100-float64(summary.WarningCount*10)-float64(summary.FailedCount*35))))
+	unknownCount := 0
+	for _, item := range items {
+		if item.Status == "unknown" {
+			unknownCount++
+		}
+	}
+	switch {
+	case summary.FailedCount > 0:
+		summary.Status = "failed"
+	case summary.WarningCount > 0 || (summary.PassedCount > 0 && unknownCount > 0):
+		summary.Status = "warning"
+	case unknownCount > 0 || len(items) == 0:
+		summary.Status = "unknown"
+	default:
+		summary.Status = "passed"
+	}
+	if summary.Status == "unknown" {
+		summary.Score = 0
+	} else {
+		summary.Score = max(0, int(math.Round(100-float64(summary.WarningCount*10)-float64(summary.FailedCount*35))))
+	}
 	switch {
 	case summary.Score >= 90:
 		summary.Grade = "A"
@@ -383,38 +426,11 @@ func summarizeProxyTestItems(items []ProxyTestItem) proxyTestSummary {
 	default:
 		summary.Grade = "D"
 	}
-	switch {
-	case summary.FailedCount > 0:
-		summary.Status = "failed"
-	case summary.WarningCount > 0:
-		summary.Status = "warning"
-	case len(items) > 0:
-		summary.Status = "passed"
-	default:
-		summary.Status = "unknown"
-	}
 	return summary
 }
 
-func proxyProviderStatus(statusCode int) string {
-	if statusCode >= 200 && statusCode < 300 {
-		return "passed"
-	}
-	if statusCode >= 300 && statusCode < 500 {
-		return "warning"
-	}
-	return "failed"
-}
-
-func proxyProviderMessage(status string, statusCode int) string {
-	switch status {
-	case "passed":
-		return fmt.Sprintf("HTTP %d", statusCode)
-	case "warning":
-		return fmt.Sprintf("HTTP %d（目标可达，但鉴权或方法受限）", statusCode)
-	default:
-		return fmt.Sprintf("HTTP %d（目标不可用或代理链路异常）", statusCode)
-	}
+func proxyProviderMessage(statusCode int) string {
+	return fmt.Sprintf("HTTP %d（传输完整，状态码仅供诊断）", statusCode)
 }
 
 func proxyTestReportMessage(status string, failedCount int, warningCount int) string {
@@ -426,7 +442,7 @@ func proxyTestReportMessage(status string, failedCount int, warningCount int) st
 	case "failed":
 		return fmt.Sprintf("代理检测存在 %d 项失败", failedCount)
 	default:
-		return "代理尚未检测"
+		return "代理检测未形成有效传输尝试"
 	}
 }
 

@@ -44,6 +44,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementclientipstats"
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
+	"juhe-ai/backend-go/internal/modules/managementmodelcheckoptions"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
@@ -479,6 +480,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
 		ManagementUsageRecordsHandler:                     managementHandlers.UsageRecordsHandler,
 		ManagementMyUsageRecordsHandler:                   managementHandlers.MyUsageRecordsHandler,
+		ManagementModelCheckOptionsHandler:                managementHandlers.ModelCheckOptionsHandler,
+		ManagementMyModelCheckOptionsHandler:              managementHandlers.MyModelCheckOptionsHandler,
 		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
 		ManagementAnnouncementPublicDetailHandler:         managementHandlers.AnnouncementPublicDetailHandler,
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
@@ -731,6 +734,8 @@ type managementAPIHandlers struct {
 	PublicAPILogsHandler                    http.Handler
 	UsageRecordsHandler                     http.Handler
 	MyUsageRecordsHandler                   http.Handler
+	ModelCheckOptionsHandler                http.Handler
+	MyModelCheckOptionsHandler              http.Handler
 	AnnouncementPublicListHandler           http.Handler
 	AnnouncementPublicDetailHandler         http.Handler
 	AnnouncementPublicReadHandler           http.Handler
@@ -1036,6 +1041,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
 	publicAPILogService := managementpublicapilogs.NewService(store)
 	usageRecordService := managementusagerecords.NewService(store)
+	modelCheckOptionsService := managementmodelcheckoptions.NewService()
 	announcementService := announcements.NewService(store)
 	statsService := managementstats.NewService(store)
 	statsOverviewService := managementstatsoverview.NewService(managementstatsoverview.ServiceOptions{
@@ -1279,6 +1285,8 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
 		UsageRecordsHandler:                     httpapi.NewManagementUsageRecordsHandler(usageRecordService),
 		MyUsageRecordsHandler:                   httpapi.NewManagementMyUsageRecordsHandler(usageRecordService),
+		ModelCheckOptionsHandler:                httpapi.NewManagementModelCheckOptionsHandler(modelCheckOptionsService),
+		MyModelCheckOptionsHandler:              httpapi.NewManagementMyModelCheckOptionsHandler(modelCheckOptionsService),
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicDetailHandler:         httpapi.NewAnnouncementPublicDetailHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),

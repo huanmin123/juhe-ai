@@ -230,6 +230,8 @@ type RouterOptions struct {
 	ManagementPublicAPILogsHandler                    http.Handler
 	ManagementUsageRecordsHandler                     http.Handler
 	ManagementMyUsageRecordsHandler                   http.Handler
+	ManagementModelCheckOptionsHandler                http.Handler
+	ManagementMyModelCheckOptionsHandler              http.Handler
 	ManagementAnnouncementPublicListHandler           http.Handler
 	ManagementAnnouncementPublicDetailHandler         http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
@@ -539,6 +541,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementPublicAPILogsHandler == nil &&
 				opts.ManagementUsageRecordsHandler == nil &&
 				opts.ManagementMyUsageRecordsHandler == nil &&
+				opts.ManagementModelCheckOptionsHandler == nil &&
+				opts.ManagementMyModelCheckOptionsHandler == nil &&
 				opts.ManagementAnnouncementPublicListHandler == nil &&
 				opts.ManagementAnnouncementPublicDetailHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
@@ -1222,6 +1226,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
 			}
+			if opts.ManagementModelCheckOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/model-checks/options", opts.ManagementModelCheckOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyModelCheckOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-model-checks/options", opts.ManagementMyModelCheckOptionsHandler.ServeHTTP)
+			}
 			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets", opts.ManagementRuntimeLogsHandler.ServeHTTP)
@@ -1716,6 +1726,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementPublicAPILogsHandler != nil ||
 		opts.ManagementUsageRecordsHandler != nil ||
 		opts.ManagementMyUsageRecordsHandler != nil ||
+		opts.ManagementModelCheckOptionsHandler != nil ||
+		opts.ManagementMyModelCheckOptionsHandler != nil ||
 		opts.ManagementAnnouncementPublicListHandler != nil ||
 		opts.ManagementAnnouncementPublicDetailHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||

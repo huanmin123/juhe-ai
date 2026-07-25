@@ -50,11 +50,18 @@ func (*Service) Options() Result {
 	}
 	return Result{
 		SupportedModels: models,
-		SupportedProfiles: []Option{{
-			Value:       "full",
-			Label:       "强诊断完整检测",
-			Description: "准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针",
-		}},
+		SupportedProfiles: []Option{
+			{
+				Value:       "quick",
+				Label:       "快速检测",
+				Description: "最多执行 2 个轻量串行探针，快速给出初步判断",
+			},
+			{
+				Value:       "full",
+				Label:       "深度检测",
+				Description: "准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针",
+			},
+		},
 		DefaultModel:   supportedModels[0],
 		DefaultProfile: "full",
 		TrustedComparison: TrustedComparison{

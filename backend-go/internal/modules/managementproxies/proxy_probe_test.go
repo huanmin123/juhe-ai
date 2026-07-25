@@ -61,4 +61,31 @@ func TestDefaultProxyProbeRejectsInvalidProxyScheme(t *testing.T) {
 	if err == nil || !strings.Contains(fmt.Sprint(err), "代理协议无效") {
 		t.Fatalf("Probe() error = %v, want invalid proxy scheme", err)
 	}
+	if isTransportProxyProbeFailure(err) {
+		t.Fatalf("invalid proxy configuration classified as transport failure: %v", err)
+	}
+}
+
+func TestDefaultProxyProbeReturnsCompleteServerErrorResponse(t *testing.T) {
+	targetURL := "http://upstream.example.com/probe"
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != targetURL {
+			t.Fatalf("request URI = %q, want %q", r.RequestURI, targetURL)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("temporary upstream response"))
+	}))
+	defer proxyServer.Close()
+
+	result, err := newDefaultProxyProbe().Probe(context.Background(), ProxyProbeInput{
+		TargetURL: targetURL,
+		ProxyURL:  proxyServer.URL,
+		Timeout:   2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+	if result.StatusCode != http.StatusServiceUnavailable || result.Body != "temporary upstream response" {
+		t.Fatalf("result = %+v", result)
+	}
 }

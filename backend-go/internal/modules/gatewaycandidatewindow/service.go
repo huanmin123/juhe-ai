@@ -290,8 +290,8 @@ func effectiveQuality(candidate Candidate) *int64 {
 }
 
 func modelRank(candidate Candidate, model, endpointFamily string) int {
-	if model == "" {
-		return 0
+	if len(candidate.SupportedModels) == 0 || strings.TrimSpace(model) == "" {
+		return 3
 	}
 	for _, supported := range candidate.SupportedModels {
 		if strings.EqualFold(strings.TrimSpace(supported), model) {
@@ -325,9 +325,6 @@ func modelRank(candidate Candidate, model, endpointFamily string) int {
 			continue
 		}
 		return 1
-	}
-	if len(candidate.SupportedModels) == 0 {
-		return 2
 	}
 	return 3
 }

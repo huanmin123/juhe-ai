@@ -12,7 +12,7 @@ func TestFilterCandidatesAppliesCapabilityBeforeModelPriority(t *testing.T) {
 		candidate("blocked", Capability{Registered: true, ContextAllowed: true, UpstreamRouteAvailable: true, SupportedEndpointModes: []string{"chat_json"}, ClientCompatibilities: []string{"openai_standard"}}, []string{"gpt-5"}),
 		candidate("mapping", readyCapability(), []string{"gpt-4o"}),
 		candidate("direct", readyCapability(), []string{"gpt-5"}),
-		candidate("unrestricted", readyCapability(), nil),
+		candidate("invalid", readyCapability(), nil),
 	}
 	candidates[1].ModelMappings = []ModelMapping{{
 		SourceModel: "gpt-5", SourceEndpointFamily: EndpointFamilyResponses,
@@ -27,10 +27,10 @@ func TestFilterCandidatesAppliesCapabilityBeforeModelPriority(t *testing.T) {
 		RequestedModel: " gpt-5 ", SourceEndpointFamily: EndpointFamilyResponses,
 	})
 
-	if got, want := candidateIDs(result.Candidates), []string{"direct", "mapping", "unrestricted"}; !reflect.DeepEqual(got, want) {
+	if got, want := candidateIDs(result.Candidates), []string{"direct", "mapping"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("filtered candidate ids = %#v, want %#v", got, want)
 	}
-	if result.Capability.SkippedCount != 1 || result.Model.DirectMatchedCount != 1 || result.Model.MappingMatchedCount != 1 || result.Model.UnrestrictedAccountCount != 1 {
+	if result.Capability.SkippedCount != 1 || result.Model.DirectMatchedCount != 1 || result.Model.MappingMatchedCount != 1 || result.Model.InvalidModelConstraintCount != 1 || result.Model.SkippedCount != 1 {
 		t.Fatalf("unexpected filter counts: %#v", result)
 	}
 	if result.Model.Priority.RankByCandidateID["direct"] != ModelPriorityDirect || result.Model.Priority.RankByCandidateID["mapping"] != ModelPriorityMapping {
@@ -38,14 +38,14 @@ func TestFilterCandidatesAppliesCapabilityBeforeModelPriority(t *testing.T) {
 	}
 }
 
-func TestFilterModelCandidatesAcceptsProtocolRegistryEndpointFamily(t *testing.T) {
+func TestFilterModelCandidatesRejectsEmptySupportedModels(t *testing.T) {
 	result := FilterModelCandidates(
-		[]Candidate{candidate("unrestricted", readyCapability(), nil)},
+		[]Candidate{candidate("invalid", readyCapability(), nil)},
 		"gpt-5",
 		gatewayprotocol.EndpointResponses,
 	)
-	if got, want := candidateIDs(result.Candidates), []string{"unrestricted"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("candidate ids = %#v, want %#v", got, want)
+	if len(result.Candidates) != 0 || result.Reason != ModelMismatchUnsupported || result.InvalidModelConstraintCount != 1 || result.SkippedCount != 1 || result.Priority.RankByCandidateID["invalid"] != ModelPriorityUnsupported {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -64,9 +64,9 @@ func TestFilterCandidatesReportsCapabilityMismatchBeforeModelMismatch(t *testing
 	}
 }
 
-func TestFilterModelCandidatesOrdersDirectMappingThenUnrestricted(t *testing.T) {
+func TestFilterModelCandidatesOrdersDirectThenMappingAndSkipsInvalidConstraint(t *testing.T) {
 	candidates := []Candidate{
-		candidate("unrestricted", readyCapability(), nil),
+		candidate("invalid", readyCapability(), nil),
 		candidate("unsupported", readyCapability(), []string{"gpt-4o-mini"}),
 		candidate("mapping", readyCapability(), []string{"gpt-4o"}),
 		candidate("direct", readyCapability(), []string{"gpt-5"}),
@@ -78,10 +78,10 @@ func TestFilterModelCandidatesOrdersDirectMappingThenUnrestricted(t *testing.T) 
 	}}
 
 	result := FilterModelCandidates(candidates, "gpt-5", EndpointFamilyResponses)
-	if got, want := candidateIDs(result.Candidates), []string{"direct", "mapping", "unrestricted"}; !reflect.DeepEqual(got, want) {
+	if got, want := candidateIDs(result.Candidates), []string{"direct", "mapping"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidate ids = %#v, want %#v", got, want)
 	}
-	if result.SkippedCount != 1 || result.LimitedAccountCount != 3 || result.UnrestrictedAccountCount != 1 || result.DirectMatchedCount != 1 || result.MappingMatchedCount != 1 {
+	if result.SkippedCount != 2 || result.LimitedAccountCount != 3 || result.InvalidModelConstraintCount != 1 || result.DirectMatchedCount != 1 || result.MappingMatchedCount != 1 {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.Priority.RankByCandidateID["unsupported"] != ModelPriorityUnsupported {
@@ -114,17 +114,16 @@ func TestFilterModelCandidatesDoesNotTreatUnsupportedMappingAsEligible(t *testin
 	}
 }
 
-func TestFilterModelCandidatesReportsMissingModelOnlyWhenAllCandidatesAreLimited(t *testing.T) {
+func TestFilterModelCandidatesReportsMissingModelForEveryInvalidConstraint(t *testing.T) {
 	limited := []Candidate{candidate("strict", readyCapability(), []string{"gpt-5"})}
 	result := FilterModelCandidates(limited, "  ", EndpointFamilyResponses)
 	if result.Reason != ModelMismatchMissing || len(result.Candidates) != 0 {
 		t.Fatalf("limited result = %#v", result)
 	}
 
-	result = FilterModelCandidates([]Candidate{candidate("open", readyCapability(), nil)}, "", EndpointFamilyResponses)
-	got := candidateIDs(result.Candidates)
-	if result.Reason != "" || !reflect.DeepEqual(got, []string{"open"}) {
-		t.Fatalf("unrestricted result = %#v", result)
+	result = FilterModelCandidates([]Candidate{candidate("invalid", readyCapability(), nil)}, "", EndpointFamilyResponses)
+	if result.Reason != ModelMismatchMissing || len(result.Candidates) != 0 || result.InvalidModelConstraintCount != 1 {
+		t.Fatalf("invalid result = %#v", result)
 	}
 }
 

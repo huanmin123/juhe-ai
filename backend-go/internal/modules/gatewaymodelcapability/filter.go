@@ -35,7 +35,6 @@ type ModelPriorityRank int
 const (
 	ModelPriorityDirect ModelPriorityRank = iota
 	ModelPriorityMapping
-	ModelPriorityUnrestricted
 	ModelPriorityUnsupported
 )
 
@@ -88,16 +87,16 @@ type ModelPriority struct {
 }
 
 type ModelFilterResult struct {
-	Candidates               []Candidate         `json:"candidates"`
-	SkippedCount             int                 `json:"skippedCount"`
-	LimitedAccountCount      int                 `json:"limitedAccountCount"`
-	UnrestrictedAccountCount int                 `json:"unrestrictedAccountCount"`
-	DirectMatchedCount       int                 `json:"directMatchedCount"`
-	MappingMatchedCount      int                 `json:"mappingMatchedCount"`
-	RequestedModel           string              `json:"requestedModel,omitempty"`
-	SourceEndpointFamily     EndpointFamily      `json:"sourceEndpointFamily,omitempty"`
-	Priority                 ModelPriority       `json:"priority"`
-	Reason                   ModelMismatchReason `json:"reason,omitempty"`
+	Candidates                  []Candidate         `json:"candidates"`
+	SkippedCount                int                 `json:"skippedCount"`
+	LimitedAccountCount         int                 `json:"limitedAccountCount"`
+	InvalidModelConstraintCount int                 `json:"invalidModelConstraintCount"`
+	DirectMatchedCount          int                 `json:"directMatchedCount"`
+	MappingMatchedCount         int                 `json:"mappingMatchedCount"`
+	RequestedModel              string              `json:"requestedModel,omitempty"`
+	SourceEndpointFamily        EndpointFamily      `json:"sourceEndpointFamily,omitempty"`
+	Priority                    ModelPriority       `json:"priority"`
+	Reason                      ModelMismatchReason `json:"reason,omitempty"`
 }
 
 type FilterInput struct {
@@ -146,7 +145,6 @@ func FilterModelCandidates(candidates []Candidate, requestedModel string, source
 	model := strings.TrimSpace(requestedModel)
 	direct := make([]Candidate, 0, len(candidates))
 	mapped := make([]Candidate, 0, len(candidates))
-	unrestricted := make([]Candidate, 0, len(candidates))
 	ranks := make(map[string]ModelPriorityRank, len(candidates))
 	result := ModelFilterResult{
 		RequestedModel:       model,
@@ -160,9 +158,12 @@ func FilterModelCandidates(candidates []Candidate, requestedModel string, source
 
 	for _, candidate := range candidates {
 		if len(candidate.SupportedModels) == 0 {
-			result.UnrestrictedAccountCount++
-			ranks[candidate.ID] = ModelPriorityUnrestricted
-			unrestricted = append(unrestricted, candidate)
+			// An empty account model list is an invalid constraint, not an
+			// unrestricted fallback. Routing it would silently send a request to
+			// an account whose declared model capability is unknown.
+			result.InvalidModelConstraintCount++
+			result.SkippedCount++
+			ranks[candidate.ID] = ModelPriorityUnsupported
 			continue
 		}
 		result.LimitedAccountCount++
@@ -182,10 +183,9 @@ func FilterModelCandidates(candidates []Candidate, requestedModel string, source
 		ranks[candidate.ID] = ModelPriorityUnsupported
 	}
 
-	result.Candidates = make([]Candidate, 0, len(direct)+len(mapped)+len(unrestricted))
+	result.Candidates = make([]Candidate, 0, len(direct)+len(mapped))
 	result.Candidates = append(result.Candidates, direct...)
 	result.Candidates = append(result.Candidates, mapped...)
-	result.Candidates = append(result.Candidates, unrestricted...)
 	if result.SkippedCount > 0 && len(result.Candidates) == 0 {
 		if model == "" {
 			result.Reason = ModelMismatchMissing

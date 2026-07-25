@@ -26,12 +26,15 @@ func TestServiceOptionsMatchesNodeContract(t *testing.T) {
 	if result.DefaultModel != wantModels[0] || result.DefaultProfile != "full" {
 		t.Fatalf("defaults = %q/%q", result.DefaultModel, result.DefaultProfile)
 	}
-	if len(result.SupportedProfiles) != 1 {
+	if len(result.SupportedProfiles) != 2 {
 		t.Fatalf("supported profiles = %#v", result.SupportedProfiles)
 	}
-	profile := result.SupportedProfiles[0]
-	if profile.Value != "full" || profile.Label != "强诊断完整检测" || profile.Description != "准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针" {
-		t.Fatalf("profile = %+v", profile)
+	quick, full := result.SupportedProfiles[0], result.SupportedProfiles[1]
+	if quick.Value != "quick" || quick.Label != "快速检测" || quick.Description != "最多执行 2 个轻量串行探针，快速给出初步判断" {
+		t.Fatalf("quick profile = %+v", quick)
+	}
+	if full.Value != "full" || full.Label != "深度检测" || full.Description != "准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针" {
+		t.Fatalf("full profile = %+v", full)
 	}
 	if result.TrustedComparison.EnabledByDefault || !result.TrustedComparison.Available || result.TrustedComparison.UnavailableReason != "" {
 		t.Fatalf("trusted comparison = %+v", result.TrustedComparison)
@@ -49,7 +52,7 @@ func TestServiceOptionsReturnsIndependentSlices(t *testing.T) {
 	first.SupportedProfiles[0].Label = "mutated"
 
 	second := service.Options()
-	if second.SupportedModels[0].Value != "gpt-5.6-sol" || second.SupportedProfiles[0].Label != "强诊断完整检测" {
+	if second.SupportedModels[0].Value != "gpt-5.6-sol" || second.SupportedProfiles[0].Label != "快速检测" {
 		t.Fatalf("options leaked caller mutation: %+v", second)
 	}
 }

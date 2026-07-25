@@ -79,7 +79,7 @@ func TestManagementModelCheckOptionsHandlers(t *testing.T) {
 				if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 					t.Fatalf("decode response: %v", err)
 				}
-				if len(body.Data.SupportedModels) != 13 || len(body.Data.SupportedProfiles) != 1 {
+				if len(body.Data.SupportedModels) != 13 || len(body.Data.SupportedProfiles) != 2 {
 					t.Fatalf("data = %+v", body.Data)
 				}
 			}

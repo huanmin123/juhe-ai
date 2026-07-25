@@ -584,7 +584,7 @@ func TestTestBuildsReportAndPersistsState(t *testing.T) {
 	latencyMs := 105
 	outboundIP := "203.0.113.10"
 	outboundRegion := "美国"
-	message := "代理可用，存在 1 项告警"
+	message := "代理质量检测通过"
 	store := &proxyOptionStoreStub{
 		findResult: port.ManagementProxySummary{
 			ID:                "proxy_a",
@@ -612,7 +612,7 @@ func TestTestBuildsReportAndPersistsState(t *testing.T) {
 			Host:            "proxy.example.com",
 			Port:            8080,
 			Enabled:         false,
-			TestStatus:      "warning",
+			TestStatus:      "passed",
 			LatencyMs:       &latencyMs,
 			OutboundIP:      &outboundIP,
 			OutboundRegion:  &outboundRegion,
@@ -657,11 +657,11 @@ func TestTestBuildsReportAndPersistsState(t *testing.T) {
 	report := result.Report
 	if report.ProxyID != "proxy_a" ||
 		report.ProxyName != "代理 A" ||
-		report.Status != "warning" ||
-		report.Score != 90 ||
+		report.Status != "passed" ||
+		report.Score != 100 ||
 		report.Grade != "A" ||
-		report.PassedCount != 2 ||
-		report.WarningCount != 1 ||
+		report.PassedCount != 3 ||
+		report.WarningCount != 0 ||
 		report.FailedCount != 0 ||
 		report.BaseLatencyMs == nil ||
 		*report.BaseLatencyMs != 105 ||
@@ -678,11 +678,12 @@ func TestTestBuildsReportAndPersistsState(t *testing.T) {
 		report.Items[0].Status != "passed" ||
 		report.Items[1].HTTPStatus == nil ||
 		*report.Items[1].HTTPStatus != 200 ||
-		report.Items[2].Status != "warning" {
+		report.Items[2].Status != "passed" ||
+		report.Items[2].Message != "HTTP 401（传输完整，状态码仅供诊断）" {
 		t.Fatalf("items = %+v", report.Items)
 	}
 	if store.testStateInput.ID != "proxy_a" ||
-		store.testStateInput.TestStatus != "warning" ||
+		store.testStateInput.TestStatus != "passed" ||
 		store.testStateInput.LatencyMs == nil ||
 		*store.testStateInput.LatencyMs != 105 ||
 		!store.testStateInput.OutboundIP.Set ||
@@ -706,7 +707,7 @@ func TestTestBuildsReportAndPersistsState(t *testing.T) {
 	}
 	if result.Before.OutboundIP == nil ||
 		*result.Before.OutboundIP != staleOutboundIP ||
-		result.Proxy.TestStatus != "warning" {
+		result.Proxy.TestStatus != "passed" {
 		t.Fatalf("result = %+v", result)
 	}
 	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != ProxyTestStateUpdatedReason {
@@ -843,6 +844,35 @@ func TestProviderProbeTimeoutUsesProbeTimeoutMessage(t *testing.T) {
 
 	if item.Message != "代理检测请求超时" {
 		t.Fatalf("message = %q, want per-probe timeout message", item.Message)
+	}
+}
+
+func TestProviderProbeBeforeAttemptIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	probe := &proxyProbeStub{}
+	service := NewServiceWithOptions(ServiceOptions{Probe: probe})
+
+	item := service.testProvider(ctx, "http://proxy.example.com:8080", port.ManagementProviderOption{
+		Code: "openai", Name: "OpenAI", Enabled: true, BaseURL: "https://api.openai.com/v1",
+	})
+
+	if item.Status != "unknown" || item.Message != "未发起目标请求：代理检测总耗时已达到上限" {
+		t.Fatalf("item = %+v", item)
+	}
+	if len(probe.inputs) != 0 {
+		t.Fatalf("probe inputs = %+v, want none", probe.inputs)
+	}
+}
+
+func TestBaseConnectivityDoesNotCallUnknownItemsReachable(t *testing.T) {
+	item := baseConnectivityItem([]ProxyTestItem{{Name: "OpenAI", Status: "unknown"}}, 1)
+	if item.Status != "unknown" || item.Message != "供应商默认地址均未形成真实传输检测" {
+		t.Fatalf("base item = %+v", item)
+	}
+	summary := summarizeProxyTestItems([]ProxyTestItem{item, {Name: "OpenAI", Status: "unknown"}})
+	if summary.Status != "unknown" || summary.Score != 0 {
+		t.Fatalf("summary = %+v", summary)
 	}
 }
 

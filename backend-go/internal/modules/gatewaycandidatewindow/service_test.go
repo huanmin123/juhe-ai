@@ -15,8 +15,11 @@ func TestLoadHydratesInBoundedBatchesAndRefillsBrokenRows(t *testing.T) {
 		rows = append(rows, port.GatewayAccountCandidate{AccountID: "account_" + itoa(i), Name: "candidate"})
 	}
 	projector := &projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows, ScanLimit: 512, LimitReached: false}}
-	hydrator := &hydratorStub{dropFirstBatch: true}
-	window, found, err := NewService(projector, hydrator).Load(context.Background(), LoadInput{GroupID: "group", SystemAccountID: "user"})
+	hydrator := &hydratorStub{dropFirstBatch: true, custom: make(map[string]HydrationResult, len(rows))}
+	for index := range rows {
+		hydrator.custom[rows[index].AccountID] = HydrationResult{AccountID: rows[index].AccountID, Candidate: Candidate{SupportedModels: []string{"gpt-5"}}}
+	}
+	window, found, err := NewService(projector, hydrator).Load(context.Background(), LoadInput{GroupID: "group", SystemAccountID: "user", RequestedModel: "gpt-5"})
 	if err != nil || !found {
 		t.Fatalf("Load() = found %v, err %v", found, err)
 	}
@@ -39,8 +42,8 @@ func TestLoadStopsAfterSuccessfulFinalBatchAndSortsModelThenBusinessAndQuality(t
 	rows[0].AccountID, rows[0].Name = "slow", "slow"
 	rows[1].AccountID, rows[1].Name = "fast", "fast"
 	projector := &projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows, LimitReached: false}}
-	hydrator := &hydratorStub{custom: map[string]HydrationResult{
-		"slow": {AccountID: "slow", Candidate: Candidate{QualityScore: ptr(int64(500))}},
+	hydrator := &hydratorStub{defaultSupportedModels: []string{"gpt-5.5"}, custom: map[string]HydrationResult{
+		"slow": {AccountID: "slow", Candidate: Candidate{SupportedModels: []string{"gpt-5.5"}, QualityScore: ptr(int64(500))}},
 		"fast": {AccountID: "fast", Candidate: Candidate{SupportedModels: []string{"gpt-5.5"}, QualityScore: ptr(int64(100))}},
 	}}
 	window, _, err := NewService(projector, hydrator).Load(context.Background(), LoadInput{RequestedModel: "gpt-5.5"})
@@ -77,7 +80,7 @@ func TestLoadRejectsHydratorProtocolViolations(t *testing.T) {
 }
 
 func TestLoadDropsRestrictedModelAndAcceptsVerifiedNonIdentityMapping(t *testing.T) {
-	rows := []port.GatewayAccountCandidate{{AccountID: "restricted"}, {AccountID: "mapped"}, {AccountID: "unrestricted"}}
+	rows := []port.GatewayAccountCandidate{{AccountID: "restricted"}, {AccountID: "mapped"}, {AccountID: "invalid"}}
 	projector := &projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows}}
 	hydrator := &hydratorStub{custom: map[string]HydrationResult{
 		"restricted": {AccountID: "restricted", Candidate: Candidate{SupportedModels: []string{"gpt-4"}}},
@@ -98,11 +101,24 @@ func TestLoadDropsRestrictedModelAndAcceptsVerifiedNonIdentityMapping(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(window.Candidates) != 2 || window.Candidates[0].Projection.AccountID != "mapped" || window.Candidates[1].Projection.AccountID != "unrestricted" {
+	if len(window.Candidates) != 1 || window.Candidates[0].Projection.AccountID != "mapped" {
 		t.Fatalf("candidates = %+v", window.Candidates)
 	}
-	if window.Diagnostics.EligibleRowCount != 3 || window.Diagnostics.HydrationDroppedCount != 1 {
+	if window.Diagnostics.EligibleRowCount != 3 || window.Diagnostics.HydrationDroppedCount != 2 {
 		t.Fatalf("diagnostics = %+v", window.Diagnostics)
+	}
+}
+
+func TestLoadDropsCandidatesWithoutRequestedModelOrSupportedModels(t *testing.T) {
+	rows := []port.GatewayAccountCandidate{{AccountID: "empty-request"}, {AccountID: "empty-models"}}
+	projector := &projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows}}
+	hydrator := &hydratorStub{custom: map[string]HydrationResult{
+		"empty-request": {AccountID: "empty-request", Candidate: Candidate{SupportedModels: []string{"gpt-5"}}},
+		"empty-models":  {AccountID: "empty-models", Candidate: Candidate{}},
+	}}
+	window, found, err := NewService(projector, hydrator).Load(context.Background(), LoadInput{})
+	if err != nil || !found || len(window.Candidates) != 0 || window.Diagnostics.HydrationDroppedCount != 2 {
+		t.Fatalf("Load() = window=%+v found=%v err=%v", window, found, err)
 	}
 }
 
@@ -113,13 +129,13 @@ func TestLoadPreRanksAllScannedRowsBeforeFirstHydrationBatch(t *testing.T) {
 	}
 	lateID := rows[299].AccountID
 	hydrator := &rankingHydratorStub{
-		hydratorStub: hydratorStub{},
+		hydratorStub: hydratorStub{defaultSupportedModels: []string{"gpt-5"}},
 		ranks: map[string]CandidateRankFacts{
 			rows[0].AccountID: {QualityScore: ptr(int64(100))},
 			lateID:            {QualityScore: ptr(int64(1))},
 		},
 	}
-	window, _, err := NewService(&projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows}}, hydrator).Load(context.Background(), LoadInput{})
+	window, _, err := NewService(&projectorStub{projection: gatewayaccountcandidates.Projection{Candidates: rows}}, hydrator).Load(context.Background(), LoadInput{RequestedModel: "gpt-5"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +177,11 @@ func (s *projectorStub) Project(context.Context, gatewayaccountcandidates.Projec
 }
 
 type hydratorStub struct {
-	calls          int
-	dropFirstBatch bool
-	custom         map[string]HydrationResult
-	results        []HydrationResult
+	calls                  int
+	dropFirstBatch         bool
+	defaultSupportedModels []string
+	custom                 map[string]HydrationResult
+	results                []HydrationResult
 }
 
 type rankingHydratorStub struct {
@@ -191,7 +208,7 @@ func (s *hydratorStub) Hydrate(_ context.Context, input HydrateInput) ([]Hydrati
 			results = append(results, result)
 			continue
 		}
-		results = append(results, HydrationResult{AccountID: row.AccountID, Candidate: Candidate{}})
+		results = append(results, HydrationResult{AccountID: row.AccountID, Candidate: Candidate{SupportedModels: append([]string(nil), s.defaultSupportedModels...)}})
 	}
 	return results, nil
 }
