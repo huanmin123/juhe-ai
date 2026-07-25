@@ -84,6 +84,7 @@ func Decide(input DecisionInput) (Decision, error) {
 	seen := make(map[string]struct{}, len(input.Candidates))
 	dropped := 0
 	for _, candidate := range input.Candidates {
+		candidate.Snapshot = normalizeSnapshot(candidate.Snapshot)
 		if err := validateCandidate(candidate, input.RouteScope); err != nil {
 			return Decision{}, err
 		}
@@ -126,6 +127,13 @@ func Decide(input DecisionInput) (Decision, error) {
 		return strings.Compare(left.RuntimeKey, right.RuntimeKey)
 	})
 	return Decision{Ordered: ordered, DroppedDuplicateKey: dropped}, nil
+}
+
+func normalizeSnapshot(value Snapshot) Snapshot {
+	if value == (Snapshot{}) {
+		return Snapshot{SampleState: SampleStateCold, Reliability: ReliabilityUnknown, EffectiveReliability: 0.5}
+	}
+	return value
 }
 
 func validateCandidate(candidate Candidate, scope string) error {

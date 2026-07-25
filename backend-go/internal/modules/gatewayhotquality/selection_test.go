@@ -30,6 +30,24 @@ func TestDecideCostFirstUsesColdNeutralityAndQuality(t *testing.T) {
 	}
 }
 
+func TestDecideNormalizesAbsentSnapshotToCold(t *testing.T) {
+	t.Parallel()
+	candidate := testCandidate("cold", "key", Tier{}, false, SampleStateKnown, ReliabilityHealthy, .9, 1)
+	candidate.Snapshot = Snapshot{}
+	decision, err := Decide(testInput(RoutingModeCostFirst, candidate))
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if got, want := decision.Ordered[0].Snapshot, (Snapshot{SampleState: SampleStateCold, Reliability: ReliabilityUnknown, EffectiveReliability: .5}); got != want {
+		t.Fatalf("normalized snapshot = %#v, want %#v", got, want)
+	}
+
+	candidate.Snapshot = Snapshot{SampleState: SampleStateCold}
+	if _, err := Decide(testInput(RoutingModeCostFirst, candidate)); err == nil {
+		t.Fatal("Decide() accepted partially populated snapshot")
+	}
+}
+
 func TestDecideSpeedFirstMovesOnlyLatencyDegradedCandidates(t *testing.T) {
 	t.Parallel()
 	input := testInput(RoutingModeSpeedFirst, testCandidate("primary-degraded", "a", Tier{}, true, SampleStateKnown, ReliabilityHealthy, .9, 10), testCandidate("fallback-fast", "b", Tier{Fallback: true}, false, SampleStateKnown, ReliabilityUnhealthy, .1, 1000))
