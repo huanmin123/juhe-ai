@@ -31,17 +31,17 @@ assert.deepEqual(filterChatComposerCommands('列表'), [])
 assert.deepEqual(chatComposerCommands.map((item) => item.key), ['image', 'parameters', 'image-model', 'compact', 'clear'])
 assert.equal(chatComposerCommands.some((item) => item.key === 'clear-input' || item.key === 'code'), false, '低价值草稿命令不得重新进入菜单')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'compact'), {
-  key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '整理当前会话的较早内容'
+  key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '调用模型整理较早消息以释放上下文空间；会产生用量。'
 })
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'image-model'), {
-  key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '设置当前会话的图片生成模型'
+  key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '选择当前会话生成或编辑图片时使用的默认图像模型。'
 })
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'parameters'), {
-  key: 'parameters', kind: 'generation', label: '生成参数', description: '设置温度、Top P、重复惩罚和回复长度'
+  key: 'parameters', kind: 'generation', label: '生成参数', description: '调整当前模型支持的温度、Top P、重复惩罚和回复长度等生成控制。'
 })
 assert.deepEqual(filterChatComposerCommands('参数').map((item) => item.key), ['parameters'], '中文命令检索必须能定位生成参数弹窗')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'clear'), {
-  key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '清除消息但保留会话壳'
+  key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '删除当前会话的全部消息并保留会话本身；此操作不可撤销。'
 })
 assert.equal(moveChatComposerCommandIndex(0, -1, 3), 2)
 assert.equal(moveChatComposerCommandIndex(2, 1, 3), 0)

@@ -6,11 +6,11 @@ export type ChatComposerCommand =
   | { key: 'image-model' | 'compact' | 'clear'; kind: 'conversation'; action: 'set-image-model' | 'compact-context' | 'clear-conversation'; label: string; description: string }
 
 export const chatComposerCommands: ChatComposerCommand[] = [
-  { key: 'image', kind: 'image', label: '添加图片', description: '粘贴或选择图片' },
-  { key: 'parameters', kind: 'generation', label: '生成参数', description: '设置温度、Top P、重复惩罚和回复长度' },
-  { key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '设置当前会话的图片生成模型' },
-  { key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '整理当前会话的较早内容' },
-  { key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '清除消息但保留会话壳' }
+  { key: 'image', kind: 'image', label: '添加图片', description: '从本机选择图片，或直接粘贴图片到当前消息。' },
+  { key: 'parameters', kind: 'generation', label: '生成参数', description: '调整当前模型支持的温度、Top P、重复惩罚和回复长度等生成控制。' },
+  { key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '选择当前会话生成或编辑图片时使用的默认图像模型。' },
+  { key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '调用模型整理较早消息以释放上下文空间；会产生用量。' },
+  { key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '删除当前会话的全部消息并保留会话本身；此操作不可撤销。' }
 ]
 
 export function filterChatComposerCommands(query: string): ChatComposerCommand[] {

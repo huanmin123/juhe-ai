@@ -70,6 +70,6 @@ export const myStatsApi = {
   accountUsageTrend: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsTrendOverview>(http.get('/my-stats/account-usage/trend', { params: accountUsageStatsParams(params, false) })),
   aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
   aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceBaseResult>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) })),
-  aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/my-stats/ai-performance/series', { params: aiPerformanceSeriesParams(params, false) }))
-  ,aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/my-stats/ai-health', { params: stripSystemAccountParam(params) }))
+  aiPerformanceSeries: (params: AiPerformanceSeriesParams) => unwrap<AiPerformanceSeriesResult>(http.get('/my-stats/ai-performance/series', { params: aiPerformanceSeriesParams(params, false) })),
+  aiHealth: (params?: AiHealthParams) => unwrap<AiHealthListResult>(http.get('/my-stats/ai-health', { params: stripSystemAccountParam(params) }))
 }

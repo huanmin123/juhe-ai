@@ -283,6 +283,8 @@ const menuIconMap = {
   '/stats': BarChartOutlined,
   '/my-ai-performance': BarChartOutlined,
   '/ai-performance': BarChartOutlined,
+  '/my-ai-health': SafetyCertificateOutlined,
+  '/ai-health': SafetyCertificateOutlined,
   '/my-usage-stats': FundOutlined,
   '/usage-stats': FundOutlined,
   '/my-usage-records': HistoryOutlined,

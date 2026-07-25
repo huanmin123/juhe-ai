@@ -3,8 +3,8 @@
     <input ref="fileInput" class="ai-composer-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" :disabled="disabled || !imageInputSupported || !imagePolicy || !conversationId" multiple @change="handleFileChange" />
     <EditorContent :editor="editor" class="ai-composer-editor" />
     <div v-if="commandOpen" class="ai-composer-command-menu" role="listbox">
-      <button v-for="(item, index) in commandItems" :key="item.key" type="button" role="option" :aria-selected="index === commandIndex" :class="{ 'is-active': index === commandIndex }" @mouseenter="commandIndex = index" @mousedown.prevent="selectCommand(item)">
-        <strong>/{{ item.key }}</strong><span>{{ item.label }}</span><small>{{ item.description }}</small>
+      <button v-for="(item, index) in commandItems" :key="item.key" type="button" role="option" :aria-selected="index === commandIndex" :aria-label="`/${item.key}：${item.description}`" :class="{ 'is-active': index === commandIndex }" @mouseenter="commandIndex = index" @mousedown.prevent="selectCommand(item)">
+        <strong>/{{ item.key }}</strong><span class="ai-composer-command-description">{{ item.description }}</span>
       </button>
     </div>
     <a-modal
@@ -795,11 +795,12 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-editor { min-height: 56px; max-height: 220px; overflow-y: auto; padding: 9px 12px; }
 .ai-composer-editor :deep(.ProseMirror) { min-height: 38px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-composer-editor :deep(.ProseMirror p.is-editor-empty:first-child::before) { color: #9aa6b2; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
-.ai-composer-command-menu { position: absolute; z-index: 3; bottom: 76px; left: 8px; width: min(360px, calc(100% - 16px)); padding: 5px; background: #fff; border: 1px solid #dbe3ec; border-radius: 7px; box-shadow: 0 10px 24px rgba(15, 23, 42, .14); }
-.ai-composer-command-menu button { width: 100%; display: grid; grid-template-columns: 90px 90px 1fr; gap: 6px; padding: 7px 8px; text-align: left; border: 0; background: transparent; cursor: pointer; }
+.ai-composer-command-menu { position: absolute; z-index: 3; bottom: 76px; left: 8px; width: min(430px, calc(100% - 16px)); padding: 5px; background: #fff; border: 1px solid #dbe3ec; border-radius: 7px; box-shadow: 0 10px 24px rgba(15, 23, 42, .14); }
+.ai-composer-command-menu button { width: 100%; display: grid; grid-template-columns: minmax(96px, auto) minmax(0, 1fr); align-items: start; column-gap: 12px; padding: 8px; text-align: left; border: 0; background: transparent; cursor: pointer; }
+.ai-composer-command-menu strong { color: #1f2937; font-size: 13px; line-height: 19px; white-space: nowrap; }
+.ai-composer-command-description { color: #64748b; font-size: 12px; line-height: 19px; }
 .ai-composer-command-menu button:hover { background: #f0f7ff; }
 .ai-composer-command-menu button.is-active { background: #eaf3ff; }
-.ai-composer-command-menu small { color: #94a3b8; }
 :global(.chat-generation-parameters-modal .ant-modal) { max-width: calc(100vw - 24px); }
 :global(.chat-generation-parameters-modal .ant-modal-content) { overflow: hidden; padding: 0; border: 1px solid #dbe7f5; border-radius: 16px; box-shadow: 0 24px 64px rgba(15, 23, 42, .2); }
 :global(.chat-generation-parameters-modal .ant-modal-header) { margin: 0; padding: 20px 24px 16px; border-bottom: 1px solid #e8eef6; background: linear-gradient(135deg, #f8fbff 0%, #ffffff 70%); }

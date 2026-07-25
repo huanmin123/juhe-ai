@@ -1331,6 +1331,9 @@ export async function handleOpenAIGatewayRequest(
           && handledResponse.retryReason === 'response_inspection'
           && 'responseInspection' in handledResponse
           && handledResponse.responseInspection?.replayAuthority === 'explicit_user_policy'
+        const requestLocalProtocolFailure = responseRetryUpstream
+          && 'retryReason' in handledResponse
+          && handledResponse.retryReason === 'upstream_protocol_failure'
         const protocolValidatedSuccess = !responseRetryUpstream
           && 'protocolValidatedSuccess' in handledResponse
           && handledResponse.protocolValidatedSuccess === true
@@ -1350,6 +1353,7 @@ export async function handleOpenAIGatewayRequest(
         }
         const diagnosticUpstreamResponse = !transportFailure
           && !neutralSchedulingTermination
+          && !requestLocalProtocolFailure
           && (
             !upstreamResponse.ok
             || (responseRetryUpstream && !explicitUserPolicyRetry)
@@ -1365,7 +1369,10 @@ export async function handleOpenAIGatewayRequest(
             })
           : undefined
         await hotQualityAttempt.recordTerminal({
-          outcomeClass: neutralSchedulingTermination
+          // A complete 2xx body with an invalid protocol shape is scoped to the
+          // current request. Keep shared quality neutral: it may be a damaged
+          // conversation while the same account remains healthy elsewhere.
+          outcomeClass: neutralSchedulingTermination || requestLocalProtocolFailure
             ? 'unknown'
             : transportFailure
             ? hotQualityOutcomeForTransportFailure(transportFailure.kind)
@@ -1374,8 +1381,8 @@ export async function handleOpenAIGatewayRequest(
               : diagnosticUpstreamResponse
                 ? 'upstream_response_failure'
                 : 'completed_response',
-          failureScope: neutralSchedulingTermination ? 'none' : transportFailure ? 'protocol_model' : explicitUserPolicyRetry ? 'account' : 'none',
-          source: neutralSchedulingTermination
+          failureScope: neutralSchedulingTermination || requestLocalProtocolFailure ? 'none' : transportFailure ? 'protocol_model' : explicitUserPolicyRetry ? 'account' : 'none',
+          source: neutralSchedulingTermination || requestLocalProtocolFailure
             ? 'request_lifecycle'
             : transportFailure
             ? 'gateway_transport'

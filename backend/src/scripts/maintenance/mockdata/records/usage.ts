@@ -512,6 +512,16 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
       createdAt: new Date(endAt.getTime() - (coverageInputs.length - index) * minuteMs)
     }))
   })
+
+  const healthCoverage = coverageInputs.find((input) => input.idSuffix === 'coverage_account_health_check')
+  if (healthCoverage) {
+    records.push(buildUsageRecord({
+      ...healthCoverage,
+      idSuffix: 'coverage_account_health_check_failure',
+      successOverride: false,
+      createdAt: new Date(endAt.getTime() - 3 * 60 * minuteMs)
+    }))
+  }
 }
 
 interface BuildUsageRecordInput {

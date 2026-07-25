@@ -51,6 +51,10 @@ import {
 } from './responses.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
+  automaticUpstreamReplayAllowedAfterDispatch,
+  resolveOpenAIGatewayRequestLane
+} from '../protocols/openai-v1/request-lane.js'
+import {
   pipeUpstreamStream,
   type StreamFailureContext,
   type StreamBodyOmissionSummary
@@ -740,10 +744,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       markFirstOutput?.()
     } else if (upstreamResponse.body) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
+      const protocolValidationEnabled = isOpenAIJsonResponseContentType(contentType)
+        && shouldValidateNonStreamJsonProtocolResponse(input)
       const inspectJsonResponse = isCodexResponsesGuardEligible(input)
         || (
           isOpenAIJsonResponseContentType(contentType)
-          && shouldBufferNonStreamJsonResponse(input)
+          && (protocolValidationEnabled || shouldBufferNonStreamJsonResponse(input))
         )
       if (inspectJsonResponse) {
         const pipeResult = await pipeNonStreamUpstreamResponseForInspection(upstreamResponse.body, res, {
@@ -808,7 +814,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             clientStrategy: input.clientStrategy,
             accountStateMutationEnabled: accountStateMutationEnabled !== false,
             automaticAccountStateMutationEnabled: input.automaticAccountStateMutationEnabled !== false,
-            protocolValidationEnabled: false,
+            protocolValidationEnabled,
             downstreamCommitState: input.downstreamCommitState,
             onCodexResponsesGuardResult: (result) => {
               if (result.outcome !== 'clean') {
@@ -1186,6 +1192,14 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
       && isGeminiInteractionCreateRequest(input.req)
     )
   )
+}
+
+function shouldValidateNonStreamJsonProtocolResponse(input: HandleUpstreamResponseInput): boolean {
+  if (!input.upstreamResponse.ok) return false
+  const endpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account)
+  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'messages') return false
+  const requestLane = resolveOpenAIGatewayRequestLane(input.req)
+  return automaticUpstreamReplayAllowedAfterDispatch(input.req, requestLane)
 }
 
 function isCodexResponsesGuardEligible(input: HandleUpstreamResponseInput): boolean {

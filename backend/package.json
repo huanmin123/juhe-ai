@@ -97,6 +97,7 @@
     "test:account-runtime-mutation-owner-fencing": "tsx src/scripts/regression/account-runtime-mutation-owner-fencing-regression.ts",
     "test:account-runtime-mutation-owner-fencing-postgres-smoke": "tsx src/scripts/regression/account-runtime-mutation-owner-fencing-postgres-smoke.ts",
     "test:account-health-check": "tsx src/scripts/regression/account-health-check-regression.ts",
+    "test:ai-health-monitor": "tsx src/scripts/regression/ai-health-monitor-regression.ts",
     "test:account-health-check-postgres-settings-boundary": "tsx src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts",
     "test:account-quality-refresh": "tsx src/scripts/regression/account-quality-refresh-regression.ts",
     "test:account-quality-gateway-status": "tsx src/scripts/regression/account-quality-gateway-status-regression.ts",

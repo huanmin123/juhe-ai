@@ -174,6 +174,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-ai-health',
+    component: () => import('@/views/ai-health/AiHealthView.vue'),
+    meta: {
+      title: 'AI健康监控',
+      description: '按小时查看你可使用 AI 账户最近一个月的健康检查结果。',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
     path: '/my-usage-records',
     component: () => import('@/views/usage-records/UsageRecordsView.vue'),
     meta: {
@@ -349,6 +359,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI性能监控',
       description: '按系统账户查看其可使用 AI 账户的小时级性能趋势，包含授权实例。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
+    path: '/ai-health',
+    component: () => import('@/views/ai-health/AiHealthView.vue'),
+    meta: {
+      title: 'AI健康监控',
+      description: '按账户查看最近一个月逐小时的健康检查结果。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',

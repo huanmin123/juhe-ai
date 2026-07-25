@@ -25,6 +25,7 @@ import {
   buildGatewayUpstreamUrlsForAccount,
   providerDriverForAccount
 } from '../../modules/providers/drivers/registry.js'
+import { gatewayAccountRuntimeKey } from '../../modules/gateway/runtime/account-runtime-keys.js'
 import { logger } from '../../shared/logger.js'
 
 interface DeepSeekUpstreamHit {
@@ -60,6 +61,9 @@ const [
   catalogService,
   gatewayCache,
   accountSideEffects,
+  accountApiKeyFailureGuard,
+  accountCircuit,
+  hotQuality,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -70,6 +74,9 @@ const [
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/runtime/account-api-key-failure-guard.service.js'),
+  import('../../modules/gateway/runtime/account-circuit.service.js'),
+  import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
@@ -86,6 +93,9 @@ try {
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   gatewayCache.clearGatewayRuntimeCache()
+  accountApiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
+  accountCircuit.resetGatewayAccountCircuitStoreForTest()
+  hotQuality.resetGatewayHotQualityRuntimeForTest()
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
@@ -145,7 +155,7 @@ try {
       providerCode: DEEPSEEK_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const retryPrimaryAccount = repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI JSON 正文中断主账户',
@@ -161,7 +171,7 @@ try {
       healthCheckModel: 'deepseek-v4-flash',
       healthCheckEndpointMode: 'chat_json'
     }, access)
-    repositories.createAccount({
+    const retryFallbackAccount = repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
       name: 'DeepSeek Mock AI JSON 正文中断备用账户',
@@ -351,7 +361,10 @@ try {
     await assertDeepSeekChatJson(baseUrl, apiKey.key)
     await assertDeepSeekOpaqueFinishReasonPassThrough(baseUrl, apiKey.key)
     await assertDeepSeekChatJsonBufferedBodyInterruptionRetriesNextAccount(baseUrl, bodyInterruptedApiKey.key)
-    await assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl, retryApiKey.key)
+    await assertDeepSeekInvalidChatJsonChoicesRetriesNextAccount(baseUrl, retryApiKey.key, {
+      primaryAccountId: retryPrimaryAccount.id,
+      fallbackAccountId: retryFallbackAccount.id
+    })
     await assertDeepSeekInvalidChatJsonChoicesBecomesGatewayError(baseUrl, allBadApiKey.key)
     await assertDeepSeekChatSse(baseUrl, apiKey.key)
     await assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl, apiKey.key)
@@ -377,6 +390,9 @@ try {
   }
 } finally {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  accountApiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
+  accountCircuit.resetGatewayAccountCircuitStoreForTest()
+  hotQuality.resetGatewayHotQualityRuntimeForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
