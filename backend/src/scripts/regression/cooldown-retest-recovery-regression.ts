@@ -1361,12 +1361,19 @@ try {
       cloneBusinessDatabaseRow('accounts', 'id = ?', [quotaSourceAccount.id], {
         id: sourceId,
         name: `冷却复测 raw cursor 来源 ${index}`,
+        status: 'active',
+        schedulable: 1,
+        cooldown_until: null,
+        account_expires_at: null,
+        deleted_at: null,
         created_at: timestamp,
         updated_at: timestamp
       })
       cloneBusinessDatabaseRow('resource_authorizations', 'id = ?', [quotaLimitedAuthorizationId], {
         id: authorizationId,
         resource_id: sourceId,
+        status: 'active',
+        expires_at: null,
         created_at: timestamp,
         updated_at: timestamp
       })
@@ -1375,14 +1382,21 @@ try {
         name: `冷却复测 raw cursor 额度过滤 ${index}`,
         authorization_instance_authorization_id: authorizationId,
         authorization_instance_source_account_id: sourceId,
+        status: 'temporary_unavailable',
+        schedulable: 1,
+        health_check_endpoint_mode: 'chat_json',
         cooldown_until: timestamp,
+        cooldown_retest_observation_started_at: timestamp,
         cooldown_retest_generation: `cooldown:raw-cursor-${index}`,
+        account_expires_at: null,
+        deleted_at: null,
         created_at: timestamp,
         updated_at: timestamp
       })
       cloneBusinessDatabaseRow('group_accounts', 'group_id = ? AND account_id = ?', [quotaGranteeGroup.id, quotaLimitedInstance.id], {
         account_id: accountId,
         account_authorization_id: authorizationId,
+        enabled: 1,
         created_at: timestamp,
         updated_at: timestamp
       })
@@ -1404,7 +1418,11 @@ try {
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run(new Date(rawCursorBaseMs + rawCursorFilteredCount + 1).toISOString(), rawCursorHealthyOwner.id)
   const rawCursorFirstPage = repositories.listAccountsDueForCooldownRetestPage(1)
-  assert.equal(rawCursorFirstPage.accounts.length, 0, '前 200 条额度耗尽授权实例在 summary 后过滤时第一页必须可为空')
+  assert.equal(
+    rawCursorFirstPage.accounts.length,
+    0,
+    `前 200 条额度耗尽授权实例在 summary 后过滤时第一页必须可为空；actual=${rawCursorFirstPage.accounts.map((item) => `${item.id}:${item.name}:${item.status}`).join(',')}`
+  )
   assert(rawCursorFirstPage.nextCursor, '第一页 summary 为空时必须仍返回 raw cursor')
   assert.equal(rawCursorFirstPage.nextCursor.id, rawCursorFilteredAccountIds[199], '空第一页 cursor 必须推进到第 200 条原始记录')
   const rawCursorSecondPage = repositories.listAccountsDueForCooldownRetestPage(1, rawCursorFirstPage.nextCursor)
