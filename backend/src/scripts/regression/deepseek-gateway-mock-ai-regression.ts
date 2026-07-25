@@ -708,6 +708,7 @@ async function assertDeepSeekChatSsePreCommitFailureUsesHttpError(baseUrl: strin
   const text = await response.text()
   assert.equal(response.status, 503, `DeepSeek Chat SSE 建流前失败应收口为 HTTP 503，实际 HTTP ${response.status}: ${text}`)
   assert.match(text, /service_unavailable|stream_server_retry_exhausted/, 'DeepSeek Chat SSE 建流前失败应返回统一网关错误 payload')
+  assert(!text.includes(': keep-alive'), 'DeepSeek 上游预语义 keep-alive 不得泄漏给客户端或锁死 HTTP 200')
   assert(!text.includes('response.failed'), '普通 Chat SSE 客户端不应收到 Responses SSE failed 事件')
   assert.equal(upstreamHits.length, 1, 'DeepSeek Chat SSE 建流前失败应只命中一次上游')
   assert.equal(upstreamHits[0]?.path, '/v1/chat/completions')

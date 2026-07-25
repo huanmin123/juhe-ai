@@ -91,6 +91,7 @@ interface UpstreamHit {
   responseKind: ResponseKind
   attemptKind: AttemptKind
   key: string
+  partialWriteFlushed: boolean
 }
 
 interface Scenario {
@@ -306,21 +307,23 @@ function createMockUpstream(): http.Server {
     const responseKind = requiredResponseKind(url.searchParams.get('postcommit_kind'))
     const attemptKind = requiredAttemptKind(url.searchParams.get('postcommit_attempt'))
     const key = bearerToken(req.headers.authorization)
-    upstreamHits.push({ responseKind, attemptKind, key })
+    const hit: UpstreamHit = { responseKind, attemptKind, key, partialWriteFlushed: false }
+    upstreamHits.push(hit)
     req.resume()
 
     if (key.includes('-backup')) {
       sendBackupResponse(res, responseKind, attemptKind)
       return
     }
-    sendCommittedThenTruncate(res, responseKind, attemptKind)
+    sendCommittedThenTruncate(res, responseKind, attemptKind, hit)
   })
 }
 
 function sendCommittedThenTruncate(
   res: http.ServerResponse,
   responseKind: ResponseKind,
-  attemptKind: AttemptKind
+  attemptKind: AttemptKind,
+  hit: UpstreamHit
 ): void {
   const event = `event: response.output_text.delta\ndata: ${JSON.stringify({
     type: 'response.output_text.delta',
@@ -335,8 +338,10 @@ function sendCommittedThenTruncate(
     'x-provider-private-error': 'must-not-drive-state'
   })
   res.flushHeaders()
-  res.write(event)
-  setTimeout(() => res.destroy(), 20).unref()
+  res.write(event, () => {
+    hit.partialWriteFlushed = true
+    setTimeout(() => res.destroy(), 20)
+  })
 }
 
 function sendBackupResponse(
@@ -394,7 +399,7 @@ function rawHttpPost(
     const startedAtMs = Date.now()
     let responseStarted = false
     let settled = false
-    const timer = setTimeout(() => finishError(new Error(`等待已提交断流响应超时：${url}`)), 5_000)
+    const timer = setTimeout(() => finishError(new Error(postcommitTimeoutMessage(url, responseStarted))), 5_000)
     timer.unref()
     const request = http.request(url, {
       method: 'POST',
@@ -467,6 +472,14 @@ function assertCommittedClientBoundary(
   )
   const hits = hitsFor(scenario.responseKind, attemptKind)
   assert.deepEqual(hits.map((hit) => hit.key), [scenario.primaryKey], `${label} 已提交后不得重放或切到备用账户`)
+  assert.equal(hits[0]?.partialWriteFlushed, true, `${label} Mock 必须先确认部分正文已写入 socket，再制造 transport truncation`)
+}
+
+function postcommitTimeoutMessage(url: string, responseStarted: boolean): string {
+  const parsed = new URL(url)
+  const responseKind = requiredResponseKind(parsed.searchParams.get('postcommit_kind'))
+  const attemptKind = requiredAttemptKind(parsed.searchParams.get('postcommit_attempt'))
+  return `等待已提交断流响应超时：${url}；responseStarted=${responseStarted}；upstreamHits=${JSON.stringify(hitsFor(responseKind, attemptKind))}`
 }
 
 function assertInitialSuspect(state: AccountCircuitState, label: string): void {

@@ -181,8 +181,8 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
-        status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
-        skipInitialHealthCheck: parsed.data.status === 'active',
+        status: 'pending_test',
+        skipInitialHealthCheck: false,
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -196,7 +196,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: parsed.data.status === 'active',
+        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)
@@ -276,8 +276,8 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         name: parsed.data.name ?? tokenInfo.email ?? 'OpenAI OAuth Account',
         type: 'oauth',
         credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
-        status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
-        skipInitialHealthCheck: parsed.data.status === 'active',
+        status: 'pending_test',
+        skipInitialHealthCheck: false,
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         superPriorityEnabled: parsed.data.superPriorityEnabled,
@@ -291,7 +291,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         proxyProfileId: parsed.data.proxyProfileId,
         accountExpiresAt: parsed.data.accountExpiresAt,
         availabilitySchedule: parsed.data.availabilitySchedule,
-        schedulable: parsed.data.status === 'active',
+        schedulable: false,
         groupId: parsed.data.groupId,
         notes: parsed.data.notes
       }, requestAccess)

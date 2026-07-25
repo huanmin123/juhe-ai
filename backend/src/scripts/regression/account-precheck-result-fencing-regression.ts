@@ -157,6 +157,7 @@ function createFixture(name: string) {
       api_key: `sk-${Math.random().toString(16).slice(2)}`,
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     schedulable: true
   }, adminAccess)

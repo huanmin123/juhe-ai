@@ -155,6 +155,7 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     groupId: group.id,
+    supportedModels: ['gpt-5.5'],
     availabilitySchedule: {
       enabled: true,
       timezone: 'UTC',
@@ -202,7 +203,8 @@ try {
       api_key: 'sk-health-pending-first-check',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   database.prepare(`
     UPDATE accounts
@@ -558,6 +560,7 @@ function createActiveAccount(
       base_url: 'https://api.openai.com/v1'
     },
     groupId,
+    supportedModels: ['gpt-5.5'],
     status: 'active'
   }, access)
   assert.equal(created.status, 'pending_test', '新账户应先进入待检查状态')

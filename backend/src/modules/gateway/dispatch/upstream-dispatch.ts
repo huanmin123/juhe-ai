@@ -62,6 +62,7 @@ import { type UpstreamAttempt } from '../upstream/attempt.js'
 import { recordFailedUpstreamAttempt, type GatewayUsageContext } from '../usage/records.js'
 import { isAccountProbeTrafficSource } from '../usage/traffic-source.js'
 import { type GatewayUpstreamResponse } from '../upstream/request.js'
+import { isProvenUpstreamBodyTransportError } from '../upstream/body.js'
 import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
 import {
@@ -1035,10 +1036,13 @@ export async function fetchFirstAvailableUpstream(
                   || error instanceof GatewayRequestValidationError
                   || error instanceof OpenAIOAuthCodexAdapterError
                 const primaryStartedTransportFailure = isPrimaryStartedGatewayTransportError(error)
+                const provenBodyTransportFailure = isProvenUpstreamBodyTransportError(error)
+                const provenStartedTransportFailure = primaryStartedTransportFailure
+                  || provenBodyTransportFailure
                 const pendingKeyTransportFailure = accountStateMutationEnabled
                   && usageContext.trafficSource === 'gateway'
                   && !localRequestFailure
-                  && primaryStartedTransportFailure
+                  && provenStartedTransportFailure
                   && !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
                   && !isGatewayFirstByteTimeoutError(error)
@@ -1056,7 +1060,7 @@ export async function fetchFirstAvailableUpstream(
                   : undefined
                 const automaticReplayAllowed = automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
                 const retryAnotherAccountApiKey = !localRequestFailure
-                  && primaryStartedTransportFailure
+                  && provenStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !signal?.aborted
                   && automaticReplayAllowed
@@ -1080,7 +1084,7 @@ export async function fetchFirstAvailableUpstream(
                   && automaticReplayAllowed
                   && !signal?.aborted
                   && !localRequestFailure
-                  && primaryStartedTransportFailure
+                  && provenStartedTransportFailure
                   && normalRouteFirstByteDeadline === undefined
                   && !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
@@ -1106,7 +1110,7 @@ export async function fetchFirstAvailableUpstream(
                   && accountCircuitAttempt?.deferConfirmationTransportFailureForKeyRotation() === true
                 const confirmedTransportQuality = accountCircuitAttempt?.isConfirmation === true
                   && !localRequestFailure
-                  && primaryStartedTransportFailure
+                  && provenStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !deferredConfirmationFailure
                 if (sameAccountRetryReservation?.reserved !== true) {
@@ -1198,7 +1202,7 @@ export async function fetchFirstAvailableUpstream(
                     cutoverReservation
                   )
                 }
-                if (!primaryStartedTransportFailure) {
+                if (!provenStartedTransportFailure) {
                   const message = error instanceof Error ? error.message : String(error)
                   auditCapture.completeAttempt(auditAttemptId, {
                     success: false,

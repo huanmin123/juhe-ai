@@ -42,7 +42,8 @@ try {
       api_key: 'sk-account-error-policy-observation-fencing',
       base_url: 'https://example.invalid/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   repositories.recordAccountHealthCheckSuccess(account.id, {
     intervalHours: 12,
@@ -264,7 +265,8 @@ try {
       api_key: 'sk-account-error-policy-newer-failure',
       base_url: 'https://example.invalid/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   repositories.recordAccountHealthCheckSuccess(transitionAccount.id, {
     intervalHours: 12,
@@ -290,7 +292,8 @@ try {
       api_key: 'sk-account-error-policy-rate-limited',
       base_url: 'https://example.invalid/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   repositories.recordAccountHealthCheckSuccess(rateLimitedAccount.id, {
     intervalHours: 12,
@@ -449,7 +452,8 @@ function createReadyAccount(groupId: string, name: string, keySuffix: string) {
       api_key: `sk-account-error-policy-${keySuffix}`,
       base_url: 'https://example.invalid/v1'
     },
-    groupId
+    groupId,
+    supportedModels: ['gpt-5.5']
   }, access)
   repositories.recordAccountHealthCheckSuccess(account.id, {
     intervalHours: 12,

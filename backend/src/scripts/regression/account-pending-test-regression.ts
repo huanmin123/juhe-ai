@@ -102,7 +102,7 @@ try {
   assert.match(forceActivateRouteSource, /acknowledgedAccountAvailable !== true/, '人工恢复必须要求用户明确确认账户当前可用')
   assert.match(accountsRouteSource, /status: parsed\.data\.status === 'disabled' \? 'disabled' : parsed\.data\.status === 'active' \? 'active' : 'pending_test',[\s\S]+skipInitialHealthCheck: parsed\.data\.status === 'active'/, '普通账户创建仅在显式选择可调度时跳过初始检查')
   assert.match(openAIOAuthRouteSource, /status: z\.enum\(\['active', 'pending_test', 'disabled'\]\)\.optional\(\)/, 'OpenAI OAuth 创建应接受待检查状态')
-  assert.match(openAIOAuthRouteSource, /skipInitialHealthCheck: parsed\.data\.status === 'active',[\s\S]+schedulable: parsed\.data\.status === 'active'/, 'OpenAI OAuth 创建仅在显式选择可调度时跳过初始检查')
+  assert.equal((openAIOAuthRouteSource.match(/status: 'pending_test',[\s\S]*?skipInitialHealthCheck: false,[\s\S]*?schedulable: false/g) ?? []).length, 2, 'OpenAI OAuth 两个创建入口都必须强制进入待检查且不可调度')
   assert.match(forceActivateRouteSource, /accounts\.force_activate_pending/, '人工恢复必须写入独立操作审计键')
   assert.match(accountRuntimeMutationSource, /forceActivatePendingAccountAsync[\s\S]+client\.transaction[\s\S]+config_revision = \?/, 'PostgreSQL 人工放行必须在事务内按配置版本 CAS')
   assert.match(accountRuntimeMutationSource, /forceActivatePendingAccount[\s\S]+account_expires_at IS NULL OR account_expires_at > \?/, '人工放行写入时必须再次校验套餐未过期')

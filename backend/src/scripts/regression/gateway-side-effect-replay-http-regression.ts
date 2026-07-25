@@ -393,15 +393,22 @@ async function exerciseScenario(
 ): Promise<void> {
   const { scenario } = fixture
   const traceId = `side-effect-replay-${scenario.id}-${Date.now()}`
-  const response = await fetch(`${gatewayBaseUrl}${scenarioPath(scenario)}?scenario=${encodeURIComponent(scenario.id)}`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${fixture.apiKey}`,
-      'content-type': 'application/json',
-      'x-trace-id': traceId
-    },
-    body: JSON.stringify(scenarioBody(scenario))
-  })
+  const requestUrl = `${gatewayBaseUrl}${scenarioPath(scenario)}?scenario=${encodeURIComponent(scenario.id)}`
+  let response: Response
+  try {
+    response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${fixture.apiKey}`,
+        connection: 'close',
+        'content-type': 'application/json',
+        'x-trace-id': traceId
+      },
+      body: JSON.stringify(scenarioBody(scenario))
+    })
+  } catch (error) {
+    throw new Error(`${scenario.id} 网关请求在响应头前失败：${requestUrl}`, { cause: error })
+  }
   const responseText = await response.text()
   await accountSideEffects.flushGatewayAccountSideEffectsForTest()
   await auditLogQueue.flushAllAuditLogQueueAsync()

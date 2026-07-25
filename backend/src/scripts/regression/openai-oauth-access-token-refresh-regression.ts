@@ -68,6 +68,7 @@ async function main(): Promise<void> {
       name: 'API Key 不应参与 OAuth 刷新',
       type: 'api_key',
       credentials: { api_key: 'sk-not-oauth', base_url: 'https://api.openai.com/v1' },
+      supportedModels: ['gpt-5.5'],
       status: 'active',
       schedulable: true,
       groupId: oauthGroupId
@@ -78,6 +79,7 @@ async function main(): Promise<void> {
       name: '未到期 OAuth 账户',
       type: 'oauth',
       credentials: oauthCredentials('fresh-token', new Date(Date.now() + 3600_000).toISOString()),
+      supportedModels: ['gpt-5.5'],
       status: 'active',
       schedulable: true,
       groupId: oauthGroupId
@@ -109,6 +111,7 @@ async function main(): Promise<void> {
       name: '客户端断开后仍应完成刷新的账户',
       type: 'oauth',
       credentials: oauthCredentials('manual-client-abort-token', new Date(Date.now() - 60_000).toISOString()),
+      supportedModels: ['gpt-5.5'],
       status: 'active',
       schedulable: true,
       groupId: oauthGroupId
@@ -414,6 +417,7 @@ async function main(): Promise<void> {
         client_id: 'test-client',
         base_url: 'https://api.openai.com/v1'
       },
+      supportedModels: ['gpt-5.5'],
       status: 'active',
       schedulable: true,
       groupId: oauthGroupId
@@ -1016,6 +1020,7 @@ function createOAuthAccount(
     name,
     type: 'oauth',
     credentials: oauthCredentials(refreshToken, overrides.expiresAt ?? new Date(Date.now() + 60_000).toISOString(), overrides.accessToken),
+    supportedModels: ['gpt-5.5'],
     status,
     schedulable,
     groupId: oauthGroupId

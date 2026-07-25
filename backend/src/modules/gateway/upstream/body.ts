@@ -2,6 +2,7 @@ import type { Response } from 'express'
 
 import { getRequestLogger } from '../../../shared/request-context.js'
 import {
+  isStartedUpstreamBodyTransportError,
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
   UpstreamRequestAbortedError
@@ -86,6 +87,21 @@ export class NonStreamUpstreamBodyPipeError extends Error {
     super(message)
     this.name = 'NonStreamUpstreamBodyPipeError'
   }
+}
+
+/**
+ * Returns true only for failures proven to have happened while consuming an
+ * already-started upstream response body. Locally generated policy/lifetime
+ * deadlines, protocol inspection, transformation, and downstream write
+ * failures deliberately remain unproven and must not mutate shared state.
+ */
+export function isProvenUpstreamBodyTransportError(error: unknown): boolean {
+  if (isStartedUpstreamBodyTransportError(error)) return true
+  if (error instanceof UpstreamBodyReadIncompleteError) return true
+  if (error instanceof NonStreamUpstreamBodyPipeError) {
+    return isProvenUpstreamBodyTransportError(error.originalError)
+  }
+  return false
 }
 
 const gatewayForcedDownstreamCloseReasonKey = 'gatewayForcedDownstreamCloseReason'
