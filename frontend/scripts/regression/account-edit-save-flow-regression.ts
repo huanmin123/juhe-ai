@@ -64,6 +64,8 @@ assert.match(
 for (const [sectionName, source] of [['API Key', apiKeySectionSource], ['OAuth', oauthSectionSource]] as const) {
   assert.doesNotMatch(source, /<a-form-item required tooltip=/, `${sectionName} 支持模型说明不得由表单标签尾部自动渲染`)
   assert.match(source, /<span>支持模型<\/span>\s*<a-tooltip[^>]*>\s*<QuestionCircleOutlined class="supported-models-help"/s, `${sectionName} 支持模型说明图标必须紧跟标题`)
+  assert.match(source, /class="supported-models-refresh-button"[\s\S]*?<SyncOutlined\s*\/>/, `${sectionName} 支持模型刷新必须使用轻量同步图标`)
+  assert.match(source, /\.supported-models-label\s*\{[\s\S]*?flex:\s*1/, `${sectionName} 支持模型标签必须铺满表单标签的可用宽度`)
   assert.doesNotMatch(source, /\.supported-models-label\s*\{[\s\S]*?width:\s*100%/, `${sectionName} 支持模型标签不得强制溢出其可用宽度`)
   assert.doesNotMatch(source, /\.supported-models-label\s*:deep\(\.ant-btn\)\s*\{[\s\S]*?margin-right:\s*-/, `${sectionName} 刷新按钮不得使用负右边距而裁切`)
 }

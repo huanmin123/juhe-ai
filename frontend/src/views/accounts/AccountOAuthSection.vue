@@ -87,8 +87,8 @@
           </a-tooltip>
           <span class="supported-models-label-spacer"></span>
           <a-tooltip title="从上游同步可新增模型">
-            <a-button size="small" type="text" :loading="modelSyncing" @click="$emit('refresh-models')">
-              <template #icon><ReloadOutlined /></template>
+            <a-button class="supported-models-refresh-button" size="small" type="text" :loading="modelSyncing" @click="$emit('refresh-models')">
+              <template #icon><SyncOutlined /></template>
             </a-button>
           </a-tooltip>
         </div>
@@ -117,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { QuestionCircleOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import type { OpenAIAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
@@ -159,6 +159,7 @@ defineEmits<{
 
 .supported-models-label {
   display: flex;
+  flex: 1;
   align-items: center;
   min-width: 0;
 }
@@ -169,6 +170,18 @@ defineEmits<{
 
 .supported-models-label :deep(.ant-btn) {
   flex: none;
+}
+
+.supported-models-refresh-button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+}
+
+.supported-models-refresh-button :deep(.anticon) {
+  font-size: 13px;
 }
 
 .supported-models-help {

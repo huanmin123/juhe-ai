@@ -164,7 +164,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 - 点击停止时先中止当前 `fetch`，再携带当前 `clientMessageId` 和已知 `turnId` 调用 `POST /conversations/:id/stop`；服务端只允许条件命中的准备或轮次收口，停止 HTTP 与旧发送对账完成前保持门禁。停止请求失败时 runtime 恢复同轮附着，页面必须显示明确中文错误，不能吞掉拒绝或伪造已停止。
 - 客户端断流或终态不确定时按 `clientMessageId` 刷新对账；无法确认时进入后台重试的待确认状态，不能直接恢复草稿造成重复计费。
 - 单次前台探活默认最多执行 180 次状态确认。轮次尚未被服务端接受且持续处于 `preparing` / `not_found` 时，达到上限后必须以明确的客户端确认超时失败收口并允许人工重试；已经接受且服务端仍报告 `running` 时释放停滞 SSE，只执行一次最终权威消息同步，不伪造服务端失败终态。同版本 streaming 快照不能解除耗尽状态，只有更高 `eventVersion` 或真实终态才能开启新的有界探活周期。页面级待确认恢复最多自动调度 8 轮，之后保留“重新确认”人工入口。
-- 输入框底部的“生成参数”只显示模型能力接口返回的项目。能力按供应商、精确模型和 Chat Completions / Responses 请求协议取保守交集，并在模型详情和实际发送时按 API Key 命中的账户端点模式、模型映射及账户类型再次收敛；OAuth 归一化和跨协议桥接只保留明确可保真转发的参数。未知、兼容层会静默忽略、或任一候选路径不能保真转发的参数一律隐藏且不发送。温度与 Top P 互斥，最大输出 Tokens 受模型目录上限约束；服务端对每一轮请求重复校验，不信任前端状态。
+- 生成参数通过编辑器 `/参数`（兼容 `/parameters`）命令打开独立弹窗，不在输入框底部放设置图标或狭窄浮层；命令自身不作为消息内容保留。弹窗只显示模型能力接口返回的项目，并对每项展示用途、启用/默认状态、当前值、范围和推荐值。参数在下一次发送时生效；未启用即不发送该字段并继续使用模型默认行为，关闭弹窗也不重置已选值。能力按供应商、精确模型和 Chat Completions / Responses 请求协议取保守交集，并在模型详情和实际发送时按 API Key 命中的账户端点模式、模型映射及账户类型再次收敛；OAuth 归一化和跨协议桥接只保留明确可保真转发的参数。未知、兼容层会静默忽略、或任一候选路径不能保真转发的参数一律隐藏且不发送。温度与 Top P 互斥，最大输出 Tokens 受模型目录上限约束；服务端对每一轮请求重复校验，不信任前端状态。
 
 ### 6.4 会话列表
 
@@ -255,7 +255,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 文本以 Markdown 语义输入；在块首输入 `- `、`1. `、`> `、代码围栏等 Markdown 前缀时由 StarterKit 输入规则创建真实列表、引用或代码块，后续 `Enter` 按该块的编辑器规则处理。图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
 - 图片选择或粘贴后立即使用原始 Blob URL 显示本地预览，压缩准备最多并发 2 张，再走 multipart 资产上传；编辑器节点只保存 `assetId` 和私有预览 URL，发送请求只传资产引用，不把 Data URL 放入聊天 JSON。删除图片会取消排队、压缩或上传任务；被取消的 active 任务继续占物理并发槽直至真实结束，但不阻塞新会话发送，被取消的 queued 任务不得保留原图强引用。迟到结果只有在节点仍属于当前文档且任务代次未失效时才能写回。提交成功后释放原始 `File`、压缩结果与临时 Blob URL，暂存记录同时按原图和压缩文件计入内存边界。
 - 同一次富文本粘贴同时含文字和图片时，必须使用浏览器 DOM 结构按“文字、图片、文字”的原顺序插入，不能把全部文字移到图片前面；图片大小/数量过滤保留原剪贴板文件槽位，远程装饰图不消耗本地图片槽位，避免后一张合法图片错绑到前一个 HTML 图片位置。只有剪贴板没有 HTML 图片位置时才回退为文字后追加图片。图片节点通过 Backspace/Delete 或按钮离开文档后统一取消仍在进行的上传；切换会话、清空或离开页面会删除已上传但未提交的资产，上传响应晚于卸载时也要补偿删除。有序列表编号和嵌套层级在 Tiptap JSON 转 Markdown 时必须保持，并通过标准 Markdown 解析器验证。
-- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/clear-input` 清空输入、`/code` 插入代码块、`/image` 添加图片、`/image-model` 设置当前会话默认图像模型、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。`/image-model` 打开中文单选弹窗并可回滚乐观更新；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
+- `/` 只在当前普通文本块的光标前触发命令建议菜单；命令固定包含 `/image` 添加图片、`/参数`（兼容 `/parameters`）打开生成参数弹窗、`/image-model` 设置当前会话默认图像模型、`/compact` 手动压缩上下文和 `/clear` 清空当前对话。不提供 `/clear-input` 或 `/code`：清空草稿使用编辑器原生选中删除，代码块通过 Markdown 输入规则或直接输入/粘贴完成。`/image-model` 打开中文单选弹窗并可回滚乐观更新；`/参数` 只在模型存在实际可调的生成参数时打开弹窗，否则提示且不产生消息内容；`/compact` 与 `/clear` 是页面级动作，必须确认并等待服务端接受，不能作为文本插入或乐观完成。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
 - 斜杠查询没有候选项时，Enter 回到普通发送语义，不能被空命令菜单吞掉。
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
@@ -276,7 +276,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。
 - 文本模型明确需要位图时调用本站 `generate_image` function tool；结构图、流程图、时序图、架构图、Mermaid、LaTeX 和 SVG 继续优先使用结构化输出。工具执行器固定 `gpt-image-2`，文本模型根据用户意图填写尺寸、质量和格式；执行器只按公开协议约束做确定性校验，合法参数原样传递、非法参数在调用上游前失败，不读取用户原话做关键词放行、静默缩放或提示词优化。工具循环对 Chat/Responses 都可用，不依赖上游 `image_generation` 托管工具。`chatImageGenerationTotalTimeoutSeconds` 控制一次图片工具调用从网关选号到资产提交的整体时限，默认 `900` 秒、范围 `60..86400`；每个新聊天任务冻结当次系统设置快照，不能与网关 image lane 的单账户首响应超时混为一个字段。通用边界见 [AI 工具创建规范](../architecture/backend/AI工具创建规范.md)。
 - 对话模型与图像模型职责严格分离：`gpt-5.5`、GPT-5.6 等普通模型只负责回答和选择 `generate_image` / 编辑工具，工具适配器才使用当前会话默认图像模型，当前固定为 `gpt-image-2`。图像账户后台健康检查使用上游 `GET /v1/models` 精确确认模型 ID，不得把普通对话模型写进 Images 请求，也不得用文本 `/v1/responses` 探测纯图像模型；真实生成和编辑仍分别走 Images generations / edits。
-- `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`，下载通过 fetch + blob 保存本地文件，避免普通链接把当前聊天页导航到图片 URL。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
+- `generate_image` 完成后通过 artifact sink 原子写入同一个 `assetId` 的 original/preview 两个对象：original 保留 provider 实际 WebP/PNG/JPEG，preview 统一 WebP、最长边约 640；消息只加载 `?variant=preview`；点击预览通过页面内 Ant Design Vue 图片灯箱按需请求 `?variant=original`。下载和复制都位于助手消息底部工具栏：下载通过 fetch + blob 保存本地文件，复制在用户点击时把原图转换为 PNG 并写入真实图片 ClipboardItem，不能复制 `attachment://` Markdown。内部附件 Markdown 已由结构化图片块渲染，渲染器必须忽略它的 alt/书签名称。资产响应默认 `Content-Disposition: inline`，可选 `download=1` 时改为 attachment；两个版本分别使用 SHA-256 ETag、`private, max-age=86400, immutable` 和条件请求 304；对象提交成功后才解除补偿删除。
 - Images、Chat Completions、Responses 和前端 SSE 的 body reader 在协议错误、大小拒绝、回调异常或消费者提前结束时必须调用 `cancel()`；只有自然读到 `done` 才直接释放 reader lock，避免旧连接在重附着或失败后继续占用资源。
 - OpenAI Chat / Responses 映射到 Gemini native 时，思考级别转换为 `generationConfig.thinkingConfig.thinkingLevel`，服务等级转换为 Gemini 顶层 `service_tier`；不能只在下游请求保留无效的 OpenAI 字段。
 - 上游自行执行的内置工具只展示状态和结果；Chat 模块不重复执行、不伪造工具结果。

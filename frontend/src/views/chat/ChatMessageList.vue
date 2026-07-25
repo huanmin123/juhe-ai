@@ -53,11 +53,16 @@
               </a-tooltip>
             </div>
           </div>
-          <div v-if="messages[item.index].role === 'assistant' && messages[item.index].status !== 'streaming' && messages[item.index].contentText.trim()" class="message-actions message-actions-assistant">
+          <div v-if="messages[item.index].role === 'assistant' && messages[item.index].status !== 'streaming' && hasAssistantActions(messages[item.index])" class="message-actions message-actions-assistant">
             <div class="message-actions-controls">
               <time :datetime="messages[item.index].createdAt">{{ formatMessageTime(messages[item.index].createdAt) }}</time>
-              <a-tooltip title="复制回答">
-                <a-button type="text" class="message-action-button" aria-label="复制 AI 回答" @click="copyMessage(messages[item.index].contentText)">
+              <a-tooltip v-for="(image, imageIndex) in completedGeneratedImages(messages[item.index])" :key="image.assetId" :title="imageDownloadLabel(messages[item.index], imageIndex)">
+                <a-button type="text" class="message-action-button" :disabled="downloadingImageAssetId === image.assetId" :aria-label="imageDownloadLabel(messages[item.index], imageIndex)" @click="downloadAssistantImage(messages[item.index], image.assetId, image.mimeType)">
+                  <template #icon><DownloadOutlined /></template>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip :title="completedGeneratedImages(messages[item.index]).length ? '复制图片' : '复制回答'">
+                <a-button type="text" class="message-action-button" :aria-label="completedGeneratedImages(messages[item.index]).length ? '复制生成图片' : '复制 AI 回答'" @click="copyAssistantMessage(messages[item.index])">
                   <template #icon><CopyOutlined /></template>
                 </a-button>
               </a-tooltip>
@@ -70,19 +75,20 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, EditOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, DownloadOutlined, EditOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { message as antdMessage } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { writeTextToClipboard } from '@/shared/clipboard'
-import type { ChatMessage } from '@/types/domain/chat'
+import type { ChatMessage, ChatMessageContentBlock } from '@/types/domain/chat'
 import type { ChatGenerationLivenessState, RunningTurn } from './chatGenerationRuntime'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatAssistantMessageContent from './ChatAssistantMessageContent.vue'
 import ChatThinkingIndicator from './ChatThinkingIndicator.vue'
 import ChatUserMessageContent from './ChatUserMessageContent.vue'
 import { chatErrorMessage } from './chatErrorMessage'
+import { copyGeneratedImageToClipboard, downloadGeneratedImage } from './chatGeneratedImageActions'
 import { chatDistanceFromBottom, resolveChatFollowState, resolveChatViewportResizeTransition, shouldBreakChatFollowOnWheel, shouldDetachChatFollowOnScroll, shouldShowChatJumpButton } from './chatScrollPolicy'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string; retryableMessageId?: string; retryLabel?: string; runtimeTurn?: RunningTurn }>()
@@ -110,6 +116,8 @@ const virtualizer = useVirtualizer(computed(() => ({
   getItemKey: (index: number) => props.messages[index]?.id ?? index
 })))
 const virtualItems = computed(() => virtualizer.value.getVirtualItems())
+const downloadingImageAssetId = ref<string>()
+type CompletedGeneratedImage = Extract<ChatMessageContentBlock, { type: 'output_image' }>
 
 function measureElement(element: unknown): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
@@ -202,6 +210,43 @@ function thinkingLiveness(message: ChatMessage): ChatGenerationLivenessState { r
 function formatMessageTime(value: string): string { return dayjs(value).format('HH:mm') }
 async function copyMessage(content: string): Promise<void> {
   try { await writeTextToClipboard(content) } catch { antdMessage.error('复制失败，请稍后重试') }
+}
+function completedGeneratedImages(message: ChatMessage): CompletedGeneratedImage[] {
+  return (message.contentBlocks ?? []).filter((block): block is CompletedGeneratedImage => block.type === 'output_image' && block.status === 'completed')
+}
+function imageDownloadLabel(message: ChatMessage, index: number): string {
+  const images = completedGeneratedImages(message)
+  return images.length > 1 ? `下载生成图片 ${index + 1}` : '下载生成图片'
+}
+function hasAssistantActions(message: ChatMessage): boolean {
+  return completedGeneratedImages(message).length > 0 || stripInternalAttachmentMarkdown(message.contentText).trim().length > 0
+}
+async function copyAssistantMessage(message: ChatMessage): Promise<void> {
+  const image = completedGeneratedImages(message)[0]
+  if (!image) {
+    await copyMessage(stripInternalAttachmentMarkdown(message.contentText))
+    return
+  }
+  try {
+    await copyGeneratedImageToClipboard(message.conversationId, image.assetId)
+    antdMessage.success('图片已复制到剪贴板')
+  } catch {
+    antdMessage.error('图片复制失败，请确认浏览器允许访问剪贴板后重试')
+  }
+}
+async function downloadAssistantImage(message: ChatMessage, assetId: string, mimeType?: string): Promise<void> {
+  if (downloadingImageAssetId.value) return
+  downloadingImageAssetId.value = assetId
+  try {
+    await downloadGeneratedImage(message.conversationId, assetId, mimeType)
+  } catch {
+    antdMessage.error('图片下载失败，请稍后重试')
+  } finally {
+    downloadingImageAssetId.value = undefined
+  }
+}
+function stripInternalAttachmentMarkdown(content: string): string {
+  return content.replace(/!\[[^\]]*\]\(attachment:\/\/[^)]+\)/gi, '')
 }
 
 watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length, props.messages.at(-1)?.eventVersion, props.messages.at(-1)?.renderRevision], followStream)

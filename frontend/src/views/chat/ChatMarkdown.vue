@@ -86,6 +86,7 @@ const renderer: RendererObject = {
     return `<a href="${escapeAttribute(href)}"${titleAttribute} target="_blank" rel="noopener noreferrer nofollow">${label}</a>`
   },
   image({ href, title, text }) {
+    if (/^attachment:\/\//i.test(href)) return ''
     if (!/^https:\/\//i.test(href)) return escapeHtml(text || '图片')
     const titleAttribute = title ? ` title="${escapeAttribute(title)}"` : ''
     return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text || '')}"${titleAttribute} loading="lazy" referrerpolicy="no-referrer" />`

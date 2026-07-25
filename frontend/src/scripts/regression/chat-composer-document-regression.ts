@@ -315,9 +315,9 @@ for (const placeholder of [imagePlaceholder, textPlaceholder]) {
 }
 assert.match(imagePlaceholder, /图片/, '支持图片的模型必须提示图片输入')
 assert.doesNotMatch(textPlaceholder, /图片/, '不支持图片的模型不得提示图片输入')
-assert.match(selectCommandSource, /const command = findChatComposerCommandQuery\(editor\.value\.state\)[\s\S]*if \(!command\)[\s\S]*item\.key === 'clear-input'/, '所有命令包括 clear-input 都必须先用最新 EditorState query 通过门禁')
-assert.match(selectCommandSource, /item\.key === 'clear-input'\) \{\s*clear\(\)/, '/clear-input 必须清空完整草稿而不是只删除命令文本')
-assert.match(selectCommandSource, /deleteRange\(command\.range\)/, '非 clear-input 命令必须只删除最新命令 range')
+assert.match(selectCommandSource, /const command = findChatComposerCommandQuery\(editor\.value\.state\)[\s\S]*if \(!command\)/, '所有命令都必须先用最新 EditorState query 通过门禁')
+assert.match(selectCommandSource, /deleteRange\(command\.range\)/, '命令触发时必须只删除最新命令 range')
+assert.doesNotMatch(selectCommandSource, /clear-input|item\.kind === 'editor'/, '已移除的草稿命令不得留下不可达处理分支')
 assert(composerSource.indexOf('URL.createObjectURL(sourceFile)') < composerSource.indexOf('imagePreparationQueue.enqueue(record)'), '图片必须先插入原始 Blob 预览，再进入异步压缩队列')
 assert.doesNotMatch(composerSource, /for \(const file of (?:files|selectedFiles)\) await insertImage\(file\)/, '多选图片不得串行等待上一张压缩后才显示下一张')
 assert.doesNotMatch(composerSource, /chatComposerCommandQueryRange/, 'AIComposer 不得再引用旧的光标减长度 range API')

@@ -474,13 +474,10 @@ function selectCommand(item: ChatComposerCommand): void {
   if (item.kind === 'conversation') {
     editor.value.chain().focus().deleteRange(command.range).run()
     emit('conversation-action', item.action)
-  } else if (item.key === 'clear-input') {
-    clear()
   } else {
     editor.value.chain().focus().deleteRange(command.range).run()
     if (item.kind === 'image') openImagePicker()
     else if (item.kind === 'generation') openGenerationParameters()
-    else if (item.kind === 'editor') editor.value.commands.insertContent(item.insert)
   }
   commandOpen.value = false
 }

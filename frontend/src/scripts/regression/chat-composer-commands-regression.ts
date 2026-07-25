@@ -26,12 +26,10 @@ const paragraph = (text = '') => schema.node('paragraph', null, text ? schema.te
 const stateAt = (doc: ReturnType<typeof schema.node>, anchor: number, head = anchor) =>
   EditorState.create({ doc, selection: TextSelection.create(doc, anchor, head) })
 
-assert.deepEqual(filterChatComposerCommands('代码').map((item) => item.key), ['code'])
+assert.deepEqual(filterChatComposerCommands('代码'), [])
 assert.deepEqual(filterChatComposerCommands('列表'), [])
-assert.deepEqual(chatComposerCommands.map((item) => item.key), ['clear-input', 'code', 'image', 'parameters', 'image-model', 'compact', 'clear'])
-assert.deepEqual(chatComposerCommands.find((item) => item.key === 'clear-input'), {
-  key: 'clear-input', kind: 'editor', label: '清空输入', description: '清除当前编辑内容', insert: ''
-})
+assert.deepEqual(chatComposerCommands.map((item) => item.key), ['image', 'parameters', 'image-model', 'compact', 'clear'])
+assert.equal(chatComposerCommands.some((item) => item.key === 'clear-input' || item.key === 'code'), false, '低价值草稿命令不得重新进入菜单')
 assert.deepEqual(chatComposerCommands.find((item) => item.key === 'compact'), {
   key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '整理当前会话的较早内容'
 })

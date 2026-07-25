@@ -1,14 +1,11 @@
 import type { EditorState } from '@tiptap/pm/state'
 
 export type ChatComposerCommand =
-  | { key: 'clear-input' | 'code'; kind: 'editor'; insert: string; label: string; description: string }
   | { key: 'image'; kind: 'image'; label: string; description: string }
   | { key: 'parameters'; kind: 'generation'; label: string; description: string }
   | { key: 'image-model' | 'compact' | 'clear'; kind: 'conversation'; action: 'set-image-model' | 'compact-context' | 'clear-conversation'; label: string; description: string }
 
 export const chatComposerCommands: ChatComposerCommand[] = [
-  { key: 'clear-input', kind: 'editor', label: '清空输入', description: '清除当前编辑内容', insert: '' },
-  { key: 'code', kind: 'editor', label: '代码块', description: '插入 Markdown 代码块', insert: '\n```\n\n```' },
   { key: 'image', kind: 'image', label: '添加图片', description: '粘贴或选择图片' },
   { key: 'parameters', kind: 'generation', label: '生成参数', description: '设置温度、Top P、重复惩罚和回复长度' },
   { key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '设置当前会话的图片生成模型' },
