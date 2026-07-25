@@ -316,6 +316,14 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
   }
+  if (account.status === 'active' && canUseAccountActions(account)) {
+    items.push({
+      key: 'manual-isolate',
+      label: '人工隔离',
+      icon: 'pause',
+      tone: 'warning'
+    })
+  }
   if (account.status === 'error') {
     if (canRestoreException(account)) {
       items.push({ key: 'restore-normal', label: '异常恢复' })

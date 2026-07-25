@@ -53,6 +53,7 @@
     "test:gateway-quality-priority-real-sample-mock-ai": "tsx src/scripts/regression/gateway-quality-priority-real-sample-mock-ai-regression.ts",
     "test:image-provider-timeout-signal": "tsx src/scripts/regression/image-provider-timeout-signal-regression.ts",
     "test:gateway-downstream-commit": "tsx src/scripts/regression/gateway-downstream-commit-regression.ts",
+    "test:gateway-stream-committed-failure": "tsx src/scripts/regression/gateway-stream-committed-failure-regression.ts",
     "test:stream-event-token-estimate-boundary": "tsx src/scripts/regression/stream-event-token-estimate-boundary-regression.ts",
     "test:response-inspection-policy": "tsx src/scripts/regression/response-inspection-policy-regression.ts",
     "test:response-inspection-policy-postgres-smoke": "tsx src/scripts/regression/response-inspection-policy-postgres-smoke.ts",

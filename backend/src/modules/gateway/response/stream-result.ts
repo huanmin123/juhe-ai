@@ -32,6 +32,8 @@ export interface StreamPipeResult {
   responseInspectionObservationOmittedCount?: number
   bodyOmission?: StreamBodyOmissionSummary
   transportFailure?: StreamTransportFailure
+  /** Local gateway processing failed before any attributable upstream transport outcome. */
+  gatewayLocalFailure?: boolean
 }
 
 export interface StreamTransportFailure {

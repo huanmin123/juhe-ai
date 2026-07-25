@@ -1328,6 +1328,8 @@ export async function handleOpenAIGatewayRequest(
         const responseRetryUpstream = 'retryUpstream' in handledResponse && handledResponse.retryUpstream
         const responseErrorCode = 'errorCode' in handledResponse ? handledResponse.errorCode : undefined
         const neutralRequestWallTermination = responseErrorCode === 'gateway_request_wall_budget_exhausted'
+        const gatewayLocalFailure = 'gatewayLocalFailure' in handledResponse
+          && handledResponse.gatewayLocalFailure === true
         const normalRouteFirstByteCutover = responseRetryUpstream
           && 'retryReason' in handledResponse
           && handledResponse.retryReason === 'normal_route_first_byte_timeout'
@@ -1341,7 +1343,9 @@ export async function handleOpenAIGatewayRequest(
             normalRouteFirstByteDeadline?.limitingFactor === 'lane_timeout'
             || normalRouteFirstByteDeadline?.limitingFactor === 'uncommitted_attempt'
           )
-        const neutralSchedulingTermination = neutralRequestWallTermination || neutralNormalRouteFirstByteCutover
+        const neutralSchedulingTermination = neutralRequestWallTermination
+          || neutralNormalRouteFirstByteCutover
+          || gatewayLocalFailure
         // A configured speed-first deadline is a scheduling decision. The
         // gateway deliberately stopped reading this otherwise-live response,
         // so it is neither transport-failure nor framing-complete evidence.

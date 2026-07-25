@@ -460,10 +460,29 @@ async function assertInterleavedMixedSessionStorm(
       mixedHealthyRequestCount,
       `共享质量分母只能包含 32 个健康会话，实际 ${quality.window5m.qualityAttempts}：${JSON.stringify(quality.window5m)}`
     )
+    const terminalOutcomeCount = quality.window5m.completedResponses
+      + quality.window5m.upstreamResponseFailures
+      + quality.window5m.explicitPolicyFailures
+      + quality.window5m.localTransportFailures
+      + quality.window5m.unknownOutcomes
+      + quality.window5m.clientCancellations
+    assert.equal(
+      quality.window5m.attempts,
+      terminalOutcomeCount,
+      `每个热质量 attempt 必须且只能结算一个终态：${JSON.stringify(quality.window5m)}`
+    )
     assert.equal(
       quality.window5m.unknownOutcomes,
-      badHitCount,
-      '同源前台 transport 失败仍应保留逐物理 attempt 的中性 unknown 诊断计数'
+      quality.window5m.attempts - quality.window5m.completedResponses,
+      `transport 风暴中除健康完成外的物理 attempt 必须保持中性 unknown：${JSON.stringify(quality.window5m)}`
+    )
+    assert(
+      quality.window5m.unknownOutcomes >= badHitCount,
+      `Mock handler 命中的坏请求都必须有中性终态；连接在 handler 前失败的已开始 attempt 可额外计数：${JSON.stringify(quality.window5m)}`
+    )
+    assert(
+      quality.window5m.attempts <= interleavedRequests.length * scenario.accountKeys.length,
+      `多 Key attempt 总数必须受请求数和物理 Key 数量约束：${JSON.stringify(quality.window5m)}`
     )
   }
   assert(

@@ -17,7 +17,7 @@ export interface StreamPreCommitResponseState {
   destroyed: boolean
 }
 
-const streamPreCommitBufferMaxBytes = 256 * 1024
+export const streamPreCommitBufferMaxBytes = 256 * 1024
 
 type SseLineKind = 'empty' | 'comment' | 'field_candidate' | 'data' | 'other'
 
@@ -154,6 +154,14 @@ export function canKeepStreamPreCommitChunk(
     && !input.inspection.skipped
     && state.bufferedBytes + input.chunk.length <= streamPreCommitBufferMaxBytes
     && responseCanStillFailBeforeCommit(input.response)
+}
+
+export function wouldExceedStreamPreCommitBuffer(
+  state: StreamPreCommitBufferState,
+  chunk: Buffer
+): boolean {
+  return state.buffering
+    && state.bufferedBytes + chunk.length > streamPreCommitBufferMaxBytes
 }
 
 export function appendStreamPreCommitChunk(state: StreamPreCommitBufferState, chunk: Buffer): void {

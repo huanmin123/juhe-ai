@@ -6,7 +6,7 @@ import type { HybridQualityInspectionOutcome } from '../hybrid/quality-inspectio
 import type { CodexResponsesGuardUsageSummary } from '../codex-responses/response-guard.js'
 
 export type UpstreamResponseHandlingResult =
-  | { alreadyFinalized: true; errorCode?: string; transportFailure?: StreamTransportFailure }
+  | { alreadyFinalized: true; errorCode?: string; transportFailure?: StreamTransportFailure; gatewayLocalFailure?: boolean }
   | {
     alreadyFinalized: false
     retryUpstream: true
@@ -19,6 +19,7 @@ export type UpstreamResponseHandlingResult =
     uncommittedResponseBody?: Buffer
     hybridQuality?: HybridQualityInspectionOutcome
     transportFailure?: StreamTransportFailure
+    gatewayLocalFailure?: boolean
   }
   | {
     alreadyFinalized: false
@@ -32,4 +33,5 @@ export type UpstreamResponseHandlingResult =
     protocolValidatedSuccess?: boolean
     errorPayload: Record<string, unknown>
     transportFailure?: StreamTransportFailure
+    gatewayLocalFailure?: boolean
   }

@@ -5,6 +5,7 @@ import type { Response } from 'express'
 
 import { GatewayDownstreamCommitState } from '../../modules/gateway/response/downstream-commit-state.js'
 import { createGatewaySseWaitHeartbeatObserver } from '../../modules/gateway/response/sse-wait-heartbeat.js'
+import { streamPreCommitBufferMaxBytes } from '../../modules/gateway/response/stream-pre-commit-buffer.js'
 import { shouldRetryPreCommitStreamFailureOnServer } from '../../modules/gateway/response/stream-finalization-retry-decision.js'
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
 import type { StreamPipeResult } from '../../modules/gateway/response/stream-result.js'
@@ -144,6 +145,39 @@ await assertTransportOnlySseRemainsPreCommit(
   '只有空 data 字段的 SSE 帧',
   chunkSequenceBody(['data:', '\r\n', '\r\n'])
 )
+await assertTransportOnlySseRemainsPreCommit(
+  'EOF 前未终止的 event 字段残片',
+  singleChunkBody('event: vendor.progress')
+)
+await assertTransportOnlySseRemainsPreCommit(
+  'EOF 前未终止的 id 字段残片',
+  singleChunkBody('id: vendor-id')
+)
+await assertTransportOnlySseRemainsPreCommit(
+  'EOF 前未终止的未知字段残片',
+  singleChunkBody('vendor-meta: pending')
+)
+await assertTransportOnlySseRemainsPreCommit(
+  'EOF 前未终止的空 data 字段残片',
+  singleChunkBody('data:')
+)
+await assertOversizedUncommittedSseRejected(
+  '超大未终止 event 字段',
+  singleChunkBody(`event: ${'x'.repeat(300 * 1024)}`)
+)
+await assertOversizedUncommittedSseRejected(
+  '超大未终止 id 字段',
+  singleChunkBody(`id: ${'x'.repeat(300 * 1024)}`)
+)
+await assertOversizedUncommittedSseRejected(
+  '超大未终止未知字段',
+  singleChunkBody(`vendor-meta: ${'x'.repeat(300 * 1024)}`)
+)
+await assertOversizedUncommittedSseRejected(
+  '同一事件累计空 data 字段超过上限',
+  chunkSequenceBody(Array.from({ length: 50_000 }, () => 'data:\n'))
+)
+await assertCompletedNonSemanticFrameAtLimitIsCleared()
 
 const opaqueDataState = new GatewayDownstreamCommitState()
 const opaqueDataChunks: Buffer[] = []
@@ -171,8 +205,29 @@ assert.equal(opaqueDataState.canRetryUpstream(), false, '普通不透明 data �
 assert.equal(opaqueDataResponse.writableEnded, true)
 assert.equal(Buffer.concat(opaqueDataChunks).toString('utf8'), opaqueDataBody, '普通不透明 data 事件正文必须保持原样')
 
+const oversizedOpaqueDataChunks: Buffer[] = []
+const oversizedOpaqueDataBody = `data: ${'v'.repeat(300 * 1024)}\n\n`
+const oversizedOpaqueDataResult = await pipeUpstreamStream(
+  singleChunkBody(oversizedOpaqueDataBody),
+  fakeResponse({ writtenChunks: oversizedOpaqueDataChunks }),
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true
+  }
+)
+assert.equal(oversizedOpaqueDataResult.completed, true, '超大但非空的 opaque data 仍是客户端语义，不得被 metadata 上限拦截')
+assert.equal(oversizedOpaqueDataResult.semanticCommitted, true)
+assert.equal(Buffer.concat(oversizedOpaqueDataChunks).toString('utf8'), oversizedOpaqueDataBody)
+
 const visibleOutputState = new GatewayDownstreamCommitState()
-const visibleOutputResponse = fakeResponse()
+const visibleOutputChunks: Buffer[] = []
+const visibleOutputResponse = fakeResponse({ writtenChunks: visibleOutputChunks })
 const visibleOutputResult = await pipeUpstreamStream(
   visibleOutputThenFailureBody(),
   visibleOutputResponse,
@@ -192,6 +247,53 @@ assert.equal(visibleOutputResult.completed, false)
 assert.equal(visibleOutputResult.semanticCommitted, true, '真实 Chat delta 写出后必须进入不可重放语义提交态')
 assert.equal(visibleOutputState.canRetryUpstream(), false, '已可见语义后不得切号拼接第二条流')
 assert.equal(shouldRetryPreCommitStreamFailureOnServer(visibleOutputResult, visibleOutputResponse), false)
+assert.equal(visibleOutputResult.transportFailure, undefined, '无上游 transport provenance 的本地 iterable 异常不得污染传输电路')
+assert.doesNotMatch(Buffer.concat(visibleOutputChunks).toString('utf8'), /vendor-secret-code/, '本地异常原文不得进入客户端流')
+
+const localTransformResponse = fakeResponse()
+const localTransformResult = await pipeUpstreamStream(
+  singleChunkBody('data: {"choices":[{"delta":{"content":"hidden"}}]}\n\n'),
+  localTransformResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true,
+    transformUpstreamChunk: () => {
+      throw new Error('vendor-secret-code local transform failed')
+    }
+  }
+)
+assert.equal(localTransformResult.completed, false)
+assert.equal(localTransformResult.transportFailure, undefined, '本地 transform 异常不得伪装成上游读取中断')
+assert.equal(localTransformResult.gatewayLocalFailure, true, '本地 transform 异常必须显式保持 unknown，不能伪装 framing complete')
+assert.equal(localTransformResponse.headersSent, false)
+assert.equal(localTransformResponse.writableEnded, false)
+assert.doesNotMatch(localTransformResult.message, /vendor-secret-code/, '公开失败摘要不得包含本地异常原文')
+
+const downstreamWriteResponse = fakeResponse({ throwOnWrite: true })
+const downstreamWriteResult = await pipeUpstreamStream(
+  singleChunkBody('data: {"choices":[{"delta":{"content":"write"}}]}\n\n'),
+  downstreamWriteResponse,
+  streamTimeoutProfile,
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'chat_completions',
+    interpretProtocolFailures: false,
+    retryBeforeDownstreamWriteUntilOutput: true
+  }
+)
+assert.equal(downstreamWriteResult.completed, false)
+assert.equal(downstreamWriteResult.transportFailure, undefined, '下游 write 异常不得伪装成上游读取中断')
+assert.equal(downstreamWriteResult.gatewayLocalFailure, true, '下游 write 异常必须显式保持 unknown，不能恢复账户电路')
+assert.doesNotMatch(downstreamWriteResult.message, /downstream write failed/, '公开失败摘要不得包含下游异常原文')
 
 console.log('gateway downstream commit regression passed')
 
@@ -210,7 +312,7 @@ async function* chunkSequenceBody(chunks: string[]): AsyncGenerator<Uint8Array> 
 async function* visibleOutputThenFailureBody(): AsyncGenerator<Uint8Array> {
   yield Buffer.from(': keep-alive\n\n')
   yield Buffer.from('data: {"choices":[{"index":0,"delta":{"content":"visible"},"finish_reason":null}]}\n\n')
-  throw new Error('semantic stream interrupted')
+  throw new Error('vendor-secret-code semantic stream interrupted')
 }
 
 async function assertTransportOnlySseRemainsPreCommit(
@@ -242,6 +344,63 @@ async function assertTransportOnlySseRemainsPreCommit(
   assert.equal(response.writableEnded, false, `${label} 必须交回上层接管`)
   assert.equal(result.uncommittedResponseBody?.toString('utf8'), expectedUncommittedBody)
   assert.equal(shouldRetryPreCommitStreamFailureOnServer(result, response), true, `${label} 应允许服务端安全切号`)
+}
+
+async function assertOversizedUncommittedSseRejected(
+  label: string,
+  body: AsyncIterable<Uint8Array>
+): Promise<void> {
+  const response = fakeResponse()
+  const result = await pipeUpstreamStream(
+    body,
+    response,
+    streamTimeoutProfile,
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'chat_completions',
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true
+    }
+  )
+  assert.equal(result.completed, false, `${label} 不得伪装成成功流`)
+  assert.equal(result.errorCode, 'stream_precommit_buffer_exceeded', `${label} 应返回稳定的本地安全上限错误码`)
+  assert.equal(result.transportFailure, undefined, `${label} 属于本地 framing 防护，不得进入账户传输电路`)
+  assert.equal(result.transportCommitted, false, `${label} 不得提交下游传输`)
+  assert.equal(result.semanticCommitted, false, `${label} 不得提交下游语义`)
+  assert.equal(result.uncommittedResponseBody, undefined, `${label} 不得把超大不完整 framing 交给最终客户端响应`)
+  assert.equal(response.headersSent, false, `${label} 不得写出 HTTP 头`)
+  assert.equal(response.writableEnded, false, `${label} 必须交回上层做有界切号或稳定失败`)
+}
+
+async function assertCompletedNonSemanticFrameAtLimitIsCleared(): Promise<void> {
+  const prefix = 'event: '
+  const visibleEvent = 'data: opaque-visible\n\n'
+  const responseChunks: Buffer[] = []
+  const response = fakeResponse({ writtenChunks: responseChunks })
+  const result = await pipeUpstreamStream(
+    chunkSequenceBody([
+      `${prefix}${'x'.repeat(streamPreCommitBufferMaxBytes - Buffer.byteLength(prefix))}`,
+      '\n\n',
+      visibleEvent
+    ]),
+    response,
+    streamTimeoutProfile,
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'chat_completions',
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true
+    }
+  )
+  assert.equal(result.completed, true, '上限内已闭合的非 data 事件后仍应允许后续真实 data 完成')
+  assert.equal(Buffer.concat(responseChunks).toString('utf8'), visibleEvent, '被丢弃的元数据事件不得破坏后续 SSE framing')
+  assert.equal(result.semanticCommitted, true)
 }
 
 function fakeResponse(input: { throwOnWrite?: boolean; writtenChunks?: Buffer[] } = {}): Response {

@@ -10,6 +10,22 @@ import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 
 assertStatus('可调度账户', accountFixture(), '可调度', 'green')
+const activeAccountMenuItems = accountMenuItems(accountFixture())
+assertTrue(
+  activeAccountMenuItems.some((item) => (
+    item.key === 'manual-isolate'
+    && item.label === '人工隔离'
+    && item.icon === 'pause'
+    && item.tone === 'warning'
+    && !item.confirmTitle
+    && !item.confirmOkText
+  )),
+  '正常自有账户应显示无需二次确认的人工隔离操作'
+)
+assertTrue(
+  !accountMenuItems(accountFixture({ accessType: 'authorized' })).some((item) => item.key === 'manual-isolate'),
+  '授权账户不应显示来源账户级人工隔离操作'
+)
 const pendingAccount = accountFixture({
   status: 'pending_test',
   effectiveAvailability: {
@@ -115,6 +131,10 @@ assertTrue(
 assertTrue(
   /const updated = options\.isManagementView\.value[\s\S]+options\.updateLoadedAccount\(updated\)/.test(accountMenuActionsSource),
   '账户状态与调度标记操作应直接回写 API 返回的当前行'
+)
+assertTrue(
+  /if \(key === 'manual-isolate'\)[\s\S]+status: 'temporary_unavailable'[\s\S]+后台将按现有机制探测恢复/.test(accountMenuActionsSource),
+  '人工隔离操作应复用 temporary_unavailable 状态和现有后台恢复机制'
 )
 assertTrue(
   accountStatusTooltipLines(accountFixture({

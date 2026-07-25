@@ -12,6 +12,7 @@ import {
   type ParsedUsage
 } from '../usage/types.js'
 import {
+  isStartedUpstreamBodyTransportError,
   isUpstreamRequestAbortedError,
   UpstreamRequestAbortedError
 } from '../upstream/request.js'
@@ -68,10 +69,10 @@ import {
   shouldFailBeforeStreamDownstreamCommit,
   StreamPreCommitSseEvidence,
   takeStreamPreCommitChunks,
-  uncommittedStreamResponseBody
+  uncommittedStreamResponseBody,
+  wouldExceedStreamPreCommitBuffer
 } from './stream-pre-commit-buffer.js'
 import {
-  shouldInterruptCommittedGenericStream,
   shouldReturnResponseInspectionBeforeDownstreamWrite,
   streamClientFailureCode
 } from './stream-retry-decision.js'
@@ -79,7 +80,8 @@ import {
   streamBodyOmissionSummary,
   streamResult,
   type StreamBodyOmissionSummary,
-  type StreamPipeResult
+  type StreamPipeResult,
+  type StreamTransportFailure
 } from './stream-result.js'
 import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import {
@@ -126,7 +128,28 @@ const streamProgressLogIntervalMs = 60_000
 const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
 
-class StreamMaxLifetimeExceededError extends Error {}
+class StreamReadPlanTimeoutError extends Error {
+  constructor(message: string, readonly timeoutKind: ReturnType<typeof buildStreamReadPlan>['timeoutKind']) {
+    super(message)
+    this.name = 'StreamReadPlanTimeoutError'
+  }
+}
+
+class StreamMaxLifetimeExceededError extends StreamReadPlanTimeoutError {
+  constructor(message: string) {
+    super(message, 'stream_lifetime')
+    this.name = 'StreamMaxLifetimeExceededError'
+  }
+}
+
+class StreamPreCommitBufferExceededError extends Error {
+  readonly code = 'stream_precommit_buffer_exceeded'
+
+  constructor() {
+    super('流式响应在语义提交前超过安全缓冲上限')
+    this.name = 'StreamPreCommitBufferExceededError'
+  }
+}
 
 class StreamBeforeDownstreamCommitError extends Error {
   constructor(readonly originalError: unknown) {
@@ -339,6 +362,23 @@ export async function pipeUpstreamStream(
       && !res.destroyed
       && !downstreamCommit.semanticCommitted
   }
+  const shouldRejectOversizedUncommittedSseFraming = (
+    inspection: GatewayStreamInspection,
+    chunk: Buffer
+  ) => {
+    return preCommitBuffer.buffering
+      && totalResponseBytes === 0
+      && !res.writableEnded
+      && !res.destroyed
+      && !downstreamCommit.semanticCommitted
+      && !inspection.outputReceived
+      && !inspection.terminalReceived
+      && !inspection.failedReceived
+      && !preCommitSseEvidence.onlyNonSemanticFramingObserved
+      && !preCommitSseEvidence.dataPayloadStarted
+      && !preCommitSseEvidence.dataEventObserved
+      && (inspection.skipped || wouldExceedStreamPreCommitBuffer(preCommitBuffer, chunk))
+  }
   const recordResponseInspectionObservations = (observations: ResponseInspectionDecision[] | undefined) => {
     if (!observations?.length) return
     for (const observation of observations) {
@@ -461,6 +501,41 @@ export async function pipeUpstreamStream(
       completed && protocolTerminalReceived && !streamParserSkipped
     )
   }
+  const signalCommittedStreamFailure = async (
+    inspection: GatewayStreamInspection
+  ): Promise<'signaled' | 'interrupted'> => {
+    if (terminalEventWritten || !committedProtocolFailureEventEnabled) {
+      interruptResponse(res)
+      return 'interrupted'
+    }
+    const clientMessage = inspection.outputReceived
+      ? '上游流式响应在输出后中断'
+      : gatewayStreamClientRetryMessage
+    const clientErrorCode = inspection.outputReceived
+      ? gatewayStreamFailureCode(clientMessage)
+      : gatewayStreamClientRetryErrorCode
+    prepareDownstreamForWrite()
+    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
+      res,
+      clientMessage,
+      clientErrorCode,
+      gatewayErrorProtocol,
+      options.downstreamProtocol
+    )
+    if (!failureEvent) {
+      interruptResponse(res)
+      return 'interrupted'
+    }
+    if (!bodyCaptureOmitted) {
+      responseCapture.push(failureEvent)
+      diagnosticCapture.push(failureEvent)
+    }
+    totalResponseBytes += failureEvent.length
+    downstreamCommit.markSemanticCommitted(failureEvent.length)
+    terminalEventWritten = true
+    endResponse(res)
+    return 'signaled'
+  }
   const finishTerminalSuccess = async (
     inspection: GatewayStreamInspection,
     input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
@@ -480,15 +555,10 @@ export async function pipeUpstreamStream(
       closeIteratorAfterEnd = true
     }
     if (interpretedProtocolFailure(finalInspection)) {
-      const message = finalInspection.errorMessage ?? '上游流式响应失败'
-      const errorCode = streamClientFailureCode(
-        finalInspection.errorCode ?? gatewayStreamFailureCode(message),
-        finalInspection.outputReceived,
-        options.clientRetryEnabled === true,
-        totalResponseBytes
-      )
+      const message = '上游流式响应在成功终态后返回矛盾失败终态'
+      const errorCode = 'upstream_protocol_failure'
       await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, interpretedProtocolFailure(finalInspection)))
-      endResponse(res)
+      interruptResponse(res)
       if (closeIteratorAfterEnd) {
         void closeAsyncIterator(iterator)
       }
@@ -680,13 +750,22 @@ export async function pipeUpstreamStream(
         }
         if (pendingFirstByteDeadlineReadDecision) {
           const semanticResultInRead = streamSemanticResultReceived(latestInspection)
+            || preCommitSseEvidence.dataPayloadStarted
           const lastOutboundInRead = outboundIndex === interceptResult.chunks.length - 1
           if (semanticResultInRead || lastOutboundInRead) {
             settleStreamFirstByteDeadlineReadDecision(semanticResultInRead)
           } else {
             // Keep all transformed fragments from the same raw read private
             // until we know whether that read contains a semantic result.
-            appendPreCommitChunk(outbound)
+            if (canKeepPreCommitBuffered(latestInspection, outbound)) {
+              appendPreCommitChunk(outbound)
+            } else if (shouldRejectOversizedUncommittedSseFraming(latestInspection, outbound)) {
+              throw new StreamPreCommitBufferExceededError()
+            } else if (shouldKeepNonSemanticSseFramingPrivate()) {
+              clearStreamPreCommitChunks(preCommitBuffer)
+            } else {
+              throw new StreamPreCommitBufferExceededError()
+            }
             continue
           }
         }
@@ -694,7 +773,11 @@ export async function pipeUpstreamStream(
           appendPreCommitChunk(outbound)
           continue
         }
+        if (shouldRejectOversizedUncommittedSseFraming(latestInspection, outbound)) {
+          throw new StreamPreCommitBufferExceededError()
+        }
         if (shouldKeepNonSemanticSseFramingPrivate()) {
+          clearStreamPreCommitChunks(preCommitBuffer)
           continue
         }
         if (interpretedProtocolFailure(latestInspection)) {
@@ -704,38 +787,13 @@ export async function pipeUpstreamStream(
           const errorCode = 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           await closeAsyncIterator(iterator)
-          if (!beforeDownstreamCommit) {
-            if (!committedProtocolFailureEventEnabled) {
-              interruptResponse(res)
-            } else {
-              const clientMessage = latestInspection.outputReceived
-                ? '上游流式响应在输出后中断'
-                : gatewayStreamClientRetryMessage
-              const clientErrorCode = latestInspection.outputReceived
-                ? gatewayStreamFailureCode(clientMessage)
-                : gatewayStreamClientRetryErrorCode
-              const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
-                res,
-                clientMessage,
-                clientErrorCode,
-                gatewayErrorProtocol,
-                options.downstreamProtocol
-              )
-              if (failureEvent) {
-                if (!bodyCaptureOmitted) {
-                  responseCapture.push(failureEvent)
-                  diagnosticCapture.push(failureEvent)
-                }
-                totalResponseBytes += failureEvent.length
-                downstreamCommit.markSemanticCommitted(failureEvent.length)
-              }
-              endResponse(res)
-            }
-          }
+          const committedFailureDisposition = beforeDownstreamCommit
+            ? undefined
+            : await signalCommittedStreamFailure(latestInspection)
           streamLogger.warn({
             event: beforeDownstreamCommit
               ? 'gateway_stream_failure_before_downstream_commit'
-              : committedProtocolFailureEventEnabled
+              : committedFailureDisposition === 'signaled'
                 ? 'gateway_stream_failure_after_downstream_commit_signaled'
                 : 'gateway_stream_failure_after_downstream_commit_interrupted',
             message,
@@ -747,7 +805,7 @@ export async function pipeUpstreamStream(
             recentSseEventTypes: latestInspection.recentEventTypes
           }, beforeDownstreamCommit
             ? '网关在下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
-            : committedProtocolFailureEventEnabled
+            : committedFailureDisposition === 'signaled'
               ? '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并补发受控协议失败事件'
               : '网关在下游提交后解析到流式失败，已丢弃供应商失败原文并中断连接')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
@@ -758,6 +816,9 @@ export async function pipeUpstreamStream(
           outbound,
           streamSemanticResultReceived(latestInspection) || preCommitSseEvidence.dataPayloadStarted
         )
+        if (latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection)) {
+          terminalEventWritten = true
+        }
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
         chunkWroteDownstream = true
@@ -947,7 +1008,11 @@ export async function pipeUpstreamStream(
           appendPreCommitChunk(outbound)
           continue
         }
+        if (shouldRejectOversizedUncommittedSseFraming(latestInspection, outbound)) {
+          throw new StreamPreCommitBufferExceededError()
+        }
         if (shouldKeepNonSemanticSseFramingPrivate()) {
+          clearStreamPreCommitChunks(preCommitBuffer)
           continue
         }
         if (interpretedProtocolFailure(latestInspection)) {
@@ -956,11 +1021,15 @@ export async function pipeUpstreamStream(
           const message = '上游流式响应返回失败终态'
           const errorCode = 'upstream_protocol_failure'
           await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
-          if (!beforeDownstreamCommit) endResponse(res)
+          const committedFailureDisposition = beforeDownstreamCommit
+            ? undefined
+            : await signalCommittedStreamFailure(latestInspection)
           streamLogger.warn({
             event: beforeDownstreamCommit
               ? 'gateway_stream_failure_before_downstream_commit'
-              : 'gateway_stream_failure_after_downstream_commit',
+              : committedFailureDisposition === 'signaled'
+                ? 'gateway_stream_failure_after_downstream_commit_signaled'
+                : 'gateway_stream_failure_after_downstream_commit_interrupted',
             message,
             errorCode,
             totalUpstreamBytes,
@@ -971,7 +1040,9 @@ export async function pipeUpstreamStream(
             eofPendingFlush: true
           }, beforeDownstreamCommit
             ? '网关在 EOF pending 下游提交前解析到流式失败，交由上层决定是否服务端换号重试'
-            : '网关在 EOF pending 下游提交后解析到流式失败，已丢弃供应商失败事件并稳定结束当前流')
+            : committedFailureDisposition === 'signaled'
+              ? '网关在 EOF pending 下游提交后解析到流式失败，已补发受控协议失败事件'
+              : '网关在 EOF pending 下游提交后解析到流式失败，已中断当前连接')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await flushPreCommitChunks()
@@ -979,6 +1050,9 @@ export async function pipeUpstreamStream(
           outbound,
           streamSemanticResultReceived(latestInspection) || preCommitSseEvidence.dataPayloadStarted
         )
+        if (latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection)) {
+          terminalEventWritten = true
+        }
         eofWroteDownstream = true
         const writeNow = Date.now()
         if (
@@ -1052,7 +1126,7 @@ export async function pipeUpstreamStream(
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-      if (inspection.terminalReceived && !interpretedProtocolFailure(inspection)) {
+      if (terminalEventWritten && !interpretedProtocolFailure(inspection)) {
         endResponse(res)
         streamLogger.info({
           event: 'gateway_stream_client_closed_after_terminal',
@@ -1149,35 +1223,7 @@ export async function pipeUpstreamStream(
       parserSkipped: inspection.skipped,
       skipReason: inspection.skipReason
     }, '网关流式转发捕获异常')
-    if (error instanceof StreamMaxLifetimeExceededError && totalResponseBytes > 0) {
-      const errorCode = streamClientFailureCode(
-        inspection.errorCode ?? gatewayStreamFailureCode(rawMessage),
-        inspection.outputReceived,
-        options.clientRetryEnabled === true,
-        totalResponseBytes
-      )
-      await handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
-      streamLogger.warn({
-        event: 'gateway_stream_max_lifetime_interrupted',
-        elapsedMs: Date.now() - startedAt,
-        chunkCount: chunkIndex,
-        totalUpstreamBytes,
-        totalResponseBytes,
-        firstTokenMs,
-        message: rawMessage,
-        errorCode,
-        outputReceived: inspection.outputReceived,
-        sseEventCount: inspection.eventCount,
-        recentSseEventTypes: inspection.recentEventTypes
-      }, '网关流式响应达到最大存活时间，已直接中断下游连接以交由客户端重试')
-      interruptResponse(res)
-      return withTransportFailure(
-        finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
-        'timeout',
-        rawMessage
-      )
-    }
-    if (inspection.terminalReceived && !interpretedProtocolFailure(inspection)) {
+    if (terminalEventWritten && !interpretedProtocolFailure(inspection)) {
       endResponse(res)
       streamLogger.info({
         event: 'gateway_stream_error_ignored_after_terminal',
@@ -1186,9 +1232,21 @@ export async function pipeUpstreamStream(
       }, '网关已收到终止事件，忽略终止后的流式异常')
       return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    const message = interpretedProtocolFailure(inspection) ? inspection.errorMessage ?? rawMessage : rawMessage
+    const transportFailure = streamTransportFailureForError(error, rawMessage)
+    const gatewayLocalFailure = isGatewayLocalStreamFailure(
+      error,
+      interpretedProtocolFailure(inspection),
+      transportFailure
+    )
+    const message = publicStreamFailureMessage(error, interpretedProtocolFailure(inspection), transportFailure)
     const errorCode = streamClientFailureCode(
-      inspection.errorCode ?? (isGatewayFirstByteTimeoutError(error) ? 'first_byte_timeout' : gatewayStreamFailureCode(message)),
+      interpretedProtocolFailure(inspection)
+        ? 'upstream_protocol_failure'
+        : isGatewayFirstByteTimeoutError(error)
+          ? 'first_byte_timeout'
+          : error instanceof StreamPreCommitBufferExceededError
+            ? error.code
+            : gatewayStreamFailureCode(message),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
@@ -1196,11 +1254,15 @@ export async function pipeUpstreamStream(
     if (isGatewayFirstByteTimeoutError(error) && error.source === 'configured_deadline') {
       await closeAsyncIterator(iterator)
     }
-    if (interpretedProtocolFailure(inspection) && shouldFailBeforeDownstreamCommit()) {
+    const failureBeforeDownstreamCommit = shouldFailBeforeDownstreamCommit()
+    if (
+      failureBeforeDownstreamCommit
+      && (interpretedProtocolFailure(inspection) || error instanceof StreamPreCommitBufferExceededError)
+    ) {
       discardPreCommitChunks()
     }
     await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
-    if (shouldFailBeforeDownstreamCommit()) {
+    if (failureBeforeDownstreamCommit) {
       streamLogger.warn({
         event: 'gateway_stream_failure_before_downstream_commit',
         message,
@@ -1208,71 +1270,42 @@ export async function pipeUpstreamStream(
         totalUpstreamBytes,
         totalResponseBytes
       }, '网关在下游提交前捕获流式失败，交由上层决定是否服务端换号重试')
-      return withTransportFailure(
+      return withTransportFailureIfProven(
+        withGatewayLocalFailureIfNeeded(
+          finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
+          gatewayLocalFailure
+        ),
+        transportFailure
+      )
+    }
+    const committedFailureDisposition = await signalCommittedStreamFailure(inspection)
+    streamLogger.warn({
+      event: committedFailureDisposition === 'signaled'
+        ? 'gateway_stream_failure_after_downstream_commit_signaled'
+        : 'gateway_stream_failure_after_downstream_commit_interrupted',
+      message,
+      errorCode,
+      totalUpstreamBytes,
+      totalResponseBytes,
+      transportFailureKind: transportFailure?.kind
+    }, committedFailureDisposition === 'signaled'
+      ? '网关已为精确客户端补发一次脱敏失败终态'
+      : '网关已中断提交后的失败流')
+    return withTransportFailureIfProven(
+      withGatewayLocalFailureIfNeeded(
         finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
-        streamTransportFailureKind(error, message),
-        message
-      )
-    }
-    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
-      streamLogger.warn({
-        event: 'gateway_stream_failure_committed_generic_interrupted',
-        message,
-        errorCode,
-        totalUpstreamBytes,
-        totalResponseBytes
-      }, '普通客户端已收到部分流式响应，网关直接中断连接以交由客户端重试')
-      interruptResponse(res)
-      return withTransportFailure(
-        finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
-        streamTransportFailureKind(error, message),
-        message
-      )
-    }
-    if (!interpretedProtocolFailure(inspection)) {
-      streamLogger.warn({
-        event: 'gateway_stream_failure_event_writing',
-        message
-      }, '网关准备补发 response.failed')
-      prepareDownstreamForWrite()
-      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
-        res,
-        message,
-        errorCode,
-        gatewayErrorProtocol,
-        options.downstreamProtocol
-      )
-      if (failureEvent) {
-        if (!bodyCaptureOmitted) {
-          responseCapture.push(failureEvent)
-          diagnosticCapture.push(failureEvent)
-        }
-        totalResponseBytes += failureEvent.length
-        downstreamCommit.markSemanticCommitted(failureEvent.length)
-        streamLogger.warn({
-          event: 'gateway_stream_failure_event_written',
-          message,
-          failureEventBytes: failureEvent.length,
-          totalResponseBytes
-        }, '网关已补发 response.failed')
-      } else {
-        streamLogger.warn({
-          event: 'gateway_stream_failure_event_skipped',
-          message
-        }, '网关补发 response.failed 失败或响应已结束')
-      }
-    }
-    endResponse(res)
-    return withTransportFailure(
-      finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
-      streamTransportFailureKind(error, message),
-      message
+        gatewayLocalFailure
+      ),
+      transportFailure
     )
   } finally {
     res.off('close', closeIterator)
   }
 
   preCommitSseEvidence.finish()
+  if (shouldKeepNonSemanticSseFramingPrivate()) {
+    clearStreamPreCommitChunks(preCommitBuffer)
+  }
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
   // Generic clients keep opaque upstream SSE semantics: once at least one real
@@ -1287,17 +1320,19 @@ export async function pipeUpstreamStream(
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
   if (inspection.skipped && preCommitSseEvidence.dataEventObserved) {
-    endResponse(res)
     const success = completed && !interpretedProtocolFailure(inspection)
-    const message = success ? '已完成' : '上游流式响应已中断'
+    const message = success ? '已完成' : '上游流式响应返回失败终态'
     const errorCode = success ? undefined : streamClientFailureCode(
-      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      'upstream_protocol_failure',
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
     if (!success) {
       await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
+      await signalCommittedStreamFailure(inspection)
+    } else {
+      endResponse(res)
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -1341,51 +1376,28 @@ export async function pipeUpstreamStream(
       }, '网关在下游提交前发现上游缺少终止事件，交由上层决定是否服务端换号重试')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
-      streamLogger.warn({
-        event: 'gateway_stream_missing_terminal_committed_generic_interrupted',
-        errorCode,
-        totalUpstreamBytes,
-        totalResponseBytes,
-        sseEventCount: inspection.eventCount,
-        recentSseEventTypes: inspection.recentEventTypes
-      }, '普通客户端已收到部分流式响应且上游缺少终止事件，网关直接中断连接以交由客户端重试')
-      interruptResponse(res)
-      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
-    }
-    prepareDownstreamForWrite()
-    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(
-      res,
-      message,
+    const committedFailureDisposition = await signalCommittedStreamFailure(inspection)
+    streamLogger.warn({
+      event: committedFailureDisposition === 'signaled'
+        ? 'gateway_stream_missing_terminal_failure_signaled'
+        : 'gateway_stream_missing_terminal_interrupted',
       errorCode,
-      gatewayErrorProtocol,
-      options.downstreamProtocol
-    )
-    if (failureEvent) {
-      if (!bodyCaptureOmitted) {
-        responseCapture.push(failureEvent)
-        diagnosticCapture.push(failureEvent)
-      }
-      totalResponseBytes += failureEvent.length
-      downstreamCommit.markSemanticCommitted(failureEvent.length)
-      streamLogger.warn({
-        event: 'gateway_stream_missing_terminal_failure_event_written',
-        failureEventBytes: failureEvent.length,
-        totalResponseBytes
-      }, '网关已因缺少终止事件补发 response.failed')
-    } else {
-      streamLogger.warn({
-        event: 'gateway_stream_missing_terminal_failure_event_skipped'
-      }, '网关因缺少终止事件补发 response.failed 失败或响应已结束')
-    }
-    endResponse(res)
+      totalUpstreamBytes,
+      totalResponseBytes,
+      sseEventCount: inspection.eventCount,
+      recentSseEventTypes: inspection.recentEventTypes
+    }, committedFailureDisposition === 'signaled'
+      ? '网关已因缺少终止事件补发一次脱敏失败终态'
+      : '网关已因缺少终止事件中断连接')
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
   if (!completed || interpretedProtocolFailure(inspection)) {
-    const message = interpretedProtocolFailure(inspection) ? inspection.errorMessage ?? '上游流式响应失败' : '上游流式响应已中断'
+    const message = interpretedProtocolFailure(inspection)
+      ? '上游流式响应返回失败终态'
+      : '上游流式响应已中断'
     const errorCode = streamClientFailureCode(
-      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      interpretedProtocolFailure(inspection) ? 'upstream_protocol_failure' : gatewayStreamFailureCode(message),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
@@ -1403,23 +1415,11 @@ export async function pipeUpstreamStream(
       }, '网关在 EOF pending 收尾后识别到失败，交由上层决定是否服务端换号重试')
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (shouldInterruptCommittedGenericStream(committedProtocolFailureEventEnabled, totalResponseBytes)) {
-      streamLogger.warn({
-        event: 'gateway_stream_finished_failed_committed_generic_interrupted',
-        completed,
-        errorCode,
-        totalUpstreamBytes,
-        totalResponseBytes,
-        sseEventCount: inspection.eventCount,
-        recentSseEventTypes: inspection.recentEventTypes
-      }, '普通客户端已收到部分流式响应且 EOF pending 收尾后识别到失败，网关直接中断连接以交由客户端重试')
-      interruptResponse(res)
-      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
-    }
-    await flushPreCommitChunks()
-    endResponse(res)
+    const committedFailureDisposition = await signalCommittedStreamFailure(inspection)
     streamLogger.warn({
-      event: 'gateway_stream_finished_failed',
+      event: committedFailureDisposition === 'signaled'
+        ? 'gateway_stream_finished_failed_signaled'
+        : 'gateway_stream_finished_failed_interrupted',
       completed,
       elapsedMs: Date.now() - startedAt,
       chunkCount: chunkIndex,
@@ -1431,7 +1431,9 @@ export async function pipeUpstreamStream(
       sseEventCount: inspection.eventCount,
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
-    }, '网关流式响应以失败结束')
+    }, committedFailureDisposition === 'signaled'
+      ? '网关已为精确客户端补发一次脱敏失败终态'
+      : '网关已中断失败流')
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
@@ -1485,24 +1487,81 @@ function codexResponsesProtocolDecision(
   }
 }
 
-function withTransportFailure(
+function withTransportFailureIfProven(
   result: StreamPipeResult,
-  kind: 'timeout' | 'read_incomplete',
-  reason: string
+  transportFailure: StreamTransportFailure | undefined
 ): StreamPipeResult {
+  if (!transportFailure) return result
   return {
     ...result,
-    transportFailure: { kind, reason }
+    transportFailure
   }
 }
 
-function streamTransportFailureKind(error: unknown, message: string): 'timeout' | 'read_incomplete' {
+function withGatewayLocalFailureIfNeeded(
+  result: StreamPipeResult,
+  gatewayLocalFailure: boolean
+): StreamPipeResult {
+  return gatewayLocalFailure
+    ? { ...result, gatewayLocalFailure: true }
+    : result
+}
+
+function streamTransportFailureForError(
+  error: unknown,
+  diagnosticMessage: string
+): StreamTransportFailure | undefined {
+  if (error instanceof StreamReadPlanTimeoutError) {
+    return {
+      kind: 'timeout',
+      reason: '上游流式响应传输超时'
+    }
+  }
+  if (!isStartedUpstreamBodyTransportError(error)) return undefined
+  const kind = streamTransportFailureKind(error, diagnosticMessage)
+  return {
+    kind,
+    reason: kind === 'timeout'
+      ? '上游流式响应传输超时'
+      : '上游流式响应读取未完成'
+  }
+}
+
+function streamTransportFailureKind(error: unknown, diagnosticMessage: string): 'timeout' | 'read_incomplete' {
   const diagnostic = [
     error instanceof Error ? error.name : '',
     typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '',
-    message
+    diagnosticMessage
   ].join(' ').toLowerCase()
   return /timeout|timedout|timed out|etimedout|超时/.test(diagnostic) ? 'timeout' : 'read_incomplete'
+}
+
+function publicStreamFailureMessage(
+  error: unknown,
+  protocolFailure: boolean,
+  transportFailure: StreamTransportFailure | undefined
+): string {
+  if (protocolFailure) return '上游流式响应返回失败终态'
+  if (
+    error instanceof StreamReadPlanTimeoutError
+    || isGatewayFirstByteTimeoutError(error)
+    || error instanceof StreamPreCommitBufferExceededError
+  ) {
+    return error.message
+  }
+  if (transportFailure) return transportFailure.reason
+  return '网关处理流式响应失败'
+}
+
+function isGatewayLocalStreamFailure(
+  error: unknown,
+  protocolFailure: boolean,
+  transportFailure: StreamTransportFailure | undefined
+): boolean {
+  return !protocolFailure
+    && !transportFailure
+    && !isGatewayFirstByteTimeoutError(error)
+    && !(error instanceof StreamPreCommitBufferExceededError)
 }
 
 async function readNextStreamChunk(
@@ -1634,7 +1693,7 @@ async function readNextStreamChunk(
 function streamReadPlanTimeoutError(readPlan: ReturnType<typeof buildStreamReadPlan>): Error {
   return readPlan.timeoutKind === 'stream_lifetime'
     ? new StreamMaxLifetimeExceededError(readPlan.timeoutMessage)
-    : new Error(readPlan.timeoutMessage)
+    : new StreamReadPlanTimeoutError(readPlan.timeoutMessage, readPlan.timeoutKind)
 }
 
 async function raceStreamReadWithDeadlines(

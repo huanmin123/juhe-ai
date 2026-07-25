@@ -21,6 +21,7 @@ interface MockUpstreamHit {
   authorization: string
   path: string
   bodyText: string
+  receivedAtMs: number
 }
 
 interface GatewayScenario {
@@ -141,14 +142,20 @@ try {
 async function assertLocalSuppressionWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
   accountSideEffects.suppressGatewayAccountLocallyForTest(scenario.accountId, 1_000, 'mock ai 本地屏蔽恢复等待')
+  const suppressionUntil = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[scenario.accountId]?.until
+  assert(suppressionUntil, '本地屏蔽测试必须取得确切 until')
+  const suppressionUntilMs = Date.parse(suppressionUntil)
   const startedAt = Date.now()
   const response = await postChat(baseUrl, scenario.apiKey, 'local suppression should wait and recover')
   const elapsedMs = Date.now() - startedAt
   assert.equal(response.status, 200, `本地屏蔽释放后应恢复调度，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /mock ai ok from sk-recoverable-local-suppression/)
-  assert(elapsedMs >= 900, `本地屏蔽恢复等待不应在释放前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `本地屏蔽恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-local-suppression'), ['Bearer sk-recoverable-local-suppression'])
+  assert(
+    singleHitForKeySince(startHitCount, 'sk-recoverable-local-suppression').receivedAtMs >= suppressionUntilMs,
+    '本地屏蔽账户不得在绝对 until 前被派发'
+  )
 }
 
 async function assertAllRecoverableAccountsHonorMaxWait(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -191,9 +198,10 @@ async function assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseU
 
 async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
+  const cooldownUntilMs = Date.now() + 1_000
   repositories.markAccountCooldown(
     scenario.accountId,
-    new Date(Date.now() + 1_000).toISOString(),
+    new Date(cooldownUntilMs).toISOString(),
     'mock ai 限流冷却恢复等待',
     'rate_limited'
   )
@@ -226,14 +234,18 @@ async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenar
     : undefined
   assert.equal(response.status, 200, `限流冷却恢复后应恢复调度，实际 HTTP ${response.status}，耗时 ${elapsedMs}ms，clear=${JSON.stringify(clearDiagnostic)}，final=${JSON.stringify(finalDiagnostic)}: ${response.text}`)
   assert.match(response.text, /mock ai ok from sk-recoverable-rate-limited/)
-  assert(elapsedMs >= 900, `限流冷却恢复等待不应在 cooldown_until 前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `限流冷却恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-rate-limited'), ['Bearer sk-recoverable-rate-limited'])
+  assert(
+    singleHitForKeySince(startHitCount, 'sk-recoverable-rate-limited').receivedAtMs >= cooldownUntilMs,
+    '限流冷却账户不得在绝对 cooldown_until 前被派发'
+  )
 }
 
 async function assertActiveCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
-  const cooldownUntil = new Date(Date.now() + 1_000).toISOString()
+  const cooldownUntilMs = Date.now() + 1_000
+  const cooldownUntil = new Date(cooldownUntilMs).toISOString()
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET status = ?, schedulable = 1, cooldown_until = ?, updated_at = ? WHERE id = ?')
     .run('active', cooldownUntil, new Date().toISOString(), scenario.accountId)
@@ -243,9 +255,12 @@ async function assertActiveCooldownWaitsAndRecovers(baseUrl: string, scenario: G
   const elapsedMs = Date.now() - startedAt
   assert.equal(response.status, 200, `active + cooldown_until 到期后应恢复调度，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /mock ai ok from sk-recoverable-active-cooldown/)
-  assert(elapsedMs >= 900, `active 冷却时间恢复等待不应在 cooldown_until 前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `active 冷却时间恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-active-cooldown'), ['Bearer sk-recoverable-active-cooldown'])
+  assert(
+    singleHitForKeySince(startHitCount, 'sk-recoverable-active-cooldown').receivedAtMs >= cooldownUntilMs,
+    'active 冷却账户不得在绝对 cooldown_until 前被派发'
+  )
 }
 
 async function assertFallbackGroupBypassesRecoverableWait(baseUrl: string, scenario: { primaryAccountId: string; apiKey: string }): Promise<void> {
@@ -471,8 +486,16 @@ function authorizationsForKeySince(startHitCount: number, apiKey: string): strin
   return authorizationsSince(startHitCount).filter((authorization) => authorization === `Bearer ${apiKey}`)
 }
 
+function singleHitForKeySince(startHitCount: number, apiKey: string): MockUpstreamHit {
+  const hits = upstreamHits.slice(startHitCount)
+    .filter((hit) => hit.authorization === `Bearer ${apiKey}`)
+  assert.equal(hits.length, 1, `${apiKey} 应且只应命中一次上游`)
+  return hits[0]!
+}
+
 function createMockOpenAIUpstream(): http.Server {
   return http.createServer((req, res) => {
+    const receivedAtMs = Date.now()
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
@@ -481,7 +504,8 @@ function createMockOpenAIUpstream(): http.Server {
       upstreamHits.push({
         authorization: String(req.headers.authorization ?? ''),
         path,
-        bodyText
+        bodyText,
+        receivedAtMs
       })
       if (req.method !== 'POST' || path !== '/v1/chat/completions') {
         res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })

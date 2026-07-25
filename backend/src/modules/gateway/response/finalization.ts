@@ -24,6 +24,7 @@ import { recordClientIpErrorCircuitSuccessAsync } from '../runtime/client-ip-err
 import {
   NonStreamUpstreamBodyPipeError,
   endResponse,
+  isProvenUpstreamBodyTransportError,
   pipeNonStreamUpstreamResponse,
   pipeNonStreamUpstreamResponseForInspection,
   nonStreamResponseCaptureBytes
@@ -593,7 +594,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     return {
       alreadyFinalized: true,
       errorCode: streamResult.errorCode,
-      transportFailure: streamResult.transportFailure
+      transportFailure: streamResult.transportFailure,
+      gatewayLocalFailure: streamResult.gatewayLocalFailure
     }
   }
 
@@ -1105,17 +1107,21 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         accountId: account.id,
         firstTokenMs
       })
+      const provenTransportFailure = !responsePrecommitDeadlineError
+        && isProvenUpstreamBodyTransportError(error)
       return {
         alreadyFinalized: true,
         errorCode,
-        ...(responsePrecommitDeadlineError
-          ? {}
-          : {
+        ...(provenTransportFailure
+          ? {
               transportFailure: {
                 kind: 'read_incomplete' as const,
-                reason: errorMessage
+                reason: '上游非流式响应读取未完成'
               }
-            })
+            }
+          : responsePrecommitDeadlineError
+            ? {}
+            : { gatewayLocalFailure: true })
       }
     }
     throw error

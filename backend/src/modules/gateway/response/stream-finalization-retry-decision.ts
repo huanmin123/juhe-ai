@@ -61,6 +61,7 @@ export function shouldRetryPreCommitStreamFailureOnServer(
 ): boolean {
   return !streamResult.completed
     && !streamResult.semanticCommitted
+    && streamResult.gatewayLocalFailure !== true
     && streamResult.errorCode !== undefined
     && !response.writableEnded
     && !response.destroyed

@@ -143,6 +143,18 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       await updateAccountState(account, { clearFailureState: true }, '已提交重新检查，后台检查通过后恢复')
       return
     }
+    if (key === 'manual-isolate') {
+      if (isAuthorizedAccount(account) || account.status !== 'active' || !canUseAccountActions(account)) {
+        message.warning('只有正常的自有账户可以人工隔离')
+        return
+      }
+      await updateAccountState(
+        account,
+        { status: 'temporary_unavailable' },
+        '账户已人工隔离，后台将按现有机制探测恢复'
+      )
+      return
+    }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
         if (!['restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off'].includes(key)) {

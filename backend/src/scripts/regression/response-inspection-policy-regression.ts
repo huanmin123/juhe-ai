@@ -1526,18 +1526,30 @@ assert.equal(validateAccountResponseInspectionRules([
     headersSent: false,
     writableEnded: false,
     destroyed: false,
+    writtenChunks: [] as Buffer[],
+    endCalls: 0,
+    destroyCalls: 0,
     writableLength: 0,
     writableHighWaterMark: 0,
+    locals: {} as Record<string, unknown>,
     once() { return this },
     off() { return this },
     hasHeader() { return false },
     setHeader() { return this },
     status() { return this },
-    write() {
+    write(chunk: Buffer | string) {
+      this.writtenChunks.push(Buffer.from(chunk))
+      this.headersSent = true
       return true
     },
     end() {
+      this.endCalls += 1
       this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyCalls += 1
+      this.destroyed = true
       return this
     }
   }
@@ -1568,7 +1580,14 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
   assert.equal(result.errorCode, 'upstream_protocol_failure', '同批终止后失败应使用与供应商错误码无关的网关诊断码')
   assert.equal(failureCalled, true, '同批终止后失败应触发失败回调')
-  assert.equal(response.writableEnded, true, '同批终止后失败应结束客户端响应')
+  const responseText = Buffer.concat(response.writtenChunks).toString('utf8')
+  assert.equal(countOccurrences(responseText, 'event: response.completed'), 1, '同批失败必须保留已写成功终态')
+  assert.equal(countOccurrences(responseText, 'event: response.failed'), 0, '成功终态写出后不得追加矛盾失败终态')
+  assert.doesNotMatch(responseText, /server_overloaded|late failure/, '供应商失败 code/message 不得泄漏给客户端')
+  assert.equal(response.writableEnded, false, '同批终止后失败不得用正常 EOF 伪装成功')
+  assert.equal(response.destroyed, true, '同批终止后失败必须中断连接')
+  assert.equal(response.endCalls, 0)
+  assert.equal(response.destroyCalls, 1)
 }
 
 {
@@ -1577,18 +1596,30 @@ assert.equal(validateAccountResponseInspectionRules([
     headersSent: false,
     writableEnded: false,
     destroyed: false,
+    writtenChunks: [] as Buffer[],
+    endCalls: 0,
+    destroyCalls: 0,
     writableLength: 0,
     writableHighWaterMark: 0,
+    locals: {} as Record<string, unknown>,
     once() { return this },
     off() { return this },
     hasHeader() { return false },
     setHeader() { return this },
     status() { return this },
-    write() {
+    write(chunk: Buffer | string) {
+      this.writtenChunks.push(Buffer.from(chunk))
+      this.headersSent = true
       return true
     },
     end() {
+      this.endCalls += 1
       this.writableEnded = true
+      return this
+    },
+    destroy() {
+      this.destroyCalls += 1
+      this.destroyed = true
       return this
     }
   }
@@ -1625,7 +1656,14 @@ assert.equal(validateAccountResponseInspectionRules([
   assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')
   assert.equal(result.errorCode, 'upstream_protocol_failure', '终止事件后一批失败应使用与供应商错误码无关的网关诊断码')
   assert.equal(failureCalled, true, '终止事件后一批失败应触发失败回调')
-  assert.equal(response.writableEnded, true, '终止事件后一批失败应结束客户端响应')
+  const responseText = Buffer.concat(response.writtenChunks).toString('utf8')
+  assert.equal(countOccurrences(responseText, 'event: response.completed'), 1, '后续失败必须保留已写成功终态')
+  assert.equal(countOccurrences(responseText, 'event: response.failed'), 0, '后续失败不得追加矛盾失败终态')
+  assert.doesNotMatch(responseText, /server_overloaded|late failure next chunk/, '供应商失败 code/message 不得泄漏给客户端')
+  assert.equal(response.writableEnded, false, '终止事件后一批失败不得用正常 EOF 伪装成功')
+  assert.equal(response.destroyed, true, '终止事件后一批失败必须中断连接')
+  assert.equal(response.endCalls, 0)
+  assert.equal(response.destroyCalls, 1)
 }
 
 await assertMalformedResponsesSseFailsBeforeDownstreamCommit('response.failed 非 JSON data', [
@@ -1798,6 +1836,10 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
     closeStorageDatabases()
     rmSync(tempRoot, { recursive: true, force: true })
   }
+}
+
+function countOccurrences(value: string, needle: string): number {
+  return value.split(needle).length - 1
 }
 
 console.info('response inspection policy regression passed')

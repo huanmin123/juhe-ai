@@ -49,6 +49,7 @@ try {
   await verifyCommittedStreamOverflowPrecommitCancellationReleasesTimers()
   await verifyNonStreamBodyDeadlineRace()
   await verifyStreamBodyDeadlineRace()
+  await verifyOpaqueDataSupersedesPendingStreamDeadline()
   await verifyStreamHeartbeatDoesNotSupersedeDeadlineRace()
   await verifyStreamHeartbeatCannotBypassResponsePrecommitDeadline()
   await verifyStreamHeartbeatDecisionCannotOutliveResponsePrecommitDeadline()
@@ -338,6 +339,61 @@ async function verifyStreamBodyDeadlineRace(): Promise<void> {
   assert.equal(result.completed, true, 'stream body should complete after its pending read wins the decision race')
   assert.equal(supersededCount, 1, 'stream read winner must release the stale cutover reservation exactly once')
   assert.match(response.writtenText(), /chatcmpl_race/)
+}
+
+async function verifyOpaqueDataSupersedesPendingStreamDeadline(): Promise<void> {
+  const pendingRead = controlledUpstreamBody(Buffer.from('opaque raw read'))
+  const deadlineObserved = deferred<void>()
+  const deadlineDecision = deferred<'abort'>()
+  const response = fakeResponse()
+  let supersededCount = 0
+  const pipe = pipeUpstreamStream(
+    pendingRead.body,
+    response,
+    {
+      firstResponseTimeoutMs: 2_000,
+      firstByteTimeoutMs: 2_000,
+      idleTimeoutMs: 2_000,
+      uncommittedAttemptMaxLifetimeMs: 10_000,
+      noAvailableAccountWaitMs: 2_000
+    },
+    Date.now(),
+    async () => {},
+    undefined,
+    {
+      responseProtocol: 'openai_v1',
+      endpointFamily: 'chat_completions',
+      interpretProtocolFailures: false,
+      retryBeforeDownstreamWriteUntilOutput: true,
+      firstByteDeadlineMs: 5,
+      onFirstByteDeadline: async () => {
+        deadlineObserved.resolve()
+        return deadlineDecision.promise
+      },
+      onFirstByteDeadlineSuperseded: () => { supersededCount += 1 },
+      transformUpstreamChunk: () => [
+        Buffer.from('event: vendor.progress\n'),
+        Buffer.from('data: opaque-visible\n\n')
+      ]
+    }
+  )
+
+  await withTimeout(deadlineObserved.promise, 'opaque stream deadline was not observed')
+  pendingRead.resolveFirstChunk()
+  await waitForImmediate()
+  deadlineDecision.resolve('abort')
+  const result = await withTimeout(pipe, 'opaque data lost to a stale first-byte decision')
+
+  assert.equal(result.completed, true, '非空 opaque data 是客户端可见语义，必须胜过迟到首字切换')
+  assert.equal(result.semanticCommitted, true, 'opaque data 写出后必须锁定不可重放')
+  assert.equal(result.errorCode, undefined)
+  assert.equal(result.transportFailure, undefined)
+  assert.equal(supersededCount, 1, 'opaque data 必须释放迟到的切号 reservation')
+  assert.equal(
+    response.writtenText(),
+    'event: vendor.progress\ndata: opaque-visible\n\n',
+    '同一 raw read 的 transformed fragments 必须按原 framing 提交'
+  )
 }
 
 async function verifyStreamHeartbeatDoesNotSupersedeDeadlineRace(): Promise<void> {
