@@ -8,6 +8,12 @@ import (
 	"testing/fstest"
 )
 
+func TestCurrentSchemaVersion(t *testing.T) {
+	if CurrentSchemaVersion != 77 {
+		t.Fatalf("CurrentSchemaVersion = %d, want 77", CurrentSchemaVersion)
+	}
+}
+
 func TestInspectReturnsMigrationsSortedByNumericVersion(t *testing.T) {
 	fsys := fstest.MapFS{
 		"000010_tenth.sql":  {Data: []byte("SELECT 10;")},

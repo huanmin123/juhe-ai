@@ -59,32 +59,77 @@ type ListResult struct {
 	PageSize int       `json:"pageSize"`
 }
 
+type CostCurrency string
+
+const CostCurrencyUSD CostCurrency = "USD"
+
+type CostLineKind string
+
+const (
+	CostLineKindInput           CostLineKind = "input"
+	CostLineKindOutput          CostLineKind = "output"
+	CostLineKindCacheRead       CostLineKind = "cache_read"
+	CostLineKindCacheWrite      CostLineKind = "cache_write"
+	CostLineKindCacheWrite1h    CostLineKind = "cache_write_1h"
+	CostLineKindImageInput      CostLineKind = "image_input"
+	CostLineKindImageOutput     CostLineKind = "image_output"
+	CostLineKindAudioInput      CostLineKind = "audio_input"
+	CostLineKindAudioOutput     CostLineKind = "audio_output"
+	CostLineKindImageOutputUnit CostLineKind = "image_output_unit"
+	CostLineKindOther           CostLineKind = "other"
+)
+
+type CostLineUnit string
+
+const (
+	CostLineUnitToken     CostLineUnit = "token"
+	CostLineUnitImage     CostLineUnit = "image"
+	CostLineUnitRequest   CostLineUnit = "request"
+	CostLineUnitSecond    CostLineUnit = "second"
+	CostLineUnitMinute    CostLineUnit = "minute"
+	CostLineUnitTokenHour CostLineUnit = "token_hour"
+)
+
+type CostLineItem struct {
+	Key          string       `json:"key"`
+	Kind         CostLineKind `json:"kind"`
+	Label        string       `json:"label"`
+	Quantity     float64      `json:"quantity"`
+	Unit         CostLineUnit `json:"unit"`
+	UnitSize     float64      `json:"unitSize"`
+	UnitPriceUSD float64      `json:"unitPriceUsd"`
+	CostUSD      float64      `json:"costUsd"`
+}
+
 type CostBreakdown struct {
-	InputCostUSD             *float64 `json:"inputCostUsd,omitempty"`
-	OutputCostUSD            *float64 `json:"outputCostUsd,omitempty"`
-	InputUSDPer1M            *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M           *float64 `json:"outputUsdPer1M,omitempty"`
-	CacheReadCostUSD         *float64 `json:"cacheReadCostUsd,omitempty"`
-	CacheReadUSDPer1M        *float64 `json:"cacheReadUsdPer1M,omitempty"`
-	CacheWriteCostUSD        *float64 `json:"cacheWriteCostUsd,omitempty"`
-	CacheWriteUSDPer1M       *float64 `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hCostUSD      *float64 `json:"cacheWrite1hCostUsd,omitempty"`
-	CacheWrite1hUSDPer1M     *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
-	ThinkingTokens           *int64   `json:"thinkingTokens,omitempty"`
-	InputImageCostUSD        *float64 `json:"inputImageCostUsd,omitempty"`
-	OutputImageCostUSD       *float64 `json:"outputImageCostUsd,omitempty"`
-	InputImageUSDPer1M       *float64 `json:"inputImageUsdPer1M,omitempty"`
-	OutputImageUSDPer1M      *float64 `json:"outputImageUsdPer1M,omitempty"`
-	InputAudioCostUSD        *float64 `json:"inputAudioCostUsd,omitempty"`
-	OutputAudioCostUSD       *float64 `json:"outputAudioCostUsd,omitempty"`
-	InputAudioUSDPer1M       *float64 `json:"inputAudioUsdPer1M,omitempty"`
-	OutputAudioUSDPer1M      *float64 `json:"outputAudioUsdPer1M,omitempty"`
-	OutputImageUnitCostUSD   *float64 `json:"outputImageUnitCostUsd,omitempty"`
-	OutputUSDPerImage        *float64 `json:"outputUsdPerImage,omitempty"`
-	AccountChargeUSD         *float64 `json:"accountChargeUsd,omitempty"`
-	Multiplier               float64  `json:"multiplier"`
-	ServiceTierPricingSource string   `json:"serviceTierPricingSource"`
-	ServiceTierMultiplier    *float64 `json:"serviceTierMultiplier,omitempty"`
+	Currency                 CostCurrency    `json:"currency,omitempty"`
+	BillingPolicy            string          `json:"billingPolicy,omitempty"`
+	LineItems                *[]CostLineItem `json:"lineItems,omitempty"`
+	InputCostUSD             *float64        `json:"inputCostUsd,omitempty"`
+	OutputCostUSD            *float64        `json:"outputCostUsd,omitempty"`
+	InputUSDPer1M            *float64        `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M           *float64        `json:"outputUsdPer1M,omitempty"`
+	CacheReadCostUSD         *float64        `json:"cacheReadCostUsd,omitempty"`
+	CacheReadUSDPer1M        *float64        `json:"cacheReadUsdPer1M,omitempty"`
+	CacheWriteCostUSD        *float64        `json:"cacheWriteCostUsd,omitempty"`
+	CacheWriteUSDPer1M       *float64        `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hCostUSD      *float64        `json:"cacheWrite1hCostUsd,omitempty"`
+	CacheWrite1hUSDPer1M     *float64        `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ThinkingTokens           *int64          `json:"thinkingTokens,omitempty"`
+	InputImageCostUSD        *float64        `json:"inputImageCostUsd,omitempty"`
+	OutputImageCostUSD       *float64        `json:"outputImageCostUsd,omitempty"`
+	InputImageUSDPer1M       *float64        `json:"inputImageUsdPer1M,omitempty"`
+	OutputImageUSDPer1M      *float64        `json:"outputImageUsdPer1M,omitempty"`
+	InputAudioCostUSD        *float64        `json:"inputAudioCostUsd,omitempty"`
+	OutputAudioCostUSD       *float64        `json:"outputAudioCostUsd,omitempty"`
+	InputAudioUSDPer1M       *float64        `json:"inputAudioUsdPer1M,omitempty"`
+	OutputAudioUSDPer1M      *float64        `json:"outputAudioUsdPer1M,omitempty"`
+	OutputImageUnitCostUSD   *float64        `json:"outputImageUnitCostUsd,omitempty"`
+	OutputUSDPerImage        *float64        `json:"outputUsdPerImage,omitempty"`
+	AccountChargeUSD         *float64        `json:"accountChargeUsd,omitempty"`
+	Multiplier               float64         `json:"multiplier"`
+	ServiceTierPricingSource string          `json:"serviceTierPricingSource"`
+	ServiceTierMultiplier    *float64        `json:"serviceTierMultiplier,omitempty"`
 }
 
 type Summary struct {

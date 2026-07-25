@@ -1226,6 +1226,7 @@ type ManagementProviderModelCatalogItem struct {
 	CachedInputUSDPer1M                     *float64
 	CacheWriteUSDPer1M                      *float64
 	CacheWrite1hUSDPer1M                    *float64
+	CacheStorageUSDPer1MPerHour             *float64
 	ServiceTierPrices                       map[string]ManagementProviderModelPriceSet
 	LongContextInputTokenThreshold          *int
 	LongContextInputTokenThresholdInclusive bool
@@ -1250,16 +1251,17 @@ type ManagementProviderModelCatalogItem struct {
 }
 
 type ManagementProviderModelPriceSet struct {
-	InputUSDPer1M        *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M       *float64 `json:"outputUsdPer1M,omitempty"`
-	CachedInputUSDPer1M  *float64 `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUSDPer1M   *float64 `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUSDPer1M *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
-	ImageInputUSDPer1M   *float64 `json:"imageInputUsdPer1M,omitempty"`
-	ImageOutputUSDPer1M  *float64 `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUSDPer1M   *float64 `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUSDPer1M  *float64 `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUSDPerImage    *float64 `json:"outputUsdPerImage,omitempty"`
+	InputUSDPer1M               *float64 `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M              *float64 `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M         *float64 `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M          *float64 `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M        *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
+	CacheStorageUSDPer1MPerHour *float64 `json:"cacheStorageUsdPer1MPerHour,omitempty"`
+	ImageInputUSDPer1M          *float64 `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M         *float64 `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M          *float64 `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M         *float64 `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage           *float64 `json:"outputUsdPerImage,omitempty"`
 }
 
 type ManagementProviderModelCatalogListInput struct {
@@ -1313,71 +1315,73 @@ type ManagementProviderSystemDefaultHealthCheckModelClearInput struct {
 }
 
 type ManagementCustomProviderModelSaveInput struct {
-	ID                        string
-	ProviderCode              string
-	Model                     string
-	Scope                     string
-	SystemAccountID           string
-	Status                    string
-	CatalogVisible            bool
-	Mode                      string
-	SupportedAPIProtocols     []string
-	SupportedServiceTiers     []string
-	SupportedReasoningEfforts []string
-	DefaultReasoningEffort    string
-	ReleaseDate               string
-	ShutdownDate              string
-	ContextWindowTokens       *int
-	MaxInputTokens            *int
-	MaxOutputTokens           *int
-	InputUSDPer1M             *float64
-	OutputUSDPer1M            *float64
-	CachedInputUSDPer1M       *float64
-	CacheWriteUSDPer1M        *float64
-	CacheWrite1hUSDPer1M      *float64
-	ServiceTierPrices         map[string]ManagementProviderModelPriceSet
-	ImageInputUSDPer1M        *float64
-	ImageOutputUSDPer1M       *float64
-	AudioInputUSDPer1M        *float64
-	AudioOutputUSDPer1M       *float64
-	OutputUSDPerImage         *float64
-	PricingNotes              string
-	CapabilityNotes           string
-	Notes                     string
-	ActorSystemAccountID      string
+	ID                          string
+	ProviderCode                string
+	Model                       string
+	Scope                       string
+	SystemAccountID             string
+	Status                      string
+	CatalogVisible              bool
+	Mode                        string
+	SupportedAPIProtocols       []string
+	SupportedServiceTiers       []string
+	SupportedReasoningEfforts   []string
+	DefaultReasoningEffort      string
+	ReleaseDate                 string
+	ShutdownDate                string
+	ContextWindowTokens         *int
+	MaxInputTokens              *int
+	MaxOutputTokens             *int
+	InputUSDPer1M               *float64
+	OutputUSDPer1M              *float64
+	CachedInputUSDPer1M         *float64
+	CacheWriteUSDPer1M          *float64
+	CacheWrite1hUSDPer1M        *float64
+	CacheStorageUSDPer1MPerHour *float64
+	ServiceTierPrices           map[string]ManagementProviderModelPriceSet
+	ImageInputUSDPer1M          *float64
+	ImageOutputUSDPer1M         *float64
+	AudioInputUSDPer1M          *float64
+	AudioOutputUSDPer1M         *float64
+	OutputUSDPerImage           *float64
+	PricingNotes                string
+	CapabilityNotes             string
+	Notes                       string
+	ActorSystemAccountID        string
 }
 
 type ManagementCustomProviderModelUpdateInput struct {
-	ID                        string
-	ProviderCode              string
-	ActorSystemAccountID      string
-	ActorRole                 string
-	Status                    ManagementProviderModelOptionalString
-	CatalogVisible            ManagementProviderModelOptionalBool
-	Mode                      ManagementProviderModelOptionalString
-	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
-	SupportedServiceTiers     ManagementProviderModelOptionalStringList
-	SupportedReasoningEfforts ManagementProviderModelOptionalStringList
-	DefaultReasoningEffort    ManagementProviderModelOptionalString
-	ReleaseDate               ManagementProviderModelOptionalString
-	ShutdownDate              ManagementProviderModelOptionalString
-	ContextWindowTokens       ManagementProviderModelOptionalInt
-	MaxInputTokens            ManagementProviderModelOptionalInt
-	MaxOutputTokens           ManagementProviderModelOptionalInt
-	InputUSDPer1M             ManagementProviderModelOptionalFloat
-	OutputUSDPer1M            ManagementProviderModelOptionalFloat
-	CachedInputUSDPer1M       ManagementProviderModelOptionalFloat
-	CacheWriteUSDPer1M        ManagementProviderModelOptionalFloat
-	CacheWrite1hUSDPer1M      ManagementProviderModelOptionalFloat
-	ServiceTierPrices         ManagementProviderModelOptionalPriceMap
-	ImageInputUSDPer1M        ManagementProviderModelOptionalFloat
-	ImageOutputUSDPer1M       ManagementProviderModelOptionalFloat
-	AudioInputUSDPer1M        ManagementProviderModelOptionalFloat
-	AudioOutputUSDPer1M       ManagementProviderModelOptionalFloat
-	OutputUSDPerImage         ManagementProviderModelOptionalFloat
-	PricingNotes              ManagementProviderModelOptionalString
-	CapabilityNotes           ManagementProviderModelOptionalString
-	Notes                     ManagementProviderModelOptionalString
+	ID                          string
+	ProviderCode                string
+	ActorSystemAccountID        string
+	ActorRole                   string
+	Status                      ManagementProviderModelOptionalString
+	CatalogVisible              ManagementProviderModelOptionalBool
+	Mode                        ManagementProviderModelOptionalString
+	SupportedAPIProtocols       ManagementProviderModelOptionalStringList
+	SupportedServiceTiers       ManagementProviderModelOptionalStringList
+	SupportedReasoningEfforts   ManagementProviderModelOptionalStringList
+	DefaultReasoningEffort      ManagementProviderModelOptionalString
+	ReleaseDate                 ManagementProviderModelOptionalString
+	ShutdownDate                ManagementProviderModelOptionalString
+	ContextWindowTokens         ManagementProviderModelOptionalInt
+	MaxInputTokens              ManagementProviderModelOptionalInt
+	MaxOutputTokens             ManagementProviderModelOptionalInt
+	InputUSDPer1M               ManagementProviderModelOptionalFloat
+	OutputUSDPer1M              ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M         ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M          ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M        ManagementProviderModelOptionalFloat
+	CacheStorageUSDPer1MPerHour ManagementProviderModelOptionalFloat
+	ServiceTierPrices           ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M          ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M         ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M          ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M         ManagementProviderModelOptionalFloat
+	OutputUSDPerImage           ManagementProviderModelOptionalFloat
+	PricingNotes                ManagementProviderModelOptionalString
+	CapabilityNotes             ManagementProviderModelOptionalString
+	Notes                       ManagementProviderModelOptionalString
 }
 
 type ManagementCustomProviderModelUpdateResult struct {
@@ -1439,60 +1443,62 @@ type ManagementProviderModelOptionalPriceMap struct {
 }
 
 type ManagementBuiltInProviderModelPriceUpdateInput struct {
-	ID                        string
-	ProviderCode              string
-	Status                    ManagementProviderModelOptionalString
-	CatalogVisible            ManagementProviderModelOptionalBool
-	Mode                      ManagementProviderModelOptionalString
-	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
-	SupportedServiceTiers     ManagementProviderModelOptionalStringList
-	SupportedReasoningEfforts ManagementProviderModelOptionalStringList
-	DefaultReasoningEffort    ManagementProviderModelOptionalString
-	ReleaseDate               ManagementProviderModelOptionalString
-	ShutdownDate              ManagementProviderModelOptionalString
-	ContextWindowTokens       ManagementProviderModelOptionalInt
-	MaxInputTokens            ManagementProviderModelOptionalInt
-	MaxOutputTokens           ManagementProviderModelOptionalInt
-	InputUSDPer1M             ManagementProviderModelOptionalFloat
-	OutputUSDPer1M            ManagementProviderModelOptionalFloat
-	CachedInputUSDPer1M       ManagementProviderModelOptionalFloat
-	CacheWriteUSDPer1M        ManagementProviderModelOptionalFloat
-	CacheWrite1hUSDPer1M      ManagementProviderModelOptionalFloat
-	ServiceTierPrices         ManagementProviderModelOptionalPriceMap
-	ImageInputUSDPer1M        ManagementProviderModelOptionalFloat
-	ImageOutputUSDPer1M       ManagementProviderModelOptionalFloat
-	AudioInputUSDPer1M        ManagementProviderModelOptionalFloat
-	AudioOutputUSDPer1M       ManagementProviderModelOptionalFloat
-	OutputUSDPerImage         ManagementProviderModelOptionalFloat
+	ID                          string
+	ProviderCode                string
+	Status                      ManagementProviderModelOptionalString
+	CatalogVisible              ManagementProviderModelOptionalBool
+	Mode                        ManagementProviderModelOptionalString
+	SupportedAPIProtocols       ManagementProviderModelOptionalStringList
+	SupportedServiceTiers       ManagementProviderModelOptionalStringList
+	SupportedReasoningEfforts   ManagementProviderModelOptionalStringList
+	DefaultReasoningEffort      ManagementProviderModelOptionalString
+	ReleaseDate                 ManagementProviderModelOptionalString
+	ShutdownDate                ManagementProviderModelOptionalString
+	ContextWindowTokens         ManagementProviderModelOptionalInt
+	MaxInputTokens              ManagementProviderModelOptionalInt
+	MaxOutputTokens             ManagementProviderModelOptionalInt
+	InputUSDPer1M               ManagementProviderModelOptionalFloat
+	OutputUSDPer1M              ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M         ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M          ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M        ManagementProviderModelOptionalFloat
+	CacheStorageUSDPer1MPerHour ManagementProviderModelOptionalFloat
+	ServiceTierPrices           ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M          ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M         ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M          ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M         ManagementProviderModelOptionalFloat
+	OutputUSDPerImage           ManagementProviderModelOptionalFloat
 }
 
 type ManagementProviderModelConfigurationSnapshot struct {
-	ID                        string
-	ProviderCode              string
-	Status                    string
-	CatalogVisible            bool
-	Mode                      string
-	SupportedAPIProtocols     []string
-	SupportedServiceTiers     []string
-	SupportedReasoningEfforts []string
-	DefaultReasoningEffort    string
-	ReleaseDate               string
-	ShutdownDate              string
-	ContextWindowTokens       *int
-	MaxInputTokens            *int
-	MaxOutputTokens           *int
-	InputUSDPer1M             *float64
-	OutputUSDPer1M            *float64
-	CachedInputUSDPer1M       *float64
-	CacheWriteUSDPer1M        *float64
-	CacheWrite1hUSDPer1M      *float64
-	ServiceTierPrices         map[string]ManagementProviderModelPriceSet
-	ImageInputUSDPer1M        *float64
-	ImageOutputUSDPer1M       *float64
-	AudioInputUSDPer1M        *float64
-	AudioOutputUSDPer1M       *float64
-	OutputUSDPerImage         *float64
-	UpdatedAt                 time.Time
+	ID                          string
+	ProviderCode                string
+	Status                      string
+	CatalogVisible              bool
+	Mode                        string
+	SupportedAPIProtocols       []string
+	SupportedServiceTiers       []string
+	SupportedReasoningEfforts   []string
+	DefaultReasoningEffort      string
+	ReleaseDate                 string
+	ShutdownDate                string
+	ContextWindowTokens         *int
+	MaxInputTokens              *int
+	MaxOutputTokens             *int
+	InputUSDPer1M               *float64
+	OutputUSDPer1M              *float64
+	CachedInputUSDPer1M         *float64
+	CacheWriteUSDPer1M          *float64
+	CacheWrite1hUSDPer1M        *float64
+	CacheStorageUSDPer1MPerHour *float64
+	ServiceTierPrices           map[string]ManagementProviderModelPriceSet
+	ImageInputUSDPer1M          *float64
+	ImageOutputUSDPer1M         *float64
+	AudioInputUSDPer1M          *float64
+	AudioOutputUSDPer1M         *float64
+	OutputUSDPerImage           *float64
+	UpdatedAt                   time.Time
 }
 
 type ManagementBuiltInProviderModelPriceUpdateResult struct {

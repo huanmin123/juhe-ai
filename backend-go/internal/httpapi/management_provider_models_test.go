@@ -409,8 +409,9 @@ func TestManagementProviderDefaultHealthCheckModelHandlerErrors(t *testing.T) {
 }
 
 func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *testing.T) {
+	cacheStoragePrice := 4.5
 	service := &managementProviderModelServiceStub{
-		customModelResult: managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active"},
+		customModelResult: managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active", CacheStorageUSDPer1MPerHour: &cacheStoragePrice, ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{"priority": {CacheStorageUSDPer1MPerHour: &cacheStoragePrice}}},
 	}
 	handler := chi.NewRouter()
 	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -427,6 +428,8 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		"defaultReasoningEffort":"high",
 		"maxInputTokens":922000,
 		"inputUsdPer1M":1.25,
+		"cacheStorageUsdPer1MPerHour":4.5,
+		"serviceTierPrices":{"priority":{"cacheStorageUsdPer1MPerHour":4.5}},
 		"pricingNotes":" 说明 "
 	}`))
 	rec := httptest.NewRecorder()
@@ -447,6 +450,10 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		service.createInput.Fields.CatalogVisible.Value ||
 		service.createInput.Fields.InputUSDPer1M.Value == nil ||
 		*service.createInput.Fields.InputUSDPer1M.Value != 1.25 ||
+		service.createInput.Fields.CacheStorageUSDPer1MPerHour.Value == nil ||
+		*service.createInput.Fields.CacheStorageUSDPer1MPerHour.Value != 4.5 ||
+		service.createInput.Fields.ServiceTierPrices.Value["priority"].CacheStorageUSDPer1MPerHour == nil ||
+		*service.createInput.Fields.ServiceTierPrices.Value["priority"].CacheStorageUSDPer1MPerHour != 4.5 ||
 		!service.createInput.Fields.SupportedServiceTiers.Set ||
 		len(service.createInput.Fields.SupportedServiceTiers.Value) != 2 ||
 		!service.createInput.Fields.SupportedReasoningEfforts.Set ||
@@ -464,7 +471,7 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Data.ID != "custom_model_1" {
+	if body.Data.ID != "custom_model_1" || body.Data.CacheStorageUSDPer1MPerHour == nil || *body.Data.CacheStorageUSDPer1MPerHour != 4.5 || body.Data.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour == nil {
 		t.Fatalf("body = %+v", body)
 	}
 }
@@ -599,7 +606,8 @@ func TestManagementProviderBuiltInModelPriceUpdatePreservesPresenceAndExplicitNu
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{
 		"inputUsdPer1M":null,
-		"outputUsdPer1M":4
+		"outputUsdPer1M":4,
+		"cacheStorageUsdPer1MPerHour":null
 	}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -610,6 +618,7 @@ func TestManagementProviderBuiltInModelPriceUpdatePreservesPresenceAndExplicitNu
 	fields := service.updateInput.Fields
 	if !fields.InputUSDPer1M.Set || fields.InputUSDPer1M.Value != nil ||
 		!fields.OutputUSDPer1M.Set || fields.OutputUSDPer1M.Value == nil || *fields.OutputUSDPer1M.Value != 4 ||
+		!fields.CacheStorageUSDPer1MPerHour.Set || fields.CacheStorageUSDPer1MPerHour.Value != nil ||
 		fields.CachedInputUSDPer1M.Set {
 		t.Fatalf("price fields = %+v", fields)
 	}
@@ -673,6 +682,7 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 		"status", "mode", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts",
 		"defaultReasoningEffort", "releaseDate", "shutdownDate", "contextWindowTokens", "maxInputTokens", "maxOutputTokens",
 		"inputUsdPer1M", "outputUsdPer1M", "cachedInputUsdPer1M", "cacheWriteUsdPer1M", "cacheWrite1hUsdPer1M",
+		"cacheStorageUsdPer1MPerHour",
 		"serviceTierPrices", "imageInputUsdPer1M", "imageOutputUsdPer1M", "audioInputUsdPer1M", "audioOutputUsdPer1M",
 		"outputUsdPerImage",
 	}

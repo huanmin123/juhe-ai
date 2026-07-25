@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/modules/providerbilling"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -111,36 +112,37 @@ type DefaultHealthCheckModelInput struct {
 }
 
 type CustomModelMutation struct {
-	Invalid                   bool
-	ConfigurationTemplateID   OptionalString
-	Scope                     OptionalString
-	Model                     OptionalString
-	Status                    OptionalString
-	CatalogVisible            OptionalBool
-	Mode                      OptionalString
-	SupportedAPIProtocols     OptionalStringList
-	SupportedServiceTiers     OptionalStringList
-	SupportedReasoningEfforts OptionalStringList
-	DefaultReasoningEffort    OptionalString
-	ReleaseDate               OptionalString
-	ShutdownDate              OptionalString
-	ContextWindowTokens       OptionalInt
-	MaxInputTokens            OptionalInt
-	MaxOutputTokens           OptionalInt
-	InputUSDPer1M             OptionalFloat
-	OutputUSDPer1M            OptionalFloat
-	CachedInputUSDPer1M       OptionalFloat
-	CacheWriteUSDPer1M        OptionalFloat
-	CacheWrite1hUSDPer1M      OptionalFloat
-	ServiceTierPrices         OptionalProviderModelPriceMap
-	ImageInputUSDPer1M        OptionalFloat
-	ImageOutputUSDPer1M       OptionalFloat
-	AudioInputUSDPer1M        OptionalFloat
-	AudioOutputUSDPer1M       OptionalFloat
-	OutputUSDPerImage         OptionalFloat
-	PricingNotes              OptionalString
-	CapabilityNotes           OptionalString
-	Notes                     OptionalString
+	Invalid                     bool
+	ConfigurationTemplateID     OptionalString
+	Scope                       OptionalString
+	Model                       OptionalString
+	Status                      OptionalString
+	CatalogVisible              OptionalBool
+	Mode                        OptionalString
+	SupportedAPIProtocols       OptionalStringList
+	SupportedServiceTiers       OptionalStringList
+	SupportedReasoningEfforts   OptionalStringList
+	DefaultReasoningEffort      OptionalString
+	ReleaseDate                 OptionalString
+	ShutdownDate                OptionalString
+	ContextWindowTokens         OptionalInt
+	MaxInputTokens              OptionalInt
+	MaxOutputTokens             OptionalInt
+	InputUSDPer1M               OptionalFloat
+	OutputUSDPer1M              OptionalFloat
+	CachedInputUSDPer1M         OptionalFloat
+	CacheWriteUSDPer1M          OptionalFloat
+	CacheWrite1hUSDPer1M        OptionalFloat
+	CacheStorageUSDPer1MPerHour OptionalFloat
+	ServiceTierPrices           OptionalProviderModelPriceMap
+	ImageInputUSDPer1M          OptionalFloat
+	ImageOutputUSDPer1M         OptionalFloat
+	AudioInputUSDPer1M          OptionalFloat
+	AudioOutputUSDPer1M         OptionalFloat
+	OutputUSDPerImage           OptionalFloat
+	PricingNotes                OptionalString
+	CapabilityNotes             OptionalString
+	Notes                       OptionalString
 }
 
 type OptionalString struct {
@@ -332,6 +334,7 @@ type ModelCatalogItem struct {
 	CachedInputUSDPer1M                     *float64                                        `json:"cachedInputUsdPer1M,omitempty"`
 	CacheWriteUSDPer1M                      *float64                                        `json:"cacheWriteUsdPer1M,omitempty"`
 	CacheWrite1hUSDPer1M                    *float64                                        `json:"cacheWrite1hUsdPer1M,omitempty"`
+	CacheStorageUSDPer1MPerHour             *float64                                        `json:"cacheStorageUsdPer1MPerHour,omitempty"`
 	ServiceTierPrices                       map[string]port.ManagementProviderModelPriceSet `json:"serviceTierPrices,omitempty"`
 	LongContextInputTokenThreshold          *int                                            `json:"longContextInputTokenThreshold,omitempty"`
 	LongContextInputTokenThresholdInclusive bool                                            `json:"longContextInputTokenThresholdInclusive"`
@@ -351,6 +354,7 @@ type ModelCatalogItem struct {
 	PricingNotes                            string                                          `json:"pricingNotes,omitempty"`
 	CapabilityNotes                         string                                          `json:"capabilityNotes,omitempty"`
 	Notes                                   string                                          `json:"notes,omitempty"`
+	CatalogDisplay                          []providerbilling.CatalogDisplaySection         `json:"catalogDisplay,omitempty"`
 	CreatedAt                               string                                          `json:"createdAt,omitempty"`
 	UpdatedAt                               string                                          `json:"updatedAt,omitempty"`
 	Source                                  string                                          `json:"source"`
@@ -835,7 +839,7 @@ func customProviderModelUpdateInput(input CustomModelUpdateInput) port.Managemen
 		ReleaseDate:               optionalProviderModelString(fields.ReleaseDate), ShutdownDate: optionalProviderModelString(fields.ShutdownDate),
 		ContextWindowTokens: optionalProviderModelInt(fields.ContextWindowTokens), MaxInputTokens: optionalProviderModelInt(fields.MaxInputTokens), MaxOutputTokens: optionalProviderModelInt(fields.MaxOutputTokens),
 		InputUSDPer1M: optionalProviderModelFloat(fields.InputUSDPer1M), OutputUSDPer1M: optionalProviderModelFloat(fields.OutputUSDPer1M), CachedInputUSDPer1M: optionalProviderModelFloat(fields.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M: optionalProviderModelFloat(fields.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: optionalProviderModelFloat(fields.CacheWrite1hUSDPer1M),
+		CacheWriteUSDPer1M: optionalProviderModelFloat(fields.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: optionalProviderModelFloat(fields.CacheWrite1hUSDPer1M), CacheStorageUSDPer1MPerHour: optionalProviderModelFloat(fields.CacheStorageUSDPer1MPerHour),
 		ServiceTierPrices:  port.ManagementProviderModelOptionalPriceMap{Present: fields.ServiceTierPrices.Set, Value: cloneProviderModelPriceMap(fields.ServiceTierPrices.Value)},
 		ImageInputUSDPer1M: optionalProviderModelFloat(fields.ImageInputUSDPer1M), ImageOutputUSDPer1M: optionalProviderModelFloat(fields.ImageOutputUSDPer1M),
 		AudioInputUSDPer1M: optionalProviderModelFloat(fields.AudioInputUSDPer1M), AudioOutputUSDPer1M: optionalProviderModelFloat(fields.AudioOutputUSDPer1M), OutputUSDPerImage: optionalProviderModelFloat(fields.OutputUSDPerImage),
@@ -908,23 +912,24 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	}
 	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: existing.ID, ProviderCode: existing.ProviderCode,
-		Status:                    port.ManagementProviderModelOptionalString{Present: input.Fields.Status.Set, Value: configuration.Status},
-		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: input.Fields.CatalogVisible.Set, Value: configuration.CatalogVisible},
-		Mode:                      port.ManagementProviderModelOptionalString{Present: input.Fields.Mode.Set, Value: configuration.Mode},
-		SupportedAPIProtocols:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedAPIProtocols.Set, Value: append([]string(nil), configuration.SupportedAPIProtocols...)},
-		SupportedServiceTiers:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedServiceTiers.Set, Value: append([]string(nil), configuration.SupportedServiceTiers...)},
-		SupportedReasoningEfforts: port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedReasoningEfforts.Set, Value: append([]string(nil), configuration.SupportedReasoningEfforts...)},
-		DefaultReasoningEffort:    port.ManagementProviderModelOptionalString{Present: input.Fields.DefaultReasoningEffort.Set, Value: configuration.DefaultReasoningEffort},
-		ReleaseDate:               port.ManagementProviderModelOptionalString{Present: input.Fields.ReleaseDate.Set, Value: configuration.ReleaseDate},
-		ShutdownDate:              port.ManagementProviderModelOptionalString{Present: input.Fields.ShutdownDate.Set, Value: configuration.ShutdownDate},
-		ContextWindowTokens:       port.ManagementProviderModelOptionalInt{Present: input.Fields.ContextWindowTokens.Set, Value: cloneIntPtr(configuration.ContextWindowTokens)},
-		MaxInputTokens:            port.ManagementProviderModelOptionalInt{Present: input.Fields.MaxInputTokens.Set, Value: cloneIntPtr(configuration.MaxInputTokens)},
-		MaxOutputTokens:           port.ManagementProviderModelOptionalInt{Present: input.Fields.MaxOutputTokens.Set, Value: cloneIntPtr(configuration.MaxOutputTokens)},
-		InputUSDPer1M:             port.ManagementProviderModelOptionalFloat{Present: input.Fields.InputUSDPer1M.Set, Value: cloneFloatPtr(configuration.InputUSDPer1M)},
-		OutputUSDPer1M:            port.ManagementProviderModelOptionalFloat{Present: input.Fields.OutputUSDPer1M.Set, Value: cloneFloatPtr(configuration.OutputUSDPer1M)},
-		CachedInputUSDPer1M:       port.ManagementProviderModelOptionalFloat{Present: input.Fields.CachedInputUSDPer1M.Set, Value: cloneFloatPtr(configuration.CachedInputUSDPer1M)},
-		CacheWriteUSDPer1M:        port.ManagementProviderModelOptionalFloat{Present: input.Fields.CacheWriteUSDPer1M.Set, Value: cloneFloatPtr(configuration.CacheWriteUSDPer1M)},
-		CacheWrite1hUSDPer1M:      port.ManagementProviderModelOptionalFloat{Present: input.Fields.CacheWrite1hUSDPer1M.Set, Value: cloneFloatPtr(configuration.CacheWrite1hUSDPer1M)},
+		Status:                      port.ManagementProviderModelOptionalString{Present: input.Fields.Status.Set, Value: configuration.Status},
+		CatalogVisible:              port.ManagementProviderModelOptionalBool{Present: input.Fields.CatalogVisible.Set, Value: configuration.CatalogVisible},
+		Mode:                        port.ManagementProviderModelOptionalString{Present: input.Fields.Mode.Set, Value: configuration.Mode},
+		SupportedAPIProtocols:       port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedAPIProtocols.Set, Value: append([]string(nil), configuration.SupportedAPIProtocols...)},
+		SupportedServiceTiers:       port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedServiceTiers.Set, Value: append([]string(nil), configuration.SupportedServiceTiers...)},
+		SupportedReasoningEfforts:   port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedReasoningEfforts.Set, Value: append([]string(nil), configuration.SupportedReasoningEfforts...)},
+		DefaultReasoningEffort:      port.ManagementProviderModelOptionalString{Present: input.Fields.DefaultReasoningEffort.Set, Value: configuration.DefaultReasoningEffort},
+		ReleaseDate:                 port.ManagementProviderModelOptionalString{Present: input.Fields.ReleaseDate.Set, Value: configuration.ReleaseDate},
+		ShutdownDate:                port.ManagementProviderModelOptionalString{Present: input.Fields.ShutdownDate.Set, Value: configuration.ShutdownDate},
+		ContextWindowTokens:         port.ManagementProviderModelOptionalInt{Present: input.Fields.ContextWindowTokens.Set, Value: cloneIntPtr(configuration.ContextWindowTokens)},
+		MaxInputTokens:              port.ManagementProviderModelOptionalInt{Present: input.Fields.MaxInputTokens.Set, Value: cloneIntPtr(configuration.MaxInputTokens)},
+		MaxOutputTokens:             port.ManagementProviderModelOptionalInt{Present: input.Fields.MaxOutputTokens.Set, Value: cloneIntPtr(configuration.MaxOutputTokens)},
+		InputUSDPer1M:               port.ManagementProviderModelOptionalFloat{Present: input.Fields.InputUSDPer1M.Set, Value: cloneFloatPtr(configuration.InputUSDPer1M)},
+		OutputUSDPer1M:              port.ManagementProviderModelOptionalFloat{Present: input.Fields.OutputUSDPer1M.Set, Value: cloneFloatPtr(configuration.OutputUSDPer1M)},
+		CachedInputUSDPer1M:         port.ManagementProviderModelOptionalFloat{Present: input.Fields.CachedInputUSDPer1M.Set, Value: cloneFloatPtr(configuration.CachedInputUSDPer1M)},
+		CacheWriteUSDPer1M:          port.ManagementProviderModelOptionalFloat{Present: input.Fields.CacheWriteUSDPer1M.Set, Value: cloneFloatPtr(configuration.CacheWriteUSDPer1M)},
+		CacheWrite1hUSDPer1M:        port.ManagementProviderModelOptionalFloat{Present: input.Fields.CacheWrite1hUSDPer1M.Set, Value: cloneFloatPtr(configuration.CacheWrite1hUSDPer1M)},
+		CacheStorageUSDPer1MPerHour: port.ManagementProviderModelOptionalFloat{Present: input.Fields.CacheStorageUSDPer1MPerHour.Set, Value: cloneFloatPtr(configuration.CacheStorageUSDPer1MPerHour)},
 		ServiceTierPrices: port.ManagementProviderModelOptionalPriceMap{
 			Present: input.Fields.ServiceTierPrices.Set,
 			Value:   cloneProviderModelPriceMap(configuration.ServiceTierPrices),
@@ -956,29 +961,30 @@ func validateBuiltInProviderModelFinalConfiguration(snapshot port.ManagementProv
 	}
 	normalized := port.ManagementCustomProviderModelSaveInput{ProviderCode: snapshot.ProviderCode}
 	err := applyCustomModelMutableFields(&normalized, CustomModelMutation{
-		Status:                    OptionalString{Set: true, Value: snapshot.Status},
-		CatalogVisible:            OptionalBool{Set: true, Value: snapshot.CatalogVisible},
-		Mode:                      OptionalString{Set: true, Value: snapshot.Mode},
-		SupportedAPIProtocols:     OptionalStringList{Set: true, Value: snapshot.SupportedAPIProtocols},
-		SupportedServiceTiers:     OptionalStringList{Set: true, Value: snapshot.SupportedServiceTiers},
-		SupportedReasoningEfforts: OptionalStringList{Set: true, Value: snapshot.SupportedReasoningEfforts},
-		DefaultReasoningEffort:    OptionalString{Set: true, Value: snapshot.DefaultReasoningEffort},
-		ReleaseDate:               OptionalString{Set: true, Value: snapshot.ReleaseDate},
-		ShutdownDate:              OptionalString{Set: true, Value: snapshot.ShutdownDate},
-		ContextWindowTokens:       OptionalInt{Set: true, Value: cloneIntPtr(snapshot.ContextWindowTokens)},
-		MaxInputTokens:            OptionalInt{Set: true, Value: cloneIntPtr(snapshot.MaxInputTokens)},
-		MaxOutputTokens:           OptionalInt{Set: true, Value: cloneIntPtr(snapshot.MaxOutputTokens)},
-		InputUSDPer1M:             OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.InputUSDPer1M)},
-		OutputUSDPer1M:            OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.OutputUSDPer1M)},
-		CachedInputUSDPer1M:       OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CachedInputUSDPer1M)},
-		CacheWriteUSDPer1M:        OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CacheWriteUSDPer1M)},
-		CacheWrite1hUSDPer1M:      OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CacheWrite1hUSDPer1M)},
-		ServiceTierPrices:         OptionalProviderModelPriceMap{Set: true, Value: cloneProviderModelPriceMap(snapshot.ServiceTierPrices)},
-		ImageInputUSDPer1M:        OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.ImageInputUSDPer1M)},
-		ImageOutputUSDPer1M:       OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.ImageOutputUSDPer1M)},
-		AudioInputUSDPer1M:        OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.AudioInputUSDPer1M)},
-		AudioOutputUSDPer1M:       OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.AudioOutputUSDPer1M)},
-		OutputUSDPerImage:         OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.OutputUSDPerImage)},
+		Status:                      OptionalString{Set: true, Value: snapshot.Status},
+		CatalogVisible:              OptionalBool{Set: true, Value: snapshot.CatalogVisible},
+		Mode:                        OptionalString{Set: true, Value: snapshot.Mode},
+		SupportedAPIProtocols:       OptionalStringList{Set: true, Value: snapshot.SupportedAPIProtocols},
+		SupportedServiceTiers:       OptionalStringList{Set: true, Value: snapshot.SupportedServiceTiers},
+		SupportedReasoningEfforts:   OptionalStringList{Set: true, Value: snapshot.SupportedReasoningEfforts},
+		DefaultReasoningEffort:      OptionalString{Set: true, Value: snapshot.DefaultReasoningEffort},
+		ReleaseDate:                 OptionalString{Set: true, Value: snapshot.ReleaseDate},
+		ShutdownDate:                OptionalString{Set: true, Value: snapshot.ShutdownDate},
+		ContextWindowTokens:         OptionalInt{Set: true, Value: cloneIntPtr(snapshot.ContextWindowTokens)},
+		MaxInputTokens:              OptionalInt{Set: true, Value: cloneIntPtr(snapshot.MaxInputTokens)},
+		MaxOutputTokens:             OptionalInt{Set: true, Value: cloneIntPtr(snapshot.MaxOutputTokens)},
+		InputUSDPer1M:               OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.InputUSDPer1M)},
+		OutputUSDPer1M:              OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.OutputUSDPer1M)},
+		CachedInputUSDPer1M:         OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CachedInputUSDPer1M)},
+		CacheWriteUSDPer1M:          OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CacheWriteUSDPer1M)},
+		CacheWrite1hUSDPer1M:        OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CacheWrite1hUSDPer1M)},
+		CacheStorageUSDPer1MPerHour: OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.CacheStorageUSDPer1MPerHour)},
+		ServiceTierPrices:           OptionalProviderModelPriceMap{Set: true, Value: cloneProviderModelPriceMap(snapshot.ServiceTierPrices)},
+		ImageInputUSDPer1M:          OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.ImageInputUSDPer1M)},
+		ImageOutputUSDPer1M:         OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.ImageOutputUSDPer1M)},
+		AudioInputUSDPer1M:          OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.AudioInputUSDPer1M)},
+		AudioOutputUSDPer1M:         OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.AudioOutputUSDPer1M)},
+		OutputUSDPerImage:           OptionalFloat{Set: true, Value: cloneFloatPtr(snapshot.OutputUSDPerImage)},
 	}, false)
 	if err != nil {
 		return err
@@ -1014,6 +1020,7 @@ func builtInCatalogItemWithConfigurationSnapshot(existing port.ManagementProvide
 	item.CachedInputUSDPer1M = cloneFloatPtr(snapshot.CachedInputUSDPer1M)
 	item.CacheWriteUSDPer1M = cloneFloatPtr(snapshot.CacheWriteUSDPer1M)
 	item.CacheWrite1hUSDPer1M = cloneFloatPtr(snapshot.CacheWrite1hUSDPer1M)
+	item.CacheStorageUSDPer1MPerHour = cloneFloatPtr(snapshot.CacheStorageUSDPer1MPerHour)
 	item.ServiceTierPrices = cloneProviderModelPriceMap(snapshot.ServiceTierPrices)
 	item.ImageInputUSDPer1M = cloneFloatPtr(snapshot.ImageInputUSDPer1M)
 	item.ImageOutputUSDPer1M = cloneFloatPtr(snapshot.ImageOutputUSDPer1M)
@@ -1369,6 +1376,7 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.CachedInputUSDPer1M = cloneFloatPtr(template.CachedInputUSDPer1M)
 	input.CacheWriteUSDPer1M = cloneFloatPtr(template.CacheWriteUSDPer1M)
 	input.CacheWrite1hUSDPer1M = cloneFloatPtr(template.CacheWrite1hUSDPer1M)
+	input.CacheStorageUSDPer1MPerHour = cloneFloatPtr(template.CacheStorageUSDPer1MPerHour)
 	input.ServiceTierPrices = cloneProviderModelPriceMap(template.ServiceTierPrices)
 	input.ImageInputUSDPer1M = cloneFloatPtr(template.ImageInputUSDPer1M)
 	input.ImageOutputUSDPer1M = cloneFloatPtr(template.ImageOutputUSDPer1M)
@@ -1398,38 +1406,39 @@ func customModelModeFromCatalog(item port.ManagementProviderModelCatalogItem) st
 
 func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogItem, actorSystemAccountID string) port.ManagementCustomProviderModelSaveInput {
 	return port.ManagementCustomProviderModelSaveInput{
-		ID:                        item.ID,
-		ProviderCode:              item.ProviderCode,
-		Model:                     item.Model,
-		Scope:                     item.Scope,
-		SystemAccountID:           item.SystemAccountID,
-		Status:                    item.Status,
-		CatalogVisible:            item.CatalogVisible,
-		Mode:                      item.Mode,
-		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
-		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
-		SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
-		DefaultReasoningEffort:    item.DefaultReasoningEffort,
-		ReleaseDate:               item.ReleaseDate,
-		ShutdownDate:              item.ShutdownDate,
-		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
-		MaxInputTokens:            cloneIntPtr(item.MaxInputTokens),
-		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
-		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
-		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
-		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
-		CacheWrite1hUSDPer1M:      cloneFloatPtr(item.CacheWrite1hUSDPer1M),
-		ServiceTierPrices:         cloneProviderModelPriceMap(item.ServiceTierPrices),
-		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
-		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
-		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
-		AudioOutputUSDPer1M:       cloneFloatPtr(item.AudioOutputUSDPer1M),
-		OutputUSDPerImage:         cloneFloatPtr(item.OutputUSDPerImage),
-		PricingNotes:              item.PricingNotes,
-		CapabilityNotes:           item.CapabilityNotes,
-		Notes:                     item.Notes,
-		ActorSystemAccountID:      strings.TrimSpace(actorSystemAccountID),
+		ID:                          item.ID,
+		ProviderCode:                item.ProviderCode,
+		Model:                       item.Model,
+		Scope:                       item.Scope,
+		SystemAccountID:             item.SystemAccountID,
+		Status:                      item.Status,
+		CatalogVisible:              item.CatalogVisible,
+		Mode:                        item.Mode,
+		SupportedAPIProtocols:       append([]string(nil), item.SupportedAPIProtocols...),
+		SupportedServiceTiers:       append([]string(nil), item.SupportedServiceTiers...),
+		SupportedReasoningEfforts:   append([]string(nil), item.SupportedReasoningEfforts...),
+		DefaultReasoningEffort:      item.DefaultReasoningEffort,
+		ReleaseDate:                 item.ReleaseDate,
+		ShutdownDate:                item.ShutdownDate,
+		ContextWindowTokens:         cloneIntPtr(item.ContextWindowTokens),
+		MaxInputTokens:              cloneIntPtr(item.MaxInputTokens),
+		MaxOutputTokens:             cloneIntPtr(item.MaxOutputTokens),
+		InputUSDPer1M:               cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:              cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:         cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:          cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:        cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		CacheStorageUSDPer1MPerHour: cloneFloatPtr(item.CacheStorageUSDPer1MPerHour),
+		ServiceTierPrices:           cloneProviderModelPriceMap(item.ServiceTierPrices),
+		ImageInputUSDPer1M:          cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:         cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:          cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:         cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:           cloneFloatPtr(item.OutputUSDPerImage),
+		PricingNotes:                item.PricingNotes,
+		CapabilityNotes:             item.CapabilityNotes,
+		Notes:                       item.Notes,
+		ActorSystemAccountID:        strings.TrimSpace(actorSystemAccountID),
 	}
 }
 
@@ -1569,6 +1578,9 @@ func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomPro
 	if err := applyOptionalCustomModelFloat(&input.CacheWrite1hUSDPer1M, fields.CacheWrite1hUSDPer1M); err != nil {
 		return err
 	}
+	if err := applyOptionalCustomModelFloat(&input.CacheStorageUSDPer1MPerHour, fields.CacheStorageUSDPer1MPerHour); err != nil {
+		return err
+	}
 	if fields.ServiceTierPrices.Set {
 		input.ServiceTierPrices = cloneProviderModelPriceMap(fields.ServiceTierPrices.Value)
 	}
@@ -1623,6 +1635,7 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.CachedInputUSDPer1M.Set ||
 		fields.CacheWriteUSDPer1M.Set ||
 		fields.CacheWrite1hUSDPer1M.Set ||
+		fields.CacheStorageUSDPer1MPerHour.Set ||
 		fields.ServiceTierPrices.Set ||
 		fields.ImageInputUSDPer1M.Set ||
 		fields.ImageOutputUSDPer1M.Set ||
@@ -1773,7 +1786,7 @@ func customModelSaveInputHasDirectPrice(input port.ManagementCustomProviderModel
 		return input.AudioInputUSDPer1M != nil || input.AudioOutputUSDPer1M != nil
 	default:
 		return input.InputUSDPer1M != nil || input.OutputUSDPer1M != nil || input.CachedInputUSDPer1M != nil ||
-			input.CacheWriteUSDPer1M != nil || input.CacheWrite1hUSDPer1M != nil || providerModelPriceMapHasAnyPrice(input.ServiceTierPrices)
+			input.CacheWriteUSDPer1M != nil || input.CacheWrite1hUSDPer1M != nil || input.CacheStorageUSDPer1MPerHour != nil || providerModelPriceMapHasAnyPrice(input.ServiceTierPrices)
 	}
 }
 
@@ -1796,7 +1809,7 @@ func validateServiceTierPriceKeys(mode string, supported []string, prices map[st
 func providerModelPriceMapHasAnyPrice(prices map[string]port.ManagementProviderModelPriceSet) bool {
 	for _, price := range prices {
 		if price.InputUSDPer1M != nil || price.OutputUSDPer1M != nil || price.CachedInputUSDPer1M != nil ||
-			price.CacheWriteUSDPer1M != nil || price.CacheWrite1hUSDPer1M != nil || price.ImageInputUSDPer1M != nil ||
+			price.CacheWriteUSDPer1M != nil || price.CacheWrite1hUSDPer1M != nil || price.CacheStorageUSDPer1MPerHour != nil || price.ImageInputUSDPer1M != nil ||
 			price.ImageOutputUSDPer1M != nil || price.AudioInputUSDPer1M != nil || price.AudioOutputUSDPer1M != nil || price.OutputUSDPerImage != nil {
 			return true
 		}
@@ -2024,6 +2037,7 @@ func hasDirectPrice(item port.ManagementProviderModelCatalogItem) bool {
 		item.CachedInputUSDPer1M != nil ||
 		item.CacheWriteUSDPer1M != nil ||
 		item.CacheWrite1hUSDPer1M != nil ||
+		item.CacheStorageUSDPer1MPerHour != nil ||
 		item.ImageInputUSDPer1M != nil ||
 		item.ImageOutputUSDPer1M != nil ||
 		item.AudioInputUSDPer1M != nil ||
@@ -2145,6 +2159,7 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		CachedInputUSDPer1M:                     cloneFloatPtr(item.CachedInputUSDPer1M),
 		CacheWriteUSDPer1M:                      cloneFloatPtr(item.CacheWriteUSDPer1M),
 		CacheWrite1hUSDPer1M:                    cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		CacheStorageUSDPer1MPerHour:             cloneFloatPtr(item.CacheStorageUSDPer1MPerHour),
 		ServiceTierPrices:                       cloneProviderModelPriceMap(item.ServiceTierPrices),
 		LongContextInputTokenThreshold:          cloneIntPtr(item.LongContextInputTokenThreshold),
 		LongContextInputTokenThresholdInclusive: item.LongContextInputTokenThresholdInclusive,
@@ -2164,6 +2179,7 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		PricingNotes:                            item.PricingNotes,
 		CapabilityNotes:                         item.CapabilityNotes,
 		Notes:                                   item.Notes,
+		CatalogDisplay:                          providerCatalogDisplay(item),
 		Source:                                  item.Source,
 	}
 	if item.Scope == "built_in" {
@@ -2178,6 +2194,57 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		output.UpdatedAt = formatOptionalTime(item.UpdatedAt)
 	}
 	return output
+}
+
+func providerCatalogDisplay(item port.ManagementProviderModelCatalogItem) []providerbilling.CatalogDisplaySection {
+	tierPrices := make(map[string]providerbilling.PriceSet, len(item.ServiceTierPrices))
+	for tier, prices := range item.ServiceTierPrices {
+		tierPrices[tier] = providerBillingPriceSet(prices)
+	}
+	return providerbilling.BuildCatalogDisplay(item.ProviderCode, providerbilling.CatalogFacts{
+		PriceSet:                           providerBillingPriceSetFromCatalog(item),
+		Mode:                               item.Mode,
+		ServiceTierPrices:                  tierPrices,
+		SupportedServiceTiers:              item.SupportedServiceTiers,
+		SupportedReasoningEfforts:          item.SupportedReasoningEfforts,
+		ContextWindowTokens:                int64Ptr(item.ContextWindowTokens),
+		MaxInputTokens:                     int64Ptr(item.MaxInputTokens),
+		MaxOutputTokens:                    int64Ptr(item.MaxOutputTokens),
+		LongContextInputTokenThreshold:     int64Ptr(item.LongContextInputTokenThreshold),
+		LongContextInputThresholdInclusive: item.LongContextInputTokenThresholdInclusive,
+		LongContextInputCostMultiplier:     item.LongContextInputCostMultiplier,
+		LongContextOutputCostMultiplier:    item.LongContextOutputCostMultiplier,
+	})
+}
+
+func providerBillingPriceSetFromCatalog(item port.ManagementProviderModelCatalogItem) providerbilling.PriceSet {
+	return providerbilling.PriceSet{
+		InputUSDPer1M: item.InputUSDPer1M, OutputUSDPer1M: item.OutputUSDPer1M,
+		CachedInputUSDPer1M: item.CachedInputUSDPer1M, CacheWriteUSDPer1M: item.CacheWriteUSDPer1M,
+		CacheWrite1hUSDPer1M: item.CacheWrite1hUSDPer1M, CacheStorageUSDPer1MPerHour: item.CacheStorageUSDPer1MPerHour,
+		ImageInputUSDPer1M: item.ImageInputUSDPer1M, ImageOutputUSDPer1M: item.ImageOutputUSDPer1M,
+		AudioInputUSDPer1M: item.AudioInputUSDPer1M, AudioOutputUSDPer1M: item.AudioOutputUSDPer1M,
+		OutputUSDPerImage: item.OutputUSDPerImage,
+	}
+}
+
+func providerBillingPriceSet(prices port.ManagementProviderModelPriceSet) providerbilling.PriceSet {
+	return providerbilling.PriceSet{
+		InputUSDPer1M: prices.InputUSDPer1M, OutputUSDPer1M: prices.OutputUSDPer1M,
+		CachedInputUSDPer1M: prices.CachedInputUSDPer1M, CacheWriteUSDPer1M: prices.CacheWriteUSDPer1M,
+		CacheWrite1hUSDPer1M: prices.CacheWrite1hUSDPer1M, CacheStorageUSDPer1MPerHour: prices.CacheStorageUSDPer1MPerHour,
+		ImageInputUSDPer1M: prices.ImageInputUSDPer1M, ImageOutputUSDPer1M: prices.ImageOutputUSDPer1M,
+		AudioInputUSDPer1M: prices.AudioInputUSDPer1M, AudioOutputUSDPer1M: prices.AudioOutputUSDPer1M,
+		OutputUSDPerImage: prices.OutputUSDPerImage,
+	}
+}
+
+func int64Ptr(value *int) *int64 {
+	if value == nil {
+		return nil
+	}
+	converted := int64(*value)
+	return &converted
 }
 
 func formatOptionalTime(value time.Time) string {
@@ -2212,7 +2279,7 @@ func cloneProviderModelPriceMap(value map[string]port.ManagementProviderModelPri
 		output[tier] = port.ManagementProviderModelPriceSet{
 			InputUSDPer1M: cloneFloatPtr(prices.InputUSDPer1M), OutputUSDPer1M: cloneFloatPtr(prices.OutputUSDPer1M),
 			CachedInputUSDPer1M: cloneFloatPtr(prices.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneFloatPtr(prices.CacheWriteUSDPer1M),
-			CacheWrite1hUSDPer1M: cloneFloatPtr(prices.CacheWrite1hUSDPer1M), ImageInputUSDPer1M: cloneFloatPtr(prices.ImageInputUSDPer1M),
+			CacheWrite1hUSDPer1M: cloneFloatPtr(prices.CacheWrite1hUSDPer1M), CacheStorageUSDPer1MPerHour: cloneFloatPtr(prices.CacheStorageUSDPer1MPerHour), ImageInputUSDPer1M: cloneFloatPtr(prices.ImageInputUSDPer1M),
 			ImageOutputUSDPer1M: cloneFloatPtr(prices.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneFloatPtr(prices.AudioInputUSDPer1M),
 			AudioOutputUSDPer1M: cloneFloatPtr(prices.AudioOutputUSDPer1M), OutputUSDPerImage: cloneFloatPtr(prices.OutputUSDPerImage),
 		}

@@ -50,6 +50,7 @@ func TestGatewayClientCatalogQueryIsScopedAndBounded(t *testing.T) {
 		"cached_input_usd_per_1m",
 		"cache_write_usd_per_1m",
 		"cache_write_1h_usd_per_1m",
+		"cache_storage_usd_per_1m_per_hour",
 		"image_input_usd_per_1m",
 		"image_output_usd_per_1m",
 		"audio_input_usd_per_1m",
@@ -63,6 +64,9 @@ func TestGatewayClientCatalogQueryIsScopedAndBounded(t *testing.T) {
 	}
 	if strings.Contains(sql, "catalog_visible = 1") {
 		t.Fatal("PostgreSQL boolean catalog_visible must not be compared with integer 1")
+	}
+	if count := strings.Count(sql, "cache_storage_usd_per_1m_per_hour"); count < 5 {
+		t.Fatalf("cache storage price must be selected and priced for built-in/custom rows; occurrences = %d", count)
 	}
 }
 
@@ -102,7 +106,8 @@ func TestListGatewayClientCatalogModelsNormalizesScopeAndDecodesFields(t *testin
 		MaxInputTokens:                    pgtype.Int4{Int32: 250000, Valid: true},
 		MaxOutputTokens:                   pgtype.Int4{Int32: 22000, Valid: true},
 		InputUsdPer1m:                     pgtype.Float8{Float64: 1.25, Valid: true},
-		ServiceTierPricesJson:             `{"priority":{"outputUsdPer1M":9.5}}`,
+		CacheStorageUsdPer1mPerHour:       pgtype.Float8{Float64: 4.5, Valid: true},
+		ServiceTierPricesJson:             `{"priority":{"outputUsdPer1M":9.5,"cacheStorageUsdPer1MPerHour":8.1}}`,
 		PricingNotes:                      pgtype.Text{String: "price", Valid: true},
 		CapabilityNotes:                   pgtype.Text{String: "capability", Valid: true},
 		Notes:                             pgtype.Text{String: "notes", Valid: true},
@@ -136,7 +141,9 @@ func TestListGatewayClientCatalogModelsNormalizesScopeAndDecodesFields(t *testin
 	}
 	if item.ContextWindowTokens == nil || *item.ContextWindowTokens != 272000 ||
 		item.InputUSDPer1M == nil || *item.InputUSDPer1M != 1.25 ||
-		item.ServiceTierPrices["priority"].OutputUSDPer1M == nil || *item.ServiceTierPrices["priority"].OutputUSDPer1M != 9.5 {
+		item.CacheStorageUSDPer1MPerHour == nil || *item.CacheStorageUSDPer1MPerHour != 4.5 ||
+		item.ServiceTierPrices["priority"].OutputUSDPer1M == nil || *item.ServiceTierPrices["priority"].OutputUSDPer1M != 9.5 ||
+		item.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour == nil || *item.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour != 8.1 {
 		t.Fatalf("decoded prices/capacity = %#v", item)
 	}
 	if !item.CreatedAt.Equal(createdAt) || item.PricingNotes != "price" || item.CapabilityNotes != "capability" || item.Notes != "notes" {

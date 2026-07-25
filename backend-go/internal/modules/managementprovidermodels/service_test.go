@@ -539,6 +539,13 @@ func TestServiceModelsIncludesTierOnlyPricedModel(t *testing.T) {
 			},
 			wantIncluded: true,
 		},
+		{
+			name: "cache storage tier price",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {CacheStorageUSDPer1MPerHour: &price},
+			},
+			wantIncluded: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -581,6 +588,7 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	priorityOutput := 60.0
 	flexInput := 2.5
 	flexOutput := 15.0
+	cacheStorage := 4.5
 	longContextThreshold := 272000
 	longContextInputMultiplier := 2.0
 	longContextOutputMultiplier := 1.5
@@ -597,7 +605,7 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		CodexMultiAgentVersion:        " v2 ",
 		SupportsServiceTier:           false,
 		ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
-			"priority": {InputUSDPer1M: &priorityInput, OutputUSDPer1M: &priorityOutput},
+			"priority": {InputUSDPer1M: &priorityInput, OutputUSDPer1M: &priorityOutput, CacheStorageUSDPer1MPerHour: &cacheStorage},
 			"flex":     {InputUSDPer1M: &flexInput, OutputUSDPer1M: &flexOutput},
 		},
 		LongContextInputTokenThreshold:  &longContextThreshold,
@@ -617,6 +625,7 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	}
 	if builtIn.ServiceTierPrices["priority"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].InputUSDPer1M != 10 ||
 		builtIn.ServiceTierPrices["priority"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].OutputUSDPer1M != 60 ||
+		builtIn.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour == nil || *builtIn.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour != 4.5 ||
 		builtIn.ServiceTierPrices["flex"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].InputUSDPer1M != 2.5 ||
 		builtIn.ServiceTierPrices["flex"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].OutputUSDPer1M != 15 {
 		t.Fatalf("built-in tier pricing metadata = %+v", builtIn)
@@ -625,6 +634,13 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		builtIn.LongContextInputCostMultiplier == nil || *builtIn.LongContextInputCostMultiplier != 2 ||
 		builtIn.LongContextOutputCostMultiplier == nil || *builtIn.LongContextOutputCostMultiplier != 1.5 {
 		t.Fatalf("built-in long-context metadata = %+v", builtIn)
+	}
+	if len(builtIn.CatalogDisplay) != 3 || builtIn.CatalogDisplay[0].Key != "tier_priority" ||
+		builtIn.CatalogDisplay[1].Key != "long_context" || builtIn.CatalogDisplay[2].Key != "reasoning" {
+		t.Fatalf("built-in catalog display = %+v", builtIn.CatalogDisplay)
+	}
+	if items := builtIn.CatalogDisplay[0].Items; len(items) != 3 || items[2].Key != "cache_storage" {
+		t.Fatalf("built-in priority display items = %+v", items)
 	}
 
 	custom := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
@@ -1526,6 +1542,7 @@ func TestServiceCreateCustomModelRequiresOwnPriceWhenActive(t *testing.T) {
 func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUser(t *testing.T) {
 	inputPrice := 5.0
 	outputPrice := 30.0
+	cacheStoragePrice := 4.5
 	contextWindow := 1_050_000
 	maxInput := 922_000
 	maxOutput := 128_000
@@ -1538,8 +1555,9 @@ func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUs
 			SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"},
 			DefaultReasoningEffort:    "high",
 			ContextWindowTokens:       &contextWindow, MaxInputTokens: &maxInput, MaxOutputTokens: &maxOutput,
-			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice,
-			PricingNotes: "trusted pricing", CapabilityNotes: "trusted capability", Notes: "trusted internal",
+			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice, CacheStorageUSDPer1MPerHour: &cacheStoragePrice,
+			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{"priority": {CacheStorageUSDPer1MPerHour: &cacheStoragePrice}},
+			PricingNotes:      "trusted pricing", CapabilityNotes: "trusted capability", Notes: "trusted internal",
 		}},
 	}
 	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_copied" }})
@@ -1560,6 +1578,8 @@ func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUs
 	if store.saveInput.ContextWindowTokens == nil || *store.saveInput.ContextWindowTokens != contextWindow ||
 		store.saveInput.MaxInputTokens == nil || *store.saveInput.MaxInputTokens != maxInput ||
 		store.saveInput.MaxOutputTokens == nil || *store.saveInput.MaxOutputTokens != maxOutput ||
+		store.saveInput.CacheStorageUSDPer1MPerHour == nil || *store.saveInput.CacheStorageUSDPer1MPerHour != cacheStoragePrice ||
+		store.saveInput.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour == nil || *store.saveInput.ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour != cacheStoragePrice ||
 		!slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority", "flex"}) ||
 		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"none", "low", "medium", "high", "xhigh", "max"}) ||
 		store.saveInput.DefaultReasoningEffort != "" ||

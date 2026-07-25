@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -103,19 +104,9 @@ func gatewayClientCatalogModelFromRow(row postgresqueries.ListGatewayClientCatal
 	if err != nil {
 		return port.GatewayClientCatalogModel{}, err
 	}
-	managementPrices, err := decodeProviderModelPriceMap(row.ServiceTierPricesJson, "gateway client catalog service_tier_prices_json")
+	prices, err := decodeGatewayClientCatalogPriceMap(row.ServiceTierPricesJson)
 	if err != nil {
 		return port.GatewayClientCatalogModel{}, err
-	}
-	prices := make(map[string]port.GatewayClientCatalogPriceSet, len(managementPrices))
-	for tier, price := range managementPrices {
-		prices[tier] = port.GatewayClientCatalogPriceSet{
-			InputUSDPer1M: price.InputUSDPer1M, OutputUSDPer1M: price.OutputUSDPer1M,
-			CachedInputUSDPer1M: price.CachedInputUSDPer1M, CacheWriteUSDPer1M: price.CacheWriteUSDPer1M,
-			CacheWrite1hUSDPer1M: price.CacheWrite1hUSDPer1M, ImageInputUSDPer1M: price.ImageInputUSDPer1M,
-			ImageOutputUSDPer1M: price.ImageOutputUSDPer1M, AudioInputUSDPer1M: price.AudioInputUSDPer1M,
-			AudioOutputUSDPer1M: price.AudioOutputUSDPer1M, OutputUSDPerImage: price.OutputUSDPerImage,
-		}
 	}
 
 	return port.GatewayClientCatalogModel{
@@ -144,6 +135,7 @@ func gatewayClientCatalogModelFromRow(row postgresqueries.ListGatewayClientCatal
 		CachedInputUSDPer1M:           float8Ptr(row.CachedInputUsdPer1m),
 		CacheWriteUSDPer1M:            float8Ptr(row.CacheWriteUsdPer1m),
 		CacheWrite1hUSDPer1M:          float8Ptr(row.CacheWrite1hUsdPer1m),
+		CacheStorageUSDPer1MPerHour:   float8Ptr(row.CacheStorageUsdPer1mPerHour),
 		ImageInputUSDPer1M:            float8Ptr(row.ImageInputUsdPer1m),
 		ImageOutputUSDPer1M:           float8Ptr(row.ImageOutputUsdPer1m),
 		AudioInputUSDPer1M:            float8Ptr(row.AudioInputUsdPer1m),
@@ -151,6 +143,17 @@ func gatewayClientCatalogModelFromRow(row postgresqueries.ListGatewayClientCatal
 		OutputUSDPerImage:             float8Ptr(row.OutputUsdPerImage),
 		ServiceTierPrices:             prices,
 	}, nil
+}
+
+func decodeGatewayClientCatalogPriceMap(raw string) (map[string]port.GatewayClientCatalogPriceSet, error) {
+	value := map[string]port.GatewayClientCatalogPriceSet{}
+	if strings.TrimSpace(raw) == "" {
+		return value, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, fmt.Errorf("decode gateway client catalog service_tier_prices_json: %w", err)
+	}
+	return value, nil
 }
 
 var _ port.GatewayClientCatalogReader = (*Store)(nil)

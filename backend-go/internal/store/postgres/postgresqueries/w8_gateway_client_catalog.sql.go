@@ -19,28 +19,54 @@ WITH requested_providers AS (
   ORDER BY requested_provider_code ASC
   LIMIT 50
 ),
-protocol_sources AS (
+protocol_provider_code_candidates AS (
   SELECT DISTINCT
-    requested.requested_provider_code,
-    providers.code AS source_provider_code
-  FROM requested_providers AS requested
-  INNER JOIN juhe_business.provider_protocol_profiles AS profiles
-    ON profiles.enabled = true
+    providers.code AS source_provider_code,
+    profiles.protocol_code,
+    profiles.protocol_version
+  FROM juhe_business.provider_protocol_profiles AS profiles
   INNER JOIN juhe_business.providers AS providers
     ON providers.code = profiles.provider_code
    AND providers.enabled = true
-  WHERE (
-    requested.requested_provider_code = 'openai'
-    AND profiles.protocol_code = 'openai'
-    AND profiles.protocol_version = 'v1'
-  ) OR (
-    requested.requested_provider_code = 'hybrid'
+  WHERE profiles.enabled = true
     AND (
       (profiles.protocol_code = 'openai' AND profiles.protocol_version = 'v1')
       OR (profiles.protocol_code = 'anthropic' AND profiles.protocol_version = 'v1')
       OR (profiles.protocol_code = 'gemini' AND profiles.protocol_version = 'v1beta')
     )
-  )
+),
+protocol_provider_codes AS (
+  SELECT
+    source_provider_code,
+    protocol_code,
+    protocol_version,
+    ROW_NUMBER() OVER (
+      PARTITION BY protocol_code, protocol_version
+      ORDER BY source_provider_code ASC
+    ) AS protocol_rank
+  FROM protocol_provider_code_candidates
+),
+protocol_sources AS (
+  SELECT
+    requested.requested_provider_code,
+    protocols.source_provider_code
+  FROM requested_providers AS requested
+  INNER JOIN protocol_provider_codes AS protocols
+    ON protocols.protocol_rank <= 50
+   AND (
+      (
+        requested.requested_provider_code = 'openai'
+        AND protocols.protocol_code = 'openai'
+        AND protocols.protocol_version = 'v1'
+      ) OR (
+        requested.requested_provider_code = 'hybrid'
+        AND (
+          (protocols.protocol_code = 'openai' AND protocols.protocol_version = 'v1')
+          OR (protocols.protocol_code = 'anthropic' AND protocols.protocol_version = 'v1')
+          OR (protocols.protocol_code = 'gemini' AND protocols.protocol_version = 'v1beta')
+        )
+      )
+    )
 ),
 source_providers AS (
   SELECT
@@ -94,6 +120,7 @@ catalog AS (
     built_in.cached_input_usd_per_1m,
     built_in.cache_write_usd_per_1m,
     built_in.cache_write_1h_usd_per_1m,
+    built_in.cache_storage_usd_per_1m_per_hour,
     built_in.image_input_usd_per_1m,
     built_in.image_output_usd_per_1m,
     built_in.audio_input_usd_per_1m,
@@ -120,6 +147,7 @@ catalog AS (
       OR built_in.cached_input_usd_per_1m IS NOT NULL
       OR built_in.cache_write_usd_per_1m IS NOT NULL
       OR built_in.cache_write_1h_usd_per_1m IS NOT NULL
+      OR built_in.cache_storage_usd_per_1m_per_hour IS NOT NULL
       OR built_in.image_input_usd_per_1m IS NOT NULL
       OR built_in.image_output_usd_per_1m IS NOT NULL
       OR built_in.audio_input_usd_per_1m IS NOT NULL
@@ -153,6 +181,7 @@ catalog AS (
     custom.cached_input_usd_per_1m,
     custom.cache_write_usd_per_1m,
     custom.cache_write_1h_usd_per_1m,
+    custom.cache_storage_usd_per_1m_per_hour,
     custom.image_input_usd_per_1m,
     custom.image_output_usd_per_1m,
     custom.audio_input_usd_per_1m,
@@ -181,6 +210,7 @@ catalog AS (
       OR custom.cached_input_usd_per_1m IS NOT NULL
       OR custom.cache_write_usd_per_1m IS NOT NULL
       OR custom.cache_write_1h_usd_per_1m IS NOT NULL
+      OR custom.cache_storage_usd_per_1m_per_hour IS NOT NULL
       OR custom.image_input_usd_per_1m IS NOT NULL
       OR custom.image_output_usd_per_1m IS NOT NULL
       OR custom.audio_input_usd_per_1m IS NOT NULL
@@ -212,6 +242,7 @@ SELECT
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
   cache_write_1h_usd_per_1m,
+  cache_storage_usd_per_1m_per_hour,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -259,6 +290,7 @@ type ListGatewayClientCatalogModelsRow struct {
 	CachedInputUsdPer1m               pgtype.Float8
 	CacheWriteUsdPer1m                pgtype.Float8
 	CacheWrite1hUsdPer1m              pgtype.Float8
+	CacheStorageUsdPer1mPerHour       pgtype.Float8
 	ImageInputUsdPer1m                pgtype.Float8
 	ImageOutputUsdPer1m               pgtype.Float8
 	AudioInputUsdPer1m                pgtype.Float8
@@ -302,6 +334,7 @@ func (q *Queries) ListGatewayClientCatalogModels(ctx context.Context, arg ListGa
 			&i.CachedInputUsdPer1m,
 			&i.CacheWriteUsdPer1m,
 			&i.CacheWrite1hUsdPer1m,
+			&i.CacheStorageUsdPer1mPerHour,
 			&i.ImageInputUsdPer1m,
 			&i.ImageOutputUsdPer1m,
 			&i.AudioInputUsdPer1m,

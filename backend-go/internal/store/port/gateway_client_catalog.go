@@ -49,28 +49,30 @@ type GatewayClientCatalogModel struct {
 	CapabilityNotes               string
 	Notes                         string
 
-	InputUSDPer1M        *float64
-	OutputUSDPer1M       *float64
-	CachedInputUSDPer1M  *float64
-	CacheWriteUSDPer1M   *float64
-	CacheWrite1hUSDPer1M *float64
-	ImageInputUSDPer1M   *float64
-	ImageOutputUSDPer1M  *float64
-	AudioInputUSDPer1M   *float64
-	AudioOutputUSDPer1M  *float64
-	OutputUSDPerImage    *float64
-	ServiceTierPrices    map[string]GatewayClientCatalogPriceSet
+	InputUSDPer1M               *float64
+	OutputUSDPer1M              *float64
+	CachedInputUSDPer1M         *float64
+	CacheWriteUSDPer1M          *float64
+	CacheWrite1hUSDPer1M        *float64
+	CacheStorageUSDPer1MPerHour *float64
+	ImageInputUSDPer1M          *float64
+	ImageOutputUSDPer1M         *float64
+	AudioInputUSDPer1M          *float64
+	AudioOutputUSDPer1M         *float64
+	OutputUSDPerImage           *float64
+	ServiceTierPrices           map[string]GatewayClientCatalogPriceSet
 }
 
 type GatewayClientCatalogPriceSet struct {
-	InputUSDPer1M        *float64
-	OutputUSDPer1M       *float64
-	CachedInputUSDPer1M  *float64
-	CacheWriteUSDPer1M   *float64
-	CacheWrite1hUSDPer1M *float64
-	ImageInputUSDPer1M   *float64
-	ImageOutputUSDPer1M  *float64
-	AudioInputUSDPer1M   *float64
-	AudioOutputUSDPer1M  *float64
-	OutputUSDPerImage    *float64
+	InputUSDPer1M               *float64
+	OutputUSDPer1M              *float64
+	CachedInputUSDPer1M         *float64
+	CacheWriteUSDPer1M          *float64
+	CacheWrite1hUSDPer1M        *float64
+	CacheStorageUSDPer1MPerHour *float64 `json:"cacheStorageUsdPer1MPerHour,omitempty"`
+	ImageInputUSDPer1M          *float64
+	ImageOutputUSDPer1M         *float64
+	AudioInputUSDPer1M          *float64
+	AudioOutputUSDPer1M         *float64
+	OutputUSDPerImage           *float64
 }

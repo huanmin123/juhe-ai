@@ -81,6 +81,104 @@ func TestSummaryJSONIncludesFalseModelMappingAppliedAndExcludesSnapshots(t *test
 	}
 }
 
+func TestCostBreakdownSnapshotIncludesProviderBillingMetadataAndLegacyFields(t *testing.T) {
+	snapshot := `{
+		"currency":"USD",
+		"billingPolicy":"gemini",
+		"lineItems":[{
+			"key":"cache_storage",
+			"kind":"other",
+			"label":"缓存存储",
+			"quantity":1500000.5,
+			"unit":"token_hour",
+			"unitSize":1000000,
+			"unitPriceUsd":1,
+			"costUsd":1.5000005
+		}],
+		"inputCostUsd":0.25,
+		"cacheReadUsdPer1M":0.1,
+		"accountChargeUsd":1.7500005,
+		"multiplier":1,
+		"serviceTierPricingSource":"default"
+	}`
+	breakdown := costBreakdown(port.ManagementUsageRecordSummary{
+		CostBreakdownSnapshotJSON: textPointer(snapshot),
+	})
+	if breakdown.Currency != "USD" || breakdown.BillingPolicy != "gemini" {
+		t.Fatalf("provider billing metadata = %+v", breakdown)
+	}
+	if breakdown.LineItems == nil || len(*breakdown.LineItems) != 1 {
+		t.Fatalf("lineItems = %+v", breakdown.LineItems)
+	}
+	line := (*breakdown.LineItems)[0]
+	if line.Key != "cache_storage" || line.Kind != "other" || line.Label != "缓存存储" ||
+		line.Quantity != 1500000.5 || line.Unit != "token_hour" || line.UnitSize != 1000000 ||
+		line.UnitPriceUSD != 1 || line.CostUSD != 1.5000005 {
+		t.Fatalf("line item = %+v", line)
+	}
+	if breakdown.InputCostUSD == nil || *breakdown.InputCostUSD != 0.25 ||
+		breakdown.CacheReadUSDPer1M == nil || *breakdown.CacheReadUSDPer1M != 0.1 ||
+		breakdown.AccountChargeUSD == nil || *breakdown.AccountChargeUSD != 1.7500005 ||
+		breakdown.Multiplier != 1 || breakdown.ServiceTierPricingSource != "default" {
+		t.Fatalf("legacy fields = %+v", breakdown)
+	}
+
+	payload, err := json.Marshal(breakdown)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	for _, key := range []string{"currency", "billingPolicy", "lineItems", "inputCostUsd", "cacheReadUsdPer1M", "accountChargeUsd", "multiplier", "serviceTierPricingSource"} {
+		if _, exists := decoded[key]; !exists {
+			t.Fatalf("cost breakdown must contain %s: %s", key, payload)
+		}
+	}
+}
+
+func TestCostBreakdownSnapshotPreservesPresentEmptyLineItems(t *testing.T) {
+	snapshot := `{"lineItems":[],"multiplier":1,"serviceTierPricingSource":"default"}`
+	breakdown := costBreakdown(port.ManagementUsageRecordSummary{CostBreakdownSnapshotJSON: textPointer(snapshot)})
+	payload, err := json.Marshal(breakdown)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	lineItems, exists := decoded["lineItems"]
+	if !exists {
+		t.Fatalf("present empty lineItems must be preserved: %s", payload)
+	}
+	if items, ok := lineItems.([]any); !ok || len(items) != 0 {
+		t.Fatalf("lineItems = %#v", lineItems)
+	}
+}
+
+func TestCostBreakdownLegacySnapshotDoesNotInventProviderBillingMetadata(t *testing.T) {
+	snapshot := `{"accountChargeUsd":0.5,"multiplier":1,"serviceTierPricingSource":"unknown"}`
+	breakdown := costBreakdown(port.ManagementUsageRecordSummary{CostBreakdownSnapshotJSON: textPointer(snapshot)})
+	payload, err := json.Marshal(breakdown)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	for _, key := range []string{"currency", "billingPolicy", "lineItems"} {
+		if _, exists := decoded[key]; exists {
+			t.Fatalf("legacy snapshot must not invent %s: %s", key, payload)
+		}
+	}
+	if decoded["accountChargeUsd"] != 0.5 {
+		t.Fatalf("legacy accountChargeUsd = %#v", decoded["accountChargeUsd"])
+	}
+}
+
 type usageRecordReaderStub struct {
 	timezone    string
 	timezoneErr error

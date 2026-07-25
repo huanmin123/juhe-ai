@@ -387,7 +387,7 @@ func managementProviderModelConfigurationSnapshot(item managementprovidermodels.
 		"contextWindowTokens": item.ContextWindowTokens, "maxInputTokens": item.MaxInputTokens, "maxOutputTokens": item.MaxOutputTokens,
 		"inputUsdPer1M": item.InputUSDPer1M, "outputUsdPer1M": item.OutputUSDPer1M,
 		"cachedInputUsdPer1M": item.CachedInputUSDPer1M, "cacheWriteUsdPer1M": item.CacheWriteUSDPer1M,
-		"cacheWrite1hUsdPer1M": item.CacheWrite1hUSDPer1M, "serviceTierPrices": item.ServiceTierPrices,
+		"cacheWrite1hUsdPer1M": item.CacheWrite1hUSDPer1M, "cacheStorageUsdPer1MPerHour": item.CacheStorageUSDPer1MPerHour, "serviceTierPrices": item.ServiceTierPrices,
 		"imageInputUsdPer1M": item.ImageInputUSDPer1M, "imageOutputUsdPer1M": item.ImageOutputUSDPer1M,
 		"audioInputUsdPer1M": item.AudioInputUSDPer1M, "audioOutputUsdPer1M": item.AudioOutputUSDPer1M,
 		"outputUsdPerImage": item.OutputUSDPerImage,
@@ -612,6 +612,13 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.CacheWrite1hUSDPer1M = value
+		case "cacheStorageUsdPer1MPerHour":
+			value, ok := decodeManagementProviderCustomModelOptionalFloat(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.CacheStorageUSDPer1MPerHour = value
 		case "imageInputUsdPer1M":
 			value, ok := decodeManagementProviderCustomModelOptionalFloat(raw)
 			if !ok {
@@ -682,7 +689,7 @@ func validManagementProviderModelPriceMap(value map[string]managementprovidermod
 			return false
 		}
 		for _, price := range []*float64{prices.InputUSDPer1M, prices.OutputUSDPer1M, prices.CachedInputUSDPer1M,
-			prices.CacheWriteUSDPer1M, prices.CacheWrite1hUSDPer1M, prices.ImageInputUSDPer1M, prices.ImageOutputUSDPer1M,
+			prices.CacheWriteUSDPer1M, prices.CacheWrite1hUSDPer1M, prices.CacheStorageUSDPer1MPerHour, prices.ImageInputUSDPer1M, prices.ImageOutputUSDPer1M,
 			prices.AudioInputUSDPer1M, prices.AudioOutputUSDPer1M, prices.OutputUSDPerImage} {
 			if price != nil && (*price < 0 || math.IsNaN(*price) || math.IsInf(*price, 0)) {
 				return false

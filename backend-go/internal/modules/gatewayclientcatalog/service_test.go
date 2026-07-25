@@ -205,6 +205,20 @@ func TestSelectClientModelsFiltersAndPrefersPersonalGlobalBuiltIn(t *testing.T) 
 			item.ServiceTierPrices = map[string]port.GatewayClientCatalogPriceSet{"priority": {}}
 			return item
 		}(),
+		func() port.GatewayClientCatalogModel {
+			item := model("gemini", "cache-storage-priced", "built_in", "2026-01-05")
+			item.InputUSDPer1M = nil
+			item.CacheStorageUSDPer1MPerHour = float64Pointer(4.5)
+			return item
+		}(),
+		func() port.GatewayClientCatalogModel {
+			item := model("gemini", "tier-cache-storage-priced", "built_in", "2026-01-06")
+			item.InputUSDPer1M = nil
+			item.ServiceTierPrices = map[string]port.GatewayClientCatalogPriceSet{
+				"priority": {CacheStorageUSDPer1MPerHour: float64Pointer(8.1)},
+			}
+			return item
+		}(),
 		model("gpt", "shared-model", "built_in", "2026-07-01"),
 		model("glm", "shared-model", "global", "2025-01-01"),
 		model("gemini", "shared-model", "personal", "2024-01-01"),
@@ -217,7 +231,7 @@ func TestSelectClientModelsFiltersAndPrefersPersonalGlobalBuiltIn(t *testing.T) 
 	for _, item := range got {
 		byID[item.Model] = item
 	}
-	for _, id := range []string{"current-model", "old-model", "missing-date", "free", "tier-priced", "tier-declared", "CaseModel", "casemodel"} {
+	for _, id := range []string{"current-model", "old-model", "missing-date", "free", "tier-priced", "tier-declared", "cache-storage-priced", "tier-cache-storage-priced", "CaseModel", "casemodel"} {
 		if _, ok := byID[id]; !ok {
 			t.Errorf("missing %q from %+v", id, got)
 		}
@@ -226,6 +240,12 @@ func TestSelectClientModelsFiltersAndPrefersPersonalGlobalBuiltIn(t *testing.T) 
 		if _, ok := byID[id]; ok {
 			t.Errorf("unexpected %q in %+v", id, got)
 		}
+	}
+	if price := byID["cache-storage-priced"].CacheStorageUSDPer1MPerHour; price == nil || *price != 4.5 {
+		t.Fatalf("direct cache storage price = %v, want 4.5", price)
+	}
+	if price := byID["tier-cache-storage-priced"].ServiceTierPrices["priority"].CacheStorageUSDPer1MPerHour; price == nil || *price != 8.1 {
+		t.Fatalf("tier cache storage price = %v, want 8.1", price)
 	}
 	shared := byID["shared-model"]
 	if shared.Scope != "personal" || shared.ProviderCode != "gemini" {

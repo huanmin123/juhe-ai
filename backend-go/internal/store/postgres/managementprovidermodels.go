@@ -195,7 +195,7 @@ func customModelSaveInputFromCatalogItem(item port.ManagementProviderModelCatalo
 	return port.ManagementCustomProviderModelSaveInput{
 		ID: item.ID, ProviderCode: item.ProviderCode, Model: item.Model, Scope: item.Scope, SystemAccountID: item.SystemAccountID,
 		Status: item.Status, CatalogVisible: item.CatalogVisible, Mode: item.Mode, SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...), SupportedServiceTiers: append([]string{}, item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string{}, item.SupportedReasoningEfforts...), DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
-		ContextWindowTokens: cloneManagementProviderModelInt(item.ContextWindowTokens), MaxInputTokens: cloneManagementProviderModelInt(item.MaxInputTokens), MaxOutputTokens: cloneManagementProviderModelInt(item.MaxOutputTokens), InputUSDPer1M: cloneManagementProviderModelFloat(item.InputUSDPer1M), OutputUSDPer1M: cloneManagementProviderModelFloat(item.OutputUSDPer1M), CachedInputUSDPer1M: cloneManagementProviderModelFloat(item.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneManagementProviderModelFloat(item.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: cloneManagementProviderModelFloat(item.CacheWrite1hUSDPer1M), ServiceTierPrices: cloneManagementProviderModelPriceMap(item.ServiceTierPrices), ImageInputUSDPer1M: cloneManagementProviderModelFloat(item.ImageInputUSDPer1M), ImageOutputUSDPer1M: cloneManagementProviderModelFloat(item.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneManagementProviderModelFloat(item.AudioInputUSDPer1M), AudioOutputUSDPer1M: cloneManagementProviderModelFloat(item.AudioOutputUSDPer1M), OutputUSDPerImage: cloneManagementProviderModelFloat(item.OutputUSDPerImage), PricingNotes: item.PricingNotes, CapabilityNotes: item.CapabilityNotes, Notes: item.Notes, ActorSystemAccountID: strings.TrimSpace(actor),
+		ContextWindowTokens: cloneManagementProviderModelInt(item.ContextWindowTokens), MaxInputTokens: cloneManagementProviderModelInt(item.MaxInputTokens), MaxOutputTokens: cloneManagementProviderModelInt(item.MaxOutputTokens), InputUSDPer1M: cloneManagementProviderModelFloat(item.InputUSDPer1M), OutputUSDPer1M: cloneManagementProviderModelFloat(item.OutputUSDPer1M), CachedInputUSDPer1M: cloneManagementProviderModelFloat(item.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneManagementProviderModelFloat(item.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: cloneManagementProviderModelFloat(item.CacheWrite1hUSDPer1M), CacheStorageUSDPer1MPerHour: cloneManagementProviderModelFloat(item.CacheStorageUSDPer1MPerHour), ServiceTierPrices: cloneManagementProviderModelPriceMap(item.ServiceTierPrices), ImageInputUSDPer1M: cloneManagementProviderModelFloat(item.ImageInputUSDPer1M), ImageOutputUSDPer1M: cloneManagementProviderModelFloat(item.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneManagementProviderModelFloat(item.AudioInputUSDPer1M), AudioOutputUSDPer1M: cloneManagementProviderModelFloat(item.AudioOutputUSDPer1M), OutputUSDPerImage: cloneManagementProviderModelFloat(item.OutputUSDPerImage), PricingNotes: item.PricingNotes, CapabilityNotes: item.CapabilityNotes, Notes: item.Notes, ActorSystemAccountID: strings.TrimSpace(actor),
 	}
 }
 
@@ -218,6 +218,7 @@ func customProviderModelCatalogItemFromSaveInput(input port.ManagementCustomProv
 	result.CachedInputUSDPer1M = cloneManagementProviderModelFloat(input.CachedInputUSDPer1M)
 	result.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(input.CacheWriteUSDPer1M)
 	result.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M)
+	result.CacheStorageUSDPer1MPerHour = cloneManagementProviderModelFloat(input.CacheStorageUSDPer1MPerHour)
 	result.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices)
 	result.ImageInputUSDPer1M = cloneManagementProviderModelFloat(input.ImageInputUSDPer1M)
 	result.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(input.ImageOutputUSDPer1M)
@@ -285,6 +286,9 @@ func mergeCustomProviderModelUpdate(candidate *port.ManagementCustomProviderMode
 	if input.CacheWrite1hUSDPer1M.Present {
 		candidate.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M.Value)
 	}
+	if input.CacheStorageUSDPer1MPerHour.Present {
+		candidate.CacheStorageUSDPer1MPerHour = cloneManagementProviderModelFloat(input.CacheStorageUSDPer1MPerHour.Value)
+	}
 	if input.ServiceTierPrices.Present {
 		candidate.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices.Value)
 	}
@@ -331,7 +335,7 @@ func customProviderModelUpdateParams(input port.ManagementProviderModelCatalogIt
 	if err != nil {
 		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model prices: %w", err)
 	}
-	return postgresqueries.UpdateManagementCustomProviderModelParams{Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: pgTextFromString(input.Mode), SupportedApiProtocolsJson: string(protocols), SupportedServiceTiersJson: string(tiers), SupportedReasoningEffortsJson: string(reasoning), DefaultReasoningEffort: pgTextFromString(input.DefaultReasoningEffort), ReleaseDate: pgTextFromString(input.ReleaseDate), ShutdownDate: pgTextFromString(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(prices), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), PricingNotes: pgTextFromString(input.PricingNotes), CapabilityNotes: pgTextFromString(input.CapabilityNotes), Notes: pgTextFromString(input.Notes), ActorSystemAccountID: pgTextFromString(actor), UpdatedAt: pgTimestamptz(time.Now().UTC()), ID: input.ID, ProviderCode: input.ProviderCode}, nil
+	return postgresqueries.UpdateManagementCustomProviderModelParams{Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: pgTextFromString(input.Mode), SupportedApiProtocolsJson: string(protocols), SupportedServiceTiersJson: string(tiers), SupportedReasoningEffortsJson: string(reasoning), DefaultReasoningEffort: pgTextFromString(input.DefaultReasoningEffort), ReleaseDate: pgTextFromString(input.ReleaseDate), ShutdownDate: pgTextFromString(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), CacheStorageUsdPer1mPerHour: pgFloat8Ptr(input.CacheStorageUSDPer1MPerHour), ServiceTierPricesJson: string(prices), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), PricingNotes: pgTextFromString(input.PricingNotes), CapabilityNotes: pgTextFromString(input.CapabilityNotes), Notes: pgTextFromString(input.Notes), ActorSystemAccountID: pgTextFromString(actor), UpdatedAt: pgTimestamptz(time.Now().UTC()), ID: input.ID, ProviderCode: input.ProviderCode}, nil
 }
 
 func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managementBuiltInProviderModelPriceUpdateQueries, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
@@ -349,7 +353,7 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 		releaseDate: locked.ReleaseDate, shutdownDate: locked.ShutdownDate, contextWindowTokens: locked.ContextWindowTokens,
 		maxInputTokens: locked.MaxInputTokens, maxOutputTokens: locked.MaxOutputTokens, inputUSDPer1M: locked.InputUsdPer1m,
 		outputUSDPer1M: locked.OutputUsdPer1m, cachedInputUSDPer1M: locked.CachedInputUsdPer1m, cacheWriteUSDPer1M: locked.CacheWriteUsdPer1m,
-		cacheWrite1hUSDPer1M: locked.CacheWrite1hUsdPer1m, serviceTierPricesJSON: locked.ServiceTierPricesJson,
+		cacheWrite1hUSDPer1M: locked.CacheWrite1hUsdPer1m, cacheStorageUSDPer1MPerHour: locked.CacheStorageUsdPer1mPerHour, serviceTierPricesJSON: locked.ServiceTierPricesJson,
 		imageInputUSDPer1M: locked.ImageInputUsdPer1m, imageOutputUSDPer1M: locked.ImageOutputUsdPer1m,
 		audioInputUSDPer1M: locked.AudioInputUsdPer1m, audioOutputUSDPer1M: locked.AudioOutputUsdPer1m,
 		outputUSDPerImage: locked.OutputUsdPerImage, updatedAt: locked.UpdatedAt,
@@ -382,7 +386,7 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 		releaseDate: updated.ReleaseDate, shutdownDate: updated.ShutdownDate, contextWindowTokens: updated.ContextWindowTokens,
 		maxInputTokens: updated.MaxInputTokens, maxOutputTokens: updated.MaxOutputTokens, inputUSDPer1M: updated.InputUsdPer1m,
 		outputUSDPer1M: updated.OutputUsdPer1m, cachedInputUSDPer1M: updated.CachedInputUsdPer1m, cacheWriteUSDPer1M: updated.CacheWriteUsdPer1m,
-		cacheWrite1hUSDPer1M: updated.CacheWrite1hUsdPer1m, serviceTierPricesJSON: updated.ServiceTierPricesJson,
+		cacheWrite1hUSDPer1M: updated.CacheWrite1hUsdPer1m, cacheStorageUSDPer1MPerHour: updated.CacheStorageUsdPer1mPerHour, serviceTierPricesJSON: updated.ServiceTierPricesJson,
 		imageInputUSDPer1M: updated.ImageInputUsdPer1m, imageOutputUSDPer1M: updated.ImageOutputUsdPer1m,
 		audioInputUSDPer1M: updated.AudioInputUsdPer1m, audioOutputUSDPer1M: updated.AudioOutputUsdPer1m,
 		outputUSDPerImage: updated.OutputUsdPerImage, updatedAt: updated.UpdatedAt,
@@ -449,6 +453,9 @@ func mergeManagementProviderModelConfigurationSnapshot(before port.ManagementPro
 	if input.CacheWrite1hUSDPer1M.Present {
 		result.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M.Value)
 	}
+	if input.CacheStorageUSDPer1MPerHour.Present {
+		result.CacheStorageUSDPer1MPerHour = cloneManagementProviderModelFloat(input.CacheStorageUSDPer1MPerHour.Value)
+	}
 	if input.ServiceTierPrices.Present {
 		result.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices.Value)
 	}
@@ -488,7 +495,7 @@ func managementProviderModelConfigurationUpdateParams(input port.ManagementProvi
 		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
 	}
 	return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{
-		Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: managementProviderModelNullableText(input.Mode), SupportedApiProtocolsJson: string(protocolsJSON), SupportedServiceTiersJson: string(serviceTiersJSON), SupportedReasoningEffortsJson: string(reasoningJSON), DefaultReasoningEffort: managementProviderModelNullableText(input.DefaultReasoningEffort), ReleaseDate: managementProviderModelNullableText(input.ReleaseDate), ShutdownDate: managementProviderModelNullableText(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), UpdatedAt: pgTimestamptz(updatedAt), ID: input.ID, ProviderCode: input.ProviderCode,
+		Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: managementProviderModelNullableText(input.Mode), SupportedApiProtocolsJson: string(protocolsJSON), SupportedServiceTiersJson: string(serviceTiersJSON), SupportedReasoningEffortsJson: string(reasoningJSON), DefaultReasoningEffort: managementProviderModelNullableText(input.DefaultReasoningEffort), ReleaseDate: managementProviderModelNullableText(input.ReleaseDate), ShutdownDate: managementProviderModelNullableText(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), CacheStorageUsdPer1mPerHour: pgFloat8Ptr(input.CacheStorageUSDPer1MPerHour), ServiceTierPricesJson: string(pricesJSON), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), UpdatedAt: pgTimestamptz(updatedAt), ID: input.ID, ProviderCode: input.ProviderCode,
 	}, nil
 }
 
@@ -520,6 +527,7 @@ func cloneManagementProviderModelPriceMap(value map[string]port.ManagementProvid
 		price.CachedInputUSDPer1M = cloneManagementProviderModelFloat(price.CachedInputUSDPer1M)
 		price.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(price.CacheWriteUSDPer1M)
 		price.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(price.CacheWrite1hUSDPer1M)
+		price.CacheStorageUSDPer1MPerHour = cloneManagementProviderModelFloat(price.CacheStorageUSDPer1MPerHour)
 		price.ImageInputUSDPer1M = cloneManagementProviderModelFloat(price.ImageInputUSDPer1M)
 		price.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(price.ImageOutputUSDPer1M)
 		price.AudioInputUSDPer1M = cloneManagementProviderModelFloat(price.AudioInputUSDPer1M)
@@ -539,6 +547,7 @@ type managementProviderModelConfigurationRow struct {
 	contextWindowTokens, maxInputTokens, maxOutputTokens        pgtype.Int4
 	inputUSDPer1M, outputUSDPer1M, cachedInputUSDPer1M          pgtype.Float8
 	cacheWriteUSDPer1M, cacheWrite1hUSDPer1M                    pgtype.Float8
+	cacheStorageUSDPer1MPerHour                                 pgtype.Float8
 	imageInputUSDPer1M, imageOutputUSDPer1M, audioInputUSDPer1M pgtype.Float8
 	audioOutputUSDPer1M, outputUSDPerImage                      pgtype.Float8
 	updatedAt                                                   pgtype.Timestamptz
@@ -567,7 +576,7 @@ func decodeManagementProviderModelConfigurationSnapshot(row managementProviderMo
 		DefaultReasoningEffort: textValue(row.defaultReasoningEffort), ReleaseDate: textValue(row.releaseDate), ShutdownDate: textValue(row.shutdownDate),
 		ContextWindowTokens: int4Ptr(row.contextWindowTokens), MaxInputTokens: int4Ptr(row.maxInputTokens), MaxOutputTokens: int4Ptr(row.maxOutputTokens),
 		InputUSDPer1M: float8Ptr(row.inputUSDPer1M), OutputUSDPer1M: float8Ptr(row.outputUSDPer1M), CachedInputUSDPer1M: float8Ptr(row.cachedInputUSDPer1M),
-		CacheWriteUSDPer1M: float8Ptr(row.cacheWriteUSDPer1M), CacheWrite1hUSDPer1M: float8Ptr(row.cacheWrite1hUSDPer1M), ServiceTierPrices: serviceTierPrices,
+		CacheWriteUSDPer1M: float8Ptr(row.cacheWriteUSDPer1M), CacheWrite1hUSDPer1M: float8Ptr(row.cacheWrite1hUSDPer1M), CacheStorageUSDPer1MPerHour: float8Ptr(row.cacheStorageUSDPer1MPerHour), ServiceTierPrices: serviceTierPrices,
 		ImageInputUSDPer1M: float8Ptr(row.imageInputUSDPer1M), ImageOutputUSDPer1M: float8Ptr(row.imageOutputUSDPer1M),
 		AudioInputUSDPer1M: float8Ptr(row.audioInputUSDPer1M), AudioOutputUSDPer1M: float8Ptr(row.audioOutputUSDPer1M),
 		OutputUSDPerImage: float8Ptr(row.outputUSDPerImage), UpdatedAt: timestamptzValue(row.updatedAt),
@@ -898,6 +907,7 @@ func saveManagementCustomProviderModel(
 		CachedInputUsdPer1m:           pgFloat8Ptr(input.CachedInputUSDPer1M),
 		CacheWriteUsdPer1m:            pgFloat8Ptr(input.CacheWriteUSDPer1M),
 		CacheWrite1hUsdPer1m:          pgFloat8Ptr(input.CacheWrite1hUSDPer1M),
+		CacheStorageUsdPer1mPerHour:   pgFloat8Ptr(input.CacheStorageUSDPer1MPerHour),
 		ServiceTierPricesJson:         string(serviceTierPricesJSON),
 		ImageInputUsdPer1m:            pgFloat8Ptr(input.ImageInputUSDPer1M),
 		ImageOutputUsdPer1m:           pgFloat8Ptr(input.ImageOutputUSDPer1M),
@@ -1000,6 +1010,7 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 		CachedInputUSDPer1M:                     float8Ptr(row.CachedInputUsdPer1m),
 		CacheWriteUSDPer1M:                      float8Ptr(row.CacheWriteUsdPer1m),
 		CacheWrite1hUSDPer1M:                    float8Ptr(row.CacheWrite1hUsdPer1m),
+		CacheStorageUSDPer1MPerHour:             float8Ptr(row.CacheStorageUsdPer1mPerHour),
 		ServiceTierPrices:                       serviceTierPrices,
 		LongContextInputTokenThreshold:          int4Ptr(row.LongContextInputTokenThreshold),
 		LongContextInputTokenThresholdInclusive: row.LongContextInputTokenThresholdInclusive,
@@ -1047,6 +1058,7 @@ type managementCustomProviderModelData struct {
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
 	CacheWrite1hUsdPer1m          pgtype.Float8
+	CacheStorageUsdPer1mPerHour   pgtype.Float8
 	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
@@ -1080,44 +1092,45 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
 	return port.ManagementProviderModelCatalogItem{
-		ID:                        row.ID,
-		ProviderCode:              row.ProviderCode,
-		Model:                     row.Model,
-		Scope:                     row.Scope,
-		SystemAccountID:           textValue(row.SystemAccountID),
-		Status:                    row.Status,
-		CatalogVisible:            row.CatalogVisible,
-		Mode:                      textValue(row.Mode),
-		ReleaseDate:               textValue(row.ReleaseDate),
-		ShutdownDate:              textValue(row.ShutdownDate),
-		SupportedAPIProtocols:     protocols,
-		SupportedServiceTiers:     serviceTiers,
-		SupportedReasoningEfforts: reasoningEfforts,
-		DefaultReasoningEffort:    textValue(row.DefaultReasoningEffort),
-		ContextWindowTokens:       int4Ptr(row.ContextWindowTokens),
-		MaxInputTokens:            int4Ptr(row.MaxInputTokens),
-		MaxOutputTokens:           int4Ptr(row.MaxOutputTokens),
-		InputUSDPer1M:             float8Ptr(row.InputUsdPer1m),
-		OutputUSDPer1M:            float8Ptr(row.OutputUsdPer1m),
-		CachedInputUSDPer1M:       float8Ptr(row.CachedInputUsdPer1m),
-		CacheWriteUSDPer1M:        float8Ptr(row.CacheWriteUsdPer1m),
-		CacheWrite1hUSDPer1M:      float8Ptr(row.CacheWrite1hUsdPer1m),
-		ServiceTierPrices:         serviceTierPrices,
-		ImageInputUSDPer1M:        float8Ptr(row.ImageInputUsdPer1m),
-		ImageOutputUSDPer1M:       float8Ptr(row.ImageOutputUsdPer1m),
-		AudioInputUSDPer1M:        float8Ptr(row.AudioInputUsdPer1m),
-		AudioOutputUSDPer1M:       float8Ptr(row.AudioOutputUsdPer1m),
-		OutputUSDPerImage:         float8Ptr(row.OutputUsdPerImage),
-		SupportsPromptCaching:     row.CachedInputUsdPer1m.Valid,
-		SupportsServiceTier:       len(serviceTiers) > 0,
-		PricingNotes:              textValue(row.PricingNotes),
-		CapabilityNotes:           textValue(row.CapabilityNotes),
-		Notes:                     textValue(row.Notes),
-		CreatedBy:                 row.CreatedBy,
-		UpdatedBy:                 textValue(row.UpdatedBy),
-		Source:                    customProviderModelSource(row.Scope),
-		CreatedAt:                 timestamptzValue(row.CreatedAt),
-		UpdatedAt:                 timestamptzValue(row.UpdatedAt),
+		ID:                          row.ID,
+		ProviderCode:                row.ProviderCode,
+		Model:                       row.Model,
+		Scope:                       row.Scope,
+		SystemAccountID:             textValue(row.SystemAccountID),
+		Status:                      row.Status,
+		CatalogVisible:              row.CatalogVisible,
+		Mode:                        textValue(row.Mode),
+		ReleaseDate:                 textValue(row.ReleaseDate),
+		ShutdownDate:                textValue(row.ShutdownDate),
+		SupportedAPIProtocols:       protocols,
+		SupportedServiceTiers:       serviceTiers,
+		SupportedReasoningEfforts:   reasoningEfforts,
+		DefaultReasoningEffort:      textValue(row.DefaultReasoningEffort),
+		ContextWindowTokens:         int4Ptr(row.ContextWindowTokens),
+		MaxInputTokens:              int4Ptr(row.MaxInputTokens),
+		MaxOutputTokens:             int4Ptr(row.MaxOutputTokens),
+		InputUSDPer1M:               float8Ptr(row.InputUsdPer1m),
+		OutputUSDPer1M:              float8Ptr(row.OutputUsdPer1m),
+		CachedInputUSDPer1M:         float8Ptr(row.CachedInputUsdPer1m),
+		CacheWriteUSDPer1M:          float8Ptr(row.CacheWriteUsdPer1m),
+		CacheWrite1hUSDPer1M:        float8Ptr(row.CacheWrite1hUsdPer1m),
+		CacheStorageUSDPer1MPerHour: float8Ptr(row.CacheStorageUsdPer1mPerHour),
+		ServiceTierPrices:           serviceTierPrices,
+		ImageInputUSDPer1M:          float8Ptr(row.ImageInputUsdPer1m),
+		ImageOutputUSDPer1M:         float8Ptr(row.ImageOutputUsdPer1m),
+		AudioInputUSDPer1M:          float8Ptr(row.AudioInputUsdPer1m),
+		AudioOutputUSDPer1M:         float8Ptr(row.AudioOutputUsdPer1m),
+		OutputUSDPerImage:           float8Ptr(row.OutputUsdPerImage),
+		SupportsPromptCaching:       row.CachedInputUsdPer1m.Valid,
+		SupportsServiceTier:         len(serviceTiers) > 0,
+		PricingNotes:                textValue(row.PricingNotes),
+		CapabilityNotes:             textValue(row.CapabilityNotes),
+		Notes:                       textValue(row.Notes),
+		CreatedBy:                   row.CreatedBy,
+		UpdatedBy:                   textValue(row.UpdatedBy),
+		Source:                      customProviderModelSource(row.Scope),
+		CreatedAt:                   timestamptzValue(row.CreatedAt),
+		UpdatedAt:                   timestamptzValue(row.UpdatedAt),
 	}, nil
 }
 
@@ -1145,6 +1158,7 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
 		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		CacheStorageUsdPer1mPerHour:   row.CacheStorageUsdPer1mPerHour,
 		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
@@ -1162,11 +1176,11 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 }
 
 func customProviderModelDataFromLockRow(row postgresqueries.LockManagementCustomProviderModelRow) managementCustomProviderModelData {
-	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, CacheStorageUsdPer1mPerHour: row.CacheStorageUsdPer1mPerHour, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func customProviderModelDataFromUpdateRow(row postgresqueries.UpdateManagementCustomProviderModelRow) managementCustomProviderModelData {
-	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, CacheStorageUsdPer1mPerHour: row.CacheStorageUsdPer1mPerHour, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCustomProviderModelByScopeRow) managementCustomProviderModelData {
@@ -1193,6 +1207,7 @@ func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCusto
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
 		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		CacheStorageUsdPer1mPerHour:   row.CacheStorageUsdPer1mPerHour,
 		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
@@ -1233,6 +1248,7 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
 		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		CacheStorageUsdPer1mPerHour:   row.CacheStorageUsdPer1mPerHour,
 		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
