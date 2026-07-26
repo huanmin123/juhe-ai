@@ -518,16 +518,87 @@ async function seedCooldownRetestPaginationBarrierFixtures(input: {
     { length: 201 },
     (_, index) => `account_${marker}_cooldown_barrier_${index}`
   )
+  const sourceAccountIds = accountIds.map((_, index) => `account_${marker}_cooldown_source_${index}`)
+  const authorizationIds = accountIds.map((_, index) => `rauth_${marker}_cooldown_barrier_${index}`)
   const cooldownUntilValues = accountIds.map((_, index) => new Date(input.baseMs + index).toISOString())
   const observationStartedAt = new Date(input.baseMs - 30_000).toISOString()
+  const insertedSources = await pool.query(`
+    WITH template_instance AS (
+      SELECT authorization_instance_source_account_id AS source_account_id
+      FROM juhe_business.accounts
+      WHERE id = $1
+    ), template AS (
+      SELECT source_row
+      FROM juhe_business.accounts AS source_row
+      JOIN template_instance ON template_instance.source_account_id = source_row.id
+    ), generated AS (
+      SELECT generated.id, generated.created_at
+      FROM unnest($2::text[], $3::timestamptz[]) AS generated(id, created_at)
+    )
+    INSERT INTO juhe_business.accounts
+    SELECT (jsonb_populate_record(
+      NULL::juhe_business.accounts,
+      to_jsonb(template.source_row) || jsonb_build_object(
+        'id', generated.id,
+        'name', 'cooldown pagination source ' || generated.id,
+        'status', 'active',
+        'schedulable', 1,
+        'cooldown_until', NULL,
+        'cooldown_retest_failure_count', 0,
+        'cooldown_retest_observation_started_at', NULL,
+        'cooldown_retest_generation', NULL,
+        'cooldown_retest_last_at', NULL,
+        'cooldown_retest_last_status_code', NULL,
+        'authorization_instance_source_account_id', NULL,
+        'authorization_instance_authorization_id', NULL,
+        'authorization_instance_owner_system_account_id', NULL,
+        'created_at', generated.created_at,
+        'updated_at', generated.created_at
+      )
+    )).*
+    FROM template
+    CROSS JOIN generated
+    RETURNING id
+  `, [input.templateAccountId, sourceAccountIds, cooldownUntilValues])
+  assert.equal(insertedSources.rows.length, sourceAccountIds.length, 'PG cooldown raw cursor 屏障源账户必须完整创建')
+  const insertedAuthorizations = await pool.query(`
+    WITH template_instance AS (
+      SELECT authorization_instance_authorization_id AS authorization_id
+      FROM juhe_business.accounts
+      WHERE id = $1
+    ), template AS (
+      SELECT authorization_row
+      FROM juhe_business.resource_authorizations AS authorization_row
+      JOIN template_instance ON template_instance.authorization_id = authorization_row.id
+    ), generated AS (
+      SELECT generated.authorization_id, generated.source_account_id, generated.created_at
+      FROM unnest($2::text[], $3::text[], $4::timestamptz[])
+        AS generated(authorization_id, source_account_id, created_at)
+    )
+    INSERT INTO juhe_business.resource_authorizations
+    SELECT (jsonb_populate_record(
+      NULL::juhe_business.resource_authorizations,
+      to_jsonb(template.authorization_row) || jsonb_build_object(
+        'id', generated.authorization_id,
+        'resource_id', generated.source_account_id,
+        'created_at', generated.created_at,
+        'updated_at', generated.created_at
+      )
+    )).*
+    FROM template
+    CROSS JOIN generated
+    RETURNING id
+  `, [input.templateAccountId, authorizationIds, sourceAccountIds, cooldownUntilValues])
+  assert.equal(insertedAuthorizations.rows.length, authorizationIds.length, 'PG cooldown raw cursor 屏障授权必须完整创建')
   const inserted = await pool.query(`
     WITH template AS (
       SELECT account_row
       FROM juhe_business.accounts AS account_row
       WHERE account_row.id = $1
     ), generated AS (
-      SELECT generated.id, generated.cooldown_until
-      FROM unnest($3::text[], $4::timestamptz[]) AS generated(id, cooldown_until)
+      SELECT generated.id, generated.source_account_id, generated.authorization_id, generated.cooldown_until
+      FROM unnest($3::text[], $4::text[], $5::text[], $6::timestamptz[])
+        AS generated(id, source_account_id, authorization_id, cooldown_until)
     )
     INSERT INTO juhe_business.accounts
     SELECT (jsonb_populate_record(
@@ -543,6 +614,8 @@ async function seedCooldownRetestPaginationBarrierFixtures(input: {
         'cooldown_retest_generation', 'cooldown:' || generated.id,
         'cooldown_retest_last_at', NULL,
         'cooldown_retest_last_status_code', NULL,
+        'authorization_instance_source_account_id', generated.source_account_id,
+        'authorization_instance_authorization_id', generated.authorization_id,
         'created_at', generated.cooldown_until,
         'updated_at', generated.cooldown_until
       )
@@ -550,7 +623,7 @@ async function seedCooldownRetestPaginationBarrierFixtures(input: {
     FROM template
     CROSS JOIN generated
     RETURNING id
-  `, [input.templateAccountId, observationStartedAt, accountIds, cooldownUntilValues])
+  `, [input.templateAccountId, observationStartedAt, accountIds, sourceAccountIds, authorizationIds, cooldownUntilValues])
   const insertedIds = inserted.rows
     .map((row) => typeof row.id === 'string' ? row.id : undefined)
     .filter((id): id is string => Boolean(id))
@@ -561,22 +634,40 @@ async function seedCooldownRetestPaginationBarrierFixtures(input: {
       FROM juhe_business.group_accounts AS binding_row
       WHERE binding_row.group_id = $1 AND binding_row.account_id = $2
     ), generated AS (
-      SELECT generated.id, generated.created_at
-      FROM unnest($3::text[], $4::timestamptz[]) AS generated(id, created_at)
+      SELECT generated.id, generated.authorization_id, generated.created_at
+      FROM unnest($3::text[], $4::text[], $5::timestamptz[])
+        AS generated(id, authorization_id, created_at)
     )
     INSERT INTO juhe_business.group_accounts
     SELECT (jsonb_populate_record(
       NULL::juhe_business.group_accounts,
       to_jsonb(template.binding_row) || jsonb_build_object(
         'account_id', generated.id,
+        'account_authorization_id', generated.authorization_id,
         'created_at', generated.created_at,
         'updated_at', generated.created_at
       )
     )).*
     FROM template
     CROSS JOIN generated
-  `, [input.groupId, input.templateAccountId, accountIds, cooldownUntilValues])
-  return { accountIds, authorizationIds: [] }
+  `, [input.groupId, input.templateAccountId, accountIds, authorizationIds, cooldownUntilValues])
+  await pool.query(`
+    WITH generated AS (
+      SELECT authorization_id
+      FROM unnest($2::text[]) AS generated(authorization_id)
+    ), grantee AS (
+      SELECT system_account_id
+      FROM juhe_business.accounts
+      WHERE id = $1
+    )
+    INSERT INTO juhe_stats.usage_stats_totals (
+      system_account_id, scope_type, scope_id, request_count, total_cost_usd, last_used_at, updated_at
+    )
+    SELECT grantee.system_account_id, 'account_authorization', generated.authorization_id, 1, 1, $3, $3
+    FROM grantee
+    CROSS JOIN generated
+  `, [input.templateAccountId, authorizationIds, new Date().toISOString()])
+  return { accountIds: [...sourceAccountIds, ...accountIds], authorizationIds }
 }
 
 async function cleanupSmokeRows(): Promise<void> {

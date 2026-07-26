@@ -63,7 +63,7 @@
 - 客户端主动断开、慢客户端背压。
 - 完整非 `2xx`、`2xx + error`、任意状态码/错误正文和完整但协议未成功的响应。
 - 普通路由配置首字截止主动取消；它是请求级中性调度事实，不是 lane hard timeout。
-- 精确客户端协议结构/语义失败；只有可安全重放文本才允许按客户端契约救当前请求，副作用请求不因此重放。
+- 精确客户端协议结构/语义失败只证明当前 attempt 未交付结果；所有请求在下游尚未语义提交且对应 lane 预算允许时，均按统一候选规则救当前请求，但不得据此推进共享账户状态。
 - IP 级错误熔断和 IP 级账号回避。
 - 普通路由速度优先的首字慢样本。它进入 `latency_degraded` 采样窗口，不进入账号失败采样，也不能直接写 `temporary_unavailable`。
 
@@ -240,7 +240,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 其他请求按分组、模型和候选 generation 进入有上限的 FIFO 等待；协调器使用单 timer、支持 AbortSignal 并在结束时清理等待者。
 - 半开请求禁用同账户 / 同 Key 原地重试。完整 HTTP framing 或 SSE 在没有读取中断时正常结束形成 `framing_complete`，按 generation CAS 清理同来源 transport 软阻断；headers、首字节或部分 token 不算 framing 完成，状态码和业务正文不参与。
 - 半开 `transport_failed`、`unknown` 或客户端中断都只释放匹配租约，不能累计后台探针轮次；旧 generation 或旧 leaseId 不能清理新状态。
-- 后备、排队和重新选号共享 `ServerRetryBudget`；默认 270 秒只累计零可派发账号、受控半开和 FIFO / 并发槽等待，fetch、正常上游 attempt 与活跃响应读取期间暂停。可重放文本另有独立固定默认 270 秒的 `GatewayRequestWallBudget`，从请求接收贯穿 Key、账户、分组、排队、attempt 和重放决策且不暂停；它不从 `noAvailableAccountWaitTimeoutSeconds` 派生。已派发图片不受文本墙钟机械中断，只受图片 lane 的 600/120/3600 时限约束并保持唯一 attempt。
+- 后备、排队和重新选号共享 `ServerRetryBudget`；默认 270 秒只累计零可派发账号、受控半开和 FIFO / 并发槽等待，fetch、正常上游 attempt 与活跃响应读取期间暂停。请求级候选切换还受 lane-aware 墙钟和 attempt 上限约束；图片使用 600/120/3600 单次时限和默认 3600 秒整请求墙钟，失败且语义未提交时仍继续后备候选。
 
 ### 从 `precheck_pending` 到持久状态
 
@@ -291,7 +291,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 用“用户请求到来”作为探针触发条件。
 - 把请求数量当成状态转换依据。
 - 不得根据完整 HTTP 状态、错误码、错误正文或精确客户端协议字段建立任何系统自动共享状态。
-- 不得对图片、音频、文件、资源创建、hosted tool 或其他副作用 POST 在上游派发后隐式重放。
+- 图片、音频、文件、资源创建、hosted tool 和其他请求在未交付结果且语义未提交时，必须与普通文本一样继续后备候选；不得按请求类型建立例外。
 
 ## 恢复出口矩阵
 
@@ -352,7 +352,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 后台探针连续独立 `transport_failed` 且并发归零后才写系统自动 transport 来源的 `temporary_unavailable`；任意完整 `4xx/5xx`、`2xx-invalid-body` 或协议失败均不推进。
 - 系统自动 transport 来源的 `temporary_unavailable` 在后台复测 `complete_success` 后自动恢复 `active`；用户显式状态只走匹配恢复出口。
 - SQLite 与真实 PostgreSQL 都要覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
-- 安全文本请求的 opaque HTTP 与 transport 失败在语义提交前仍能按唯一 Key/账户候选救回当前请求，整个请求最多 64 次真实 attempt；图片、音频、文件和其他副作用 POST 派发后保持 at-most-once。
+- 各类请求的 opaque HTTP 与 transport 失败在语义提交前都能按唯一 Key/账户候选救回当前请求，整个请求最多 64 次真实 attempt。
 - 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
 - performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
 - `precheck_pending` 在 memory / Redis 下都软阻断普通调度；全池软阻断时健康 / 后备优先、同账户与同分组单飞半开、FIFO 等待均生效。`noAvailableAccountWaitTimeoutSeconds` 控制的 `ServerRetryBudget` 默认 270 秒，只累计零可派发、半开和 FIFO / 并发槽等待；正常上游 attempt 不消耗该累计等待预算。可重放文本的 `GatewayRequestWallBudget` 是另一套固定默认 270 秒绝对墙钟，不能混为一谈。

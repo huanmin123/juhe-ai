@@ -1398,6 +1398,8 @@ function closeServer(server: http.Server | undefined): Promise<void> {
       if (error) rejectPromise(error)
       else resolvePromise()
     })
+    server.closeIdleConnections?.()
+    server.closeAllConnections?.()
   })
 }
 

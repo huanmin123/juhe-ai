@@ -229,11 +229,16 @@ async function main(): Promise<void> {
       })
     })
     const opaqueResponseText = await opaqueResponse.text()
-    assert.equal(opaqueResponse.status, 503, `副作用 POST 的未知完整上游结果应返回稳定网关错误：${opaqueResponseText}`)
-    assert.match(opaqueResponseText, /upstream_outcome_unknown/, '副作用 POST 不得把供应商错误当作客户端重试语义')
+    assert.equal(opaqueResponse.status, 503, `副作用 POST 穷尽候选后应返回稳定网关错误：${opaqueResponseText}`)
+    assert.match(opaqueResponseText, /upstream_retryable_error/, '副作用 POST 与文本共用统一候选耗尽语义')
+    assert.doesNotMatch(opaqueResponseText, /upstream_outcome_unknown/, '统一候选规则不得返回旧自动重放阻断语义')
     assert.doesNotMatch(opaqueResponseText, /Invalid value for model level|invalid_request_error|422/, '副作用 POST 不得泄漏供应商状态或错误正文')
     assert.equal(opaqueResponse.headers.get('x-upstream-contract'), null, '副作用 POST 不得泄漏不透明上游响应头')
-    assert.deepEqual(upstreamAuthorizations, ['Bearer sk-opaque-failure-first'], '完整 HTTP 非 2xx 后不得换 Key 或跨账号重放 POST')
+    assert.deepEqual(
+      upstreamAuthorizations,
+      ['Bearer sk-opaque-failure-first', 'Bearer sk-opaque-failure-fallback'],
+      '完整 HTTP 非 2xx 后必须各尝试一次失败首选和后备账户'
+    )
     assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
     const opaqueAccount = opaqueAccounts[0]!
     const opaqueQuality = await gatewayHotQuality.getGatewayHotQualityRuntime().hotQualityStore.get({
@@ -255,15 +260,16 @@ async function main(): Promise<void> {
     const sideEffectTransportResponse = await fetch(`${baseUrl}/v1/audio/speech?mock_side_effect_transport_drop=1`, {
       method: 'POST',
       headers: { authorization: `Bearer ${sideEffectTransportApiKey.key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-4o-mini', input: 'already dispatched side effect must not replay' })
+      body: JSON.stringify({ model: 'gpt-4o-mini', input: 'dispatched side effect must use unified failover' })
     })
     const sideEffectTransportText = await sideEffectTransportResponse.text()
     assert.equal(sideEffectTransportResponse.status, 503, sideEffectTransportText)
-    assert.match(sideEffectTransportText, /upstream_outcome_unknown/)
+    assert.match(sideEffectTransportText, /upstream_retryable_error/)
+    assert.doesNotMatch(sideEffectTransportText, /upstream_outcome_unknown/)
     assert.deepEqual(
       upstreamAuthorizations.slice(sideEffectTransportOffset),
-      ['Bearer sk-side-effect-transport-first'],
-      'audio/files 等副作用 POST 一旦 dispatch，transport 失败不得自动换 Key 或账户重放'
+      ['Bearer sk-side-effect-transport-first', 'Bearer sk-side-effect-transport-fallback'],
+      'audio/files 等请求 transport 失败后必须各尝试一次失败首选和后备账户'
     )
     assertAccountsRemainAvailable(sideEffectTransportAccounts, '副作用 transport 失败')
 
@@ -394,7 +400,7 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
-    console.log('上游请求失败回归通过：副作用 POST 不重放，真实传输失败保持请求级切号，本地 URL/派发/响应头后转换异常不轮换 Key/账户且不污染共享状态')
+    console.log('上游请求失败回归通过：完整 HTTP 与副作用 transport 共用统一候选切换，本地故障保持请求级且不污染共享状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()

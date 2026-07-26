@@ -16,8 +16,8 @@
       </template>
       <template #actions>
         <div class="ai-health-legend" aria-label="状态图例">
-          <span><i class="success" />成功</span>
-          <span><i class="failure" />失败</span>
+          <span><i class="success" />可用</span>
+          <span><i class="failure" />不可用</span>
           <span><i class="unknown" />无记录</span>
         </div>
       </template>
@@ -36,7 +36,7 @@
               </div>
               <div class="ai-health-account-rate">
                 <strong>{{ formatHealthRate(account.healthRate) }}</strong>
-                <span>有效检查健康率</span>
+                <span>账户可用率</span>
               </div>
             </header>
 
@@ -44,12 +44,12 @@
               <span v-if="isManagementView && account.systemAccountName">所属用户：{{ account.systemAccountName }}</span>
               <span>最近检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
               <span>下次检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
-              <span class="success-text">成功 {{ account.successHours }}</span>
-              <span class="failure-text">失败 {{ account.failureHours }}</span>
+              <span class="success-text">可用 {{ account.successHours }}</span>
+              <span class="failure-text">不可用 {{ account.failureHours }}</span>
               <span class="unknown-text">无记录 {{ account.unknownHours }}</span>
             </div>
 
-            <AiHealthStatusBar :account-name="account.name" :hours="account.hours" />
+            <AiHealthStatusBar :account-name="account.name" :hours="account.hours" @select="openHourDetail(account.name, $event)" />
             <div class="ai-health-range-labels">
               <span>{{ formatHour(account.hours[0]?.statHour) }}</span>
               <span>{{ formatHour(account.hours[account.hours.length - 1]?.statHour) }}</span>
@@ -71,6 +71,20 @@
         @change="changePage"
       />
     </div>
+
+    <a-drawer v-model:open="detailOpen" title="检查详情" width="420px">
+      <a-descriptions v-if="selectedDetail" bordered size="small" :column="1">
+        <a-descriptions-item label="账户">{{ selectedDetail.accountName }}</a-descriptions-item>
+        <a-descriptions-item label="状态">
+          <a-tag :color="healthStatusColor(selectedDetail.point.status)">{{ pointStatusLabel(selectedDetail.point.status) }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="统计小时">{{ formatHour(selectedDetail.point.statHour) }}</a-descriptions-item>
+        <a-descriptions-item label="检查时间">{{ formatDateTime(selectedDetail.point.lastObservedAt) }}</a-descriptions-item>
+        <a-descriptions-item label="HTTP 状态">{{ selectedDetail.point.statusCode ?? '-' }}</a-descriptions-item>
+        <a-descriptions-item label="错误码">{{ selectedDetail.point.errorCode || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="原因">{{ detailReason(selectedDetail.point) }}</a-descriptions-item>
+      </a-descriptions>
+    </a-drawer>
   </a-card>
 </template>
 
@@ -85,13 +99,20 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountStatus, AiHealthAccountRow, AiHealthHourStatus } from '@/types/domain'
+import type { AccountStatus, AiHealthAccountRow, AiHealthHourPoint, AiHealthHourStatus } from '@/types/domain'
 import AiHealthStatusBar from './AiHealthStatusBar.vue'
 
 const pageSize = 20
 const keyword = ref('')
 const rangeHours = ref(7 * 24)
 const contentRef = ref<HTMLElement>()
+const selectedDetail = ref<{ accountName: string; point: AiHealthHourPoint }>()
+const detailOpen = computed({
+  get: () => Boolean(selectedDetail.value),
+  set: (open: boolean) => {
+    if (!open) selectedDetail.value = undefined
+  }
+})
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const rangeOptions = [
   { label: '最近 24 小时', value: 24 },
@@ -154,9 +175,15 @@ function scrollContentToTop(): void {
 }
 
 function healthStatusLabel(status: AiHealthHourStatus): string {
-  if (status === 'success') return '最近检查正常'
-  if (status === 'failure') return '最近检查失败'
+  if (status === 'success') return '当前可用'
+  if (status === 'failure') return '当前不可用'
   return '暂无检查'
+}
+
+function pointStatusLabel(status: AiHealthHourStatus): string {
+  if (status === 'success') return '可用'
+  if (status === 'failure') return '不可用'
+  return '无记录'
 }
 
 function healthStatusColor(status: AiHealthHourStatus): string {
@@ -188,6 +215,16 @@ function formatHealthRate(value?: number): string {
 
 function formatHour(value?: string): string {
   return value ? value.replace('T', ' ') : '-'
+}
+
+function openHourDetail(accountName: string, point: AiHealthHourPoint): void {
+  selectedDetail.value = { accountName, point }
+}
+
+function detailReason(point: AiHealthHourPoint): string {
+  if (point.status === 'unknown') return '该小时没有检查记录'
+  if (point.status === 'success') return '-'
+  return point.errorMessage || point.errorCode || '检查未成功，未返回具体原因'
 }
 
 onMounted(() => void loadData())

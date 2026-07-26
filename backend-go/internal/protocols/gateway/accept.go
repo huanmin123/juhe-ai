@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func acceptsEventStream(value string) bool {
+// AcceptsEventStream reports whether a parsed Accept header permits SSE. It is
+// exported for listener-independent request-facts adapters; it performs no
+// HTTP I/O and does not mutate the header value.
+func AcceptsEventStream(value string) bool {
 	for _, item := range splitHeaderList(value) {
 		mediaType, parameters, err := mime.ParseMediaType(strings.TrimSpace(item))
 		if err != nil || !strings.EqualFold(mediaType, "text/event-stream") {
@@ -22,6 +25,8 @@ func acceptsEventStream(value string) bool {
 	}
 	return false
 }
+
+func acceptsEventStream(value string) bool { return AcceptsEventStream(value) }
 
 func splitHeaderList(value string) []string {
 	items := make([]string, 0, 4)

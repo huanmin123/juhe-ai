@@ -385,11 +385,22 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  let requestLane = options.requestLane ?? 'text'
   const serverRetryBudget = options.serverRetryBudget
     ?? new ServerRetryBudget(activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds * 1000)
   options.serverRetryBudget = serverRetryBudget
-  const gatewayRequestWallBudget = options.gatewayRequestWallBudget
-    ?? new GatewayRequestWallBudget({ requestAcceptedAtMs: startedAt })
+  let gatewayRequestWallBudget = options.gatewayRequestWallBudget
+    ?? new GatewayRequestWallBudget({
+      requestAcceptedAtMs: startedAt,
+      budgetMs: requestLane === 'image'
+        ? activeGatewaySettings.imageRequestWallTimeoutSeconds * 1000
+        : undefined
+    })
+  if (requestLane === 'image') {
+    gatewayRequestWallBudget = gatewayRequestWallBudget.withMinimumBudgetMs(
+      activeGatewaySettings.imageRequestWallTimeoutSeconds * 1000
+    )
+  }
   options.gatewayRequestWallBudget = gatewayRequestWallBudget
   const routeCoordinationBudget = options.routeCoordinationBudget
     ?? new RouteCoordinationBudget({ requestId: traceId })
@@ -398,7 +409,6 @@ export async function prepareOpenAIGatewayDispatchContext(
   options.requestAttemptTracker = requestAttemptTracker
   const downstreamCommitState = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
   options.downstreamCommitState = downstreamCommitState
-  let requestLane = options.requestLane ?? 'text'
   const currentGroupUsageContext = (input: { groupId?: string; groupAccess?: GroupUsageAccessMetadata } = {}): GatewayFailureUsageContext => buildGatewayUsageContext({
     traceId,
     clientIp,
@@ -970,7 +980,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (codexBridgeStatePreflight === 'completed') {
     return undefined
   }
-  const routePlanSnapshot = options.routePlanSnapshot ?? createOpenAIGatewayRoutePlanSnapshot({
+  let routePlanSnapshot = options.routePlanSnapshot ?? createOpenAIGatewayRoutePlanSnapshot({
     traceId,
     startedAt,
     groupId,
@@ -1105,7 +1115,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
   if (
     requestLane !== 'image'
-    && await accountModelMappingsTargetImage(req, candidateFilter.accounts, systemAccountId)
+    && await accountModelsTargetImage(req, candidateFilter.accounts, systemAccountId)
   ) {
     requestLane = 'image'
   }
@@ -1134,6 +1144,20 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
+  if (requestLane === 'image') {
+    gatewayRequestWallBudget = gatewayRequestWallBudget.withMinimumBudgetMs(
+      activeGatewaySettings.imageRequestWallTimeoutSeconds * 1000
+    )
+    options.gatewayRequestWallBudget = gatewayRequestWallBudget
+    routePlanSnapshot = createGatewayRoutePlanSnapshot({
+      ...routePlanSnapshot,
+      gatewayRequestWallBudgetMs: gatewayRequestWallBudget.budgetMs,
+      firstByteDeadlineMs: undefined,
+      requestPrecommitDeadlineAtMs: gatewayRequestWallBudget.deadlineAtMs,
+      orderedAllowedTargets: routePlanSnapshot.orderedAllowedTargets
+    })
+    options.routePlanSnapshot = routePlanSnapshot
+  }
   const normalRouteFirstByteConfig = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
     ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
     : undefined
@@ -1631,6 +1655,7 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     imageFirstResponseTimeoutSeconds: override.imageFirstResponseTimeoutSeconds ?? base.imageFirstResponseTimeoutSeconds,
     imageStreamIdleTimeoutSeconds: override.imageStreamIdleTimeoutSeconds ?? base.imageStreamIdleTimeoutSeconds,
     imageUncommittedAttemptMaxLifetimeSeconds: override.imageUncommittedAttemptMaxLifetimeSeconds ?? base.imageUncommittedAttemptMaxLifetimeSeconds,
+    imageRequestWallTimeoutSeconds: override.imageRequestWallTimeoutSeconds ?? base.imageRequestWallTimeoutSeconds,
     noAvailableAccountWaitTimeoutSeconds: override.noAvailableAccountWaitTimeoutSeconds ?? base.noAvailableAccountWaitTimeoutSeconds,
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
@@ -1747,7 +1772,7 @@ function shouldDeferForcedImageGenerationToolPermissionToAnthropicBridge(input: 
   })
 }
 
-async function accountModelMappingsTargetImage(
+async function accountModelsTargetImage(
   req: Request,
   accounts: UpstreamAccount[],
   systemAccountId: string
@@ -1761,6 +1786,7 @@ async function accountModelMappingsTargetImage(
   }>()
   for (const account of accounts) {
     const upstreamModel = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)?.upstreamModel
+      ?? requestedModel
     if (!upstreamModel) continue
     if (isOpenAIGatewayImageGenerationModel(upstreamModel)) return true
     const providerCode = account.providerCode.trim()

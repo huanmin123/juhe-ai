@@ -92,11 +92,30 @@ try {
 
   assert.equal(account.status, 'pending_test', 'PG 新建账户应先进入待检查状态')
   assert.equal(account.schedulable, false, 'PG 新建账户健康成功前不得参与调度')
-  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 3, 'PG 多协议 fixture 创建后应先刷新三个 pending 分组统计')
+  const pendingFixtureGroupIds = [group.id, anthropicGroup.id, geminiGroup.id]
+  assert.deepEqual(
+    await Promise.all(pendingFixtureGroupIds.map((groupId) => readGroupStatsDirtyReason(groupId))),
+    ['account_created', 'account_created', 'account_created'],
+    'PG 多协议 fixture 创建后必须分别标记三个 pending 分组统计'
+  )
+  assert(
+    await refreshGroupStatsUntilClean(pendingFixtureGroupIds) >= 1,
+    'PG 多协议 fixture 必须至少消费一个全量或定向统计刷新批次'
+  )
   assert.deepEqual(
     await readGroupAccountStats(group.id),
     { available: 0, error: 1 },
     'PG pending 账户首次聚合应为 available=0/error=1'
+  )
+  assert.deepEqual(
+    await readGroupAccountStats(anthropicGroup.id),
+    { available: 0, error: 1 },
+    'PG Anthropic pending 账户首次聚合应为 available=0/error=1'
+  )
+  assert.deepEqual(
+    await readGroupAccountStats(geminiGroup.id),
+    { available: 0, error: 1 },
+    'PG Gemini pending 账户首次聚合应为 available=0/error=1'
   )
 
   const healthCandidates = await handleDbServiceOperation({
@@ -698,6 +717,18 @@ async function readGroupStatsDirtyReason(groupId: string): Promise<string | unde
     LIMIT 1
   `, [groupId])
   return typeof result.rows[0]?.reason === 'string' ? result.rows[0].reason : undefined
+}
+
+async function refreshGroupStatsUntilClean(groupIds: string[]): Promise<number> {
+  let refreshBatches = 0
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const dirtyReasons = await Promise.all(groupIds.map((groupId) => readGroupStatsDirtyReason(groupId)))
+    if (dirtyReasons.every((reason) => reason === undefined)) return refreshBatches
+    const refreshed = await refreshDirtyGroupAccountStatsCacheAsync()
+    assert(refreshed > 0, 'PG fixture 分组仍为 dirty 时刷新器不得返回空批次')
+    refreshBatches += 1
+  }
+  assert.fail('PG fixture 分组统计脏标记未在有界批次内清理')
 }
 
 async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {

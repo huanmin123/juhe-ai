@@ -53,7 +53,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 | 流式响应语义 | OpenAI / Codex SSE 解析、首 token、usage、错误事件 | Anthropic SSE 解析 `message_*`、`content_block_*`、`event:error`，`message_stop` 后主动结束 | 主链路已对齐 |
 | 本地错误响应 | OpenAI-compatible JSON，Codex 流式可写 `response.failed` | Anthropic native 本地错误按 `{type:"error", error:{...}}` 渲染，流式已提交后的本地错误使用 Anthropic `event: error` | 已补齐 |
 | 流式失败兜底 | Codex Responses SSE 有专用 `upstream_retryable_error` 兜底 | Anthropic 不伪造 Codex 事件；未提交前可服务端切号，已输出后不拼接 | 当前正确；如需 Anthropic 客户端可读失败事件需单独设计 |
-| 账户错误处理策略 | 状态码 / 错误码 / 文案只作为用户显式策略输入，命中后按 provenance / generation / CAS 直接执行配置动作；系统自动 transport confirmation 独立 | Anthropic 错误类型也只进入诊断和用户显式策略输入，不直接判死；`retry_next` 仍受副作用 at-most-once 门禁 | 已对齐 |
+| 账户错误处理策略 | 状态码 / 错误码 / 文案只作为用户显式策略输入，命中后按 provenance / generation / CAS 直接执行配置动作；系统自动 transport confirmation 独立 | Anthropic 错误类型也只进入诊断和用户显式策略输入，不直接判死；所有请求未交付结果时均按统一规则切换候选 | 已对齐 |
 | 会话亲和 | 支持 header/body 会话字段、迁移流量、Codex turn 级特殊避让 | 通用会话字段可复用；Claude Code 没有 turn 级避让 | 基础可用，Claude Code 专项可选 |
 | OAuth 额度快照 | GPT OAuth 记录 Codex 5h / 7d 被动快照 | Anthropic API Key 无等价字段；OAuth 不做 | 不应补到 API Key |
 | usage 解析 | input / output / cache read / 图片 / 音频等通用字段 | input / output / cache read / cache write / 1h cache / thinking token 已进入使用记录明细 | 明细已补齐；统计聚合扩维另立范围 |

@@ -7,6 +7,7 @@
       role="img"
       @pointermove="handlePointerMove"
       @pointerleave="handlePointerLeave"
+      @click="handleClick"
     />
   </div>
 </template>
@@ -17,6 +18,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AiHealthHourPoint } from '@/types/domain'
 
 const props = defineProps<{ accountName: string; hours: AiHealthHourPoint[] }>()
+const emit = defineEmits<{ select: [point: AiHealthHourPoint] }>()
 const containerRef = ref<HTMLElement>()
 const canvasRef = ref<HTMLCanvasElement>()
 const containerWidth = ref(0)
@@ -24,7 +26,7 @@ let resizeObserver: ResizeObserver | undefined
 
 const successCount = computed(() => props.hours.filter((hour) => hour.status === 'success').length)
 const failureCount = computed(() => props.hours.filter((hour) => hour.status === 'failure').length)
-const ariaLabel = computed(() => `${props.accountName} 健康状态：成功 ${successCount.value} 小时，失败 ${failureCount.value} 小时，无记录 ${Math.max(0, props.hours.length - successCount.value - failureCount.value)} 小时`)
+const ariaLabel = computed(() => `${props.accountName} 健康状态：可用 ${successCount.value} 小时，不可用 ${failureCount.value} 小时，无记录 ${Math.max(0, props.hours.length - successCount.value - failureCount.value)} 小时`)
 
 function draw(): void {
   const canvas = canvasRef.value
@@ -51,17 +53,27 @@ function draw(): void {
 }
 
 function handlePointerMove(event: PointerEvent): void {
-  const canvas = canvasRef.value
-  if (!canvas || !props.hours.length) return
-  const bounds = canvas.getBoundingClientRect()
-  const index = Math.min(props.hours.length - 1, Math.max(0, Math.floor(((event.clientX - bounds.left) / bounds.width) * props.hours.length)))
-  const hour = props.hours[index]
+  const hour = pointAtClientX(event.clientX)
   if (!hour) return
   const details = [hour.statHour.replace('T', ' '), statusLabel(hour.status)]
   if (hour.statusCode) details.push(`HTTP ${hour.statusCode}`)
   if (hour.errorCode) details.push(hour.errorCode)
   if (hour.errorMessage) details.push(hour.errorMessage)
-  canvas.title = details.join(' · ')
+  if (canvasRef.value) canvasRef.value.title = details.join(' · ')
+}
+
+function handleClick(event: MouseEvent): void {
+  const hour = pointAtClientX(event.clientX)
+  if (hour) emit('select', hour)
+}
+
+function pointAtClientX(clientX: number): AiHealthHourPoint | undefined {
+  const canvas = canvasRef.value
+  if (!canvas || !props.hours.length) return undefined
+  const bounds = canvas.getBoundingClientRect()
+  if (bounds.width <= 0) return undefined
+  const index = Math.min(props.hours.length - 1, Math.max(0, Math.floor(((clientX - bounds.left) / bounds.width) * props.hours.length)))
+  return props.hours[index]
 }
 
 function handlePointerLeave(): void {
@@ -82,8 +94,8 @@ function statusColor(status: AiHealthHourPoint['status']): string {
 }
 
 function statusLabel(status: AiHealthHourPoint['status']): string {
-  if (status === 'success') return '检查成功'
-  if (status === 'failure') return '检查失败'
+  if (status === 'success') return '可用'
+  if (status === 'failure') return '不可用'
   return '无检查记录'
 }
 
@@ -119,6 +131,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
 
 .ai-health-status-canvas {
   display: block;
-  cursor: crosshair;
+  max-width: 100%;
+  cursor: pointer;
 }
 </style>

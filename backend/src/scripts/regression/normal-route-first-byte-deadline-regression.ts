@@ -104,23 +104,20 @@ assert.match(
 assert.match(dispatchSource, /normalRouteAttemptFirstByteDeadline\(/, '每次真实 attempt 必须在 HTTP 派发前计算有效首字截止')
 assert.match(
   dispatchSource,
-  /normalRouteFirstByteDeadlineAppliesToLane\(requestLane\)[\s\S]*automaticUpstreamReplayAllowedAfterDispatch\(req, requestLane\)[\s\S]*normalRouteAttemptFirstByteDeadline\(/,
-  'dispatch 必须在创建普通路由首字 timer 前排除图片、后台任务和副作用请求'
+  /normalRouteFirstByteDeadlineAppliesToLane\(requestLane\)[\s\S]*requestCoordination\.normalRouteFirstByteConfig[\s\S]*normalRouteAttemptFirstByteDeadline\(/,
+  'dispatch 必须只按 lane 排除图片首字切换；后台任务和工具请求不得另建重放门禁'
 )
+assert.doesNotMatch(dispatchSource, /automaticUpstreamReplayAllowedAfterDispatch|UpstreamReplayBlockedError/, '首字截止不得再依赖第二套自动重放许可')
 assert.match(dispatchSource, /firstByteDeadlineDecision \?\?=/, '响应头与响应体必须共享同一次截止判定，不能把一个 attempt 重复累计为两次慢样本')
 assert.match(routesSource, /deadline\.schedulingPreference === 'cost_first' \|\| deadline\.limitingFactor === 'wall_precommit'/, '成本优先配置截止和墙钟预算截止必须交回外层切换')
 assert.match(routesSource, /deadline\.limitingFactor === 'lane_timeout'[\s\S]*deadline\.limitingFactor === 'uncommitted_attempt'[\s\S]*return 'continue'/, 'lane 或 attempt 硬上限必须让真实 transport timer 归因，且不得累计速度慢样本')
 assert.match(dispatchSource, /throw new NormalRouteFirstByteCutoverError\(/, '响应头前的配置型截止必须显式交回外层，不能在 dispatch 内绕过预占与重试预算')
 const neutralCutoverStart = dispatchSource.indexOf('if (neutralFirstByteDeadline && normalRouteFirstByteDeadline)')
-const neutralCutoverReplayGate = dispatchSource.indexOf(
-  'if (!automaticUpstreamReplayAllowedAfterDispatch(req, requestLane))',
-  neutralCutoverStart
-)
 const neutralCutoverThrow = dispatchSource.indexOf('throw new NormalRouteFirstByteCutoverError(', neutralCutoverStart)
 assert.ok(neutralCutoverStart >= 0, '必须保留配置型首字截止处理分支')
 assert.ok(
-  neutralCutoverReplayGate > neutralCutoverStart && neutralCutoverReplayGate < neutralCutoverThrow,
-  '即使请求语义在 timer 创建后发生变化，首字切换前仍必须再次执行重放门禁'
+  neutralCutoverThrow > neutralCutoverStart,
+  '配置型首字截止必须直接交回统一候选切换，不得经过请求类型重放门禁'
 )
 assert.match(routesSource, /firstByteDeadlineMs: effectiveFirstByteDeadlineMs/g, '流式和非流式读取必须共用同一个有效截止')
 assert.match(upstreamRequestSource, /firstByteDeadlineTimer = setTimeout/g, '响应头到达前也必须受公共首字截止约束')

@@ -112,6 +112,7 @@
       :can-edit="canEditAccount"
       :can-select="canSelectAccountForBatch"
       :columns="managedColumns"
+      :editing-priority-account-id="editingPriorityAccountId"
       :group-name="groupNameForAccount"
       :is-management-view="isManagementView"
       :is-selected="isAccountSelected"
@@ -130,6 +131,7 @@
       :table-scroll-y="tableScrollY"
       :balance-refreshing-ids="balanceRefreshingIds"
       @change="handleAccountTableChange"
+      @cancel-priority-edit="closePriorityEditor"
       @clone="openClone"
       @delete="removeAccount"
       @edit="openEdit"
@@ -139,6 +141,7 @@
       @return-authorization="returnAuthorizationAccount"
       @refresh-balance="refreshAccountBalance"
       @sort-change="handleAccountSortChange"
+      @start-priority-edit="startPriorityEditor"
       @test="openTestModal"
       @toggle-selection="toggleAccountSelection"
     />
@@ -344,6 +347,7 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
+const editingPriorityAccountId = ref<string>()
 const prioritySavingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
 const modelCatalogSyncing = ref(false)
@@ -369,13 +373,13 @@ const {
   handleSystemAccountOptionsDropdown,
   handleSystemAccountOptionsSearch,
   loadMoreMobileAccounts,
-  refreshMobileAccounts,
+  refreshMobileAccounts: refreshMobileAccountList,
   loadAccountOptions: loadAccountAuxiliaryOptions,
   loadData: loadAccountListData,
-  refreshData,
+  refreshData: refreshAccountList,
   applyFilters,
   handleAccountTableChangeAndLoad,
-  handleAccountSortChange,
+  handleAccountSortChange: handleAccountListSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
   removeLoadedAccount,
   updateLoadedAccount,
@@ -449,7 +453,27 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 }
 
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
+  closePriorityEditor()
   await loadAccountListData(options)
+}
+
+function startPriorityEditor(accountId: string): void {
+  editingPriorityAccountId.value = accountId
+}
+
+function closePriorityEditor(accountId?: string): void {
+  if (accountId && editingPriorityAccountId.value !== accountId) return
+  editingPriorityAccountId.value = undefined
+}
+
+function refreshData(): void {
+  closePriorityEditor()
+  refreshAccountList()
+}
+
+async function refreshMobileAccounts(): Promise<void> {
+  closePriorityEditor()
+  await refreshMobileAccountList()
 }
 
 async function refreshAccountBalance(accountId: string) {
@@ -564,8 +588,14 @@ const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
 function handleAccountTableChange(...args: unknown[]): void {
+  closePriorityEditor()
   if (tableChangeAction(args[3]) === 'sort') return
   void handleAccountTableChangeAndLoad(args[0])
+}
+
+function handleAccountSortChange(sorts: Parameters<typeof handleAccountListSortChange>[0]): void {
+  closePriorityEditor()
+  handleAccountListSortChange(sorts)
 }
 
 function tableChangeAction(value: unknown): string | undefined {

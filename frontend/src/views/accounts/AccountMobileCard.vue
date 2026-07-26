@@ -59,9 +59,12 @@
         <div class="account-mobile-priority-row">
           <AccountPriorityEditor
             :editable="canEdit"
+            :editing="priorityEditing"
             mobile
             :priority="account.priority"
             :save-priority="(priority) => savePriority(account, priority)"
+            @cancel-edit="$emit('cancel-priority-edit', account.id)"
+            @start-edit="$emit('start-priority-edit', account.id)"
           />
           <span v-if="prioritySuffix" class="account-mobile-priority-suffix">{{ prioritySuffix }}</span>
         </div>
@@ -119,6 +122,7 @@ const props = defineProps<{
   isManagementView: boolean
   menuItems: AccountMenuItem[]
   providerName: string
+  priorityEditing: boolean
   proxy?: ProxyProfileOptionSummary
   savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
   selected: boolean
@@ -131,8 +135,10 @@ const emit = defineEmits<{
   (event: 'edit'): void
   (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
+  (event: 'cancel-priority-edit', accountId: string): void
   (event: 'return-authorization'): void
   (event: 'refresh-balance'): void
+  (event: 'start-priority-edit', accountId: string): void
   (event: 'test'): void
   (event: 'toggle-selection'): void
 }>()

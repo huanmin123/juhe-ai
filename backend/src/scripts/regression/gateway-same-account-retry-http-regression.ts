@@ -471,13 +471,13 @@ function assertReplaySafetyGate(): void {
     originalUrl: '/v1/responses',
     path: '/v1/responses',
     body: { model, input: 'background work', background: true }
-  }, 'text'), false, 'background Responses 必须保持 at-most-once，重试设置不得绕过门禁')
+  }, 'text'), true, 'background Responses 未交付结果时必须与普通文本共用候选切换')
   assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
     method: 'POST',
     originalUrl: '/v1/responses',
     path: '/v1/responses',
     body: { model, input: 'hosted work', tools: [{ type: 'web_search' }] }
-  }, 'text'), false, '供应商托管工具必须保持 at-most-once，重试设置不得绕过门禁')
+  }, 'text'), true, '供应商托管工具未交付结果时必须与普通文本共用候选切换')
 }
 
 function assertRetryModeIsolation(): void {

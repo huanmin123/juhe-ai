@@ -53,6 +53,19 @@ assert.equal(wallBudget.clipFirstByteDeadlineMs({
   finalResponseReserveMs: 2_000
 }), 0, '进入最终响应保留窗口后不得再启动未提交 attempt')
 
+nowMs = 301_000
+const imageWallBudget = wallBudget.withMinimumBudgetMs(3_600_000)
+assert.notEqual(imageWallBudget, wallBudget, '图片 lane 必须能从文本墙钟扩展为独立长墙钟')
+assert.equal(imageWallBudget.requestAcceptedAtMs, wallBudget.requestAcceptedAtMs, '扩展墙钟不得重置请求接收时间')
+assert.equal(imageWallBudget.budgetMs, 3_600_000)
+assert.equal(imageWallBudget.deadlineAtMs, 3_601_000)
+assert.equal(imageWallBudget.remainingMs(), 3_300_000, '扩展后的墙钟必须保留原 now 来源')
+assert.equal(
+  imageWallBudget.withMinimumBudgetMs(defaultGatewayRequestWallBudgetMs),
+  imageWallBudget,
+  '跨分组重入不得把已经扩展的图片墙钟缩回文本默认值'
+)
+
 let coordinationNowMs = 10_000
 const coordinationBudget = new RouteCoordinationBudget({
   requestId: 'request-a',
@@ -561,6 +574,8 @@ assert.match(compactPreflightSource, /requestCoordination: GatewayUpstreamReques
 assert.match(auxiliaryDispatchSource, /gateway_internal_request_coordination/, '独立 hybrid 辅助请求必须显式记录其独立预算原因')
 assert.match(preflightSource, /const routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>/, 'preflight 必须为候选过滤和 preparation 建立共享 route owner')
 assert.match(preflightSource, /createOpenAIGatewayRoutePlanSnapshot/, 'preflight 必须在真实主路径创建请求级 route plan snapshot')
+assert.match(preflightSource, /activeGatewaySettings\.imageRequestWallTimeoutSeconds \* 1000/, '图片 lane 必须使用独立整请求总墙钟')
+assert.match(preflightSource, /firstByteDeadlineMs: undefined/, '映射升级为图片 lane 后必须清除文本快速模式首 token 截止')
 assert.match(preflightSource, /routePlanSnapshot: candidate\.routePlanSnapshot/, '分组 fallback 预检必须传递推进后的 route plan snapshot')
 assert.doesNotMatch(candidateFilterSource, /input\.attemptFallback\(/, 'candidate filter 不得直接解释 fallback callback')
 assert.doesNotMatch(preparationSource, /input\.attemptFallback\(/, 'preparation 不得直接解释 fallback callback')

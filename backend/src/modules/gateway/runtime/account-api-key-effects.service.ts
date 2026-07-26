@@ -159,9 +159,9 @@ export function recordGatewayAccountApiKeySuccess(
     trafficSource?: OpenAIGatewayTrafficSource
     mutationContext?: AccountApiKeyPersistentMutationContext
   }
-): void {
+): Promise<void> {
   if (account.apiKeyRuntimeStateDisabled) {
-    return
+    return Promise.resolve()
   }
   const observedAt = new Date().toISOString()
   const authorization = authorizeAccountApiKeyPersistentMutationForTrafficSource(
@@ -170,13 +170,15 @@ export function recordGatewayAccountApiKeySuccess(
     input.mutationContext
   )
   if (input.mutationContext && !authorization.allowed) {
-    return
+    return Promise.resolve()
   }
   if (input.trafficSource === 'gateway') {
     recordGatewayAccountApiKeySuccessGuard(account)
   }
-  if (input.trafficSource === 'gateway' && runtimeConfig.runtimeStateDriver === 'redis' && account.selectedApiKeyFingerprint) {
-    void clearGatewayAccountApiKeyTransientFailure(account).catch((error) => {
+  const transientFailureClear = input.trafficSource === 'gateway'
+    && runtimeConfig.runtimeStateDriver === 'redis'
+    && account.selectedApiKeyFingerprint
+    ? clearGatewayAccountApiKeyTransientFailure(account).then(() => undefined).catch((error) => {
       logger.warn(errorLogFields(error, {
         event: 'gateway_account_api_key_transient_avoidance_clear_failed',
         accountId: account.id,
@@ -184,9 +186,9 @@ export function recordGatewayAccountApiKeySuccess(
         source: input.source
       }), '账户内 API Key Redis 短暂避让清理失败')
     })
-  }
+    : Promise.resolve()
   if (!account.selectedApiKeyFingerprint || !authorization.allowed || !input.mutationContext || !input.trafficSource) {
-    return
+    return transientFailureClear
   }
   coalesceGatewayAccountApiKeySuccessWrite(
     account,
@@ -195,6 +197,7 @@ export function recordGatewayAccountApiKeySuccess(
     input.mutationContext,
     observedAt
   )
+  return transientFailureClear
 }
 
 function coalesceGatewayAccountApiKeySuccessWrite(

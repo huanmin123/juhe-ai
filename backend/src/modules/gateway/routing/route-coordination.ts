@@ -154,6 +154,16 @@ export class GatewayRequestWallBudget {
     this.now = options.now ?? Date.now
   }
 
+  withMinimumBudgetMs(minimumBudgetMs: number): GatewayRequestWallBudget {
+    const normalizedMinimumBudgetMs = normalizedPositiveMs(minimumBudgetMs, this.budgetMs)
+    if (normalizedMinimumBudgetMs <= this.budgetMs) return this
+    return new GatewayRequestWallBudget({
+      requestAcceptedAtMs: this.requestAcceptedAtMs,
+      budgetMs: normalizedMinimumBudgetMs,
+      now: this.now
+    })
+  }
+
   elapsedMs(nowMs = this.now()): number {
     return Math.max(0, normalizedTimestamp(nowMs) - this.requestAcceptedAtMs)
   }

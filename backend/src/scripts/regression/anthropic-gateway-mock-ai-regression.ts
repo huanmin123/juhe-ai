@@ -97,10 +97,16 @@ const repositories = {
     const supportedModels = Array.isArray(fixtureInput.supportedModels)
       ? fixtureInput.supportedModels.filter((model): model is string => typeof model === 'string' && Boolean(model.trim()))
       : []
+    const fixtureSupportedModels = supportedModels.length > 0
+      ? supportedModels
+      : fixtureInput.providerCode === ANTHROPIC_PROVIDER_CODE
+        ? ['claude-haiku-4-5']
+        : ['gpt-5.5']
     const account = rawRepositories.createAccount({
       ...fixtureInput,
-      ...(supportedModels.length > 0 && !fixtureInput.healthCheckModel
-        ? { healthCheckModel: supportedModels[0] }
+      supportedModels: fixtureSupportedModels,
+      ...(!fixtureInput.healthCheckModel
+        ? { healthCheckModel: fixtureSupportedModels[0] }
         : {})
     }, actor)
     if (input.status === 'active') {
@@ -167,14 +173,14 @@ try {
     await assertAnthropicMessagesSse(baseUrl, apiKey.key)
     await assertAnthropicSseRetryExhaustedErrorShape(baseUrl, upstreamBaseUrl)
     await assertAnthropicSsePreCommitFailureSwitchesAccount(baseUrl, upstreamBaseUrl)
-    await assertAnthropicHostedWorkStaysAtMostOnce(baseUrl, upstreamBaseUrl)
+    await assertAnthropicHostedWorkUsesUnifiedFailover(baseUrl, upstreamBaseUrl)
     await assertClaudeCodeClientProfileHeader(baseUrl, apiKey.key)
     await assertAnthropicBetaHeaderForwardsClientValue(baseUrl, upstreamBaseUrl)
     await assertAnthropicLocalErrorShape(baseUrl)
     await assertAnthropicCountTokens(baseUrl, apiKey.key)
     await assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
-    await assertAnthropicEmptyJsonContentStaysOpaque(baseUrl, upstreamBaseUrl)
+    await assertAnthropicEmptyJsonContentUsesUnifiedFailureHandling(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
     assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl)
     await assertAnthropicApiKeyPoolOpaqueFailover(baseUrl, upstreamBaseUrl)
@@ -505,9 +511,10 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收上游空 SSE，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(response.headers.get('content-type'), null, '通用 Anthropic 客户端不得替上游空 SSE 补写响应类型')
-  assert.equal(text, '', '通用 Anthropic 客户端不得把空 SSE 解释为网关协议错误')
+  assert.equal(response.status, 503, `通用 Anthropic 客户端的空 SSE 未形成可交付成功，候选耗尽后应返回稳定错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(response.headers.get('content-type') ?? '', /application\/json/, '候选耗尽应返回 Anthropic JSON 错误形态')
+  assert.match(text, /upstream_retryable_error/, '候选耗尽必须返回网关稳定可重试码')
+  assert.doesNotMatch(text, /sk-ant-empty-sse|upstream_outcome_unknown/, '候选耗尽不得泄漏供应商或旧重放阻断语义')
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewayCache.clearGatewayRuntimeCache()
@@ -615,7 +622,7 @@ async function assertAnthropicSsePreCommitFailureSwitchesAccount(baseUrl: string
   await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, healthyAccount.id], apiKey.id)
 }
 
-async function assertAnthropicHostedWorkStaysAtMostOnce(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicHostedWorkUsesUnifiedFailover(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const cases = [
     {
       label: 'server-tool',
@@ -633,7 +640,7 @@ async function assertAnthropicHostedWorkStaysAtMostOnce(baseUrl: string, upstrea
 
   for (const testCase of cases) {
     const group = repositories.createGroup({
-      name: `Anthropic ${testCase.label} at-most-once 分组`,
+      name: `Anthropic ${testCase.label} 统一切号分组`,
       providerCode: ANTHROPIC_PROVIDER_CODE,
       enabled: true
     }, access)
@@ -666,7 +673,7 @@ async function assertAnthropicHostedWorkStaysAtMostOnce(baseUrl: string, upstrea
       priority: 100
     }, access)
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-      name: `Anthropic ${testCase.label} at-most-once Key`,
+      name: `Anthropic ${testCase.label} 统一切号 Key`,
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
@@ -685,16 +692,21 @@ async function assertAnthropicHostedWorkStaysAtMostOnce(baseUrl: string, upstrea
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5',
-        messages: [{ role: 'user', content: `at-most-once ${testCase.label}` }],
+        messages: [{ role: 'user', content: `unified failover ${testCase.label}` }],
         max_tokens: 16,
         stream: true,
         ...testCase.body
       })
     })
     const text = await response.text()
-    assert.equal(response.status, 503, `Anthropic ${testCase.label} 已派发后不得切号，实际 HTTP ${response.status}: ${text}`)
-    assert.match(text, /upstream_outcome_unknown/)
-    assert.deepEqual(upstreamHits.map((hit) => hit.xApiKey), ['sk-ant-empty-sse'], `Anthropic ${testCase.label} 不得命中后备账户`)
+    assert.equal(response.status, 200, `Anthropic ${testCase.label} 未交付成功结果时必须切到健康账户，实际 HTTP ${response.status}: ${text}`)
+    assert.match(text, /anthropic sse ok/)
+    assert.doesNotMatch(text, /upstream_outcome_unknown|upstream_retryable_error/)
+    assert.deepEqual(
+      upstreamHits.map((hit) => hit.xApiKey),
+      ['sk-ant-empty-sse', `sk-ant-${testCase.label}-fallback`],
+      `Anthropic ${testCase.label} 必须只命中一次失败首选和一次健康后备`
+    )
     await assertRequestLocalSwitchDidNotMutateSharedState([failedAccount.id, fallbackAccount.id], apiKey.id)
   }
 }
@@ -962,7 +974,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
   })
 }
 
-async function assertAnthropicEmptyJsonContentStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicEmptyJsonContentUsesUnifiedFailureHandling(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic empty content 协议守卫回归分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -1002,10 +1014,10 @@ async function assertAnthropicEmptyJsonContentStaysOpaque(baseUrl: string, upstr
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收 empty content，实际 HTTP ${response.status}: ${text}`)
-  const body = JSON.parse(text) as { content?: unknown[] }
-  assert.deepEqual(body.content, [], '通用 Anthropic 客户端不得把 content:[] 解释为协议错误')
-  assert.equal(upstreamHits.length, 1, 'Anthropic empty content 透明转发应命中一次 mock 上游')
+  assert.equal(response.status, 503, `Anthropic empty content 未形成可交付成功且无后备时应返回稳定错误，实际 HTTP ${response.status}: ${text}`)
+  assert.match(text, /upstream_retryable_error/)
+  assert.doesNotMatch(text, /upstream_outcome_unknown|"content"\s*:\s*\[\]/)
+  assert.equal(upstreamHits.length, 1, 'Anthropic empty content 候选耗尽应只命中唯一账户一次')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',

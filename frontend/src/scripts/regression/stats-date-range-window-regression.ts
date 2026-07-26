@@ -61,8 +61,14 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /Promise\.all\(\[[\s\S]*api\.stats\.systemMetrics\(rangeParams\)[\s\S]*loadUsageStatsWindow\(\)/,
-  'system metrics must load the cached window and business data in parallel'
+  /void\s+loadUsageStatsWindow\(\)[\s\S]*return\s+loadData\(\)/,
+  'system metrics must start the cached-window request without blocking its trend request'
+)
+
+assert.match(
+  systemMetricsViewSource,
+  /api\.stats\.systemMetricsTrend\(rangeParams\)/,
+  'system metrics must load the split trend endpoint'
 )
 
 assert.match(
@@ -97,8 +103,14 @@ assert.match(
 
 assert.match(
   aiPerformanceViewSource,
-  /const windowScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*await\s+loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*windowScope[\s\S]*\}\)[\s\S]*const systemAccountId = selectedPerformanceSystemAccountId\(\)/,
-  'AI performance must use the scoped cached stats window before building date params'
+  /const windowScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*await\s+loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*windowScope[\s\S]*\}\)[\s\S]*loadPerformanceBase\(\)/,
+  'AI performance must use the scoped cached stats window before loading its base data'
+)
+
+assert.match(
+  aiPerformanceViewSource,
+  /function\s+currentPerformanceRequest[\s\S]*systemAccountId:\s*selectedPerformanceSystemAccountId\(\)/,
+  'AI performance requests must include the selected system account after the stats window resolves'
 )
 
 assert.match(

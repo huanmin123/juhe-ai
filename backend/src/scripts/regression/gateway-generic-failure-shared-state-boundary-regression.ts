@@ -66,6 +66,7 @@ const settings = {
   imageFirstResponseTimeoutSeconds: 60,
   imageStreamIdleTimeoutSeconds: 120,
   imageUncommittedAttemptMaxLifetimeSeconds: 180,
+  imageRequestWallTimeoutSeconds: 180,
   noAvailableAccountWaitTimeoutSeconds: 10,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5

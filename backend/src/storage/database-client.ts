@@ -37,6 +37,10 @@ interface PostgresPoolLike extends PostgresQueryClient {
   connect?: () => Promise<PostgresPoolClient>
 }
 
+interface PostgresTransactionQueryState {
+  tail: Promise<unknown>
+}
+
 export const sqliteDialect: SqlDialect = {
   driver: 'sqlite',
   placeholder: () => '?',
@@ -188,13 +192,17 @@ function createSqliteDatabaseClientInternal(database: DatabaseSync, transactionA
   return client
 }
 
-function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transactionActive: boolean): DatabaseClient {
+function createPostgresDatabaseClientInternal(
+  client: PostgresPoolLike,
+  transactionActive: boolean,
+  transactionQueryState?: PostgresTransactionQueryState
+): DatabaseClient {
   return {
     driver: 'postgres',
     dialect: postgresDialect,
     async query<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
       const bound = postgresDialect.bind(sql, params)
-      const result = await queryPostgres(client, bound.sql, bound.params)
+      const result = await queryPostgresForClient(client, bound.sql, bound.params, transactionQueryState)
       return normalizePostgresRows(result.rows) as T[]
     },
     async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
@@ -203,35 +211,63 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
     },
     async execute(sql: string, params: readonly unknown[] = []): Promise<ExecuteResult> {
       const bound = postgresDialect.bind(sql, params)
-      const result = await queryPostgres(client, bound.sql, bound.params)
+      const result = await queryPostgresForClient(client, bound.sql, bound.params, transactionQueryState)
       return {
         changes: Number(result.rowCount ?? result.rows.length ?? 0)
       }
     },
     async transaction<T>(operation: (tx: DatabaseClient) => Promise<T>): Promise<T> {
       if (transactionActive) {
-        return operation(createPostgresDatabaseClientInternal(client, true))
+        return operation(createPostgresDatabaseClientInternal(client, true, transactionQueryState))
       }
       if (!client.connect) {
         throw new Error('PostgreSQL transaction requires a pool client with connect()')
       }
       const connection = await client.connect()
       let released = false
+      let connectionFailure: Error | undefined
+      let rejectConnectionError: ((error: Error) => void) | undefined
+      const connectionError = new Promise<never>((_resolve, reject) => {
+        rejectConnectionError = reject
+      })
+      // The connection can emit while BEGIN / SET LOCAL is still in flight,
+      // before operation() is raced below. Mark the deferred rejection handled
+      // immediately while retaining the original promise for the later race.
+      void connectionError.catch(() => undefined)
+      const onConnectionError = (error: Error): void => {
+        connectionFailure = error
+        rejectConnectionError?.(error)
+      }
+      connection.on?.('error', onConnectionError)
       const releaseConnection = (): void => {
         if (released) return
         released = true
-        connection.release()
+        connection.release(connectionFailure)
+        if (connection.off) {
+          connection.off('error', onConnectionError)
+        } else {
+          connection.removeListener?.('error', onConnectionError)
+        }
       }
       try {
         await connection.query('BEGIN')
         await connection.query(postgresTransactionLocalTimeoutSetSql())
-        const tx = createPostgresDatabaseClientInternal(connection, true)
-        const result = await operation(tx)
+        const queryState: PostgresTransactionQueryState = { tail: Promise.resolve() }
+        const tx = createPostgresDatabaseClientInternal(connection, true, queryState)
+        const result = await Promise.race([operation(tx), connectionError])
+        await queryState.tail
         await connection.query('COMMIT')
         return result
       } catch (error) {
         try {
           await connection.query('ROLLBACK')
+        } catch (rollbackError) {
+          // A server-terminated or already closed transaction connection cannot
+          // accept ROLLBACK. Preserve the first failure that explains why the
+          // transaction was abandoned; release() will discard the bad client.
+          connectionFailure = rollbackError instanceof Error
+            ? rollbackError
+            : new Error(String(rollbackError))
         } finally {
           releaseConnection()
         }
@@ -241,6 +277,26 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
       }
     }
   }
+}
+
+function queryPostgresForClient(
+  client: PostgresQueryClient,
+  sql: string,
+  params: readonly unknown[],
+  transactionQueryState?: PostgresTransactionQueryState
+): Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number | null }> {
+  if (!transactionQueryState) {
+    return queryPostgres(client, sql, params)
+  }
+
+  // node-postgres only supports one active query per checked-out connection.
+  // Repository helpers may intentionally use Promise.all when backed by a pool;
+  // the same helper can also receive a transaction client. Serialize only the
+  // transaction-bound connection so those callers cannot overlap protocol
+  // messages, leave the transaction idle, or race COMMIT with an unawaited tail.
+  const result = transactionQueryState.tail.then(() => queryPostgres(client, sql, params))
+  transactionQueryState.tail = result
+  return result
 }
 
 function toSqliteValues(params: readonly unknown[]): SQLInputValue[] {

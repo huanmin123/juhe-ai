@@ -42,6 +42,12 @@ try {
       process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum, process_heap_used_bytes_max, updated_at
     ) VALUES (?, ?, ?, ?, 'server', 3, 60, 3, 30, 128, 128, 64, 64, ?)
   `).run(windowKey, range.startDate, range.endDate, bucketKey, '2026-01-01T00:00:00.000Z')
+  const sampledAt = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO process_event_loop_samples (
+      sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
+    ) VALUES (?, 'server', 12345, 12, 'process_metric_query_guard', ?)
+  `).run(sampledAt, sampledAt)
 
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: SQLInputValue[] }> = []

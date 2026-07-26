@@ -45,6 +45,7 @@ const gatewaySettings: GatewaySettings = {
   imageFirstResponseTimeoutSeconds: 600,
   imageStreamIdleTimeoutSeconds: 120,
   imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  imageRequestWallTimeoutSeconds: 3600,
   noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 1,
   streamFailureThresholdWindowMinutes: 5

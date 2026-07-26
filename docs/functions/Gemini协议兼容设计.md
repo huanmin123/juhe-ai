@@ -198,7 +198,7 @@ Interactions JSON 以官方 `interaction` 对象为根，保留 `id`、`status`�
 
 Interactions 创建流由 POST body `stream: true` 与 `Accept: text/event-stream` 协商，读取既有资源的流由 `GET /v1beta/interactions/{id}?stream=true` 与同一 Accept 协商；两者都不得追加 GenerateContent 专用的 `alt=sse`。每个 SSE `data:` JSON 的 `event_type` 决定 `step.delta`、`interaction.completed` 或 `interaction.failed`，payload 的 `type` 保持原值。流式检查器必须在完成 / 失败事件后结束下游响应，即使上游连接没有立即 EOF；空心跳或未闭合事件不计为可见输出。`metadata.total_usage` 中 input/output/thought/cache token 作为累计快照归一到 Gemini usage semantic，后帧覆盖相同累计维度，不能逐帧求和。
 
-Interaction 资源支持 `POST /v1beta/interactions/{id}/cancel`。`DELETE /v1beta/interactions/{id}` 的 2xx 空 body（包括 204）由通用响应最终化按 endpoint + method + status 精准识别，记录零 usage 成功结果并删除亲和映射。GET / HEAD 等无副作用读取的完整响应继续保持 `generic_gemini` 透明；Interactions 创建、cancel、DELETE 和其他副作用动作一旦派发即保持 at-most-once。其完整 `2xx` 成功响应可正常交付；完整非 `2xx` 或结果未知且下游未提交时返回网关稳定的 `503/upstream_outcome_unknown`，已提交时结束或断流，供应商原始错误只进有界诊断。精确客户端策略可以解释声明的协议结构或执行状态动作，但 retry 动作不能切 Key / 账户重放已派发的 Interaction。
+Interaction 资源支持 `POST /v1beta/interactions/{id}/cancel`。`DELETE /v1beta/interactions/{id}` 的 2xx 空 body（包括 204）由通用响应最终化按 endpoint + method + status 精准识别，记录零 usage 成功结果并删除亲和映射。GET / HEAD 等读取的完整响应继续保持 `generic_gemini` 透明；Interactions 创建、cancel、DELETE 和其他动作的完整非 `2xx` 或结果未知，在下游尚未语义提交时按统一规则切换 Key / 账户，已提交时结束或断流，供应商原始错误只进有界诊断。精确客户端策略可以解释声明的协议结构或执行状态动作，但这些状态动作不建立另一套切号规则。
 
 ### SSE
 
@@ -208,7 +208,7 @@ Gemini streaming 使用 SSE。每个有效事件的 `data:` 是 Gemini response 
 - 支持多行 `data:` 合并。
 - 空行表示一个 SSE event 结束。
 - 注释 / keep-alive 行只刷新活跃时间，不当作可见输出。
-- `generic_gemini` 的坏 JSON chunk 原样转发，不触发切号或账户副作用；只有允许上游语义解释的精确 `gemini_cli` 策略才把坏 chunk 作为协议错误，并且仅在当前请求为可安全重放文本、下游尚未写出可见输出且预算允许时尝试切号。Interactions 和其他副作用请求派发后不重放，写出后按当前流式失败规则处理。
+- `generic_gemini` 的坏 JSON chunk 原样转发，不触发切号或账户副作用；只有允许上游语义解释的精确 `gemini_cli` 策略才把坏 chunk 作为协议错误，并且在下游尚未写出可见输出且对应 lane 预算允许时尝试切号。Interactions 和其他请求使用同一候选切换准入；写出后按当前流式失败规则结束或断流。
 - 不要求 `[DONE]`。
 - 不把 Gemini chunk 改成 `chat.completion.chunk`。
 
@@ -296,7 +296,7 @@ endpointFamilies = [chat_completions]
 
 响应策略：
 
-- `generic_gemini` 的完整 JSON / SSE 响应不解释失败语义：`200 + error` 和普通流内 error 保持 payload 透明；可安全重放文本 `generateContent` 的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，不写共享状态。副作用型 Interactions/资源创建派发后保持唯一 attempt，按上文稳定中性终态处理。协议解析器仍可有界提取 usage 和 Interactions 资源 ID，但不得借此升级失败语义。
+- `generic_gemini` 的完整 JSON / SSE 响应不解释失败语义：`200 + error` 和普通流内 error 保持 payload 透明；所有端点的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，不写共享状态。Interactions / 资源创建同样使用该规则。协议解析器仍可有界提取 usage 和 Interactions 资源 ID，但不得借此升级失败语义。
 - `gemini_cli` 专属默认规则只在 `clientProfiles = ['gemini_cli']` 时匹配 Google canonical `error.status`：`RESOURCE_EXHAUSTED`、`UNAVAILABLE`、`DEADLINE_EXCEEDED`、`INTERNAL`、`CANCELLED`。
 - 该专属规则动作为 `retry_next_account`，只在可安全重放文本 GenerateContent 的写出前窗口表达重放意图；Interactions、资源和其他副作用请求不进入该白名单。普通 `generic_gemini`、OpenAI、Anthropic 客户端不会继承。
 - 不伪造 `TOS_VIOLATION`、`VALIDATION_REQUIRED` 等 Google 特定 reason；这些会触发 `gemini-cli` 账号封禁或验证流程语义。

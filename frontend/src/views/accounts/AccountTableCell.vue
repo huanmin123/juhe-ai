@@ -38,8 +38,11 @@
   <AccountPriorityEditor
     v-else-if="columnKey === 'priority'"
     :editable="canEdit(account)"
+    :editing="priorityEditing"
     :priority="account.priority"
     :save-priority="(priority) => savePriority(account, priority)"
+    @cancel-edit="$emit('cancel-priority-edit', account.id)"
+    @start-edit="$emit('start-priority-edit', account.id)"
   />
   <template v-else-if="columnKey === 'lastUsedAt'">
     {{ formatDateTime(accountLastUsedAt(account)) }}
@@ -101,8 +104,10 @@ defineEmits<{
   (event: 'delete', account: AccountSummary): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
+  (event: 'cancel-priority-edit', accountId: string): void
   (event: 'return-authorization', account: AccountSummary): void
   (event: 'refresh-balance', accountId: string): void
+  (event: 'start-priority-edit', accountId: string): void
   (event: 'test', account: AccountSummary): void
 }>()
 
@@ -115,6 +120,7 @@ const props = defineProps<{
   groupName: (accountId: string) => string | undefined
   menuItems: (account: AccountSummary) => AccountMenuItem[]
   providerName: (providerCode?: string) => string
+  priorityEditing: boolean
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean

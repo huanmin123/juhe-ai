@@ -47,6 +47,11 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 class RegressionAccountApiKeyTransientStore implements AccountApiKeyTransientStateStore {
   private readonly values = new Map<string, AccountApiKeyTransientState>()
   private generationSequence = 0
+  private nextSuccessGate?: { promise: Promise<void>; entered: () => void }
+
+  holdNextSuccess(promise: Promise<void>, entered: () => void): void {
+    this.nextSuccessGate = { promise, entered }
+  }
 
   async recordFailure(input: {
     target: AccountApiKeyTransientTarget
@@ -73,6 +78,12 @@ class RegressionAccountApiKeyTransientStore implements AccountApiKeyTransientSta
   }
 
   async recordSuccess(input: { target: AccountApiKeyTransientTarget; expectedGeneration: string }): Promise<AccountApiKeyTransientMutationResult> {
+    const gate = this.nextSuccessGate
+    this.nextSuccessGate = undefined
+    if (gate) {
+      gate.entered()
+      await gate.promise
+    }
     const key = `${input.target.accountId}\u0000${input.target.keyFingerprint}`
     const current = this.values.get(key)
     if (!current) return { applied: false, reason: 'missing_state' }
@@ -134,6 +145,7 @@ try {
     type: 'api_key',
     status: 'active',
     schedulable: true,
+    supportedModels: ['gpt-5.5'],
     credentials: {
       api_key: 'sk-failure-guard-a',
       api_keys: ['sk-failure-guard-a', 'sk-failure-guard-b'],
@@ -556,11 +568,36 @@ try {
     [selectedA.selectedApiKeyFingerprint],
     'Redis 短避让必须按完整 fingerprint 隔离，不能误伤同账户其他 Key'
   )
-  await apiKeyFailureGuard.clearGatewayAccountApiKeyTransientFailure(redisSelectedA)
+  let releaseRedisSuccess!: () => void
+  const redisSuccessGate = new Promise<void>((resolvePromise) => {
+    releaseRedisSuccess = resolvePromise
+  })
+  let markRedisSuccessEntered!: () => void
+  const redisSuccessEntered = new Promise<void>((resolvePromise) => {
+    markRedisSuccessEntered = resolvePromise
+  })
+  transientStore.holdNextSuccess(redisSuccessGate, markRedisSuccessEntered)
+  let redisSuccessSettled = false
+  const redisSuccessSettlement = apiKeyEffects.recordGatewayAccountApiKeySuccess(redisSelectedA, {
+    source: 'redis_success_release_order_regression',
+    trafficSource: 'gateway'
+  }).then(() => {
+    redisSuccessSettled = true
+  })
+  await redisSuccessEntered
+  await Promise.resolve()
+  assert.equal(redisSuccessSettled, false, '账户槽释放前的 Key 成功结算必须等待 Redis 短避让清理完成')
+  assert.equal(
+    (await apiKeyFailureGuard.loadGatewayAccountApiKeyTransientStatesForDispatch(account.id, [selectedA.selectedApiKeyFingerprint]))[0]?.status,
+    'temporary_unavailable',
+    'Redis 成功清理尚未完成时，新调度仍应看到旧的短避让状态'
+  )
+  releaseRedisSuccess()
+  await redisSuccessSettlement
   assert.equal(
     (await apiKeyFailureGuard.loadGatewayAccountApiKeyTransientStatesForDispatch(account.id, [selectedA.selectedApiKeyFingerprint]))[0]?.status,
     'active',
-    '真实成功应清理 Redis fingerprint 短避让并保留 generation tombstone'
+    '真实成功结算返回时必须已清理 Redis fingerprint 短避让并保留 generation tombstone'
   )
   await apiKeyEffects.recordGatewayAccountApiKeyFailure(redisSelectedA, {
     status: 'temporary_unavailable',

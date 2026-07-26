@@ -14,4 +14,16 @@ export type AuthorizationGranteeType = 'system_account' | 'team'
 export type AuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
 export type TeamStatus = 'active' | 'disabled'
 export type TeamMemberStatus = 'active' | 'removed'
-export type ProcessRole = 'server' | 'ingest-worker' | 'stats-worker' | 'ops-worker' | 'db-service'
+export type ProcessRole =
+  | 'server'
+  | 'ingest-worker'
+  | 'stats-worker'
+  | 'ops-worker'
+  | 'db-service'
+  | `gateway:${string}`
+  | `control:${string}`
+  | `db-service:${string}`
+  | `usage-worker:${number}`
+  | `log-worker:${number}`
+  | `stats-worker:${number}`
+  | `ops-worker:${number}`

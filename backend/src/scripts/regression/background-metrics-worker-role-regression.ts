@@ -57,7 +57,8 @@ for (const role of expectedSupervisedRoles) {
 for (const role of retiredRoles) {
   assert(!roleCaseExists(role), `background-jobs 不应保留 ${role} 独立调度分支`)
 }
-assert(supervisorSource.includes("JUHE_AI_WORKER_ROLE: role"), 'supervisor fork 子进程时必须传入 worker role')
+assert(supervisorSource.includes('JUHE_AI_WORKER_ROLE: spec.role'), 'supervisor fork 子进程时必须传入副本规格中的 worker role')
+assert(supervisorSource.includes('JUHE_AI_WORKER_REPLICA_INDEX: String(spec.replicaIndex)'), 'supervisor fork 子进程时必须传入 worker replica index')
 assert(supervisorSource.includes('attachBackgroundWorkerProcess(child, {') && supervisorSource.includes('role,'), 'supervisor attach worker IPC 时必须传入 role')
 assert(supervisorSource.includes('startWorkerProcessesInSequence()'), 'supervisor 首次启动必须按序启动 worker，避免多个 worker 同时初始化 SQLite')
 assert(serverSource.includes('startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })'), 'server 必须在 DB service ready 后启动后台 worker')
@@ -97,6 +98,8 @@ assertRoleBlockContainsOnly('ops-worker', [
   'chat-retention-cleanup',
   'proxy-latency-refresh',
   'account-balance-refresh',
+  'account-circuit-control-plane-maintenance',
+  'account-circuit-recovery',
   'account-health-check',
   'cooldown-account-retest',
   'account-api-key-cooldown-retest',
@@ -214,7 +217,20 @@ function roleCaseBlock(role: string): string {
   assert(start >= 0, `background-jobs 必须包含 ${marker}`)
   const rest = backgroundJobsSource.slice(start + marker.length)
   const nextCase = rest.search(/\n\s*case\s+'[^']+':|\n\s*default:/)
-  return nextCase >= 0 ? rest.slice(0, nextCase) : rest
+  const block = nextCase >= 0 ? rest.slice(0, nextCase) : rest
+  if (role === 'ingest-worker') {
+    return `${block}\n${functionBlock('scheduleUsageIngestJobs')}\n${functionBlock('scheduleLogIngestJobs')}`
+  }
+  return block
+}
+
+function functionBlock(name: string): string {
+  const marker = `function ${name}(`
+  const start = backgroundJobsSource.indexOf(marker)
+  assert(start >= 0, `background-jobs 必须包含 ${marker}`)
+  const rest = backgroundJobsSource.slice(start)
+  const nextFunction = rest.slice(marker.length).search(/\n(?:async\s+)?function\s+/)
+  return nextFunction >= 0 ? rest.slice(0, marker.length + nextFunction) : rest
 }
 
 function roleCaseExists(role: string): boolean {

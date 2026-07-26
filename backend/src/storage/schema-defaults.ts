@@ -600,6 +600,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['imageFirstResponseTimeoutSeconds', 600],
   ['imageStreamIdleTimeoutSeconds', 120],
   ['imageUncommittedAttemptMaxLifetimeSeconds', 3600],
+  ['imageRequestWallTimeoutSeconds', 3600],
   ['chatImageGenerationTotalTimeoutSeconds', 900],
   ['noAvailableAccountWaitTimeoutSeconds', 270],
   ['streamFailureThresholdCount', 3],

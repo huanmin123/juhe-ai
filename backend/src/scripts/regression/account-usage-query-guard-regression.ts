@@ -55,7 +55,8 @@ try {
       api_key: 'sk-account-usage-query-guard-matched',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const otherAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -66,7 +67,8 @@ try {
       api_key: 'sk-account-usage-query-guard-other',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const selectedAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -77,7 +79,8 @@ try {
       api_key: 'sk-account-usage-query-guard-selected',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const notesOnlyAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -89,7 +92,8 @@ try {
       base_url: 'https://api.openai.com/v1'
     },
     notes: 'keywordnote 备注前缀',
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, access)
   const owner = repositories.createSystemAccount({
     username: 'account_usage_auth_owner',
@@ -124,7 +128,8 @@ try {
       api_key: 'sk-account-usage-authorized-source',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: ownerGroup.id
+    groupId: ownerGroup.id,
+    supportedModels: ['gpt-5.5']
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'account',
@@ -154,7 +159,8 @@ try {
       api_key: 'sk-account-usage-group-authorized-source',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: authorizedGroup.id
+    groupId: authorizedGroup.id,
+    supportedModels: ['gpt-5.5']
   }, ownerAccess)
   repositories.createResourceAuthorization({
     resourceType: 'group',

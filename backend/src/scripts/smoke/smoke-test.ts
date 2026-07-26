@@ -122,6 +122,7 @@ interface SystemSettings {
   imageFirstResponseTimeoutSeconds?: number
   imageStreamIdleTimeoutSeconds?: number
   imageUncommittedAttemptMaxLifetimeSeconds?: number
+  imageRequestWallTimeoutSeconds?: number
   chatImageGenerationTotalTimeoutSeconds?: number
   noAvailableAccountWaitTimeoutSeconds?: number
   streamFailureThresholdCount?: number
@@ -198,6 +199,7 @@ async function main(): Promise<void> {
     assert(typeof settings.imageFirstResponseTimeoutSeconds === 'number', '系统设置缺少 imageFirstResponseTimeoutSeconds')
     assert(typeof settings.imageStreamIdleTimeoutSeconds === 'number', '系统设置缺少 imageStreamIdleTimeoutSeconds')
     assert(typeof settings.imageUncommittedAttemptMaxLifetimeSeconds === 'number', '系统设置缺少 imageUncommittedAttemptMaxLifetimeSeconds')
+    assert(typeof settings.imageRequestWallTimeoutSeconds === 'number', '系统设置缺少 imageRequestWallTimeoutSeconds')
     assert(typeof settings.chatImageGenerationTotalTimeoutSeconds === 'number', '系统设置缺少 chatImageGenerationTotalTimeoutSeconds')
     assert(typeof settings.noAvailableAccountWaitTimeoutSeconds === 'number', '系统设置缺少 noAvailableAccountWaitTimeoutSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')

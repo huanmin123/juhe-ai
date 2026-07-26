@@ -45,6 +45,7 @@ export interface GatewaySettings {
   imageFirstResponseTimeoutSeconds: number
   imageStreamIdleTimeoutSeconds: number
   imageUncommittedAttemptMaxLifetimeSeconds: number
+  imageRequestWallTimeoutSeconds: number
   noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
@@ -109,6 +110,7 @@ function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): Gate
     imageFirstResponseTimeoutSeconds: numberSetting(settings.imageFirstResponseTimeoutSeconds, 'imageFirstResponseTimeoutSeconds', 10, 3600),
     imageStreamIdleTimeoutSeconds: numberSetting(settings.imageStreamIdleTimeoutSeconds, 'imageStreamIdleTimeoutSeconds', 1, 3600),
     imageUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.imageUncommittedAttemptMaxLifetimeSeconds, 'imageUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    imageRequestWallTimeoutSeconds: numberSetting(settings.imageRequestWallTimeoutSeconds, 'imageRequestWallTimeoutSeconds', 60, 86400),
     noAvailableAccountWaitTimeoutSeconds: numberSetting(settings.noAvailableAccountWaitTimeoutSeconds, 'noAvailableAccountWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
@@ -133,6 +135,7 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
     imageFirstResponseTimeoutSeconds: numberSetting(settings.imageFirstResponseTimeoutSeconds, 'imageFirstResponseTimeoutSeconds', 10, 3600),
     imageStreamIdleTimeoutSeconds: numberSetting(settings.imageStreamIdleTimeoutSeconds, 'imageStreamIdleTimeoutSeconds', 1, 3600),
     imageUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.imageUncommittedAttemptMaxLifetimeSeconds, 'imageUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    imageRequestWallTimeoutSeconds: numberSetting(settings.imageRequestWallTimeoutSeconds, 'imageRequestWallTimeoutSeconds', 60, 86400),
     noAvailableAccountWaitTimeoutSeconds: numberSetting(settings.noAvailableAccountWaitTimeoutSeconds, 'noAvailableAccountWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)

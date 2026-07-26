@@ -600,6 +600,7 @@ async function listOwnerAccountRowsPageAsync(
   }
   const filters = ownerAccountListFilters(client, access, options, ownerSystemAccountId)
   const orderClause = ownerAccountListOrderClause(options)
+  const qualityJoin = accountListRecentRequestJoin(client, options, 'accounts.id')
   const rows = await client.query<AccountListRow>(`
     SELECT
       ${accountRowSelectColumns(false)},
@@ -613,6 +614,7 @@ async function listOwnerAccountRowsPageAsync(
       group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled,
       COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS system_account_sort_name
     FROM ${accountSummaryTable(client, 'accounts')} accounts
+    ${qualityJoin}
     LEFT JOIN LATERAL (
       SELECT
         group_accounts.system_account_id,
@@ -658,6 +660,7 @@ async function listAccountRowsPageAsync(
   const scopeParams = ownerSystemAccountId ? [ownerSystemAccountId] : []
   const filters = accountListFilters(client, options, ownerSystemAccountId)
   const orderClause = accountListOrderClause(options)
+  const qualityJoin = accountListRecentRequestJoin(client, options, 'account_rows.id')
   const rows = await client.query<AccountListRow>(`
     WITH account_rows AS (
       SELECT
@@ -763,6 +766,7 @@ async function listAccountRowsPageAsync(
       group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled,
       COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name
     FROM account_rows
+    ${qualityJoin}
     LEFT JOIN LATERAL (
       SELECT
         group_accounts.system_account_id,
@@ -1207,7 +1211,7 @@ function accountListOrderClause(options: NormalizedAccountListOptions): string {
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
     const column = accountListSortColumn(sort.field)
-    if (sort.field === 'qualityScore') {
+    if (sort.field === 'qualityScore' || sort.field === 'lastUsedAt') {
       return `${column} ${direction} NULLS LAST`
     }
     return `${column} ${direction}`
@@ -1220,6 +1224,7 @@ function accountListSortColumn(field: NormalizedAccountListOptions['sorts'][numb
   if (field === 'superPriority') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END"
   if (field === 'fallback') return "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END"
   if (field === 'qualityScore') return 'NULL'
+  if (field === 'recentRequestCount') return 'COALESCE(quality_scores.recent_request_count, 0)'
   if (field === 'name') return 'account_rows.name COLLATE "C"'
   if (field === 'type') return 'COALESCE(account_rows.source_type, account_rows.type) COLLATE "C"'
   if (field === 'providerCode') return 'COALESCE(account_rows.source_provider_code, account_rows.provider_code) COLLATE "C"'
@@ -1368,7 +1373,7 @@ function ownerAccountListOrderClause(options: NormalizedAccountListOptions): str
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
     const column = ownerAccountListSortColumn(sort.field)
-    if (sort.field === 'qualityScore') {
+    if (sort.field === 'qualityScore' || sort.field === 'lastUsedAt') {
       return `${column} ${direction} NULLS LAST`
     }
     return `${column} ${direction}`
@@ -1381,6 +1386,7 @@ function ownerAccountListSortColumn(field: NormalizedAccountListOptions['sorts']
   if (field === 'superPriority') return 'accounts.super_priority_enabled'
   if (field === 'fallback') return 'accounts.fallback_enabled'
   if (field === 'qualityScore') return 'NULL'
+  if (field === 'recentRequestCount') return 'COALESCE(quality_scores.recent_request_count, 0)'
   if (field === 'name') return 'accounts.name COLLATE "C"'
   if (field === 'type') return 'accounts.type COLLATE "C"'
   if (field === 'providerCode') return 'accounts.provider_code COLLATE "C"'
@@ -1390,6 +1396,16 @@ function ownerAccountListSortColumn(field: NormalizedAccountListOptions['sorts']
   if (field === 'accountExpiresAt') return 'accounts.account_expires_at'
   if (field === 'lastUsedAt') return 'accounts.last_used_at'
   return 'accounts.priority'
+}
+
+function accountListRecentRequestJoin(
+  client: DatabaseClient,
+  options: Pick<NormalizedAccountListOptions, 'sorts'>,
+  accountIdSql: string
+): string {
+  if (!options.sorts.some((sort) => sort.field === 'recentRequestCount')) return ''
+  return `LEFT JOIN ${client.dialect.qualifyTable('juhe_stats', 'account_quality_scores')} quality_scores
+    ON quality_scores.account_id = ${accountIdSql}`
 }
 
 function ownerAccountEffectiveStatusSql(): string {

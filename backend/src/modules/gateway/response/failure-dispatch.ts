@@ -44,29 +44,25 @@ import {
 } from '../runtime/client-ip-account-avoidance.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
-import {
-  automaticUpstreamReplayAllowedAfterDispatch,
-  resolveOpenAIGatewayRequestLane,
-  type OpenAIGatewayRequestLane
-} from '../protocols/openai-v1/request-lane.js'
+import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 
-/** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
-export function isOpaqueUpstreamFailoverAllowed(req: Request): boolean {
-  const lane = resolveOpenAIGatewayRequestLane(req)
-  return automaticUpstreamReplayAllowedAfterDispatch(req, lane)
+/** Every gateway endpoint uses the same availability-first candidate failover rule. */
+export function isOpaqueUpstreamFailoverAllowed(_req: Request): boolean {
+  return true
 }
 
 export function accountErrorPolicyAllowsUpstreamReplayAfterDispatch(
-  req: Request,
-  lane: OpenAIGatewayRequestLane,
+  _req: Request,
+  _lane: OpenAIGatewayRequestLane,
   _decision?: Pick<AccountErrorPolicyDecision, 'action'>
 ): boolean {
-  // A user policy can decide how to classify or mutate account state, but it
-  // cannot make an already-dispatched side-effect request safe to replay.
-  return automaticUpstreamReplayAllowedAfterDispatch(req, lane)
+  // Account-state actions and request-local candidate failover are independent:
+  // a policy may mutate shared state, while the current request still follows
+  // the universal availability-first rule.
+  return true
 }
 
-/** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
+/** Normalized failed-response facts used by account-state and failover handling. */
 export type AccountFailureInput = {
   success: false
   statusCode: number
@@ -121,7 +117,6 @@ interface HandleUpstreamRequestErrorInput {
 
 type HandleFailedUpstreamResponseResult =
   | { action: 'retry' | 'skip_account'; failureKind: 'explicit_policy' | 'opaque_http'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure; tryNextApiKeyForRequest?: boolean }
-  | { action: 'replay_blocked'; failureKind: 'explicit_policy' | 'opaque_http'; lastAttempt: UpstreamAttempt }
   | { action: 'return_response'; response: GatewayUpstreamResponse }
 
 export interface PendingAccountApiKeyFailure {
@@ -161,13 +156,7 @@ export async function handleFailedUpstreamResponse(
   }
 
   if (!accountErrorPolicyCouldMatchStatus(account, response.status)) {
-    if (!automaticUpstreamReplayAllowedAfterDispatch(req, input.requestLane)) {
-      return handleOpaqueFailedUpstreamResponse(input, undefined, true)
-    }
-    if (isOpaqueUpstreamFailoverAllowed(req)) {
-      return handleOpaqueFailedUpstreamResponse(input)
-    }
-    return { action: 'return_response', response }
+    return handleOpaqueFailedUpstreamResponse(input)
   }
 
   const responseBodyRead = await readUpstreamBodyForPolicyInspection(response.body, {
@@ -181,21 +170,7 @@ export async function handleFailedUpstreamResponse(
     ? decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
     : undefined
   if (!explicitPolicyDecision) {
-    if (!automaticUpstreamReplayAllowedAfterDispatch(req, input.requestLane)) {
-      return handleOpaqueFailedUpstreamResponse(input, responseBodyRead, true)
-    }
-    if (isOpaqueUpstreamFailoverAllowed(req)) {
-      return handleOpaqueFailedUpstreamResponse(input, responseBodyRead)
-    }
-    return {
-      action: 'return_response',
-      response: {
-        status: response.status,
-        ok: response.ok,
-        headers: response.headers,
-        body: responseBodyRead.replayBody
-      }
-    }
+    return handleOpaqueFailedUpstreamResponse(input, responseBodyRead)
   }
   await responseBodyRead.close()
   const failureObservation = classifyGatewayUpstreamFailure({
@@ -295,14 +270,6 @@ export async function handleFailedUpstreamResponse(
     }
   }
 
-  if (!accountErrorPolicyAllowsUpstreamReplayAfterDispatch(req, input.requestLane, explicitPolicyDecision)) {
-    return {
-      action: 'replay_blocked',
-      failureKind: 'explicit_policy',
-      lastAttempt
-    }
-  }
-
   return {
     action: 'skip_account',
     failureKind: 'explicit_policy',
@@ -312,8 +279,7 @@ export async function handleFailedUpstreamResponse(
 
 export async function handleOpaqueFailedUpstreamResponse(
   input: HandleFailedUpstreamResponseInput,
-  inspectedBody?: ReplayableLimitedBodyReadResult,
-  replayBlocked = false
+  inspectedBody?: ReplayableLimitedBodyReadResult
 ): Promise<HandleFailedUpstreamResponseResult> {
   const {
     req,
@@ -414,16 +380,6 @@ export async function handleOpaqueFailedUpstreamResponse(
         trafficSource: usageContext.trafficSource,
         policyDecision: explicitPolicyDecision
       })
-    }
-  }
-  if (
-    replayBlocked
-    && !accountErrorPolicyAllowsUpstreamReplayAfterDispatch(req, input.requestLane, explicitPolicyDecision)
-  ) {
-    return {
-      action: 'replay_blocked',
-      failureKind: 'opaque_http',
-      lastAttempt
     }
   }
   return {

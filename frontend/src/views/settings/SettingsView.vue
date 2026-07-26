@@ -266,7 +266,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane 的唯一 attempt：超时只终止当前尝试；下游未提交返回 503/upstream_outcome_unknown，已写出则结束或断流；不会自动切 Key、账户或分组。">
+              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane 的单次 attempt；超时终止当前候选，若下游尚未提交则按统一候选机制继续切 Key、账户或分组。快速模式的文本首 token 截止不作用于图片。">
                 <a-input-number v-model:value="systemForm.imageFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
@@ -278,6 +278,11 @@
             <div class="setting-item">
               <a-form-item label="图像未提交尝试寿命（秒）" tooltip="只作用于 image lane：当前账号尚未产生模型语义输出时的单次尝试最大存活时间。">
                 <a-input-number v-model:value="systemForm.imageUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="图像整请求总时限（秒）" tooltip="一次通用网关图片请求从接收到候选切换决策的总墙钟，默认 3600 秒。已在执行且仍处于图片专用 attempt 时限内的请求不会被机械中断；失败后只有总墙钟仍有余量才继续后备候选。">
+                <a-input-number v-model:value="systemForm.imageRequestWallTimeoutSeconds" :min="60" :max="86400" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
@@ -373,7 +378,7 @@ const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | und
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
-  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'account-test': ['accountTestTaskConcurrency'],

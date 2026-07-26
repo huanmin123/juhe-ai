@@ -63,6 +63,7 @@ const settings: GatewaySettings = {
   imageFirstResponseTimeoutSeconds: 600,
   imageStreamIdleTimeoutSeconds: 120,
   imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  imageRequestWallTimeoutSeconds: 3600,
   noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
@@ -337,7 +338,7 @@ for (const errorCode of ['401', '429', '500', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE
     assert.equal(
       nonRetryNextResult.decision?.replayAuthority,
       undefined,
-      `${action} 不得被提升为图片重放授权；只有 retry_next_account 可以授权`
+      `${action} 不得伪装成显式 retry_next_account 归因；该归因只用于审计，不控制统一候选切换`
     )
   }
 }

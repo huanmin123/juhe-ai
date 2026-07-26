@@ -36,6 +36,7 @@ export const systemSettingKeys = [
   'imageFirstResponseTimeoutSeconds',
   'imageStreamIdleTimeoutSeconds',
   'imageUncommittedAttemptMaxLifetimeSeconds',
+  'imageRequestWallTimeoutSeconds',
   'chatImageGenerationTotalTimeoutSeconds',
   'noAvailableAccountWaitTimeoutSeconds',
   'streamFailureThresholdCount',
@@ -87,7 +88,7 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 export const managementSettingsSectionCatalog = {
   brand: { domain: 'global', keys: globalSettingKeys },
-  'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
+  'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
   'account-health': { domain: 'system', keys: ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'] as const },
   'api-rate-limit': { domain: 'system', keys: ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'] as const },
   'account-test': { domain: 'system', keys: ['accountTestTaskConcurrency'] as const },
@@ -113,6 +114,7 @@ const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   imageFirstResponseTimeoutSeconds: integerSetting(10, 3600),
   imageStreamIdleTimeoutSeconds: integerSetting(1, 3600),
   imageUncommittedAttemptMaxLifetimeSeconds: integerSetting(60, 86400),
+  imageRequestWallTimeoutSeconds: integerSetting(60, 86400),
   chatImageGenerationTotalTimeoutSeconds: integerSetting(60, 86400),
   noAvailableAccountWaitTimeoutSeconds: integerSetting(10, 3600),
   streamFailureThresholdCount: integerSetting(1, 100),

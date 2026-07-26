@@ -12,6 +12,7 @@ export const accountListSortFieldValues = [
   'superPriority',
   'fallback',
   'qualityScore',
+  'recentRequestCount',
   'name',
   'type',
   'providerCode',

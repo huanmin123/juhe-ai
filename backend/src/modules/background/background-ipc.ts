@@ -172,6 +172,20 @@ export function attachBackgroundWorkerProcess(child: ChildProcess, options: { ro
   flushWorkerMessageQueue()
 }
 
+export function attachBackgroundAuxiliaryWorkerProcess(
+  child: ChildProcess,
+  options: { role: Extract<BackgroundWorkerProcessRole, 'usage-worker' | 'log-worker'>; onReady?: () => void }
+): void {
+  child.removeAllListeners('message')
+  child.on('message', (message: unknown) => {
+    if (isBackgroundWorkerReadyMessage(message)) {
+      options.onReady?.()
+      return
+    }
+    handleWorkerMessage(message, options.role, child)
+  })
+}
+
 function attachIngestWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
   ingestWorkerProcess = child
   ingestWorkerPid = child.pid ?? undefined
@@ -1618,6 +1632,13 @@ function markWorkerReady(role: BackgroundWorkerProcessRole, record: Partial<Back
   flushWorkerMessageQueue()
 }
 
+function isBackgroundWorkerReadyMessage(message: unknown): boolean {
+  return typeof message === 'object'
+    && message !== null
+    && !Array.isArray(message)
+    && (message as { type?: unknown }).type === 'background_worker_ready'
+}
+
 function finishWorkerStatusResponse(role: BackgroundWorkerProcessRole, requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {
   finishWorkerSnapshotResponse(role, requestId, snapshot)
 }
@@ -1837,7 +1858,7 @@ function normalizedString(value: unknown): string | undefined {
 
 async function respondToProcessEventLoopRequest(requestId: string, targetChild = workerProcess): Promise<void> {
   const samples = [
-    buildProcessEventLoopSample('server')
+    buildProcessEventLoopSample()
   ]
   const dbServiceSample = await dbServiceProcessEventLoopSample()
   if (dbServiceSample) {

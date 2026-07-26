@@ -18,7 +18,8 @@ import {
 } from '../../modules/gateway/response/failure-dispatch.js'
 import {
   automaticUpstreamReplayAllowedAfterDispatch,
-  isOpenAIGatewayImageGenerationModel
+  isOpenAIGatewayImageGenerationModel,
+  resolveOpenAIGatewayRequestLane
 } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
 
 const genericProfiles: OpenAIGatewayClientProfile[] = ['generic_openai', 'generic_anthropic', 'generic_gemini']
@@ -30,180 +31,68 @@ for (const clientProfile of explicitProfiles) {
   assert.equal(gatewayClientAllowsUpstreamSemanticInterpretation({ clientProfile }), true, `${clientProfile} 应保留专用协议语义`)
 }
 
-assert.equal(isOpaqueUpstreamFailoverAllowed({
-  method: 'POST',
-  originalUrl: '/v1/audio/speech',
-  path: '/v1/audio/speech'
-} as Request), false, '白名单外端点不得由网关自动接管或重放')
-assert.equal(isOpaqueUpstreamFailoverAllowed({
-  method: 'POST',
-  originalUrl: '/v1/chat/completions',
-  path: '/v1/chat/completions'
-} as Request), true, '安全推理端点应保留请求内 opaque 接管能力')
-for (const imagePath of ['/v1/images/generations', '/v1/images/edits']) {
-  assert.equal(isOpaqueUpstreamFailoverAllowed({
-    method: 'POST',
-    originalUrl: imagePath,
-    path: imagePath
-  } as Request), false, `${imagePath} 可能已创建计费资源，不得自动重放`)
-}
-assert.equal(isOpaqueUpstreamFailoverAllowed({
-  method: 'POST',
-  originalUrl: '/v1/responses',
-  path: '/v1/responses',
-  body: { model: 'gpt-image-2', input: 'create an image' }
-} as Request), false, 'Responses 路径只要进入图片 lane 也不得 opaque 重放')
 const replayableInferenceRequest = {
   method: 'POST',
   originalUrl: '/v1/chat/completions',
-  path: '/v1/chat/completions'
+  path: '/v1/chat/completions',
+  body: { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hello' }] }
 } as Request
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch(replayableInferenceRequest, 'text'), true)
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch(replayableInferenceRequest, 'image'), false, '图片 transport 一旦被调用就不得自动跨 Key/账户重放')
-for (const sideEffectPath of ['/v1/audio/speech', '/v1/files', '/v1/vector_stores']) {
-  assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-    method: 'POST',
-    originalUrl: sideEffectPath,
-    path: sideEffectPath
-  }, 'text'), false, `${sideEffectPath} 发出请求体后不得自动重放`)
-}
-const replayableResponsesRequest = {
+const geminiImageRequest = {
   method: 'POST',
-  originalUrl: '/v1/responses',
-  path: '/v1/responses',
-  body: {
-    model: 'gpt-5.5',
-    input: 'hello',
-    background: false,
-    tools: [{ type: 'function', name: 'lookup' }, { type: 'custom', name: 'grammar' }]
-  }
+  originalUrl: '/v1beta/models/gemini-2.5-flash:generateContent',
+  path: '/v1beta/models/gemini-2.5-flash:generateContent',
+  body: { contents: [], generationConfig: { responseModalities: ['IMAGE'] } }
 } as Request
-assert.equal(
-  automaticUpstreamReplayAllowedAfterDispatch(replayableResponsesRequest, 'text'),
-  true,
-  '前台 Responses + 客户端执行工具仍可沿用推理重放能力'
-)
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/responses',
-  path: '/v1/responses'
-}, 'text'), false, 'Responses 请求体和解析元数据完全不可用时必须 fail-closed')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/embeddings',
-  path: '/v1/embeddings'
-}, 'text'), true, 'Responses fail-closed 不得改变 embeddings 推理重放边界')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/messages',
-  path: '/v1/messages',
-  body: {
-    model: 'claude-haiku-4-5',
-    messages: [{ role: 'user', content: 'hello' }],
-    tools: [{ name: 'lookup', input_schema: { type: 'object' } }]
-  }
-}, 'text'), true, '普通 Anthropic Messages 与客户端执行工具属于可安全切号的文本推理')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/messages?beta=1',
-  path: '/messages',
-  gatewayParsedJsonBodyAvailable: true,
-  gatewayParsedJsonBody: {
-    model: 'claude-haiku-4-5',
-    messages: [{ role: 'user', content: 'parsed metadata' }]
-  }
-}, 'text'), true, '挂载在 /v1 且只保留解析正文缓存的 Messages 仍应精确识别')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/messages/count_tokens',
-  path: '/v1/messages/count_tokens'
-}, 'text'), true, 'Anthropic Count Tokens 是只读计算，即使正文未解析也允许切号')
-for (const [label, body] of [
-  ['server tool', { model: 'claude-sonnet-4-5', messages: [], tools: [{ type: 'web_search_20250305', name: 'web_search' }] }],
-  ['mcp_servers', { model: 'claude-sonnet-4-5', messages: [], mcp_servers: [{ type: 'url', url: 'https://mcp.invalid' }] }],
-  ['container', { model: 'claude-sonnet-4-5', messages: [], container: 'container_123' }],
-  ['malformed tools object', { model: 'claude-sonnet-4-5', messages: [], tools: {} }],
-  ['malformed tools item', { model: 'claude-sonnet-4-5', messages: [], tools: [null] }],
-  ['malformed custom type', { model: 'claude-sonnet-4-5', messages: [], tools: [{ type: '' }] }],
-  ['malformed mcp_servers object', { model: 'claude-sonnet-4-5', messages: [], mcp_servers: {} }],
-  ['malformed empty container', { model: 'claude-sonnet-4-5', messages: [], container: {} }]
-] as const) {
-  assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-    method: 'POST',
-    originalUrl: '/v1/messages',
-    path: '/v1/messages',
-    body
-  }, 'text'), false, `Anthropic ${label} 可能执行供应商托管工作，必须保持 at-most-once`)
-}
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/messages',
-  path: '/v1/messages'
-}, 'text'), false, 'Anthropic Messages 请求体不可检查时必须 fail-closed')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/foo/messages',
-  path: '/foo/messages',
-  body: { model: 'claude-haiku-4-5', messages: [] }
-}, 'text'), false, '未知后缀路径不得仅因以 /messages 结尾就被纳入重放白名单')
-for (const [label, body] of [
-  ['background', { model: 'gpt-5.5', input: 'hello', background: true }],
-  ['web_search', { model: 'gpt-5.5', input: 'hello', tools: [{ type: 'web_search' }] }],
-  ['code_interpreter', { model: 'gpt-5.5', input: 'hello', tools: [{ type: 'code_interpreter' }] }],
-  ['computer', { model: 'gpt-5.5', input: 'hello', tools: [{ type: 'computer' }] }],
-  ['file_search tool_choice', { model: 'gpt-5.5', input: 'hello', tool_choice: { type: 'file_search' } }],
-  ['future hosted extension', { model: 'gpt-5.5', input: 'hello', tools: [{ type: 'provider_hosted_future_tool' }] }]
-] as const) {
-  assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-    method: 'POST',
-    originalUrl: '/v1/responses',
-    path: '/v1/responses',
-    body
-  }, 'text'), false, `${label} 可能已创建后台任务或执行服务端工具，不得自动重放`)
-}
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/responses',
-  path: '/v1/responses',
-  gatewayParsedJsonBodyAvailable: true,
-  gatewayParsedJsonBody: { model: 'gpt-5.5', input: 'hello', background: true }
-}, 'text'), false, '请求体只存在解析缓存时也必须识别 background')
-assert.equal(automaticUpstreamReplayAllowedAfterDispatch({
-  method: 'POST',
-  originalUrl: '/v1/responses',
-  path: '/v1/responses',
-  gatewayRequestBody: {
-    rawBodyBytes: 300_000,
-    contentType: 'application/json',
-    isJson: true,
-    jsonParseStatus: 'deferred_large_json',
-    jsonParseWarningBytes: 2 * 1024 * 1024
-  }
-}, 'text'), false, '大 JSON 无完整工具元数据时必须保守按最多一次处理')
-
+assert.equal(resolveOpenAIGatewayRequestLane(geminiImageRequest), 'image', 'Gemini 原生图片输出必须使用图片长时限 lane')
 const sideEffectRequest = {
   method: 'POST',
   originalUrl: '/v1/audio/speech',
   path: '/v1/audio/speech'
 } as Request
-for (const action of ['cooldown', 'disable'] as const) {
+
+const universalFailoverCases: Array<{
+  label: string
+  request: Request
+  lane: 'text' | 'image'
+}> = [
+  { label: '普通文本推理', request: replayableInferenceRequest, lane: 'text' },
+  { label: '图片 lane', request: replayableInferenceRequest, lane: 'image' },
+  { label: '语音生成', request: sideEffectRequest, lane: 'text' },
+  { label: '图片生成', request: { method: 'POST', originalUrl: '/v1/images/generations', path: '/v1/images/generations' } as Request, lane: 'image' },
+  { label: '图片编辑', request: { method: 'POST', originalUrl: '/v1/images/edits', path: '/v1/images/edits' } as Request, lane: 'image' },
+  { label: 'Responses 图片生成', request: { method: 'POST', originalUrl: '/v1/responses', path: '/v1/responses', body: { model: 'gpt-image-2', input: 'create an image' } } as Request, lane: 'image' },
+  { label: 'Chat 托管工具', request: { method: 'POST', originalUrl: '/v1/chat/completions', path: '/v1/chat/completions', body: { tools: [{ type: 'web_search' }], store: true } } as Request, lane: 'text' },
+  { label: 'Chat 不可检查正文', request: { method: 'POST', originalUrl: '/v1/chat/completions', path: '/v1/chat/completions' } as Request, lane: 'text' },
+  { label: 'Responses 后台任务', request: { method: 'POST', originalUrl: '/v1/responses', path: '/v1/responses', body: { background: true, store: true } } as Request, lane: 'text' },
+  { label: 'Responses 解析正文缓存', request: { method: 'POST', originalUrl: '/v1/responses', path: '/v1/responses', gatewayParsedJsonBodyAvailable: true, gatewayParsedJsonBody: { background: true } } as unknown as Request, lane: 'text' },
+  { label: 'Gemini 托管工具', request: { method: 'POST', originalUrl: '/v1beta/models/gemini-2.5-flash:generateContent', path: '/v1beta/models/gemini-2.5-flash:generateContent', body: { tools: [{ googleSearch: {} }] } } as Request, lane: 'text' },
+  { label: 'Gemini 图片输出', request: geminiImageRequest, lane: 'image' },
+  { label: 'Gemini Interactions 状态推进', request: { method: 'POST', originalUrl: '/v1beta/interactions/interaction-1', path: '/v1beta/interactions/interaction-1', body: { input: 'continue' } } as Request, lane: 'text' },
+  { label: 'Anthropic 服务端工具', request: { method: 'POST', originalUrl: '/v1/messages', path: '/v1/messages', body: { tools: [{ type: 'web_search_20250305', name: 'web_search' }] } } as Request, lane: 'text' },
+  { label: 'Anthropic MCP', request: { method: 'POST', originalUrl: '/v1/messages', path: '/v1/messages', body: { mcp_servers: [{ type: 'url', url: 'https://mcp.invalid' }] } } as Request, lane: 'text' },
+  { label: '未知资源端点', request: { method: 'POST', originalUrl: '/v1/vector_stores', path: '/v1/vector_stores' } as Request, lane: 'text' }
+]
+
+for (const { label, request, lane } of universalFailoverCases) {
+  assert.equal(isOpaqueUpstreamFailoverAllowed(request), true, `${label} 未交付结果时必须允许请求内切换候选`)
+  assert.equal(automaticUpstreamReplayAllowedAfterDispatch(request, lane), true, `${label} 必须与普通文本共用统一切号规则`)
+}
+
+for (const action of ['cooldown', 'disable', 'retry_next'] as const) {
   assert.equal(
     accountErrorPolicyAllowsUpstreamReplayAfterDispatch(sideEffectRequest, 'text', { action }),
-    false,
-    `${action} 只授权状态变更，不授权已派发副作用请求重放`
+    true,
+    `${action} 的账户状态动作不得阻断当前请求继续切换候选`
   )
 }
-assert.equal(
-  accountErrorPolicyAllowsUpstreamReplayAfterDispatch(sideEffectRequest, 'text', { action: 'retry_next' }),
-  false,
-  '显式 retry_next 也不能把已派发副作用请求变成可安全重放'
-)
 assert.equal(
   accountErrorPolicyAllowsUpstreamReplayAfterDispatch(replayableInferenceRequest, 'text', { action: 'cooldown' }),
   true,
   '普通推理请求仍可在执行 cooldown 后选择下一账户'
 )
 assert.equal(isOpenAIGatewayImageGenerationModel('gpt-image-1'), true)
+assert.equal(isOpenAIGatewayImageGenerationModel('imagen-3.0-generate-002'), true)
+assert.equal(isOpenAIGatewayImageGenerationModel('gemini-2.5-flash-image-preview'), true)
 assert.equal(isOpenAIGatewayImageGenerationModel('gpt-5.5'), false)
 assert.equal(isOpenAIGatewayImageGenerationModel('flux-image-regression'), false, '非标准图片模型必须由目录能力识别，不能继续扩张名称猜测')
 
@@ -234,9 +123,9 @@ assert.equal(decideAccountErrorPolicy(
 
 const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
 const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
+const requestLaneSource = readFileSync(new URL('../../modules/gateway/protocols/openai-v1/request-lane.ts', import.meta.url), 'utf8')
 const failureClassifierSource = readFileSync(new URL('../../modules/gateway/response/upstream-failure-classifier.ts', import.meta.url), 'utf8')
 const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
-const replayBlockedSource = readFileSync(new URL('../../modules/gateway/response/upstream-replay-blocked.ts', import.meta.url), 'utf8')
 const responseInspectionSource = readFileSync(new URL('../../modules/gateway/response/inspection.ts', import.meta.url), 'utf8')
 const requestPreflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 const streamSource = readFileSync(new URL('../../modules/gateway/response/stream.ts', import.meta.url), 'utf8')
@@ -249,7 +138,17 @@ const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/q
 assert.match(
   failureDispatchSource,
   /isOpaqueUpstreamFailoverAllowed/,
-  '安全推理端点的未知完整 HTTP 失败必须进入统一 opaque 接管边界'
+  '所有端点的未知完整 HTTP 失败必须进入统一 opaque 接管边界'
+)
+assert.match(
+  requestLaneSource,
+  /automaticUpstreamReplayAllowedAfterDispatch\([\s\S]*?\): boolean \{\s*return true\s*\}/,
+  '所有请求类型和 lane 必须共用无条件候选切换许可'
+)
+assert.doesNotMatch(
+  requestLaneSource,
+  /lane === 'image'|RequiresAtMostOnce|toolDefinitionsRequireAtMostOnce|outputModalitiesRequireAtMostOnce/,
+  '统一切号规则不得重新引入图片、工具或副作用请求分类门禁'
 )
 assert.match(
   dispatchSource,
@@ -271,20 +170,10 @@ assert.match(
   /failureScope: explicitPolicyFailure \? 'account' : 'none'/,
   'opaque HTTP 切号只允许写诊断中性终态'
 )
-assert.match(
-  dispatchSource,
-  /automaticUpstreamReplayAllowedAfterDispatch\(req, requestLane\)[\s\S]*phase: 'upstream_transport'[\s\S]*throw new UpstreamReplayBlockedError/,
-  '请求体可能已被上游接受的图片或副作用 transport 失败必须终止服务端重放'
-)
-assert.match(
-  routesSource,
-  /automaticUpstreamReplayAllowedAfterDispatch\(req, currentPreflight\.requestLane\)[\s\S]*phase: 'upstream_response_body'[\s\S]*throw new UpstreamReplayBlockedError/,
-  '图片或副作用请求的 2xx 正文读取失败必须终止服务端重放'
-)
-assert.match(
-  routesSource,
-  /if \(error instanceof UpstreamReplayBlockedError\) \{\s*throw error\s*\}[\s\S]*switchToFallbackGroup/,
-  '图片重放阻断错误必须在跨组 fallback 之前终止调度'
+assert.doesNotMatch(
+  `${dispatchSource}\n${routesSource}\n${failureDispatchSource}`,
+  /UpstreamReplayBlockedError|upstream_outcome_unknown|upstream_automatic_replay_blocked|replay_blocked/,
+  '统一候选切换不得保留第二套自动重放阻断终态或旧结果未知错误'
 )
 assert.match(
   requestPreflightSource,
@@ -293,7 +182,7 @@ assert.match(
 )
 assert.match(
   requestPreflightSource,
-  /requestLane !== 'image'[\s\S]*await accountModelMappingsTargetImage\(req, candidateFilter\.accounts, systemAccountId\)[\s\S]*requestLane = 'image'[\s\S]*applyOpenAIGatewayImagePermissionPreflight/,
+  /requestLane !== 'image'[\s\S]*await accountModelsTargetImage\(req, candidateFilter\.accounts, systemAccountId\)[\s\S]*requestLane = 'image'[\s\S]*applyOpenAIGatewayImagePermissionPreflight/,
   '候选账户把客户端模型映射为图片模型时，必须在权限检查和上游派发前提升为图片 lane'
 )
 assert.match(
@@ -302,27 +191,21 @@ assert.match(
   '非标准映射模型必须复用模型目录的显式图片能力，不能只依赖模型名称前缀'
 )
 assert.match(
+  requestPreflightSource,
+  /resolveOpenAIAccountModelMapping\(account, requestedModel, sourceEndpointFamily\)\?\.upstreamModel\s*\?\? requestedModel/,
+  '没有显式映射的直接自定义模型也必须查询目录能力，不能漏过图片 lane'
+)
+assert.match(
   routesSource,
   /resolveNextHybridGatewayRoute\([\s\S]*requestLane: resolveOpenAIGatewayRequestLane\(req\)/,
   '混合质量升级改写模型后必须把新 lane 传入重入预检'
 )
-assert.match(routesSource, /if \(!automaticUpstreamReplayAllowedAfterDispatch\(req, currentPreflight\.requestLane\)\) \{/, '任意流式/正文重试都必须服从统一请求语义门禁')
-assert.doesNotMatch(routesSource, /userAuthorizedReplay|&& !userAuthorizedReplay/, '用户策略不得形成绕过副作用 at-most-once 的旁路')
-assert.match(
-  replayBlockedSource,
-  /gatewayUpstreamOutcomeUnknownErrorCode = 'upstream_outcome_unknown'[\s\S]*gatewayUpstreamOutcomeUnknownMessage = '上游可能已接收请求，但结果未知；网关未自动重放'[\s\S]*upstreamAutomaticReplayBlockedAuditLabel = 'upstream_automatic_replay_blocked'/,
-  '副作用结果未知必须使用通用稳定网关错误与审计标签'
-)
-assert.match(
-  routesSource,
-  /gatewayUpstreamOutcomeUnknownErrorCode[\s\S]*!automaticReplayBlocked && shouldSendDispatchExhaustedProtocolRetry[\s\S]*!automaticReplayBlocked && options\.exposeUpstreamDiagnostics/,
-  '副作用结果未知必须返回非重试型稳定网关错误，并禁止协议重试提示或诊断透传'
-)
-assert.doesNotMatch(`${routesSource}\n${dispatchSource}`, /image_request_automatic_replay_blocked|图片上游|图片请求/, '副作用请求不得复用图片专属自动重放阻止文案或标签')
+assert.doesNotMatch(routesSource, /userAuthorizedReplay|&& !userAuthorizedReplay/, '用户策略不得形成另一套候选切换旁路')
+assert.doesNotMatch(`${routesSource}\n${dispatchSource}`, /image_request_automatic_replay_blocked|图片上游|图片请求/, '候选切换不得存在图片专属阻断文案或标签')
 assert.match(
   responseInspectionSource,
   /policy\.source !== 'system_default' && policy\.action === 'retry_next_account'[\s\S]*replayAuthority: 'explicit_user_policy'/,
-  '显式响应策略的归因标签必须可审计，但不得被消费为副作用重放旁路'
+  '显式响应策略的归因标签必须可审计，但不得形成另一套切号规则'
 )
 const codexSyntheticDecisionSource = streamSource.slice(
   streamSource.indexOf('function codexResponsesProtocolDecision'),
@@ -348,13 +231,13 @@ for (const [label, source] of [
 }
 assert.match(
   failureDispatchSource,
-  /if \(!explicitPolicyDecision\) \{[\s\S]*action: 'return_response'/,
-  '显式规则正文不命中且端点不可重放时必须保持透明返回'
+  /if \(!explicitPolicyDecision\) \{\s*return handleOpaqueFailedUpstreamResponse\(input, responseBodyRead\)\s*\}/,
+  '显式策略正文未命中时必须直接复用已读取正文进入统一 opaque 切号'
 )
 assert.match(
   failureDispatchSource,
-  /if \(!explicitPolicyDecision\) \{[\s\S]*isOpaqueUpstreamFailoverAllowed\(req\)[\s\S]*handleOpaqueFailedUpstreamResponse\(input, responseBodyRead\)/,
-  '显式规则只命中状态预筛选时，安全推理端点必须复用已检查正文进入 opaque 接管'
+  /if \(!accountErrorPolicyCouldMatchStatus\(account, response\.status\)\) \{\s*return handleOpaqueFailedUpstreamResponse\(input\)\s*\}/,
+  '无策略状态预筛选路径必须对所有端点直接进入统一 opaque 切号'
 )
 assert.match(
   failureDispatchSource,
@@ -363,38 +246,13 @@ assert.match(
 )
 assert.match(
   failureDispatchSource,
-  /!automaticUpstreamReplayAllowedAfterDispatch\(req, input\.requestLane\)[\s\S]*handleOpaqueFailedUpstreamResponse\(input, undefined, true\)/,
-  '无策略预筛选时，所有不可重放请求的未知 HTTP 失败都必须消费并审计后进入稳定终态'
-)
-assert.match(
-  failureDispatchSource,
-  /!explicitPolicyDecision[\s\S]*!automaticUpstreamReplayAllowedAfterDispatch\(req, input\.requestLane\)[\s\S]*handleOpaqueFailedUpstreamResponse\(input, responseBodyRead, true\)/,
-  '状态预筛选命中但用户规则正文不命中时，不可重放请求仍不得透传供应商原错'
-)
-assert.match(
-  failureDispatchSource,
-  /replayBlocked[\s\S]*accountErrorPolicyAllowsUpstreamReplayAfterDispatch\(req, input\.requestLane, explicitPolicyDecision\)/,
-  '账户错误策略必须经过统一请求语义门禁，不能越过副作用 at-most-once'
-)
-assert.match(
-  failureDispatchSource,
-  /applyAccountErrorHandlingWithCacheInvalidation\(account,[\s\S]*if \(!accountErrorPolicyAllowsUpstreamReplayAfterDispatch\(req, input\.requestLane, explicitPolicyDecision\)\)[\s\S]*failureKind: 'explicit_policy'/,
-  'cooldown/disable 必须先执行显式状态动作，再阻止副作用请求自动跳到下一账户'
+  /applyAccountErrorHandlingWithCacheInvalidation\(account,[\s\S]*action: 'skip_account'[\s\S]*failureKind: 'explicit_policy'/,
+  'cooldown/disable 必须先执行显式状态动作，再无条件沿统一规则切换候选'
 )
 assert.match(
   finalizationSource,
   /pipeNonStreamUpstreamResponseForInspection[\s\S]*maxLifetimeMs: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs[\s\S]*pipeNonStreamUpstreamResponse[\s\S]*maxLifetimeMs: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs/,
   '非流式响应的普通转发与检查缓冲都必须受 lane 独立绝对上限约束'
-)
-assert.match(
-  dispatchSource,
-  /failedResponseResult\.action === 'replay_blocked'[\s\S]*phase: 'opaque_upstream_response'[\s\S]*throw new UpstreamReplayBlockedError/,
-  '图片未知 HTTP 失败必须返回稳定网关错误，不能透传供应商原错或切号'
-)
-assert.match(
-  dispatchSource,
-  /catch \(error\) \{\s*if \(error instanceof UpstreamReplayBlockedError\) \{\s*throw error\s*\}[\s\S]*handleUpstreamRequestError/,
-  '图片 HTTP 重放阻断异常不得被通用 catch 再分类为 transport 故障或重复写状态'
 )
 assert.doesNotMatch(
   failureDispatchSource,

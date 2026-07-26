@@ -543,7 +543,7 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     const response: DbServiceChildMessage = {
       type: 'db_service_process_event_loop_response',
       requestId: record.requestId,
-      sample: buildProcessEventLoopSample('db-service')
+      sample: buildProcessEventLoopSample()
     }
     sendDbServiceChildMessage(response, () => exitDbServiceAfterChildIpcFailure(response.type))
     return true

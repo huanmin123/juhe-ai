@@ -1102,7 +1102,8 @@ assert.match(modelPricingProviderDriverRegistrySource, /buildAnthropicModelCandi
 
 const gatewayFailureDispatchSource = readSource('modules/gateway/response/failure-dispatch.ts')
 assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
-assert.match(gatewayFailureDispatchSource, /automaticUpstreamReplayAllowedAfterDispatch/)
+assert.match(gatewayFailureDispatchSource, /return handleOpaqueFailedUpstreamResponse\(input/)
+assert.doesNotMatch(gatewayFailureDispatchSource, /UpstreamReplayBlockedError|replay_blocked|upstream_outcome_unknown/)
 assert.match(gatewayFailureDispatchSource, /recordFailedDispatchAttempt/, '账号准备等未创建 upstream attempt 的失败分支必须补审计 attempt')
 assert.doesNotMatch(gatewayFailureDispatchSource, /suppressGatewayAccountLocally/, '通用失败不得写跨请求本地账户屏蔽')
 assert.doesNotMatch(gatewayFailureDispatchSource, /parseErrorPayload/)

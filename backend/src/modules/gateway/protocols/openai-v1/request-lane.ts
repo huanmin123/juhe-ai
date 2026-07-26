@@ -17,116 +17,23 @@ type UpstreamReplayRequest = Pick<Request, 'method' | 'originalUrl' | 'path'>
   >>
 
 /**
- * Requests that can create a resource or execute provider-hosted work are not
- * safe to replay automatically. Once the upstream transport has been invoked,
- * the gateway cannot know whether the provider accepted the request.
+ * All gateway requests use the same availability-first failover rule. If the
+ * current attempt does not produce a deliverable result, the dispatcher may
+ * continue with another candidate regardless of endpoint or request lane.
  */
 export function automaticUpstreamReplayAllowedAfterDispatch(
-  req: UpstreamReplayRequest,
-  lane: OpenAIGatewayRequestLane
+  _req: UpstreamReplayRequest,
+  _lane: OpenAIGatewayRequestLane
 ): boolean {
-  if (lane === 'image') return false
-
-  const method = req.method.toUpperCase()
-  if (method === 'GET' || method === 'HEAD') return true
-  if (method !== 'POST') return false
-
-  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
-  if (/\/responses$/i.test(path) && responsesRequestRequiresAtMostOnce(req)) {
-    return false
-  }
-  const anthropicEndpoint = anthropicReplayEndpoint(path)
-  if (anthropicEndpoint === 'messages' && anthropicMessagesRequestRequiresAtMostOnce(req)) {
-    return false
-  }
-
-  return /\/(?:chat\/completions|responses|embeddings)$/i.test(path)
-    || anthropicEndpoint !== undefined
-    || /\/models\/[^/]+:(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.test(path)
-    || /\/interactions\/[^/]+$/i.test(path)
+  return true
 }
 
-function anthropicReplayEndpoint(path: string): 'messages' | 'count_tokens' | undefined {
-  const normalized = path.toLowerCase()
-  if (normalized === '/messages' || normalized === '/v1/messages') return 'messages'
-  if (normalized === '/messages/count_tokens' || normalized === '/v1/messages/count_tokens') return 'count_tokens'
-  return undefined
-}
-
-function anthropicMessagesRequestRequiresAtMostOnce(req: UpstreamReplayRequest): boolean {
-  const body = replayInspectionBody(req)
-  if (!body) {
-    // As with Responses, an uninspectable request cannot be positively proven
-    // to exclude provider-hosted tools or remote state.
-    return true
-  }
-
-  if (anthropicMcpServersRequireAtMostOnce(body.mcp_servers) || body.container !== undefined) {
-    return true
-  }
-
-  return anthropicToolSelectionRequiresAtMostOnce(body.tools)
-}
-
-function responsesRequestRequiresAtMostOnce(req: UpstreamReplayRequest): boolean {
-  const body = replayInspectionBody(req)
-  if (!body) {
-    // Large JSON is intentionally not parsed on the main thread, and adapters
-    // may expose neither body representation. Without positive foreground/tool
-    // metadata, replay safety cannot be established.
-    return true
-  }
-  if (body.background === true) return true
-
-  return responsesToolSelectionRequiresAtMostOnce(body.tools)
-    || responsesToolSelectionRequiresAtMostOnce(body.tool_choice)
-}
-
-function replayInspectionBody(req: UpstreamReplayRequest): Record<string, unknown> | undefined {
+function requestInspectionBody(req: UpstreamReplayRequest): Record<string, unknown> | undefined {
   if (isRecord(req.body)) return req.body
   if (req.gatewayParsedJsonBodyAvailable && isRecord(req.gatewayParsedJsonBody)) {
     return req.gatewayParsedJsonBody
   }
   return undefined
-}
-
-function responsesToolSelectionRequiresAtMostOnce(value: unknown): boolean {
-  if (Array.isArray(value)) {
-    return value.some(responsesToolSelectionRequiresAtMostOnce)
-  }
-  if (!isRecord(value)) return false
-
-  const type = typeof value.type === 'string' ? value.type.trim().toLowerCase() : ''
-  if (!type) return false
-  if (type === 'allowed_tools') {
-    return responsesToolSelectionRequiresAtMostOnce(value.tools)
-  }
-
-  // Function/custom tools are returned to the client for execution. Every
-  // other known or future Responses tool type may execute provider-side work.
-  return type !== 'function' && type !== 'custom'
-}
-
-function anthropicToolSelectionRequiresAtMostOnce(value: unknown): boolean {
-  if (value === undefined) return false
-  if (!Array.isArray(value)) return true
-
-  return value.some((item) => {
-    if (!isRecord(item)) return true
-    if (!Object.hasOwn(item, 'type')) return false
-    if (typeof item.type !== 'string') return true
-    const type = item.type.trim().toLowerCase()
-
-    // Ordinary Anthropic client tools normally omit type; explicit non-custom
-    // types are provider-hosted/server tools and may already have executed.
-    return type !== 'custom'
-  })
-}
-
-function anthropicMcpServersRequireAtMostOnce(value: unknown): boolean {
-  if (value === undefined) return false
-  if (Array.isArray(value)) return value.length > 0
-  return true
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,7 +46,11 @@ export function resolveOpenAIGatewayRequestLane(req: Request): OpenAIGatewayRequ
   }
 
   const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.imageGeneration || requestBodyHasImageGenerationHint(req.body)) {
+  if (
+    bodyState?.imageGeneration
+    || requestBodyHasImageGenerationHint(req.body)
+    || requestBodyRequestsImageOutput(req)
+  ) {
     return 'image'
   }
   return 'text'
@@ -165,5 +76,26 @@ export function isOpenAIGatewayImageGenerationModel(model: string | undefined): 
   return Boolean(normalized && (
     normalized.startsWith('gpt-image')
     || normalized.startsWith('dall-e')
+    || normalized.startsWith('imagen-')
+    || normalized.startsWith('nano-banana')
+    || /(?:^|-)gemini(?:[^/]*-)?image(?:-|$)/.test(normalized)
   ))
+}
+
+function requestBodyRequestsImageOutput(req: UpstreamReplayRequest): boolean {
+  const body = requestInspectionBody(req)
+  if (!body) return false
+  const generationConfig = isRecord(body.generationConfig)
+    ? body.generationConfig
+    : isRecord(body.generation_config)
+      ? body.generation_config
+      : undefined
+  const modalities = generationConfig?.responseModalities ?? generationConfig?.response_modalities
+  if (Array.isArray(modalities) && modalities.some((value) => (
+    typeof value === 'string' && value.trim().toLowerCase() === 'image'
+  ))) {
+    return true
+  }
+  const mime = generationConfig?.responseMimeType ?? generationConfig?.response_mime_type
+  return typeof mime === 'string' && /^image\//i.test(mime.trim())
 }

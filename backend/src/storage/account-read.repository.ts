@@ -372,7 +372,7 @@ function queryAccountRowsForAccess(
 }
 
 function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
-  return options.sorts.some((sort) => sort.field === 'qualityScore')
+  return options.sorts.some((sort) => sort.field === 'qualityScore' || sort.field === 'recentRequestCount')
 }
 
 function accountListNeedsQuotaDatabase(options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {

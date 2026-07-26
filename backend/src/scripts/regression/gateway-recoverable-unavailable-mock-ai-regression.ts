@@ -112,8 +112,8 @@ try {
 
     await assertLocalSuppressionWaitsAndRecovers(baseUrl, localSuppression)
     await assertAllRecoverableAccountsHonorMaxWait(baseUrl, allRecoverableTimeout)
-    await assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, transportFailure)
-    await assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, persistentTransportFailure)
+    await assertSingleCandidateTransportFailureDoesNotEnterRecoveryWait(baseUrl, transportFailure)
+    await assertPersistentSingleCandidateTransportFailureDoesNotEnterRecoveryWait(baseUrl, persistentTransportFailure)
     await assertRateLimitedCooldownWaitsAndRecovers(baseUrl, rateLimitedCooldown)
     await assertActiveCooldownWaitsAndRecovers(baseUrl, activeCooldown)
     await assertFallbackGroupBypassesRecoverableWait(baseUrl, fallback)
@@ -171,29 +171,29 @@ async function assertAllRecoverableAccountsHonorMaxWait(baseUrl: string, scenari
   assert.match(response.text, /upstream_retryable_error/, `全池可恢复等待耗尽后应返回稳定可重试错误码，实际耗时 ${elapsedMs}ms`)
 }
 
-async function assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+async function assertSingleCandidateTransportFailureDoesNotEnterRecoveryWait(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
   const startedAt = Date.now()
-  const response = await postChat(baseUrl, scenario.apiKey, 'opaque transport failure must not replay')
+  const response = await postChat(baseUrl, scenario.apiKey, 'single candidate transport failure must exhaust once')
   const elapsedMs = Date.now() - startedAt
   const matchingAuthorizations = authorizationsSince(startHitCount)
     .filter((authorization) => authorization === 'Bearer sk-recoverable-transport-failure')
   assert.equal(response.status, 503, `通用 POST 传输失败应交给客户端决定是否重试，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /上游暂时不可用|上游请求失败/)
   assert(elapsedMs < 3_000, `通用 POST 传输失败不得进入服务端恢复等待，实际 ${elapsedMs}ms`)
-  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-failure'], '通用 POST 可能已被上游接受，不得服务端重放')
+  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-failure'], '仅有一个候选时统一切号也只能派发该候选一次')
 }
 
-async function assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+async function assertPersistentSingleCandidateTransportFailureDoesNotEnterRecoveryWait(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
   const startedAt = Date.now()
-  const response = await postChat(baseUrl, scenario.apiKey, 'persistent opaque transport failure must not replay')
+  const response = await postChat(baseUrl, scenario.apiKey, 'persistent single candidate transport failure must exhaust once')
   const elapsedMs = Date.now() - startedAt
   const matchingAuthorizations = authorizationsForKeySince(startHitCount, 'sk-recoverable-transport-always-fails')
   assert.equal(response.status, 503, `持续通用 POST transport 失败应直接交给客户端重试，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /上游暂时不可用|上游请求失败/)
   assert(elapsedMs < 3_000, `持续通用 POST transport 失败不得消耗服务端恢复预算，实际 ${elapsedMs}ms`)
-  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-always-fails'], '持续通用 POST transport 失败也不得服务端重放')
+  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-always-fails'], '持续失败且仅有一个候选时也不得重复派发同一候选')
 }
 
 async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {

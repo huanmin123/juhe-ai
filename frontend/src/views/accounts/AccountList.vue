@@ -33,17 +33,20 @@
         :column-key="tableColumnKey(column)"
         :group-name="groupName"
         :menu-items="menuItems"
+        :priority-editing="editingPriorityAccountId === record.id"
         :provider-name="providerName"
         :proxy="proxy"
         :save-priority="savePriority"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
         @bind-group="$emit('bind-group', $event)"
+        @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
         @clone="$emit('clone', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', $event.id)"
         @refresh-balance="$emit('refresh-balance', $event)"
+        @start-priority-edit="$emit('start-priority-edit', $event)"
         @test="$emit('test', $event)"
       />
     </template>
@@ -57,11 +60,13 @@
         :group-name="groupName(record.id)"
         :is-management-view="isManagementView"
         :menu-items="menuItems(record)"
+        :priority-editing="editingPriorityAccountId === record.id"
         :provider-name="providerName(record.providerCode)"
         :proxy="proxy(record.proxyProfileId)"
         :save-priority="savePriority"
         :selected="isSelected(record.id)"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
+        @cancel-priority-edit="$emit('cancel-priority-edit', $event)"
         @delete="$emit('delete', record.id)"
         @clone="$emit('clone', record)"
         @edit="$emit('edit', record)"
@@ -69,6 +74,7 @@
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', record.id)"
         @refresh-balance="$emit('refresh-balance', record.id)"
+        @start-priority-edit="$emit('start-priority-edit', $event)"
         @test="$emit('test', record)"
         @toggle-selection="$emit('toggle-selection', record)"
       />
@@ -92,6 +98,7 @@ defineProps<{
   canEdit: (account: AccountSummary) => boolean
   canSelect: (account: AccountSummary) => boolean
   columns: Array<Record<string, unknown>>
+  editingPriorityAccountId?: string
   groupName: (accountId: string) => string | undefined
   isManagementView: boolean
   isSelected: (accountId: string) => boolean
@@ -115,6 +122,7 @@ defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
   (event: 'change', ...args: unknown[]): void
   (event: 'clone', account: AccountSummary): void
+  (event: 'cancel-priority-edit', accountId: string): void
   (event: 'delete', accountId: string): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
@@ -123,6 +131,7 @@ defineEmits<{
   (event: 'return-authorization', accountId: string): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
+  (event: 'start-priority-edit', accountId: string): void
   (event: 'test', account: AccountSummary): void
   (event: 'toggle-selection', account: AccountSummary): void
 }>()

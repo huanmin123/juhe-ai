@@ -24,6 +24,7 @@ export interface SystemForm {
   imageFirstResponseTimeoutSeconds: number
   imageStreamIdleTimeoutSeconds: number
   imageUncommittedAttemptMaxLifetimeSeconds: number
+  imageRequestWallTimeoutSeconds: number
   chatImageGenerationTotalTimeoutSeconds: number
   noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
@@ -62,6 +63,7 @@ export const defaultSystemSettings: SystemForm = {
   imageFirstResponseTimeoutSeconds: 600,
   imageStreamIdleTimeoutSeconds: 120,
   imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  imageRequestWallTimeoutSeconds: 3600,
   chatImageGenerationTotalTimeoutSeconds: 900,
   noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
@@ -103,6 +105,7 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     imageFirstResponseTimeoutSeconds: integerValue(settings.imageFirstResponseTimeoutSeconds, '图像首响应等待上限', 10, 3600),
     imageStreamIdleTimeoutSeconds: integerValue(settings.imageStreamIdleTimeoutSeconds, '图像流式停顿上限', 1, 3600),
     imageUncommittedAttemptMaxLifetimeSeconds: integerValue(settings.imageUncommittedAttemptMaxLifetimeSeconds, '图像未提交尝试最大存活时间', 60, 86400),
+    imageRequestWallTimeoutSeconds: integerValue(settings.imageRequestWallTimeoutSeconds, '图像整请求总时限', 60, 86400),
     chatImageGenerationTotalTimeoutSeconds: integerValue(settings.chatImageGenerationTotalTimeoutSeconds, 'AI 对话生图总超时', 60, 86400),
     noAvailableAccountWaitTimeoutSeconds: integerValue(settings.noAvailableAccountWaitTimeoutSeconds, '无可用账号等待上限', 10, 3600),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '流失败诊断计数', 1, 100),

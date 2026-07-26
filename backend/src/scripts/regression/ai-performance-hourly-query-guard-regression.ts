@@ -39,7 +39,8 @@ try {
     name: 'AI 性能小时查询 A',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-a', base_url: 'https://api.openai.com/v1' },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, adminAccess)
   const accountB = repositories.createAccount({
     providerCode: 'gpt',
@@ -47,7 +48,8 @@ try {
     name: 'AI 性能小时查询 B',
     type: 'api_key',
     credentials: { api_key: 'sk-ai-performance-hourly-b', base_url: 'https://api.openai.com/v1' },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, adminAccess)
   seedHourlyRows(databaseModule.getStatsDatabase(), accountA.id, accountB.id)
 

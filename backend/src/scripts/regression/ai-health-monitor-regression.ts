@@ -31,6 +31,7 @@ try {
   const monitorSource = readFileSync(resolve('src/storage/account-health-monitor.repository.ts'), 'utf8')
   assert.doesNotMatch(monitorSource, /\busage_records\b/i, '健康监控请求路径不得扫描使用记录明细')
   assert.match(monitorSource, /FROM account_health_hourly/, '健康监控必须查询小时预聚合表')
+  assert.match(monitorSource, /field: 'recentRequestCount'[\s\S]+field: 'lastUsedAt'/, '健康监控必须先按近期请求数、再按最近使用时间排序')
 
   const group = repositories.createGroup({ name: 'AI 健康监控回归分组', providerCode: 'gpt' }, access)
   const account = repositories.createAccount({
@@ -43,7 +44,7 @@ try {
     healthCheckModel: 'gpt-5.1',
     groupId: group.id
   }, access)
-  const currentHour = new Date()
+  const currentHour = new Date(Date.now() - 60 * 60_000)
   currentHour.setMinutes(0, 0, 0)
   const previousHourAt = new Date(currentHour.getTime() - 55 * 60_000).toISOString()
   const currentSuccessAt = new Date(currentHour.getTime() + 5 * 60_000).toISOString()
@@ -83,7 +84,50 @@ try {
   const bounded = healthMonitorRepository.getAiHealthList(access, { hours: 9999, pageSize: 20 })
   assert.equal(bounded.rangeHours, 31 * 24, '最大范围必须限制为 31 天')
   assert.equal(bounded.items.find((item) => item.id === account.id)?.hours.length, 31 * 24)
+
+  const highRecent = createSortAccount('AI 健康排序-高频较新', 'recent')
+  const highOlder = createSortAccount('AI 健康排序-高频较旧', 'older')
+  const lowLatest = createSortAccount('AI 健康排序-低频最新', 'latest')
+  const now = Date.now()
+  const highRecentAt = new Date(now - 60 * 60_000).toISOString()
+  const highOlderAt = new Date(now - 2 * 24 * 60 * 60_000).toISOString()
+  const lowLatestAt = new Date(now).toISOString()
+  const updateLastUsed = databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET last_used_at = ? WHERE id = ?')
+  updateLastUsed.run(highRecentAt, highRecent.id)
+  updateLastUsed.run(highOlderAt, highOlder.id)
+  updateLastUsed.run(lowLatestAt, lowLatest.id)
+  const qualityWindowStart = new Date(now - 10 * 60_000).toISOString()
+  const qualityWindowEnd = new Date(now).toISOString()
+  const insertQuality = databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO account_quality_scores (
+      account_id, system_account_id, provider_code, recent_request_count,
+      window_started_at, window_ended_at, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', ?, ?, ?, ?)
+  `)
+  insertQuality.run(highRecent.id, 50, qualityWindowStart, qualityWindowEnd, highRecentAt)
+  insertQuality.run(highOlder.id, 50, qualityWindowStart, qualityWindowEnd, highOlderAt)
+  insertQuality.run(lowLatest.id, 5, qualityWindowStart, qualityWindowEnd, lowLatestAt)
+
+  const sorted = healthMonitorRepository.getAiHealthList(access, { hours: 3, keyword: 'AI 健康排序-', page: 1, pageSize: 20 })
+  assert.deepEqual(
+    sorted.items.map((item) => item.id),
+    [highRecent.id, highOlder.id, lowLatest.id],
+    '健康监控必须先按近期请求数降序，再按最后使用时间降序'
+  )
   console.log('AI 健康监控回归通过')
+
+  function createSortAccount(name: string, keySuffix: string) {
+    return repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: 'profile_gpt_openai_v1',
+      name,
+      type: 'api_key',
+      credentials: { api_key: `sk-ai-health-sort-${keySuffix}`, base_url: 'https://api.openai.com/v1' },
+      supportedModels: ['gpt-5.1'],
+      healthCheckModel: 'gpt-5.1',
+      groupId: group.id
+    }, access)
+  }
 
   function healthRecord(id: string, createdAt: string, success: boolean, statusCode?: number, errorCode?: string, errorMessage?: string) {
     return {

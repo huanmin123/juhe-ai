@@ -49,6 +49,14 @@
       </template>
     </ResponsiveListToolbar>
 
+    <a-alert
+      v-if="!rangeReady"
+      class="ip-stats-range-alert"
+      type="warning"
+      show-icon
+      :message="`${currentUsageWindowLabel}用量窗口尚未完成预聚合，请稍后刷新。`"
+    />
+
     <IpStatsList
       :empty-description="emptyDescription"
       :loading="loading"
@@ -664,6 +672,10 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 
 .ip-stats-status {
   width: 130px;
+}
+
+.ip-stats-range-alert {
+  margin-bottom: 12px;
 }
 
 .policy-duration-input {

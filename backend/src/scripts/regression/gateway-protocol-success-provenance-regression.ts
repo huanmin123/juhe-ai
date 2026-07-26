@@ -121,7 +121,7 @@ assert.equal(nonStreamJsonProtocolValidationAllowed({
   }),
   account,
   upstreamResponse: { ok: true }
-}), false, 'Chat 入口中的图片模型请求也必须保持 at-most-once')
+}), true, 'Chat 入口中的图片模型请求必须与文本共用提交前协议验证和候选切换')
 assert.equal(nonStreamJsonProtocolValidationAllowed({
   req: requestWithBody('/v1/messages', {
     model: 'claude-sonnet-4-5',
@@ -138,13 +138,13 @@ assert.equal(nonStreamJsonProtocolValidationAllowed({
   }),
   account: anthropicAccount,
   upstreamResponse: { ok: true }
-}), false, 'Anthropic 服务端工具可能已执行，不得因响应结构异常自动重放')
+}), true, 'Anthropic 服务端工具未交付有效结果时必须与普通 Messages 共用候选切换')
 for (const sideEffectPath of ['/v1/images/generations', '/v1/audio/speech', '/v1/files']) {
   assert.equal(nonStreamJsonProtocolValidationAllowed({
     req: requestWithBody(sideEffectPath, { model: 'gpt-5.5', input: 'side effect' }),
     account,
     upstreamResponse: { ok: true }
-  }), false, `${sideEffectPath} 不得启用可触发自动切号的协议结构验证`)
+  }), false, `${sideEffectPath} 尚无提交前结构校验器时不得伪装成已验证协议；HTTP/transport 失败仍由统一候选切换处理`)
 }
 assert.equal(nonStreamJsonProtocolValidationAllowed({
   req: requestWithBody('/v1/chat/completions', {

@@ -1,6 +1,6 @@
 import { normalizeListPage } from './query-utils.js'
 
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'recentRequestCount' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 export type AccountListSortDirection = 'asc' | 'desc'
 
 export interface AccountListSort {
@@ -53,6 +53,7 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
   fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
   qualityScore: 'quality_score',
+  recentRequestCount: 'COALESCE(quality_recent_request_count, 0)',
   name: 'account_rows.name',
   type: 'account_rows.type',
   providerCode: 'account_rows.provider_code',

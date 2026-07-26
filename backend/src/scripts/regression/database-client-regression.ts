@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -129,13 +130,33 @@ async function testPostgresDatabaseClient(): Promise<void> {
 
   await client.transaction(async (tx) => {
       await tx.execute('INSERT INTO demo (id, name) VALUES (?, ?)', ['id_1', 'name_1'])
+      await Promise.all([
+        tx.query('SELECT serial_one FROM demo'),
+        tx.query('SELECT serial_two FROM demo'),
+        tx.transaction(async (nestedTx) => Promise.all([
+          nestedTx.query('SELECT serial_nested_one FROM demo'),
+          nestedTx.query('SELECT serial_nested_two FROM demo')
+        ]))
+      ])
     })
   const committedConnection = assertConnection(pool.connection)
   assert.equal(committedConnection.queries[0]?.sql, 'BEGIN')
   assert.match(committedConnection.queries[1]?.sql ?? '', /^SET LOCAL statement_timeout/)
   assert.equal(committedConnection.queries[2]?.sql, 'INSERT INTO demo (id, name) VALUES ($1, $2)')
-  assert.equal(committedConnection.queries[3]?.sql, 'COMMIT')
+  assert.deepEqual(
+    committedConnection.queries.slice(3, 7).map((query) => query.sql),
+    [
+      'SELECT serial_one FROM demo',
+      'SELECT serial_two FROM demo',
+      'SELECT serial_nested_one FROM demo',
+      'SELECT serial_nested_two FROM demo'
+    ],
+    '同一个 PostgreSQL 事务连接上的 Promise.all / 嵌套事务查询必须按提交顺序串行执行'
+  )
+  assert.equal(committedConnection.queries[7]?.sql, 'COMMIT')
+  assert.equal(committedConnection.maxConcurrentQueries, 1, '事务连接不得并发执行 client.query')
   assert.equal(committedConnection.releaseCount, 1)
+  assert.equal(committedConnection.releaseError, undefined)
 
   pool.connection = undefined
   await assert.rejects(
@@ -151,6 +172,26 @@ async function testPostgresDatabaseClient(): Promise<void> {
   assert.equal(rolledBackConnection.queries[2]?.sql, 'INSERT INTO demo (id, name) VALUES ($1, $2)')
   assert.equal(rolledBackConnection.queries[3]?.sql, 'ROLLBACK')
   assert.equal(rolledBackConnection.releaseCount, 1)
+
+  pool.connection = undefined
+  let releaseBlockedOperation: (() => void) | undefined
+  const blockedOperation = new Promise<void>((resolvePromise) => {
+    releaseBlockedOperation = resolvePromise
+  })
+  const terminatedTransaction = client.transaction(async () => {
+    await blockedOperation
+    return 'should-not-commit'
+  })
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+  const terminatedConnection = assertConnection(pool.connection)
+  const terminationError = Object.assign(new Error('terminating connection due to idle-in-transaction timeout'), { code: '25P03' })
+  const terminationAssertion = assert.rejects(terminatedTransaction, (error: unknown) => error === terminationError)
+  terminatedConnection.emit('error', terminationError)
+  await terminationAssertion
+  releaseBlockedOperation?.()
+  assert.equal(terminatedConnection.releaseCount, 1, '事务连接异步 error 必须由事务边界接管并释放，不能升级为进程 uncaughtException')
+  assert.equal(terminatedConnection.releaseError, terminationError, '服务端终止的连接必须带 error 释放，禁止回收到 pool')
+  assert.equal(terminatedConnection.listenerCount('error'), 0, '事务结束后不得遗留连接 error listener')
 }
 
 interface LoggedQuery {
@@ -185,17 +226,28 @@ class FakePostgresPool {
   }
 }
 
-class FakePostgresConnection implements PostgresPoolClient {
+class FakePostgresConnection extends EventEmitter implements PostgresPoolClient {
   queries: LoggedQuery[] = []
   releaseCount = 0
+  releaseError: Error | undefined
+  maxConcurrentQueries = 0
+  private activeQueries = 0
 
   async query(sql: string, params: readonly unknown[] = []): Promise<PostgresQueryResult> {
-    this.queries.push({ sql, params })
-    return { rows: [], rowCount: 1 }
+    this.activeQueries += 1
+    this.maxConcurrentQueries = Math.max(this.maxConcurrentQueries, this.activeQueries)
+    try {
+      this.queries.push({ sql, params })
+      await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+      return { rows: [], rowCount: 1 }
+    } finally {
+      this.activeQueries -= 1
+    }
   }
 
-  release(): void {
+  release(error?: Error): void {
     this.releaseCount += 1
+    this.releaseError = error
   }
 }
 

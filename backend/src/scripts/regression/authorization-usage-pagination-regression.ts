@@ -81,7 +81,8 @@ try {
       api_key: 'sk-authorization-usage-pagination',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.5']
   }, ownerAccess)
   const granteeAGroup = repositories.createGroup({
     name: '授权分页用户A目标分组',

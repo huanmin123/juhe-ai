@@ -27,9 +27,9 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。Codex `ModelInfo` 的默认 reasoning、支持级别、服务等级和多代理版本必须由模型目录精确能力驱动，不再给所有模型伪造统一值；OpenAI API wire reasoning 与 Codex `ultra` 分开建模。
 
-单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF，只有在当前请求为可安全重放文本、`semanticCommitted = false` 且预算允许时，才可进入服务端隐藏重试；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 一旦派发后保持唯一 attempt。SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`，但不能放宽请求重放语义。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF，在 `semanticCommitted = false` 且预算允许时按统一规则进入服务端候选切换；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 不设例外。SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`，不等同于语义提交。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-Codex Responses SSE 的可安全重放文本请求如果在建流前遇到上游 HTTP 非 `2xx`，可按 Codex 精确画像的协议结构和用户显式策略在 `semanticCommitted = false` 且预算允许时切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 一旦派发后保持唯一 attempt，不能因 `retry_next` 或尚未输出而重放。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；安全文本推理端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 与副作用 POST 继续按各自透明/at-most-once 边界处理。
+Codex Responses SSE 在建流前遇到上游 HTTP 非 `2xx`，或精确协议确认失败且 `semanticCommitted = false`、预算允许时，按统一规则切换账号；副作用型 Responses、图片、音频、文件/资源、后台任务和 hosted tool 同样执行。服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端不解释具体状态码或正文；所有端点只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，整个请求最多 64 次真实 attempt，且不写共享 Key/账户状态。完整 `2xx` 继续按协议透明或验证边界处理。
 
 ## 协议与供应商定义
 
@@ -134,7 +134,7 @@ OAuth 运行时修复口径：
 
 - API Key 加密存储；单 Key 账户保存 `credentials.api_key`，多 Key 账户额外保存 `credentials.api_keys`、`credentials.api_key_strategy` 和可选 `credentials.api_key_weights`
 - 新增 API Key 账户时默认展示一个 API Key 输入框；可继续添加输入框，也可粘贴多行文本，前端会提取 `sk-` 开头的密钥并生成多条输入。多个密钥只创建一个账户，复用同一 Base URL、分组、代理、支持模型、时间计划和错误处理策略。
-- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。安全文本推理请求按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 在本请求内唯一尝试当前可执行 Key，再切后续账户；跨账户物理凭据去重，整个请求最多 64 次真实上游 attempt。未知 HTTP 状态/正文只产生请求内排除，不写共享 Key 状态；图片、音频、文件/资源创建和其他副作用 POST 派发后不轮换 Key。
+- 只有配置多个 API Key 时才显示账户内 Key 策略；默认 `round_robin` 轮询，每次请求在该账户内部选择下一个上游 Key；可切换为 `weighted_round_robin`，按每个 Key 的 `1-100` 权重做平滑加权轮询。账户内 Key 选择发生在系统已选中该账户之后，不改变分组内账户切号、并发和授权边界。所有请求按 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md) 在未交付结果时唯一尝试当前可执行 Key，再切后续账户；跨账户物理凭据去重，整个请求最多 64 次真实上游 attempt。未知 HTTP 状态/正文只产生请求内排除，不写共享 Key 状态；图片、音频、文件/资源创建和其他请求同样轮换候选。
 - 多 Key API Key 账户的人工测试可以诊断账户内所有 Key，账户级结果只要求至少 1 个 Key 可用；测试只返回逐 Key 脱敏结果，不改写、初始化、恢复或摘除 Key 运行态。Key 初始化和恢复由后台激活检查、Key 检查与恢复探针负责。
 - 新建 API Key 账户固定写入 `status = pending_test` 且 `schedulable = false`，事务完成后投递后台激活检查；创建请求不接受人工测试任务 ID 作为直接激活凭证。
 - API Key 账户允许重复添加相同凭据；同一个固定 API Key 即使指向同一上游域名，也可以创建多个账户。系统只保留凭据指纹用于排查相同 API Key，不承担唯一约束。

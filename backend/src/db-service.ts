@@ -18,6 +18,7 @@ import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsD
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { dbServiceSuccessLogLevel } from './shared/logging/runtime-log-policy.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
+import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -65,6 +66,7 @@ let dbServiceShutdownPromise: Promise<void> | undefined
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
+  startPerformanceProcessMetricsPublisher()
   startLogMaintenance()
   setDbServiceQueueRuntimeProvider(buildDbServiceQueueRuntimeMetrics)
   if (runtimeConfig.databaseDriver === 'sqlite') {
@@ -132,6 +134,7 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'db_service_storage_shutdown_failed' }), 'DB service 退出时关闭数据库连接失败')
   }
+  stopPerformanceProcessMetricsPublisher()
   await closeLogger()
   process.exit(exitCode)
 }

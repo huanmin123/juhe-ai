@@ -336,7 +336,7 @@ Anthropic 非流式错误结构：
 - HTTP 状态码、`error.type`、错误文案和 `request_id` 只作为使用记录、审计、诊断摘要和账户错误处理策略输入。
 - 代码不得内置 `authentication_error = 账号异常`、`rate_limit_error = 账号限流`、`overloaded_error = 临时不可调用` 这类固定映射。
 - 通用 Anthropic 客户端不解释完整上游非 `2xx` 的状态或错误体；安全文本 Messages 请求只按 `response.ok=false` 做内容无关的请求级 Key/账号接管，不写共享状态。Claude Code 精确画像才允许额外按声明的协议结构处理，用户显式策略按配置执行。transport / timeout 失败仍按“独立确认 -> 切换其他账号 / 分组 -> 后台事前确认”的统一流程处理。
-- 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案；这是账户所有者的显式管理意图，命中后按配置的 `retry_next`、TTL 避让或状态动作执行并保留来源，不走系统默认 transport 分类。只有 `retry_next` 表达重放意图，且副作用 POST 派发后仍受 at-most-once 门禁。
+- 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案；这是账户所有者的显式管理意图，命中后按配置的 `retry_next`、TTL 避让或状态动作执行并保留来源，不走系统默认 transport 分类。账户状态动作与当前请求切号彼此独立：所有请求在未交付可用结果且下游尚未语义提交时均按统一规则切换候选。
 - Anthropic `event: error`、缺少 `message_stop`、上游 EOF 或流式中断按流式失败流水线处理；是否写持久账号状态仍由确认阶段决定。
 - 最终返回给 Anthropic native 客户端的本地错误使用 Anthropic error shape，而不是 OpenAI error shape；所有候选账号耗尽时返回本地统一错误语义，不透传最后一个上游错误体作为权威结论。
 - `request-id` 响应头和 body 内 `request_id` 都应写入审计元数据，便于排障。
@@ -618,7 +618,7 @@ MCP 是工具 / 上下文协议，不是本项目的上游模型网关协议。�
 - 流式响应能按 `message_start -> content_block_* -> message_delta -> message_stop` 增量转发，并正确处理 `ping` 和未知事件。
 - 流内 `event: error` 能进入统一上游失败链路。
 - `authentication_error`、`rate_limit_error`、`overloaded_error` 等 Anthropic 错误类型只进入审计和策略匹配输入，不能被代码直接写成异常、限流或临时不可调用。
-- 账户错误处理策略命中 Anthropic 错误类型后，按用户显式 provenance / generation / CAS 直接执行配置动作，不等待系统自动 confirmation；未命中策略的完整 HTTP / 正文只作请求级 opaque 诊断。只有独立后台 transport 证据才进入自动确认；`retry_next` 仍受安全文本与副作用 at-most-once 门禁。
+- 账户错误处理策略命中 Anthropic 错误类型后，按用户显式 provenance / generation / CAS 直接执行配置动作，不等待系统自动 confirmation；未命中策略的完整 HTTP / 正文只作请求级 opaque 诊断。只有独立后台 transport 证据才进入自动确认；当前请求是否继续候选不依赖错误类型或策略动作，只依赖是否尚未交付可用结果、是否尚未语义提交及请求预算。
 - 尚未写出任何 SSE body 的流式失败可以服务端切号；已经写出任意 Anthropic SSE body 后不做静默拼接。
 - 模型不匹配、端点不支持、本地认证失败、额度不足和分组无可承接账号不写 Anthropic 账号状态。
 - 本地认证失败、分组无账号、端点能力不匹配和模型不匹配时返回 Anthropic error shape。
