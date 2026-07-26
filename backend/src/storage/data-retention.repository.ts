@@ -978,9 +978,10 @@ export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 100
   const batchLimit = positiveLimit(limit)
   const rows = database
     .prepare(`
-      SELECT id
-      FROM model_check_runs
+    SELECT id
+    FROM model_check_runs
       WHERE created_at < ?
+        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
@@ -1017,6 +1018,7 @@ export async function cleanupModelCheckRunsBeforeAsync(cutoffCreatedAt: string, 
     SELECT id
     FROM juhe_dataset.model_check_runs
     WHERE created_at < ?
+      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `, [cutoffCreatedAt, positiveLimit(limit)])

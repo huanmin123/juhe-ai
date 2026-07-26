@@ -146,10 +146,11 @@ type ModelQualityScheduleWriter interface {
 }
 
 type ModelQualityScheduleClaimInput struct {
-	OwnerID    ModelQualityClaimOwnerID
-	Now        time.Time
-	LeaseUntil time.Time
-	Limit      int
+	OwnerID ModelQualityClaimOwnerID
+	// LeaseDuration is applied to one PostgreSQL clock_timestamp() inside
+	// each claim write. Callers cannot extend a lease with a skewed host clock.
+	LeaseDuration time.Duration
+	Limit         int
 }
 
 // ModelQualityScheduleClaim is a durable scheduler hand-off. The adapter must
@@ -184,8 +185,10 @@ type ModelQualityScheduleCompleteInput struct {
 	Lease            ModelQualityScheduleLease
 	RunID            string
 	Status           ModelQualityScheduleCompletionStatus
-	CompletedAt      time.Time
-	Interval         time.Duration
+	// CompletedAt is retained for source compatibility only. PostgreSQL owns
+	// completion time, lease expiry and next_run_at; adapters must not trust it.
+	CompletedAt time.Time
+	Interval    time.Duration
 }
 
 type ModelQualityScheduleCompleter interface {
@@ -276,10 +279,11 @@ type ModelQualityEnforcementApplier interface {
 }
 
 type ModelQualityRecoveryClaimInput struct {
-	OwnerID    ModelQualityClaimOwnerID
-	Now        time.Time
-	LeaseUntil time.Time
-	Limit      int
+	OwnerID ModelQualityClaimOwnerID
+	// LeaseDuration is applied to one PostgreSQL clock_timestamp() inside
+	// each claim write. Callers cannot extend a lease with a skewed host clock.
+	LeaseDuration time.Duration
+	Limit         int
 }
 
 // ModelQualityRecoveryClaim contains all three fences required to launch a
@@ -318,7 +322,9 @@ type ModelQualityRecoveryCompleteInput struct {
 	RunID                         string
 	Passed                        bool
 	RecoveryInterval              time.Duration
-	CompletedAt                   time.Time
+	// CompletedAt is retained for source compatibility only. PostgreSQL owns
+	// completion time, lease expiry and recovery_due_at; adapters must not trust it.
+	CompletedAt time.Time
 }
 
 type ModelQualityRecoveryCompleteResult struct {

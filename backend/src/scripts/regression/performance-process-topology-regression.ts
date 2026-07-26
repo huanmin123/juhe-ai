@@ -93,6 +93,11 @@ try {
     JUHE_AI_LOG_WORKER_REPLICAS: '999'
   })
   runChild('performance-default', performanceEnv())
+  runChildFailure('performance-production-missing-instance-id', {
+    ...performanceEnv(),
+    NODE_ENV: 'production',
+    JUHE_AI_INSTANCE_ID: ''
+  }, 'JUHE_AI_INSTANCE_ID')
   runChild('performance-gateway', {
     ...performanceEnv(),
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
@@ -130,6 +135,24 @@ function runChild(mode: string, overrides: NodeJS.ProcessEnv): void {
     encoding: 'utf8'
   })
   assert.equal(result.status, 0, `topology child ${mode} failed\nstdout=${result.stdout}\nstderr=${result.stderr}`)
+}
+
+function runChildFailure(mode: string, overrides: NodeJS.ProcessEnv, expectedMessage: string): void {
+  const result = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+    cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+    env: {
+      ...process.env,
+      JUHE_AI_PERFORMANCE_TOPOLOGY_CHILD: mode,
+      JUHE_AI_ENV_FILE: '',
+      JUHE_AI_LOG_FILE_ENABLED: 'true',
+      JUHE_AI_LOG_DIR: tempRoot,
+      JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+      ...overrides
+    },
+    encoding: 'utf8'
+  })
+  assert.notEqual(result.status, 0, `topology child ${mode} 应拒绝缺少稳定实例 ID 的 production performance 配置`)
+  assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(expectedMessage), `topology child ${mode} 应报告缺失配置名`)
 }
 
 function performanceEnv(): NodeJS.ProcessEnv {

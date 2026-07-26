@@ -308,7 +308,7 @@ export const runtimeConfig: RuntimeConfig = {
   performanceNodeRole: configuredPerformanceNodeRole,
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
   workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
-  instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID'),
+  instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID', configuredRuntimeMode),
   workerReplicaIndex: numberConfig('JUHE_AI_WORKER_REPLICA_INDEX', 0, 0, 63),
   topology: {
     backgroundWorkerSupervisorEnabled: configuredRuntimeMode === 'standalone'
@@ -597,9 +597,14 @@ function performanceNodeRoleConfig(name: string, fallback: PerformanceNodeRole):
   throw new Error(`${name} 只能配置为 combined、gateway 或 control`)
 }
 
-function runtimeInstanceIdConfig(name: string): string {
+function runtimeInstanceIdConfig(name: string, runtimeMode: RuntimeMode): string {
   const configured = rawStringConfig(name)?.trim()
-  if (!configured) return `process-${process.pid}`
+  if (!configured) {
+    if (runtimeMode === 'performance' && rawStringConfig('NODE_ENV')?.toLowerCase() === 'production') {
+      throw new Error(`${name} 在 production performance 模式下必须显式配置为跨重启稳定且进程唯一的值`)
+    }
+    return `process-${process.pid}`
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(configured)) {
     throw new Error(`${name} 必须以字母或数字开头，且只能包含字母、数字、点、下划线或连字符，最长 64 字符`)
   }

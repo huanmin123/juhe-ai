@@ -23,10 +23,19 @@ import (
 )
 
 const (
-	modelQualityHealthSyncMaximumDecisionBytes = 64 << 10
-	modelQualityHealthSyncMaximumErrorBytes    = 64 << 10
-	modelQualityHealthSyncQuarantineDelay      = time.Hour
-	modelQualityHealthSyncMaximumRetryDelay    = 24 * time.Hour
+	modelQualityHealthSyncMaximumDecisionBytes        = 64 << 10
+	modelQualityHealthSyncMaximumErrorBytes           = 64 << 10
+	modelQualityHealthSyncMaximumRunIDBytes           = 256
+	modelQualityHealthSyncMaximumSystemAccountIDBytes = 256
+	modelQualityHealthSyncMaximumProviderCodeBytes    = 256
+	modelQualityHealthSyncMaximumAccountIDBytes       = 256
+	modelQualityHealthSyncMaximumModelBytes           = 512
+	modelQualityHealthSyncMaximumProfileBytes         = 16
+	modelQualityHealthSyncMaximumLevelBytes           = 32
+	modelQualityHealthSyncMaximumFinishedAtBytes      = 64
+	modelQualityHealthSyncMaximumUpdatedAtBytes       = 64
+	modelQualityHealthSyncQuarantineDelay             = time.Hour
+	modelQualityHealthSyncMaximumRetryDelay           = 24 * time.Hour
 )
 
 type modelQualityHealthSyncBeginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error)
@@ -36,19 +45,24 @@ type modelQualityHealthSyncExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+type modelQualityHealthSyncBoundedText struct {
+	value pgtype.Text
+	bytes int64
+}
+
 type modelQualityHealthSyncCandidate struct {
-	runID           string
-	systemAccountID string
-	providerCode    string
-	accountID       string
-	model           string
-	profile         string
+	rowRef          string
+	runID           modelQualityHealthSyncBoundedText
+	systemAccountID modelQualityHealthSyncBoundedText
+	providerCode    modelQualityHealthSyncBoundedText
+	accountID       modelQualityHealthSyncBoundedText
+	model           modelQualityHealthSyncBoundedText
+	profile         modelQualityHealthSyncBoundedText
 	score           int64
-	level           string
-	finishedAtRaw   pgtype.Text
-	decisionJSON    pgtype.Text
-	decisionBytes   int64
-	updatedAtRaw    string
+	level           modelQualityHealthSyncBoundedText
+	finishedAtRaw   modelQualityHealthSyncBoundedText
+	decisionJSON    modelQualityHealthSyncBoundedText
+	updatedAtRaw    modelQualityHealthSyncBoundedText
 	claimEpoch      int64
 	attemptCount    int64
 }
@@ -108,6 +122,15 @@ func claimFailedModelQualityHealthSyncs(
 	rows, err := tx.Query(ctx, claimModelQualityHealthSyncCandidatesSQL,
 		input.Limit,
 		modelQualityHealthSyncMaximumDecisionBytes,
+		modelQualityHealthSyncMaximumRunIDBytes,
+		modelQualityHealthSyncMaximumSystemAccountIDBytes,
+		modelQualityHealthSyncMaximumProviderCodeBytes,
+		modelQualityHealthSyncMaximumAccountIDBytes,
+		modelQualityHealthSyncMaximumModelBytes,
+		modelQualityHealthSyncMaximumProfileBytes,
+		modelQualityHealthSyncMaximumLevelBytes,
+		modelQualityHealthSyncMaximumFinishedAtBytes,
+		modelQualityHealthSyncMaximumUpdatedAtBytes,
 	)
 	if err != nil {
 		return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("select model quality health-sync candidates: %w", err)
@@ -116,18 +139,28 @@ func claimFailedModelQualityHealthSyncs(
 	for rows.Next() {
 		var candidate modelQualityHealthSyncCandidate
 		if err := rows.Scan(
-			&candidate.runID,
-			&candidate.systemAccountID,
-			&candidate.providerCode,
-			&candidate.accountID,
-			&candidate.model,
-			&candidate.profile,
+			&candidate.rowRef,
+			&candidate.runID.value,
+			&candidate.runID.bytes,
+			&candidate.systemAccountID.value,
+			&candidate.systemAccountID.bytes,
+			&candidate.providerCode.value,
+			&candidate.providerCode.bytes,
+			&candidate.accountID.value,
+			&candidate.accountID.bytes,
+			&candidate.model.value,
+			&candidate.model.bytes,
+			&candidate.profile.value,
+			&candidate.profile.bytes,
 			&candidate.score,
-			&candidate.level,
-			&candidate.finishedAtRaw,
-			&candidate.decisionJSON,
-			&candidate.decisionBytes,
-			&candidate.updatedAtRaw,
+			&candidate.level.value,
+			&candidate.level.bytes,
+			&candidate.finishedAtRaw.value,
+			&candidate.finishedAtRaw.bytes,
+			&candidate.decisionJSON.value,
+			&candidate.decisionJSON.bytes,
+			&candidate.updatedAtRaw.value,
+			&candidate.updatedAtRaw.bytes,
 			&candidate.claimEpoch,
 			&candidate.attemptCount,
 		); err != nil {
@@ -162,7 +195,7 @@ func claimFailedModelQualityHealthSyncs(
 			string(input.OwnerID),
 			string(claimToken),
 			int64(leaseMilliseconds),
-			candidate.runID,
+			candidate.runID.value.String,
 			candidate.claimEpoch,
 			candidate.attemptCount,
 		).Scan(&persistedEpoch, &leaseUntilRaw, &claimedAtRaw)
@@ -170,18 +203,18 @@ func claimFailedModelQualityHealthSyncs(
 			continue
 		}
 		if err != nil {
-			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q: %w", candidate.runID, err)
+			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q: %w", candidate.runID.value.String, err)
 		}
 		if persistedEpoch != candidate.claimEpoch+1 || persistedEpoch < 1 {
-			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid epoch", candidate.runID)
+			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid epoch", candidate.runID.value.String)
 		}
 		leaseUntil, err := modelQualityPolicyParseTime(leaseUntilRaw)
 		if err != nil || leaseUntil.IsZero() {
-			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid lease time", candidate.runID)
+			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid lease time", candidate.runID.value.String)
 		}
 		claimedAt, err := modelQualityPolicyParseTime(claimedAtRaw)
 		if err != nil || claimedAt.IsZero() || !leaseUntil.After(claimedAt) {
-			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid database time", candidate.runID)
+			return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("claim model quality health-sync run %q returned invalid database time", candidate.runID.value.String)
 		}
 		claim.Lease.Epoch = uint64(persistedEpoch)
 		claim.Lease.Until = leaseUntil
@@ -201,29 +234,70 @@ func prepareModelQualityHealthSyncClaim(
 	input port.ModelQualityHealthSyncClaimInput,
 	token port.ModelQualityHealthSyncClaimToken,
 ) (port.ModelQualityHealthSyncClaim, error) {
-	if !validModelQualityScheduleText(candidate.runID, 256) ||
-		!validModelQualityScheduleText(candidate.systemAccountID, 256) ||
-		!validModelQualityScheduleText(candidate.providerCode, 256) ||
-		!validModelQualityScheduleText(candidate.accountID, 256) ||
-		!validModelQualityScheduleText(candidate.model, 512) ||
+	runID, err := requiredModelQualityHealthSyncCandidateText(candidate.runID, "id", modelQualityHealthSyncMaximumRunIDBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	systemAccountID, err := requiredModelQualityHealthSyncCandidateText(candidate.systemAccountID, "system_account_id", modelQualityHealthSyncMaximumSystemAccountIDBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	providerCode, err := requiredModelQualityHealthSyncCandidateText(candidate.providerCode, "provider_code", modelQualityHealthSyncMaximumProviderCodeBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	accountID, err := requiredModelQualityHealthSyncCandidateText(candidate.accountID, "account_id", modelQualityHealthSyncMaximumAccountIDBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	model, err := requiredModelQualityHealthSyncCandidateText(candidate.model, "model", modelQualityHealthSyncMaximumModelBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	profileRaw, err := requiredModelQualityHealthSyncCandidateText(candidate.profile, "profile", modelQualityHealthSyncMaximumProfileBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	levelRaw, err := requiredModelQualityHealthSyncCandidateText(candidate.level, "level", modelQualityHealthSyncMaximumLevelBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	updatedAtRaw, err := requiredModelQualityHealthSyncCandidateText(candidate.updatedAtRaw, "updated_at", modelQualityHealthSyncMaximumUpdatedAtBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	decisionJSON, err := requiredModelQualityHealthSyncCandidateText(candidate.decisionJSON, "quality_decision_json", modelQualityHealthSyncMaximumDecisionBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+	finishedAtRaw, finishedAtPresent, err := optionalModelQualityHealthSyncCandidateText(candidate.finishedAtRaw, "finished_at", modelQualityHealthSyncMaximumFinishedAtBytes)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaim{}, err
+	}
+
+	if !validModelQualityScheduleText(runID, modelQualityHealthSyncMaximumRunIDBytes) ||
+		!validModelQualityScheduleText(systemAccountID, modelQualityHealthSyncMaximumSystemAccountIDBytes) ||
+		!validModelQualityScheduleText(providerCode, modelQualityHealthSyncMaximumProviderCodeBytes) ||
+		!validModelQualityScheduleText(accountID, modelQualityHealthSyncMaximumAccountIDBytes) ||
+		!validModelQualityScheduleText(model, modelQualityHealthSyncMaximumModelBytes) ||
 		candidate.score < 0 || candidate.score > 100 ||
 		candidate.claimEpoch < 0 || candidate.claimEpoch >= math.MaxInt64 ||
 		candidate.attemptCount < 0 || candidate.attemptCount >= math.MaxInt64 {
 		return port.ModelQualityHealthSyncClaim{}, fmt.Errorf("persisted model quality health-sync fact is invalid")
 	}
-	profile := modelquality.Profile(candidate.profile)
-	level := modelquality.Level(candidate.level)
+	profile := modelquality.Profile(profileRaw)
+	level := modelquality.Level(levelRaw)
 	if (profile != modelquality.ProfileQuick && profile != modelquality.ProfileFull) || !validModelQualityHealthLevel(level) {
 		return port.ModelQualityHealthSyncClaim{}, fmt.Errorf("persisted model quality health-sync profile or level is invalid")
 	}
-	updatedAt, err := modelQualityPolicyParseTime(candidate.updatedAtRaw)
+	updatedAt, err := modelQualityPolicyParseTime(updatedAtRaw)
 	if err != nil || updatedAt.IsZero() {
 		return port.ModelQualityHealthSyncClaim{}, fmt.Errorf("persisted model quality health-sync updated time is invalid")
 	}
-	if candidate.decisionBytes < 1 || candidate.decisionBytes > modelQualityHealthSyncMaximumDecisionBytes || !candidate.decisionJSON.Valid {
+	if candidate.decisionJSON.bytes < 1 {
 		return port.ModelQualityHealthSyncClaim{}, fmt.Errorf("persisted model quality health-sync decision exceeds its bounded contract")
 	}
-	decision, err := decodeModelQualityHealthSyncDecision(candidate.decisionJSON.String)
+	decision, err := decodeModelQualityHealthSyncDecision(decisionJSON)
 	if err != nil {
 		return port.ModelQualityHealthSyncClaim{}, err
 	}
@@ -231,8 +305,8 @@ func prepareModelQualityHealthSyncClaim(
 		return port.ModelQualityHealthSyncClaim{}, err
 	}
 	observedAt := decision.decidedAt
-	if candidate.finishedAtRaw.Valid {
-		observedAt, err = modelQualityPolicyParseTime(candidate.finishedAtRaw.String)
+	if finishedAtPresent {
+		observedAt, err = modelQualityPolicyParseTime(finishedAtRaw)
 		if err != nil || observedAt.IsZero() {
 			return port.ModelQualityHealthSyncClaim{}, fmt.Errorf("persisted model quality health-sync finished time is invalid")
 		}
@@ -242,21 +316,64 @@ func prepareModelQualityHealthSyncClaim(
 		errorCode = "model_quality_unavailable"
 	}
 	return port.ModelQualityHealthSyncClaim{
-		RunID: candidate.runID,
+		RunID: runID,
 		Failure: port.ModelQualityHealthFailureInput{
-			AccountID: candidate.accountID, SystemAccountID: candidate.systemAccountID,
-			ProviderCode: candidate.providerCode, ObservedAt: observedAt,
-			RunID: candidate.runID, Model: candidate.model, Profile: profile,
+			AccountID: accountID, SystemAccountID: systemAccountID,
+			ProviderCode: providerCode, ObservedAt: observedAt,
+			RunID: runID, Model: model, Profile: profile,
 			Score: int(candidate.score), Threshold: decision.threshold, Level: level,
 			ErrorCode: errorCode, ErrorMessage: truncateModelQualityTextRunes(decision.message, 1000),
 		},
 		DecisionFence: port.ModelQualityHealthSyncDecisionFence{
-			RawJSON: candidate.decisionJSON.String, RawUpdatedAt: candidate.updatedAtRaw,
+			RawJSON: decisionJSON, RawUpdatedAt: updatedAtRaw,
 		},
 		Lease: port.ModelQualityHealthSyncLease{
 			OwnerID: input.OwnerID, ClaimToken: token,
 		},
 	}, nil
+}
+
+func requiredModelQualityHealthSyncCandidateText(
+	value modelQualityHealthSyncBoundedText,
+	column string,
+	maximumBytes int,
+) (string, error) {
+	text, present, err := modelQualityHealthSyncCandidateText(value, column, maximumBytes)
+	if err != nil {
+		return "", err
+	}
+	if !present {
+		return "", fmt.Errorf("persisted model quality health-sync %s is missing", column)
+	}
+	return text, nil
+}
+
+func optionalModelQualityHealthSyncCandidateText(
+	value modelQualityHealthSyncBoundedText,
+	column string,
+	maximumBytes int,
+) (string, bool, error) {
+	return modelQualityHealthSyncCandidateText(value, column, maximumBytes)
+}
+
+func modelQualityHealthSyncCandidateText(
+	value modelQualityHealthSyncBoundedText,
+	column string,
+	maximumBytes int,
+) (string, bool, error) {
+	if value.bytes < 0 || value.bytes > int64(maximumBytes) {
+		return "", false, fmt.Errorf("persisted model quality health-sync %s exceeds %d bytes", column, maximumBytes)
+	}
+	if !value.value.Valid {
+		if value.bytes == 0 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("persisted model quality health-sync %s bounded value is missing", column)
+	}
+	if int64(len(value.value.String)) != value.bytes {
+		return "", false, fmt.Errorf("persisted model quality health-sync %s byte count is inconsistent", column)
+	}
+	return value.value.String, true, nil
 }
 
 func quarantineModelQualityHealthSyncCandidate(
@@ -270,15 +387,15 @@ func quarantineModelQualityHealthSyncCandidate(
 		int64(modelQualityHealthSyncQuarantineDelay/time.Millisecond),
 		"invalid_durable_fact",
 		message,
-		candidate.runID,
+		candidate.rowRef,
 		candidate.claimEpoch,
 		candidate.attemptCount,
 	)
 	if err != nil {
-		return fmt.Errorf("quarantine model quality health-sync run %q: %w", candidate.runID, err)
+		return fmt.Errorf("quarantine model quality health-sync row %q: %w", candidate.rowRef, err)
 	}
 	if command.RowsAffected() != 1 {
-		return fmt.Errorf("quarantine model quality health-sync run %q lost its locked row", candidate.runID)
+		return fmt.Errorf("quarantine model quality health-sync row %q lost its locked row", candidate.rowRef)
 	}
 	return nil
 }

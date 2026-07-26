@@ -92,8 +92,8 @@ try {
   const modelCheckCleanup = dataRetention.cleanupModelCheckRunsBefore('2001-01-01T00:00:00.000Z', 100)
   assert.equal(modelCheckCleanup.modelCheckRuns, 1, '模型检测历史应接入统一保留清理')
   assert.equal(modelCheckCleanup.modelCheckItems, 1, '模型检测项应随过期检测运行一起清理')
-  assert.equal(tableCount('model_check_runs'), 0, '模型检测运行清理后不应残留旧记录')
-  assert.equal(tableCount('model_check_items'), 0, '模型检测项清理后不应残留旧记录')
+  assert.equal(tableCount('model_check_runs'), 2, 'health-sync failed/pending_retry 运行必须保留，不能被 retention 删除')
+  assert.equal(tableCount('model_check_items'), 2, 'health-sync failed/pending_retry 的检测项必须随运行保留')
 
   seedRuntimeLogFileCursor()
   assert.equal(
@@ -157,6 +157,19 @@ function seedModelCheckHistory(): void {
     INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
     VALUES ('mci_retention_old', 'mcr_retention_old', 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
+  for (const [runId, itemId, healthStatus] of [
+    ['mcr_retention_failed', 'mci_retention_failed', 'failed'],
+    ['mcr_retention_pending', 'mci_retention_pending', 'pending_retry']
+  ] as const) {
+    datasetDatabase.prepare(`
+      INSERT INTO model_check_runs (id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, model, status, quality_health_sync_status, started_at, created_at, updated_at)
+      VALUES (?, 'sys_admin', 'sys_admin', 'gpt', 'account', 'acct_retention_old', 'gpt-5.5', 'completed', ?, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+    `).run(runId, healthStatus)
+    datasetDatabase.prepare(`
+      INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
+      VALUES (?, ?, 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+    `).run(itemId, runId)
+  }
 }
 
 function seedClientIpUsageRangeWindow(): void {
@@ -207,6 +220,7 @@ function assertModelCheckRunCleanupUsesIndex(): void {
       SELECT id
       FROM model_check_runs
       WHERE created_at < ?
+        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)

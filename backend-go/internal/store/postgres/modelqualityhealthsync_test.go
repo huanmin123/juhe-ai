@@ -47,7 +47,14 @@ func TestClaimFailedModelQualityHealthSyncsDefaultsAndBoundsBatch(t *testing.T) 
 			if len(tx.queryCalls) != 1 {
 				t.Fatalf("query calls=%d, want 1", len(tx.queryCalls))
 			}
-			wantArgs := []any{test.wantLimit, modelQualityHealthSyncMaximumDecisionBytes}
+			wantArgs := []any{
+				test.wantLimit, modelQualityHealthSyncMaximumDecisionBytes,
+				modelQualityHealthSyncMaximumRunIDBytes, modelQualityHealthSyncMaximumSystemAccountIDBytes,
+				modelQualityHealthSyncMaximumProviderCodeBytes, modelQualityHealthSyncMaximumAccountIDBytes,
+				modelQualityHealthSyncMaximumModelBytes, modelQualityHealthSyncMaximumProfileBytes,
+				modelQualityHealthSyncMaximumLevelBytes, modelQualityHealthSyncMaximumFinishedAtBytes,
+				modelQualityHealthSyncMaximumUpdatedAtBytes,
+			}
 			if !reflect.DeepEqual(tx.queryCalls[0].args, wantArgs) {
 				t.Fatalf("candidate args=%#v, want %#v", tx.queryCalls[0].args, wantArgs)
 			}
@@ -120,7 +127,7 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBadDecisionWithoutStarving
 	quarantineArgs := tx.execCalls[0].args
 	if len(quarantineArgs) != 6 || quarantineArgs[0] != int64(modelQualityHealthSyncQuarantineDelay/time.Millisecond) ||
 		quarantineArgs[1] != "invalid_durable_fact" || !strings.Contains(quarantineArgs[2].(string), "duplicate top-level field") ||
-		quarantineArgs[3] != "run-bad" || quarantineArgs[4] != int64(3) || quarantineArgs[5] != int64(4) {
+		quarantineArgs[3] != "(0,1)" || quarantineArgs[4] != int64(3) || quarantineArgs[5] != int64(4) {
 		t.Fatalf("quarantine args=%#v", quarantineArgs)
 	}
 	if len(tx.queryCalls) != 2 || tx.queryCalls[1].query != claimModelQualityHealthSyncRunSQL {
@@ -135,6 +142,29 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBadDecisionWithoutStarving
 	}
 	if rows := tx.queryRows.(*modelQualityScheduleRowsStub); !rows.closed {
 		t.Fatal("candidate rows were not closed before quarantine and claim writes")
+	}
+}
+
+func TestClaimFailedModelQualityHealthSyncsQuarantinesBoundedTextByLockedCTID(t *testing.T) {
+	decision := modelQualityHealthSyncDecisionJSON()
+	values := modelQualityHealthSyncCandidateValues("run-good", decision, int64(len(decision)), 3, 4)
+	values[1] = pgtype.Text{}
+	values[2] = int64(modelQualityHealthSyncMaximumRunIDBytes + 1)
+	tx := &modelQualityScheduleTxStub{
+		queryRows: &modelQualityScheduleRowsStub{rows: [][]any{values}},
+		execTags:  []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+	}
+	batch, err := claimFailedModelQualityHealthSyncs(
+		context.Background(),
+		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+		port.ModelQualityHealthSyncClaimInput{OwnerID: "health-sync-1", LeaseDuration: 2 * time.Minute, Limit: 1},
+		func() (string, error) { return "mqhs_claim_token_1", nil },
+	)
+	if err != nil || batch.Quarantined != 1 || len(batch.Claims) != 0 || tx.commitCalls != 1 || len(tx.execCalls) != 1 {
+		t.Fatalf("batch=%+v error=%v commit=%d exec=%d", batch, err, tx.commitCalls, len(tx.execCalls))
+	}
+	if got := tx.execCalls[0].args[3]; got != "(0,1)" {
+		t.Fatalf("quarantine row ref=%#v, want locked ctid", got)
 	}
 }
 
@@ -386,6 +416,19 @@ func TestModelQualityHealthSyncDecisionRejectsDuplicatesPreservesUnknownFieldsAn
 func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 	for _, fragment := range []string{
 		"FOR UPDATE OF runs SKIP LOCKED",
+		"runs.ctid::text AS row_ref",
+		"octet_length(runs.id) <= $3",
+		"octet_length(runs.system_account_id) <= $4",
+		"octet_length(runs.provider_code) <= $5",
+		"octet_length(runs.account_id) <= $6",
+		"octet_length(runs.model) <= $7",
+		"octet_length(runs.profile) <= $8",
+		"octet_length(runs.level) <= $9",
+		"octet_length(runs.finished_at) <= $10",
+		"octet_length(runs.updated_at) <= $11",
+		"quality_health_sync_next_attempt_at !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"quality_health_sync_claim_until !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"THEN 0",
 		"clock_timestamp() AT TIME ZONE 'UTC'",
 		"quality_health_sync_claim_epoch < 9223372036854775807",
 		"quality_health_sync_attempt_count < 9223372036854775807",
@@ -401,6 +444,7 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 		"quality_health_sync_claim_epoch = $5",
 		"quality_health_sync_attempt_count = $6",
 		"RETURNING\n  quality_health_sync_claim_epoch",
+		"quality_health_sync_claim_until !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
 	} {
 		if !strings.Contains(claimModelQualityHealthSyncRunSQL, fragment) {
 			t.Fatalf("claim SQL missing %q", fragment)
@@ -423,22 +467,26 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 		!strings.Contains(releaseModelQualityHealthSyncRunSQL, "quality_health_sync_claim_until > "+modelQualityHealthSyncDatabaseNowExpression) {
 		t.Fatal("completion/release lease expiry must use the PostgreSQL clock")
 	}
+	if !strings.Contains(quarantineModelQualityHealthSyncRunSQL, "ctid = $4::tid") {
+		t.Fatal("quarantine must use locked ctid plus epoch/attempt fences")
+	}
 }
 
 func modelQualityHealthSyncCandidateValues(runID, decision string, decisionBytes, claimEpoch, attemptCount int64) []any {
 	return []any{
-		runID,
-		"system-1",
-		"openai",
-		"account-1",
-		"gpt-5",
-		"quick",
+		"(0,1)",
+		pgtype.Text{String: runID, Valid: true}, int64(len(runID)),
+		pgtype.Text{String: "system-1", Valid: true}, int64(len("system-1")),
+		pgtype.Text{String: "openai", Valid: true}, int64(len("openai")),
+		pgtype.Text{String: "account-1", Valid: true}, int64(len("account-1")),
+		pgtype.Text{String: "gpt-5", Valid: true}, int64(len("gpt-5")),
+		pgtype.Text{String: "quick", Valid: true}, int64(len("quick")),
 		int64(0),
-		"unavailable",
-		pgtype.Text{String: "2026-07-26T08:09:10.123Z", Valid: true},
+		pgtype.Text{String: "unavailable", Valid: true}, int64(len("unavailable")),
+		pgtype.Text{String: "2026-07-26T08:09:10.123Z", Valid: true}, int64(len("2026-07-26T08:09:10.123Z")),
 		pgtype.Text{String: decision, Valid: true},
 		decisionBytes,
-		"2026-07-26T08:10:00.000Z",
+		pgtype.Text{String: "2026-07-26T08:10:00.000Z", Valid: true}, int64(len("2026-07-26T08:10:00.000Z")),
 		claimEpoch,
 		attemptCount,
 	}

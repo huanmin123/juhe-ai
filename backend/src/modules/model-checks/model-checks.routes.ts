@@ -63,6 +63,10 @@ const modelQualityScheduleSchema = z.object({
   accountId: z.string().trim().min(1),
   model: z.string().trim().min(1).max(200),
   intervalMinutes: z.number().int().min(10).max(10080),
+  profile: z.enum(['quick', 'full']),
+  penaltyThreshold: z.number().int().min(40).max(100),
+  penaltyAction: z.enum(['disable', 'fallback', 'quality_isolate']),
+  recoveryIntervalMinutes: z.number().int().min(10).max(10080),
   enabled: z.boolean().optional(),
   expectedRevision: z.number().int().min(0).optional()
 }).strict()

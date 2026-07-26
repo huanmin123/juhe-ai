@@ -18,6 +18,20 @@ export interface DedicatedRedisClientOptions {
   connectTimeoutMs?: number
 }
 
+export interface RedisOperationDeadlineOptions {
+  timeoutMs?: number
+  deadlineAtMs?: number
+  signal?: AbortSignal
+  operationName: string
+}
+
+export class RedisOperationDeadlineError extends Error {
+  constructor(operationName: string) {
+    super(`${operationName}超时`)
+    this.name = 'RedisOperationDeadlineError'
+  }
+}
+
 const redisClients = new Map<string, Promise<RedisCommandClient>>()
 const redisClientConnectTimeoutMs = 10000
 const redisClientCloseTimeoutMs = 2000
@@ -41,6 +55,36 @@ export async function getRedisClient(url: string): Promise<RedisCommandClient> {
   clientPromise.catch(() => undefined)
   redisClients.set(normalizedUrl, clientPromise)
   return await clientPromise
+}
+
+export async function runRedisOperationWithDeadline<T>(
+  url: string,
+  options: RedisOperationDeadlineOptions,
+  operation: (client: RedisCommandClient) => Promise<T>
+): Promise<T> {
+  const normalizedUrl = normalizeRedisUrl(url)
+  const deadlineAtMs = normalizedRedisOperationDeadlineAt(options)
+  let client: RedisCommandClient | undefined
+  try {
+    client = await awaitRedisOperationStep(
+      getRedisClient(normalizedUrl),
+      deadlineAtMs,
+      options,
+      `${options.operationName}连接`
+    )
+    return await awaitRedisOperationStep(
+      operation(client),
+      deadlineAtMs,
+      options,
+      options.operationName
+    )
+  } catch (error) {
+    if (options.signal?.aborted || error instanceof RedisOperationDeadlineError || isRecoverableRedisClientError(error)) {
+      client?.destroy?.()
+      void invalidateRedisClient(normalizedUrl, client).catch(() => undefined)
+    }
+    throw error
+  }
 }
 
 export function hasRedisClient(url: string): boolean {
@@ -145,6 +189,40 @@ function normalizedPositiveInteger(value: number | undefined, fallback: number):
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.max(1, Math.trunc(value))
     : fallback
+}
+
+function normalizedRedisOperationDeadlineAt(options: RedisOperationDeadlineOptions): number {
+  const configuredDeadline = Number(options.deadlineAtMs)
+  if (Number.isFinite(configuredDeadline) && configuredDeadline > 0) return Math.trunc(configuredDeadline)
+  return Date.now() + normalizedPositiveInteger(options.timeoutMs, 3_000)
+}
+
+async function awaitRedisOperationStep<T>(
+  promise: Promise<T>,
+  deadlineAtMs: number,
+  options: RedisOperationDeadlineOptions,
+  operationName: string
+): Promise<T> {
+  options.signal?.throwIfAborted()
+  const remainingMs = Math.max(0, deadlineAtMs - Date.now())
+  if (remainingMs === 0) throw new RedisOperationDeadlineError(operationName)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let abortListener: (() => void) | undefined
+  const deadline = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new RedisOperationDeadlineError(operationName)), remainingMs)
+    timer.unref?.()
+    if (options.signal) {
+      abortListener = () => reject(options.signal?.reason ?? new Error(`${operationName}已取消`))
+      options.signal.addEventListener('abort', abortListener, { once: true })
+    }
+  })
+  try {
+    return await Promise.race([promise, deadline])
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (abortListener) options.signal?.removeEventListener('abort', abortListener)
+    promise.catch(() => undefined)
+  }
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

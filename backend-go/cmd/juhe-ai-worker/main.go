@@ -153,6 +153,33 @@ func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
 	root.AddCommand(gatewayQuotaSnapshotCommand)
 
+	modelQualityHealthSyncOptions := app.ModelQualityHealthSyncWorkerOptions{
+		Enabled:      true,
+		Interval:     time.Minute,
+		InitialDelay: 58 * time.Second,
+	}
+	modelQualityHealthSyncCommand := &cobra.Command{
+		Use:   "model-quality-health-sync",
+		Short: "Run the Go model-quality health-sync retry worker",
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunModelQualityHealthSyncWorker(ctx, cfg, logger, modelQualityHealthSyncOptions)
+			}
+		}),
+	}
+	modelQualityHealthSyncCommand.Flags().StringVar(&modelQualityHealthSyncOptions.OwnerID, "owner-id", "", "stable owner ID; empty generates one per process")
+	modelQualityHealthSyncCommand.Flags().DurationVar(&modelQualityHealthSyncOptions.Interval, "interval", modelQualityHealthSyncOptions.Interval, "retry interval")
+	modelQualityHealthSyncCommand.Flags().DurationVar(&modelQualityHealthSyncOptions.InitialDelay, "initial-delay", modelQualityHealthSyncOptions.InitialDelay, "initial delay before the first retry")
+	modelQualityHealthSyncCommand.Flags().IntVar(&modelQualityHealthSyncOptions.BatchSize, "batch-size", 0, "runs to claim per batch; 0 uses the service default")
+	modelQualityHealthSyncCommand.Flags().IntVar(&modelQualityHealthSyncOptions.Workers, "workers", 0, "parallel completion workers; 0 uses the service default")
+	modelQualityHealthSyncCommand.Flags().DurationVar(&modelQualityHealthSyncOptions.Lease, "lease", 0, "claim lease duration; 0 uses the service default")
+	modelQualityHealthSyncCommand.Flags().DurationVar(&modelQualityHealthSyncOptions.AttemptTimeout, "attempt-timeout", 0, "claim/complete timeout; 0 uses the service default")
+	modelQualityHealthSyncCommand.Flags().BoolVar(&modelQualityHealthSyncOptions.GoExclusiveOwner, "go-exclusive-owner", false, "assert that Go is the only health-sync writer")
+	modelQualityHealthSyncCommand.Flags().BoolVar(&modelQualityHealthSyncOptions.LegacyWorkerDrained, "legacy-worker-drained", false, "assert that the legacy Node health-sync worker is drained")
+	modelQualityHealthSyncCommand.Flags().BoolVar(&modelQualityHealthSyncOptions.NodeRetentionSafe, "node-retention-safe", false, "assert that Node retention preserves failed and claimed health-sync runs")
+	modelQualityHealthSyncCommand.Flags().BoolVar(&modelQualityHealthSyncOptions.RunOnce, "run-once", false, "run one batch and exit")
+	root.AddCommand(modelQualityHealthSyncCommand)
+
 	cooldownAccountRetestOptions := app.CooldownAccountRetestWorkerOptions{
 		InitialDelay: 60 * time.Second,
 	}

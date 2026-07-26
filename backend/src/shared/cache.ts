@@ -2,7 +2,7 @@ import { LRUCache } from 'lru-cache'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
-import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { runRedisOperationWithDeadline, type RedisCommandClient } from './redis-client.js'
 import { redisNamespacedKey } from './redis-namespace.js'
 
 export interface AppCacheOptions<K extends {}, V extends {}> {
@@ -31,16 +31,21 @@ export interface SharedJsonCacheOptions<V extends {}> {
   version?: string
 }
 
+export interface SharedJsonCacheOperationOptions {
+  signal?: AbortSignal
+  deadlineAtMs?: number
+}
+
 export interface SharedJsonCache<V extends {}> {
   readonly name: string
-  get(key: string): Promise<V | undefined>
-  set(key: string, value: V, options?: { ttlMs?: number }): Promise<void>
-  delete(key: string): Promise<void>
-  clear(): Promise<void>
-  acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean>
-  renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean>
-  setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean>
-  releaseLease(key: string, token: string): Promise<void>
+  get(key: string, options?: SharedJsonCacheOperationOptions): Promise<V | undefined>
+  set(key: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<void>
+  delete(key: string, options?: SharedJsonCacheOperationOptions): Promise<void>
+  clear(options?: SharedJsonCacheOperationOptions): Promise<void>
+  acquireLease(key: string, options: { ttlMs: number; token: string } & SharedJsonCacheOperationOptions): Promise<boolean>
+  renewLease(key: string, token: string, options: { ttlMs: number } & SharedJsonCacheOperationOptions): Promise<boolean>
+  setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<boolean>
+  releaseLease(key: string, token: string, options?: SharedJsonCacheOperationOptions): Promise<void>
 }
 
 export function clearSharedJsonCacheInBackground<V extends {}>(
@@ -164,36 +169,36 @@ class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     this.memoryCache = new MemorySharedJsonCache(options)
   }
 
-  async get(key: string): Promise<V | undefined> {
-    return this.cache().get(key)
+  async get(key: string, options?: SharedJsonCacheOperationOptions): Promise<V | undefined> {
+    return this.cache().get(key, options)
   }
 
-  async set(key: string, value: V, options?: { ttlMs?: number }): Promise<void> {
+  async set(key: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<void> {
     await this.cache().set(key, value, options)
   }
 
-  async delete(key: string): Promise<void> {
-    await this.cache().delete(key)
+  async delete(key: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    await this.cache().delete(key, options)
   }
 
-  async clear(): Promise<void> {
-    await this.cache().clear()
+  async clear(options?: SharedJsonCacheOperationOptions): Promise<void> {
+    await this.cache().clear(options)
   }
 
-  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+  async acquireLease(key: string, options: { ttlMs: number; token: string } & SharedJsonCacheOperationOptions): Promise<boolean> {
     return await this.cache().acquireLease(key, options)
   }
 
-  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
+  async renewLease(key: string, token: string, options: { ttlMs: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
     return await this.cache().renewLease(key, token, options)
   }
 
-  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
     return await this.cache().setIfLeaseOwner(key, token, value, options)
   }
 
-  async releaseLease(key: string, token: string): Promise<void> {
-    await this.cache().releaseLease(key, token)
+  async releaseLease(key: string, token: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    await this.cache().releaseLease(key, token, options)
   }
 
   private cache(): SharedJsonCache<V> {
@@ -213,44 +218,52 @@ class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     this.store = createSharedStore(options)
   }
 
-  async get(key: string): Promise<V | undefined> {
+  async get(key: string, options?: SharedJsonCacheOperationOptions): Promise<V | undefined> {
+    options?.signal?.throwIfAborted()
     return this.store.get(key)
   }
 
-  async set(key: string, value: V, options?: { ttlMs?: number }): Promise<void> {
+  async set(key: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
     this.store.set(key, value, options?.ttlMs === undefined ? undefined : { ttl: normalizeTtlMs(options.ttlMs) })
   }
 
-  async delete(key: string): Promise<void> {
+  async delete(key: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
     this.store.delete(key)
   }
 
-  async clear(): Promise<void> {
+  async clear(options?: SharedJsonCacheOperationOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
     this.store = createSharedStore(this.options)
   }
 
-  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+  async acquireLease(key: string, options: { ttlMs: number; token: string } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    options.signal?.throwIfAborted()
     const current = this.leases.get(key)
     if (current && current.expiresAt > Date.now()) return false
     this.leases.set(key, { token: options.token, expiresAt: Date.now() + normalizeTtlMs(options.ttlMs) })
     return true
   }
 
-  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
+  async renewLease(key: string, token: string, options: { ttlMs: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    options.signal?.throwIfAborted()
     const current = this.leases.get(key)
     if (!current || current.token !== token || current.expiresAt <= Date.now()) return false
     current.expiresAt = Date.now() + normalizeTtlMs(options.ttlMs)
     return true
   }
 
-  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    options?.signal?.throwIfAborted()
     const current = this.leases.get(key)
     if (!current || current.token !== token || current.expiresAt <= Date.now()) return false
     this.store.set(key, value, options?.ttlMs === undefined ? undefined : { ttl: normalizeTtlMs(options.ttlMs) })
     return true
   }
 
-  async releaseLease(key: string, token: string): Promise<void> {
+  async releaseLease(key: string, token: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
     if (this.leases.get(key)?.token === token) this.leases.delete(key)
   }
 }
@@ -275,101 +288,106 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     this.leaseKeyPrefix = redisNamespacedKey(`juhe-ai:cache-lease:${safeName}:`)
   }
 
-  async get(key: string): Promise<V | undefined> {
-    const location = await this.redisLocation(key)
-    const rawValue = await (await this.client()).get(location.key)
+  async get(key: string, options?: SharedJsonCacheOperationOptions): Promise<V | undefined> {
+    const location = await this.redisLocation(key, options)
+    const rawValue = await this.runRedis('共享缓存读取', options, (client) => client.get(location.key))
     if (rawValue === null) return undefined
     try {
       return JSON.parse(rawValue) as V
     } catch {
-      await this.delete(key)
+      await this.delete(key, options)
       return undefined
     }
   }
 
-  async set(key: string, value: V, options?: { ttlMs?: number }): Promise<void> {
+  async set(key: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<void> {
     const ttlMs = normalizeTtlMs(options?.ttlMs ?? this.options.ttlMs)
-    const location = await this.redisLocation(key)
-    const client = await this.client()
-    await client.set(
-      location.key,
-      JSON.stringify(value),
-      { PX: ttlMs }
-    )
-    await this.trackKeyAndTrim(client, location.indexKey, location.key, ttlMs)
+    const location = await this.redisLocation(key, options)
+    await this.runRedis('共享缓存写入', options, async (client) => {
+      await client.set(location.key, JSON.stringify(value), { PX: ttlMs })
+      await this.trackKeyAndTrim(client, location.indexKey, location.key, ttlMs)
+    })
   }
 
-  async delete(key: string): Promise<void> {
-    const location = await this.redisLocation(key)
-    const client = await this.client()
-    await client.del(location.key)
-    await client.sendCommand(['ZREM', location.indexKey, location.key])
+  async delete(key: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    const location = await this.redisLocation(key, options)
+    await this.runRedis('共享缓存删除', options, async (client) => {
+      await client.del(location.key)
+      await client.sendCommand(['ZREM', location.indexKey, location.key])
+    })
   }
 
-  async clear(): Promise<void> {
-    await (await this.client()).set(this.versionKey, nextCacheVersion(), { PX: 30 * 24 * 60 * 60 * 1000 })
+  async clear(options?: SharedJsonCacheOperationOptions): Promise<void> {
+    await this.runRedis('共享缓存清空', options, async (client) => {
+      await client.set(this.versionKey, nextCacheVersion(), { PX: 30 * 24 * 60 * 60 * 1000 })
+    })
   }
 
-  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
-    const result = await (await this.client()).set(
-      `${this.leaseKeyPrefix}${key}`,
-      options.token,
-      { PX: normalizeTtlMs(options.ttlMs), NX: true }
-    )
+  async acquireLease(key: string, options: { ttlMs: number; token: string } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    const result = await this.runRedis('共享缓存租约获取', options, (client) => client.set(
+      `${this.leaseKeyPrefix}${key}`, options.token, { PX: normalizeTtlMs(options.ttlMs), NX: true }
+    ))
     return result === 'OK'
   }
 
-  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
-    const result = await (await this.client()).eval(renewSharedCacheLeaseScript, {
+  async renewLease(key: string, token: string, options: { ttlMs: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
+    const result = await this.runRedis('共享缓存租约续期', options, (client) => client.eval(renewSharedCacheLeaseScript, {
       keys: [`${this.leaseKeyPrefix}${key}`],
       arguments: [token, String(normalizeTtlMs(options.ttlMs))]
-    })
+    }))
     return Number(result) === 1
   }
 
-  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number } & SharedJsonCacheOperationOptions): Promise<boolean> {
     const ttlMs = normalizeTtlMs(options?.ttlMs ?? this.options.ttlMs)
-    const location = await this.redisLocation(key)
-    const client = await this.client()
-    const result = await client.eval(setSharedCacheEntryIfLeaseOwnerScript, {
-      keys: [`${this.leaseKeyPrefix}${key}`, location.key],
-      arguments: [token, JSON.stringify(value), String(ttlMs)]
+    const location = await this.redisLocation(key, options)
+    return await this.runRedis('共享缓存租约写入', options, async (client) => {
+      const result = await client.eval(setSharedCacheEntryIfLeaseOwnerScript, {
+        keys: [`${this.leaseKeyPrefix}${key}`, location.key],
+        arguments: [token, JSON.stringify(value), String(ttlMs)]
+      })
+      if (Number(result) !== 1) return false
+      await this.trackKeyAndTrim(client, location.indexKey, location.key, ttlMs)
+      return true
     })
-    if (Number(result) !== 1) return false
-    await this.trackKeyAndTrim(client, location.indexKey, location.key, ttlMs)
-    return true
   }
 
-  async releaseLease(key: string, token: string): Promise<void> {
-    await (await this.client()).eval(releaseSharedCacheLeaseScript, {
+  async releaseLease(key: string, token: string, options?: SharedJsonCacheOperationOptions): Promise<void> {
+    await this.runRedis('共享缓存租约释放', options, (client) => client.eval(releaseSharedCacheLeaseScript, {
       keys: [`${this.leaseKeyPrefix}${key}`],
       arguments: [token]
-    })
+    }).then(() => undefined))
   }
 
-  private client(): Promise<RedisCommandClient> {
+  private runRedis<T>(operationName: string, options: SharedJsonCacheOperationOptions | undefined, operation: (client: RedisCommandClient) => Promise<T>): Promise<T> {
     const cacheUrl = runtimeConfig.redis.cacheUrl
     if (!cacheUrl) {
       throw new Error('JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置')
     }
-    return getRedisClient(cacheUrl)
+    return runRedisOperationWithDeadline(cacheUrl, {
+      operationName,
+      timeoutMs: 3_000,
+      signal: options?.signal,
+      deadlineAtMs: options?.deadlineAtMs
+    }, operation)
   }
 
-  private async redisLocation(key: string): Promise<{ key: string; indexKey: string }> {
-    const version = await this.namespaceVersion()
+  private async redisLocation(key: string, options?: SharedJsonCacheOperationOptions): Promise<{ key: string; indexKey: string }> {
+    const version = await this.namespaceVersion(options)
     return {
       key: `${this.keyPrefix}${version}:${key}`,
       indexKey: `${this.indexKeyPrefix}${version}`
     }
   }
 
-  private async namespaceVersion(): Promise<string> {
-    const client = await this.client()
-    const existing = await client.get(this.versionKey)
-    if (existing) return existing
-    const version = this.options.version?.trim() || nextCacheVersion()
-    const inserted = await client.set(this.versionKey, version, { NX: true, PX: 30 * 24 * 60 * 60 * 1000 })
-    return inserted === 'OK' ? version : (await client.get(this.versionKey)) ?? version
+  private async namespaceVersion(options?: SharedJsonCacheOperationOptions): Promise<string> {
+    return await this.runRedis('共享缓存版本读取', options, async (client) => {
+      const existing = await client.get(this.versionKey)
+      if (existing) return existing
+      const version = this.options.version?.trim() || nextCacheVersion()
+      const inserted = await client.set(this.versionKey, version, { NX: true, PX: 30 * 24 * 60 * 60 * 1000 })
+      return inserted === 'OK' ? version : (await client.get(this.versionKey)) ?? version
+    })
   }
 
   private async trackKeyAndTrim(client: RedisCommandClient, indexKey: string, key: string, ttlMs: number): Promise<void> {

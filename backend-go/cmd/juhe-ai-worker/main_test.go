@@ -67,7 +67,7 @@ func TestExecuteCommandReturnsWhenFatalWriterBlocks(t *testing.T) {
 	}
 }
 
-func TestSevenWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 	var gated []string
 	deps := workerCommandDependencies{
 		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
@@ -90,6 +90,7 @@ func TestSevenWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		"operation-log-retention-cleanup",
 		"authorization-usage-range-windows-refresh",
 		"gateway-quota-snapshot-build",
+		"model-quality-health-sync",
 		"cooldown-account-retest",
 	} {
 		command, _, err := root.Find([]string{name})
@@ -106,6 +107,19 @@ func TestSevenWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		}
 		if len(gated) != before+1 {
 			t.Fatalf("%s runtime gate calls = %d, want one additional call", name, len(gated)-before)
+		}
+	}
+
+	modelQualityCommand, _, err := root.Find([]string{"model-quality-health-sync"})
+	if err != nil {
+		t.Fatalf("find model-quality-health-sync: %v", err)
+	}
+	for _, flagName := range []string{
+		"owner-id", "interval", "initial-delay", "batch-size", "workers", "lease", "attempt-timeout",
+		"go-exclusive-owner", "legacy-worker-drained", "node-retention-safe", "run-once",
+	} {
+		if modelQualityCommand.Flags().Lookup(flagName) == nil {
+			t.Fatalf("model-quality-health-sync flag %q is missing", flagName)
 		}
 	}
 

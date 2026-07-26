@@ -193,7 +193,7 @@ func claimDueModelQualitySchedules(
 	committed := false
 	defer rollbackModelQualityScheduleTx(tx, &committed)()
 
-	rows, err := tx.Query(ctx, claimDueModelQualityScheduleCandidatesSQL, modelQualityPolicyTimeText(input.Now), input.Limit)
+	rows, err := tx.Query(ctx, claimDueModelQualityScheduleCandidatesSQL, input.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("select due model quality schedules: %w", err)
 	}
@@ -227,23 +227,30 @@ func claimDueModelQualitySchedules(
 		if !validModelQualityScheduleText(string(token), 256) {
 			return nil, fmt.Errorf("generated model quality schedule claim token is invalid")
 		}
-		command, err := tx.Exec(ctx, claimModelQualityScheduleSQL,
+		var leaseUntilRaw, claimedAtRaw string
+		err = tx.QueryRow(ctx, claimModelQualityScheduleSQL,
 			string(input.OwnerID),
 			string(token),
-			modelQualityPolicyTimeText(input.LeaseUntil),
-			modelQualityPolicyTimeText(input.Now),
+			int64(input.LeaseDuration/time.Millisecond),
 			candidate.schedule.ID,
 			int64(candidate.schedule.Revision),
 			int64(candidate.accountRevision),
-		)
+		).Scan(&leaseUntilRaw, &claimedAtRaw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The schedule row remains locked, so no row means the account
+			// changed after candidate selection. This is a stale-CAS skip.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("claim model quality schedule %q: %w", candidate.schedule.ID, err)
 		}
-		if command.RowsAffected() != 1 {
-			// The schedule row remains locked, so a zero-row update means the
-			// account changed after candidate selection. Skipping it is the
-			// expected stale-CAS outcome, not a partially failed batch.
-			continue
+		leaseUntil, err := modelQualityPolicyParseTime(leaseUntilRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse claimed model quality schedule lease_until: %w", err)
+		}
+		claimedAt, err := modelQualityPolicyParseTime(claimedAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse claimed model quality schedule updated_at: %w", err)
 		}
 		policy, ok := policyCache[candidate.schedule.SystemAccountID]
 		if !ok {
@@ -253,9 +260,9 @@ func claimDueModelQualitySchedules(
 			}
 			policyCache[candidate.schedule.SystemAccountID] = policy
 		}
-		lease := port.ModelQualityScheduleLease{OwnerID: input.OwnerID, ClaimToken: token, Until: input.LeaseUntil.UTC()}
+		lease := port.ModelQualityScheduleLease{OwnerID: input.OwnerID, ClaimToken: token, Until: leaseUntil}
 		candidate.schedule.Lease = &lease
-		candidate.schedule.UpdatedAt = input.Now.UTC()
+		candidate.schedule.UpdatedAt = claimedAt
 		claims = append(claims, port.ModelQualityScheduleClaim{
 			Schedule:              candidate.schedule,
 			Policy:                policy,
@@ -278,18 +285,12 @@ func completeModelQualitySchedule(ctx context.Context, q modelQualityScheduleExe
 	if err := validateModelQualityScheduleCompleteInput(input); err != nil {
 		return false, err
 	}
-	nextRunAt, err := addModelQualityScheduleInterval(input.CompletedAt, input.Interval)
-	if err != nil {
-		return false, err
-	}
 	command, err := q.Exec(ctx, completeModelQualityScheduleSQL,
 		input.RunID,
-		modelQualityPolicyTimeText(input.CompletedAt),
 		string(input.Status),
-		modelQualityPolicyTimeText(nextRunAt),
+		int(input.Interval/time.Minute),
 		input.ScheduleID,
 		int64(input.ExpectedRevision),
-		int(input.Interval/time.Minute),
 		string(input.Lease.OwnerID),
 		string(input.Lease.ClaimToken),
 		modelQualityPolicyTimeText(input.Lease.Until),
@@ -438,6 +439,9 @@ func validateModelQualityScheduleDeleteInput(input port.ModelQualityScheduleDele
 }
 
 func normalizeModelQualityScheduleClaimInput(input port.ModelQualityScheduleClaimInput) port.ModelQualityScheduleClaimInput {
+	if input.LeaseDuration == 0 {
+		input.LeaseDuration = port.ModelQualityScheduleClaimDefaultLease
+	}
 	if input.Limit == 0 {
 		input.Limit = port.ModelQualityScheduleClaimDefaultLimit
 	}
@@ -445,9 +449,9 @@ func normalizeModelQualityScheduleClaimInput(input port.ModelQualityScheduleClai
 }
 
 func validateModelQualityScheduleClaimInput(input port.ModelQualityScheduleClaimInput) error {
-	lease := input.LeaseUntil.Sub(input.Now)
-	if !validModelQualityScheduleText(string(input.OwnerID), 128) || input.Now.IsZero() || input.LeaseUntil.IsZero() ||
-		lease < port.ModelQualityClaimMinimumLease || lease > port.ModelQualityClaimMaximumLease ||
+	if !validModelQualityScheduleText(string(input.OwnerID), 128) ||
+		input.LeaseDuration < port.ModelQualityClaimMinimumLease || input.LeaseDuration > port.ModelQualityClaimMaximumLease ||
+		input.LeaseDuration%time.Millisecond != 0 ||
 		input.Limit < 1 || input.Limit > port.ModelQualityScheduleClaimMaximumLimit {
 		return fmt.Errorf("model quality schedule claim is invalid")
 	}
@@ -457,7 +461,7 @@ func validateModelQualityScheduleClaimInput(input port.ModelQualityScheduleClaim
 func validateModelQualityScheduleCompleteInput(input port.ModelQualityScheduleCompleteInput) error {
 	if !validModelQualityScheduleText(input.ScheduleID, 256) || input.ExpectedRevision == 0 || input.ExpectedRevision > modelquality.ScheduleRevision(math.MaxInt32) ||
 		!validModelQualityScheduleText(string(input.Lease.OwnerID), 128) || !validModelQualityScheduleText(string(input.Lease.ClaimToken), 256) ||
-		input.Lease.Until.IsZero() || input.CompletedAt.IsZero() || !input.Lease.Until.After(input.CompletedAt) || !validModelQualityScheduleInterval(input.Interval) {
+		input.Lease.Until.IsZero() || !validModelQualityScheduleInterval(input.Interval) {
 		return fmt.Errorf("model quality schedule completion is invalid")
 	}
 	if input.RunID != "" && !validModelQualityScheduleText(input.RunID, 256) {

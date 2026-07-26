@@ -9,7 +9,7 @@ aqe.recovery_due_at, aqe.recovery_lease_owner, aqe.recovery_lease_token,
 aqe.recovery_lease_until, aqe.last_recovery_run_id, aqe.started_at,
 aqe.cleared_at, aqe.updated_at`
 
-const claimDueModelQualityRecoveryCandidatesSQL = `
+const claimDueModelQualityRecoveryCandidatesSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 SELECT ` + modelQualityEnforcementColumns + `,
        COALESCE(NULLIF(mqs.model, ''), NULLIF(accounts.health_check_model, '')) AS recovery_model,
        accounts.config_revision
@@ -20,33 +20,38 @@ JOIN juhe_business.accounts AS accounts
 LEFT JOIN juhe_business.model_quality_schedules AS mqs
   ON mqs.account_id = aqe.account_id
  AND mqs.system_account_id = aqe.system_account_id
+CROSS JOIN db_clock
 WHERE aqe.state = 'active'
   AND aqe.action = 'quality_isolate'
   AND aqe.recovery_due_at IS NOT NULL
-  AND aqe.recovery_due_at <= $1
-  AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until <= $1)
+  AND aqe.recovery_due_at <= db_clock.now_text
+  AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until <= db_clock.now_text)
   AND accounts.deleted_at IS NULL
   AND accounts.authorization_instance_authorization_id IS NULL
   AND accounts.status = 'quality_isolated'
 ORDER BY aqe.recovery_due_at ASC, aqe.account_id ASC
-LIMIT $2
+LIMIT $1
 FOR UPDATE OF aqe SKIP LOCKED`
 
-const claimModelQualityRecoverySQL = `
+const claimModelQualityRecoverySQL = `WITH ` + modelQualityDatabaseClockCTE + `
 UPDATE juhe_business.account_quality_enforcements AS aqe
 SET recovery_lease_owner = $1,
     recovery_lease_token = $2,
-    recovery_lease_until = $3,
+    recovery_lease_until = to_char(
+      (db_clock.now + ($3::bigint * interval '1 millisecond')) AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ),
     account_config_revision = $4,
-    updated_at = $5
-WHERE aqe.account_id = $6
-  AND aqe.enforcement_id = $7
-  AND aqe.generation = $8
+    updated_at = db_clock.now_text
+FROM db_clock
+WHERE aqe.account_id = $5
+  AND aqe.enforcement_id = $6
+  AND aqe.generation = $7
   AND aqe.state = 'active'
   AND aqe.action = 'quality_isolate'
   AND aqe.recovery_due_at IS NOT NULL
-  AND aqe.recovery_due_at <= $5
-  AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until <= $5)
+  AND aqe.recovery_due_at <= db_clock.now_text
+  AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until <= db_clock.now_text)
   AND EXISTS (
     SELECT 1
     FROM juhe_business.accounts AS accounts
@@ -58,27 +63,29 @@ WHERE aqe.account_id = $6
       AND accounts.status = 'quality_isolated'
   )
   AND (
-    ($9 = 0 AND NOT EXISTS (
+    ($8 = 0 AND NOT EXISTS (
       SELECT 1 FROM juhe_business.model_quality_policies AS policies
       WHERE policies.system_account_id = aqe.system_account_id
     ))
     OR EXISTS (
       SELECT 1 FROM juhe_business.model_quality_policies AS policies
       WHERE policies.system_account_id = aqe.system_account_id
-        AND policies.revision = $9
+        AND policies.revision = $8
     )
-  )`
+  )
+RETURNING aqe.recovery_lease_until, aqe.updated_at`
 
-const findModelQualityRecoveryScopeSQL = `
-SELECT system_account_id
-FROM juhe_business.account_quality_enforcements
-WHERE account_id = $1
-  AND enforcement_id = $2
-  AND generation = $3
-  AND recovery_lease_owner = $4
-  AND recovery_lease_token = $5
-  AND recovery_lease_until = $6
-  AND recovery_lease_until > $7
+const findModelQualityRecoveryScopeSQL = `WITH ` + modelQualityDatabaseClockCTE + `
+SELECT aqe.system_account_id
+FROM juhe_business.account_quality_enforcements AS aqe
+CROSS JOIN db_clock
+WHERE aqe.account_id = $1
+  AND aqe.enforcement_id = $2
+  AND aqe.generation = $3
+  AND aqe.recovery_lease_owner = $4
+  AND aqe.recovery_lease_token = $5
+  AND aqe.recovery_lease_until = $6
+  AND aqe.recovery_lease_until > db_clock.now_text
 LIMIT 1`
 
 const lockModelQualityRecoveryAccountSQL = `
@@ -90,74 +97,32 @@ WHERE id = $1
 LIMIT 1
 FOR UPDATE`
 
-const lockModelQualityRecoveryEnforcementSQL = `
-SELECT ` + modelQualityEnforcementColumns + `
+const lockModelQualityRecoveryEnforcementSQL = `WITH ` + modelQualityDatabaseClockCTE + `
+SELECT ` + modelQualityEnforcementColumns + `, db_clock.now_text
 FROM juhe_business.account_quality_enforcements AS aqe
+CROSS JOIN db_clock
 WHERE aqe.account_id = $1
   AND aqe.enforcement_id = $2
   AND aqe.generation = $3
   AND aqe.recovery_lease_owner = $4
   AND aqe.recovery_lease_token = $5
   AND aqe.recovery_lease_until = $6
-  AND aqe.recovery_lease_until > $7
+  AND aqe.recovery_lease_until > db_clock.now_text
 LIMIT 1
-FOR UPDATE`
+FOR UPDATE OF aqe`
 
-const rescheduleModelQualityRecoverySQL = `
+const rescheduleModelQualityRecoverySQL = `WITH ` + modelQualityDatabaseClockCTE + `
 UPDATE juhe_business.account_quality_enforcements AS aqe
 SET last_recovery_run_id = $1,
-    recovery_due_at = $2,
+    recovery_due_at = to_char(
+      (db_clock.now + ($2::bigint * interval '1 minute')) AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ),
     recovery_lease_owner = NULL,
     recovery_lease_token = NULL,
     recovery_lease_until = NULL,
-    updated_at = $3
-WHERE aqe.account_id = $4
-  AND aqe.enforcement_id = $5
-  AND aqe.generation = $6
-  AND aqe.state = 'active'
-  AND aqe.action = 'quality_isolate'
-  AND aqe.account_config_revision = $7
-  AND aqe.recovery_lease_owner = $8
-  AND aqe.recovery_lease_token = $9
-  AND aqe.recovery_lease_until = $10
-  AND aqe.recovery_lease_until > $3
-  AND (
-    ($11 = 0 AND NOT EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-    ))
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-        AND policies.revision = $11
-    )
-  )`
-
-const recoverModelQualityAccountSQL = `
-UPDATE juhe_business.accounts
-SET status = $1,
-    schedulable = $2,
-    last_error_code = NULL,
-    last_error_message = NULL,
-    config_revision = config_revision + 1,
-    updated_at = $3
-WHERE id = $4
-  AND system_account_id = $5
-  AND status = 'quality_isolated'
-  AND config_revision = $6
-  AND deleted_at IS NULL
-  AND authorization_instance_authorization_id IS NULL`
-
-const clearModelQualityRecoveryEnforcementSQL = `
-UPDATE juhe_business.account_quality_enforcements AS aqe
-SET state = 'cleared',
-    last_recovery_run_id = $1,
-    cleared_at = $2,
-    recovery_due_at = NULL,
-    recovery_lease_owner = NULL,
-    recovery_lease_token = NULL,
-    recovery_lease_until = NULL,
-    updated_at = $2
+    updated_at = db_clock.now_text
+FROM db_clock
 WHERE aqe.account_id = $3
   AND aqe.enforcement_id = $4
   AND aqe.generation = $5
@@ -167,7 +132,7 @@ WHERE aqe.account_id = $3
   AND aqe.recovery_lease_owner = $7
   AND aqe.recovery_lease_token = $8
   AND aqe.recovery_lease_until = $9
-  AND aqe.recovery_lease_until > $2
+  AND aqe.recovery_lease_until > db_clock.now_text
   AND (
     ($10 = 0 AND NOT EXISTS (
       SELECT 1 FROM juhe_business.model_quality_policies AS policies
@@ -177,5 +142,55 @@ WHERE aqe.account_id = $3
       SELECT 1 FROM juhe_business.model_quality_policies AS policies
       WHERE policies.system_account_id = aqe.system_account_id
         AND policies.revision = $10
+      )
+  )
+RETURNING aqe.recovery_due_at`
+
+const recoverModelQualityAccountSQL = `WITH ` + modelQualityDatabaseClockCTE + `
+UPDATE juhe_business.accounts
+SET status = $1,
+    schedulable = $2,
+    last_error_code = NULL,
+    last_error_message = NULL,
+    config_revision = config_revision + 1,
+    updated_at = db_clock.now_text
+FROM db_clock
+WHERE id = $3
+  AND system_account_id = $4
+  AND status = 'quality_isolated'
+  AND config_revision = $5
+  AND deleted_at IS NULL
+  AND authorization_instance_authorization_id IS NULL`
+
+const clearModelQualityRecoveryEnforcementSQL = `WITH ` + modelQualityDatabaseClockCTE + `
+UPDATE juhe_business.account_quality_enforcements AS aqe
+SET state = 'cleared',
+    last_recovery_run_id = $1,
+    cleared_at = db_clock.now_text,
+    recovery_due_at = NULL,
+    recovery_lease_owner = NULL,
+    recovery_lease_token = NULL,
+    recovery_lease_until = NULL,
+    updated_at = db_clock.now_text
+FROM db_clock
+WHERE aqe.account_id = $2
+  AND aqe.enforcement_id = $3
+  AND aqe.generation = $4
+  AND aqe.state = 'active'
+  AND aqe.action = 'quality_isolate'
+  AND aqe.account_config_revision = $5
+  AND aqe.recovery_lease_owner = $6
+  AND aqe.recovery_lease_token = $7
+  AND aqe.recovery_lease_until = $8
+  AND aqe.recovery_lease_until > db_clock.now_text
+  AND (
+    ($9 = 0 AND NOT EXISTS (
+      SELECT 1 FROM juhe_business.model_quality_policies AS policies
+      WHERE policies.system_account_id = aqe.system_account_id
+    ))
+    OR EXISTS (
+      SELECT 1 FROM juhe_business.model_quality_policies AS policies
+      WHERE policies.system_account_id = aqe.system_account_id
+        AND policies.revision = $9
     )
   )`

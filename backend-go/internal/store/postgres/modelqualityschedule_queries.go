@@ -1,5 +1,15 @@
 package postgres
 
+const modelQualityDatabaseClockCTE = `db_clock AS (
+  SELECT
+    fixed.now,
+    to_char(
+      fixed.now AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ) AS now_text
+  FROM (SELECT clock_timestamp() AS now) AS fixed
+)`
+
 const modelQualityScheduleColumns = `
 id, system_account_id, account_id, model, interval_minutes, enabled, revision,
 next_run_at, last_run_id, last_run_at, last_run_status,
@@ -54,7 +64,7 @@ const deleteModelQualityScheduleSQL = `
 DELETE FROM juhe_business.model_quality_schedules
 WHERE id = $1 AND system_account_id = $2 AND revision = $3`
 
-const claimDueModelQualityScheduleCandidatesSQL = `
+const claimDueModelQualityScheduleCandidatesSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 SELECT
   mqs.id, mqs.system_account_id, mqs.account_id, mqs.model,
   mqs.interval_minutes, mqs.enabled, mqs.revision, mqs.next_run_at,
@@ -64,55 +74,64 @@ SELECT
   accounts.config_revision
 FROM juhe_business.model_quality_schedules AS mqs
 JOIN juhe_business.accounts AS accounts
-  ON accounts.id = mqs.account_id
+ ON accounts.id = mqs.account_id
  AND accounts.system_account_id = mqs.system_account_id
+CROSS JOIN db_clock
 WHERE mqs.enabled = 1
-  AND mqs.next_run_at <= $1
-  AND (mqs.lease_until IS NULL OR mqs.lease_until <= $1)
+  AND mqs.next_run_at <= db_clock.now_text
+  AND (mqs.lease_until IS NULL OR mqs.lease_until <= db_clock.now_text)
   AND accounts.deleted_at IS NULL
   AND accounts.authorization_instance_authorization_id IS NULL
   AND accounts.status = 'active'
 ORDER BY mqs.next_run_at ASC, mqs.id ASC
-LIMIT $2
+LIMIT $1
 FOR UPDATE OF mqs SKIP LOCKED`
 
-const claimModelQualityScheduleSQL = `
+const claimModelQualityScheduleSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 UPDATE juhe_business.model_quality_schedules
 SET lease_owner = $1,
     lease_token = $2,
-    lease_until = $3,
-    updated_at = $4
-WHERE id = $5
-  AND revision = $6
+    lease_until = to_char(
+      (db_clock.now + ($3::bigint * interval '1 millisecond')) AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ),
+    updated_at = db_clock.now_text
+FROM db_clock
+WHERE id = $4
+  AND revision = $5
   AND enabled = 1
-  AND next_run_at <= $4
-  AND (lease_until IS NULL OR lease_until <= $4)
+  AND next_run_at <= db_clock.now_text
+  AND (lease_until IS NULL OR lease_until <= db_clock.now_text)
   AND EXISTS (
     SELECT 1
     FROM juhe_business.accounts AS accounts
     WHERE accounts.id = juhe_business.model_quality_schedules.account_id
       AND accounts.system_account_id = juhe_business.model_quality_schedules.system_account_id
-      AND accounts.config_revision = $7
+      AND accounts.config_revision = $6
       AND accounts.deleted_at IS NULL
       AND accounts.authorization_instance_authorization_id IS NULL
       AND accounts.status = 'active'
-  )`
+  )
+RETURNING lease_until, updated_at`
 
-const completeModelQualityScheduleSQL = `
+const completeModelQualityScheduleSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 UPDATE juhe_business.model_quality_schedules
 SET last_run_id = NULLIF($1, ''),
-    last_run_at = $2,
-    last_run_status = $3,
-    next_run_at = $4,
+    last_run_at = db_clock.now_text,
+    last_run_status = $2,
+    next_run_at = to_char(
+      (db_clock.now + ($3::bigint * interval '1 minute')) AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ),
     lease_owner = NULL,
     lease_token = NULL,
     lease_until = NULL,
-    updated_at = $2
-WHERE id = $5
-  AND revision = $6
-  AND interval_minutes = $7
-  AND lease_owner = $8
-  AND lease_token = $9
-  AND lease_until = $10
-  AND updated_at <= $2
-  AND lease_until > $2`
+    updated_at = db_clock.now_text
+FROM db_clock
+WHERE id = $4
+  AND revision = $5
+  AND interval_minutes = $3
+  AND lease_owner = $6
+  AND lease_token = $7
+  AND lease_until = $8
+  AND lease_until > db_clock.now_text`

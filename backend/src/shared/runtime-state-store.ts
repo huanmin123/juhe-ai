@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { getRedisClient, type RedisCommandClient } from './redis-client.js'
+import { runRedisOperationWithDeadline, type RedisCommandClient } from './redis-client.js'
 import { redisNamespacedKey } from './redis-namespace.js'
 
 export type RuntimeStateKey = string
@@ -155,7 +155,7 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
   }
 
   async getJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
-    const rawValue = await (await this.client()).get(this.redisKey(key))
+    const rawValue = await this.run('运行态读取', (client) => client.get(this.redisKey(key)))
     if (rawValue === null) return undefined
     try {
       return JSON.parse(rawValue) as T
@@ -168,7 +168,7 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
   async getJsonMany<T>(keys: RuntimeStateKey[]): Promise<Array<T | undefined>> {
     if (!keys.length) return []
     const redisKeys = keys.map((key) => this.redisKey(key))
-    const rawValues = await (await this.client()).sendCommand(['MGET', ...redisKeys])
+    const rawValues = await this.run('运行态批量读取', (client) => client.sendCommand(['MGET', ...redisKeys]))
     const values = Array.isArray(rawValues) ? rawValues : []
     const malformedKeys: string[] = []
     const output = redisKeys.map((redisKey, index) => {
@@ -182,13 +182,13 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
       }
     })
     if (malformedKeys.length) {
-      await (await this.client()).sendCommand(['DEL', ...malformedKeys])
+      await this.run('运行态损坏数据清理', (client) => client.sendCommand(['DEL', ...malformedKeys]))
     }
     return output
   }
 
   async getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
-    const rawValue = await (await this.client()).sendCommand(['GETDEL', this.redisKey(key)])
+    const rawValue = await this.run('运行态读取并删除', (client) => client.sendCommand(['GETDEL', this.redisKey(key)]))
     if (typeof rawValue !== 'string') return undefined
     try {
       return JSON.parse(rawValue) as T
@@ -198,11 +198,7 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
   }
 
   async setJson<T>(key: RuntimeStateKey, value: T, ttlMs: number): Promise<void> {
-    await (await this.client()).set(
-      this.redisKey(key),
-      JSON.stringify(value),
-      { PX: normalizeTtlMs(ttlMs) }
-    )
+    await this.run('运行态写入', (client) => client.set(this.redisKey(key), JSON.stringify(value), { PX: normalizeTtlMs(ttlMs) }).then(() => undefined))
   }
 
   async compareSetJson<T>(
@@ -211,62 +207,58 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
     nextValue: T,
     ttlMs: number
   ): Promise<boolean> {
-    const result = await (await this.client()).eval(compareSetJsonScript, {
+    const result = await this.run('运行态 CAS 写入', (client) => client.eval(compareSetJsonScript, {
       keys: [this.redisKey(key)],
       arguments: [
         expectedValue === undefined ? '' : JSON.stringify(expectedValue),
         JSON.stringify(nextValue),
         String(normalizeTtlMs(ttlMs))
       ]
-    })
+    }))
     return numericRedisResult(result) === 1
   }
 
   async compareDeleteJson<T>(key: RuntimeStateKey, expectedValue: T): Promise<boolean> {
-    const result = await (await this.client()).eval(compareDeleteJsonScript, {
+    const result = await this.run('运行态 CAS 删除', (client) => client.eval(compareDeleteJsonScript, {
       keys: [this.redisKey(key)],
       arguments: [JSON.stringify(expectedValue)]
-    })
+    }))
     return numericRedisResult(result) === 1
   }
 
   async delete(key: RuntimeStateKey): Promise<void> {
-    await (await this.client()).del(this.redisKey(key))
+    await this.run('运行态删除', (client) => client.del(this.redisKey(key)).then(() => undefined))
   }
 
   async incr(key: RuntimeStateKey, options: { ttlMs: number; max?: number }): Promise<number> {
-    const result = await (await this.client()).eval(incrWithMaxScript, {
+    const result = await this.run('运行态计数', (client) => client.eval(incrWithMaxScript, {
       keys: [this.redisKey(key)],
       arguments: [
         String(normalizeTtlMs(options.ttlMs)),
         options.max === undefined ? '' : String(normalizeNonNegativeInteger(options.max))
       ]
-    })
+    }))
     return numericRedisResult(result)
   }
 
   async acquireLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean> {
-    const result = await (await this.client()).set(
-      this.redisKey(key),
-      options.token,
-      { PX: normalizeTtlMs(options.ttlMs), NX: true }
-    )
+    const result = await this.run('运行态锁获取', (client) => client.set(this.redisKey(key), options.token, { PX: normalizeTtlMs(options.ttlMs), NX: true }))
     return result === 'OK'
   }
 
   async releaseLock(key: RuntimeStateKey, token: string): Promise<void> {
-    await (await this.client()).eval(releaseLockScript, {
+    await this.run('运行态锁释放', (client) => client.eval(releaseLockScript, {
       keys: [this.redisKey(key)],
       arguments: [token]
-    })
+    }).then(() => undefined))
   }
 
-  private client(): Promise<RedisCommandClient> {
+  private run<T>(operationName: string, operation: (client: RedisCommandClient) => Promise<T>): Promise<T> {
     const redisUrl = runtimeConfig.redis.stateUrl
     if (!redisUrl) {
       throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
     }
-    return getRedisClient(redisUrl)
+    return runRedisOperationWithDeadline(redisUrl, { operationName, timeoutMs: 3_000 }, operation)
   }
 
   private redisKey(key: RuntimeStateKey): string {

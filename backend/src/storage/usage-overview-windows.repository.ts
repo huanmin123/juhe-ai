@@ -39,6 +39,7 @@ export interface UsageOverviewWindowRefreshContext {
 interface UsageOverviewWindowRefreshOptions {
   endDate?: string
   minEndDate?: string
+  systemAccountIds?: string[]
 }
 
 interface UsageOverviewIncrementalWindowRefresh {
@@ -120,9 +121,87 @@ export async function refreshUsageOverviewWindowSnapshotsIncrementalAsync(
   previousSourceWatermark?: string,
   sourceWatermark?: string
 ): Promise<void> {
-  const refresh = await usageOverviewIncrementalWindowRefreshAsync(client, context, previousSourceWatermark, sourceWatermark)
-  if (!refresh) return
-  await refreshUsageOverviewWindowSnapshotsAsync(client, refresh.context, refresh.options)
+  await seedUsageOverviewRolloverDirtyScopesAsync(client, context)
+  const dirtyRows = await client.query<{
+    system_account_id: string
+    scope_id: string
+    min_changed_date: string
+    generation: number | string
+  }>(`
+    SELECT system_account_id, scope_id, min_changed_date, generation
+    FROM ${statsTable(client, 'usage_overview_dirty_scopes')}
+    ORDER BY updated_at, system_account_id
+    LIMIT 8
+    FOR UPDATE SKIP LOCKED
+  `)
+  if (dirtyRows.length === 0) return
+  const minChangedDate = dirtyRows.reduce((minDate, row) => row.min_changed_date < minDate ? row.min_changed_date : minDate, dirtyRows[0]!.min_changed_date)
+  const ranges = context.ranges.filter((range) => range.endDate >= minChangedDate)
+  if (ranges.length === 0) return
+  const systemAccountIds = dirtyRows.map((row) => row.system_account_id)
+  const refreshContext: UsageOverviewWindowRefreshContext = {
+    ...context,
+    ranges,
+    earliestDate: ranges[0]?.startDate ?? minChangedDate,
+    overviewScopes: dirtyRows.map((row) => ({ systemAccountId: row.system_account_id, scopeId: row.scope_id })),
+    uniqueSystemAccountIds: systemAccountIds.filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID)
+  }
+  await refreshUsageOverviewWindowSnapshotsAsync(client, refreshContext, { minEndDate: minChangedDate, systemAccountIds })
+  const claimedValues = dirtyRows.map(() => '(?, ?::bigint)').join(', ')
+  await client.execute(`
+    DELETE FROM ${statsTable(client, 'usage_overview_dirty_scopes')} dirty
+    USING (VALUES ${claimedValues}) AS claimed(system_account_id, generation)
+    WHERE dirty.system_account_id = claimed.system_account_id
+      AND dirty.generation = claimed.generation
+  `, dirtyRows.flatMap((row) => [row.system_account_id, row.generation]))
+}
+
+async function seedUsageOverviewRolloverDirtyScopesAsync(
+  client: DatabaseClient,
+  context: UsageOverviewWindowRefreshContext
+): Promise<void> {
+  const stateTable = statsTable(client, 'stats_job_state')
+  const state = await client.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT cursor_created_at, cursor_id FROM ${stateTable}
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_overview_daily_seed'
+  `)
+  const cursor = state?.cursor_created_at === context.todayKey ? state.cursor_id ?? '' : ''
+  if (cursor === '__done__') return
+  const scopes = await client.query<{ system_account_id: string; scope_id: string }>(`
+    SELECT system_account_id, scope_id
+    FROM ${statsTable(client, 'usage_stats_totals')}
+    WHERE scope_type = 'system_account'
+      AND system_account_id > ?
+    ORDER BY system_account_id
+    LIMIT 128
+  `, [cursor])
+  if (!scopes.some((scope) => scope.system_account_id === GLOBAL_STATS_SYSTEM_ACCOUNT_ID)) {
+    scopes.unshift({ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scope_id: GLOBAL_STATS_SCOPE_ID })
+  }
+  for (const chunk of chunkValues(scopes, 128)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'usage_overview_dirty_scopes')} (
+        system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+      ) VALUES ${chunk.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
+      ON CONFLICT(system_account_id) DO UPDATE SET
+        scope_id = EXCLUDED.scope_id,
+        min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
+        generation = usage_overview_dirty_scopes.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((scope) => [scope.system_account_id, scope.scope_id, context.todayKey, context.updatedAt, context.updatedAt]))
+  }
+  const pageRows = scopes.filter((scope) => scope.system_account_id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID)
+  const nextCursor = pageRows.length < 128 ? '__done__' : pageRows.at(-1)?.system_account_id ?? '__done__'
+  await client.execute(`
+    INSERT INTO ${stateTable} (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('global', '', 'usage_overview_daily_seed', ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = EXCLUDED.cursor_created_at,
+      cursor_id = EXCLUDED.cursor_id,
+      last_success_at = EXCLUDED.last_success_at,
+      updated_at = EXCLUDED.updated_at
+  `, [context.todayKey, nextCursor, context.updatedAt, context.updatedAt])
 }
 
 export function refreshUsageOverviewTodayWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
@@ -356,15 +435,20 @@ function deleteUsageOverviewWindowRows(database: DatabaseSync, tableName: string
 }
 
 async function deleteUsageOverviewWindowRowsAsync(client: DatabaseClient, tableName: string, options: UsageOverviewWindowRefreshOptions): Promise<void> {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (options.systemAccountIds?.length) {
+    conditions.push('system_account_id = ANY(?::text[])')
+    params.push(options.systemAccountIds)
+  }
   if (options.endDate) {
-    await client.execute(`DELETE FROM ${statsTable(client, tableName)} WHERE end_date = ?`, [options.endDate])
-    return
+    conditions.push('end_date = ?')
+    params.push(options.endDate)
+  } else if (options.minEndDate) {
+    conditions.push('end_date >= ?')
+    params.push(options.minEndDate)
   }
-  if (options.minEndDate) {
-    await client.execute(`DELETE FROM ${statsTable(client, tableName)} WHERE end_date >= ?`, [options.minEndDate])
-    return
-  }
-  await client.execute(`DELETE FROM ${statsTable(client, tableName)}`)
+  await client.execute(`DELETE FROM ${statsTable(client, tableName)}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''}`, params)
 }
 
 async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {

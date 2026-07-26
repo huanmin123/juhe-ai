@@ -73,7 +73,8 @@ function assertSourceGuards(): void {
   assert(!cleanupSource.includes('dataRetentionCleanupBatchSize'), '清理服务不能读取系统设置里的单批删除行数')
   assert(!cleanupSource.includes('dataRetentionCleanupMaxBatchesPerRun'), '清理服务不能读取系统设置里的单轮最大批数')
   assert(cleanupSource.includes('DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS'), '清理服务连续批次之间必须保留 SQLite 写入间隙')
-  assert(cleanupSource.includes('pauseBetweenCleanupBatches()'), '清理服务必须在继续下一批前节流')
+  assert(cleanupSource.includes('pauseBetweenCleanupBatches(signal)'), '清理服务必须在继续下一批前节流并支持取消')
+  assert(cleanupSource.includes('signal.throwIfAborted()'), '清理服务必须在新批次准入前响应取消')
   assert(cleanupSource.includes('checkpointDatasetAndUsageDatabases()'), '清理删除数据后必须维护 dataset / usage shard WAL')
 
   const constantsSource = readFileSync(resolve('src/modules/background/data-retention-cleanup.constants.ts'), 'utf8')

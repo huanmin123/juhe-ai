@@ -49,7 +49,7 @@ func claimDueModelQualityRecoveries(
 	committed := false
 	defer rollbackModelQualityScheduleTx(tx, &committed)()
 
-	rows, err := tx.Query(ctx, claimDueModelQualityRecoveryCandidatesSQL, modelQualityPolicyTimeText(input.Now), input.Limit)
+	rows, err := tx.Query(ctx, claimDueModelQualityRecoveryCandidatesSQL, input.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("select due model quality recoveries: %w", err)
 	}
@@ -107,22 +107,30 @@ func claimDueModelQualityRecoveries(
 		if !validModelQualityScheduleText(string(token), 256) {
 			return nil, fmt.Errorf("generated model quality recovery token is invalid")
 		}
-		command, err := tx.Exec(ctx, claimModelQualityRecoverySQL,
-			string(input.OwnerID), string(token), modelQualityPolicyTimeText(input.LeaseUntil),
-			int64(plan.State.AccountRevision), modelQualityPolicyTimeText(input.Now),
-			candidate.enforcement.AccountID, candidate.enforcement.Token.ID,
+		var leaseUntilRaw, claimedAtRaw string
+		err = tx.QueryRow(ctx, claimModelQualityRecoverySQL,
+			string(input.OwnerID), string(token), int64(input.LeaseDuration/time.Millisecond),
+			int64(plan.State.AccountRevision), candidate.enforcement.AccountID, candidate.enforcement.Token.ID,
 			int64(candidate.enforcement.Token.Generation), int64(policy.Policy.Revision),
-		)
+		).Scan(&leaseUntilRaw, &claimedAtRaw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("claim model quality recovery for account %q: %w", candidate.enforcement.AccountID, err)
 		}
-		if command.RowsAffected() != 1 {
-			continue
+		leaseUntil, err := modelQualityPolicyParseTime(leaseUntilRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse claimed model quality recovery lease_until: %w", err)
 		}
-		lease := port.ModelQualityRecoveryLease{OwnerID: input.OwnerID, ClaimToken: token, Until: input.LeaseUntil.UTC()}
+		claimedAt, err := modelQualityPolicyParseTime(claimedAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("parse claimed model quality recovery updated_at: %w", err)
+		}
+		lease := port.ModelQualityRecoveryLease{OwnerID: input.OwnerID, ClaimToken: token, Until: leaseUntil}
 		candidate.enforcement.AccountConfigRevision = plan.State.AccountRevision
 		candidate.enforcement.RecoveryLease = &lease
-		candidate.enforcement.UpdatedAt = input.Now.UTC()
+		candidate.enforcement.UpdatedAt = claimedAt
 		claims = append(claims, port.ModelQualityRecoveryClaim{
 			AccountID: candidate.enforcement.AccountID, SystemAccountID: candidate.enforcement.SystemAccountID,
 			Model: candidate.model, Policy: policy, ExpectedAccountConfigRevision: plan.State.AccountRevision,
@@ -155,7 +163,6 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	err = tx.QueryRow(ctx, findModelQualityRecoveryScopeSQL,
 		input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 		string(input.Lease.OwnerID), string(input.Lease.ClaimToken), modelQualityPolicyTimeText(input.Lease.Until),
-		modelQualityPolicyTimeText(input.CompletedAt),
 	).Scan(&systemAccountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commitModelQualityRecoveryResult(ctx, tx, &committed, port.ModelQualityRecoveryCompleteResult{Status: port.ModelQualityRecoveryStale})
@@ -163,7 +170,6 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	if err != nil {
 		return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("find model quality recovery scope: %w", err)
 	}
-
 	account, found, err := lockModelQualityRecoveryAccount(ctx, tx, input.AccountID, systemAccountID)
 	if err != nil {
 		return port.ModelQualityRecoveryCompleteResult{}, err
@@ -171,7 +177,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	if !found {
 		return commitModelQualityRecoveryResult(ctx, tx, &committed, port.ModelQualityRecoveryCompleteResult{Status: port.ModelQualityRecoveryStale})
 	}
-	enforcement, found, err := lockModelQualityRecoveryEnforcement(ctx, tx, input)
+	enforcement, completionNow, found, err := lockModelQualityRecoveryEnforcement(ctx, tx, input)
 	if err != nil {
 		return port.ModelQualityRecoveryCompleteResult{}, err
 	}
@@ -187,7 +193,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 		input.ExpectedAccountConfigRevision == enforcement.AccountConfigRevision &&
 		enforcement.AccountConfigRevision == account.ConfigRevision &&
 		account.Status == modelquality.AccountStatusQualityIsolated {
-		availableNow, err = modelQualityRecoveryAvailable(account.AvailabilityScheduleJSON, input.CompletedAt)
+		availableNow, err = modelQualityRecoveryAvailable(account.AvailabilityScheduleJSON, completionNow)
 		if err != nil {
 			return port.ModelQualityRecoveryCompleteResult{}, err
 		}
@@ -202,21 +208,22 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 
 	before := account.Status
 	if plan.NeedsReschedule {
-		next, err := addModelQualityScheduleInterval(input.CompletedAt, input.RecoveryInterval)
-		if err != nil {
-			return port.ModelQualityRecoveryCompleteResult{}, err
-		}
-		command, err := tx.Exec(ctx, rescheduleModelQualityRecoverySQL,
-			input.RunID, modelQualityPolicyTimeText(next), modelQualityPolicyTimeText(input.CompletedAt),
+		var nextRaw string
+		err = tx.QueryRow(ctx, rescheduleModelQualityRecoverySQL,
+			input.RunID, int(input.RecoveryInterval/time.Minute),
 			input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 			int64(enforcement.AccountConfigRevision), string(input.Lease.OwnerID), string(input.Lease.ClaimToken),
 			modelQualityPolicyTimeText(input.Lease.Until), int64(policy.Policy.Revision),
-		)
+		).Scan(&nextRaw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("locked model quality recovery was not rescheduled")
+		}
 		if err != nil {
 			return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("reschedule model quality recovery: %w", err)
 		}
-		if command.RowsAffected() != 1 {
-			return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("locked model quality recovery was not rescheduled")
+		next, err := modelQualityPolicyParseTime(nextRaw)
+		if err != nil {
+			return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("parse model quality recovery next run: %w", err)
 		}
 		status := port.ModelQualityRecoveryStale
 		if plan.Result == modelquality.RecoveryKeptIsolated {
@@ -230,7 +237,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 		return commitModelQualityRecoveryResult(ctx, tx, &committed, recoveryStaleResult(account.Status))
 	}
 	command, err := tx.Exec(ctx, recoverModelQualityAccountSQL,
-		string(plan.TargetStatus), *plan.TargetSchedulable, input.CompletedAt.UTC(),
+		string(plan.TargetStatus), *plan.TargetSchedulable,
 		input.AccountID, enforcement.SystemAccountID, int64(account.ConfigRevision),
 	)
 	if err != nil {
@@ -240,8 +247,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 		return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("locked model quality account was not recovered")
 	}
 	command, err = tx.Exec(ctx, clearModelQualityRecoveryEnforcementSQL,
-		input.RunID, modelQualityPolicyTimeText(input.CompletedAt), input.AccountID,
-		input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
+		input.RunID, input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 		int64(enforcement.AccountConfigRevision), string(input.Lease.OwnerID), string(input.Lease.ClaimToken),
 		modelQualityPolicyTimeText(input.Lease.Until), int64(policy.Policy.Revision),
 	)
@@ -289,19 +295,23 @@ func lockModelQualityRecoveryAccount(ctx context.Context, tx pgx.Tx, accountID, 
 	return account, true, nil
 }
 
-func lockModelQualityRecoveryEnforcement(ctx context.Context, tx pgx.Tx, input port.ModelQualityRecoveryCompleteInput) (port.ModelQualityEnforcementRecord, bool, error) {
-	record, err := scanModelQualityEnforcement(tx.QueryRow(ctx, lockModelQualityRecoveryEnforcementSQL,
+func lockModelQualityRecoveryEnforcement(ctx context.Context, tx pgx.Tx, input port.ModelQualityRecoveryCompleteInput) (port.ModelQualityEnforcementRecord, time.Time, bool, error) {
+	var completionNowRaw string
+	record, err := scanModelQualityEnforcementWithTail(tx.QueryRow(ctx, lockModelQualityRecoveryEnforcementSQL,
 		input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 		string(input.Lease.OwnerID), string(input.Lease.ClaimToken), modelQualityPolicyTimeText(input.Lease.Until),
-		modelQualityPolicyTimeText(input.CompletedAt),
-	))
+	), &completionNowRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return port.ModelQualityEnforcementRecord{}, false, nil
+		return port.ModelQualityEnforcementRecord{}, time.Time{}, false, nil
 	}
 	if err != nil {
-		return port.ModelQualityEnforcementRecord{}, false, fmt.Errorf("lock model quality recovery enforcement: %w", err)
+		return port.ModelQualityEnforcementRecord{}, time.Time{}, false, fmt.Errorf("lock model quality recovery enforcement: %w", err)
 	}
-	return record, true, nil
+	completionNow, err := modelQualityPolicyParseTime(completionNowRaw)
+	if err != nil {
+		return port.ModelQualityEnforcementRecord{}, time.Time{}, false, fmt.Errorf("parse model quality recovery database clock: %w", err)
+	}
+	return record, completionNow, true, nil
 }
 
 func scanModelQualityRecoveryCandidate(row modelQualityScheduleScanner) (port.ModelQualityEnforcementRecord, string, modelquality.AccountRevision, error) {
@@ -430,6 +440,9 @@ func modelQualityRecoveryAvailable(raw *string, now time.Time) (bool, error) {
 }
 
 func normalizeModelQualityRecoveryClaimInput(input port.ModelQualityRecoveryClaimInput) port.ModelQualityRecoveryClaimInput {
+	if input.LeaseDuration == 0 {
+		input.LeaseDuration = port.ModelQualityRecoveryClaimDefaultLease
+	}
 	if input.Limit == 0 {
 		input.Limit = port.ModelQualityRecoveryClaimDefaultLimit
 	}
@@ -437,9 +450,9 @@ func normalizeModelQualityRecoveryClaimInput(input port.ModelQualityRecoveryClai
 }
 
 func validateModelQualityRecoveryClaimInput(input port.ModelQualityRecoveryClaimInput) error {
-	lease := input.LeaseUntil.Sub(input.Now)
-	if !validModelQualityScheduleText(string(input.OwnerID), 128) || input.Now.IsZero() || input.LeaseUntil.IsZero() ||
-		lease < port.ModelQualityClaimMinimumLease || lease > port.ModelQualityClaimMaximumLease ||
+	if !validModelQualityScheduleText(string(input.OwnerID), 128) ||
+		input.LeaseDuration < port.ModelQualityClaimMinimumLease || input.LeaseDuration > port.ModelQualityClaimMaximumLease ||
+		input.LeaseDuration%time.Millisecond != 0 ||
 		input.Limit < 1 || input.Limit > port.ModelQualityRecoveryClaimMaximumLimit {
 		return fmt.Errorf("model quality recovery claim is invalid")
 	}
@@ -452,7 +465,7 @@ func validateModelQualityRecoveryCompleteInput(input port.ModelQualityRecoveryCo
 		input.ExpectedPolicyRevision > modelquality.PolicyRevision(math.MaxInt32) || input.ExpectedAccountConfigRevision == 0 ||
 		input.ExpectedAccountConfigRevision > modelquality.AccountRevision(math.MaxInt32) ||
 		!validModelQualityScheduleText(string(input.Lease.OwnerID), 128) || !validModelQualityScheduleText(string(input.Lease.ClaimToken), 256) ||
-		input.Lease.Until.IsZero() || input.CompletedAt.IsZero() || !input.Lease.Until.After(input.CompletedAt) ||
+		input.Lease.Until.IsZero() ||
 		!validModelQualityScheduleInterval(input.RecoveryInterval) || !validModelQualityScheduleText(input.RunID, 256) {
 		return fmt.Errorf("model quality recovery completion is invalid")
 	}

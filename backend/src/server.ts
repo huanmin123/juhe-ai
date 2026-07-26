@@ -40,6 +40,7 @@ import {
 } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
+import { stopUserRequestLimitCoordinator } from './modules/gateway/runtime/user-request-limit-coordinator.js'
 import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-first-body-admission.middleware.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
@@ -524,7 +525,8 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
     ])
     const dispatchIdle = await waitForAuditLogServerDispatchIdle(8_000)
     const ingestFactQueuesIdle = await waitForIngestFactQueueDrain(5_000)
-    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestFactQueuesIdle) {
+    const userRequestLimitCountersFlushed = await stopUserRequestLimitCoordinator(3_000)
+    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestFactQueuesIdle || !userRequestLimitCountersFlushed) {
       logger.warn({
         event: 'server_shutdown_drain_incomplete',
         httpClosed,
@@ -532,6 +534,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
         captureIdle,
         dispatchIdle,
         ingestFactQueuesIdle,
+        userRequestLimitCountersFlushed,
         activeAuditCaptureCount: getActiveAuditCaptureCount(),
         pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
         pendingAuditDispatchCount: getAuditLogServerDispatchPendingCount(),

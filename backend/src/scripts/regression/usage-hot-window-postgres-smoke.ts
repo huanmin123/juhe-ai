@@ -119,6 +119,16 @@ async function seedTodayUsageSources(client: ReturnType<typeof createPostgresDat
     ) VALUES (?, 'system_account', ?, ?, 7, 5, 2, 70, 14, 3, 0.001, 0.07, 700, 7, 140, 210, 7, 40, ?, ?)
   `, [systemAccountId, systemAccountId, today, `${today}T00:00:00.000Z`, updatedAt])
   await client.execute(`
+    INSERT INTO juhe_stats.usage_overview_dirty_scopes (
+      system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+    ) VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(system_account_id) DO UPDATE SET
+      scope_id = EXCLUDED.scope_id,
+      min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
+      generation = usage_overview_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, systemAccountId, today, updatedAt, updatedAt])
+  await client.execute(`
     INSERT INTO juhe_stats.usage_stats_hourly (
       system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
@@ -160,5 +170,6 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.usage_stats_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_model_daily WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_error_daily WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.usage_overview_dirty_scopes WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
 }

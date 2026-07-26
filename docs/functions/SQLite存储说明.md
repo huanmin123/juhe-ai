@@ -1041,6 +1041,13 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 原始审计日志虽然带有 `system_account_id`，当前仍仅管理员可读取；普通用户不能通过审计日志接口查看自己的完整原文请求。
 - 操作日志按 `operation_log_viewers.system_account_id` 和 `visibility_scope = 'all_users'` 控制普通用户可见范围；管理员可读取全部操作日志。
 
+## 系统账户请求限制字段
+
+- `system_accounts.request_limits_json` 保存 Node 用户请求限制覆盖，结构可包含 `perMinute`、`perDay`、`perWeek`、`perMonth` 和 `expiresOn`。
+- 四个窗口字段缺失表示继承全局，`0` 表示用户无限，正整数表示覆盖；`expiresOn` 是整组覆盖的可选 `YYYY-MM-DD` 到期日，日期当天仍有效，次日按 `usageStatsTimezone` 继承全局。
+- 空对象或只有到期日而没有窗口覆盖时归一化为 `NULL`。该字段不是查询条件，不建立索引，也不保存计数事实。
+- fresh SQLite schema 直接创建该列；旧本地数据库启动时通过列检查和 `ALTER TABLE ... ADD COLUMN request_limits_json TEXT` 兼容升级，不能要求用户删除现有库。
+
 ## 敏感字段
 
 以下字段必须加密存储：

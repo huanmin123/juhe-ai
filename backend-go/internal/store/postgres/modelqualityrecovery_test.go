@@ -33,7 +33,7 @@ func TestModelQualityRecoverySQLFencesOwnershipAndLockOrder(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"FOR UPDATE OF aqe SKIP LOCKED", "accounts.authorization_instance_authorization_id IS NULL",
-		"accounts.status = 'quality_isolated'", "LIMIT $2",
+		"accounts.status = 'quality_isolated'", "LIMIT $1",
 	} {
 		if !strings.Contains(claimDueModelQualityRecoveryCandidatesSQL, fragment) {
 			t.Fatalf("claim candidate SQL missing %q", fragment)
@@ -46,11 +46,38 @@ func TestModelQualityRecoverySQLFencesOwnershipAndLockOrder(t *testing.T) {
 			}
 		}
 	}
+	for name, sqlAndFragments := range map[string]struct {
+		sql       string
+		fragments []string
+	}{
+		"claim":      {claimModelQualityRecoverySQL, []string{"aqe.account_id = $5", "aqe.generation = $7", "policies.revision = $8"}},
+		"reschedule": {rescheduleModelQualityRecoverySQL, []string{"aqe.account_id = $3", "aqe.generation = $5", "aqe.recovery_lease_until = $9"}},
+		"clear":      {clearModelQualityRecoveryEnforcementSQL, []string{"aqe.account_id = $2", "aqe.generation = $4", "aqe.recovery_lease_until = $8"}},
+	} {
+		for _, fragment := range sqlAndFragments.fragments {
+			if !strings.Contains(sqlAndFragments.sql, fragment) {
+				t.Fatalf("%s SQL missing parameter fence %q", name, fragment)
+			}
+		}
+	}
 	if strings.Contains(claimModelQualityRecoverySQL, "aqe.policy_revision = $9") {
 		t.Fatal("claim must not pin recovery to the enforcement's historical policy revision")
 	}
 	if !strings.Contains(lockModelQualityRecoveryAccountSQL, "FOR UPDATE") || !strings.Contains(lockModelQualityRecoveryEnforcementSQL, "FOR UPDATE") {
 		t.Fatal("completion must lock both account and enforcement rows")
+	}
+	for name, sql := range map[string]string{
+		"candidates": claimDueModelQualityRecoveryCandidatesSQL,
+		"claim":      claimModelQualityRecoverySQL,
+		"scope":      findModelQualityRecoveryScopeSQL,
+		"lock":       lockModelQualityRecoveryEnforcementSQL,
+		"reschedule": rescheduleModelQualityRecoverySQL,
+		"recover":    recoverModelQualityAccountSQL,
+		"clear":      clearModelQualityRecoveryEnforcementSQL,
+	} {
+		if strings.Count(sql, "clock_timestamp()") != 1 || !strings.Contains(sql, `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`) {
+			t.Fatalf("%s SQL must fix one canonical database clock", name)
+		}
 	}
 	if strings.Contains(claimDueModelQualityRecoveryCandidatesSQL, "FOR UPDATE OF accounts") {
 		t.Fatal("claim must not hold an account lock after taking the enforcement lock")
@@ -75,12 +102,14 @@ func TestClaimDueModelQualityRecoveriesUsesBoundedTokenizedCAS(t *testing.T) {
 	enforcement[7] = int64(4)
 	row := append(enforcement, "gpt-5", int64(8))
 	tx := &modelQualityScheduleTxStub{
-		queryRows:     &modelQualityScheduleRowsStub{rows: [][]any{row}},
-		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)}},
-		execTags:      []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+		queryRows: &modelQualityScheduleRowsStub{rows: [][]any{row}},
+		queryRowQueue: []pgx.Row{
+			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
+			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now)}},
+		},
 	}
 	claims, err := claimDueModelQualityRecoveries(context.Background(), beginModelQualityRecoveryTestTx(tx), port.ModelQualityRecoveryClaimInput{
-		OwnerID: "worker-1", Now: now, LeaseUntil: leaseUntil,
+		OwnerID: "worker-1", LeaseDuration: 6 * time.Minute,
 	}, func() (string, error) { return "mqr_claim_token", nil })
 	if err != nil {
 		t.Fatalf("claimDueModelQualityRecoveries() error = %v", err)
@@ -92,14 +121,14 @@ func TestClaimDueModelQualityRecoveriesUsesBoundedTokenizedCAS(t *testing.T) {
 	if claims[0].Lease.ClaimToken != "mqr_claim_token" || claims[0].Enforcement.RecoveryLease == nil || claims[0].Enforcement.AccountConfigRevision != 8 {
 		t.Fatalf("tokenized claim = %#v", claims[0])
 	}
-	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 1 {
+	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 3 {
 		t.Fatalf("transaction commit/rollback/exec = %d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls))
 	}
-	if got := tx.queryCalls[0].args[1]; got != port.ModelQualityRecoveryClaimDefaultLimit {
+	if got := tx.queryCalls[0].args[0]; got != port.ModelQualityRecoveryClaimDefaultLimit {
 		t.Fatalf("default limit = %v", got)
 	}
-	args := tx.execCalls[0].args
-	if args[1] != "mqr_claim_token" || args[3] != int64(8) || args[8] != int64(5) {
+	args := tx.queryCalls[2].args
+	if args[1] != "mqr_claim_token" || args[3] != int64(8) || args[7] != int64(5) {
 		t.Fatalf("claim CAS args = %#v", args)
 	}
 }
@@ -113,7 +142,7 @@ func TestClaimDueModelQualityRecoveriesRollsBackOnEntropyFailure(t *testing.T) {
 		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)}},
 	}
 	_, err := claimDueModelQualityRecoveries(context.Background(), beginModelQualityRecoveryTestTx(tx), port.ModelQualityRecoveryClaimInput{
-		OwnerID: "worker-1", Now: now, LeaseUntil: now.Add(6 * time.Minute),
+		OwnerID: "worker-1", LeaseDuration: 6 * time.Minute,
 	}, func() (string, error) { return "", errors.New("entropy unavailable") })
 	if err == nil || !strings.Contains(err.Error(), "entropy unavailable") {
 		t.Fatalf("error = %v", err)
@@ -131,10 +160,10 @@ func TestCompleteModelQualityRecoveryReschedulesStalePolicy(t *testing.T) {
 		queryRowQueue: []pgx.Row{
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{}}},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true})},
+			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
 			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 6)},
+			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(now.Add(10 * time.Minute))}},
 		},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
 	}
 	result, err := completeModelQualityRecovery(context.Background(), beginModelQualityRecoveryTestTx(tx), modelQualityRecoveryCompleteInput(now, lease, true))
 	if err != nil {
@@ -143,7 +172,7 @@ func TestCompleteModelQualityRecoveryReschedulesStalePolicy(t *testing.T) {
 	if result.Status != port.ModelQualityRecoveryStale || result.NextRecoveryAt == nil || !result.NextRecoveryAt.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("result = %#v", result)
 	}
-	if tx.commitCalls != 1 || len(tx.execCalls) != 1 || tx.execCalls[0].args[8] != "claim-1" {
+	if tx.commitCalls != 1 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 5 || tx.queryCalls[4].args[7] != "claim-1" {
 		t.Fatalf("transaction or token fence = %#v", tx)
 	}
 }
@@ -156,10 +185,10 @@ func TestCompleteModelQualityRecoveryFailedProbeIgnoresUnrelatedMalformedSchedul
 		queryRowQueue: []pgx.Row{
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{String: "{", Valid: true}}},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true})},
+			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
 			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
+			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(now.Add(10 * time.Minute))}},
 		},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
 	}
 	input := modelQualityRecoveryCompleteInput(now, lease, false)
 	result, err := completeModelQualityRecovery(context.Background(), beginModelQualityRecoveryTestTx(tx), input)
@@ -173,7 +202,11 @@ func TestCompleteModelQualityRecoveryAtomicallyRecoversAndClears(t *testing.T) {
 	now := time.Date(2026, 7, 26, 8, 0, 0, 0, time.UTC)
 	lease := port.ModelQualityRecoveryLease{OwnerID: "worker-1", ClaimToken: "claim-1", Until: now.Add(5 * time.Minute)}
 	tx := modelQualityRecoveryCompletionTx(now, lease, pgconn.NewCommandTag("UPDATE 1"), pgconn.NewCommandTag("UPDATE 1"))
-	result, err := completeModelQualityRecovery(context.Background(), beginModelQualityRecoveryTestTx(tx), modelQualityRecoveryCompleteInput(now, lease, true))
+	availability := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"08:00","end":"09:00"}]}`
+	tx.queryRowQueue[1] = modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{String: availability, Valid: true}}}
+	input := modelQualityRecoveryCompleteInput(now, lease, true)
+	input.CompletedAt = lease.Until.Add(24 * time.Hour)
+	result, err := completeModelQualityRecovery(context.Background(), beginModelQualityRecoveryTestTx(tx), input)
 	if err != nil {
 		t.Fatalf("completeModelQualityRecovery() error = %v", err)
 	}
@@ -184,7 +217,7 @@ func TestCompleteModelQualityRecoveryAtomicallyRecoversAndClears(t *testing.T) {
 	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 2 {
 		t.Fatalf("transaction commit/rollback/exec = %d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls))
 	}
-	if tx.execCalls[0].args[1] != true || tx.execCalls[1].args[7] != "claim-1" {
+	if tx.execCalls[0].args[1] != true || tx.execCalls[1].args[6] != "claim-1" {
 		t.Fatalf("recovery mutation args = %#v / %#v", tx.execCalls[0].args, tx.execCalls[1].args)
 	}
 }
@@ -203,18 +236,37 @@ func TestCompleteModelQualityRecoveryRollsBackAccountWhenClearLosesCAS(t *testin
 	}
 }
 
-func TestCompleteModelQualityRecoveryRejectsExpiredLeaseBeforeStartingTransaction(t *testing.T) {
+func TestCompleteModelQualityRecoveryUsesDatabaseLeaseExpiry(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 26, 8, 0, 0, 0, time.UTC)
-	called := false
-	_, err := completeModelQualityRecovery(context.Background(), func(context.Context, pgx.TxOptions) (pgx.Tx, error) {
-		called = true
-		return nil, errors.New("must not begin")
-	}, modelQualityRecoveryCompleteInput(now, port.ModelQualityRecoveryLease{
+	tx := &modelQualityScheduleTxStub{queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{err: pgx.ErrNoRows}}}
+	result, err := completeModelQualityRecovery(context.Background(), beginModelQualityRecoveryTestTx(tx), modelQualityRecoveryCompleteInput(now, port.ModelQualityRecoveryLease{
 		OwnerID: "worker-1", ClaimToken: "claim-1", Until: now,
 	}, true))
-	if err == nil || called {
-		t.Fatalf("error/called = %v/%v", err, called)
+	if err != nil || result.Status != port.ModelQualityRecoveryStale || tx.commitCalls != 1 {
+		t.Fatalf("result/error/commit = %#v/%v/%d", result, err, tx.commitCalls)
+	}
+}
+
+func TestModelQualityRecoveryClaimValidationUsesBoundedDuration(t *testing.T) {
+	t.Parallel()
+	input := normalizeModelQualityRecoveryClaimInput(port.ModelQualityRecoveryClaimInput{OwnerID: "worker-1"})
+	if input.LeaseDuration != port.ModelQualityRecoveryClaimDefaultLease || input.Limit != port.ModelQualityRecoveryClaimDefaultLimit {
+		t.Fatalf("normalized claim = %+v", input)
+	}
+	if err := validateModelQualityRecoveryClaimInput(input); err != nil {
+		t.Fatalf("valid claim error = %v", err)
+	}
+	for _, duration := range []time.Duration{
+		port.ModelQualityClaimMinimumLease - time.Millisecond,
+		port.ModelQualityClaimMinimumLease + time.Nanosecond,
+		port.ModelQualityClaimMaximumLease + time.Millisecond,
+	} {
+		invalid := input
+		invalid.LeaseDuration = duration
+		if err := validateModelQualityRecoveryClaimInput(invalid); err == nil {
+			t.Fatalf("invalid lease duration accepted: %s", duration)
+		}
 	}
 }
 
@@ -223,7 +275,7 @@ func modelQualityRecoveryCompletionTx(now time.Time, lease port.ModelQualityReco
 		queryRowQueue: []pgx.Row{
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{}}},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true})},
+			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
 			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
 		},
 		execTags: tags,

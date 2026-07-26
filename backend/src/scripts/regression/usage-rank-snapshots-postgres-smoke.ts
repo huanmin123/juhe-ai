@@ -18,9 +18,9 @@ const stageNames: UsageRankSnapshotStageName[] = [
   'caller_account_last7d_request_rank',
   'api_key_current_month_cost_rank',
   'account_authorization_current_month_cost_rank',
-  'group_authorization_current_month_cost_rank',
-  'ai_performance_summary_windows'
+  'group_authorization_current_month_cost_rank'
 ]
+const aiPerformanceStageNames: UsageRankSnapshotStageName[] = ['ai_performance_summary_windows']
 
 try {
   const timezone = await usageStatsTimezoneAsync()
@@ -84,13 +84,30 @@ try {
     yieldToEventLoop: async () => {}
   })
   assert.equal(refreshed.skipped, false, '首次 PG usage rank refresh 不应跳过')
-  assert.deepEqual(refreshed.stages.map((stage) => stage.name), stageNames, 'PG usage rank refresh 应执行 TopN 和 AI 性能窗口阶段')
+  assert.deepEqual(refreshed.stages.map((stage) => stage.name), stageNames, 'PG usage rank refresh 应只执行 TopN 阶段')
 
   await assertTopRank('account', 'last7d', 'request_count', `account_a_${marker}`, 19)
   await assertTopRank('caller_account', 'last7d', 'request_count', `caller_a_${marker}`, 23)
   await assertTopRank('api_key', 'current_month', 'total_cost_usd', `api_key_a_${marker}`, 0.531)
   await assertTopRank('account_authorization', 'current_month', 'total_cost_usd', `account_auth_${marker}`, 0.729)
   await assertTopRank('group_authorization', 'current_month', 'total_cost_usd', `group_auth_${marker}`, 0.837)
+  await client.execute(`
+    INSERT INTO juhe_stats.ai_performance_summary_dirty_system_accounts (
+      system_account_id, min_stat_date, max_stat_date, generation, first_dirty_at, updated_at
+    ) VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(system_account_id) DO UPDATE SET
+      min_stat_date = LEAST(ai_performance_summary_dirty_system_accounts.min_stat_date, EXCLUDED.min_stat_date),
+      max_stat_date = GREATEST(ai_performance_summary_dirty_system_accounts.max_stat_date, EXCLUDED.max_stat_date),
+      generation = ai_performance_summary_dirty_system_accounts.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, today, today, updatedAt, updatedAt])
+  const aiRefreshed = await refreshUsageRankSnapshotsInStages({
+    stageNames: aiPerformanceStageNames,
+    skipIfUnchanged: true,
+    jobName: `${jobName}:ai-performance`,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(aiRefreshed.skipped, false, 'PG AI 性能 dirty 队列非空时不应被 source watermark 跳过')
   await assertAiPerformanceSummaryWindow(today)
 
   const skipped = await refreshUsageRankSnapshotsInStages({
@@ -103,7 +120,7 @@ try {
 
   console.log(JSON.stringify({
     message: '用量 TopN 排行 PG smoke 通过',
-    stages: refreshed.stages.length,
+    stages: refreshed.stages.length + aiRefreshed.stages.length,
     accountTop: `account_a_${marker}`,
     callerTop: `caller_a_${marker}`,
     skipped: skipped.skipped === true
@@ -170,5 +187,6 @@ async function cleanupSmokeRows(): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.usage_stats_monthly WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_stats_totals WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.ai_performance_summary_windows WHERE system_account_id = $1', [systemAccountId])
-  await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
+  await pool.query('DELETE FROM juhe_stats.ai_performance_summary_dirty_system_accounts WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = ANY($1::text[])', [[jobName, `${jobName}:ai-performance`]])
 }

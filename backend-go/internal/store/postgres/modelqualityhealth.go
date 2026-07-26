@@ -168,7 +168,7 @@ func truncateModelQualityTextRunes(value string, maximum int) string {
 	count := 0
 	for byteIndex := range value {
 		if count == maximum {
-			return value[:byteIndex]
+			return strings.Clone(value[:byteIndex])
 		}
 		count++
 	}

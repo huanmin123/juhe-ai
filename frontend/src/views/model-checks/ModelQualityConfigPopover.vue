@@ -4,20 +4,20 @@
       <a-spin :spinning="loading">
         <div class="quality-config">
           <div>
-            <div class="quality-config-title">模型质量检测配置</div>
-            <div class="quality-config-help">快速与深度互斥；默认使用快速检测。</div>
+            <div class="quality-config-title">手动检测质量配置</div>
+            <div class="quality-config-help">仅用于页面手动检查；定时计划使用各自独立配置。</div>
           </div>
           <div class="quality-config-row">
             <div>
               <div class="quality-config-label">深度检测</div>
-              <div class="quality-config-help">开启后手工、定时和恢复检查统一使用深度模式。</div>
+              <div class="quality-config-help">开启后手动检查使用深度模式；耗时更长且消耗更多 Token，请按需开启。</div>
             </div>
             <a-switch v-model:checked="form.deepDetection" :disabled="saving" />
           </div>
           <div class="quality-config-row">
             <div>
               <div class="quality-config-label">手动测试处罚</div>
-              <div class="quality-config-help">关闭时仍记录日志并同步健康监控，只不修改账户。</div>
+              <div class="quality-config-help">开启后，手动检测不达标会按下方方式处罚自有账户；关闭后仅记录检测结果与健康状态，不修改账户。</div>
             </div>
             <a-switch v-model:checked="form.manualEnforcementEnabled" :disabled="saving" />
           </div>
@@ -29,7 +29,7 @@
             <span>处罚方式</span>
             <a-select v-model:value="form.penaltyAction" :disabled="saving" :options="penaltyOptions" />
           </label>
-          <label class="quality-config-field">
+          <label v-if="form.penaltyAction === 'quality_isolate'" class="quality-config-field">
             <span>质量隔离恢复周期</span>
             <a-input-number v-model:value="form.recoveryIntervalMinutes" :min="10" :max="10080" :precision="0" :disabled="saving" addon-after="分钟" />
           </label>
@@ -40,8 +40,8 @@
         </div>
       </a-spin>
     </template>
-    <a-tooltip title="模型质量检测配置">
-      <a-button aria-label="模型质量检测配置" :disabled="disabled" @click="emit('open')">
+    <a-tooltip title="手动检测质量配置">
+      <a-button aria-label="手动检测质量配置" :disabled="disabled" @click="emit('open')">
         <template #icon><SettingOutlined /></template>
       </a-button>
     </a-tooltip>
