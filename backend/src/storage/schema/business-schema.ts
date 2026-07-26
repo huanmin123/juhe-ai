@@ -440,6 +440,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cleared_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
+      CHECK (
+        (config_source = 'manual' AND config_source_id IS NULL)
+        OR
+        (config_source = 'schedule' AND config_source_id IS NOT NULL AND length(trim(config_source_id)) > 0)
+      ),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );

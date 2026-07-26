@@ -160,9 +160,16 @@ WITH run_facts AS (
 ), resolved_enforcement AS (
   SELECT
     source.account_id,
-    source.resolved_config_source AS config_source,
     CASE
-      WHEN source.resolved_config_source = 'schedule' THEN source.resolved_config_source_id
+      WHEN source.resolved_config_source = 'schedule'
+        AND source.resolved_config_source_id IS NOT NULL
+        THEN 'schedule'
+      ELSE 'manual'
+    END AS config_source,
+    CASE
+      WHEN source.resolved_config_source = 'schedule'
+        AND source.resolved_config_source_id IS NOT NULL
+        THEN source.resolved_config_source_id
       ELSE NULL
     END AS config_source_id,
     COALESCE(
@@ -277,6 +284,7 @@ ALTER TABLE juhe_business.account_quality_enforcements
 
 ALTER TABLE juhe_business.account_quality_enforcements
   DROP CONSTRAINT IF EXISTS account_quality_enforcements_config_source_check,
+  DROP CONSTRAINT IF EXISTS account_quality_enforcements_config_source_id_check,
   DROP CONSTRAINT IF EXISTS account_quality_enforcements_profile_check,
   DROP CONSTRAINT IF EXISTS account_quality_enforcements_penalty_threshold_check,
   DROP CONSTRAINT IF EXISTS account_quality_enforcements_recovery_interval_minutes_check;
@@ -284,6 +292,12 @@ ALTER TABLE juhe_business.account_quality_enforcements
 ALTER TABLE juhe_business.account_quality_enforcements
   ADD CONSTRAINT account_quality_enforcements_config_source_check
     CHECK (config_source IN ('manual', 'schedule')),
+  ADD CONSTRAINT account_quality_enforcements_config_source_id_check
+    CHECK (
+      (config_source = 'manual' AND config_source_id IS NULL)
+      OR
+      (config_source = 'schedule' AND config_source_id IS NOT NULL AND length(BTRIM(config_source_id)) > 0)
+    ),
   ADD CONSTRAINT account_quality_enforcements_profile_check
     CHECK (profile IN ('quick', 'full')),
   ADD CONSTRAINT account_quality_enforcements_penalty_threshold_check

@@ -149,6 +149,16 @@ try {
   assert.equal(Number(scheduledEnforcementRow.penalty_threshold), 58)
   assert.equal(Number(scheduledEnforcementRow.recovery_interval_minutes), 45)
   assert.equal(scheduledEnforcementRow.recovery_model, 'gpt-5.5')
+  assert.throws(
+    () => business.prepare('UPDATE account_quality_enforcements SET config_source_id = NULL WHERE account_id = ?').run(account.id),
+    /CHECK constraint failed/,
+    'schedule enforcement 必须保留非空 config_source_id'
+  )
+  assert.throws(
+    () => business.prepare("UPDATE account_quality_enforcements SET config_source = 'manual' WHERE account_id = ?").run(account.id),
+    /CHECK constraint failed/,
+    'manual enforcement 不得保留 schedule config_source_id'
+  )
   business.prepare("UPDATE account_quality_enforcements SET recovery_due_at = '2020-01-01T00:00:00.000Z' WHERE account_id = ?").run(account.id)
   const scheduledRecoveries = await qualityRepository.claimDueModelQualityRecoveriesAsync('regression-scheduled-recovery', { now: '2026-07-26T00:01:00.000Z' })
   assert.equal(scheduledRecoveries.length, 1)

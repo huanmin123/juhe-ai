@@ -146,8 +146,10 @@ func TestModelQualityConfigurationSnapshotMigrationBackfillsBeforeConstraints(t 
 		"source.policy_snapshot ->> 'scheduleId'",
 		"source.policy_snapshot ->> 'threshold'",
 		"source.policy_snapshot ->> 'recoveryIntervalMinutes'",
+		"source.resolved_config_source_id IS NOT NULL",
 		"ALTER COLUMN config_source SET NOT NULL",
 		"CHECK (config_source IN ('manual', 'schedule'))",
+		"account_quality_enforcements_config_source_id_check",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("%s missing %q", migrationName, want)
