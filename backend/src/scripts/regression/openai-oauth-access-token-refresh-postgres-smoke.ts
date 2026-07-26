@@ -175,10 +175,17 @@ function assertLocalConfigurationErrorMessage(message: string | undefined): void
 
 async function assertOAuthRefreshDueExplainUsesIndex(): Promise<void> {
   const pool = await getPostgresPool()
+  // A freshly initialized isolated smoke database has no autovacuum statistics
+  // yet. Populate the planner statistics explicitly so the EXPLAIN assertion
+  // verifies the production query/index contract instead of whichever generic
+  // account index happens to win with default empty-table estimates.
+  await pool.query('ANALYZE juhe_business.accounts')
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
     await client.query('SET LOCAL enable_seqscan = off')
+    await client.query('SET LOCAL enable_bitmapscan = off')
+    await client.query('SET LOCAL enable_sort = off')
     const planRows = await client.query(`
       EXPLAIN (COSTS OFF)
       SELECT id
@@ -187,10 +194,11 @@ async function assertOAuthRefreshDueExplainUsesIndex(): Promise<void> {
         AND deleted_at IS NULL
         AND provider_protocol_profile_id = $1
         AND type = 'oauth'
-        AND oauth_refresh_token_present IN (0, 1)
+        AND oauth_refresh_token_present BETWEEN 0 AND 1
         AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> 'oauth_token_refresh_local_configuration_invalid')
         AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= $2)
-      ORDER BY (oauth_access_token_expires_at IS NOT NULL) ASC,
+      ORDER BY oauth_refresh_token_present ASC,
+        (oauth_access_token_expires_at IS NOT NULL) ASC,
         oauth_access_token_expires_at ASC,
         updated_at ASC,
         id ASC
@@ -199,6 +207,7 @@ async function assertOAuthRefreshDueExplainUsesIndex(): Promise<void> {
     const plan = planRows.rows.map((row) => String(row['QUERY PLAN'] ?? '')).join('\n')
     assert.match(plan, /idx_accounts_openai_oauth_refresh_pg_due/, 'PG OAuth 刷新候选查询应命中 due 索引')
     assert.doesNotMatch(plan, /\bSeq Scan\b/, 'PG OAuth 刷新候选查询不应出现 Seq Scan')
+    assert.doesNotMatch(plan, /\bSort\b/, 'PG OAuth 刷新候选查询应直接复用 due 索引顺序')
   } finally {
     await client.query('ROLLBACK').catch(() => undefined)
     client.release()

@@ -1483,10 +1483,14 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
         AND deleted_at IS NULL
         AND provider_protocol_profile_id = ?
         AND type = 'oauth'
-        AND oauth_refresh_token_present IN (0, 1)
+        AND oauth_refresh_token_present BETWEEN 0 AND 1
         AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
         AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
-      ORDER BY oauth_access_token_expires_at IS NOT NULL ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
+      ORDER BY oauth_refresh_token_present ASC,
+        oauth_access_token_expires_at IS NOT NULL ASC,
+        oauth_access_token_expires_at ASC,
+        updated_at ASC,
+        id ASC
       LIMIT ?
     `)
     .all(GPT_OPENAI_V1_PROFILE_ID, input.stoppedErrorCode, dueBefore, limit) as unknown as OpenAIOAuthRefreshCandidateRow[]
@@ -1516,10 +1520,14 @@ export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input
       AND deleted_at IS NULL
       AND provider_protocol_profile_id IN (${client.dialect.bindPlaceholders(profileIds.length)})
       AND type = 'oauth'
-      AND oauth_refresh_token_present IN (0, 1)
+      AND oauth_refresh_token_present BETWEEN 0 AND 1
       AND (status <> 'error' OR last_error_code IS NULL OR last_error_code <> ?)
       AND (oauth_access_token_expires_at IS NULL OR oauth_access_token_expires_at <= ?)
-    ORDER BY (oauth_access_token_expires_at IS NOT NULL) ASC, oauth_access_token_expires_at ASC, updated_at ASC, id ASC
+    ORDER BY oauth_refresh_token_present ASC,
+      (oauth_access_token_expires_at IS NOT NULL) ASC,
+      oauth_access_token_expires_at ASC,
+      updated_at ASC,
+      id ASC
     LIMIT ?
   `, [...profileIds, input.stoppedErrorCode, dueBefore, limit])
   return openAIOAuthRefreshCandidateResults(rows)
