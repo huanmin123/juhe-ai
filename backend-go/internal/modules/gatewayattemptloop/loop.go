@@ -408,9 +408,9 @@ func newAttemptObservation(attempt Attempt, request protocolgateway.RequestShape
 		AttemptIndex:    attempt.Index,
 		CandidateIndex:  attempt.CandidateIndex,
 		APIKeyIndex:     attempt.APIKeyIndex,
-		AccountRuntime:  runtimeKey(attempt.Candidate),
-		ProtocolProfile: protocolProfile(attempt.Candidate),
-		RequestLane:     requestLane(request),
+		AccountRuntime:  hotQualityRuntimeKey(attempt.Candidate),
+		ProtocolProfile: hotQualityProtocolProfile(attempt.Candidate),
+		RequestLane:     string(protocolgateway.ResolveRequestLane(request)),
 		ModelBucket:     modelBucket(request.Model),
 		StartedAt:       attempt.StartedAt.UTC(),
 	}
@@ -430,36 +430,47 @@ func invalidTerminalObservation() AttemptTerminalObservation {
 	return AttemptTerminalObservation{ErrorCode: "invalid_attempt_result"}
 }
 
-func protocolProfile(candidate gatewaycandidatewindow.Candidate) string {
+func hotQualityRuntimeKey(candidate gatewaycandidatewindow.Candidate) string {
 	projection := candidate.Projection
-	for _, value := range []string{projection.ResourceProviderProtocolProfileID, projection.ProviderProtocolProfileID} {
-		if value = strings.TrimSpace(value); value != "" {
+	accountID := strings.TrimSpace(projection.AccountID)
+	if accountID == "" {
+		return ""
+	}
+	authorizationID := strings.TrimSpace(projection.AccountAuthorizationID)
+	if authorizationID == "" {
+		return accountID
+	}
+	systemAccountID, groupID := strings.TrimSpace(projection.SystemAccountID), strings.TrimSpace(projection.GroupID)
+	if systemAccountID == "" || groupID == "" {
+		return ""
+	}
+	return accountID + ":authorized:" + systemAccountID + ":" + groupID + ":" + authorizationID
+}
+
+func hotQualityProtocolProfile(candidate gatewaycandidatewindow.Candidate) string {
+	projection := candidate.Projection
+	if strings.TrimSpace(projection.ResourceAccountID) != "" {
+		if value := strings.TrimSpace(projection.ResourceProviderProtocolProfileID); value != "" {
 			return value
 		}
+		code, version := strings.TrimSpace(projection.ResourceProtocolCode), strings.TrimSpace(projection.ResourceProtocolVersion)
+		if code != "" {
+			return code + ":" + version
+		}
 	}
-	code, version := strings.TrimSpace(projection.ResourceProtocolCode), strings.TrimSpace(projection.ResourceProtocolVersion)
+	if value := strings.TrimSpace(projection.ProviderProtocolProfileID); value != "" {
+		return value
+	}
+	code, version := strings.TrimSpace(projection.ProtocolCode), strings.TrimSpace(projection.ProtocolVersion)
 	if code == "" {
-		code, version = strings.TrimSpace(projection.ProtocolCode), strings.TrimSpace(projection.ProtocolVersion)
-	}
-	if code == "" {
-		return "unknown"
-	}
-	if version == "" {
-		return code
+		return ""
 	}
 	return code + ":" + version
 }
 
-func requestLane(request protocolgateway.RequestShape) string {
-	if request.ImageGenerationHint {
-		return "image"
-	}
-	return "text"
-}
-
 func modelBucket(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || len(model) > 256 || strings.IndexFunc(model, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
 		return "unknown"
 	}
 	sum := sha256.Sum256([]byte(model))

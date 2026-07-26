@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestRunObserverSeesEachActualAttemptAndOnlyOneFirstByte(t *testing.T) {
@@ -36,6 +38,32 @@ func TestRunObserverNeutralizesInvalidExecutorResult(t *testing.T) {
 	}
 	if len(observer.terminals) != 1 || observer.terminals[0].result.Valid || observer.terminals[0].result.Success || observer.terminals[0].result.ErrorCode != "invalid_attempt_result" {
 		t.Fatalf("terminal observations = %#v", observer.terminals)
+	}
+}
+
+func TestAttemptObservationUsesAuthorizedRuntimeAndNormalizedScopeHints(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	candidate := gatewaycandidatewindow.Candidate{Projection: port.GatewayAccountCandidate{
+		AccountID: "account-1", SystemAccountID: "system-1", GroupID: "group-1", AccountAuthorizationID: "authorization-1",
+		ProviderProtocolProfileID: "local-profile", ResourceProviderProtocolProfileID: "resource-profile",
+	}}
+	observation := newAttemptObservation(Attempt{Candidate: candidate, StartedAt: now}, protocolgateway.RequestShape{Path: "/v1/images/generations", Model: "GPT-IMAGE"})
+	if observation.AccountRuntime != "account-1:authorized:system-1:group-1:authorization-1" || observation.ProtocolProfile != "local-profile" || observation.RequestLane != "image" || observation.ModelBucket != modelBucket("gpt-image") {
+		t.Fatalf("observation=%+v", observation)
+	}
+	candidate.Projection.ResourceAccountID = "resource-account-1"
+	candidate.Projection.ResourceProtocolCode = "resource-code"
+	candidate.Projection.ResourceProtocolVersion = "v2"
+	if got := newAttemptObservation(Attempt{Candidate: candidate, StartedAt: now}, protocolgateway.RequestShape{}).ProtocolProfile; got != "resource-profile" {
+		t.Fatalf("resource protocol profile = %q", got)
+	}
+	candidate.Projection.ResourceProviderProtocolProfileID = ""
+	if got := newAttemptObservation(Attempt{Candidate: candidate, StartedAt: now}, protocolgateway.RequestShape{}).ProtocolProfile; got != "resource-code:v2" {
+		t.Fatalf("resource protocol fallback = %q", got)
+	}
+	candidate.Projection.GroupID = ""
+	if got := newAttemptObservation(Attempt{Candidate: candidate, StartedAt: now}, protocolgateway.RequestShape{}).AccountRuntime; got != "" {
+		t.Fatalf("incomplete authorized runtime = %q", got)
 	}
 }
 
