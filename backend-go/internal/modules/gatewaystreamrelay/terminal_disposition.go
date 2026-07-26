@@ -36,6 +36,11 @@ type TerminalDisposition struct {
 	RetryUpstream       bool
 	EmitControlledEvent bool
 	Disconnect          bool
+
+	// controlledEventAuthorized is deliberately unexported. A response adapter
+	// may observe the public plan, but only DecideTerminalDisposition can mint
+	// the proof required to encode a second terminal event.
+	controlledEventAuthorized bool
 }
 
 // DecideTerminalDisposition yields one owner-independent outcome. Go keeps a
@@ -59,6 +64,7 @@ func DecideTerminalDisposition(input TerminalDispositionInput) TerminalDispositi
 	}
 	if retryableUpstream && input.Capability == CommittedFailureSignalProtocolEvent {
 		result.EmitControlledEvent = true
+		result.controlledEventAuthorized = true
 		return result
 	}
 	result.Disconnect = true
