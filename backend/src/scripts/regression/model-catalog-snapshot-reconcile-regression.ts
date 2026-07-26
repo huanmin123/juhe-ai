@@ -72,6 +72,23 @@ assert.deepEqual(
   personalRequests.map((request) => `${request.systemAccountId}:${request.generation}`).sort()
 )
 
+let emptyRebuildCount = 0
+const emptyService = new ModelCatalogSnapshotReconcileService({
+  ...dependencies,
+  listPendingRequests: async () => [],
+  rebuildAll: async () => { emptyRebuildCount += 1 },
+  rebuildPersonal: async () => { emptyRebuildCount += 1 }
+})
+const emptyScan = await emptyService.reconcileDirtyOnceAsync()
+assert.deepEqual(emptyScan, {
+  capturedCount: 0,
+  rebuildCount: 0,
+  acknowledgedCount: 0,
+  retainedCount: 0,
+  failedCount: 0
+})
+assert.equal(emptyRebuildCount, 0, '没有 dirty generation 时不得执行任何模型目录重建')
+
 const personalOnlyService = new ModelCatalogSnapshotReconcileService({
   ...dependencies,
   listPendingRequests: async () => personalRequests

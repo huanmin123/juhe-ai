@@ -12,6 +12,8 @@ $requiredFiles = @(
   'README.md',
   'install-launchd-service.sh',
   'install-performance-topology.sh',
+  'wait-performance-slot-drain.sh',
+  'retire-performance-slot.sh',
   'manage-sing-box.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
@@ -48,13 +50,24 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--release-dir', '--nginx-main-config', '--service-user', '--service-group', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'wait_for_ingress', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '<key>GroupName</key>', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--slot main|temporary', '--release-dir', '--nginx-main-config', '--nginx-config-kind', '--service-user', '--service-group', '--deployment-lock-library', '--drain-script', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'service_instance_id', 'assert_existing_slot_is_inactive_and_drained', 'location ^~ /__aiinternal__', 'X-Juhe-Active-Upstream performance', 'wait_for_health', 'wait_for_ingress', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', 'acquire_deployment_lock', 'release_deployment_lock', '<key>UserName</key>', '<key>GroupName</key>', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf("nginx_reload`n", [StringComparison]::Ordinal)
 if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex) {
   throw 'Performance topology must verify every Node service before switching nginx'
+}
+$performanceDrain = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'wait-performance-slot-drain.sh')
+foreach ($contract in @('--slot main|temporary|standalone', 'X-Juhe-Active-Upstream', 'lsof -nP -a -c nginx', 'PERFORMANCE_SLOT_DRAINED', 'required_stable_zero=3')) {
+  if (-not $performanceDrain.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance slot drain contract missing: $contract" }
+}
+foreach ($mutation in @('launchctl bootstrap', 'launchctl bootout', 'nginx -s reload', 'rm -rf', 'mv -f')) {
+  if ($performanceDrain.Contains($mutation, [StringComparison]::OrdinalIgnoreCase)) { throw "Performance slot drain must remain read-only: $mutation" }
+}
+$performanceRetire = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'retire-performance-slot.sh')
+foreach ($contract in @('--dry-run', '--apply', '--slot main|temporary', 'wait-performance-slot-drain.sh', 'acquire_deployment_lock', 'PERFORMANCE_SLOT_RETIRED', 'rollback')) {
+  if (-not $performanceRetire.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance slot retire contract missing: $contract" }
 }
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
@@ -100,6 +113,12 @@ if ($bash) {
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --control-port 3102 --gateway-base-port 3101 --gateway-count 3 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted overlapping control and gateway ports' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config-kind main --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --service-user huanmin --service-group staff
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology installer rejected the system/main-config production contract' }
+    & $bash.Source ((Join-Path $operationsRoot 'wait-performance-slot-drain.sh') -replace '\\', '/') --check --slot invalid --control-port 3200 --gateway-base-port 3211 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance slot drain accepted an invalid slot' }
+    & $bash.Source ((Join-Path $operationsRoot 'retire-performance-slot.sh') -replace '\\', '/') --dry-run --scope system --slot temporary --base-dir '/tmp/juhe-ai-performance-test' --drain-script '/tmp/wait-performance-slot-drain.sh'
+    if ($LASTEXITCODE -ne 0) { throw 'performance slot retire dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai|unsafe' --label 'com.example.juhe-ai' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'launchd installer accepted a sed-unsafe base path' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai$(id)' --label 'com.example.juhe-ai' 2>$null

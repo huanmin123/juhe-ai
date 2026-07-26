@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import http from 'node:http'
 import { basename, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
@@ -83,6 +84,7 @@ import {
   reconcileModelCatalogSnapshotScopeAsync
 } from './modules/model-pricing/model-catalog-snapshot-reconcile.service.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
+import { createSharedJsonCache } from './shared/cache.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -103,6 +105,13 @@ let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
 let modelCatalogSnapshotReconcileInFlight: Promise<void> | undefined
 let modelCatalogSnapshotReconcileTimer: NodeJS.Timeout | undefined
+const modelCatalogSnapshotReconcileLease = createSharedJsonCache<{ owner: string }>({
+  name: 'model-catalog-snapshot-reconcile-lease',
+  max: 1,
+  ttlMs: 60_000
+})
+const modelCatalogSnapshotReconcileLeaseKey = 'dirty-scan'
+const modelCatalogSnapshotReconcileLeaseTtlMs = 60_000
 let serverShutdownInProgress = false
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
@@ -209,12 +218,7 @@ function startModelCatalogSnapshotReconcileLoop(): void {
   if (runtimeConfig.databaseDriver !== 'postgres' || modelCatalogSnapshotReconcileTimer) return
   const run = (): void => {
     if (modelCatalogSnapshotReconcileInFlight) return
-    modelCatalogSnapshotReconcileInFlight = reconcileDirtyModelCatalogSnapshotsOnceAsync()
-      .then((result) => {
-        if (result.failedCount > 0) {
-          logger.warn({ event: 'published_model_catalog_reconcile_partial_failure', ...result }, '发布模型目录 dirty 重建未完全成功，保留请求等待下次重试')
-        }
-      })
+    modelCatalogSnapshotReconcileInFlight = runModelCatalogSnapshotReconcileWithLeaseAsync()
       .catch((error) => {
         logger.warn(errorLogFields(error, { event: 'published_model_catalog_reconcile_failed' }), '发布模型目录 dirty 重建失败，保留请求等待下次重试')
       })
@@ -225,6 +229,56 @@ function startModelCatalogSnapshotReconcileLoop(): void {
   run()
   modelCatalogSnapshotReconcileTimer = setInterval(run, 5_000)
   modelCatalogSnapshotReconcileTimer.unref()
+}
+
+async function runModelCatalogSnapshotReconcileWithLeaseAsync(): Promise<void> {
+  const token = `${runtimeConfig.instanceId}:${randomUUID()}`
+  let acquired = false
+  try {
+    acquired = await modelCatalogSnapshotReconcileLease.acquireLease(modelCatalogSnapshotReconcileLeaseKey, {
+      ttlMs: modelCatalogSnapshotReconcileLeaseTtlMs,
+      token
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'published_model_catalog_reconcile_lease_failed'
+    }), '发布模型目录 dirty 扫描租约暂不可用，本轮跳过并保留 dirty 请求')
+    return
+  }
+  if (!acquired) return
+
+  let renewalInFlight = false
+  const renewalTimer = setInterval(() => {
+    if (renewalInFlight) return
+    renewalInFlight = true
+    void modelCatalogSnapshotReconcileLease.renewLease(modelCatalogSnapshotReconcileLeaseKey, token, {
+      ttlMs: modelCatalogSnapshotReconcileLeaseTtlMs
+    }).then((renewed) => {
+      if (!renewed) {
+        logger.warn({ event: 'published_model_catalog_reconcile_lease_lost' }, '发布模型目录 dirty 扫描租约已丢失，当前 generation 仍由持久确认保护')
+      }
+    }).catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'published_model_catalog_reconcile_lease_renew_failed'
+      }), '发布模型目录 dirty 扫描租约续期失败')
+    }).finally(() => {
+      renewalInFlight = false
+    })
+  }, 10_000)
+  renewalTimer.unref()
+
+  try {
+    const result = await reconcileDirtyModelCatalogSnapshotsOnceAsync()
+    if (result.failedCount > 0) {
+      logger.warn({ event: 'published_model_catalog_reconcile_partial_failure', ...result }, '发布模型目录 dirty 重建未完全成功，保留请求等待下次重试')
+    }
+  } finally {
+    clearInterval(renewalTimer)
+    await modelCatalogSnapshotReconcileLease.releaseLease(modelCatalogSnapshotReconcileLeaseKey, token)
+      .catch((error) => logger.warn(errorLogFields(error, {
+        event: 'published_model_catalog_reconcile_lease_release_failed'
+      }), '发布模型目录 dirty 扫描租约释放失败，等待 TTL 自动回收'))
+  }
 }
 
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
