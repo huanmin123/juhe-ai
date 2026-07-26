@@ -12,13 +12,14 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises'
 
 import pino, { type Logger, type LoggerOptions } from 'pino'
 
-import { runtimeConfig } from '../config/runtime.js'
+import { runtimeConfig, type RuntimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import {
   drainProcessDiagnosticAsync,
   writeProcessDiagnosticAsync,
   writeProcessFatalDiagnostic
 } from './process-fatal-diagnostic.js'
+import { isCurrentRuntimeLogFileName, isRotatedRuntimeLogFileName } from './runtime-log-file-name.js'
 
 interface RotatingFileLogStreamOptions {
   directory: string
@@ -337,7 +338,6 @@ class RotatingFileLogStream extends Writable {
     this.currentPath = join(options.directory, options.fileName)
     this.currentSize = this.readCurrentSize()
     this.stream = this.openStream()
-    this.cleanup()
   }
 
   cleanup(): void {
@@ -503,7 +503,6 @@ class RotatingFileLogStream extends Writable {
       await rename(this.currentPath, fallbackPath)
     }
     this.currentSize = 0
-    this.cleanup()
     this.stream = this.openStream()
   }
 
@@ -686,7 +685,7 @@ async function cleanupRotatedLogFiles(options: {
       if (scannedFileCount % logDirectoryScanYieldEvery === 0) {
         await yieldImmediate()
       }
-      if (!entry.isFile() || !isRotatedJuheLogFileName(entry.name)) {
+      if (!entry.isFile() || !isRotatedRuntimeLogFileName(entry.name)) {
         continue
       }
       const path = join(options.directory, entry.name)
@@ -753,7 +752,7 @@ async function countCurrentLogFiles(directoryPath: string, protectedCurrentFileN
       if (scannedFileCount % logDirectoryScanYieldEvery === 0) {
         await yieldImmediate()
       }
-      if (entry.isFile() && protectedCurrentFileNames.has(entry.name)) {
+      if (entry.isFile() && (protectedCurrentFileNames.has(entry.name) || isCurrentRuntimeLogFileName(entry.name))) {
         count += 1
       }
     }
@@ -788,10 +787,6 @@ async function unlinkIfExists(path: string): Promise<number> {
   } catch {
     return 0
   }
-}
-
-function isRotatedJuheLogFileName(fileName: string): boolean {
-  return /^juhe-ai(?:\.(?:worker|db-service|ingest-worker|stats-worker|ops-worker|temporary-maintenance-worker))?\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
 }
 
 export function setRotatedLogCleanupProtectionPredicate(predicate: RotatedLogCleanupProtectionPredicate): void {
@@ -914,9 +909,13 @@ export function logPublisherStats(): LogPublisherStats {
 }
 
 export function startLogMaintenance(): void {
+  if (!isLogMaintenanceOwner()) return
   if (logMaintenanceTimer) return
   if (!fileLogStream) return
-  fileLogStream.cleanup()
+  logMaintenanceKickoff = setImmediate(() => {
+    logMaintenanceKickoff = undefined
+    fileLogStream.cleanup()
+  })
   logMaintenanceTimer = setInterval(
     () => fileLogStream.cleanup(),
     runtimeConfig.log.cleanupIntervalMinutes * 60 * 1000
@@ -926,6 +925,16 @@ export function startLogMaintenance(): void {
 
 let fatalProcessExitStarted = false
 let logMaintenanceTimer: NodeJS.Timeout | undefined
+let logMaintenanceKickoff: NodeJS.Immediate | undefined
+
+type LogMaintenanceOwnerContext = Pick<RuntimeConfig, 'runtimeMode' | 'processRole' | 'workerRole' | 'workerReplicaIndex'>
+
+export function isLogMaintenanceOwner(context: LogMaintenanceOwnerContext = runtimeConfig): boolean {
+  if (context.processRole !== 'worker' || context.workerReplicaIndex !== 0) return false
+  return context.runtimeMode === 'performance'
+    ? context.workerRole === 'log-worker'
+    : context.workerRole === 'ingest-worker'
+}
 
 export function installProcessLogHandlers(): void {
   process.on('unhandledRejection', (reason) => {
@@ -961,6 +970,10 @@ export function installProcessLogHandlers(): void {
 }
 
 export async function closeLogger(timeoutMs = 30_000): Promise<void> {
+  if (logMaintenanceKickoff) {
+    clearImmediate(logMaintenanceKickoff)
+    logMaintenanceKickoff = undefined
+  }
   if (logMaintenanceTimer) {
     clearInterval(logMaintenanceTimer)
     logMaintenanceTimer = undefined

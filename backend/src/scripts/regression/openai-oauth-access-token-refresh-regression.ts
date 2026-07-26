@@ -991,7 +991,141 @@ async function main(): Promise<void> {
     assert(dbServiceRaceInjected, 'DB service 回归必须在 OAuth clear 前注入用户显式错误')
     assertAccountState(dbServiceRaceAccount.id, 'error', false, 'user_explicit_race_error', '用户在 OAuth 刷新成功后')
 
-    console.log('OpenAI OAuth Access Token 后台保活回归通过：不可信上游失败仅退避，本地配置错误独立确认，历史误判可刷新恢复')
+    const boundedAccounts = Array.from({ length: 8 }, (_, index) => createOAuthAccount(
+      `OAuth 有界并发账户 ${index}`,
+      'active',
+      true,
+      `bounded-refresh-${index}`,
+      { expiresAt: `2000-01-01T00:00:${String(index).padStart(2, '0')}.000Z` }
+    ))
+    let activeRefreshes = 0
+    let maxActiveRefreshes = 0
+    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
+      activeRefreshes += 1
+      maxActiveRefreshes = Math.max(maxActiveRefreshes, activeRefreshes)
+      await delay(150)
+      activeRefreshes -= 1
+      return successfulTokenInfo(refreshToken, clientId)
+    })
+    const boundedResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
+      leadSeconds: 300,
+      batchSize: 8,
+      retryBackoffSeconds: 0,
+      accountIds: boundedAccounts.map((account) => account.id),
+      persistMode: 'sync',
+      startAdmissionBudgetMs: 100
+    })
+    assert(maxActiveRefreshes === 4, `OAuth 后台刷新并发应限制为 4，实际 ${maxActiveRefreshes}，结果 ${JSON.stringify(boundedResult)}`)
+    assert(boundedResult.started === 4, `100ms 启动预算内应只启动首批 4 个账户，实际 ${boundedResult.started}`)
+    assert(boundedResult.refreshed === 4, `已启动的 4 个 token rotation 应等待写回完成，实际 ${boundedResult.refreshed}`)
+    assert(boundedResult.deferredBudget === 4, `预算到期后应延后剩余 4 个账户，实际 ${boundedResult.deferredBudget}`)
+    assert(boundedResult.failed === 0, '启动预算到期不应记为刷新失败')
+
+    const abortAccounts = Array.from({ length: 8 }, (_, index) => createOAuthAccount(
+      `OAuth 取消 admission 账户 ${index}`,
+      'active',
+      true,
+      `abort-admission-${index}`,
+      { expiresAt: `2000-01-01T00:00:${String(index).padStart(2, '0')}.000Z` }
+    ))
+    const firstAbortWaveEntered = deferred<void>()
+    const releaseAbortWave = deferred<void>()
+    const abortController = new AbortController()
+    let abortWaveStarted = 0
+    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
+      abortWaveStarted += 1
+      if (abortWaveStarted === 4) firstAbortWaveEntered.resolve()
+      await releaseAbortWave.promise
+      return successfulTokenInfo(refreshToken, clientId)
+    })
+    const abortedBatchPromise = oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
+      leadSeconds: 300,
+      batchSize: 8,
+      retryBackoffSeconds: 0,
+      accountIds: abortAccounts.map((account) => account.id),
+      persistMode: 'sync',
+      startAdmissionBudgetMs: 5_000,
+      signal: abortController.signal
+    })
+    await firstAbortWaveEntered.promise
+    abortController.abort(new Error('scheduler stopping'))
+    releaseAbortWave.resolve()
+    const abortedBatchResult = await abortedBatchPromise
+    assert(abortedBatchResult.started === 4, `父任务取消后不得启动第二批 OAuth rotation，实际 ${abortedBatchResult.started}`)
+    assert(abortedBatchResult.refreshed === 4, `取消前已开始的 OAuth rotation 必须完成并写回，实际 ${abortedBatchResult.refreshed}`)
+    assert(abortedBatchResult.deferredBudget === 4, `父任务取消后剩余 OAuth 候选必须延期，实际 ${abortedBatchResult.deferredBudget}`)
+    assert(abortedBatchResult.failed === 0, '父任务取消不得把未启动 OAuth 候选记为刷新失败')
+
+    const lockedAccount = createOAuthAccount(
+      'OAuth 后台非阻塞锁账户',
+      'active',
+      true,
+      'background-lock-skip',
+      { expiresAt: '2000-01-01T00:01:00.000Z' }
+    )
+    const lockedCurrent = repositories.findAccountForTest(lockedAccount.id, access)
+    assert(lockedCurrent, 'OAuth 后台非阻塞锁账户不存在')
+    const lockEntered = deferred<void>()
+    const lockRelease = deferred<void>()
+    let lockedRefreshCalls = 0
+    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
+      lockedRefreshCalls += 1
+      if (lockedRefreshCalls === 1) {
+        lockEntered.resolve()
+        await lockRelease.promise
+      }
+      return successfulTokenInfo(refreshToken, clientId)
+    })
+    const firstManualRefresh = oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(lockedCurrent, {
+      force: true,
+      persistMode: 'sync'
+    })
+    await lockEntered.promise
+    let secondManualSettled = false
+    const secondManualRefresh = oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(lockedCurrent, {
+      force: true,
+      persistMode: 'sync'
+    }).finally(() => {
+      secondManualSettled = true
+    })
+    await delay(5)
+    assert(!secondManualSettled, '手动刷新必须等待同账户在途 token rotation，不得改成非阻塞跳过')
+    const lockedBackgroundResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
+      leadSeconds: 300,
+      batchSize: 20,
+      retryBackoffSeconds: 0,
+      accountIds: [lockedAccount.id],
+      persistMode: 'sync'
+    })
+    assert(lockedBackgroundResult.started === 0, '后台锁未取得时不得计为已启动')
+    assert(lockedBackgroundResult.skippedLocked === 1, '后台刷新遇到在途同账户任务应立即跳过锁')
+    assert(lockedBackgroundResult.failed === 0, '后台锁占用不得污染刷新失败统计')
+    lockRelease.resolve()
+    await Promise.all([firstManualRefresh, secondManualRefresh])
+
+    const defaultBatchAccounts = Array.from({ length: 21 }, (_, index) => createOAuthAccount(
+      `OAuth 默认批次账户 ${index}`,
+      'active',
+      true,
+      `default-batch-${index}`,
+      { expiresAt: `2000-01-01T00:02:${String(index).padStart(2, '0')}.000Z` }
+    ))
+    const boundedFailureRedis = new BoundedReadOpenAIOAuthRefreshFailureRedis()
+    oauthRefreshService.setOpenAIOAuthRefreshFailureRedisClientForTest(boundedFailureRedis)
+    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => successfulTokenInfo(refreshToken, clientId))
+    const defaultBatchResult = await oauthRefreshService.refreshDueOpenAIOAuthAccessTokens({
+      leadSeconds: 300,
+      retryBackoffSeconds: 0,
+      accountIds: defaultBatchAccounts.map((account) => account.id),
+      persistMode: 'sync'
+    })
+    oauthRefreshService.setOpenAIOAuthRefreshFailureRedisClientForTest()
+    assert(defaultBatchResult.started === 20, `OAuth 默认 batch 应为 20，实际 ${defaultBatchResult.started}`)
+    assert(defaultBatchResult.refreshed === 20, `OAuth 默认 batch 应完成 20 个账户，实际 ${defaultBatchResult.refreshed}`)
+    assert(boundedFailureRedis.getCalls === 20, `无退避命中时只应读取入选 20 个 Redis 状态，实际 ${boundedFailureRedis.getCalls}`)
+    assert(boundedFailureRedis.maxActiveGets <= 4, `Redis 退避读取并发应不超过 4，实际 ${boundedFailureRedis.maxActiveGets}`)
+
+    console.log('OpenAI OAuth Access Token 后台保活回归通过：默认 batch 20、并发 4、启动预算延后、后台非阻塞锁、Redis 退避读取有界')
   } finally {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     oauthRefreshService.setOpenAIOAuthDbServiceRequesterForTest()
@@ -1115,6 +1249,39 @@ function deferred<T>() {
     rejectPromise = reject
   })
   return { promise, resolve: resolvePromise, reject: rejectPromise }
+}
+
+function successfulTokenInfo(refreshToken: string, clientId?: string) {
+  return {
+    accessToken: `access-refreshed-${refreshToken}`,
+    refreshToken: `refresh-refreshed-${refreshToken}`,
+    expiresIn: 3600,
+    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    clientId: clientId ?? 'test-client'
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
+class BoundedReadOpenAIOAuthRefreshFailureRedis implements OpenAIOAuthRefreshFailureRedisClientForTest {
+  getCalls = 0
+  activeGets = 0
+  maxActiveGets = 0
+
+  async get(): Promise<string | null> {
+    this.getCalls += 1
+    this.activeGets += 1
+    this.maxActiveGets = Math.max(this.maxActiveGets, this.activeGets)
+    await delay(1)
+    this.activeGets -= 1
+    return null
+  }
+
+  async eval(): Promise<unknown> {
+    throw new Error('无退避状态的成功刷新不应执行 Redis failure-state eval')
+  }
 }
 
 type RefreshFailureRedisPayload = {

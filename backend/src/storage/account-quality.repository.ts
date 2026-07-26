@@ -5,6 +5,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
 
@@ -83,6 +84,11 @@ interface AccountQualityUpsertInput {
   lastErrorAt?: string
   lastErrorMessage?: string
   updatedAt: string
+}
+
+interface PostgresAccountQualityDirtyMarker {
+  accountId: string
+  rowCtid: string
 }
 
 const unknownQualityScore = 1_000_000
@@ -178,7 +184,11 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10, dirtyAccountL
   }
 }
 
-export async function refreshAccountQualityFromUsageAsync(windowMinutes = 10, dirtyAccountLimit = accountQualityDirtyAccountBatchLimit): Promise<AccountQualityRealtimeRefreshResult> {
+export async function refreshAccountQualityFromUsageAsync(
+  windowMinutes = 10,
+  dirtyAccountLimit = accountQualityDirtyAccountBatchLimit,
+  scheduledLease?: ScheduledJobLeaseFence
+): Promise<AccountQualityRealtimeRefreshResult> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const now = new Date()
   const timezone = await usageStatsTimezoneAsync()
@@ -189,12 +199,14 @@ export async function refreshAccountQualityFromUsageAsync(windowMinutes = 10, di
   const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
 
-  const dirtyAccountIds = await loadDirtyAccountQualityIdsAsync(client, dirtyAccountLimit)
+  const dirtyMarkers = await loadDirtyAccountQualityMarkersAsync(client, dirtyAccountLimit)
+  const dirtyAccountIds = dirtyMarkers.map((marker) => marker.accountId)
   const rows = await loadAccountQualityAggregatesAsync(client, dirtyAccountIds, windowStartedMinute)
   const sampledAccountIds = uniqueAccountQualityIds(rows.map((row) => row.account_id))
   const activeAccounts = await loadQualityAccountMetadataByIdsAsync(client, sampledAccountIds)
   const previousQualityByAccount = await loadAccountQualityRowsByAccountIdsAsync(client, sampledAccountIds)
   const removed = await client.transaction(async (tx) => {
+    if (scheduledLease) await pinScheduledJobLeaseInTransaction(tx, scheduledLease)
     const deleteResult = await cleanupInactiveQualityRowsAsync(tx, qualityCleanupBatchLimit)
     await cleanupInactiveQualityMinuteRowsAsync(tx, qualityCleanupBatchLimit)
     await cleanupOldQualityMinuteRowsAsync(tx, retentionCutoffMinute, qualityCleanupBatchLimit)
@@ -239,7 +251,7 @@ export async function refreshAccountQualityFromUsageAsync(windowMinutes = 10, di
         updatedAt
       })
     }
-    await deleteDirtyAccountQualityRowsAsync(tx, dirtyAccountIds)
+    await deleteDirtyAccountQualityRowsAsync(tx, dirtyMarkers)
     return deleteResult
   })
   return { refreshed: rows.length, removed, windowStartedAt, windowEndedAt }
@@ -433,14 +445,18 @@ function loadAccountQualityAggregates(
   return rows
 }
 
-async function loadDirtyAccountQualityIdsAsync(client: DatabaseClient, limit: number): Promise<string[]> {
-  const rows = await client.query<{ account_id?: string | null }>(`
-    SELECT account_id
+async function loadDirtyAccountQualityMarkersAsync(client: DatabaseClient, limit: number): Promise<PostgresAccountQualityDirtyMarker[]> {
+  const rows = await client.query<{ account_id?: string | null; row_ctid?: string | null }>(`
+    SELECT account_id, ctid::text AS row_ctid
     FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')}
     ORDER BY updated_at ASC, account_id ASC
     LIMIT ?
   `, [Math.max(1, Math.trunc(limit))])
-  return uniqueAccountQualityIds(rows.map((row) => row.account_id))
+  return rows.flatMap((row) => {
+    const accountId = String(row.account_id ?? '').trim()
+    const rowCtid = String(row.row_ctid ?? '').trim()
+    return accountId && rowCtid ? [{ accountId, rowCtid }] : []
+  })
 }
 
 async function loadAccountQualityAggregatesAsync(
@@ -499,12 +515,14 @@ function deleteDirtyAccountQualityRows(database: ReturnType<typeof getStatsDatab
   }
 }
 
-async function deleteDirtyAccountQualityRowsAsync(client: DatabaseClient, accountIds: string[]): Promise<void> {
-  for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
+async function deleteDirtyAccountQualityRowsAsync(client: DatabaseClient, markers: PostgresAccountQualityDirtyMarker[]): Promise<void> {
+  for (const chunk of chunkValues(markers, qualityLookupChunkSize)) {
     await client.execute(`
-      DELETE FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')}
-      WHERE account_id IN (${chunk.map(() => '?').join(', ')})
-    `, chunk)
+      DELETE FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')} dirty
+      USING (VALUES ${chunk.map(() => '(?, ?::tid)').join(', ')}) AS claimed(account_id, row_ctid)
+      WHERE dirty.account_id = claimed.account_id
+        AND dirty.ctid = claimed.row_ctid
+    `, chunk.flatMap((marker) => [marker.accountId, marker.rowCtid]))
   }
 }
 

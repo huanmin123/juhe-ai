@@ -80,6 +80,13 @@ const noActiveMetricRows = buildBackgroundQueueRows({
 } as never)
 assert.equal(backgroundQueueActiveCount(noActiveMetricRows[0]!), undefined, '没有任何活跃来源时必须显示不适用而不是 0')
 
+assert.equal(backgroundJobStatusText(backgroundJobState({ queuedForLane: true })), '等待资源')
+assert.equal(backgroundJobStatusText(backgroundJobState({ pending: true })), '待补跑')
+assert.equal(backgroundJobStatusText(backgroundJobState({ leaseState: 'busy', lastOutcome: 'skipped' })), '其他实例执行')
+assert.equal(backgroundJobStatusText(backgroundJobState({ leaseState: 'lost' })), '租约丢失')
+assert.equal(backgroundJobStatusColor(backgroundJobState({ leaseState: 'lost' })), 'error')
+assert.equal(backgroundJobStatusText(backgroundJobState({ lastOutcome: 'timeout' })), '上次超时')
+
 await testAccountBalancePartialAndRecoveryAcrossRuntimeDto()
 
 assert.equal(auditLogEmptyDescription(undefined), '暂无审计日志。')
@@ -91,11 +98,14 @@ assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 
 const jobsCardSource = readFileSync(new URL('../../views/stats/StatsBackgroundJobsCard.vue', import.meta.url), 'utf8')
 const systemMetricsViewSource = readFileSync(new URL('../../views/stats/SystemMetricsStatsView.vue', import.meta.url), 'utf8')
 const statsApiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
+const frontendDomainSource = readFileSync(new URL('../../types/domain/usage-stats.ts', import.meta.url), 'utf8')
 const statsRoutesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+const dbServiceTypesSource = readFileSync(new URL('../../../../backend/src/modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
+const mockBackgroundRuntimeSource = readFileSync(new URL('../../../../backend/src/modules/stats/mock-background-runtime.ts', import.meta.url), 'utf8')
 assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
 assert.match(statsApiSource, /systemMetricsRuntime:[\s\S]*\/stats\/system-metrics\/runtime/, '后台运行态必须使用独立 API')
 assert.match(systemMetricsViewSource, /void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '运行态卡片加载不得阻塞趋势首屏')
-assert.match(systemMetricsViewSource, /Promise\.all\(\[[\s\S]*api\.stats\.systemMetrics\(rangeParams\)[\s\S]*loadUsageStatsWindow\(\)/, '窗口配置应与趋势业务请求并行')
+assert.match(systemMetricsViewSource, /function loadPageData\(\)[\s\S]*void loadUsageStatsWindow\(\)[\s\S]*return loadData\(\)/, '窗口配置不得阻塞趋势业务请求')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
 assert.match(
@@ -107,6 +117,15 @@ assert(jobsCardSource.includes('backgroundJobStatusText'), '后台任务组件�
 assert(jobsCardSource.includes("title: '部分失败（本进程）'"), '后台任务必须单独展示部分失败次数')
 assert(jobsCardSource.includes("title: '累计失败（本进程）'"), '后台任务历史失败必须明确计数作用域')
 assert(jobsCardSource.includes("title: '最近失败'"), '后台任务必须展示最近失败时间以区分当前异常和历史计数')
+assert(jobsCardSource.includes("title: '任务跳过 / 合并 / 超时'"), '后台任务必须区分任务主动跳过、合并补跑和超时次数')
+assert(jobsCardSource.includes("title: '下次运行'"), '后台任务必须展示 scheduler 计算的下次运行时间')
+for (const field of ['stablePhaseOffsetMs', 'scheduleMode', 'overlapPolicy', 'pending', 'queuedForLane', 'overdueMs', 'nextRunAt', 'lastOutcome', 'leaseState', 'taskSkippedCount', 'coalescedCount', 'timedOutCount']) {
+  assert(statsRoutesSource.includes(field), `system-metrics DTO 必须声明 scheduler 字段 ${field}`)
+  assert(dbServiceTypesSource.includes(field), `DB service runtime DTO 必须声明 scheduler 字段 ${field}`)
+  assert(frontendDomainSource.includes(field), `前端 runtime DTO 必须声明 scheduler 字段 ${field}`)
+}
+assert.match(mockBackgroundRuntimeSource, /runCount:[^\n]+taskSkippedCount/, 'mock runCount 只能包含真实任务执行结果，不能把调度跳过次数算成执行次数')
+assert.doesNotMatch(mockBackgroundRuntimeSource, /runCount:[^\n]+skippedCount/, 'mock runCount 不得包含 scheduler overlap skippedCount')
 
 const queuesCardSource = readFileSync(new URL('../../views/stats/StatsBackgroundQueuesCard.vue', import.meta.url), 'utf8')
 assert(queuesCardSource.includes("if (row.nextRunAt) return '下次运行'"), '定时队列时间必须明确标注为下次运行')
@@ -136,9 +155,16 @@ async function testAccountBalancePartialAndRecoveryAcrossRuntimeDto(): Promise<v
         nextRefreshAt: new Date().toISOString(),
         stateUpdatedAt: new Date().toISOString()
       }],
-      refreshCandidate: async () => {
+      refreshCandidate: async (_candidate, context) => {
         refreshAttempt += 1
-        if (refreshAttempt === 1) await neverSettles
+        if (refreshAttempt === 1) {
+          await Promise.race([
+            neverSettles,
+            new Promise<never>((_resolve, reject) => {
+              context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+            })
+          ])
+        }
       },
       runBudgetMs: 20,
       candidateTimeoutMs: 5
@@ -173,6 +199,20 @@ function systemMetricsJobDto(
   return {
     backgroundJobsAvailable: true,
     backgroundJobs: [{ ...snapshot, workerRole: 'ops-worker' }]
+  }
+}
+
+function backgroundJobState(overrides: Partial<NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]> = {}): NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number] {
+  return {
+    name: 'runtime-contract',
+    intervalMs: 60_000,
+    running: false,
+    runCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    partialCount: 0,
+    skippedCount: 0,
+    ...overrides
   }
 }
 

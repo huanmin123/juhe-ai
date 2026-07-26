@@ -144,6 +144,7 @@ interface ModelCheckRunRow {
   result_summary_json: string
   policy_snapshot_json: string
   quality_decision_json: string
+  quality_health_sync_status: ModelQualityDecision['healthSyncResult'] | null
   error_code: string | null
   error_message: string | null
   created_at: string
@@ -201,6 +202,7 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     result_summary_json: '{}',
     policy_snapshot_json: safeJson(input.policySnapshot ?? {}),
     quality_decision_json: '{}',
+    quality_health_sync_status: null,
     error_code: null,
     error_message: null,
     created_at: now,
@@ -297,6 +299,7 @@ export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput):
     result_summary_json: '{}',
     policy_snapshot_json: safeJson(input.policySnapshot ?? {}),
     quality_decision_json: '{}',
+    quality_health_sync_status: null,
     error_code: null,
     error_message: null,
     created_at: now,
@@ -516,9 +519,9 @@ export async function finishModelCheckRunAsync(runId: string, input: ModelCheckR
 export function updateModelCheckQualityDecision(runId: string, decision: ModelQualityDecision): ModelCheckRunSummary | undefined {
   const result = getDatasetDatabase().prepare(`
     UPDATE model_check_runs
-    SET quality_decision_json = ?, updated_at = ?
+    SET quality_decision_json = ?, quality_health_sync_status = ?, updated_at = ?
     WHERE id = ?
-  `).run(safeJson(decision), nowIso(), runId)
+  `).run(safeJson(decision), decision.healthSyncResult ?? null, nowIso(), runId)
   return result.changes > 0 ? findModelCheckRun(runId) : undefined
 }
 
@@ -527,10 +530,35 @@ export async function updateModelCheckQualityDecisionAsync(runId: string, decisi
   const client = await modelCheckDatabaseClient()
   const result = await client.execute(`
     UPDATE ${modelCheckTable(client, 'model_check_runs')}
-    SET quality_decision_json = ?, updated_at = ?
+    SET quality_decision_json = ?, quality_health_sync_status = ?, updated_at = ?
     WHERE id = ?
-  `, [safeJson(decision), nowIso(), runId])
+  `, [safeJson(decision), decision.healthSyncResult ?? null, nowIso(), runId])
   return result.changes > 0 ? findModelCheckRunAsync(runId) : undefined
+}
+
+export async function listFailedModelQualityHealthSyncRunsAsync(limit = 20): Promise<ModelCheckRunSummary[]> {
+  const boundedLimit = boundedInteger(limit, 20, 1, 100)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const rows = getDatasetDatabase().prepare(`
+      SELECT * FROM model_check_runs
+      WHERE account_id IS NOT NULL
+        AND status = 'completed'
+        AND quality_health_sync_status = 'failed'
+      ORDER BY updated_at ASC, id ASC
+      LIMIT ?
+    `).all(boundedLimit) as unknown as ModelCheckRunRow[]
+    return rows.map((row) => modelCheckRunFromRow(row, true))
+  }
+  const client = await modelCheckDatabaseClient()
+  const rows = await client.query<ModelCheckRunRow>(`
+    SELECT * FROM ${modelCheckTable(client, 'model_check_runs')}
+    WHERE account_id IS NOT NULL
+      AND status = 'completed'
+      AND quality_health_sync_status = 'failed'
+    ORDER BY updated_at ASC, id ASC
+    LIMIT ?
+  `, [boundedLimit])
+  return rows.map((row) => modelCheckRunFromRow(row, true))
 }
 
 export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunListOptions = {}): ModelCheckRunListResult {

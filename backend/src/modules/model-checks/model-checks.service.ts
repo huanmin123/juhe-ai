@@ -106,6 +106,7 @@ import {
   modelCheckSupportedProtocolLabel
 } from './model-checks.provider-capabilities.js'
 import {
+  configuredModelCheckModelsForAccount,
   findModelCheckProfileForAccount,
   findModelCheckProfileForAccountModel,
   pairedModelForProfile,
@@ -307,6 +308,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   const profile = policy.profile
   const policySnapshot: ModelQualityPolicySnapshot = {
     policyRevision: policy.revision,
+    configSource: execution.scheduleId ? 'schedule' : 'manual',
     profile,
     manualEnforcementEnabled: policy.manualEnforcementEnabled,
     threshold: policy.penaltyThreshold,
@@ -692,6 +694,10 @@ async function applyModelQualityOutcome(
           runId: detail.id,
           action: snapshot.action,
           policyRevision: snapshot.policyRevision,
+          scheduleId: snapshot.scheduleId,
+          profile: snapshot.profile,
+          penaltyThreshold: snapshot.threshold,
+          model: detail.model,
           accountConfigRevision: snapshot.accountConfigRevision,
           recoveryIntervalMinutes: snapshot.recoveryIntervalMinutes,
           message: decisionMessage,
@@ -891,7 +897,7 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
     }
     throw new ModelCheckRequestError(400, modelCheckUnsupportedProtocolMessage())
   }
-  if (!accountAllowsModel(account, model, modelCheckProfile)) {
+  if (!accountAllowsModel(account, model)) {
     throw new ModelCheckRequestError(400, `账户模型限制未包含 ${model}，请先在 AI 账户中配置完整模型 ID`)
   }
   if (account.status === 'disabled') {
@@ -988,30 +994,8 @@ function modelCheckModelsForAccountMessage(account: AccountSummary): string {
   return findModelCheckProfileForAccount(account)?.models.join('、') || supportedModels.join('、')
 }
 
-function accountAllowsModel(account: AccountSummary, model: string, modelCheckProfile: ModelCheckProtocolProfile): boolean {
-  const models = account.supportedModels?.map((item) => item.trim()).filter(Boolean) ?? []
-  return models.length === 0 || models.includes(model) || mappedModelCheckSourceAllowed(account, model, models, modelCheckProfile)
-}
-
-function mappedModelCheckSourceAllowed(
-  account: AccountSummary,
-  model: string,
-  supportedModels: string[],
-  modelCheckProfile: ModelCheckProtocolProfile
-): boolean {
-  return modelCheckSourceEndpointFamilies(modelCheckProfile).some((sourceEndpointFamily) => {
-    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
-    return Boolean(mapping && supportedModels.includes(mapping.upstreamModel))
-  })
-}
-
-function modelCheckSourceEndpointFamilies(
-  profile: ModelCheckProtocolProfile
-): Array<'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'> {
-  if (profile.protocol === 'openai_responses') return ['responses']
-  if (profile.protocol === 'openai_chat') return ['chat_completions']
-  if (profile.protocol === 'anthropic_messages') return ['messages']
-  return ['generate_content', 'stream_generate_content']
+function accountAllowsModel(account: AccountSummary, model: string): boolean {
+  return configuredModelCheckModelsForAccount(account).includes(model)
 }
 
 async function executeProbeSuite(

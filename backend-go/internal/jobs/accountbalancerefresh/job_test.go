@@ -3,6 +3,7 @@ package accountbalancerefresh
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -181,36 +182,47 @@ func TestRunReturnsRuntimeFilterInfrastructureError(t *testing.T) {
 	}
 }
 
-func TestRunEnforcesCandidateTimeoutWhenRunnerIgnoresContext(t *testing.T) {
-	release := make(chan struct{}, 1)
-	fallbackRelease := time.AfterFunc(300*time.Millisecond, func() { release <- struct{}{} })
-	t.Cleanup(func() {
-		fallbackRelease.Stop()
-		select {
-		case release <- struct{}{}:
-		default:
-		}
-	})
+func TestRunDoesNotDetachCandidateThatIgnoresContext(t *testing.T) {
+	release := make(chan struct{})
+	finished := make(chan struct{})
 	store := &fakeCandidateStore{due: []port.AccountBalanceRefreshCandidate{refreshCandidate("stuck")}}
+	timer := time.AfterFunc(40*time.Millisecond, func() { close(release) })
+	t.Cleanup(func() { timer.Stop() })
 	startedAt := time.Now()
 	result, err := Run(context.Background(), Dependencies{
 		Store:            store,
 		WorkerLimit:      1,
 		WindowSize:       1,
 		RunBudget:        time.Second,
-		CandidateTimeout: 10 * time.Millisecond,
+		CandidateTimeout: 5 * time.Millisecond,
 		RefreshCandidate: func(context.Context, port.AccountBalanceRefreshCandidate) error {
 			<-release
+			close(finished)
 			return nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if elapsed := time.Since(startedAt); elapsed >= 200*time.Millisecond {
-		t.Fatalf("Run() elapsed = %v, want candidate timeout to return promptly", elapsed)
+	if elapsed := time.Since(startedAt); elapsed < 30*time.Millisecond {
+		t.Fatalf("Run() elapsed = %v, detached candidate before its execution stopped", elapsed)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Fatal("Run() returned before the candidate execution stopped")
 	}
 	if result.Outcome != OutcomePartial || result.CandidateFailureCount != 1 {
 		t.Fatalf("result = %+v, want timed out candidate failure", result)
+	}
+}
+
+func TestRunCandidateConvertsPanicToInfrastructureErrorWithoutHelperGoroutine(t *testing.T) {
+	want := "refresh panic"
+	err := runCandidate(t.Context(), func(context.Context, port.AccountBalanceRefreshCandidate) error {
+		panic(want)
+	}, refreshCandidate("panic"))
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("runCandidate() error = %v, want recovered panic", err)
 	}
 }

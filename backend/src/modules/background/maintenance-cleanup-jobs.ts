@@ -9,6 +9,7 @@ import {
   runtimeLogIndexRetentionDaysFromSettings
 } from '../../storage/runtime-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
+import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezoneAsync, weekKey } from '../../storage/usage-stats-helpers.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
@@ -100,22 +101,24 @@ export async function runAccountRecordCleanupRetry(): Promise<void> {
   }
 }
 
-export async function runDataRetentionCleanup(): Promise<void> {
+export async function runDataRetentionCleanup(signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
   if (runtimeConfig.databaseDriver === 'postgres') {
-    await enqueuePostgresDataRetentionMaintenanceJobs()
+    await enqueuePostgresDataRetentionMaintenanceJobs(signal)
     return
   }
-  await cleanupExpiredRetainedData()
+  await cleanupExpiredRetainedData(signal)
 }
 
-export async function runChatRetentionCleanup(): Promise<void> {
+export async function runChatRetentionCleanup(_signal?: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   const now = new Date()
   const result = await requestBackgroundWorkerDbService({
     type: 'cleanup_chat_retention',
     now: now.toISOString(),
     interruptedBefore: new Date(now.getTime() - 20 * 60_000).toISOString(),
     limit: 1000,
-    retentionDays: runtimeConfig.chat.retentionDays
+    retentionDays: runtimeConfig.chat.retentionDays,
+    scheduledLease
   }, { timeoutMs: 60_000, priority: 'low' })
   if (!result) throw new Error('DB service 未返回 AI 问答保留清理结果')
   if (result.droppedPartitions > 0 || result.deletedMessages > 0 || result.deletedConversations > 0 || result.recoveredTurns > 0 || result.recoveredCompactions > 0 || result.deletedCheckpoints > 0 || result.claimedAssets > 0 || result.failedAssets > 0) {
@@ -123,12 +126,14 @@ export async function runChatRetentionCleanup(): Promise<void> {
   }
 }
 
-async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
+async function enqueuePostgresDataRetentionMaintenanceJobs(signal: AbortSignal): Promise<void> {
   if (runtimeConfig.processRole !== 'worker') return
   if (postgresDataRetentionDispatchRunning) return
   postgresDataRetentionDispatchRunning = true
   try {
+    signal.throwIfAborted()
     const settings = await getSettingsAsync()
+    signal.throwIfAborted()
     const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
     const maxBatches = DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
     const nowMs = Date.now()
@@ -142,6 +147,7 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
       batchSize,
       maxBatches
     })
+    signal.throwIfAborted()
     await enqueueRecordMaintenanceJobAsync({
       type: 'audit_retained_data_cleanup',
       nowAt,
@@ -153,11 +159,13 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
       batchSize,
       maxBatches
     })
+    signal.throwIfAborted()
     const datasetCleanup = await cleanupPostgresDatasetRetainedData({
       nowMs,
       retention,
       batchSize,
-      maxBatches
+      maxBatches,
+      signal
     })
     const retainedCleanup = await cleanupPostgresStatsAndSharedRetainedData({
       nowMs,
@@ -165,7 +173,8 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
       timezone: await usageStatsTimezoneAsync(),
       retention,
       batchSize,
-      maxBatches
+      maxBatches,
+      signal
     })
     logger.info({
       event: 'postgres_data_retention_maintenance_jobs_enqueued',
@@ -180,6 +189,7 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
       }
     }, 'PostgreSQL 高性能使用记录、审计、日志与统计保留维护任务已投递')
   } catch (error) {
+    if (signal.aborted) throw error
     logger.error(errorLogFields(error, {
       event: 'postgres_data_retention_maintenance_jobs_enqueue_failed'
     }), 'PostgreSQL 高性能数据保留维护任务投递失败')
@@ -194,22 +204,26 @@ async function cleanupPostgresDatasetRetainedData(input: {
   retention: PostgresRetentionPolicy
   batchSize: number
   maxBatches: number
+  signal: AbortSignal
 }): Promise<Record<string, number>> {
   const result: Record<string, number> = {}
   result.operationLogs = await cleanupCountedRetentionBatches(
     input.maxBatches,
     () => cleanupOperationLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.operationLogDays), input.batchSize),
-    input.batchSize
+    input.batchSize,
+    input.signal
   )
   result.publicApiLogs = await cleanupCountedRetentionBatches(
     input.maxBatches,
     () => cleanupPublicApiLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.publicApiLogDays), input.batchSize),
-    input.batchSize
+    input.batchSize,
+    input.signal
   )
   const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
     cutoffIso: cutoffIso(input.nowMs, input.retention.runtimeLogDays),
     batchSize: input.batchSize,
-    maxBatches: input.maxBatches
+    maxBatches: input.maxBatches,
+    signal: input.signal
   })
   result.runtimeLogs = runtimeLogCleanup.runtimeLogs
   result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
@@ -217,7 +231,7 @@ async function cleanupPostgresDatasetRetainedData(input: {
     const deleted = await cleanupModelCheckRunsBeforeAsync(cutoffIso(input.nowMs, input.retention.modelCheckDays), input.batchSize)
     addNumberResult(result, deleted)
     return deleted.modelCheckRuns
-  }, input.batchSize)
+  }, input.batchSize, input.signal)
   return result
 }
 
@@ -228,6 +242,7 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
   retention: PostgresRetentionPolicy
   batchSize: number
   maxBatches: number
+  signal: AbortSignal
 }): Promise<Record<string, number>> {
   const result: Record<string, number> = {}
   await runRetentionBatches(input.maxBatches, async () => {
@@ -237,7 +252,7 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     })
     addNumberResult(result, deleted)
     return sumNumbers(deleted)
-  })
+  }, 1, input.signal)
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await requestStatsWriter({
       type: 'cleanup_system_metrics_retention',
@@ -245,7 +260,7 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     })
     addNumberResult(result, deleted)
     return sumNumbers(deleted)
-  })
+  }, 1, input.signal)
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await requestStatsWriter({
       type: 'cleanup_table_storage_snapshots_retention',
@@ -254,7 +269,7 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     })
     result.tableStorageSnapshots = (result.tableStorageSnapshots ?? 0) + deleted.deleted
     return deleted.deleted
-  }, input.batchSize)
+  }, input.batchSize, input.signal)
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await requestBackgroundWorkerDbService({
       type: 'cleanup_expired_system_sessions',
@@ -264,7 +279,7 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     const count = deleted?.deleted ?? 0
     result.systemSessions = (result.systemSessions ?? 0) + count
     return count
-  }, input.batchSize)
+  }, input.batchSize, input.signal)
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await requestBackgroundWorkerDbService({
       type: 'cleanup_expired_codex_context_states',
@@ -276,42 +291,60 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     result.codexContextResponses = (result.codexContextResponses ?? 0) + deleted.deletedResponses
     result.codexContextCompacts = (result.codexContextCompacts ?? 0) + deleted.deletedCompacts
     result.codexContextFiles = (result.codexContextFiles ?? 0) + await deleteCodexContextStorageKeys(deleted.storageKeys)
+    input.signal.throwIfAborted()
     return deleted.hasMore ? input.batchSize : 0
-  }, input.batchSize)
+  }, input.batchSize, input.signal)
   return result
 }
 
-async function cleanupCountedRetentionBatches(maxBatches: number, cleanupBatch: () => Promise<number>, fullBatchSize: number): Promise<number> {
+async function cleanupCountedRetentionBatches(maxBatches: number, cleanupBatch: () => Promise<number>, fullBatchSize: number, signal: AbortSignal): Promise<number> {
   let total = 0
   const normalizedMaxBatches = Math.max(1, Math.trunc(maxBatches))
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
+    signal.throwIfAborted()
     const deleted = await cleanupBatch()
     total += deleted
     if (deleted < fullBatchSize) {
       break
     }
     if (index < normalizedMaxBatches - 1) {
-      await pauseRetentionCleanupBatch()
+      await pauseRetentionCleanupBatch(signal)
     }
   }
   return total
 }
 
-async function runRetentionBatches(maxBatches: number, cleanupBatch: () => Promise<number>, fullBatchSize = 1): Promise<void> {
+async function runRetentionBatches(maxBatches: number, cleanupBatch: () => Promise<number>, fullBatchSize: number, signal: AbortSignal): Promise<void> {
   const normalizedMaxBatches = Math.max(1, Math.trunc(maxBatches))
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
+    signal.throwIfAborted()
     const deleted = await cleanupBatch()
     if (deleted < fullBatchSize) {
       break
     }
     if (index < normalizedMaxBatches - 1) {
-      await pauseRetentionCleanupBatch()
+      await pauseRetentionCleanupBatch(signal)
     }
   }
 }
 
-function pauseRetentionCleanupBatch(): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS))
+function pauseRetentionCleanupBatch(signal: AbortSignal): Promise<void> {
+  return abortableRetentionDelay(DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS, signal)
+}
+
+function abortableRetentionDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolvePromise()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function addNumberResult(result: Record<string, number>, deleted: object): void {

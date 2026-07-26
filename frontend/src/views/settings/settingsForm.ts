@@ -9,6 +9,10 @@ export interface GlobalForm {
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
   accountCircuitConfirmationFailuresRequired: number
+  gatewayUserRequestLimitPerMinute: number
+  gatewayUserRequestLimitPerDay: number
+  gatewayUserRequestLimitPerWeek: number
+  gatewayUserRequestLimitPerMonth: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -48,6 +52,10 @@ export const defaultGlobalSettings: GlobalForm = {
 export const defaultSystemSettings: SystemForm = {
   gatewayTextRawBodyLimitMegabytes: 16,
   accountCircuitConfirmationFailuresRequired: 2,
+  gatewayUserRequestLimitPerMinute: 0,
+  gatewayUserRequestLimitPerDay: 0,
+  gatewayUserRequestLimitPerWeek: 0,
+  gatewayUserRequestLimitPerMonth: 0,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
   systemApiRateLimitIpWritePerMinute: 180,
@@ -90,6 +98,10 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
   return {
     gatewayTextRawBodyLimitMegabytes: integerValue(settings.gatewayTextRawBodyLimitMegabytes, '文本请求体上限', 1, 64),
     accountCircuitConfirmationFailuresRequired: integerValue(settings.accountCircuitConfirmationFailuresRequired, '账户电路独立确认失败次数', 1, 5),
+    gatewayUserRequestLimitPerMinute: integerValue(settings.gatewayUserRequestLimitPerMinute, '用户每分钟请求上限', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerDay: integerValue(settings.gatewayUserRequestLimitPerDay, '用户每日请求上限', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerWeek: integerValue(settings.gatewayUserRequestLimitPerWeek, '用户每周请求上限', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerMonth: integerValue(settings.gatewayUserRequestLimitPerMonth, '用户每月请求上限', 0, 1_000_000_000),
     systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
     systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),

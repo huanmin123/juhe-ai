@@ -2,7 +2,9 @@ import { runtimeConfig } from '../config/runtime.js'
 import { logger } from './logger.js'
 import {
   buildProcessEventLoopSample,
+  currentProcessEventLoopRole,
   processEventLoopRoleFromUnknown,
+  type ProcessEventLoopRole,
   type ProcessEventLoopSample
 } from './process-event-loop-monitor.js'
 import {
@@ -13,30 +15,71 @@ import {
 import { redisNamespacedKey, sanitizeRedisNamespacePart } from './redis-namespace.js'
 
 const publishIntervalMs = 5_000
+const publishPhaseWindowStartMs = 250
+const publishPhaseWindowEndMs = 3_000
+const minimumNextPublishDelayMs = 10
 const registryTtlSeconds = 20
 const commandTimeoutMs = 800
 const scanPageLimit = 4
 const registryEntryLimit = 128
 const registryKeyPrefix = redisNamespacedKey('juhe-ai:runtime:process-event-loop:')
+const registryKeyVersion = 'v2'
 
 let publishTimer: NodeJS.Timeout | undefined
+let publisherStarted = false
 let publishInFlight = false
 let publishFailureCount = 0
 let registryClientPromise: Promise<RedisCommandClient> | undefined
 
 export function startPerformanceProcessMetricsPublisher(): void {
-  if (!performanceRegistryEnabled() || publishTimer) return
-  void publishCurrentProcessMetrics()
-  publishTimer = setInterval(() => void publishCurrentProcessMetrics(), publishIntervalMs)
-  publishTimer.unref()
+  if (!performanceRegistryEnabled() || publisherStarted) return
+  publisherStarted = true
+  scheduleNextPublish()
 }
 
 export function stopPerformanceProcessMetricsPublisher(): void {
+  publisherStarted = false
   if (publishTimer) {
-    clearInterval(publishTimer)
+    clearTimeout(publishTimer)
     publishTimer = undefined
   }
   dropRegistryClient()
+}
+
+export function stablePerformanceProcessMetricsPublishPhaseMs(seed: string): number {
+  const windowSize = publishPhaseWindowEndMs - publishPhaseWindowStartMs
+  return publishPhaseWindowStartMs + stableHash(seed) % windowSize
+}
+
+export function delayUntilPerformanceProcessMetricsPublishPhaseMs(nowMs: number, phaseMs: number): number {
+  const normalizedNow = finiteNonNegative(nowMs) % publishIntervalMs
+  const normalizedPhase = Math.min(
+    publishIntervalMs - 1,
+    Math.max(0, Math.floor(finiteNonNegative(phaseMs)))
+  )
+  let delayMs = (normalizedPhase - normalizedNow + publishIntervalMs) % publishIntervalMs
+  if (delayMs < minimumNextPublishDelayMs) delayMs += publishIntervalMs
+  return delayMs
+}
+
+export function performanceProcessMetricsRegistryKey(
+  instanceId: string,
+  processRole: ProcessEventLoopRole
+): string {
+  return `${registryKeyPrefix}${registryKeyVersion}:${sanitizeRedisNamespacePart(instanceId)}:${sanitizeRedisNamespacePart(processRole)}`
+}
+
+function scheduleNextPublish(): void {
+  if (!publisherStarted || publishTimer) return
+  const seed = `${stableRuntimeIdentity(runtimeConfig.instanceId)}:${stableRuntimeIdentity(currentProcessEventLoopRole())}`
+  const phaseMs = stablePerformanceProcessMetricsPublishPhaseMs(seed)
+  const delayMs = delayUntilPerformanceProcessMetricsPublishPhaseMs(Date.now(), phaseMs)
+  publishTimer = setTimeout(() => {
+    publishTimer = undefined
+    if (!publisherStarted) return
+    void publishCurrentProcessMetrics().finally(() => scheduleNextPublish())
+  }, delayMs)
+  publishTimer.unref()
 }
 
 export async function readPerformanceProcessEventLoopSamples(): Promise<ProcessEventLoopSample[]> {
@@ -46,7 +89,7 @@ export async function readPerformanceProcessEventLoopSamples(): Promise<ProcessE
   try {
     return await withTimeout(readRegistry(redisUrl), commandTimeoutMs, '高性能进程指标注册表读取超时')
   } catch (error) {
-    if (isRecoverableRedisClientError(error)) {
+    if (isRecoverableRedisClientError(error) || error instanceof PerformanceRegistryCommandTimeoutError) {
       dropRegistryClient()
     }
     throw error
@@ -68,7 +111,7 @@ async function publishCurrentProcessMetrics(): Promise<void> {
     publishFailureCount = 0
   } catch (error) {
     publishFailureCount += 1
-    if (isRecoverableRedisClientError(error)) {
+    if (isRecoverableRedisClientError(error) || error instanceof PerformanceRegistryCommandTimeoutError) {
       dropRegistryClient()
     }
     if (publishFailureCount === 1 || publishFailureCount % 12 === 0) {
@@ -85,7 +128,7 @@ async function publishCurrentProcessMetrics(): Promise<void> {
 
 async function writeRegistrySample(redisUrl: string, sample: ProcessEventLoopSample): Promise<void> {
   const client = await getRegistryClient(redisUrl)
-  const key = `${registryKeyPrefix}${sanitizeRedisNamespacePart(sample.processRole)}`
+  const key = performanceProcessMetricsRegistryKey(runtimeConfig.instanceId, sample.processRole)
   await client.set(key, JSON.stringify(sample), { EX: registryTtlSeconds })
 }
 
@@ -204,7 +247,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
     return await Promise.race([
       promise,
       new Promise<T>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(message)), timeoutMs)
+        timeout = setTimeout(() => reject(new PerformanceRegistryCommandTimeoutError(message)), timeoutMs)
         timeout.unref()
       })
     ])
@@ -212,4 +255,28 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
     if (timeout) clearTimeout(timeout)
     promise.catch(() => undefined)
   }
+}
+
+class PerformanceRegistryCommandTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PerformanceRegistryCommandTimeoutError'
+  }
+}
+
+function stableHash(value: string): number {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
+}
+
+function finiteNonNegative(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+}
+
+function stableRuntimeIdentity(value: string): string {
+  return value.replace(/(^|:)process-\d+(?=$|-)/g, '$1default')
 }

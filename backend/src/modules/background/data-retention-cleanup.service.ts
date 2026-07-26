@@ -134,7 +134,8 @@ export interface DataRetentionCleanupResult {
   codexContextFiles: number
 }
 
-export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanupResult> {
+export async function cleanupExpiredRetainedData(signal: AbortSignal): Promise<DataRetentionCleanupResult> {
+  signal.throwIfAborted()
   if (runtimeConfig.processRole !== 'worker') {
     return emptyCleanupResult()
   }
@@ -147,6 +148,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
 
   cleanupRunning = true
   try {
+    signal.throwIfAborted()
     const settings = getSettings()
     const timezone = usageStatsTimezone()
     const batchSize = DATA_RETENTION_CLEANUP_BATCH_SIZE
@@ -183,7 +185,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
         retention,
         batchSize,
         maxBatches,
-        successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000)
+        successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
+        signal
       })
       addCleanupResult(result, datasetCleanup)
       if (sumDeleted(datasetCleanup) > 0) {
@@ -194,11 +197,11 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
       await cleanupRetentionInBatches(result, () => requestStatsWriter({
         type: 'cleanup_usage_stats_retention',
         input: usageStatsRetentionInput(now, retention, timezone, batchSize)
-      }), maxBatches)
+      }), maxBatches, signal)
       await cleanupRetentionInBatches(result, () => requestStatsWriter({
         type: 'cleanup_system_metrics_retention',
         input: systemMetricsRetentionInput(now, retention, timezone, batchSize)
-      }), maxBatches)
+      }), maxBatches, signal)
       const tableCleanup = await cleanupInBatches(async () => {
         const cleanupResult = await requestStatsWriter({
           type: 'cleanup_table_storage_snapshots_retention',
@@ -206,7 +209,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
           limit: batchSize
         })
         return cleanupResult.deleted
-      }, batchSize, maxBatches)
+      }, batchSize, maxBatches, signal)
       result.tableStorageSnapshots = tableCleanup
       result.systemSessions = await cleanupInBatches(async () => {
         const cleanupResult = await requestBackgroundWorkerDbService({
@@ -215,8 +218,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
           limit: batchSize
         })
         return cleanupResult?.deleted ?? 0
-      }, batchSize, maxBatches)
-      await cleanupCodexContextStatesInBatches(result, new Date(now).toISOString(), batchSize, maxBatches)
+      }, batchSize, maxBatches, signal)
+      await cleanupCodexContextStatesInBatches(result, new Date(now).toISOString(), batchSize, maxBatches, signal)
     }
 
     logger.info({
@@ -230,6 +233,7 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
 
     return result
   } catch (error) {
+    if (signal.aborted) throw error
     logger.error(errorLogFields(error, { event: 'data_retention_cleanup_failed' }), '数据保留清理失败')
     throw error
   } finally {
@@ -243,17 +247,21 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   batchSize: number
   maxBatches: number
   successSampleBucketThreshold: number
+  signal: AbortSignal
 }): Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>> {
   const result = emptyCleanupResult()
   const { now, retention, batchSize, maxBatches } = input
-  result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
+  result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches, input.signal)
   await yieldToEventLoop()
+  input.signal.throwIfAborted()
   result.publicApiLogs = await cleanupInBatches(
     () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
     batchSize,
-    maxBatches
+    maxBatches,
+    input.signal
   )
   await yieldToEventLoop()
+  input.signal.throwIfAborted()
   result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
       successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
       successCutoffCreatedAt: auditSuccessRetentionCutoffIso(now, retention.auditLogSuccessHotHours, retention.auditLogSuccessDays),
@@ -261,25 +269,31 @@ async function cleanupDatasetAndUsageRetainedData(input: {
       errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
       successSampleBucketThreshold: input.successSampleBucketThreshold,
       limit: batchSize
-    }), batchSize, maxBatches)
+    }), batchSize, maxBatches, input.signal)
   await yieldToEventLoop()
+  input.signal.throwIfAborted()
   result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
   await yieldToEventLoop()
+  input.signal.throwIfAborted()
   const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
     cutoffIso: cutoffIso(now, retention.runtimeLogDays),
     batchSize,
-    maxBatches
+    maxBatches,
+    signal: input.signal
   })
   result.runtimeLogs = runtimeLogCleanup.runtimeLogs
   result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
   await yieldToEventLoop()
+  input.signal.throwIfAborted()
   await cleanupRetentionInBatches(
     result,
     () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
-    maxBatches
+    maxBatches,
+    input.signal
   )
   await yieldToEventLoop()
-  const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
+  input.signal.throwIfAborted()
+  const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches, input.signal)
   result.usageRecords = usageRecordCleanup.deletedRows
   if (usageRecordCleanup.blockedReason) {
     logger.warn({
@@ -293,21 +307,23 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   return result
 }
 
-async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, batchSize: number, maxBatches: number): Promise<number> {
+async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, batchSize: number, maxBatches: number, signal: AbortSignal): Promise<number> {
   let total = 0
   for (let index = 0; index < maxBatches; index += 1) {
+    signal.throwIfAborted()
     const deleted = await cleanupBatch()
     total += deleted
     await yieldToEventLoop()
+    signal.throwIfAborted()
     if (deleted < batchSize) {
       break
     }
-    await pauseBetweenCleanupBatches()
+    await pauseBetweenCleanupBatches(signal)
   }
   return total
 }
 
-async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number): Promise<{
+async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number, signal: AbortSignal): Promise<{
   cutoffCreatedAt: string
   deletedRows: number
   batches: number
@@ -317,6 +333,7 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
   let batches = 0
   let blockedReason: string | undefined
   for (let index = 0; index < maxBatches; index += 1) {
+    signal.throwIfAborted()
     const batch = await cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffCreatedAt, batchSize)
     deletedRows += batch.deletedRows
     blockedReason = batch.blockedReason ?? blockedReason
@@ -324,10 +341,11 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
       batches += 1
     }
     await yieldToEventLoop()
+    signal.throwIfAborted()
     if (batch.blockedReason || batch.deletedRows < batchSize || !batch.hasMore) {
       break
     }
-    await pauseBetweenCleanupBatches()
+    await pauseBetweenCleanupBatches(signal)
   }
   return {
     cutoffCreatedAt,
@@ -340,16 +358,19 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
 async function cleanupRetentionInBatches(
   result: DataRetentionCleanupResult,
   cleanupBatch: () => Partial<Record<keyof DataRetentionCleanupResult, number>> | Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>>,
-  maxBatches: number
+  maxBatches: number,
+  signal: AbortSignal
 ): Promise<void> {
   for (let index = 0; index < maxBatches; index += 1) {
+    signal.throwIfAborted()
     const deleted = await cleanupBatch()
     addCleanupResult(result, deleted)
     await yieldToEventLoop()
+    signal.throwIfAborted()
     if (sumDeleted(deleted) === 0) {
       break
     }
-    await pauseBetweenCleanupBatches()
+    await pauseBetweenCleanupBatches(signal)
   }
 }
 
@@ -357,9 +378,11 @@ async function cleanupCodexContextStatesInBatches(
   result: DataRetentionCleanupResult,
   expiredBefore: string,
   batchSize: number,
-  maxBatches: number
+  maxBatches: number,
+  signal: AbortSignal
 ): Promise<void> {
   for (let index = 0; index < maxBatches; index += 1) {
+    signal.throwIfAborted()
     const cleanupResult = await requestBackgroundWorkerDbService({
       type: 'cleanup_expired_codex_context_states',
       expiredBefore,
@@ -372,11 +395,12 @@ async function cleanupCodexContextStatesInBatches(
     result.codexContextResponses += cleanupResult.deletedResponses
     result.codexContextCompacts += cleanupResult.deletedCompacts
     result.codexContextFiles += await deleteCodexContextStorageKeys(cleanupResult.storageKeys)
+    signal.throwIfAborted()
     await yieldToEventLoop()
     if (!cleanupResult.hasMore || cleanupResult.deletedSessions < batchSize) {
       break
     }
-    await pauseBetweenCleanupBatches()
+    await pauseBetweenCleanupBatches(signal)
   }
 }
 
@@ -571,6 +595,17 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
-function pauseBetweenCleanupBatches(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS))
+function pauseBetweenCleanupBatches(signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }

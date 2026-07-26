@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
@@ -31,26 +32,260 @@ const PROCESS_EVENT_LOOP_ROLES: ProcessEventLoopRole[] = [
 ]
 const PROCESS_EVENT_LOOP_PEAK_WINDOW_MS = 24 * 60 * 60 * 1000
 const PROCESS_EVENT_LOOP_LATEST_FRESHNESS_MS = 2 * 60 * 1000
+const SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 
 export interface SystemMetricsTrendWindowSnapshotContext {
   ranges: AccountUsageStatsRange[]
   earliestDate: string
   todayKey: string
   updatedAt: string
+  sourceWatermark?: string
+  previousSourceWatermark?: string
 }
 
 export function refreshSystemMetricsTrendWindowSnapshotsStage(database: DatabaseSync, context: SystemMetricsTrendWindowSnapshotContext): void {
-  database.prepare('DELETE FROM system_metrics_trend_windows').run()
-  database.prepare('DELETE FROM process_event_loop_trend_windows').run()
-  refreshSystemMetricsTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
-  refreshProcessEventLoopTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  const refresh = systemMetricsTrendWindowRefresh(database, context)
+  if (!refresh.ranges.length) return
+  if (refresh.full) {
+    database.prepare('DELETE FROM system_metrics_trend_windows').run()
+    database.prepare('DELETE FROM process_event_loop_trend_windows').run()
+  } else {
+    deleteSystemMetricsTrendWindowRanges(database, 'system_metrics_trend_windows', refresh.ranges)
+    deleteSystemMetricsTrendWindowRanges(database, 'process_event_loop_trend_windows', refresh.ranges)
+  }
+  const bounds = systemMetricsTrendWindowBounds(refresh.ranges, context)
+  refreshSystemMetricsTrendWindows(database, refresh.ranges, bounds.earliestDate, bounds.latestDate, context.updatedAt)
+  refreshProcessEventLoopTrendWindows(database, refresh.ranges, bounds.earliestDate, bounds.latestDate, context.updatedAt)
 }
 
 export async function refreshSystemMetricsTrendWindowSnapshotsStageAsync(client: DatabaseClient, context: SystemMetricsTrendWindowSnapshotContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'system_metrics_trend_windows')}`)
-  await client.execute(`DELETE FROM ${statsTable(client, 'process_event_loop_trend_windows')}`)
-  await refreshSystemMetricsTrendWindowsAsync(client, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
-  await refreshProcessEventLoopTrendWindowsAsync(client, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  const refresh = await systemMetricsTrendWindowRefreshAsync(client, context)
+  if (!refresh.ranges.length) return
+  if (refresh.full) {
+    await client.execute(`DELETE FROM ${statsTable(client, 'system_metrics_trend_windows')}`)
+    await client.execute(`DELETE FROM ${statsTable(client, 'process_event_loop_trend_windows')}`)
+  } else {
+    await deleteSystemMetricsTrendWindowRangesAsync(client, 'system_metrics_trend_windows', refresh.ranges)
+    await deleteSystemMetricsTrendWindowRangesAsync(client, 'process_event_loop_trend_windows', refresh.ranges)
+  }
+  const bounds = systemMetricsTrendWindowBounds(refresh.ranges, context)
+  await refreshSystemMetricsTrendWindowsAsync(client, refresh.ranges, bounds.earliestDate, bounds.latestDate, context.updatedAt)
+  await refreshProcessEventLoopTrendWindowsAsync(client, refresh.ranges, bounds.earliestDate, bounds.latestDate, context.updatedAt)
+}
+
+interface SystemMetricsTrendWindowRefresh {
+  ranges: AccountUsageStatsRange[]
+  full: boolean
+}
+
+type SystemMetricsTrendWindowTable = 'system_metrics_trend_windows' | 'process_event_loop_trend_windows'
+
+function systemMetricsTrendWindowRefresh(
+  database: DatabaseSync,
+  context: SystemMetricsTrendWindowSnapshotContext
+): SystemMetricsTrendWindowRefresh {
+  const previousUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.previousSourceWatermark)
+  const sourceUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.sourceWatermark)
+  if (!previousUpdatedAt || !sourceUpdatedAt || sourceUpdatedAt < previousUpdatedAt) {
+    return { ranges: context.ranges, full: true }
+  }
+  if (context.sourceWatermark === context.previousSourceWatermark) {
+    return { ranges: [], full: false }
+  }
+  const updatedAtOperator = sourceUpdatedAt === previousUpdatedAt ? '>=' : '>'
+  const changedDates = database.prepare(`
+    SELECT stat_date
+    FROM (
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      FROM system_metrics_hourly
+      WHERE updated_at ${updatedAtOperator} ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+      UNION
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      FROM process_event_loop_hourly
+      WHERE updated_at ${updatedAtOperator} ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+    ) changed_dates
+    ORDER BY stat_date ASC
+  `).all(
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`,
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`
+  ) as unknown as Array<{ stat_date?: string | null }>
+  return systemMetricsTrendWindowRefreshForChangedDates(context, changedDates.map((row) => row.stat_date))
+}
+
+async function systemMetricsTrendWindowRefreshAsync(
+  client: DatabaseClient,
+  context: SystemMetricsTrendWindowSnapshotContext
+): Promise<SystemMetricsTrendWindowRefresh> {
+  const previousUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.previousSourceWatermark)
+  const sourceUpdatedAt = systemMetricsTrendSourceWatermarkUpdatedAt(context.sourceWatermark)
+  if (!previousUpdatedAt || !sourceUpdatedAt || sourceUpdatedAt < previousUpdatedAt) {
+    return { ranges: context.ranges, full: true }
+  }
+  if (context.sourceWatermark === context.previousSourceWatermark) {
+    return { ranges: [], full: false }
+  }
+  const updatedAtOperator = sourceUpdatedAt === previousUpdatedAt ? '>=' : '>'
+  const changedDates = await client.query<{ stat_date?: string | null }>(`
+    SELECT stat_date
+    FROM (
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      FROM ${statsTable(client, 'system_metrics_hourly')}
+      WHERE updated_at ${updatedAtOperator} ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+      UNION
+      SELECT DISTINCT substr(stat_hour, 1, 10) AS stat_date
+      FROM ${statsTable(client, 'process_event_loop_hourly')}
+      WHERE updated_at ${updatedAtOperator} ?
+        AND stat_hour >= ?
+        AND stat_hour <= ?
+    ) changed_dates
+    ORDER BY stat_date ASC
+  `, [
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`,
+    previousUpdatedAt,
+    `${context.earliestDate}T00`,
+    `${context.todayKey}T23`
+  ])
+  return systemMetricsTrendWindowRefreshForChangedDates(context, changedDates.map((row) => row.stat_date))
+}
+
+function systemMetricsTrendWindowRefreshForChangedDates(
+  context: SystemMetricsTrendWindowSnapshotContext,
+  values: Array<string | null | undefined>
+): SystemMetricsTrendWindowRefresh {
+  const changedDates = [...new Set(values.filter((value): value is string => Boolean(value)))]
+  if (!changedDates.length) {
+    return { ranges: [], full: false }
+  }
+  const ranges = context.ranges.filter((range) => changedDates.some((statDate) => range.startDate <= statDate && range.endDate >= statDate))
+  return { ranges, full: false }
+}
+
+function systemMetricsTrendSourceWatermarkUpdatedAt(watermark?: string): string | undefined {
+  if (!watermark) return undefined
+  const [updatedAt] = watermark.split('|', 1)
+  return updatedAt || undefined
+}
+
+export function systemMetricsTrendSourceWatermark(database: DatabaseSync): string {
+  const updatedAt = systemMetricsTrendMaxUpdatedAt([
+    database.prepare('SELECT MAX(updated_at) AS updated_at FROM system_metrics_hourly').get() as { updated_at?: string | null } | undefined,
+    database.prepare('SELECT MAX(updated_at) AS updated_at FROM process_event_loop_hourly').get() as { updated_at?: string | null } | undefined
+  ])
+  if (updatedAt === SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK) return updatedAt
+  const systemRows = database.prepare(`
+    SELECT *
+    FROM system_metrics_hourly
+    WHERE updated_at = ?
+    ORDER BY stat_hour ASC
+  `).all(updatedAt) as unknown as Array<Record<string, unknown>>
+  const processRows = database.prepare(`
+    SELECT *
+    FROM process_event_loop_hourly
+    WHERE updated_at = ?
+    ORDER BY stat_hour ASC, process_role ASC
+  `).all(updatedAt) as unknown as Array<Record<string, unknown>>
+  return systemMetricsTrendWatermarkWithTieDigest(updatedAt, systemRows, processRows)
+}
+
+export async function systemMetricsTrendSourceWatermarkAsync(client: DatabaseClient): Promise<string> {
+  const [systemMaxRow, processMaxRow] = await Promise.all([
+    client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM ${statsTable(client, 'system_metrics_hourly')}`),
+    client.one<{ updated_at?: string | null }>(`SELECT MAX(updated_at) AS updated_at FROM ${statsTable(client, 'process_event_loop_hourly')}`)
+  ])
+  const updatedAt = systemMetricsTrendMaxUpdatedAt([systemMaxRow, processMaxRow])
+  if (updatedAt === SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK) return updatedAt
+  const [systemRows, processRows] = await Promise.all([
+    client.query<Record<string, unknown>>(`
+      SELECT *
+      FROM ${statsTable(client, 'system_metrics_hourly')}
+      WHERE updated_at = ?
+      ORDER BY stat_hour ASC
+    `, [updatedAt]),
+    client.query<Record<string, unknown>>(`
+      SELECT *
+      FROM ${statsTable(client, 'process_event_loop_hourly')}
+      WHERE updated_at = ?
+      ORDER BY stat_hour ASC, process_role ASC
+    `, [updatedAt])
+  ])
+  return systemMetricsTrendWatermarkWithTieDigest(updatedAt, systemRows, processRows)
+}
+
+function systemMetricsTrendMaxUpdatedAt(rows: Array<{ updated_at?: string | null } | undefined>): string {
+  let updatedAt = SYSTEM_METRICS_EMPTY_SOURCE_WATERMARK
+  for (const row of rows) {
+    if (typeof row?.updated_at === 'string' && row.updated_at > updatedAt) updatedAt = row.updated_at
+  }
+  return updatedAt
+}
+
+function systemMetricsTrendWatermarkWithTieDigest(
+  updatedAt: string,
+  systemRows: Array<Record<string, unknown>>,
+  processRows: Array<Record<string, unknown>>
+): string {
+  const digest = createHash('sha256')
+    .update(stableWatermarkRows('system_metrics_hourly', systemRows))
+    .update(stableWatermarkRows('process_event_loop_hourly', processRows))
+    .digest('hex')
+  return `${updatedAt}|v2:${digest}`
+}
+
+function stableWatermarkRows(tableName: string, rows: Array<Record<string, unknown>>): string {
+  return JSON.stringify([
+    tableName,
+    rows.map((row) => Object.keys(row).sort().map((key) => [key, stableWatermarkValue(row[key])]))
+  ])
+}
+
+function stableWatermarkValue(value: unknown): unknown {
+  if (typeof value === 'bigint') return value.toString()
+  if (value instanceof Date) return value.toISOString()
+  return value
+}
+
+function systemMetricsTrendWindowBounds(
+  ranges: AccountUsageStatsRange[],
+  context: SystemMetricsTrendWindowSnapshotContext
+): { earliestDate: string; latestDate: string } {
+  return {
+    earliestDate: ranges.reduce((earliest, range) => range.startDate < earliest ? range.startDate : earliest, ranges[0]?.startDate ?? context.earliestDate),
+    latestDate: ranges.reduce((latest, range) => range.endDate > latest ? range.endDate : latest, ranges[0]?.endDate ?? context.todayKey)
+  }
+}
+
+function deleteSystemMetricsTrendWindowRanges(
+  database: DatabaseSync,
+  tableName: SystemMetricsTrendWindowTable,
+  ranges: AccountUsageStatsRange[]
+): void {
+  const windowKeys = [...new Set(ranges.map((range) => rangeWindowKey(range)))]
+  for (const chunk of chunkValues(windowKeys, 250)) {
+    database.prepare(`DELETE FROM ${tableName} WHERE window_key IN (${chunk.map(() => '?').join(', ')})`).run(...chunk)
+  }
+}
+
+async function deleteSystemMetricsTrendWindowRangesAsync(
+  client: DatabaseClient,
+  tableName: SystemMetricsTrendWindowTable,
+  ranges: AccountUsageStatsRange[]
+): Promise<void> {
+  const windowKeys = [...new Set(ranges.map((range) => rangeWindowKey(range)))]
+  for (const chunk of chunkValues(windowKeys, 250)) {
+    await client.execute(`DELETE FROM ${statsTable(client, tableName)} WHERE window_key IN (${chunk.map(() => '?').join(', ')})`, chunk)
+  }
 }
 
 export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
@@ -101,36 +336,9 @@ export async function insertSystemMetricsSampleAsync(input: SystemMetricsSampleI
     return
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const sampledAt = input.sampledAt ?? nowIso()
-  const statHour = hourKey(new Date(sampledAt), await usageStatsTimezoneAsync())
+  const timezone = await usageStatsTimezoneAsync()
   await client.transaction(async (tx) => {
-    await tx.execute(`
-      INSERT INTO ${statsTable(tx, 'system_metrics_samples')} (
-        sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
-        process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
-        network_rx_bytes_per_sec, network_tx_bytes_per_sec, network_rx_total_bytes, network_tx_total_bytes,
-        db_file_bytes, stats_lag_seconds, id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      sampledAt,
-      input.cpuPercent ?? null,
-      input.memoryUsedPercent ?? null,
-      input.memoryTotalBytes ?? null,
-      input.memoryFreeBytes ?? null,
-      input.processRssBytes ?? null,
-      input.processHeapUsedBytes ?? null,
-      input.processHeapTotalBytes ?? null,
-      input.eventLoopLagMs ?? null,
-      input.networkRxBytesPerSecond ?? null,
-      input.networkTxBytesPerSecond ?? null,
-      input.networkRxTotalBytes ?? null,
-      input.networkTxTotalBytes ?? null,
-      input.dbFileBytes ?? null,
-      input.statsLagSeconds ?? null,
-      newId('metric'),
-      sampledAt
-    ])
-    await upsertSystemMetricsHourlyAsync(tx, statHour, input, sampledAt)
+    await insertSystemMetricsSampleWithClientAsync(tx, input, timezone)
   })
 }
 
@@ -199,6 +407,133 @@ export async function insertProcessEventLoopSampleAsync(input: ProcessEventLoopS
     insertProcessEventLoopSample(input)
     return
   }
+  const normalizedInput = normalizedProcessEventLoopSample(input)
+  if (!normalizedInput) return
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const timezone = await usageStatsTimezoneAsync()
+  await client.transaction(async (tx) => {
+    await insertProcessEventLoopSampleWithClientAsync(tx, normalizedInput, timezone)
+  })
+}
+
+export async function insertSystemMetricsSampleBatchAsync(
+  input: SystemMetricsSampleInput,
+  processEventLoopSamples: readonly ProcessEventLoopSampleInput[]
+): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const database = getStatsDatabase()
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      insertSystemMetricsSample(input)
+      for (const processSample of processEventLoopSamples) insertProcessEventLoopSample(processSample)
+      commitDatabaseTransaction(database, transactionStarted)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
+    }
+    return
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await insertSystemMetricsSampleBatchWithClientAsync(
+    client,
+    input,
+    processEventLoopSamples,
+    await usageStatsTimezoneAsync()
+  )
+}
+
+export async function insertSystemMetricsSampleBatchWithClientAsync(
+  client: DatabaseClient,
+  input: SystemMetricsSampleInput,
+  processEventLoopSamples: readonly ProcessEventLoopSampleInput[],
+  timezone: string
+): Promise<void> {
+  const normalizedProcessSamples = processEventLoopSamples
+    .map(normalizedProcessEventLoopSample)
+    .filter((sample): sample is NormalizedProcessEventLoopSample => Boolean(sample))
+  await client.transaction(async (tx) => {
+    await insertSystemMetricsSampleWithClientAsync(tx, input, timezone)
+    for (const processSample of normalizedProcessSamples) {
+      await insertProcessEventLoopSampleWithClientAsync(tx, processSample, timezone)
+    }
+  })
+}
+
+interface NormalizedProcessEventLoopSample extends ProcessEventLoopSampleInput {
+  eventLoopLagMs?: number
+  processRssBytes?: number
+  processHeapUsedBytes?: number
+  processHeapTotalBytes?: number
+  processExternalBytes?: number
+  processArrayBuffersBytes?: number
+}
+
+async function insertSystemMetricsSampleWithClientAsync(
+  client: DatabaseClient,
+  input: SystemMetricsSampleInput,
+  timezone: string
+): Promise<void> {
+  const sampledAt = input.sampledAt ?? nowIso()
+  const statHour = hourKey(new Date(sampledAt), timezone)
+  await client.execute(`
+    INSERT INTO ${statsTable(client, 'system_metrics_samples')} (
+      sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
+      process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
+      network_rx_bytes_per_sec, network_tx_bytes_per_sec, network_rx_total_bytes, network_tx_total_bytes,
+      db_file_bytes, stats_lag_seconds, id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    sampledAt,
+    input.cpuPercent ?? null,
+    input.memoryUsedPercent ?? null,
+    input.memoryTotalBytes ?? null,
+    input.memoryFreeBytes ?? null,
+    input.processRssBytes ?? null,
+    input.processHeapUsedBytes ?? null,
+    input.processHeapTotalBytes ?? null,
+    input.eventLoopLagMs ?? null,
+    input.networkRxBytesPerSecond ?? null,
+    input.networkTxBytesPerSecond ?? null,
+    input.networkRxTotalBytes ?? null,
+    input.networkTxTotalBytes ?? null,
+    input.dbFileBytes ?? null,
+    input.statsLagSeconds ?? null,
+    newId('metric'),
+    sampledAt
+  ])
+  await upsertSystemMetricsHourlyAsync(client, statHour, input, sampledAt)
+}
+
+async function insertProcessEventLoopSampleWithClientAsync(
+  client: DatabaseClient,
+  input: NormalizedProcessEventLoopSample,
+  timezone: string
+): Promise<void> {
+  const sampledAt = input.sampledAt ?? nowIso()
+  const statHour = hourKey(new Date(sampledAt), timezone)
+  await client.execute(`
+    INSERT INTO ${statsTable(client, 'process_event_loop_samples')} (
+      sampled_at, process_role, process_pid, event_loop_lag_ms,
+      process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
+      process_external_bytes, process_array_buffers_bytes, id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    sampledAt,
+    input.processRole,
+    input.processPid ?? null,
+    input.eventLoopLagMs ?? null,
+    input.processRssBytes ?? null,
+    input.processHeapUsedBytes ?? null,
+    input.processHeapTotalBytes ?? null,
+    input.processExternalBytes ?? null,
+    input.processArrayBuffersBytes ?? null,
+    newId('process_metric'),
+    sampledAt
+  ])
+  await upsertProcessEventLoopHourlyAsync(client, statHour, input, sampledAt)
+}
+
+function normalizedProcessEventLoopSample(input: ProcessEventLoopSampleInput): NormalizedProcessEventLoopSample | undefined {
   const eventLoopLagMs = nullableNumber(input.eventLoopLagMs)
   const processRssBytes = nullableNumber(input.processRssBytes)
   const processHeapUsedBytes = nullableNumber(input.processHeapUsedBytes)
@@ -212,43 +547,16 @@ export async function insertProcessEventLoopSampleAsync(input: ProcessEventLoopS
     && processHeapTotalBytes === null
     && processExternalBytes === null
     && processArrayBuffersBytes === null
-  ) {
-    return
+  ) return undefined
+  return {
+    ...input,
+    eventLoopLagMs: eventLoopLagMs ?? undefined,
+    processRssBytes: processRssBytes ?? undefined,
+    processHeapUsedBytes: processHeapUsedBytes ?? undefined,
+    processHeapTotalBytes: processHeapTotalBytes ?? undefined,
+    processExternalBytes: processExternalBytes ?? undefined,
+    processArrayBuffersBytes: processArrayBuffersBytes ?? undefined
   }
-
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const sampledAt = input.sampledAt ?? nowIso()
-  const statHour = hourKey(new Date(sampledAt), await usageStatsTimezoneAsync())
-  await client.transaction(async (tx) => {
-    await tx.execute(`
-      INSERT INTO ${statsTable(tx, 'process_event_loop_samples')} (
-        sampled_at, process_role, process_pid, event_loop_lag_ms,
-        process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
-        process_external_bytes, process_array_buffers_bytes, id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      sampledAt,
-      input.processRole,
-      input.processPid ?? null,
-      eventLoopLagMs,
-      processRssBytes,
-      processHeapUsedBytes,
-      processHeapTotalBytes,
-      processExternalBytes,
-      processArrayBuffersBytes,
-      newId('process_metric'),
-      sampledAt
-    ])
-    await upsertProcessEventLoopHourlyAsync(tx, statHour, {
-      ...input,
-      eventLoopLagMs: eventLoopLagMs ?? undefined,
-      processRssBytes: processRssBytes ?? undefined,
-      processHeapUsedBytes: processHeapUsedBytes ?? undefined,
-      processHeapTotalBytes: processHeapTotalBytes ?? undefined,
-      processExternalBytes: processExternalBytes ?? undefined,
-      processArrayBuffersBytes: processArrayBuffersBytes ?? undefined
-    }, sampledAt)
-  })
 }
 
 export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {

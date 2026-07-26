@@ -6,7 +6,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { getRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
+import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
@@ -41,6 +41,8 @@ export interface OpenAIOAuthAccessTokenRefreshOptions {
   retryBackoffSeconds?: number
   persistMode?: 'sync' | 'db-service'
   accountIds?: string[]
+  startAdmissionBudgetMs?: number
+  signal?: AbortSignal
 }
 
 export interface OpenAIOAuthAccessTokenRefreshResult {
@@ -51,6 +53,9 @@ export interface OpenAIOAuthAccessTokenRefreshResult {
   exceptioned: number
   cooldowned: number
   skippedBackoff: number
+  started: number
+  skippedLocked: number
+  deferredBudget: number
 }
 
 export interface RefreshedOpenAIOAuthAccount {
@@ -95,6 +100,9 @@ const recentRefreshTtlMs = 30_000
 const openAIOAuthRefreshFailureStateTtlMs = 7 * 24 * 60 * 60 * 1000
 const openAIOAuthRefreshLockTtlMs = 90_000
 const openAIOAuthRefreshLockWaitMs = 30_000
+const openAIOAuthRefreshBatchConcurrency = 4
+const openAIOAuthRefreshStartAdmissionBudgetMs = 55_000
+const openAIOAuthRefreshBackoffReadConcurrency = 4
 const recentRefreshByAccountId = createAppCache<string, OpenAIOAuthRefreshAccount>({
   name: 'openai-oauth:recent-refresh',
   max: 5000,
@@ -122,6 +130,15 @@ type OpenAIOAuthAccountRefreshCallOptions = {
   leadSeconds?: number
   persistMode?: 'sync' | 'db-service'
   restoreFailureState?: boolean
+  lockMode?: 'wait' | 'skip'
+  onLockAcquired?: () => void
+}
+
+class OpenAIOAuthRefreshLockBusyError extends Error {
+  constructor() {
+    super('OpenAI OAuth 账户正在其他节点刷新')
+    this.name = 'OpenAIOAuthRefreshLockBusyError'
+  }
 }
 
 type OpenAIOAuthRefreshLocalConfigurationMarker = {
@@ -180,7 +197,11 @@ export async function refreshOpenAIOAuthAccountAccessToken(
   if (!isOpenAIOAuthRefreshAccount(account)) {
     throw new Error('仅支持刷新 OpenAI OAuth 账户')
   }
-  return runWithAccountRefreshLock(account.id, () => refreshOpenAIOAuthAccountAccessTokenLocked(account, options))
+  return runWithAccountRefreshLock(
+    account.id,
+    () => refreshOpenAIOAuthAccountAccessTokenLocked(account, options),
+    options.lockMode === 'skip' ? options : { ...options, signal: undefined }
+  )
 }
 
 async function refreshOpenAIOAuthAccountAccessTokenLocked(
@@ -310,6 +331,10 @@ async function persistOpenAIOAuthCredentialsViaDbService(
 export async function refreshDueOpenAIOAuthAccessTokens(
   options: OpenAIOAuthAccessTokenRefreshOptions = {}
 ): Promise<OpenAIOAuthAccessTokenRefreshResult> {
+  if (options.signal?.aborted) {
+    return emptyOpenAIOAuthAccessTokenRefreshResult()
+  }
+  const admissionStartedAt = Date.now()
   const persistMode = effectivePersistMode({ persistMode: options.persistMode })
   const settings = runtimeConfig.databaseDriver === 'postgres'
     ? await getSettingsAsync()
@@ -323,13 +348,16 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const retryBackoffSeconds = options.retryBackoffSeconds === undefined
     ? settingsInteger(settings, 'oauthAccessTokenRefreshRetryBackoffSeconds', 0, 86400)
     : optionInteger(options.retryBackoffSeconds, 'retryBackoffSeconds', 0, 86400)
+  const startAdmissionBudgetMs = options.startAdmissionBudgetMs === undefined
+    ? openAIOAuthRefreshStartAdmissionBudgetMs
+    : optionInteger(options.startAdmissionBudgetMs, 'startAdmissionBudgetMs', 1, 300_000)
   const now = Date.now()
   const leadMs = leadSeconds * 1000
   const retryBackoffMs = retryBackoffSeconds * 1000
   const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
   const accountIdFilter = normalizedRefreshAccountIdSet(options.accountIds)
-  const candidateFetchLimit = refreshCandidateFetchLimit(batchSize)
+  const candidateFetchLimit = refreshCandidateFetchLimit(batchSize, accountIdFilter?.size)
 
   const listedCandidates = runtimeConfig.databaseDriver === 'postgres'
     ? await listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync({
@@ -361,41 +389,37 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     failed: 0,
     exceptioned: 0,
     cooldowned: 0,
-    skippedBackoff: 0
+    skippedBackoff: 0,
+    started: 0,
+    skippedLocked: 0,
+    deferredBudget: 0
   }
 
-  const candidates: OpenAIOAuthRefreshBatchCandidate[] = []
-  for (const candidate of dueAccounts) {
-    const accountId = openAIOAuthRefreshCandidateAccountId(candidate)
-    const configRevision = openAIOAuthRefreshCandidateConfigRevision(candidate)
-    const failureState = await readRefreshFailureState(accountId, now, configRevision)
-    if (failureState?.backoffUntil !== undefined && failureState.backoffUntil > now) {
-      result.skippedBackoff += 1
-      continue
-    }
-    candidates.push(candidate.kind === 'account'
-      ? { kind: 'account', account: candidate.account, observedFailureState: failureState }
-      : {
-          kind: 'local_configuration_error',
-          accountId: candidate.accountId,
-          accountName: candidate.accountName,
-          accountStatus: candidate.accountStatus,
-          configRevision: candidate.configRevision,
-          errorMessage: candidate.errorMessage,
-          accountLocalEvidenceConfirmed: accountLocalCredentialEvidenceConfirmed,
-          observedFailureState: failureState
-        })
-    if (candidates.length >= batchSize) {
-      break
-    }
-  }
-  for (const candidate of candidates) {
+  const candidates = await selectOpenAIOAuthRefreshBatchCandidates({
+    dueAccounts,
+    batchSize,
+    now,
+    accountLocalCredentialEvidenceConfirmed,
+    result,
+    signal: options.signal,
+    admissionDeadlineAtMs: admissionStartedAt + startAdmissionBudgetMs
+  })
+  let nextCandidateIndex = 0
+
+  const processCandidate = async (candidate: OpenAIOAuthRefreshBatchCandidate): Promise<void> => {
     const accountId = openAIOAuthRefreshBatchCandidateAccountId(candidate)
     const accountName = openAIOAuthRefreshBatchCandidateAccountName(candidate)
     const accountStatus = openAIOAuthRefreshBatchCandidateAccountStatus(candidate)
     const attemptConfigRevision = openAIOAuthRefreshBatchCandidateConfigRevision(candidate)
+    let countedAsStarted = false
+    const markStarted = (): void => {
+      if (countedAsStarted) return
+      countedAsStarted = true
+      result.started += 1
+    }
     try {
       if (candidate.kind === 'local_configuration_error') {
+        markStarted()
         if (candidate.accountLocalEvidenceConfirmed) {
           throw new OpenAIOAuthRefreshLocalConfigurationError(candidate.errorMessage, {
             expectedConfigRevision: candidate.configRevision
@@ -403,11 +427,26 @@ export async function refreshDueOpenAIOAuthAccessTokens(
         }
         throw new Error('OpenAI OAuth 凭据存储当前不可验证，未改变账户调度状态')
       }
-      await refreshOpenAIOAuthAccountAccessToken(candidate.account, { force: false, leadSeconds, restoreFailureState: false, persistMode })
+      await refreshOpenAIOAuthAccountAccessToken(candidate.account, {
+        force: false,
+        leadSeconds,
+        restoreFailureState: false,
+        persistMode,
+        lockMode: 'skip',
+        signal: options.signal,
+        onLockAcquired: markStarted
+      })
       await clearRefreshFailureState(accountId, candidate.observedFailureState)
       await restoreOpenAIOAuthTokenRefreshFailureIfRecovered(candidate.account, persistMode)
       result.refreshed += 1
     } catch (error) {
+      if (options.signal?.aborted && !countedAsStarted) {
+        return
+      }
+      if (error instanceof OpenAIOAuthRefreshLockBusyError) {
+        result.skippedLocked += 1
+        return
+      }
       result.failed += 1
       const expiredOrMissing = candidate.kind === 'account'
         ? isAccessTokenExpiredOrMissing(candidate.account.credentials, Date.now())
@@ -456,7 +495,90 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     }
   }
 
+  const workers = Array.from(
+    { length: Math.min(openAIOAuthRefreshBatchConcurrency, candidates.length) },
+    async () => {
+      while (nextCandidateIndex < candidates.length) {
+        if (
+          Date.now() - admissionStartedAt >= startAdmissionBudgetMs
+          || options.signal?.aborted === true
+        ) {
+          return
+        }
+        const candidateIndex = nextCandidateIndex
+        nextCandidateIndex += 1
+        const candidate = candidates[candidateIndex]
+        if (!candidate) return
+        await processCandidate(candidate)
+      }
+    }
+  )
+  await Promise.all(workers)
+  result.deferredBudget += Math.max(0, candidates.length - nextCandidateIndex)
+
   return result
+}
+
+function emptyOpenAIOAuthAccessTokenRefreshResult(): OpenAIOAuthAccessTokenRefreshResult {
+  return {
+    scanned: 0,
+    due: 0,
+    refreshed: 0,
+    failed: 0,
+    exceptioned: 0,
+    cooldowned: 0,
+    skippedBackoff: 0,
+    started: 0,
+    skippedLocked: 0,
+    deferredBudget: 0
+  }
+}
+
+async function selectOpenAIOAuthRefreshBatchCandidates(input: {
+  dueAccounts: OpenAIOAuthRefreshCandidateResult[]
+  batchSize: number
+  now: number
+  accountLocalCredentialEvidenceConfirmed: boolean
+  result: OpenAIOAuthAccessTokenRefreshResult
+  signal?: AbortSignal
+  admissionDeadlineAtMs: number
+}): Promise<OpenAIOAuthRefreshBatchCandidate[]> {
+  const candidates: OpenAIOAuthRefreshBatchCandidate[] = []
+  for (let offset = 0; offset < input.dueAccounts.length && candidates.length < input.batchSize; offset += openAIOAuthRefreshBackoffReadConcurrency) {
+    if (input.signal?.aborted || Date.now() >= input.admissionDeadlineAtMs) {
+      input.result.deferredBudget += Math.max(0, input.dueAccounts.length - offset)
+      break
+    }
+    const candidateWindow = input.dueAccounts.slice(offset, offset + openAIOAuthRefreshBackoffReadConcurrency)
+    const failureStates = await Promise.all(candidateWindow.map((candidate) => readRefreshFailureState(
+      openAIOAuthRefreshCandidateAccountId(candidate),
+      input.now,
+      openAIOAuthRefreshCandidateConfigRevision(candidate),
+      { signal: input.signal, deadlineAtMs: input.admissionDeadlineAtMs }
+    )))
+    for (let index = 0; index < candidateWindow.length && candidates.length < input.batchSize; index += 1) {
+      const candidate = candidateWindow[index]
+      if (!candidate) continue
+      const failureState = failureStates[index]
+      if (failureState?.backoffUntil !== undefined && failureState.backoffUntil > input.now) {
+        input.result.skippedBackoff += 1
+        continue
+      }
+      candidates.push(candidate.kind === 'account'
+        ? { kind: 'account', account: candidate.account, observedFailureState: failureState }
+        : {
+            kind: 'local_configuration_error',
+            accountId: candidate.accountId,
+            accountName: candidate.accountName,
+            accountStatus: candidate.accountStatus,
+            configRevision: candidate.configRevision,
+            errorMessage: candidate.errorMessage,
+            accountLocalEvidenceConfirmed: input.accountLocalCredentialEvidenceConfirmed,
+            observedFailureState: failureState
+          })
+    }
+  }
+  return candidates
 }
 
 function isExistingOpenAIOAuthAccountForRefresh(account: AccountSummary): boolean {
@@ -538,7 +660,7 @@ async function recordRefreshFailure(
   const normalizedRevision = normalizedConfigRevision(configRevision) ?? 1
   const mutationId = randomBytes(12).toString('hex')
   if (usesRedisRefreshFailureState()) {
-    const result = await (await redisStateClient()).eval(redisRecordRefreshFailureScript, {
+    const result = await runRefreshFailureRedisOperation('OAuth 刷新失败状态写入', (client) => client.eval(redisRecordRefreshFailureScript, {
       keys: [redisRefreshFailureStateKey(accountId)],
       arguments: [
         String(Math.max(0, Math.trunc(backoffUntil))),
@@ -547,7 +669,7 @@ async function recordRefreshFailure(
         String(normalizedRevision),
         mutationId
       ]
-    })
+    }))
     const values = redisResultArray(result)
     const applied = numericRedisResult(values[4]) === 1
     const storedMutationId = stringRedisResult(values[5]) ?? mutationId
@@ -581,10 +703,19 @@ async function recordRefreshFailure(
   return next
 }
 
-async function readRefreshFailureState(accountId: string, now: number, configRevision: number): Promise<OpenAIOAuthRefreshFailureState | undefined> {
+async function readRefreshFailureState(
+  accountId: string,
+  now: number,
+  configRevision: number,
+  options: { signal?: AbortSignal; deadlineAtMs?: number } = {}
+): Promise<OpenAIOAuthRefreshFailureState | undefined> {
   const normalizedRevision = normalizedConfigRevision(configRevision) ?? 1
   if (usesRedisRefreshFailureState()) {
-    const rawValue = await (await redisStateClient()).get(redisRefreshFailureStateKey(accountId))
+    const rawValue = await runRefreshFailureRedisOperation(
+      'OAuth 刷新失败状态读取',
+      (client) => client.get(redisRefreshFailureStateKey(accountId)),
+      options
+    )
     if (!rawValue) return undefined
     try {
       const parsed = JSON.parse(rawValue) as Partial<OpenAIOAuthRefreshFailureState>
@@ -645,11 +776,12 @@ type OpenAIOAuthRefreshFailureStateGuard = {
 async function clearRefreshFailureState(accountId: string, expected?: OpenAIOAuthRefreshFailureStateGuard): Promise<void> {
   if (!expected) return
   if (usesRedisRefreshFailureState()) {
-    if (!expected.snapshot) return
-    await (await redisStateClient()).eval(redisCompareDeleteRefreshFailureScript, {
+    const snapshot = expected.snapshot
+    if (!snapshot) return
+    await runRefreshFailureRedisOperation('OAuth 刷新失败状态清理', (client) => client.eval(redisCompareDeleteRefreshFailureScript, {
       keys: [redisRefreshFailureStateKey(accountId)],
-      arguments: [expected.snapshot, String(expected.configRevision ?? 0)]
-    })
+      arguments: [snapshot, String(expected.configRevision ?? 0)]
+    }).then(() => undefined))
     return
   }
   const current = refreshFailureStateByAccountId.get(accountId)
@@ -713,9 +845,17 @@ async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: Account
   }
 }
 
-async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+async function runWithAccountRefreshLock<T>(
+  accountId: string,
+  task: () => Promise<T>,
+  options: Pick<OpenAIOAuthAccountRefreshCallOptions, 'lockMode' | 'onLockAcquired' | 'signal'> = {}
+): Promise<T> {
+  options.signal?.throwIfAborted()
   if (runtimeConfig.runtimeStateDriver === 'redis') {
-    return runWithRedisAccountRefreshLock(accountId, task)
+    return runWithRedisAccountRefreshLock(accountId, task, options)
+  }
+  if (options.lockMode === 'skip' && refreshQueueByAccountId.has(accountId)) {
+    throw new OpenAIOAuthRefreshLockBusyError()
   }
   const previous = refreshQueueByAccountId.get(accountId) ?? Promise.resolve()
   const ready = previous.catch(() => undefined)
@@ -726,6 +866,8 @@ async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promi
   refreshQueueByAccountId.set(accountId, current)
   await ready
   try {
+    options.signal?.throwIfAborted()
+    options.onLockAcquired?.()
     return await task()
   } finally {
     release()
@@ -735,17 +877,30 @@ async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promi
   }
 }
 
-async function runWithRedisAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {
+async function runWithRedisAccountRefreshLock<T>(
+  accountId: string,
+  task: () => Promise<T>,
+  options: Pick<OpenAIOAuthAccountRefreshCallOptions, 'lockMode' | 'onLockAcquired' | 'signal'>
+): Promise<T> {
   const lockStore = createRuntimeStateStore('openai-oauth:refresh-locks')
   const token = randomBytes(16).toString('hex')
   const deadline = Date.now() + openAIOAuthRefreshLockWaitMs
-  while (!await lockStore.acquireLock(accountId, { ttlMs: openAIOAuthRefreshLockTtlMs, token })) {
+  while (true) {
+    options.signal?.throwIfAborted()
+    if (await lockStore.acquireLock(accountId, { ttlMs: openAIOAuthRefreshLockTtlMs, token })) {
+      break
+    }
+    if (options.lockMode === 'skip') {
+      throw new OpenAIOAuthRefreshLockBusyError()
+    }
     if (Date.now() >= deadline) {
       throw new Error('OpenAI OAuth 账户正在其他节点刷新，请稍后重试')
     }
     await delay(250)
   }
   try {
+    options.signal?.throwIfAborted()
+    options.onLockAcquired?.()
     return await task()
   } finally {
     await lockStore.releaseLock(accountId, token).catch((error) => {
@@ -1000,26 +1155,36 @@ function optionInteger(value: unknown, label: string, min: number, max: number):
 
 registerGatewayRuntimeCacheInvalidator(clearOpenAIOAuthRecentRefreshCache)
 
-function refreshCandidateFetchLimit(batchSize: number): number {
-  if (!usesRedisRefreshFailureState()) {
-    return batchSize + refreshFailureStateByAccountId.size
+function refreshCandidateFetchLimit(batchSize: number, requestedAccountCount?: number): number {
+  if (requestedAccountCount !== undefined) {
+    return Math.min(500, Math.max(batchSize, requestedAccountCount * 5))
   }
-  return 500
+  if (!usesRedisRefreshFailureState()) {
+    return Math.min(500, batchSize + refreshFailureStateByAccountId.size)
+  }
+  return Math.min(200, batchSize * 5)
 }
 
 function usesRedisRefreshFailureState(): boolean {
   return Boolean(openAIOAuthRefreshFailureRedisClientForTest) || runtimeConfig.runtimeStateDriver === 'redis'
 }
 
-function redisStateClient(): Promise<OpenAIOAuthRefreshFailureRedisClientForTest> {
-  if (openAIOAuthRefreshFailureRedisClientForTest) {
-    return Promise.resolve(openAIOAuthRefreshFailureRedisClientForTest)
-  }
+async function runRefreshFailureRedisOperation<T>(
+  operationName: string,
+  operation: (client: OpenAIOAuthRefreshFailureRedisClientForTest) => Promise<T>,
+  options: { signal?: AbortSignal; deadlineAtMs?: number } = {}
+): Promise<T> {
+  if (openAIOAuthRefreshFailureRedisClientForTest) return await operation(openAIOAuthRefreshFailureRedisClientForTest)
   const redisUrl = runtimeConfig.redis.stateUrl
   if (!redisUrl) {
     throw new Error('JUHE_AI_REDIS_STATE_URL 在 Redis runtime state driver 下必须配置')
   }
-  return getRedisClient(redisUrl) as Promise<RedisCommandClient>
+  return await runRedisOperationWithDeadline(redisUrl, {
+    operationName,
+    timeoutMs: 3_000,
+    signal: options.signal,
+    deadlineAtMs: options.deadlineAtMs
+  }, (client: RedisCommandClient) => operation(client))
 }
 
 function redisRefreshFailureStateKey(accountId: string): string {

@@ -16,6 +16,9 @@ import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
+import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
+import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
+import { configuredModelCheckModelsForAccount } from '../modules/model-checks/model-checks.profiles.js'
 
 const businessSchemaName = 'juhe_business'
 const defaultSchedulePageSize = 20
@@ -41,6 +44,10 @@ interface ModelQualityScheduleRow {
   provider_code: string | null
   model: string
   interval_minutes: number
+  profile: ModelCheckProfile
+  penalty_threshold: number
+  penalty_action: ModelQualityPenaltyAction
+  recovery_interval_minutes: number
   enabled: number
   revision: number
   next_run_at: string
@@ -68,6 +75,10 @@ export interface ModelQualityScheduleMutationInput {
   accountId: string
   model: string
   intervalMinutes: number
+  profile: ModelCheckProfile
+  penaltyThreshold: number
+  penaltyAction: ModelQualityPenaltyAction
+  recoveryIntervalMinutes: number
   enabled?: boolean
   expectedRevision?: number
 }
@@ -78,6 +89,10 @@ export interface ModelQualityEnforcementInput {
   runId: string
   action: ModelQualityPenaltyAction
   policyRevision: number
+  scheduleId?: string
+  profile: ModelCheckProfile
+  penaltyThreshold: number
+  model: string
   accountConfigRevision: number
   recoveryIntervalMinutes: number
   message: string
@@ -111,6 +126,7 @@ export interface ModelQualityRecoveryCandidate {
   accountConfigRevision: number
   enforcementId: string
   generation: number
+  scheduleId?: string
   policy: ModelQualityPolicy
 }
 
@@ -235,16 +251,39 @@ export async function upsertModelQualityScheduleAsync(
   const accountId = requiredText(input.accountId, '定时检查账户不能为空')
   const model = requiredText(input.model, '定时检查模型不能为空')
   const intervalMinutes = strictInteger(input.intervalMinutes, 10, 10080, '定时检查间隔必须是 10 到 10080 的整数分钟')
+  assertSchedulePolicyInput(input)
   const client = await businessClient()
   const accounts = table(client, 'accounts')
   const schedules = table(client, 'model_quality_schedules')
-  const account = await client.one<{ id: string }>(`
-    SELECT id FROM ${accounts}
+  const account = await client.one<{
+    id: string
+    provider_code: string
+    provider_protocol_profile_id: string
+    protocol_code: string
+    protocol_version: string
+  }>(`
+    SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version FROM ${accounts}
     WHERE id = ? AND system_account_id = ? AND deleted_at IS NULL
       AND authorization_instance_authorization_id IS NULL
     LIMIT 1
   `, [accountId, systemAccountId])
   if (!account) throw new Error('账户不存在、不是当前系统账户的自有账户或无权配置定时检查')
+  const [supportedModelsByAccountId, modelMappingsByAccountId] = await Promise.all([
+    loadSupportedModelsByAccountIdsAsync([account.id]),
+    loadModelMappingsByAccountIdsAsync([account.id])
+  ])
+  const allowedModels = configuredModelCheckModelsForAccount({
+    providerCode: account.provider_code,
+    providerProtocolProfileId: account.provider_protocol_profile_id,
+    protocolCode: account.protocol_code,
+    protocolVersion: account.protocol_version,
+    supportedModels: supportedModelsByAccountId.get(account.id) ?? [],
+    modelMappings: modelMappingsByAccountId.get(account.id) ?? []
+  })
+  if (!allowedModels.includes(model)) {
+    const allowedModelText = allowedModels.length ? `；可选模型：${allowedModels.join('、')}` : ''
+    throw new Error(`账户模型限制或供应商协议不支持定时检查模型 ${model}${allowedModelText}`)
+  }
   const existing = await client.one<{ id: string; revision: number }>(`
     SELECT id, revision FROM ${schedules}
     WHERE system_account_id = ? AND account_id = ?
@@ -259,20 +298,22 @@ export async function upsertModelQualityScheduleAsync(
     const id = newId('mqs')
     await client.execute(`
       INSERT INTO ${schedules} (
-        id, system_account_id, account_id, model, interval_minutes, enabled, revision,
+        id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold,
+        penalty_action, recovery_interval_minutes, enabled, revision,
         next_run_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `, [id, systemAccountId, accountId, model, intervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, now])
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    `, [id, systemAccountId, accountId, model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, now])
   } else {
     if (input.expectedRevision !== undefined && input.expectedRevision !== existing.revision) {
       throw new Error('定时检查配置已变化，请刷新后重试')
     }
     const result = await client.execute(`
       UPDATE ${schedules}
-      SET model = ?, interval_minutes = ?, enabled = ?, revision = revision + 1,
+      SET model = ?, interval_minutes = ?, profile = ?, penalty_threshold = ?, penalty_action = ?,
+          recovery_interval_minutes = ?, enabled = ?, revision = revision + 1,
           next_run_at = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
       WHERE id = ? AND revision = ?
-    `, [model, intervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, existing.id, existing.revision])
+    `, [model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, existing.id, existing.revision])
     if (result.changes <= 0) throw new Error('定时检查配置已变化，请刷新后重试')
   }
   const row = await findScheduleRow(client, systemAccountId, accountId)
@@ -308,8 +349,13 @@ export async function claimDueModelQualitySchedulesAsync(
       account_id: string
       model: string
       interval_minutes: number
+      profile: ModelCheckProfile
+      penalty_threshold: number
+      penalty_action: ModelQualityPenaltyAction
+      recovery_interval_minutes: number
     }>(`
-      SELECT mqs.id, mqs.revision, mqs.system_account_id, mqs.account_id, mqs.model, mqs.interval_minutes
+      SELECT mqs.id, mqs.revision, mqs.system_account_id, mqs.account_id, mqs.model, mqs.interval_minutes,
+             mqs.profile, mqs.penalty_threshold, mqs.penalty_action, mqs.recovery_interval_minutes
       FROM ${schedules} mqs
       JOIN ${accounts} accounts ON accounts.id = mqs.account_id
       WHERE mqs.enabled = 1
@@ -330,10 +376,6 @@ export async function claimDueModelQualitySchedulesAsync(
           AND (lease_until IS NULL OR lease_until <= ?)
       `, [ownerId, leaseUntil, now, row.id, row.revision, now])
       if (result.changes <= 0) continue
-      const policyRow = await tx.one<ModelQualityPolicyRow>(`
-        SELECT * FROM ${table(tx, 'model_quality_policies')}
-        WHERE system_account_id = ? LIMIT 1
-      `, [row.system_account_id])
       claimed.push({
         scheduleId: row.id,
         scheduleRevision: row.revision,
@@ -341,7 +383,7 @@ export async function claimDueModelQualitySchedulesAsync(
         accountId: row.account_id,
         model: row.model,
         intervalMinutes: Number(row.interval_minutes),
-        policy: policyRow ? policyFromRow(policyRow) : defaultModelQualityPolicy(row.system_account_id)
+        policy: schedulePolicy(row)
       })
     }
   })
@@ -379,7 +421,6 @@ export async function claimDueModelQualityRecoveriesAsync(
   const leaseUntil = addMinutes(now, boundedInteger(options.leaseMinutes, 6, 1, 30))
   const enforcements = table(client, 'account_quality_enforcements')
   const accounts = table(client, 'accounts')
-  const schedules = table(client, 'model_quality_schedules')
   const candidates: ModelQualityRecoveryCandidate[] = []
   await client.transaction(async (tx) => {
     const rows = await tx.query<{
@@ -389,13 +430,18 @@ export async function claimDueModelQualityRecoveriesAsync(
       generation: number
       recovery_model: string
       config_revision: number
+      policy_revision: number
+      config_source_id: string | null
+      profile: ModelCheckProfile
+      penalty_threshold: number
+      recovery_interval_minutes: number
     }>(`
       SELECT aqe.account_id, aqe.system_account_id, aqe.enforcement_id, aqe.generation,
-             COALESCE(mqs.model, accounts.health_check_model) AS recovery_model, accounts.config_revision
+             COALESCE(NULLIF(aqe.recovery_model, ''), accounts.health_check_model) AS recovery_model,
+             accounts.config_revision, aqe.policy_revision, aqe.config_source_id, aqe.profile,
+             aqe.penalty_threshold, aqe.recovery_interval_minutes
       FROM ${enforcements} aqe
       JOIN ${accounts} accounts ON accounts.id = aqe.account_id
-      LEFT JOIN ${schedules} mqs
-        ON mqs.account_id = aqe.account_id AND mqs.system_account_id = aqe.system_account_id
       WHERE aqe.state = 'active' AND aqe.action = 'quality_isolate'
         AND aqe.recovery_due_at IS NOT NULL AND aqe.recovery_due_at <= ?
         AND (aqe.recovery_lease_until IS NULL OR aqe.recovery_lease_until <= ?)
@@ -407,16 +453,12 @@ export async function claimDueModelQualityRecoveriesAsync(
     for (const row of rows) {
       const claimed = await tx.execute(`
         UPDATE ${enforcements}
-        SET recovery_lease_owner = ?, recovery_lease_until = ?, updated_at = ?
+        SET recovery_lease_owner = ?, recovery_lease_until = ?, account_config_revision = ?, updated_at = ?
         WHERE account_id = ? AND enforcement_id = ? AND generation = ?
           AND state = 'active' AND action = 'quality_isolate'
           AND (recovery_lease_until IS NULL OR recovery_lease_until <= ?)
-      `, [ownerId, leaseUntil, now, row.account_id, row.enforcement_id, row.generation, now])
+      `, [ownerId, leaseUntil, row.config_revision, now, row.account_id, row.enforcement_id, row.generation, now])
       if (claimed.changes <= 0) continue
-      const policyRow = await tx.one<ModelQualityPolicyRow>(`
-        SELECT * FROM ${table(tx, 'model_quality_policies')}
-        WHERE system_account_id = ? LIMIT 1
-      `, [row.system_account_id])
       candidates.push({
         accountId: row.account_id,
         systemAccountId: row.system_account_id,
@@ -424,7 +466,16 @@ export async function claimDueModelQualityRecoveriesAsync(
         accountConfigRevision: Number(row.config_revision),
         enforcementId: row.enforcement_id,
         generation: Number(row.generation),
-        policy: policyRow ? policyFromRow(policyRow) : defaultModelQualityPolicy(row.system_account_id)
+        scheduleId: row.config_source_id ?? undefined,
+        policy: {
+          systemAccountId: row.system_account_id,
+          revision: Number(row.policy_revision),
+          profile: row.profile,
+          manualEnforcementEnabled: true,
+          penaltyThreshold: Number(row.penalty_threshold),
+          penaltyAction: 'quality_isolate',
+          recoveryIntervalMinutes: Number(row.recovery_interval_minutes)
+        }
       })
     }
   })
@@ -447,35 +498,36 @@ export async function completeModelQualityRecoveryAsync(input: {
   const recoveryIntervalMinutes = strictInteger(input.recoveryIntervalMinutes, 10, 10080, '质量隔离恢复周期无效')
   let accountChanged = false
   const result = await client.transaction(async (tx): Promise<ModelQualityRecoveryCompletionResult> => {
-    const enforcement = await tx.one<{ state: string; action: string; system_account_id: string }>(`
-      SELECT state, action, system_account_id FROM ${table(tx, 'account_quality_enforcements')}
+    const enforcement = await tx.one<{ state: string; action: string; system_account_id: string; account_config_revision: number; policy_revision: number }>(`
+      SELECT state, action, system_account_id, account_config_revision, policy_revision FROM ${table(tx, 'account_quality_enforcements')}
       WHERE account_id = ? AND enforcement_id = ? AND generation = ? AND recovery_lease_owner = ?
       LIMIT 1
     `, [input.accountId, input.enforcementId, input.generation, input.ownerId])
     if (!enforcement || enforcement.state !== 'active' || enforcement.action !== 'quality_isolate') {
       return { result: 'stale', message: '质量隔离处罚代次或恢复租约已变化，本次恢复结果已忽略' }
     }
-    const policy = await tx.one<ModelQualityPolicyRow>(`
-      SELECT * FROM ${table(tx, 'model_quality_policies')} WHERE system_account_id = ? LIMIT 1
-    `, [enforcement.system_account_id])
-    const currentRevision = policy?.revision ?? 0
-    if (currentRevision !== input.policyRevision) {
+    if (Number(enforcement.policy_revision) !== input.policyRevision) {
       const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
       await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
-      return { result: 'stale', nextRecoveryAt, message: '检测配置已变化，本次不解除隔离并按新周期等待复检' }
+      return { result: 'stale', nextRecoveryAt, message: '处罚配置快照已变化，本次不解除隔离并等待复检' }
     }
     if (!input.passed) {
       const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
       await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
       return { result: 'kept_isolated', beforeStatus: 'quality_isolated', afterStatus: 'quality_isolated', nextRecoveryAt, message: `质量恢复检查未达标，账户继续隔离；下次检查时间 ${nextRecoveryAt}` }
     }
-    const account = await tx.one<{ status: AccountStatus; availability_schedule_json: string | null }>(`
-      SELECT status, availability_schedule_json FROM ${table(tx, 'accounts')}
+    const account = await tx.one<{ status: AccountStatus; config_revision: number; availability_schedule_json: string | null }>(`
+      SELECT status, config_revision, availability_schedule_json FROM ${table(tx, 'accounts')}
       WHERE id = ? AND system_account_id = ? AND deleted_at IS NULL
       LIMIT 1
     `, [input.accountId, enforcement.system_account_id])
     if (!account || account.status !== 'quality_isolated') {
       return { result: 'stale', beforeStatus: account?.status, afterStatus: account?.status, message: '账户已被用户或其他任务修改，本次恢复结果已忽略' }
+    }
+    if (Number(account.config_revision) !== Number(enforcement.account_config_revision)) {
+      const nextRecoveryAt = addMinutes(completedAt, recoveryIntervalMinutes)
+      await rescheduleRecovery(tx, input, nextRecoveryAt, completedAt)
+      return { result: 'stale', beforeStatus: account.status, afterStatus: account.status, nextRecoveryAt, message: '账户配置在恢复检查期间发生变化，本次不解除隔离并等待重新复检' }
     }
     const afterStatus: AccountStatus = isAccountAvailabilityScheduleAllowed(account.availability_schedule_json, new Date(completedAt)) ? 'active' : 'disabled'
     const updated = await tx.execute(`
@@ -517,13 +569,10 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
   const decidedAt = input.decidedAt ?? nowIso()
   let changed = false
   const result = await client.transaction(async (tx): Promise<ModelQualityEnforcementWriteResult> => {
-    const policy = await tx.one<ModelQualityPolicyRow>(`
-      SELECT * FROM ${table(tx, 'model_quality_policies')}
-      WHERE system_account_id = ?
-      LIMIT 1
-    `, [input.systemAccountId])
-    const defaultPolicyMatches = !policy && input.policyRevision === 0 && input.action === 'fallback'
-    if (!defaultPolicyMatches && (!policy || policy.revision !== input.policyRevision || policy.penalty_action !== input.action)) {
+    const configurationMatches = input.scheduleId
+      ? await scheduledEnforcementConfigurationMatches(tx, input)
+      : await manualEnforcementConfigurationMatches(tx, input)
+    if (!configurationMatches) {
       return { result: 'stale', message: '检测配置已变化，本次仅保留质量事实，不修改账户' }
     }
     const account = await tx.one<AccountQualityMutationRow>(`
@@ -589,10 +638,11 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
     await tx.execute(`
       INSERT INTO ${table(tx, 'account_quality_enforcements')} (
         account_id, system_account_id, enforcement_id, generation, state, action, trigger_run_id,
-        policy_revision, account_config_revision, before_status, after_status,
+        config_source, config_source_id, policy_revision, profile, penalty_threshold,
+        recovery_interval_minutes, recovery_model, account_config_revision, before_status, after_status,
         fallback_was_enabled, super_priority_was_enabled, started_at, recovery_due_at,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         system_account_id = excluded.system_account_id,
         enforcement_id = excluded.enforcement_id,
@@ -600,7 +650,13 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
         state = 'active',
         action = excluded.action,
         trigger_run_id = excluded.trigger_run_id,
+        config_source = excluded.config_source,
+        config_source_id = excluded.config_source_id,
         policy_revision = excluded.policy_revision,
+        profile = excluded.profile,
+        penalty_threshold = excluded.penalty_threshold,
+        recovery_interval_minutes = excluded.recovery_interval_minutes,
+        recovery_model = excluded.recovery_model,
         account_config_revision = excluded.account_config_revision,
         before_status = excluded.before_status,
         after_status = excluded.after_status,
@@ -618,7 +674,13 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
       generation,
       input.action,
       input.runId,
+      input.scheduleId ? 'schedule' : 'manual',
+      input.scheduleId ?? null,
       input.policyRevision,
+      input.profile,
+      input.penaltyThreshold,
+      input.recoveryIntervalMinutes,
+      input.model,
       input.accountConfigRevision,
       account.status,
       targetStatus,
@@ -681,6 +743,10 @@ function scheduleFromRow(row: ModelQualityScheduleRow): ModelQualitySchedule {
     providerCode: row.provider_code ?? undefined,
     model: row.model,
     intervalMinutes: Number(row.interval_minutes),
+    profile: row.profile,
+    penaltyThreshold: Number(row.penalty_threshold),
+    penaltyAction: row.penalty_action,
+    recoveryIntervalMinutes: Number(row.recovery_interval_minutes),
     enabled: row.enabled === 1,
     revision: Number(row.revision),
     nextRunAt: row.next_run_at,
@@ -725,6 +791,75 @@ function assertPolicyInput(input: ModelQualityPolicyUpdateInput): void {
     throw new Error('处罚方式无效')
   }
   strictInteger(input.recoveryIntervalMinutes, 10, 10080, '质量隔离恢复周期必须是 10 到 10080 的整数分钟')
+}
+
+function assertSchedulePolicyInput(input: ModelQualityScheduleMutationInput): void {
+  if (input.profile !== 'quick' && input.profile !== 'full') throw new Error('定时检测 profile 仅支持 quick 或 full')
+  strictInteger(input.penaltyThreshold, 40, 100, '定时处罚阈值必须是 40 到 100 的整数')
+  if (input.penaltyAction !== 'disable' && input.penaltyAction !== 'fallback' && input.penaltyAction !== 'quality_isolate') throw new Error('定时处罚方式无效')
+  strictInteger(input.recoveryIntervalMinutes, 10, 10080, '定时质量隔离恢复周期必须是 10 到 10080 的整数分钟')
+}
+
+function schedulePolicy(row: {
+  system_account_id: string
+  revision: number
+  profile: ModelCheckProfile
+  penalty_threshold: number
+  penalty_action: ModelQualityPenaltyAction
+  recovery_interval_minutes: number
+}): ModelQualityPolicy {
+  return {
+    systemAccountId: row.system_account_id,
+    revision: Number(row.revision),
+    profile: row.profile,
+    manualEnforcementEnabled: true,
+    penaltyThreshold: Number(row.penalty_threshold),
+    penaltyAction: row.penalty_action,
+    recoveryIntervalMinutes: Number(row.recovery_interval_minutes)
+  }
+}
+
+async function scheduledEnforcementConfigurationMatches(client: DatabaseClient, input: ModelQualityEnforcementInput): Promise<boolean> {
+  const schedule = await client.one<{
+    revision: number
+    profile: ModelCheckProfile
+    penalty_threshold: number
+    penalty_action: ModelQualityPenaltyAction
+    recovery_interval_minutes: number
+    model: string
+  }>(`
+    SELECT revision, profile, penalty_threshold, penalty_action, recovery_interval_minutes, model
+    FROM ${table(client, 'model_quality_schedules')}
+    WHERE id = ? AND system_account_id = ? AND account_id = ?
+    LIMIT 1
+  `, [input.scheduleId, input.systemAccountId, input.accountId])
+  return Boolean(schedule
+    && Number(schedule.revision) === input.policyRevision
+    && schedule.profile === input.profile
+    && Number(schedule.penalty_threshold) === input.penaltyThreshold
+    && schedule.penalty_action === input.action
+    && Number(schedule.recovery_interval_minutes) === input.recoveryIntervalMinutes
+    && schedule.model === input.model)
+}
+
+async function manualEnforcementConfigurationMatches(client: DatabaseClient, input: ModelQualityEnforcementInput): Promise<boolean> {
+  const policy = await client.one<ModelQualityPolicyRow>(`
+    SELECT * FROM ${table(client, 'model_quality_policies')}
+    WHERE system_account_id = ?
+    LIMIT 1
+  `, [input.systemAccountId])
+  if (!policy) {
+    return input.policyRevision === 0
+      && input.profile === 'quick'
+      && input.penaltyThreshold === 70
+      && input.action === 'fallback'
+      && input.recoveryIntervalMinutes === 10
+  }
+  return policy.revision === input.policyRevision
+    && policy.profile === input.profile
+    && Number(policy.penalty_threshold) === input.penaltyThreshold
+    && policy.penalty_action === input.action
+    && Number(policy.recovery_interval_minutes) === input.recoveryIntervalMinutes
 }
 
 async function businessClient(): Promise<DatabaseClient> {

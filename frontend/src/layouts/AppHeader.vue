@@ -45,12 +45,12 @@
         </button>
         <template #overlay>
           <a-menu @click="$emit('user-menu-click', $event)">
+            <a-menu-item key="profile">个人信息</a-menu-item>
+            <a-menu-divider />
             <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">
               {{ switchMenuModeLabel }}
             </a-menu-item>
             <a-menu-divider v-if="canSwitchMenuMode" />
-            <a-menu-item key="display-name">修改名称</a-menu-item>
-            <a-menu-item key="password">修改密码</a-menu-item>
             <a-menu-item key="logout" danger>退出登录</a-menu-item>
           </a-menu>
         </template>

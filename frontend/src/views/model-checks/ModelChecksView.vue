@@ -112,6 +112,7 @@
       :model-options="historyModelOptions"
       :page="schedulesPage"
       :page-size="schedulesPageSize"
+      :reset-token="scheduleFormResetToken"
       :saving="scheduleSaving"
       :schedules="schedules"
       :total="schedulesTotal"
@@ -237,12 +238,13 @@ const qualityPolicySaving = ref(false)
 const schedulesOpen = ref(false)
 const schedulesLoading = ref(false)
 const scheduleSaving = ref(false)
+const scheduleFormResetToken = ref(0)
 const scheduleAccountOptionsLoading = ref(false)
 const schedules = ref<ModelQualitySchedule[]>([])
 const schedulesTotal = ref(0)
 const schedulesPage = ref(1)
 const schedulesPageSize = 10
-const scheduleAccountOptions = ref<Array<{ label: string; value: string }>>([])
+const scheduleAccountOptions = ref<Array<{ label: string; value: string; modelCheckModels: string[] }>>([])
 const qualityPolicy = ref<ModelQualityPolicy>({
   systemAccountId: '',
   revision: 0,
@@ -425,10 +427,10 @@ async function saveQualityPolicy(input: ModelQualityPolicyUpdateInput) {
   try {
     qualityPolicy.value = await modelChecksApi.saveQualityPolicy(input, modelCheckScopeParams.value)
     form.profile = qualityPolicy.value.profile
-    message.success('模型质量检测配置已保存')
+    message.success('手动检测质量配置已保存')
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '保存模型质量检测配置失败'))
+    message.error(extractApiErrorMessage(error, '保存手动检测质量配置失败'))
     await loadQualityPolicy()
   } finally {
     qualityPolicySaving.value = false
@@ -460,7 +462,11 @@ async function loadScheduleAccountOptions(keyword: string) {
   scheduleAccountOptionsLoading.value = true
   try {
     const items = await accountsApi.options({ ...modelCheckScopeParams.value, purpose: 'run', keyword: keyword.trim() || undefined, limit: 50 })
-    scheduleAccountOptions.value = items.map((item) => ({ label: item.name, value: item.id }))
+    scheduleAccountOptions.value = items.map((item) => ({
+      label: item.name,
+      value: item.id,
+      modelCheckModels: [...item.modelCheckModels]
+    }))
   } catch (error) {
     console.error(error)
   } finally {
@@ -474,6 +480,7 @@ async function saveSchedule(input: ModelQualityScheduleMutationInput) {
     await modelChecksApi.saveQualitySchedule(input, modelCheckScopeParams.value)
     message.success('定时检查计划已保存')
     await loadSchedules()
+    scheduleFormResetToken.value += 1
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存定时检查计划失败'))
@@ -487,6 +494,7 @@ async function deleteSchedule(id: string) {
     await modelChecksApi.deleteQualitySchedule(id, modelCheckScopeParams.value)
     message.success('定时检查计划已删除')
     await loadSchedules()
+    scheduleFormResetToken.value += 1
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除定时检查计划失败'))

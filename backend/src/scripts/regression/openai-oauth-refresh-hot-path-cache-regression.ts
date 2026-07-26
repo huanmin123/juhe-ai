@@ -105,6 +105,7 @@ try {
       client_id: 'client-hot-path',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     schedulable: true,
     groupId: group.id
@@ -176,6 +177,7 @@ try {
       client_id: 'client-near-hot-path',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     schedulable: true,
     groupId: group.id
@@ -229,6 +231,7 @@ try {
       client_id: 'client-expired-hot-path',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     schedulable: true,
     groupId: group.id

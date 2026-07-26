@@ -26,6 +26,11 @@ const [databaseModule, tableMonitorRepository] = await Promise.all([
 
 try {
   assertTableMonitorAsyncSourceGuard()
+  assert.doesNotMatch(
+    readFileSync(new URL('../../storage/table-monitor.repository.ts', import.meta.url), 'utf8'),
+    /SELECT\s+COUNT\s*\(\s*\*\s*\)\s+AS\s+(?:total|count)\s+FROM\s+\$\{|SELECT\s+COUNT\s*\(\s*\*\s*\)\s+AS\s+(?:total|count)\s+FROM\s+"/i,
+    '表监控 repository 不得对被监控表执行精确 COUNT(*)'
+  )
 
   const businessDatabase = databaseModule.getBusinessDatabase()
   databaseModule.getCodexContextStateShardDatabase(0)
@@ -49,7 +54,7 @@ try {
   })()
   assert.equal(result.tableScanMode, 'cursor', '表监控默认采样应使用 cursor，避免误触发全库表扫描')
   assert(result.tableSnapshots > 0, '表监控默认采样应写入本轮 cursor 表快照')
-  assert(result.tableSnapshots < 20, `默认 cursor 采样不应一次采完业务库、数据集目录库、使用记录目录库、usage shard 和统计结果库所有表，实际 ${result.tableSnapshots}`)
+  assert(result.tableSnapshots <= 20, `默认 cursor 采样每个数据库角色最多处理 4 个 relation / shard-table pair，实际 ${result.tableSnapshots}`)
   assert(capturedSamplingSql.every((sql) => !/SELECT\s+COUNT\s*\(\s*\*\s*\)\s+AS\s+count\s+FROM/i.test(sql)), '表监控行数采样不应回退为精确 COUNT(*) 扫表')
 
   const sampledRows = databaseModule.getStatsDatabase()

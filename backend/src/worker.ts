@@ -4,7 +4,7 @@ import {
   type BackgroundWorkerQueueRuntime,
   type BackgroundWorkerRuntimeLogQueueRuntime
 } from './modules/background/background-ipc.js'
-import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
+import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, stopBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
 import {
   enqueueAuditLogsLocal,
   flushAuditLogQueueForShutdown,
@@ -38,7 +38,7 @@ import {
   startRecordMaintenanceRedisStreamConsumer,
   stopRecordMaintenanceRedisStreamConsumer
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
-import { getRuntimeLogFileImportRuntime, startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
+import { getRuntimeLogFileImportRuntime, startRuntimeLogFileImport, stopRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueUsageRecordsLocal,
   flushUsageRecordQueueForShutdown,
@@ -432,6 +432,14 @@ async function exitAfterWorkerQueueFlush(exitCode: number): Promise<never> {
 }
 
 async function flushWorkerQueuesForShutdown(): Promise<void> {
+  const backgroundJobsDrain = await stopBackgroundJobs()
+  if (!backgroundJobsDrain.drained) {
+    logger.warn({
+      event: 'background_jobs_shutdown_drain_timeout',
+      activeCount: backgroundJobsDrain.activeCount
+    }, '后台任务停止等待超时，将继续关闭 worker 队列')
+  }
+  await stopRuntimeLogFileImport({ drainTimeoutMs: 5_000 })
   if (isIngestWorker()) {
     await stopUsageRecordRedisStreamConsumer()
     await stopOperationLogRedisStreamConsumer()

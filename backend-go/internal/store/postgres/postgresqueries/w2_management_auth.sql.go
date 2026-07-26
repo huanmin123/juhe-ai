@@ -124,6 +124,57 @@ func (q *Queries) CompleteManagementLogin(ctx context.Context, arg CompleteManag
 	return i, err
 }
 
+const findManagementCurrentUserProfile = `-- name: FindManagementCurrentUserProfile :one
+SELECT
+  id,
+  username,
+  display_name,
+  description,
+  role,
+  status,
+  must_change_password,
+  image_generation_enabled,
+  last_login_at,
+  created_at,
+  updated_at
+FROM juhe_business.system_accounts
+WHERE id = $1
+LIMIT 1
+`
+
+type FindManagementCurrentUserProfileRow struct {
+	ID                     string
+	Username               string
+	DisplayName            string
+	Description            pgtype.Text
+	Role                   string
+	Status                 string
+	MustChangePassword     bool
+	ImageGenerationEnabled bool
+	LastLoginAt            pgtype.Timestamptz
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+}
+
+func (q *Queries) FindManagementCurrentUserProfile(ctx context.Context, id string) (FindManagementCurrentUserProfileRow, error) {
+	row := q.db.QueryRow(ctx, findManagementCurrentUserProfile, id)
+	var i FindManagementCurrentUserProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.DisplayName,
+		&i.Description,
+		&i.Role,
+		&i.Status,
+		&i.MustChangePassword,
+		&i.ImageGenerationEnabled,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findManagementSessionByTokenHash = `-- name: FindManagementSessionByTokenHash :one
 SELECT
   ss.id,

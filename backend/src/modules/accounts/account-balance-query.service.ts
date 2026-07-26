@@ -42,6 +42,7 @@ interface AccountBalanceRequestContext {
   apiKey: string
   proxyUrl?: string
   deadlineAtMs: number
+  signal?: AbortSignal
 }
 
 export interface AccountBalanceBuiltinQueryResult {
@@ -63,6 +64,28 @@ interface AccountBalanceRefreshAttempt {
 type AccountBalanceRefreshMode = 'automatic' | 'manual'
 type AccountBalanceFailureKind = 'transient' | 'deterministic'
 
+export type AccountBalanceRefreshOutcome = 'refreshed' | 'lease_busy' | 'stale' | 'failed' | 'unsupported'
+
+export interface AccountBalanceRefreshResult {
+  outcome: AccountBalanceRefreshOutcome
+  snapshot: AccountBalanceSnapshot
+  persisted: boolean
+}
+
+interface AccountBalanceRefreshExecutionContext {
+  signal?: AbortSignal
+  deadlineAtMs?: number
+}
+
+interface AccountBalanceRefreshDependencies extends AccountBalanceRefreshExecutionContext {
+  mode?: AccountBalanceRefreshMode
+  query?: (
+    candidate: AccountBalanceRefreshCandidate,
+    context: AccountBalanceRefreshExecutionContext
+  ) => Promise<AccountBalanceSnapshot>
+  resolveProxyUrl?: (proxyProfileId: string) => Promise<string | undefined>
+}
+
 class AccountBalanceQueryFailure extends Error {
   constructor(readonly kind: AccountBalanceFailureKind, message: string) {
     super(message)
@@ -72,13 +95,17 @@ class AccountBalanceQueryFailure extends Error {
 
 export async function refreshAccountBalanceCandidate(
   candidate: AccountBalanceRefreshCandidate,
-  dependencies: {
-    mode?: AccountBalanceRefreshMode
-    query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot>
-    resolveProxyUrl?: (proxyProfileId: string) => Promise<string | undefined>
-  } = {}
+  dependencies: AccountBalanceRefreshDependencies = {}
 ): Promise<AccountBalanceSnapshot> {
+  return (await refreshAccountBalanceCandidateWithOutcome(candidate, dependencies)).snapshot
+}
+
+export async function refreshAccountBalanceCandidateWithOutcome(
+  candidate: AccountBalanceRefreshCandidate,
+  dependencies: AccountBalanceRefreshDependencies = {}
+): Promise<AccountBalanceRefreshResult> {
   if (!candidate) throw new Error('余额刷新账户不存在')
+  throwIfBalanceRefreshAborted(dependencies.signal)
   const leaseKey = `account-balance:${candidate.id}`
   const ownerId = `account-balance-${randomUUID()}`
   const startedAt = new Date().toISOString()
@@ -92,20 +119,29 @@ export async function refreshAccountBalanceCandidate(
   }
   const acquired = await acquireBalanceLease(leaseInput)
   if (!acquired) {
-    return await loadCurrentGenerationBalanceSnapshot(candidate)
-      ?? { status: 'refreshing', lastAttemptAt: startedAt }
+    return {
+      outcome: 'lease_busy',
+      snapshot: await loadCurrentGenerationBalanceSnapshot(candidate)
+        ?? { status: 'refreshing', lastAttemptAt: startedAt },
+      persisted: false
+    }
   }
 
   try {
+    throwIfBalanceRefreshAborted(dependencies.signal)
     const attempt = await resolveAccountBalanceRefreshAttempt(candidate, dependencies)
-    await persistBalanceRefreshIfCurrent(
+    const persisted = await persistBalanceRefreshIfCurrent(
       candidate,
       attempt.nextConfig,
       attempt.snapshot,
       attempt.nextRefreshAfter,
       dependencies.mode
     )
-    return attempt.snapshot
+    return {
+      outcome: persisted ? accountBalanceRefreshOutcome(attempt.snapshot) : 'stale',
+      snapshot: attempt.snapshot,
+      persisted
+    }
   } finally {
     await releaseBalanceLease(leaseKey, ownerId)
   }
@@ -113,19 +149,17 @@ export async function refreshAccountBalanceCandidate(
 
 async function resolveAccountBalanceRefreshAttempt(
   candidate: AccountBalanceRefreshCandidate,
-  dependencies: {
-    mode?: AccountBalanceRefreshMode
-    query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot>
-    resolveProxyUrl?: (proxyProfileId: string) => Promise<string | undefined>
-  }
+  dependencies: AccountBalanceRefreshDependencies
 ): Promise<AccountBalanceRefreshAttempt> {
+  throwIfBalanceRefreshAborted(dependencies.signal)
   const resolvedProxyUrl = dependencies.query || !candidate.proxyProfileId
     ? undefined
     : (await (dependencies.resolveProxyUrl ?? resolveProxyUrlForProfileAsync)(candidate.proxyProfileId) ?? null)
+  throwIfBalanceRefreshAborted(dependencies.signal)
   try {
     const resolution = dependencies.query
-      ? { snapshot: await dependencies.query(candidate) }
-      : await queryAccountBalanceResolution(candidate, resolvedProxyUrl)
+      ? { snapshot: await dependencies.query(candidate, balanceRefreshExecutionContext(dependencies)) }
+      : await queryAccountBalanceResolution(candidate, resolvedProxyUrl, dependencies)
     const completedAt = new Date().toISOString()
     const successful = isSuccessfulBalanceSnapshot(resolution.snapshot)
     const snapshot: AccountBalanceSnapshot = {
@@ -191,8 +225,11 @@ function nextBalanceRefreshAfter(intervalMinutes: number): string {
   return new Date(Date.now() + intervalMinutes * 60_000).toISOString()
 }
 
-export async function queryAccountBalance(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceSnapshot> {
-  return (await queryAccountBalanceResolution(candidate)).snapshot
+export async function queryAccountBalance(
+  candidate: AccountBalanceQueryCandidate,
+  executionContext: AccountBalanceRefreshExecutionContext = {}
+): Promise<AccountBalanceSnapshot> {
+  return (await queryAccountBalanceResolution(candidate, undefined, executionContext)).snapshot
 }
 
 export async function testAccountBalanceCandidate(
@@ -223,16 +260,17 @@ export async function testAccountBalanceCandidate(
 
 async function queryAccountBalanceResolution(
   candidate: AccountBalanceQueryCandidate,
-  resolvedProxyUrl?: string | null
+  resolvedProxyUrl?: string | null,
+  executionContext: AccountBalanceRefreshExecutionContext = {}
 ): Promise<AccountBalanceQueryResolution> {
   if (candidate.config.adapter === 'builtin') {
-    const result = await queryBuiltinAccountBalance(candidate, { resolvedProxyUrl })
+    const result = await queryBuiltinAccountBalance(candidate, { resolvedProxyUrl, ...executionContext })
     return {
       snapshot: result.snapshot,
       ...(isSuccessfulBalanceSnapshot(result.snapshot) ? { preferredBuiltinAdapter: result.adapter } : {})
     }
   }
-  const context = await accountBalanceRequestContext(candidate, resolvedProxyUrl)
+  const context = await accountBalanceRequestContext(candidate, resolvedProxyUrl, executionContext)
   const customConfig = candidate.config.custom
   if (!customConfig) throw deterministicBalanceError('自定义余额查询配置缺失')
   const target = new URL(customConfig.path, context.baseUrl)
@@ -246,17 +284,22 @@ export async function queryBuiltinAccountBalance(
   dependencies: {
     queryAdapter?: (candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => Promise<AccountBalanceSnapshot>
     resolvedProxyUrl?: string | null
+    signal?: AbortSignal
+    deadlineAtMs?: number
   } = {}
 ): Promise<AccountBalanceBuiltinQueryResult> {
   if (candidate.config.adapter !== 'builtin') throw deterministicBalanceError('账户未配置内置余额适配')
   const adapters = preferredBuiltinAdapterOrder(candidate.config.preferredBuiltinAdapter)
-  const context = dependencies.queryAdapter ? undefined : await accountBalanceRequestContext(candidate, dependencies.resolvedProxyUrl)
+  const context = dependencies.queryAdapter
+    ? undefined
+    : await accountBalanceRequestContext(candidate, dependencies.resolvedProxyUrl, dependencies)
   const queryAdapter = dependencies.queryAdapter
     ?? ((_candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => queryBuiltinAdapter(context as AccountBalanceRequestContext, adapter))
   let transientError: unknown
   let deterministicError: unknown
   let unsupportedResult: AccountBalanceBuiltinQueryResult | undefined
   for (const adapter of adapters) {
+    throwIfBalanceRefreshAborted(dependencies.signal)
     try {
       const snapshot = await queryAdapter(candidate, adapter)
       if (snapshot.status === 'fresh' || snapshot.status === 'unlimited') {
@@ -293,8 +336,10 @@ export async function queryBuiltinAccountBalance(
 
 async function accountBalanceRequestContext(
   candidate: Pick<AccountBalanceRefreshCandidate, 'credentials' | 'proxyProfileId'>,
-  resolvedProxyUrl?: string | null
+  resolvedProxyUrl?: string | null,
+  executionContext: AccountBalanceRefreshExecutionContext = {}
 ): Promise<AccountBalanceRequestContext> {
+  throwIfBalanceRefreshAborted(executionContext.signal)
   const baseUrlText = typeof candidate.credentials.base_url === 'string' ? candidate.credentials.base_url.trim() : ''
   if (!baseUrlText) throw deterministicBalanceError('账户未配置 Base URL')
   let baseUrl: URL
@@ -309,7 +354,17 @@ async function accountBalanceRequestContext(
     : candidate.proxyProfileId
       ? await resolveProxyUrlForProfileAsync(candidate.proxyProfileId)
       : undefined
-  return { baseUrl, apiKey, proxyUrl, deadlineAtMs: Date.now() + requestTimeoutMs }
+  throwIfBalanceRefreshAborted(executionContext.signal)
+  const localDeadlineAtMs = Date.now() + requestTimeoutMs
+  return {
+    baseUrl,
+    apiKey,
+    proxyUrl,
+    deadlineAtMs: executionContext.deadlineAtMs === undefined
+      ? localDeadlineAtMs
+      : Math.min(localDeadlineAtMs, executionContext.deadlineAtMs),
+    signal: executionContext.signal
+  }
 }
 
 async function queryBuiltinAdapter(context: AccountBalanceRequestContext, adapter: AccountBalanceBuiltinAdapter): Promise<AccountBalanceSnapshot> {
@@ -438,15 +493,17 @@ async function releaseBalanceLease(leaseKey: string, ownerId: string): Promise<v
 }
 
 async function requestJson(url: URL, context: AccountBalanceRequestContext): Promise<unknown> {
+  throwIfBalanceRefreshAborted(context.signal)
   const remainingMs = context.deadlineAtMs - Date.now()
   if (remainingMs <= 0) throw new UpstreamRequestTimeoutError('上游余额查询超时')
+  const deadlineSignal = AbortSignal.timeout(remainingMs)
   const response = await requestUpstream(url.toString(), {
     method: 'GET',
     headers: new Headers({ authorization: `Bearer ${context.apiKey}`, accept: 'application/json' }),
     proxyUrl: context.proxyUrl,
     timeoutMs: remainingMs,
     requestTimeoutMs: remainingMs,
-    signal: AbortSignal.timeout(remainingMs)
+    signal: context.signal ? AbortSignal.any([context.signal, deadlineSignal]) : deadlineSignal
   })
   if (!response.ok) throw transientBalanceError(`上游余额接口返回非成功响应（HTTP ${response.status}）`)
   if (!response.body) throw deterministicBalanceError('上游余额接口响应为空')
@@ -555,4 +612,25 @@ function accountBalanceFailureKind(error: unknown): AccountBalanceFailureKind {
     return 'transient'
   }
   return 'transient'
+}
+
+function balanceRefreshExecutionContext(
+  dependencies: AccountBalanceRefreshExecutionContext
+): AccountBalanceRefreshExecutionContext {
+  return {
+    ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+    ...(dependencies.deadlineAtMs === undefined ? {} : { deadlineAtMs: dependencies.deadlineAtMs })
+  }
+}
+
+function throwIfBalanceRefreshAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new UpstreamRequestAbortedError('上游余额刷新已取消')
+}
+
+function accountBalanceRefreshOutcome(snapshot: AccountBalanceSnapshot): AccountBalanceRefreshOutcome {
+  if (snapshot.status === 'unsupported') return 'unsupported'
+  if (snapshot.status === 'failed') return 'failed'
+  if (snapshot.lastTransientFailureAt && snapshot.lastTransientFailureAt === snapshot.lastAttemptAt) return 'stale'
+  if (snapshot.status === 'pending' || snapshot.status === 'refreshing') return 'stale'
+  return 'refreshed'
 }

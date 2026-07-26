@@ -77,6 +77,7 @@ export interface ModelCheckAccountOption {
   providerProtocolProfileId: string
   protocolCode?: string
   protocolVersion?: string
+  modelCheckModels: string[]
 }
 
 export interface ModelCheckRunPayload {
@@ -117,6 +118,10 @@ export interface ModelQualitySchedule {
   providerCode?: string
   model: string
   intervalMinutes: number
+  profile: ModelCheckProfile
+  penaltyThreshold: number
+  penaltyAction: ModelQualityPenaltyAction
+  recoveryIntervalMinutes: number
   enabled: boolean
   revision: number
   nextRunAt: string
@@ -139,6 +144,7 @@ export interface ModelQualityScheduleListResult {
 
 export interface ModelQualityPolicySnapshot {
   policyRevision: number
+  configSource?: 'manual' | 'schedule'
   profile: ModelCheckProfile
   manualEnforcementEnabled: boolean
   threshold: number
@@ -186,6 +192,10 @@ export interface ModelQualityScheduleMutationInput {
   accountId: string
   model: string
   intervalMinutes: number
+  profile: ModelCheckProfile
+  penaltyThreshold: number
+  penaltyAction: ModelQualityPenaltyAction
+  recoveryIntervalMinutes: number
   enabled?: boolean
   expectedRevision?: number
 }

@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
+import { pinScheduledJobLeaseInTransaction, ScheduledJobLeaseLostError, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import { dateKey } from './usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys, hotUsageStatsRanges } from './usage-stats-window-helpers.js'
 import {
@@ -100,7 +101,8 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(
   timezone: string,
   yieldToEventLoop?: () => Promise<void>,
   previousSourceWatermark?: string,
-  sourceWatermark?: string
+  sourceWatermark?: string,
+  scheduledLease?: ScheduledJobLeaseFence
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
@@ -111,6 +113,7 @@ export async function refreshUsageScopeRangeWindowSnapshotsAsync(
   const refreshStartDate = dates[refreshStartIndex]
   for (const range of ranges.filter((item) => item.endDate >= refreshStartDate)) {
       await client.transaction(async (tx) => {
+        await pinScheduledLeaseIfPresent(tx, scheduledLease)
         await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
         await tx.execute(`
           INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
@@ -279,13 +282,15 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
   client: DatabaseClient,
   updatedAt: string,
   timezone: string,
-  yieldToEventLoop?: () => Promise<void>
+  yieldToEventLoop?: () => Promise<void>,
+  scheduledLease?: ScheduledJobLeaseFence
 ): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const ranges = hotUsageStatsRanges(timezone, todayKey).filter((range) => range.endDate === todayKey)
   if (!ranges.length) return
   for (const range of ranges) {
     await client.transaction(async (tx) => {
+      await pinScheduledLeaseIfPresent(tx, scheduledLease)
       await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
       await tx.execute(`
         INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
@@ -357,7 +362,7 @@ export async function refreshUsageScopeRangeTodayWindowSnapshotsAsync(
     })
     await yieldToEventLoop?.()
   }
-  await refreshPendingUsageScopeRangeWindowRequestsAsync(client, updatedAt, yieldToEventLoop)
+  await refreshPendingUsageScopeRangeWindowRequestsAsync(client, updatedAt, yieldToEventLoop, scheduledLease)
 }
 
 async function refreshPendingUsageScopeRangeWindowRequests(
@@ -384,19 +389,21 @@ async function refreshPendingUsageScopeRangeWindowRequests(
 async function refreshPendingUsageScopeRangeWindowRequestsAsync(
   client: DatabaseClient,
   updatedAt: string,
-  yieldToEventLoop?: () => Promise<void>
+  yieldToEventLoop?: () => Promise<void>,
+  scheduledLease?: ScheduledJobLeaseFence
 ): Promise<void> {
   const requests = await listPendingUsageRangeWindowRequestsAsync(client, 'usage_scope')
   for (const request of requests) {
-    await markUsageRangeWindowRequestProcessingAsync(client, request.id, updatedAt)
+    await runFencedTransaction(client, scheduledLease, (tx) => markUsageRangeWindowRequestProcessingAsync(tx, request.id, updatedAt))
     try {
       await refreshUsageScopeRangeWindowRequestAsync(client, updatedAt, {
         startDate: request.start_date,
         endDate: request.end_date
-      })
-      await markUsageRangeWindowRequestCompletedAsync(client, request.id, updatedAt)
+      }, scheduledLease)
+      await runFencedTransaction(client, scheduledLease, (tx) => markUsageRangeWindowRequestCompletedAsync(tx, request.id, updatedAt))
     } catch (error) {
-      await markUsageRangeWindowRequestFailedAsync(client, request.id, error instanceof Error ? error.message : String(error), updatedAt)
+      if (error instanceof ScheduledJobLeaseLostError) throw error
+      await runFencedTransaction(client, scheduledLease, (tx) => markUsageRangeWindowRequestFailedAsync(tx, request.id, error instanceof Error ? error.message : String(error), updatedAt))
     }
     await yieldToEventLoop?.()
   }
@@ -487,9 +494,11 @@ function refreshUsageScopeRangeWindowRequest(
 async function refreshUsageScopeRangeWindowRequestAsync(
   client: DatabaseClient,
   updatedAt: string,
-  range: { startDate: string; endDate: string }
+  range: { startDate: string; endDate: string },
+  scheduledLease?: ScheduledJobLeaseFence
 ): Promise<void> {
   await client.transaction(async (tx) => {
+    await pinScheduledLeaseIfPresent(tx, scheduledLease)
     await tx.execute(`DELETE FROM ${statsTable(tx, 'usage_scope_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
     await tx.execute(`
       INSERT INTO ${statsTable(tx, 'usage_scope_range_windows')} (
@@ -662,12 +671,13 @@ export function refreshAuthorizationUsageRangeWindowSnapshots(database: Database
   }
 }
 
-export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>): Promise<void> {
+export async function refreshAuthorizationUsageRangeWindowSnapshotsAsync(client: DatabaseClient, updatedAt: string, timezone: string, yieldToEventLoop?: () => Promise<void>, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   const todayKey = dateKey(new Date(), timezone)
   const ranges = hotUsageStatsRanges(timezone, todayKey)
   if (!ranges.length) return
   for (const range of ranges) {
       await client.transaction(async (tx) => {
+        await pinScheduledLeaseIfPresent(tx, scheduledLease)
         await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_team_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
         await tx.execute(`DELETE FROM ${statsTable(tx, 'authorization_user_usage_range_windows')} WHERE end_date = ? AND start_date = ?`, [range.endDate, range.startDate])
         await tx.execute(`
@@ -1295,4 +1305,19 @@ function clearTemporaryRangeWindowTable(database: DatabaseSync, tableName: strin
 
 function statsTable(client: DatabaseClient, tableName: string): string {
   return client.dialect.qualifyTable('juhe_stats', tableName)
+}
+
+async function pinScheduledLeaseIfPresent(client: DatabaseClient, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
+  if (scheduledLease) await pinScheduledJobLeaseInTransaction(client, scheduledLease)
+}
+
+async function runFencedTransaction<T>(
+  client: DatabaseClient,
+  scheduledLease: ScheduledJobLeaseFence | undefined,
+  operation: (tx: DatabaseClient) => Promise<T>
+): Promise<T> {
+  return client.transaction(async (tx) => {
+    await pinScheduledLeaseIfPresent(tx, scheduledLease)
+    return await operation(tx)
+  })
 }

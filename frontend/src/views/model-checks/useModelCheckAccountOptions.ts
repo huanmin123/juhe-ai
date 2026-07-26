@@ -304,7 +304,8 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
       providerCode: account.providerCode,
       providerProtocolProfileId: account.providerProtocolProfileId,
       protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion
+      protocolVersion: account.protocolVersion,
+      modelCheckModels: [...account.modelCheckModels]
     }
   }
 

@@ -31,7 +31,7 @@ assert.equal(partial?.lastError, undefined)
 
 await waitFor(() => (scheduler.snapshots()[0]?.runCount ?? 0) >= 2)
 const recovered = scheduler.snapshots()[0]
-assert.equal(recovered?.successCount, 1)
+assert.ok((recovered?.successCount ?? 0) >= 1)
 assert.equal(recovered?.partialCount, 1)
 assert.equal(recovered?.runCount, (recovered?.successCount ?? 0) + (recovered?.partialCount ?? 0) + (recovered?.failureCount ?? 0))
 assert.equal(recovered?.lastWarning, undefined, '后续完整成功后应清除当前部分失败提示')

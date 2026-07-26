@@ -282,6 +282,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementCaptchaHandler:                          managementHandlers.CaptchaHandler,
 		ManagementLoginHandler:                            managementHandlers.LoginHandler,
 		ManagementCurrentUserHandler:                      managementHandlers.CurrentUserHandler,
+		ManagementProfileDetailHandler:                    managementHandlers.ProfileDetailHandler,
 		ManagementProfileUpdateHandler:                    managementHandlers.ProfileUpdateHandler,
 		ManagementPasswordChangeHandler:                   managementHandlers.PasswordChangeHandler,
 		ManagementLogoutHandler:                           managementHandlers.LogoutHandler,
@@ -536,6 +537,7 @@ type managementAPIHandlers struct {
 	CaptchaHandler                          http.Handler
 	LoginHandler                            http.Handler
 	CurrentUserHandler                      http.Handler
+	ProfileDetailHandler                    http.Handler
 	ProfileUpdateHandler                    http.Handler
 	PasswordChangeHandler                   http.Handler
 	LogoutHandler                           http.Handler
@@ -870,6 +872,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		Store: store, Captcha: captchaService, Guard: loginGuardService, CaptchaDisabled: cfg.AuthCaptchaDisabled,
 	})
 	profileService := managementauth.NewProfileService(store)
+	profileDetailService := managementauth.NewProfileDetailService(store)
 	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewServiceWithOptions(managementproxies.ServiceOptions{
 		Store:       store,
@@ -1087,6 +1090,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		CaptchaHandler:                          httpapi.NewManagementCaptchaHandler(captchaService, cfg),
 		LoginHandler:                            httpapi.NewManagementLoginHandler(loginService, cfg),
 		CurrentUserHandler:                      httpapi.NewManagementCurrentUserHandler(authenticator),
+		ProfileDetailHandler:                    httpapi.NewManagementProfileDetailHandler(authenticator, profileDetailService),
 		ProfileUpdateHandler:                    httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
 		PasswordChangeHandler:                   httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
 		LogoutHandler:                           httpapi.NewManagementLogoutHandler(authenticator, cfg),

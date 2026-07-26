@@ -5,11 +5,17 @@ import { fileURLToPath } from 'node:url'
 
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const cooldownRetestSource = readSource('src/modules/background/account-api-key-cooldown-retest.service.ts')
+const accountProbeJobsSource = readSource('src/modules/background/account-probe-jobs.ts')
 const backgroundIpcSource = readSource('src/modules/background/background-ipc.ts')
 
 assert(
   cooldownRetestSource.includes('requestBackgroundWorkerDbService'),
   '账户内 API Key 冷却复测写回必须通过 worker -> server -> DB service typed operation'
+)
+assert(
+  accountProbeJobsSource.includes("type: 'list_account_api_key_runtime_states_due_for_probe'")
+    && !accountProbeJobsSource.includes('listAccountApiKeyRuntimeStatesDueForProbeAsync'),
+  '账户内 API Key 冷却复测候选 claim 必须通过 DB service，worker 不得直接写 SQLite 租约'
 )
 assert(
   !/\brecordAccountApiKeyRuntime(?:Failure|Success)\b/.test(cooldownRetestSource),

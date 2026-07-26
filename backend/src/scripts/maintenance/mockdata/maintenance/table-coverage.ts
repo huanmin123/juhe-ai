@@ -49,6 +49,7 @@ export async function createBusinessTableCoverageMockdata(created: CreatedMockda
   createGroupAuthorizationSettingsCoverage(created)
   createOpenAICompatibleStorageCoverage(created)
   createAvailabilityScheduleEventCoverage(created)
+  createModelQualityBusinessCoverage(created)
   createCodexContextStateCoverage(created)
   await createAccountCircuitIncidentCoverage(created)
 }
@@ -98,6 +99,114 @@ export function createStatsTableCoverageMockdata(created: CreatedMockdata, usage
   createBackgroundJobCoverage(database, now)
   createStatsDirtyQueueCoverage(database, created, now)
   createUsageRecordCleanupDeductionCoverage(database, created, usageRecords, now)
+  createModelQualityStatsCoverage(created, now)
+}
+
+function createModelQualityBusinessCoverage(created: CreatedMockdata): void {
+  const database = getBusinessDatabase()
+  const now = nowIso()
+  const systemAccountId = created.users.manager.id
+  const account = created.accounts.managerPrimary
+  database.prepare(`
+    INSERT INTO model_quality_policies (
+      system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold,
+      penalty_action, recovery_interval_minutes, created_at, updated_at
+    ) VALUES (?, 1, 'quick', 1, 70, 'fallback', 10, ?, ?)
+    ON CONFLICT(system_account_id) DO UPDATE SET
+      profile = excluded.profile,
+      manual_enforcement_enabled = excluded.manual_enforcement_enabled,
+      penalty_threshold = excluded.penalty_threshold,
+      penalty_action = excluded.penalty_action,
+      recovery_interval_minutes = excluded.recovery_interval_minutes,
+      updated_at = excluded.updated_at
+  `).run(systemAccountId, now, now)
+  database.prepare(`
+    INSERT INTO model_quality_schedules (
+      id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold,
+      penalty_action, recovery_interval_minutes, enabled, revision,
+      next_run_at, last_run_id, last_run_at, last_run_status, created_at, updated_at
+    ) VALUES (?, ?, ?, 'gpt-5.4', 30, 'full', 65, 'quality_isolate', 30, 0, 1, ?, ?, ?, 'completed', ?, ?)
+    ON CONFLICT(system_account_id, account_id) DO UPDATE SET
+      model = excluded.model,
+      interval_minutes = excluded.interval_minutes,
+      profile = excluded.profile,
+      penalty_threshold = excluded.penalty_threshold,
+      penalty_action = excluded.penalty_action,
+      recovery_interval_minutes = excluded.recovery_interval_minutes,
+      enabled = excluded.enabled,
+      last_run_id = excluded.last_run_id,
+      last_run_at = excluded.last_run_at,
+      last_run_status = excluded.last_run_status,
+      updated_at = excluded.updated_at
+  `).run(
+    `${idPrefix}model_quality_schedule_manager`,
+    systemAccountId,
+    account.id,
+    new Date(Date.now() + 30 * minuteMs).toISOString(),
+    `${idPrefix}model_check_run_0002`,
+    new Date(Date.now() - 30 * minuteMs).toISOString(),
+    now,
+    now
+  )
+  database.prepare(`
+    INSERT INTO account_quality_enforcements (
+      account_id, system_account_id, enforcement_id, generation, state, action, trigger_run_id,
+      config_source, config_source_id, policy_revision, profile, penalty_threshold,
+      recovery_interval_minutes, recovery_model, account_config_revision, before_status, after_status,
+      fallback_was_enabled, super_priority_was_enabled, started_at, recovery_due_at,
+      last_recovery_run_id, cleared_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 1, 'cleared', 'quality_isolate', ?, 'schedule', ?, 1, 'full', 65, 30, 'gpt-5.4', ?, 'active', 'quality_isolated',
+      0, 0, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      state = excluded.state,
+      action = excluded.action,
+      trigger_run_id = excluded.trigger_run_id,
+      last_recovery_run_id = excluded.last_recovery_run_id,
+      cleared_at = excluded.cleared_at,
+      updated_at = excluded.updated_at
+  `).run(
+    account.id,
+    systemAccountId,
+    `${idPrefix}model_quality_enforcement_manager`,
+    `${idPrefix}model_check_run_0002`,
+    `${idPrefix}model_quality_schedule_manager`,
+    Number(account.configRevision ?? 1),
+    new Date(Date.now() - 20 * minuteMs).toISOString(),
+    new Date(Date.now() - 10 * minuteMs).toISOString(),
+    `${idPrefix}model_quality_recovery_manager`,
+    new Date(Date.now() - 5 * minuteMs).toISOString(),
+    now,
+    now
+  )
+}
+
+function createModelQualityStatsCoverage(created: CreatedMockdata, now: string): void {
+  const account = created.accounts.managerPrimary
+  const statHour = new Date(Math.floor(Date.now() / (60 * minuteMs)) * 60 * minuteMs).toISOString()
+  getStatsDatabase().prepare(`
+    INSERT INTO account_quality_health_hourly (
+      account_id, system_account_id, provider_code, stat_hour, observed_at, model_check_run_id,
+      model, profile, score, threshold, level, error_code, error_message, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'gpt-5.4', 'quick', 35, 70, 'suspicious',
+      'mockdata_model_quality_failed', 'Mockdata 模拟模型质量不达标', ?)
+    ON CONFLICT(account_id, stat_hour) DO UPDATE SET
+      observed_at = excluded.observed_at,
+      model_check_run_id = excluded.model_check_run_id,
+      score = excluded.score,
+      threshold = excluded.threshold,
+      level = excluded.level,
+      error_code = excluded.error_code,
+      error_message = excluded.error_message,
+      updated_at = excluded.updated_at
+  `).run(
+    account.id,
+    created.users.manager.id,
+    account.providerCode,
+    statHour,
+    now,
+    `${idPrefix}model_check_run_0002`,
+    now
+  )
 }
 
 function createSystemSessionCoverage(created: CreatedMockdata): void {

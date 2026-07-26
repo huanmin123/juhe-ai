@@ -2,9 +2,11 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { resolveEffectiveUserRequestLimits, type GlobalUserRequestLimitSettings } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
 import { createSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { getSettingsAsync } from '../../storage/settings.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyCaptchaChallengeAsync } from './captcha.service.js'
 import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
@@ -140,6 +142,30 @@ authRouter.get('/me', requireSessionContext, (_req, res) => {
     role: context.role,
     mustChangePassword: context.mustChangePassword
   }))
+})
+
+authRouter.get('/profile', requireSessionContext, async (_req, res, next) => {
+  const context = getRequestAuthContext()
+  if (!context) {
+    res.status(401).json({ message: '请先登录' })
+    return
+  }
+  try {
+    const [account, settings] = await Promise.all([
+      findSystemAccountByIdAsync(context.systemAccountId),
+      getSettingsAsync()
+    ])
+    if (!account) {
+      res.status(404).json({ message: '系统账户不存在' })
+      return
+    }
+    res.json(ok({
+      ...account,
+      effectiveRequestLimits: resolveEffectiveUserRequestLimits(settings as unknown as GlobalUserRequestLimitSettings, account.requestLimits)
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 authRouter.patch('/me', requireSessionContext, async (req, res, next) => {

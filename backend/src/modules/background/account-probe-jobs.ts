@@ -1,6 +1,6 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { CooldownAccountRetestCursor } from '../../storage/account-cooldown-retest.repository.js'
-import { listAccountApiKeyRuntimeStatesDueForProbeAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import { listNormalRouteLatencyProbeCandidatesAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
 import { requestStatsWriter } from './background-stats-writer.js'
@@ -45,6 +45,8 @@ interface AccountQualityRefreshDeps {
   settingsNumber: SettingsNumberReader
   ensureUsageRecordsIngestedBeforeStatsAggregation: () => Promise<void>
   yieldToEventLoop: () => Promise<void>
+  signal: AbortSignal
+  scheduledLease?: ScheduledJobLeaseFence
 }
 
 interface AccountRetestDeps {
@@ -53,20 +55,25 @@ interface AccountRetestDeps {
 
 export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps): Promise<void> {
   try {
+    deps.signal.throwIfAborted()
     await deps.ensureUsageRecordsIngestedBeforeStatsAggregation()
+    deps.signal.throwIfAborted()
     await deps.yieldToEventLoop()
+    deps.signal.throwIfAborted()
     const windowMinutes = deps.settingsNumber('accountQualityWindowMinutes', 1, 60)
     const realtimeResult = await requestStatsWriter({
       type: 'refresh_account_quality',
       windowMinutes,
-      failureCandidateLimit: accountQualityFailurePrecheckBatchSize
-    })
+      failureCandidateLimit: accountQualityFailurePrecheckBatchSize,
+      scheduledLease: deps.scheduledLease
+    }, 45_000)
     const failureCandidates = realtimeResult.failureCandidates
     const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(accountQualityFailurePrecheckBatchSize)
     setAccountQualityFailurePrecheckQueueConcurrency(queueConcurrency)
     let failurePrecheckEnqueuedCount = 0
     let failurePrecheckSkippedQueuedCount = 0
     for (const candidate of failureCandidates) {
+      deps.signal.throwIfAborted()
       if (enqueueAccountQualityFailurePrecheck(candidate)) {
         failurePrecheckEnqueuedCount += 1
       } else {
@@ -203,7 +210,10 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
     queueConcurrency - queueBeforeScan.runningCount - queueBeforeScan.pendingCount
   )
   if (availableQueueSlots === 0) return
-  const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(Math.min(batchSize, availableQueueSlots))
+  const candidates = await requestBackgroundWorkerDbService({
+    type: 'list_account_api_key_runtime_states_due_for_probe',
+    limit: Math.min(batchSize, availableQueueSlots)
+  }, backgroundProbeDbServiceTimeoutMs) ?? []
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0

@@ -77,6 +77,64 @@
           </div>
         </section>
 
+        <section class="settings-section request-limit-section" :ref="(element) => setLazySectionElement(element, 'user-request-limit')">
+          <div class="section-heading">
+            <div>
+              <h3 class="section-title">
+                <span>用户请求限制</span>
+                <a-tooltip title="限制同一系统用户通过所有 API Key 发起的网关请求；0 表示无限。请求只在本机内存中同步判断，多节点计数由 Redis 后台合并。">
+                  <QuestionCircleOutlined class="help-icon" />
+                </a-tooltip>
+              </h3>
+              <p class="section-description">全局默认值，可在系统账户编辑中为单个用户继承、设为无限或单独覆盖。</p>
+            </div>
+          </div>
+
+          <a-alert
+            v-if="sectionErrors['user-request-limit']"
+            type="error"
+            show-icon
+            message="用户请求限制加载失败"
+            :description="sectionErrors['user-request-limit']"
+          >
+            <template #action>
+              <a-button size="small" @click="retrySection('user-request-limit')">重新加载</a-button>
+            </template>
+          </a-alert>
+          <a-skeleton v-else-if="!sectionReady['user-request-limit']" active :paragraph="{ rows: 2 }" />
+          <template v-else>
+            <a-alert
+              class="request-limit-alert"
+              type="info"
+              show-icon
+              message="性能优先"
+              description="网关请求不会等待 Redis 或数据库。多节点之间按秒级后台同步，因此高并发时允许短暂超额，但不会拖慢正常请求。"
+            />
+            <div class="settings-grid">
+              <div class="setting-item">
+                <a-form-item label="每分钟请求数" tooltip="0 表示无限；达到上限后，本分钟内的新请求立即返回 429。">
+                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerMinute" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
+                </a-form-item>
+              </div>
+              <div class="setting-item">
+                <a-form-item label="每日请求数" tooltip="0 表示无限；按系统使用统计时区的自然日计算。">
+                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerDay" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
+                </a-form-item>
+              </div>
+              <div class="setting-item">
+                <a-form-item label="每周请求数" tooltip="0 表示无限；按系统使用统计时区、周一作为一周起点。">
+                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerWeek" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
+                </a-form-item>
+              </div>
+              <div class="setting-item">
+                <a-form-item label="每月请求数" tooltip="0 表示无限；按系统使用统计时区的自然月计算。">
+                  <a-input-number v-model:value="systemForm.gatewayUserRequestLimitPerMonth" :min="0" :max="1000000000" :precision="0" :step="1" style="width: 100%" />
+                </a-form-item>
+              </div>
+            </div>
+          </template>
+        </section>
+
         <section class="settings-section" :ref="(element) => setLazySectionElement(element, 'account-health')">
           <div class="section-heading">
             <div>
@@ -367,18 +425,19 @@ const savingSystem = ref(false)
 const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
 const systemForm = reactive<SystemForm>({ ...defaultSystemSettings })
 const sectionReady = reactive<Record<ManagementSettingsSectionKey, boolean>>({
-  brand: false, 'gateway-core': false, 'account-health': false, 'api-rate-limit': false,
+  brand: false, 'gateway-core': false, 'user-request-limit': false, 'account-health': false, 'api-rate-limit': false,
   'account-test': false, 'cooldown-retest': false, 'data-retention': false
 })
 const sectionLoading = reactive<Record<ManagementSettingsSectionKey, boolean>>({ ...sectionReady })
 const sectionErrors = reactive<Record<ManagementSettingsSectionKey, string | undefined>>({
-  brand: undefined, 'gateway-core': undefined, 'account-health': undefined, 'api-rate-limit': undefined,
+  brand: undefined, 'gateway-core': undefined, 'user-request-limit': undefined, 'account-health': undefined, 'api-rate-limit': undefined,
   'account-test': undefined, 'cooldown-retest': undefined, 'data-retention': undefined
 })
 const sectionBaselines = reactive<Record<string, Record<string, unknown>>>({})
 const sectionFields: Record<ManagementSettingsSectionKey, readonly string[]> = {
   brand: ['appName', 'appIcon'],
   'gateway-core': ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'],
+  'user-request-limit': ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth'],
   'account-health': ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'],
   'api-rate-limit': ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'],
   'account-test': ['accountTestTaskConcurrency'],
@@ -695,6 +754,21 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.section-description {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.request-limit-section {
+  border-color: #dbe7f5;
+}
+
+.request-limit-alert {
+  margin-bottom: 16px;
 }
 
 .help-icon {

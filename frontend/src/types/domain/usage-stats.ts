@@ -337,7 +337,20 @@ export interface SystemMetricsRuntimeOverview {
     name: string
     workerRole?: ProcessRole
     intervalMs: number
+    initialDelayMs?: number
+    stablePhaseOffsetMs?: number
+    scheduleMode?: 'fixedRate' | 'fixedDelay'
+    overlapPolicy?: 'skip' | 'coalesceOne'
+    timeoutMs?: number
+    resourceLane?: string
     running: boolean
+    pending?: boolean
+    queuedForLane?: boolean
+    timedOut?: boolean
+    overdueMs?: number
+    nextRunAt?: string
+    runningSince?: string
+    lastScheduledAt?: string
     lastStartedAt?: string
     lastFinishedAt?: string
     lastSuccessAt?: string
@@ -345,13 +358,21 @@ export interface SystemMetricsRuntimeOverview {
     lastError?: string
     lastWarningAt?: string
     lastWarning?: string
+    lastSkipAt?: string
+    lastSkipReason?: string
+    lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
+    leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
     lastDurationMs?: number
     maxDurationMs?: number
+    consecutiveFailureCount?: number
     runCount: number
     successCount: number
     failureCount: number
     partialCount: number
     skippedCount: number
+    taskSkippedCount?: number
+    coalescedCount?: number
+    timedOutCount?: number
     retryQueue?: {
       name: string
       pendingCount: number

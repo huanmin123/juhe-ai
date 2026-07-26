@@ -20,6 +20,23 @@ LIMIT 1;
 DELETE FROM juhe_business.system_sessions
 WHERE token_hash = $1;
 
+-- name: FindManagementCurrentUserProfile :one
+SELECT
+  id,
+  username,
+  display_name,
+  description,
+  role,
+  status,
+  must_change_password,
+  image_generation_enabled,
+  last_login_at,
+  created_at,
+  updated_at
+FROM juhe_business.system_accounts
+WHERE id = $1
+LIMIT 1;
+
 -- name: TouchManagementSession :exec
 UPDATE juhe_business.system_sessions
 SET last_seen_at = sqlc.arg(last_seen_at)::timestamptz

@@ -62,6 +62,17 @@ func (s *Store) FindManagementSystemAccountPasswordByUsername(ctx context.Contex
 	}, true, nil
 }
 
+func (s *Store) FindManagementCurrentUserProfile(ctx context.Context, systemAccountID string) (port.ManagementSystemAccountSummary, bool, error) {
+	row, err := s.queries().FindManagementCurrentUserProfile(ctx, systemAccountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemAccountSummary{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementSystemAccountSummary{}, false, fmt.Errorf("find management current user profile: %w", err)
+	}
+	return managementCurrentUserProfileFromRow(row), true, nil
+}
+
 func (s *Store) CompleteManagementLogin(ctx context.Context, input port.ManagementLoginSessionInput) (port.ManagementLoginSessionResult, bool, error) {
 	row, err := s.queries().CompleteManagementLogin(ctx, postgresqueries.CompleteManagementLoginParams{
 		LoggedInAt:           pgtype.Timestamptz{Time: input.LoggedInAt.UTC(), Valid: true},
@@ -185,6 +196,22 @@ func managementPasswordAccountFromRow(row postgresqueries.UpdateManagementCurren
 	}
 }
 
+func managementCurrentUserProfileFromRow(row postgresqueries.FindManagementCurrentUserProfileRow) port.ManagementSystemAccountSummary {
+	return port.ManagementSystemAccountSummary{
+		ID:                     row.ID,
+		Username:               row.Username,
+		DisplayName:            row.DisplayName,
+		Description:            textValue(row.Description),
+		Role:                   row.Role,
+		Status:                 row.Status,
+		MustChangePassword:     row.MustChangePassword,
+		ImageGenerationEnabled: row.ImageGenerationEnabled,
+		LastLoginAt:            timestamptzPtr(row.LastLoginAt),
+		CreatedAt:              timestamptzValue(row.CreatedAt),
+		UpdatedAt:              timestamptzValue(row.UpdatedAt),
+	}
+}
+
 func managementLoginSessionResultFromRow(row postgresqueries.CompleteManagementLoginRow) (port.ManagementLoginSessionResult, error) {
 	if !row.SessionExpiresAt.Valid {
 		return port.ManagementLoginSessionResult{}, fmt.Errorf("management login session expires_at is null")
@@ -219,5 +246,6 @@ var _ port.ManagementSessionReader = (*Store)(nil)
 var _ port.ManagementSessionRevoker = (*Store)(nil)
 var _ port.ManagementSessionToucher = (*Store)(nil)
 var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
+var _ port.ManagementCurrentUserProfileReader = (*Store)(nil)
 var _ port.ManagementCurrentUserPasswordChanger = (*Store)(nil)
 var _ port.ManagementLoginStore = (*Store)(nil)

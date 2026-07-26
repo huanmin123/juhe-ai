@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 
 export type ChatContextState = 'ready' | 'compact_pending' | 'compacting' | 'compact_failed'
 export type ChatContextEntryKind = 'verbatim' | 'durable_memory' | 'task_state' | 'tool_result' | 'image_observation' | 'provider_compaction'
@@ -756,40 +757,46 @@ export async function recoverStaleChatContextCompactions(client: DatabaseClient,
   now: string
   staleClaimBefore: string
   limit: number
+  scheduledLease?: ScheduledJobLeaseFence
 }): Promise<number> {
   const limit = boundedInteger(input.limit, 'limit', 1, chatContextMaintenanceMaxBatchSize)
   const staleClaimBefore = normalizedTimestamp(input.staleClaimBefore, 'staleClaimBefore')
-  const rows = await client.query<{ id?: unknown; system_account_id?: unknown }>(`
-    SELECT id, system_account_id
-    FROM ${chatTable(client, 'chat_conversations')}
-    WHERE context_state = 'compacting' AND context_claimed_at <= ?
-    ORDER BY context_claimed_at ASC, id ASC
-    LIMIT ?${client.driver === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : ''}
-  `, [staleClaimBefore, limit])
-  let recovered = 0
-  for (const row of rows) {
-    const result = await client.execute(`
-      UPDATE ${chatTable(client, 'chat_conversations')}
-      SET context_state = 'compact_failed', context_claim_id = NULL,
-          context_claim_revision = NULL, context_claim_through_sequence = NULL,
-          context_claimed_at = NULL, context_retry_at = ?,
-          context_error_code = 'chat_context_compaction_stale',
-          context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
-          updated_at = ?
-      WHERE id = ? AND system_account_id = ?
-        AND context_state = 'compacting' AND context_claimed_at <= ?
-    `, [input.now, input.now, String(row.id ?? ''), String(row.system_account_id ?? ''), staleClaimBefore])
-    recovered += result.changes
-  }
-  return recovered
+  return client.transaction(async (tx) => {
+    if (input.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, input.scheduledLease)
+    const rows = await tx.query<{ id?: unknown; system_account_id?: unknown }>(`
+      SELECT id, system_account_id
+      FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE context_state = 'compacting' AND context_claimed_at <= ?
+      ORDER BY context_claimed_at ASC, id ASC
+      LIMIT ?${tx.driver === 'postgres' ? ' FOR UPDATE SKIP LOCKED' : ''}
+    `, [staleClaimBefore, limit])
+    let recovered = 0
+    for (const row of rows) {
+      const result = await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_conversations')}
+        SET context_state = 'compact_failed', context_claim_id = NULL,
+            context_claim_revision = NULL, context_claim_through_sequence = NULL,
+            context_claimed_at = NULL, context_retry_at = ?,
+            context_error_code = 'chat_context_compaction_stale',
+            context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
+            updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+          AND context_state = 'compacting' AND context_claimed_at <= ?
+      `, [input.now, input.now, String(row.id ?? ''), String(row.system_account_id ?? ''), staleClaimBefore])
+      recovered += result.changes
+    }
+    return recovered
+  })
 }
 
 export async function cleanupExpiredChatContextCheckpoints(client: DatabaseClient, input: {
   now: string
   limit: number
+  scheduledLease?: ScheduledJobLeaseFence
 }): Promise<{ deletedCheckpoints: number; hasMore: boolean }> {
   const limit = boundedInteger(input.limit, 'limit', 1, chatContextMaintenanceMaxBatchSize)
   return client.transaction(async (tx) => {
+    if (input.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, input.scheduledLease)
     const rows = await tx.query<{ id?: unknown; conversation_id?: unknown; status?: unknown }>(`
       SELECT id, conversation_id, status
       FROM ${chatTable(tx, 'chat_context_checkpoints')}

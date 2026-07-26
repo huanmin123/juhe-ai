@@ -23,6 +23,7 @@ const [databaseModule, usageStatsRepository] = await Promise.all([
 ])
 
 try {
+  const latestSampleBaseMs = Date.now() - 10_000
   const emptyOverview = usageStatsRepository.getSystemMetricsOverview({
     startDate: '2026-01-01',
     endDate: '2026-01-01',
@@ -43,7 +44,7 @@ try {
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1001,
-    sampledAt: '2026-01-01T00:00:00.000Z',
+    sampledAt: new Date(latestSampleBaseMs).toISOString(),
     eventLoopLagMs: 11,
     processRssBytes: 1100,
     processHeapUsedBytes: 510,
@@ -52,25 +53,25 @@ try {
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'db-service',
     processPid: 3001,
-    sampledAt: '2026-01-01T00:00:01.000Z',
+    sampledAt: new Date(latestSampleBaseMs + 1000).toISOString(),
     eventLoopLagMs: 31
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'ingest-worker',
     processPid: 5001,
-    sampledAt: '2026-01-01T00:00:03.000Z',
+    sampledAt: new Date(latestSampleBaseMs + 3000).toISOString(),
     eventLoopLagMs: 9
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'stats-worker',
     processPid: 5101,
-    sampledAt: '2026-01-01T00:00:04.000Z',
+    sampledAt: new Date(latestSampleBaseMs + 4000).toISOString(),
     eventLoopLagMs: 10
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'ops-worker',
     processPid: 5201,
-    sampledAt: '2026-01-01T00:00:05.000Z',
+    sampledAt: new Date(latestSampleBaseMs + 5000).toISOString(),
     eventLoopLagMs: 12
   })
 
@@ -95,6 +96,9 @@ try {
   assert.equal(latestStatusByRole.get('ops-worker')?.eventLoopLagMs, 12, 'ops-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本应按自身角色读取')
+
+  databaseModule.getStatsDatabase().prepare('DELETE FROM process_event_loop_samples').run()
+  databaseModule.getStatsDatabase().prepare('DELETE FROM process_event_loop_hourly').run()
 
   const recentMinute = new Date(Date.now() - 60_000)
   recentMinute.setSeconds(0, 0)

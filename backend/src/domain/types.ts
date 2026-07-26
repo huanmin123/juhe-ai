@@ -47,6 +47,31 @@ export function isSuperAdminRole(role: unknown): role is 'super_admin' {
   return role === 'super_admin'
 }
 export type SystemAccountStatus = 'active' | 'disabled'
+export type UserRequestLimitWindow = 'perMinute' | 'perDay' | 'perWeek' | 'perMonth'
+export type UserRequestLimitSource = 'global' | 'user'
+
+export interface UserRequestLimits {
+  perMinute?: number
+  perDay?: number
+  perWeek?: number
+  perMonth?: number
+  expiresOn?: string
+}
+
+export interface EffectiveUserRequestLimitValue {
+  limit: number
+  source: UserRequestLimitSource
+}
+
+export interface EffectiveUserRequestLimits {
+  perMinute: EffectiveUserRequestLimitValue
+  perDay: EffectiveUserRequestLimitValue
+  perWeek: EffectiveUserRequestLimitValue
+  perMonth: EffectiveUserRequestLimitValue
+  timezone: string
+  overrideExpiresOn?: string
+  overrideActive: boolean
+}
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'
 export type GroupUsageAccessType = 'owner' | 'authorized'
@@ -71,6 +96,7 @@ export interface SystemAccountSummary {
   status: SystemAccountStatus
   mustChangePassword: boolean
   imageGenerationEnabled: boolean
+  requestLimits?: UserRequestLimits
   lastLoginAt?: string
   createdAt: string
   updatedAt: string
@@ -1188,7 +1214,9 @@ export interface ModelCheckOptions {
   trustedComparison: ModelCheckTrustedComparisonStatus
 }
 
-export type ModelCheckAccountOption = Pick<AccountOptionSummary, 'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>
+export type ModelCheckAccountOption = Pick<AccountOptionSummary, 'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'> & {
+  modelCheckModels: string[]
+}
 
 export interface ModelCheckRunRequest {
   targetType: ModelCheckTargetType
@@ -1228,6 +1256,10 @@ export interface ModelQualitySchedule {
   providerCode?: string
   model: string
   intervalMinutes: number
+  profile: ModelCheckProfile
+  penaltyThreshold: number
+  penaltyAction: ModelQualityPenaltyAction
+  recoveryIntervalMinutes: number
   enabled: boolean
   revision: number
   nextRunAt: string
@@ -1250,6 +1282,7 @@ export interface ModelQualityScheduleListResult {
 
 export interface ModelQualityPolicySnapshot {
   policyRevision: number
+  configSource?: 'manual' | 'schedule'
   profile: ModelCheckProfile
   manualEnforcementEnabled: boolean
   threshold: number

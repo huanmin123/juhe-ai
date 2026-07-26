@@ -190,24 +190,23 @@ func filterRuntimeCandidates(ctx context.Context, filter RuntimeAvailabilityFilt
 }
 
 func runCandidate(ctx context.Context, refresh func(context.Context, port.AccountBalanceRefreshCandidate) error, candidate port.AccountBalanceRefreshCandidate) (err error) {
-	result := make(chan error, 1)
-	go func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				result <- fmt.Errorf("account balance refresh candidate panic: %v", recovered)
-			}
-		}()
-		result <- refresh(ctx, candidate)
+	// RefreshCandidate must own the lifetime of every resource it starts and
+	// honor ctx itself. Running it in a detached goroutine would let Run return
+	// while an uncooperative HTTP/driver call remained alive, so periodic runs
+	// could accumulate goroutines, sockets, and duplicate work without bound.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("account balance refresh candidate panic: %v", recovered)
+		}
 	}()
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	err = refresh(ctx, candidate)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			return candidateTimeoutError{accountID: candidate.ID}
 		}
-		return ctx.Err()
+		return ctxErr
 	}
+	return err
 }
 
 func boundedPositiveInt(value int, fallback int, maximum int) int {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import { ensurePostgresChatMessagePartitions } from './postgres-chat-message-partitions.js'
 import { commitChatAssetsToMessageInClient, expireChatAssetsForConversationInClient, removeChatAssetReferencesForMessage } from './chat-assets.repository.js'
 
@@ -1063,11 +1064,13 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
   interruptedBefore: string
   limit: number
   retentionDays: number
+  scheduledLease?: ScheduledJobLeaseFence
   isActiveTurn?: (ownerId: string, conversationId: string, turnId: string) => boolean
 }): Promise<ChatRetentionCleanupResult> {
   const limit = Math.max(2, Math.min(Math.trunc(input.limit), 1000))
   const retentionDays = input.retentionDays
   return client.transaction(async (tx) => {
+    if (input.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, input.scheduledLease)
     const affectedConversations = new Map<string, AffectedChatConversation>()
     const partitionCleanup = await dropExpiredPostgresChatPartitions(tx, input.now, retentionDays, affectedConversations)
     const advancedConversationKeys = partitionCleanup.advancedConversationKeys

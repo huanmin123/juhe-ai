@@ -8,50 +8,222 @@ import (
 func TestClassifyAutomaticProbeOutcome(t *testing.T) {
 	t.Parallel()
 
+	realHTTPS := "https://api.openai.com/v1/responses"
+	realHTTP := "http://localhost:8080/v1/chat/completions"
+	realAttempt := NewProbeUpstreamAttempt
+
 	tests := []struct {
 		name     string
 		evidence ProbeEvidence
 		want     ProbeOutcome
 	}{
 		{
-			name:     "success wins even when no response evidence was retained",
-			evidence: ProbeEvidence{Success: true},
-			want:     ProbeOutcomeCompleteSuccess,
+			name: "completed real response succeeds",
+			evidence: ProbeEvidence{
+				Success:         true,
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       FramingCompleteTransport(200),
+			},
+			want: ProbeOutcomeCompleteSuccess,
 		},
 		{
-			name:     "completed HTTPS response is account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "https://api.openai.com/v1/responses", ResponseObserved: true},
-			want:     ProbeOutcomeUpstreamFailure,
+			name: "completed authentication failure is business-neutral",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       FramingCompleteTransport(401),
+			},
+			want: ProbeOutcomeFramingCompleteNeutral,
 		},
 		{
-			name:     "framed diagnostic failure is neutral before response attribution",
-			evidence: ProbeEvidence{UpstreamURL: "https://api.openai.com/v1/responses", ResponseObserved: true, FramingComplete: true},
-			want:     ProbeOutcomeFramingCompleteNeutral,
+			name: "completed rate-limit response is business-neutral",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       FramingCompleteTransport(429),
+			},
+			want: ProbeOutcomeFramingCompleteNeutral,
 		},
 		{
-			name:     "completed HTTP response is account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "http://localhost:8080/v1/chat/completions", ResponseObserved: true},
-			want:     ProbeOutcomeUpstreamFailure,
+			name: "completed server error response is business-neutral",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTP),
+				Transport:       FramingCompleteTransport(503),
+			},
+			want: ProbeOutcomeFramingCompleteNeutral,
 		},
 		{
-			name:     "WHATWG HTTP URL with one slash remains account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "https:/api.example.test/v1/responses", ResponseObserved: true},
-			want:     ProbeOutcomeUpstreamFailure,
+			name: "connection failure before headers is account-attributable",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeUpstreamFailure,
 		},
 		{
-			name:     "local synthetic URL is never account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "account:capacity_limited", ResponseObserved: true},
-			want:     ProbeOutcomeTaskFailure,
+			name: "timeout before response is account-attributable",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       IncompleteTransport(ProbeTransportFailureTimeout),
+			},
+			want: ProbeOutcomeUpstreamFailure,
 		},
 		{
-			name:     "request without response header is not account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "https://api.openai.com/v1/responses"},
-			want:     ProbeOutcomeTaskFailure,
+			name: "read interruption after headers is account-attributable",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport: ProbeTransportEvidence{
+					kind:             probeTransportIncomplete,
+					transportFailure: ProbeTransportFailureRead,
+					statusCode:       200,
+				},
+			},
+			want: ProbeOutcomeUpstreamFailure,
 		},
 		{
-			name:     "malformed URL is not account attributable",
-			evidence: ProbeEvidence{UpstreamURL: "://not-a-url", ResponseObserved: true},
-			want:     ProbeOutcomeTaskFailure,
+			name: "transport evidence wins over contradictory success flag",
+			evidence: ProbeEvidence{
+				Success:         true,
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       IncompleteTransport(ProbeTransportFailureRead),
+			},
+			want: ProbeOutcomeUpstreamFailure,
+		},
+		{
+			name: "WHATWG HTTP URL with one slash remains a real attempt",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt("https:/api.example.test/v1/responses"),
+				Transport:       IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeUpstreamFailure,
+		},
+		{
+			name: "canceled real attempt is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       UnknownTransport(ProbeTaskFailureCanceled),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "cancellation wins over contradictory success flag",
+			evidence: ProbeEvidence{
+				Success:         true,
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       UnknownTransport(ProbeTaskFailureCanceled),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "executor failure after constructing a real URL is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       UnknownTransport(ProbeTaskFailureExecutor),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "no real upstream attempt is a task failure",
+			evidence: ProbeEvidence{
+				Transport: IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "local synthetic error is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt("account:capacity_limited"),
+				Transport:       IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "malformed attempted URL is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt("://not-a-url"),
+				Transport:       IncompleteTransport(ProbeTransportFailureTimeout),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "success without a real attempt is a task failure",
+			evidence: ProbeEvidence{
+				Success:   true,
+				Transport: FramingCompleteTransport(200),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "zero status cannot prove complete framing",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       FramingCompleteTransport(0),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "non-three-digit status cannot prove complete framing",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       FramingCompleteTransport(1000),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "framing and failure evidence cannot coexist",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport: ProbeTransportEvidence{
+					kind:             probeTransportFramingComplete,
+					transportFailure: ProbeTransportFailureRead,
+					statusCode:       200,
+				},
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "task failure marker cannot coexist with transport-incomplete",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport: ProbeTransportEvidence{
+					kind:             probeTransportIncomplete,
+					transportFailure: ProbeTransportFailureConnection,
+					taskFailure:      ProbeTaskFailureCanceled,
+				},
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "unknown transport failure kind is rejected",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       IncompleteTransport(ProbeTransportFailureKind(255)),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "missing incomplete failure kind is rejected",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport:       ProbeTransportEvidence{kind: probeTransportIncomplete},
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "unknown transport remains a task failure regardless of failure label",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+				Transport: ProbeTransportEvidence{
+					kind:             probeTransportUnknown,
+					transportFailure: ProbeTransportFailureConnection,
+				},
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "zero-value transport evidence is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt(realHTTPS),
+			},
+			want: ProbeOutcomeTaskFailure,
 		},
 	}
 

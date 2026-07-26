@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { stat as statFile } from 'node:fs/promises'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -5,13 +6,20 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { readPerformanceProcessEventLoopSamples } from '../../shared/performance-process-metrics-registry.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
-import { getSettings, getSettingsAsync, listSystemAccountsAsync, listUsageRecordsAsync } from '../../storage/repositories.js'
+import { getSettings, getSettingsAsync } from '../../storage/repositories.js'
 import {
   latestUsageStatsLagSecondsForRuntime,
   usageStatsCursorSafetyDelaySeconds,
   type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
-import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import {
+  releaseScheduledJobLease,
+  renewScheduledJobLease,
+  ScheduledJobLeaseLostError,
+  tryAcquireScheduledJobLease,
+  type ScheduledJobLeaseFence
+} from '../../storage/scheduled-job-lease.repository.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
@@ -45,7 +53,7 @@ import {
   runExpiredDeletedAccountCleanup
 } from './maintenance-cleanup-jobs.js'
 import { currentCpuPercent, currentMemoryMetrics, currentNetworkMetrics } from './system-metrics-sampler.service.js'
-import { WorkerScheduler } from './worker-scheduler.js'
+import { WorkerScheduler, type WorkerScheduledJobTaskResult } from './worker-scheduler.js'
 import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/record-queue.service.js'
 import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanup.constants.js'
 import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
@@ -54,15 +62,20 @@ import {
   backgroundTaskRunReconcileIntervalMs,
   runBackgroundTaskRunReconcile
 } from './background-task-run-reconcile.job.js'
-import { seedUsageRecordFirstPage } from '../usage-records/usage-record-first-page-cache.service.js'
+import { runUsageRecordFirstPagePrewarmJob } from './usage-record-first-page-prewarm.job.js'
 import {
   installDefaultScheduledAccountCircuitRecoveryResolver,
   runScheduledAccountCircuitRecovery
 } from './account-circuit-recovery.service.js'
 import { runGatewayAccountCircuitControlPlaneMaintenance } from '../gateway/runtime/account-circuit.service.js'
-import { runDueModelQualityRecoveries, runDueModelQualityScheduledChecks } from './model-quality-scheduled-check.service.js'
+import {
+  retryFailedModelQualityHealthSyncs,
+  runDueModelQualityRecoveries,
+  runDueModelQualityScheduledChecks
+} from './model-quality-scheduled-check.service.js'
 
 let started = false
+let startGeneration = 0
 let usageStatsAggregationRunning = false
 let modelTrustAggregationRunning = false
 let clientIpStatsAggregationRunning = false
@@ -70,7 +83,6 @@ let usageRankSnapshotsRefreshRunning = false
 let groupAccountStatsStartupDirtyMarked = false
 let missingRemoteProcessEventLoopSampleWarningCount = 0
 let usageHotWindowRefreshPending = false
-let usageHotWindowRefreshDrainScheduled = false
 let lastUsageHotWindowRefreshStartedAtMs = 0
 let lastUsageHotWindowDateKey: string | undefined
 interface UsageStatsAggregationSafety {
@@ -100,11 +112,18 @@ const usageRankSnapshotCoreStageNames: UsageRankSnapshotStageName[] = [
   'group_authorization_current_month_cost_rank',
   'ai_performance_summary_windows'
 ]
+const postgresUsageRankSnapshotCoreStageNames: UsageRankSnapshotStageName[] = usageRankSnapshotCoreStageNames.filter(
+  (stageName) => stageName !== 'ai_performance_summary_windows'
+)
+const aiPerformanceSummaryWindowStageNames: UsageRankSnapshotStageName[] = ['ai_performance_summary_windows']
 const systemMetricsTrendStageNames: UsageRankSnapshotStageName[] = ['system_metrics_trend_windows']
 const usageOverviewWindowStageNames: UsageRankSnapshotStageName[] = ['usage_overview_windows']
 const usageScopeRangeWindowStageNames: UsageRankSnapshotStageName[] = ['usage_scope_range_windows']
 const authorizationUsageRangeWindowStageNames: UsageRankSnapshotStageName[] = ['authorization_usage_range_windows']
-const scheduler = new WorkerScheduler()
+const scheduler = new WorkerScheduler({
+  stableInstanceId: runtimeConfig.instanceId,
+  workerRole: `${runtimeConfig.workerRole}:${runtimeConfig.workerReplicaIndex}`
+})
 const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
 const backgroundJobSettingsSnapshotTtlMs = 60_000
 let backgroundJobSettingsSnapshot: Record<string, unknown> | undefined
@@ -115,13 +134,125 @@ let sqliteSettingsTableMissingWarningLogged = false
 export function startBackgroundJobs(): void {
   if (started) return
   started = true
+  const generation = ++startGeneration
   if (runtimeConfig.databaseDriver === 'postgres') {
     void refreshBackgroundJobSettingsSnapshotIfNeeded()
-      .then(scheduleBackgroundJobs)
-      .catch(handleBackgroundJobsStartError)
+      .then(() => {
+        if (!started || generation !== startGeneration) return
+        scheduleBackgroundJobs()
+      })
+      .catch((error) => handleBackgroundJobsStartError(error, generation))
     return
   }
   scheduleBackgroundJobs()
+}
+
+export async function stopBackgroundJobs(): Promise<{ drained: boolean; activeCount: number }> {
+  if (!started) return { drained: true, activeCount: 0 }
+  started = false
+  startGeneration += 1
+  return await scheduler.stopAndDrain(10_000)
+}
+
+async function runWithPostgresScheduledLease(
+  jobName: string,
+  ttlMs: number,
+  signal: AbortSignal,
+  task: (signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence) => void | WorkerScheduledJobTaskResult | Promise<void | WorkerScheduledJobTaskResult>
+): Promise<void | WorkerScheduledJobTaskResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return await task(signal, undefined)
+
+  const ownerId = `${runtimeConfig.instanceId}:${runtimeConfig.workerRole}:${runtimeConfig.workerReplicaIndex}:${randomUUID()}`
+  const acquired = await tryAcquireScheduledJobLease({
+    jobName,
+    ownerId,
+    runId: randomUUID(),
+    ttlMs
+  })
+  if (!acquired.acquired) {
+    return { outcome: 'skipped', warning: `lease_busy:${acquired.reason}`, leaseState: 'busy' }
+  }
+
+  let lease = acquired.lease
+  let leaseLostError: ScheduledJobLeaseLostError | undefined
+  let stopped = false
+  let heartbeatTimer: NodeJS.Timeout | undefined
+  let heartbeatInFlight: Promise<void> | undefined
+  const controller = new AbortController()
+  const forwardAbort = () => controller.abort(signal.reason)
+  if (signal.aborted) forwardAbort()
+  else signal.addEventListener('abort', forwardAbort, { once: true })
+
+  const scheduleHeartbeat = () => {
+    if (stopped || controller.signal.aborted) return
+    heartbeatTimer = setTimeout(() => {
+      heartbeatInFlight = renewLease()
+    }, Math.max(secondMs, Math.trunc(ttlMs / 3)))
+    heartbeatTimer.unref()
+  }
+  const renewLease = async (): Promise<void> => {
+    try {
+      const renewed = await renewScheduledJobLease(lease, ttlMs)
+      if (!renewed) {
+        leaseLostError = new ScheduledJobLeaseLostError(lease)
+        controller.abort(leaseLostError)
+        return
+      }
+      lease = renewed
+      scheduleHeartbeat()
+    } catch (error) {
+      leaseLostError = error instanceof ScheduledJobLeaseLostError
+        ? error
+        : new ScheduledJobLeaseLostError(lease)
+      controller.abort(leaseLostError)
+      logger.error(errorLogFields(error, {
+        event: 'background_job_lease_renew_failed',
+        jobName,
+        leaseKey: lease.leaseKey
+      }), '后台任务租约续期失败，已请求取消当前任务')
+    } finally {
+      heartbeatInFlight = undefined
+    }
+  }
+
+  scheduleHeartbeat()
+  let result: void | WorkerScheduledJobTaskResult | undefined
+  let taskError: unknown
+  try {
+    result = await task(controller.signal, {
+      leaseKey: lease.leaseKey,
+      ownerId: lease.ownerId,
+      fencingToken: lease.fencingToken
+    })
+  } catch (error) {
+    taskError = error
+  } finally {
+    stopped = true
+    if (heartbeatTimer) clearTimeout(heartbeatTimer)
+    if (heartbeatInFlight) await heartbeatInFlight
+    signal.removeEventListener('abort', forwardAbort)
+  }
+
+  let released = false
+  if (!leaseLostError) {
+    try {
+      released = await releaseScheduledJobLease(lease)
+    } catch (error) {
+      logger.error(errorLogFields(error, {
+        event: 'background_job_lease_release_failed',
+        jobName,
+        leaseKey: lease.leaseKey
+      }), '后台任务完成但租约释放失败，等待 TTL 自动过期')
+    }
+  }
+  if (taskError) throw taskError
+  if (leaseLostError) throw leaseLostError
+  if (!released) {
+    return { outcome: 'partial', warning: '任务完成但租约释放未命中', leaseState: 'lost' }
+  }
+  return result
+    ? { ...result, leaseState: 'acquired' }
+    : { outcome: 'success', leaseState: 'acquired' }
 }
 
 function scheduleBackgroundJobs(): void {
@@ -141,58 +272,66 @@ function scheduleBackgroundJobs(): void {
         name: backgroundScheduledJobName('background-task-run-reconcile'),
         intervalMs: backgroundTaskRunReconcileIntervalMs,
         initialDelayMs: backgroundTaskRunReconcileInitialDelayMs,
+        scheduleMode: 'fixedDelay',
+        timeoutMs: 2 * minuteMs,
+        failureBackoff: { baseMs: 5 * secondMs, maxMs: 5 * minuteMs },
         task: runBackgroundTaskRunReconcile
       })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-trust-observation-aggregation'), intervalMs: 30 * secondMs, initialDelayMs: 12 * secondMs, task: runModelTrustAggregation })
+      scheduler.schedule({ name: backgroundScheduledJobName('model-trust-observation-aggregation'), intervalMs: 30 * secondMs, initialDelayMs: 12 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 3 * minuteMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('model-trust-observation-aggregation', 10 * minuteMs, signal, runModelTrustAggregation) })
       if (isPostgresHighPerformanceMode()) {
-        scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
-        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, task: runUsageStatsAggregation })
-        scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
-        scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
-        scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
-        scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('system-metrics-trend-windows-refresh'), systemMetricsTrendStageNames) })
-        scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
+        scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 4 * secondMs, overlapPolicy: 'coalesceOne', timeoutMs: 20 * secondMs, task: runSystemMetricsSample })
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, initialDelayMs: 3 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('usage-stats-aggregation', minuteMs, signal, runUsageStatsAggregation) })
+        scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runClientIpStatsAggregation })
+        scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runGroupAccountStatsRefresh })
+        scheduleUsageHotWindowRefreshJob()
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', postgresUsageRankSnapshotCoreStageNames, signal) })
+        scheduler.schedule({ name: backgroundScheduledJobName('ai-performance-summary-windows-refresh'), intervalMs: 5 * minuteMs, initialDelayMs: 3 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: minuteMs, failureBackoff: { baseMs: 15 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('ai-performance-summary-windows-refresh', aiPerformanceSummaryWindowStageNames, signal, 5 * minuteMs) })
+        scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames, signal) })
+        scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-overview-windows-refresh', usageOverviewWindowStageNames, signal) })
+        scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: authorizationUsageRangeWindowInitialDelayMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames, signal) })
         logger.info({
           event: 'background_cold_range_window_refresh_disabled',
           driver: runtimeConfig.databaseDriver,
           hotStages: usageScopeRangeWindowStageNames
         }, 'PG 高性能模式跳过在线冷历史范围窗口重刷，热窗口刷新保持今日范围数据新鲜')
-        scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation, yieldToEventLoop }) })
-        scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
+        scheduleAccountQualityRefreshJob()
+        scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('table-storage-monitor', 5 * minuteMs, signal, runTableStorageMonitor) })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
         return
       }
-      scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, task: runUsageStatsAggregation })
-      scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, task: runClientIpStatsAggregation })
-      scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, task: runGroupAccountStatsRefresh })
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-rank-snapshots-refresh'), usageRankSnapshotCoreStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('system-metrics-trend-windows-refresh'), systemMetricsTrendStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-overview-windows-refresh'), usageOverviewWindowStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: usageScopeRangeWindowInitialDelayMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('usage-scope-range-windows-refresh'), usageScopeRangeWindowStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: authorizationUsageRangeWindowInitialDelayMs, task: () => runUsageRankSnapshotsRefresh(backgroundScheduledJobName('authorization-usage-range-windows-refresh'), authorizationUsageRangeWindowStageNames) })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-quality-refresh'), intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs, initialDelayMs: 75 * secondMs, task: () => runAccountQualityRefresh({ settingsNumber, ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation, yieldToEventLoop }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runTableStorageMonitor })
+      scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 4 * secondMs, overlapPolicy: 'coalesceOne', timeoutMs: 20 * secondMs, task: runSystemMetricsSample })
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, initialDelayMs: 3 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('usage-stats-aggregation', minuteMs, signal, runUsageStatsAggregation) })
+      scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runClientIpStatsAggregation })
+      scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runGroupAccountStatsRefresh })
+      scheduleUsageHotWindowRefreshJob()
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', usageRankSnapshotCoreStageNames, signal) })
+      scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames, signal) })
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-overview-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 4 * minuteMs + 10 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-overview-windows-refresh', usageOverviewWindowStageNames, signal) })
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-scope-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: usageScopeRangeWindowInitialDelayMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-scope-range-windows-refresh', usageScopeRangeWindowStageNames, signal) })
+      scheduler.schedule({ name: backgroundScheduledJobName('authorization-usage-range-windows-refresh'), intervalMs: coldUsageRangeWindowRefreshIntervalMs, initialDelayMs: authorizationUsageRangeWindowInitialDelayMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('authorization-usage-range-windows-refresh', authorizationUsageRangeWindowStageNames, signal) })
+      scheduleAccountQualityRefreshJob()
+      scheduler.schedule({ name: backgroundScheduledJobName('table-storage-monitor'), intervalMs: 10 * minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('table-storage-monitor', 5 * minuteMs, signal, runTableStorageMonitor) })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
       installDefaultScheduledAccountCircuitRecoveryResolver()
-      scheduler.schedule({ name: backgroundScheduledJobName('chat-retention-cleanup'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runChatRetentionCleanup })
+      scheduler.schedule({ name: backgroundScheduledJobName('chat-retention-cleanup'), intervalMs: 10 * minuteMs, initialDelayMs: 270 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', resourceLane: 'storage-maintenance', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('chat-retention-cleanup', 5 * minuteMs, signal, runChatRetentionCleanup) })
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
       scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-scheduled-check'), intervalMs: minuteMs, initialDelayMs: 45 * secondMs, task: async () => { await runDueModelQualityScheduledChecks() } })
-      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, task: async () => { await runDueModelQualityRecoveries() } })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, task: () => runAccountBalanceRefresh() })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, stablePhaseWindowMs: 10 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'account-diagnostic-scanner', timeoutMs: 55 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-scheduled-check'), intervalMs: minuteMs, initialDelayMs: 45 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityScheduledChecks(signal), '模型质量定时检查') })
+      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityRecoveries(signal), '模型质量恢复检查') })
+      scheduler.schedule({ name: backgroundScheduledJobName('model-quality-health-sync-retry'), intervalMs: minuteMs, initialDelayMs: 58 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await retryFailedModelQualityHealthSyncs(signal), '模型质量健康同步补偿') })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
       scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: cooldownAccountRetestStartupDelayMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, task: runScheduledAccountCircuitRecovery })
-      scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
-      scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
+      scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runProxyLatencyRefresh(signal) })
+      scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 90 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runOpenAIOAuthAccessTokenRefresh(signal) })
       return
     default:
       return
@@ -200,21 +339,53 @@ function scheduleBackgroundJobs(): void {
 }
 
 function scheduleUsageIngestJobs(): void {
-  scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, task: runUsageRecordFirstPagePrewarm })
+  if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.workerReplicaIndex === 0) {
+    scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', resourceLane: 'stats-heavy', timeoutMs: 15 * secondMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: ({ signal }) => runUsageRecordFirstPagePrewarmJob({}, { signal }) })
+  }
   scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
   scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
   scheduler.schedule({
     name: backgroundScheduledJobName('data-retention-cleanup'),
     intervalMs: DATA_RETENTION_CLEANUP_INTERVAL_MINUTES * minuteMs,
-    initialDelayMs: 13 * minuteMs,
-    task: runDataRetentionCleanup
+    initialDelayMs: 450 * secondMs,
+    stablePhaseWindowMs: minuteMs,
+    scheduleMode: 'fixedDelay',
+    resourceLane: 'storage-maintenance',
+    timeoutMs: 5 * minuteMs,
+    failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs },
+    task: ({ signal }) => runWithPostgresScheduledLease('data-retention-cleanup', 10 * minuteMs, signal, runDataRetentionCleanup)
+  })
+}
+
+function scheduleAccountQualityRefreshJob(): void {
+  scheduler.schedule({
+    name: backgroundScheduledJobName('account-quality-refresh'),
+    intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 60, 3600) * secondMs,
+    initialDelayMs: 75 * secondMs,
+    stablePhaseWindowMs: 30 * secondMs,
+    overlapPolicy: 'coalesceOne',
+    resourceLane: 'stats-online',
+    timeoutMs: minuteMs,
+    failureBackoff: { baseMs: 5 * secondMs, maxMs: 5 * minuteMs },
+    task: ({ signal }) => runWithPostgresScheduledLease(
+      'account-quality-refresh',
+      5 * minuteMs,
+      signal,
+      (leaseSignal, scheduledLease) => runAccountQualityRefresh({
+        settingsNumber,
+        ensureUsageRecordsIngestedBeforeStatsAggregation: ensureUsageRecordsSafeForStatsAggregation,
+        yieldToEventLoop,
+        signal: leaseSignal,
+        scheduledLease
+      })
+    )
   })
 }
 
 function scheduleLogIngestJobs(): void {
   scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
   if (runtimeConfig.log.indexEnabled) {
-    scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+    scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 9 * minuteMs, stablePhaseWindowMs: minuteMs, scheduleMode: 'fixedDelay', resourceLane: 'storage-maintenance', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 30 * minuteMs }, task: runRuntimeLogIndexMaintenance })
   }
 }
 
@@ -228,23 +399,21 @@ async function runAccountCircuitControlPlaneMaintenance(): Promise<void> {
   }
 }
 
-async function runUsageRecordFirstPagePrewarm(): Promise<void> {
-  const accounts = await listSystemAccountsAsync()
-  const timezone = await usageStatsTimezoneAsync()
-  const today = dateKey(new Date(), timezone)
-  const startAt = startOfZonedDateKeyIso(today, timezone)
-  const tomorrow = dateKey(new Date(Date.now() + 24 * 60 * 60 * 1000), timezone)
-  const endAt = startOfZonedDateKeyIso(tomorrow, timezone)
-  for (const account of accounts) {
-    if (account.status !== 'active') continue
-    const access = { systemAccountId: account.id, role: 'user' as const }
-    const options = { page: 1, pageSize: 20, sortBy: 'createdAt' as const, sortOrder: 'desc' as const, trafficSource: 'gateway' as const, startAt, endAt }
-    const result = await listUsageRecordsAsync(access, options)
-    await seedUsageRecordFirstPage(access, options, result)
+function modelQualityBatchOutcome(
+  result: { completed: number; failed: number },
+  label: string
+): WorkerScheduledJobTaskResult {
+  if (result.failed > 0) {
+    return {
+      outcome: 'partial',
+      warning: `${label}部分完成：成功 ${result.completed}，失败 ${result.failed}`
+    }
   }
+  return { outcome: 'success' }
 }
 
-function handleBackgroundJobsStartError(error: unknown): void {
+function handleBackgroundJobsStartError(error: unknown, generation: number): void {
+  if (generation !== startGeneration || !started) return
   started = false
   logger.error(errorLogFields(error, { event: 'background_jobs_start_failed' }), '后台任务启动失败')
   setImmediate(() => { throw error })
@@ -279,11 +448,25 @@ function usageHotWindowRefreshMinIntervalMs(): number {
   return settingsNumber('usageHotWindowRefreshIntervalSeconds', 60, 3600) * secondMs
 }
 
+function scheduleUsageHotWindowRefreshJob(): void {
+  scheduler.schedule({
+    name: backgroundScheduledJobName('usage-hot-window-refresh'),
+    intervalMs: usageHotWindowRefreshMinIntervalMs(),
+    initialDelayMs: 25 * secondMs,
+    stablePhaseWindowMs: 10 * secondMs,
+    overlapPolicy: 'coalesceOne',
+    resourceLane: 'stats-heavy',
+    timeoutMs: usageHotWindowRefreshTimeoutMs + 5 * secondMs,
+    failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs },
+    task: ({ signal }) => runScheduledUsageHotWindowRefresh(signal)
+  })
+}
+
 export function getBackgroundJobRuntimeSnapshots() {
   return scheduler.snapshots()
 }
 
-async function runUsageStatsAggregation(): Promise<void> {
+async function runUsageStatsAggregation(_signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
   try {
@@ -296,9 +479,10 @@ async function runUsageStatsAggregation(): Promise<void> {
       batchSize,
       maxBatches,
       maxRunMs: usageStatsAggregationMaxRunMs,
-      safeCreatedBefore: safety.safeCreatedBefore
+      safeCreatedBefore: safety.safeCreatedBefore,
+      scheduledLease
     }, Math.max(10_000, usageStatsAggregationMaxRunMs + 5_000))
-    scheduleHotUsageWindowsAfterAggregation(result.processed)
+    if (result.processed > 0) usageHotWindowRefreshPending = true
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error
@@ -307,13 +491,24 @@ async function runUsageStatsAggregation(): Promise<void> {
   }
 }
 
-async function runModelTrustAggregation(): Promise<void> {
+async function runModelTrustAggregation(signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void | WorkerScheduledJobTaskResult> {
   if (modelTrustAggregationRunning) return
   modelTrustAggregationRunning = true
+  const startedAtMs = Date.now()
+  const maxRunMs = 2 * minuteMs
   try {
     for (let index = 0; index < 10; index += 1) {
-      const result = await requestStatsWriter({ type: 'aggregate_model_trust_observations', batchSize: 500 }) as { processed?: number }
+      throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
+      if (Date.now() - startedAtMs >= maxRunMs) {
+        return { outcome: 'partial', warning: `模型可信 observation 聚合达到 ${maxRunMs}ms 单轮预算` }
+      }
+      const result = await requestStatsWriter({
+        type: 'aggregate_model_trust_observations',
+        batchSize: 500,
+        scheduledLease
+      }, 45 * secondMs) as { processed?: number }
       if ((result.processed ?? 0) < 500) break
+      throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
       await yieldToEventLoop()
     }
   } catch (error) {
@@ -324,48 +519,55 @@ async function runModelTrustAggregation(): Promise<void> {
   }
 }
 
-function scheduleHotUsageWindowsAfterAggregation(processed: number): void {
-  void refreshHotUsageWindowsAfterAggregation(processed).catch((error) => {
-    logger.error(errorLogFields(error, {
-      event: 'background_usage_hot_window_refresh_schedule_failed',
-      processed
-    }), '热用量窗口刷新调度失败')
-  })
-}
-
-async function refreshHotUsageWindowsAfterAggregation(processed: number): Promise<void> {
+async function runScheduledUsageHotWindowRefresh(signal: AbortSignal): Promise<WorkerScheduledJobTaskResult> {
+  throwIfBackgroundJobAborted(signal, 'usage-hot-window-refresh')
   const todayKey = dateKey(new Date(), await usageStatsTimezoneAsync())
   const dateChanged = lastUsageHotWindowDateKey !== todayKey
-  lastUsageHotWindowDateKey = todayKey
-  if (processed <= 0 && !dateChanged && !usageHotWindowRefreshPending) {
-    return
+  if (runtimeConfig.databaseDriver !== 'postgres' && !dateChanged && !usageHotWindowRefreshPending) {
+    return { outcome: 'skipped', warning: 'no_pending_usage_window_refresh' }
   }
-  await runUsageHotWindowRefresh(dateChanged ? 'date_changed' : processed > 0 ? 'usage_stats_processed' : 'pending_retry')
+
+  const reason = dateChanged ? 'date_changed' : 'usage_stats_processed'
+  if (reason !== 'date_changed' && Date.now() - lastUsageHotWindowRefreshStartedAtMs < usageHotWindowRefreshMinIntervalMs()) {
+    return { outcome: 'skipped', warning: 'usage_window_refresh_throttled' }
+  }
+
+  const result = await runWithPostgresScheduledLease(
+    'usage-hot-window-refresh',
+    2 * minuteMs,
+    signal,
+    (leaseSignal, scheduledLease) => runUsageHotWindowRefresh(reason, todayKey, leaseSignal, scheduledLease)
+  )
+  return result ?? { outcome: 'success' }
 }
 
-async function runUsageHotWindowRefresh(reason: 'usage_stats_processed' | 'date_changed' | 'pending_retry'): Promise<void> {
-  const now = Date.now()
-  if (reason !== 'date_changed' && now - lastUsageHotWindowRefreshStartedAtMs < usageHotWindowRefreshMinIntervalMs()) {
-    usageHotWindowRefreshPending = true
-    return
-  }
+async function runUsageHotWindowRefresh(
+  reason: 'usage_stats_processed' | 'date_changed',
+  todayKey: string,
+  signal: AbortSignal,
+  scheduledLease?: ScheduledJobLeaseFence
+): Promise<WorkerScheduledJobTaskResult> {
+  throwIfBackgroundJobAborted(signal, usageHotWindowRefreshJobName)
   if (usageRankSnapshotsRefreshRunning) {
     usageHotWindowRefreshPending = true
     logger.debug({
       event: 'background_usage_hot_window_refresh_busy',
       reason
     }, '热用量窗口刷新等待已有窗口刷新结束')
-    return
+    return { outcome: 'skipped', warning: 'usage_rank_snapshot_refresh_busy' }
   }
 
   usageHotWindowRefreshPending = false
   usageRankSnapshotsRefreshRunning = true
-  lastUsageHotWindowRefreshStartedAtMs = now
+  lastUsageHotWindowDateKey = todayKey
+  lastUsageHotWindowRefreshStartedAtMs = Date.now()
   try {
     const result = await requestStatsWriter({
       type: 'refresh_hot_usage_windows',
-      jobName: usageHotWindowRefreshJobName
+      jobName: usageHotWindowRefreshJobName,
+      scheduledLease
     }, usageHotWindowRefreshTimeoutMs)
+    throwIfBackgroundJobAborted(signal, usageHotWindowRefreshJobName)
     if (result.skipped) {
       logger.debug({
         event: 'background_usage_hot_window_refresh_skipped',
@@ -374,7 +576,7 @@ async function runUsageHotWindowRefresh(reason: 'usage_stats_processed' | 'date_
         refreshDate: result.refreshDate,
         durationMs: result.durationMs
       }, '热用量窗口刷新无新增聚合数据，跳过本轮')
-      return
+      return { outcome: 'skipped', warning: result.skipReason ?? 'source_watermark_unchanged' }
     }
     const slowStages = result.stages.filter((stage) => stage.durationMs >= usageRankSnapshotSlowStageMs)
     if (slowStages.length > 0) {
@@ -394,21 +596,21 @@ async function runUsageHotWindowRefresh(reason: 'usage_stats_processed' | 'date_
       sourceWatermark: result.sourceWatermark,
       refreshDate: result.refreshDate
     }, '热用量窗口刷新完成')
+    return { outcome: 'success' }
   } catch (error) {
+    usageHotWindowRefreshPending = true
     logger.error(errorLogFields(error, { event: 'background_usage_hot_window_refresh_failed', reason }), '热用量窗口刷新失败')
+    throw error
   } finally {
     usageRankSnapshotsRefreshRunning = false
-    schedulePendingUsageHotWindowRefreshDrain()
   }
 }
 
-function schedulePendingUsageHotWindowRefreshDrain(): void {
-  if (!usageHotWindowRefreshPending || usageHotWindowRefreshDrainScheduled) return
-  usageHotWindowRefreshDrainScheduled = true
-  setImmediate(() => {
-    usageHotWindowRefreshDrainScheduled = false
-    void runUsageHotWindowRefresh('pending_retry')
-  })
+function throwIfBackgroundJobAborted(signal: AbortSignal, jobName: string): void {
+  if (!signal.aborted) return
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error(`后台任务已取消：${jobName}`)
 }
 
 async function runClientIpStatsAggregation(): Promise<void> {
@@ -672,24 +874,35 @@ function mergeProcessEventLoopSamples(samples: ReturnType<typeof buildProcessEve
   return [...latestByRole.values()]
 }
 
-async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {
+async function runOpenAIOAuthAccessTokenRefresh(signal?: AbortSignal): Promise<WorkerScheduledJobTaskResult> {
   try {
-    const result = await refreshDueOpenAIOAuthAccessTokens()
+    const result = await refreshDueOpenAIOAuthAccessTokens({ signal })
     if (result.refreshed > 0 || result.failed > 0 || result.exceptioned > 0 || result.cooldowned > 0) {
       logger.info({
         event: 'background_openai_oauth_access_token_refresh_completed',
         ...result
       }, 'OpenAI OAuth Access Token 刷新完成')
     }
+    if (result.failed > 0 || result.deferredBudget > 0) {
+      return {
+        outcome: 'partial',
+        warning: `OAuth 刷新部分完成：失败 ${result.failed}，预算延期 ${result.deferredBudget}`
+      }
+    }
+    return { outcome: 'success' }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_openai_oauth_access_token_refresh_failed' }), 'OpenAI OAuth Access Token 刷新失败')
     throw error
   }
 }
 
-async function runProxyLatencyRefresh(): Promise<void> {
+async function runProxyLatencyRefresh(signal?: AbortSignal): Promise<WorkerScheduledJobTaskResult> {
   try {
-    await refreshProxyLatencyBatch(proxyLatencyRefreshBatchSize)
+    const result = await refreshProxyLatencyBatch({ limit: proxyLatencyRefreshBatchSize, signal })
+    if (result.processedCount > 0 || result.warning) {
+      logger.info({ event: 'background_proxy_latency_refresh_completed', ...result }, '代理延迟刷新完成')
+    }
+    return result
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
     throw error
@@ -788,7 +1001,7 @@ async function fileSize(path: string): Promise<number> {
   }
 }
 
-async function runTableStorageMonitor(): Promise<void> {
+async function runTableStorageMonitor(_signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   try {
     await requestStatsWriter({
       type: 'collect_table_storage_snapshot',
@@ -796,7 +1009,8 @@ async function runTableStorageMonitor(): Promise<void> {
       options: {
       tableScanMode: 'cursor',
       maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 0, 100)
-      }
+      },
+      scheduledLease
     }, 20_000)
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')
@@ -804,7 +1018,18 @@ async function runTableStorageMonitor(): Promise<void> {
   }
 }
 
-async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRankSnapshotStageName[]): Promise<void> {
+async function runLeasedUsageRankSnapshotsRefresh(
+  jobName: Parameters<typeof backgroundScheduledJobName>[0],
+  stageNames: UsageRankSnapshotStageName[],
+  signal: AbortSignal,
+  leaseTtlMs = 15 * minuteMs
+): Promise<void | WorkerScheduledJobTaskResult> {
+  return await runWithPostgresScheduledLease(jobName, leaseTtlMs, signal, async (_leaseSignal, scheduledLease) => {
+    await runUsageRankSnapshotsRefresh(backgroundScheduledJobName(jobName), stageNames, scheduledLease)
+  })
+}
+
+async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRankSnapshotStageName[], scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   if (usageRankSnapshotsRefreshRunning) {
     logger.debug({
       event: 'background_usage_rank_snapshots_refresh_busy',
@@ -818,7 +1043,8 @@ async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRa
     const result = await requestStatsWriter({
       type: 'refresh_usage_rank_snapshots',
       stageNames,
-      jobName
+      jobName,
+      scheduledLease
     }, 30_000)
     if (result.skipped) {
       logger.debug({
@@ -858,7 +1084,6 @@ async function runUsageRankSnapshotsRefresh(jobName: string, stageNames: UsageRa
     throw error
   } finally {
     usageRankSnapshotsRefreshRunning = false
-    schedulePendingUsageHotWindowRefreshDrain()
   }
 }
 

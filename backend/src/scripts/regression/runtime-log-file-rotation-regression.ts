@@ -97,6 +97,26 @@ try {
   assert.ok(discoveredWithRotation.some((file) => file.path === rotatedPath), '角色 basename 必须保留并被轮转发现')
   assert.match(rotatedPath, /juhe-ai\.stats-worker\./, '轮转文件名必须包含角色 basename')
 
+  const performanceCurrentName = 'juhe-ai.log-worker.node-a.log'
+  const performanceCurrentPath = join(logDir, performanceCurrentName)
+  const performanceRotatedName = loggerModule.rotatedLogFileName(
+    performanceCurrentName,
+    new Date('2026-07-21T02:03:04.000Z'),
+    '00000000-0000-0000-0000-000000000003'
+  )
+  const performanceRotatedPath = join(logDir, performanceRotatedName)
+  writeFileSync(performanceCurrentPath, 'performance current\n')
+  writeFileSync(performanceRotatedPath, 'performance rotated\n')
+  const discoveredPerformanceFiles = await importerModule.discoverRuntimeLogFilesForTest()
+  assert.ok(
+    discoveredPerformanceFiles.some((file) => file.path === performanceCurrentPath && file.role === 'log-worker:node-a' && file.kind === 'current'),
+    'performance log-worker current 文件必须携带 instanceId 被发现'
+  )
+  assert.ok(
+    discoveredPerformanceFiles.some((file) => file.path === performanceRotatedPath && file.role === 'log-worker:node-a' && file.kind === 'rotated'),
+    'performance log-worker rotated 文件必须携带 instanceId 被发现'
+  )
+
   const result = await loggerModule.cleanupRotatedLogFilesForTest({
     directory: logDir,
     maxFiles: 0,

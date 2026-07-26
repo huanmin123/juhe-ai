@@ -38,6 +38,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           result_summary_json TEXT NOT NULL DEFAULT '{}',
           policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
           quality_decision_json TEXT NOT NULL DEFAULT '{}',
+          quality_health_sync_status TEXT CHECK (quality_health_sync_status IS NULL OR quality_health_sync_status IN ('applied', 'pending_retry', 'failed')),
           error_code TEXT,
           error_message TEXT,
           created_at TEXT NOT NULL,
@@ -431,6 +432,10 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_account_created ON model_check_runs(account_id, created_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_trigger_created ON model_check_runs(trigger_kind, created_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_quality_health_sync_retry
+      ON model_check_runs(quality_health_sync_status, updated_at, id)
+      WHERE quality_health_sync_status = 'failed';
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_model_created ON model_check_runs(system_account_id, model, created_at DESC, id DESC);
 

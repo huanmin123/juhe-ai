@@ -21,6 +21,10 @@ const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
   'accountCircuitConfirmationFailuresRequired',
+  'gatewayUserRequestLimitPerMinute',
+  'gatewayUserRequestLimitPerDay',
+  'gatewayUserRequestLimitPerWeek',
+  'gatewayUserRequestLimitPerMonth',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -83,12 +87,19 @@ const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
 type SystemSettingKey = typeof systemSettingKeys[number]
 type GlobalSettingKey = 'appName' | 'appIcon'
 type SettingValidator = (value: unknown, key: string) => unknown
+const compatibleSystemSettingDefaults: Partial<Record<SystemSettingKey, unknown>> = {
+  gatewayUserRequestLimitPerMinute: 0,
+  gatewayUserRequestLimitPerDay: 0,
+  gatewayUserRequestLimitPerWeek: 0,
+  gatewayUserRequestLimitPerMonth: 0
+}
 
 const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 export const managementSettingsSectionCatalog = {
   brand: { domain: 'global', keys: globalSettingKeys },
   'gateway-core': { domain: 'system', keys: ['gatewayTextRawBodyLimitMegabytes', 'accountCircuitConfirmationFailuresRequired', 'defaultTemporaryUnschedulableMinutes', 'temporaryUnschedulableRetryIntervalSeconds', 'temporaryUnschedulableRetryAttempts', 'textFirstResponseTimeoutSeconds', 'textStreamIdleTimeoutSeconds', 'textUncommittedAttemptMaxLifetimeSeconds', 'imageFirstResponseTimeoutSeconds', 'imageStreamIdleTimeoutSeconds', 'imageUncommittedAttemptMaxLifetimeSeconds', 'imageRequestWallTimeoutSeconds', 'chatImageGenerationTotalTimeoutSeconds', 'noAvailableAccountWaitTimeoutSeconds'] as const },
+  'user-request-limit': { domain: 'system', keys: ['gatewayUserRequestLimitPerMinute', 'gatewayUserRequestLimitPerDay', 'gatewayUserRequestLimitPerWeek', 'gatewayUserRequestLimitPerMonth'] as const },
   'account-health': { domain: 'system', keys: ['accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes', 'accountHealthCheckBatchSize', 'accountHealthCheckFailureThreshold'] as const },
   'api-rate-limit': { domain: 'system', keys: ['systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds', 'systemApiRateLimitIpWritePerMinute', 'systemApiRateLimitIpWriteBurstPer10Seconds', 'systemApiRateLimitUserReadPerMinute', 'systemApiRateLimitUserWritePerMinute'] as const },
   'account-test': { domain: 'system', keys: ['accountTestTaskConcurrency'] as const },
@@ -99,6 +110,10 @@ export type ManagementSettingsSectionKey = keyof typeof managementSettingsSectio
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
   accountCircuitConfirmationFailuresRequired: integerSetting(1, 5),
+  gatewayUserRequestLimitPerMinute: integerSetting(0, 1_000_000_000),
+  gatewayUserRequestLimitPerDay: integerSetting(0, 1_000_000_000),
+  gatewayUserRequestLimitPerWeek: integerSetting(0, 1_000_000_000),
+  gatewayUserRequestLimitPerMonth: integerSetting(0, 1_000_000_000),
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),
@@ -240,6 +255,7 @@ export function getManagementSettingsSectionReadOnly(sectionKey: ManagementSetti
       ? normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
       : normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
+  if (section.domain === 'system') applyCompatibleSystemSettingDefaults(values, section.keys)
   assertAllSettingsPresent(values, section.keys, `${sectionKey} 设置`)
   return values
 }
@@ -263,6 +279,7 @@ export async function getManagementSettingsSectionAsync(sectionKey: ManagementSe
       ? normalizeGlobalSetting(row.key, JSON.parse(row.value_json) as unknown)
       : normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
+  if (section.domain === 'system') applyCompatibleSystemSettingDefaults(values, section.keys)
   assertAllSettingsPresent(values, section.keys, `${sectionKey} 设置`)
   return values
 }
@@ -388,6 +405,7 @@ export function getSettings(): Record<string, unknown> {
   for (const row of rows) {
     settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
+  applyCompatibleSystemSettingDefaults(settings, systemSettingKeys)
   assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
   systemSettingsCache.set('current', settings)
   return { ...settings }
@@ -402,6 +420,7 @@ export function getSettingsReadOnly(): Record<string, unknown> {
   for (const row of rows) {
     settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
+  applyCompatibleSystemSettingDefaults(settings, systemSettingKeys)
   assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
   return { ...settings }
 }
@@ -438,6 +457,7 @@ async function loadSystemSettingsFromDatabaseAsync(): Promise<Record<string, unk
   for (const row of rows) {
     settings[row.key] = normalizeSystemSetting(row.key, JSON.parse(row.value_json) as unknown)
   }
+  applyCompatibleSystemSettingDefaults(settings, systemSettingKeys)
   assertAllSettingsPresent(settings, systemSettingKeys, '系统设置')
   return settings
 }
@@ -650,10 +670,21 @@ function normalizeSystemSettingsInput(input: Record<string, unknown>): Record<st
 function normalizeSystemSettingsSnapshot(input: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   for (const key of systemSettingKeys) {
-    output[key] = normalizeSystemSetting(key, input[key])
+    const value = Object.prototype.hasOwnProperty.call(input, key)
+      ? input[key]
+      : compatibleSystemSettingDefaults[key]
+    output[key] = normalizeSystemSetting(key, value)
   }
   assertAllSettingsPresent(output, systemSettingKeys, '系统设置')
   return output
+}
+
+function applyCompatibleSystemSettingDefaults(settings: Record<string, unknown>, keys: readonly string[]): void {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(settings, key)) continue
+    const fallback = compatibleSystemSettingDefaults[key as SystemSettingKey]
+    if (fallback !== undefined) settings[key] = fallback
+  }
 }
 
 function normalizeGlobalSettingsInput(input: Record<string, unknown>): Record<string, unknown> {

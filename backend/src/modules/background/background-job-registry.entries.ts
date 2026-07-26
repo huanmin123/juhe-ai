@@ -15,7 +15,8 @@ export const backgroundScheduledJobs = [
     shardable: false,
     leaseRequired: false,
     blocksUserVisibleFreshness: false,
-    writes: ['cache:usage_record_first_page']
+    writes: ['cache:usage_record_first_page'],
+    notes: '仅 ingest/usage worker 的 replica 0 注册，避免 performance 多副本重复候选查询和首屏预热'
   }),
   scheduled({
     jobName: 'system-metrics-sample',
@@ -56,6 +57,20 @@ export const backgroundScheduledJobs = [
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
     writes: ['stats:usage_stats_*', 'stats:usage_model_*', 'stats:usage_error_*', 'stats:usage_latency_*']
+  }),
+  scheduled({
+    jobName: 'usage-hot-window-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: true,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:usage_overview_summary_windows', 'stats:usage_overview_trend_windows', 'stats:usage_scope_range_windows'],
+    notes: 'usage 增量聚合后由独立 scheduler job 合并刷新热窗口，不阻塞在线聚合主链路'
   }),
   scheduled({
     jobName: 'model-trust-observation-aggregation',
@@ -108,7 +123,21 @@ export const backgroundScheduledJobs = [
     shardable: false,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['stats:usage_rank_snapshots', 'stats:ai_performance_summary_windows']
+    writes: ['stats:usage_rank_snapshots']
+  }),
+  scheduled({
+    jobName: 'ai-performance-summary-windows-refresh',
+    category: 'scheduled',
+    kind: 'snapshot',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:ai_performance_summary_windows', 'stats:ai_performance_summary_dirty_system_accounts'],
+    notes: 'PostgreSQL 在线模式按 dirty system account 小批增量刷新；SQLite 保留在组合快照任务内。'
   }),
   scheduled({
     jobName: 'usage-overview-windows-refresh',
@@ -345,6 +374,20 @@ export const backgroundScheduledJobs = [
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
     writes: ['business:accounts', 'business:account_quality_enforcements', 'dataset:model_check_runs', 'stats:account_quality_health_hourly']
+  }),
+  scheduled({
+    jobName: 'model-quality-health-sync-retry',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['dataset:model_check_runs', 'stats:account_quality_health_hourly'],
+    notes: '有界重放质量判定中 healthSyncResult=failed 的 run；统计小时表和 run 决策更新均幂等'
   }),
   scheduled({
     jobName: 'cooldown-account-retest',

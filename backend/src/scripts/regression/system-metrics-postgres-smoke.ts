@@ -5,8 +5,7 @@ import { closeRedisClients } from '../../shared/redis-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
   getSystemMetricsOverviewAsync,
-  insertProcessEventLoopSampleAsync,
-  insertSystemMetricsSampleAsync,
+  insertSystemMetricsSampleBatchAsync,
   refreshUsageRankSnapshotsInStages,
   type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
@@ -21,6 +20,10 @@ const stageNames: UsageRankSnapshotStageName[] = ['system_metrics_trend_windows'
 let statHour = ''
 let statDate = ''
 let sampledAt = ''
+let unaffectedDate = ''
+
+const sentinelUpdatedAt = '1999-12-31T00:00:00.000Z'
+const changedSourceUpdatedAt = '2999-01-01T00:00:00.000Z'
 
 try {
   const timezone = await usageStatsTimezoneAsync()
@@ -29,9 +32,11 @@ try {
   statHour = candidate.statHour
   statDate = candidate.statDate
   sampledAt = sampledAtForStatHour(statHour, timezone)
+  unaffectedDate = fixedUsageStatsDateKeys(timezone).find((date) => date !== statDate) ?? ''
+  assert.ok(unaffectedDate, 'PG system metrics trend 增量 smoke 需要一个不包含变更日期的固定窗口')
 
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
-  await insertSystemMetricsSampleAsync({
+  await insertSystemMetricsSampleBatchAsync({
     sampledAt,
     cpuPercent: 40,
     memoryUsedPercent: 60,
@@ -47,8 +52,7 @@ try {
     networkTxTotalBytes: 12000,
     dbFileBytes: 512000,
     statsLagSeconds: 9
-  })
-  await insertProcessEventLoopSampleAsync({
+  }, [{
     sampledAt,
     processRole: 'server',
     processPid: 12345,
@@ -58,7 +62,7 @@ try {
     processHeapTotalBytes: 120,
     processExternalBytes: 12,
     processArrayBuffersBytes: 6
-  })
+  }])
 
   const refreshed = await refreshUsageRankSnapshotsInStages({
     stageNames,
@@ -98,6 +102,41 @@ try {
   })
   assert.equal(skipped.skipped, true, 'PG system metrics trend refresh 源水位不变时应跳过')
 
+  await seedUnaffectedTrendSentinels(unaffectedDate)
+  await pool.query(`
+    UPDATE juhe_stats.system_metrics_hourly
+    SET cpu_percent_sum = 90,
+      cpu_percent_max = 90,
+      updated_at = $1
+    WHERE stat_hour = $2
+  `, [changedSourceUpdatedAt, statHour])
+  await pool.query(`
+    UPDATE juhe_stats.process_event_loop_hourly
+    SET event_loop_lag_ms_sum = 45,
+      event_loop_lag_ms_count = 1,
+      event_loop_lag_ms_max = 45,
+      updated_at = $1
+    WHERE stat_hour = $2
+      AND process_role = 'server'
+  `, [changedSourceUpdatedAt, statHour])
+  const incremental = await refreshUsageRankSnapshotsInStages({
+    stageNames,
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(incremental.skipped, false, 'PG system metrics trend 同日源水位变化后应执行增量刷新')
+  assert.equal(await trendSentinelUpdatedAt('system_metrics_trend_windows', unaffectedDate), sentinelUpdatedAt, 'PG 系统趋势增量不应重写无关日期窗口')
+  assert.equal(await trendSentinelUpdatedAt('process_event_loop_trend_windows', unaffectedDate), sentinelUpdatedAt, 'PG 进程趋势增量不应重写无关日期窗口')
+  const incrementalOverview = await getSystemMetricsOverviewAsync({
+    startDate: statDate,
+    endDate: statDate,
+    days: 1,
+    maxDays: 31
+  })
+  assert.equal(incrementalOverview.hourlyTrend.find((bucket) => bucket.statHour === statHour)?.cpuPercentAvg, 90, 'PG 系统趋势增量应读取更新后的小时聚合')
+  assert.equal(incrementalOverview.processEventLoopTrend.find((bucket) => bucket.statHour === statHour && bucket.processRole === 'server')?.eventLoopLagMsAvg, 45, 'PG 进程趋势增量应读取更新后的小时聚合')
+
   console.log(JSON.stringify({
     message: '系统指标趋势 PG smoke 通过',
     statHour,
@@ -105,6 +144,7 @@ try {
     hourlyTrend: overview.hourlyTrend.length,
     processEventLoopTrend: overview.processEventLoopTrend.length,
     explainIndexed: true,
+    incrementalPreservedUnaffectedWindow: true,
     skipped: skipped.skipped === true,
     timezone
   }))
@@ -162,7 +202,10 @@ async function assertSystemMetricsExplainPlans(rangeDate: string, targetStatHour
       ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
     `,
     ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service', sampledAt],
-    ['idx_process_event_loop_samples_role_peak']
+    [
+      'idx_process_event_loop_samples_role_peak',
+      'idx_process_event_loop_samples_role_latest'
+    ]
   )
   await assertIndexedPlan(
     '进程事件循环趋势窗口 PG 查询',
@@ -230,6 +273,11 @@ async function findEmptyStatHour(): Promise<{ statDate: string; statHour: string
 
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
+  if (unaffectedDate) {
+    const windowKey = `${unaffectedDate}:${unaffectedDate}`
+    await pool.query('DELETE FROM juhe_stats.system_metrics_trend_windows WHERE window_key = $1', [windowKey])
+    await pool.query('DELETE FROM juhe_stats.process_event_loop_trend_windows WHERE window_key = $1', [windowKey])
+  }
   if (statHour) {
     if (sampledAt) {
       await pool.query('DELETE FROM juhe_stats.system_metrics_samples WHERE sampled_at = $1', [sampledAt])
@@ -245,4 +293,35 @@ async function cleanupSmokeRows(): Promise<void> {
     }).catch(() => undefined)
   }
   await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = $1', [jobName])
+}
+
+async function seedUnaffectedTrendSentinels(statDateValue: string): Promise<void> {
+  const pool = await getPostgresPool()
+  const windowKey = `${statDateValue}:${statDateValue}`
+  const bucketKey = `${statDateValue}T00`
+  await pool.query(`
+    INSERT INTO juhe_stats.system_metrics_trend_windows (
+      window_key, start_date, end_date, bucket_key, sample_count, updated_at
+    ) VALUES ($1, $2, $2, $3, 0, $4)
+    ON CONFLICT(window_key, bucket_key) DO UPDATE SET updated_at = excluded.updated_at
+  `, [windowKey, statDateValue, bucketKey, sentinelUpdatedAt])
+  await pool.query(`
+    INSERT INTO juhe_stats.process_event_loop_trend_windows (
+      window_key, start_date, end_date, bucket_key, process_role, sample_count, updated_at
+    ) VALUES ($1, $2, $2, $3, 'server', 0, $4)
+    ON CONFLICT(window_key, bucket_key, process_role) DO UPDATE SET updated_at = excluded.updated_at
+  `, [windowKey, statDateValue, bucketKey, sentinelUpdatedAt])
+}
+
+async function trendSentinelUpdatedAt(tableName: 'system_metrics_trend_windows' | 'process_event_loop_trend_windows', statDateValue: string): Promise<string | undefined> {
+  const pool = await getPostgresPool()
+  const result = await pool.query(`
+    SELECT updated_at
+    FROM juhe_stats.${tableName}
+    WHERE window_key = $1
+      AND bucket_key = $2
+    LIMIT 1
+  `, [`${statDateValue}:${statDateValue}`, `${statDateValue}T00`])
+  const updatedAt = result.rows[0]?.updated_at
+  return typeof updatedAt === 'string' ? updatedAt : undefined
 }

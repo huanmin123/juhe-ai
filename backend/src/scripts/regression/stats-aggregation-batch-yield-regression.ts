@@ -32,7 +32,7 @@ assert(
   'client IP 统计聚合必须是异步批次，不能用同步 for 循环连续占用 stats-worker'
 )
 assert(
-  statsWriterSource.includes('const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)')
+  statsWriterSource.includes('const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore, requiredPostgresScheduledLease(operation))')
     && statsWriterSource.includes('return result'),
   'handleStatsWriteOperation 必须等待 usage 统计异步批次并传入运行预算和安全读取上界'
 )
@@ -55,11 +55,14 @@ assert(
   'usage 聚合后必须通过防抖热窗口刷新发布今日概览和范围窗口'
 )
 assert(
-  backgroundJobsSource.includes('scheduleHotUsageWindowsAfterAggregation(result.processed)')
-    && backgroundJobsSource.includes('function scheduleHotUsageWindowsAfterAggregation(processed: number): void')
-    && backgroundJobsSource.includes('void refreshHotUsageWindowsAfterAggregation(processed).catch')
-    && !backgroundJobsSource.includes('await refreshHotUsageWindowsAfterAggregation(result.processed)'),
-  'usage 聚合主链路不能同步等待热窗口刷新，避免热窗口刷新慢或失败阻塞在线聚合'
+  backgroundJobsSource.includes("name: backgroundScheduledJobName('usage-hot-window-refresh')")
+    && backgroundJobsSource.includes("resourceLane: 'stats-heavy'")
+    && /runWithPostgresScheduledLease\(\s*'usage-hot-window-refresh'/.test(backgroundJobsSource)
+    && backgroundJobsSource.includes('task: ({ signal }) => runScheduledUsageHotWindowRefresh(signal)')
+    && backgroundJobsSource.includes('if (result.processed > 0) usageHotWindowRefreshPending = true')
+    && !backgroundJobsSource.includes('void refreshHotUsageWindowsAfterAggregation')
+    && !backgroundJobsSource.includes("void runUsageHotWindowRefresh('pending_retry')"),
+  'usage 热窗口必须作为可跟踪 scheduler job 进入 stats-heavy lane 并由 PG lease 保护，聚合主链路只合并待刷新状态'
 )
 assert(
   usageStatsRepositorySource.includes('aggregateUsageStatsRecords(database, rows, updatedAt, aggregationContext)')

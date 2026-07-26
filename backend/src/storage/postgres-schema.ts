@@ -60,6 +60,16 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text'
   },
   {
+    schemaName: 'juhe_dataset',
+    source: 'model-quality-pg-columns',
+    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'scheduled-job-lease-pg-columns',
+    sql: 'ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0'
+  },
+  {
     schemaName: 'juhe_business',
     source: 'account-circuit-confirmation-pg-constraints',
     sql: `DO $$
@@ -247,6 +257,7 @@ const postgresBigintColumnNames = new Set([
   'open_until_ms',
   'next_transition_at_ms',
   'lease_until_ms',
+  'fencing_token',
   'attempt_started_at_ms',
   'attempt_hard_deadline_ms',
   'retained_until_ms',

@@ -20,10 +20,7 @@ import {
   aggregateUsageStatsBatchAsync,
   checkUsageStatsConsistency,
   checkUsageStatsConsistencyAsync,
-  insertProcessEventLoopSample,
-  insertProcessEventLoopSampleAsync,
-  insertSystemMetricsSample,
-  insertSystemMetricsSampleAsync,
+  insertSystemMetricsSampleBatchAsync,
   refreshDirtyGroupAccountStatsCacheAsync,
   refreshDirtyGroupAccountStatsCacheWithWriter,
   refreshHotUsageWindowSnapshots,
@@ -71,6 +68,7 @@ import {
 import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
+import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
 import { activateModelTokenInterceptBaselineAsync, aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
 import {
@@ -91,7 +89,7 @@ const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
 const usageStatsAggregationMaxRunMsCap = 60_000
 
-export type BackgroundStatsWriteOperation =
+export type BackgroundStatsWriteOperation = (
   | {
     type: 'record_model_quality_health_failure'
     input: ModelQualityHealthFailureInput
@@ -222,6 +220,7 @@ export type BackgroundStatsWriteOperation =
     type: 'cleanup_deleted_account_record_stats'
     input: DeletedAccountRecordStatsCleanupInput
   }
+) & { scheduledLease?: ScheduledJobLeaseFence }
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
   T extends { type: 'record_model_quality_health_failure' } ? ModelQualityHealthFailureResult :
@@ -273,9 +272,9 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'record_model_quality_health_failure':
       return await recordModelQualityHealthFailureAsync(operation.input)
     case 'aggregate_model_trust_observations':
-      return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize) }
+      return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize, requiredPostgresScheduledLease(operation)) }
     case 'aggregate_usage_stats': {
-      const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
+      const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore, requiredPostgresScheduledLease(operation))
       return result
     }
     case 'aggregate_client_ip_stats':
@@ -284,28 +283,22 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { refreshed: await refreshGroupAccountStats() }
     case 'refresh_account_quality':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit)
+        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit, requiredPostgresScheduledLease(operation))
       }
       return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
     case 'record_system_metrics_sample':
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        await insertSystemMetricsSampleAsync(operation.sample)
-        for (const sample of operation.processEventLoopSamples) {
-          await insertProcessEventLoopSampleAsync(processEventLoopSampleInput(sample))
-        }
-      } else {
-        insertSystemMetricsSample(operation.sample)
-        for (const sample of operation.processEventLoopSamples) {
-          insertProcessEventLoopSample(processEventLoopSampleInput(sample))
-        }
-      }
+      await insertSystemMetricsSampleBatchAsync(
+        operation.sample,
+        operation.processEventLoopSamples.map(processEventLoopSampleInput)
+      )
       return { recorded: true }
     case 'refresh_usage_rank_snapshots': {
       const result = await refreshUsageRankSnapshotsInStages({
         yieldToEventLoop,
         stageNames: operation.stageNames,
         skipIfUnchanged: true,
-        jobName: operation.jobName
+        jobName: operation.jobName,
+        scheduledLease: requiredPostgresScheduledLease(operation)
       })
       return result
     }
@@ -313,7 +306,8 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       const result = await refreshHotUsageWindowSnapshots({
         yieldToEventLoop,
         skipIfUnchanged: true,
-        jobName: operation.jobName
+        jobName: operation.jobName,
+        scheduledLease: requiredPostgresScheduledLease(operation)
       })
       return result
     }
@@ -324,7 +318,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return checkUsageStatsConsistency(operation.limit)
     case 'collect_table_storage_snapshot':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await collectTableStorageSnapshotAsync(operation.sampledAt, operation.options)
+        return await collectTableStorageSnapshotAsync(operation.sampledAt, operation.options, requiredPostgresScheduledLease(operation))
       }
       return collectTableStorageSnapshot(operation.sampledAt, operation.options)
     case 'record_client_ip_policy_hits':
@@ -402,7 +396,7 @@ function currentProcessOwnsStatsWriter(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'stats-worker'
 }
 
-async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRunMs: number, safeCreatedBefore?: string): Promise<{ processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number }> {
+async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRunMs: number, safeCreatedBefore?: string, scheduledLease?: ScheduledJobLeaseFence): Promise<{ processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number }> {
   const startedAtMs = Date.now()
   let processed = 0
   let stoppedByTimeBudget = false
@@ -417,7 +411,7 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
       stoppedByTimeBudget = true
       break
     }
-    const batchProcessed = await aggregateUsageStatsBatchAsync(normalizedBatchSize, safeCreatedBefore)
+    const batchProcessed = await aggregateUsageStatsBatchAsync(normalizedBatchSize, safeCreatedBefore, scheduledLease)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
     if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
@@ -427,12 +421,15 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
     await yieldToEventLoop()
     await pauseBetweenStatsAggregationBatches()
   }
-  if (processed > 0) {
-    if (runtimeConfig.databaseDriver === 'postgres') {
-      await refreshUsageQuotaHourlyWindowsCacheAsync()
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const quotaRefresh = await refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease)
+    if (processed > 0 || quotaRefresh.changed) {
       sendGatewayQuotaSnapshotToServer(await buildGatewayQuotaSnapshotAsync())
       return { processed, quotaSnapshotSent: true, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
     }
+    return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
+  }
+  if (processed > 0) {
     refreshUsageQuotaHourlyWindowsCache()
     sendGatewayQuotaSnapshotToServer(buildGatewayQuotaSnapshot())
     return { processed, quotaSnapshotSent: true, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
@@ -498,8 +495,8 @@ function refreshAccountQuality(windowMinutes: number, failureCandidateLimit: num
   }
 }
 
-async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
-  const result = await refreshAccountQualityFromUsageAsync(boundedPositiveInteger(windowMinutes, 1, 24 * 60))
+async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number, scheduledLease?: ScheduledJobLeaseFence): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
+  const result = await refreshAccountQualityFromUsageAsync(boundedPositiveInteger(windowMinutes, 1, 24 * 60), undefined, scheduledLease)
   return {
     ...result,
     failureCandidates: await listAccountQualityFailurePrecheckCandidatesAsync(boundedPositiveInteger(failureCandidateLimit, 1, 100))
@@ -523,6 +520,14 @@ function processEventLoopSampleInput(sample: ProcessEventLoopSample): ProcessEve
 function boundedPositiveInteger(value: number, min: number, max: number): number {
   const parsed = Math.trunc(Number(value))
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : min
+}
+
+function requiredPostgresScheduledLease(operation: BackgroundStatsWriteOperation): ScheduledJobLeaseFence | undefined {
+  if (runtimeConfig.databaseDriver !== 'postgres') return undefined
+  if (!operation.scheduledLease) {
+    throw new Error(`PostgreSQL 定时统计写操作缺少 scheduledLease：${operation.type}`)
+  }
+  return operation.scheduledLease
 }
 
 function yieldToEventLoop(): Promise<void> {

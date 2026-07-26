@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   AccountCircuitControlPlaneBridge,
@@ -16,6 +17,21 @@ import type {
   AccountCircuitIncidentRecord,
   AccountCircuitOutboxRecord
 } from '../../storage/account-circuit-control-plane.repository.js'
+
+const bridgeSource = readFileSync(
+  new URL('../../modules/gateway/runtime/account-circuit-control-plane-bridge.ts', import.meta.url),
+  'utf8'
+)
+assert.match(
+  bridgeSource,
+  /import \{ requestGatewayDbService \} from '\.\/gateway-db-service-request\.js'/,
+  'control-plane bridge 必须通过角色感知封装访问 DB service'
+)
+assert.doesNotMatch(
+  bridgeSource,
+  /from '\.\.\/\.\.\/db-service\/db-service-ipc\.js'/,
+  'control-plane bridge 不得绕过 worker IPC 直接依赖本地 DB service'
+)
 
 const scope = {
   kind: 'protocol_model' as const,

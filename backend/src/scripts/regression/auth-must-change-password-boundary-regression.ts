@@ -68,6 +68,15 @@ interface CurrentUser {
   mustChangePassword: boolean
 }
 
+interface CurrentUserProfile extends CurrentUser {
+  description?: string
+  status: 'active' | 'disabled'
+  imageGenerationEnabled: boolean
+  lastLoginAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
 async function main(): Promise<void> {
   let server: http.Server | undefined
   try {
@@ -83,6 +92,9 @@ async function main(): Promise<void> {
     assertCurrentUserProjection(currentAdmin, 'GET /auth/me')
     assert(currentAdmin.username === 'admin', '默认管理员登录后应能读取当前用户')
     assert(currentAdmin.mustChangePassword === false, '管理员账户不应触发初始密码强制修改')
+    const adminProfile = await getEnvelope<CurrentUserProfile>(baseUrl, '/__aisys__/api/auth/profile', adminCookie)
+    assertCurrentUserProfileProjection(adminProfile, '管理员 GET /auth/profile')
+    assert(adminProfile.imageGenerationEnabled === false, '默认管理员详情应返回系统账户级图像生成权限')
 
     const adminAllowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', adminCookie)
     assert(adminAllowed.protected === true, '管理员账户即使存在旧改密标记也应允许访问受保护接口')
@@ -108,6 +120,10 @@ async function main(): Promise<void> {
     assertCurrentUserProjection(currentUser, '普通用户 GET /auth/me')
     assert(currentUser.username === 'locked_user', '普通用户登录后应能读取当前用户')
     assert(currentUser.mustChangePassword === true, '普通用户应保留初始密码修改标记')
+    const lockedProfile = await getEnvelope<CurrentUserProfile>(baseUrl, '/__aisys__/api/auth/profile', cookie)
+    assertCurrentUserProfileProjection(lockedProfile, '待改密用户 GET /auth/profile')
+    assert(lockedProfile.id === createdUser.id, 'profile 只能返回当前 session 对应系统账户')
+    assert(lockedProfile.mustChangePassword === true, '初始密码未修改时仍应允许读取本人详情')
 
     const blocked = await fetch(`${baseUrl}/__aisys__/api/protected`, { headers: { cookie } })
     const blockedText = await blocked.text()
@@ -197,6 +213,26 @@ function assertCurrentUserProjection(value: CurrentUser, label: string): void {
   const actualKeys = JSON.stringify(Object.keys(value).sort())
   const expectedKeys = JSON.stringify(['displayName', 'id', 'mustChangePassword', 'role', 'username'].sort())
   assert(actualKeys === expectedKeys, `${label} 响应必须使用 CurrentUserSummary 窄投影，实际字段：${actualKeys}`)
+}
+
+function assertCurrentUserProfileProjection(value: CurrentUserProfile, label: string): void {
+  const requiredKeys = [
+    'id',
+    'username',
+    'displayName',
+    'role',
+    'status',
+    'mustChangePassword',
+    'imageGenerationEnabled',
+    'createdAt',
+    'updatedAt'
+  ]
+  for (const key of requiredKeys) {
+    assert(Object.prototype.hasOwnProperty.call(value, key), `${label} 缺少字段：${key}`)
+  }
+  for (const forbidden of ['passwordHash', 'password_hash', 'tokenHash', 'token', 'sessionId']) {
+    assert(!Object.prototype.hasOwnProperty.call(value, forbidden), `${label} 不得返回敏感字段：${forbidden}`)
+  }
 }
 
 function assertCaptchaImageDoesNotExposeAnswer(image: string, answer: string): void {

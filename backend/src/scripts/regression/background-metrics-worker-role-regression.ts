@@ -91,7 +91,8 @@ assertRolePostgresBlockContains('stats-worker', 'table-storage-monitor', 'PG 高
 assertRolePostgresBlockContains('stats-worker', 'group-account-stats-refresh', 'PG 高性能 stats-worker 必须注册 group-account-stats-refresh，避免分组账户统计缓存长期不刷新')
 assertRolePostgresBlockContains('stats-worker', 'account-quality-refresh', 'PG 高性能 stats-worker 必须注册 account-quality-refresh，避免账户质量分长期不刷新')
 assertRolePostgresBlockContains('stats-worker', 'usage-stats-consistency-check', 'PG 高性能 stats-worker 必须注册 usage-stats-consistency-check，避免统计一致性漂移无人检测')
-assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshBackgroundJobSettingsSnapshotIfNeeded\(\)[\s\S]*\.then\(scheduleBackgroundJobs\)/, 'PG 后台定时任务必须等待系统设置快照加载后再注册 interval')
+assertRolePostgresBlockContains('stats-worker', 'authorization-usage-range-windows-refresh', 'PG 高性能 stats-worker 必须注册授权用量范围窗口刷新')
+assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshBackgroundJobSettingsSnapshotIfNeeded\(\)[\s\S]*generation !== startGeneration[\s\S]*scheduleBackgroundJobs\(\)/, 'PG 后台定时任务必须等待系统设置快照加载，并使用 generation 防止停机后复活')
 assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapshotIfNeeded\(\): Promise<void>/, 'PG 后台任务系统设置快照刷新必须返回 Promise，避免启动时异步未完成就注册默认 interval')
 assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
@@ -101,6 +102,9 @@ assertRoleBlockContainsOnly('ops-worker', [
   'account-circuit-control-plane-maintenance',
   'account-circuit-recovery',
   'account-health-check',
+  'model-quality-scheduled-check',
+  'model-quality-recovery',
+  'model-quality-health-sync-retry',
   'cooldown-account-retest',
   'account-api-key-cooldown-retest',
   'openai-oauth-access-token-refresh',
@@ -113,6 +117,8 @@ assertRoleBlockContainsOnly('ops-worker', [
 assert(backgroundJobsSource.includes('const localProcessEventLoopSample = buildProcessEventLoopSample()'), 'system-metrics-sample 本地事件循环样本必须使用当前 workerRole')
 
 assert(workerSource.includes('if (isIngestWorker()) {'), 'worker.ts 必须把 append-only 写入队列隔离到 ingest-worker')
+assert(workerSource.includes('await stopBackgroundJobs()') && workerSource.indexOf('await stopBackgroundJobs()') < workerSource.indexOf('await stopUsageRecordRedisStreamConsumer()'), 'worker 停机必须先停止后台 producer，再排空消费队列')
+assert(workerSource.includes('await stopRuntimeLogFileImport({ drainTimeoutMs: 5_000 })'), 'worker 停机必须停止运行日志 importer，防止 poll 重新排程')
 assert(workerSource.includes('} else if (isOpsWorker()) {'), 'ops-worker 必须启动账号测试和轻量运维本地队列')
 assert(workerSource.includes('startRuntimeLogFileImport()'), 'ingest-worker 应启动运行日志文件导入')
 assert(workerSource.includes('startAccountTestTaskQueue()'), 'ops-worker 应启动手动账号测试队列')

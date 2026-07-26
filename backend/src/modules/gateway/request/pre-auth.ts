@@ -17,6 +17,8 @@ import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.
 import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.service.js'
 import { readCachedGatewayRuntimeAsync } from '../runtime/runtime-cache.service.js'
 import { inspectClientIpPolicy, recordClientIpPolicyHitAsync } from '../runtime/client-ip-policy-cache.service.js'
+import { startUserRequestLimitCoordinator } from '../runtime/user-request-limit-coordinator.js'
+import { userRequestLimitCounter, type UserRequestLimitDecision } from '../runtime/user-request-limit-counter.js'
 import {
   gatewayErrorPayload,
   sendGatewayJsonError
@@ -50,6 +52,8 @@ import {
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
 }
+
+startUserRequestLimitCoordinator()
 
 interface ResolveGatewayRuntimeOptions {
   closeConnectionOnAuthFailure?: boolean
@@ -90,6 +94,17 @@ export async function preResolveGatewayRuntime(
     if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: true })) {
       resolutionOutcome = 'expected_failure'
       resolutionReason = 'client_ip_blacklisted'
+      return
+    }
+    const userRequestLimitDecision = userRequestLimitCounter.consume({
+      systemAccountId: runtime.apiKey.system_account_id,
+      settings: runtime.settings,
+      overrides: runtime.apiKey.system_account_request_limits
+    })
+    if (!userRequestLimitDecision.allowed) {
+      resolutionOutcome = 'expected_failure'
+      resolutionReason = 'user_request_limit_exceeded'
+      sendUserRequestLimitExceededResponse(req, res, userRequestLimitDecision)
       return
     }
     req.gatewayRuntime = runtime
@@ -451,6 +466,47 @@ function sendEarlyImageGenerationDisabledResponse(req: Request, res: Response): 
     clientIp: context?.clientIp ?? extractClientIp(req),
     userAgent: req.header('user-agent')
   })
+}
+
+function sendUserRequestLimitExceededResponse(req: Request, res: Response, decision: UserRequestLimitDecision): void {
+  const message = `你的${userRequestLimitWindowLabel(decision.window)}请求数已达到 ${decision.limit ?? 0} 次，请联系管理员提升额度。`
+  if (decision.retryAfterSeconds) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds))
+  }
+  setGatewayAuthFailureAudit(res, {
+    errorMessage: message,
+    errorCode: 'user_request_limit_exceeded'
+  })
+  sendGatewayJsonError(
+    res,
+    429,
+    gatewayErrorPayload(message, 'rate_limit_exceeded', 'user_request_limit_exceeded'),
+    { protocol: gatewayErrorProtocolForRequest(req) }
+  )
+  const context = getRequestContext()
+  recordDroppedAuditCapture({
+    traceId: context?.traceId ?? createTraceId(),
+    auditOutcome: 'gateway_failed',
+    success: false,
+    bytes: 0,
+    reason: 'user_request_limit_exceeded',
+    method: req.method,
+    path: req.originalUrl.split('?')[0] || req.path,
+    queryString: req.originalUrl.includes('?') ? req.originalUrl.split('?').slice(1).join('?') : undefined,
+    statusCode: 429,
+    errorPhase: 'authorization',
+    errorCode: 'user_request_limit_exceeded',
+    errorMessage: message,
+    clientIp: context?.clientIp ?? extractClientIp(req),
+    userAgent: req.header('user-agent')
+  })
+}
+
+function userRequestLimitWindowLabel(window: UserRequestLimitDecision['window']): string {
+  if (window === 'perMinute') return '每分钟'
+  if (window === 'perDay') return '每日'
+  if (window === 'perWeek') return '每周'
+  return '每月'
 }
 
 function gatewayErrorProtocolForRequest(req: Request): 'openai' | 'anthropic' | 'gemini' {

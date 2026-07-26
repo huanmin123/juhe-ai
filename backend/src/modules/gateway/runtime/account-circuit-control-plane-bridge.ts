@@ -8,7 +8,6 @@ import {
   type CompareAndSetAccountCircuitIncidentInput,
   type CompareAndSetAccountCircuitIncidentResult
 } from '../../../storage/account-circuit-control-plane.repository.js'
-import { requestDbService } from '../../db-service/db-service-ipc.js'
 import {
   accountCircuitConfirmationFailureCount,
   accountCircuitFailureEvidenceKeys,
@@ -19,10 +18,11 @@ import {
   type AccountCircuitState,
   type AccountCircuitStore
 } from './account-circuit-store.js'
+import { requestGatewayDbService } from './gateway-db-service-request.js'
 
 export interface AccountCircuitControlPlaneBridgeOptions {
   store: AccountCircuitStore
-  requestDb?: typeof requestDbService
+  requestDb?: typeof requestGatewayDbService
   ownerId?: string
   retryDelayMs?: number
   maxPersistAttempts?: number
@@ -67,7 +67,7 @@ export async function loadPublicAccountCircuitSummaries(
   accountRuntimeKeys: string[]
 ): Promise<Record<string, PublicAccountCircuitSummary>> {
   const keys = [...new Set(accountRuntimeKeys.map((key) => key.trim()).filter(Boolean))].slice(0, 100)
-  const incidents = await requestDbService({
+  const incidents = await requestGatewayDbService({
     type: 'list_account_circuit_incidents_by_runtime_keys',
     accountRuntimeKeys: keys
   })
@@ -88,7 +88,7 @@ export async function loadPublicAccountCircuitSummaries(
  */
 export class AccountCircuitControlPlaneBridge {
   private readonly store: AccountCircuitStore
-  private readonly requestDb: typeof requestDbService
+  private readonly requestDb: typeof requestGatewayDbService
   private readonly ownerId: string
   private readonly retryDelayMs: number
   private readonly maxPersistAttempts: number
@@ -118,7 +118,7 @@ export class AccountCircuitControlPlaneBridge {
 
   constructor(options: AccountCircuitControlPlaneBridgeOptions) {
     this.store = options.store
-    this.requestDb = options.requestDb ?? requestDbService
+    this.requestDb = options.requestDb ?? requestGatewayDbService
     this.ownerId = options.ownerId?.trim() || `circuit-bridge:${randomUUID()}`
     this.retryDelayMs = positive(options.retryDelayMs ?? 1_000)
     this.maxPersistAttempts = positive(options.maxPersistAttempts ?? 3)

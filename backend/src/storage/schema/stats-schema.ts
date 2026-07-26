@@ -793,6 +793,34 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, scope_type, scope_id, window_hours)
         );
 
+    CREATE TABLE IF NOT EXISTS usage_quota_hourly_window_dirty_scopes (
+          system_account_id TEXT NOT NULL,
+          scope_type TEXT NOT NULL,
+          scope_id TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 1,
+          first_dirty_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, scope_type, scope_id)
+        );
+
+    CREATE TABLE IF NOT EXISTS usage_overview_dirty_scopes (
+          system_account_id TEXT PRIMARY KEY,
+          scope_id TEXT NOT NULL,
+          min_changed_date TEXT NOT NULL,
+          generation INTEGER NOT NULL DEFAULT 1,
+          first_dirty_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+    CREATE TABLE IF NOT EXISTS ai_performance_summary_dirty_system_accounts (
+          system_account_id TEXT PRIMARY KEY,
+          min_stat_date TEXT NOT NULL,
+          max_stat_date TEXT NOT NULL,
+          generation INTEGER NOT NULL DEFAULT 1,
+          first_dirty_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
     CREATE TABLE IF NOT EXISTS usage_scope_range_windows (
           system_account_id TEXT NOT NULL,
           scope_type TEXT NOT NULL,
@@ -1277,6 +1305,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
           shard_key TEXT NOT NULL DEFAULT '',
           owner_id TEXT NOT NULL,
           run_id TEXT,
+          fencing_token INTEGER NOT NULL DEFAULT 0,
           lease_until TEXT NOT NULL,
           heartbeat_at TEXT NOT NULL,
           started_at TEXT NOT NULL,
@@ -1527,6 +1556,12 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);
 
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_system_account_top_activity
+      ON usage_stats_daily(stat_date, request_count DESC, last_used_at DESC, system_account_id)
+      WHERE scope_type = 'system_account'
+        AND scope_id = system_account_id
+        AND system_account_id <> 'global';
+
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_date ON usage_stats_daily(stat_date);
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_updated ON usage_stats_daily(updated_at);
@@ -1630,6 +1665,20 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_rank_snapshots_snapshot ON usage_rank_snapshots(snapshot_at);
 
     CREATE INDEX IF NOT EXISTS idx_usage_overview_summary_windows_end ON usage_overview_summary_windows(end_date);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_quota_hourly_window_dirty_updated
+      ON usage_quota_hourly_window_dirty_scopes(updated_at, system_account_id, scope_type, scope_id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_overview_dirty_updated
+      ON usage_overview_dirty_scopes(updated_at, system_account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_dirty_updated
+      ON ai_performance_summary_dirty_system_accounts(updated_at, system_account_id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_overview_summary_windows_prewarm_order
+      ON usage_overview_summary_windows(window_key, request_count DESC, last_used_at DESC, system_account_id)
+      WHERE request_count > 0
+        AND system_account_id <> 'global';
 
     CREATE INDEX IF NOT EXISTS idx_usage_overview_trend_windows_lookup ON usage_overview_trend_windows(system_account_id, window_key, bucket_key);
 
@@ -1767,4 +1816,11 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
       ON usage_record_cleanup_deductions(account_id, shard_deleted_at);
   `)
+  ensureBackgroundJobLeaseFencingTokenColumn(database)
+}
+
+function ensureBackgroundJobLeaseFencingTokenColumn(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(background_job_leases)').all() as Array<{ name?: string }>
+  if (columns.length === 0 || columns.some((column) => column.name === 'fencing_token')) return
+  database.exec('ALTER TABLE background_job_leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0')
 }

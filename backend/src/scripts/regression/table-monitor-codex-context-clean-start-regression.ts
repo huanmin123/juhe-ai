@@ -87,12 +87,22 @@ try {
     '监控应只打开真实 shard，不能补建其余配置 shard'
   )
   const probeSnapshot = databaseModule.getStatsDatabase().prepare(`
-    SELECT row_count
+    SELECT table_name, parent_table_name, table_kind, is_partition, row_count
     FROM table_storage_snapshots
     WHERE database_role = 'codex-context-state'
-      AND table_name = 'table_monitor_existing_shard_probe'
+      AND parent_table_name = 'table_monitor_existing_shard_probe'
       AND sampled_at = ?
-  `).get('2026-07-16T00:10:00.000Z') as { row_count?: number } | undefined
+  `).get('2026-07-16T00:10:00.000Z') as {
+    table_name?: string
+    parent_table_name?: string
+    table_kind?: string
+    is_partition?: number
+    row_count?: number
+  } | undefined
+  assert.equal(probeSnapshot?.table_name, 'state-002.sqlite3:table_monitor_existing_shard_probe', 'shard-table pair 快照必须使用稳定物理表名，避免把局部数据伪装成全 shard 聚合')
+  assert.equal(probeSnapshot?.parent_table_name, 'table_monitor_existing_shard_probe', 'pair 快照应保留逻辑表名用于分组展示')
+  assert.equal(probeSnapshot?.table_kind, 'shard_table')
+  assert.equal(probeSnapshot?.is_partition, 1)
   assert.equal(probeSnapshot?.row_count, 1, '非 0 shard 中的真实表必须被聚合监控，不能为了规避首次启动错误跳过实际数据')
 
   console.log('表监控 Codex context 干净启动回归通过：空 shard 不越权建库，已有非 0 shard 仍完整采样')

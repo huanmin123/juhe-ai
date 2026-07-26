@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { createSharedJsonCache } from '../../shared/cache.js'
+import { createSharedJsonCache, type SharedJsonCacheOperationOptions } from '../../shared/cache.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { canAccessAll, scopedSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
@@ -60,29 +60,59 @@ export async function seedUsageRecordFirstPage(
   const tomorrowStart = startOfZonedDateKeyIso(tomorrow, timezone)
   if (options?.startAt !== todayStart || options?.endAt !== tomorrowStart) return
   try {
-    await mergeFirstPageCache(firstPageCacheKey(systemAccountId, today), result.items)
+    await seedUsageRecordFirstPageForDate(systemAccountId, today, result.items)
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_seed_failed', systemAccountId }), '使用记录首屏热列表回填失败，已保留数据库查询结果')
   }
 }
 
-async function mergeFirstPageCache(key: string, rows: UsageRecordSummary[]): Promise<void> {
+export async function hasUsageRecordFirstPageForDate(systemAccountId: string, date: string, options?: SharedJsonCacheOperationOptions): Promise<boolean> {
+  return await cache.get(firstPageCacheKey(systemAccountId, date), options) !== undefined
+}
+
+export async function seedUsageRecordFirstPageForDate(
+  systemAccountId: string,
+  date: string,
+  rows: UsageRecordSummary[],
+  options?: SharedJsonCacheOperationOptions
+): Promise<void> {
+  await mergeFirstPageCache(firstPageCacheKey(systemAccountId, date), rows, options)
+}
+
+async function mergeFirstPageCache(key: string, rows: UsageRecordSummary[], options?: SharedJsonCacheOperationOptions): Promise<void> {
   const token = randomUUID()
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (!await cache.acquireLease(key, { ttlMs: 2_000, token })) {
-      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)))
+    options?.signal?.throwIfAborted()
+    if (!await cache.acquireLease(key, { ttlMs: 2_000, token, ...options })) {
+      await abortableCacheDelay(10 * (attempt + 1), options?.signal)
       continue
     }
     try {
-      const existing = await cache.get(key) ?? []
+      const existing = await cache.get(key, options) ?? []
       const merged = dedupeAndSort([...rows, ...existing]).slice(0, firstPageLimit)
-      if (!await cache.setIfLeaseOwner(key, token, merged)) throw new Error('使用记录首屏缓存租约已失效')
+      if (!await cache.setIfLeaseOwner(key, token, merged, options)) throw new Error('使用记录首屏缓存租约已失效')
       return
     } finally {
       await cache.releaseLease(key, token)
     }
   }
   throw new Error('使用记录首屏缓存更新竞争超时')
+}
+
+function abortableCacheDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted()
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 export async function getUsageRecordFirstPage(

@@ -21,10 +21,10 @@
             <a-menu @click="handleImmersiveMenuClick">
               <a-menu-item key="navigation">打开导航</a-menu-item>
               <a-menu-divider />
+              <a-menu-item key="profile">个人信息</a-menu-item>
+              <a-menu-divider />
               <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">{{ switchMenuModeLabel }}</a-menu-item>
               <a-menu-divider v-if="canSwitchMenuMode" />
-              <a-menu-item key="display-name">修改名称</a-menu-item>
-              <a-menu-item key="password">修改密码</a-menu-item>
               <a-menu-item key="logout" danger>退出登录</a-menu-item>
             </a-menu>
           </template>
@@ -52,10 +52,7 @@
           <a-spin size="small" />
           <span>正在打开页面</span>
         </div>
-        <div v-if="mustChangePassword" class="password-lock-state">
-          <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
-        </div>
-        <div v-if="!mustChangePassword && routeSwitching" class="route-switch-page-shell" aria-busy="true">
+        <div v-if="routeSwitching" class="route-switch-page-shell" aria-busy="true">
           <a-card class="page-card route-switch-toolbar-card">
             <div class="route-switch-skeleton-block">
               <span class="route-switch-skeleton-line route-switch-title-line" />
@@ -78,7 +75,7 @@
             </div>
           </a-card>
         </div>
-        <div v-if="!mustChangePassword" class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
+        <div class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
           <router-view v-slot="{ Component, route: viewRoute }">
             <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
               <component :is="Component" :key="viewRoute.path" />
@@ -96,8 +93,6 @@
       :loading-ids="announcementContentLoadingIds"
       @load-content="loadAnnouncementContent"
     />
-    <DisplayNameModal v-model:open="displayNameModalOpen" :form="displayNameForm" :saving="displayNameSaving" @ok="handleUpdateDisplayName" />
-    <ChangePasswordModal v-model:open="passwordModalOpen" :forced="mustChangePassword" :form="passwordForm" :require-old-password="requireOldPasswordForPasswordChange" :saving="passwordSaving" @ok="handleChangePassword" />
   </a-layout>
 </template>
 
@@ -130,11 +125,11 @@ import {
 import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import { authState, changePassword, logout, updateProfile } from '@/composables/useAuth'
+import { authState, logout } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
@@ -149,24 +144,16 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { PublishedAnnouncementListItem } from '@/types/domain'
 import { resolveChatViewportHeight } from '@/views/chat/chatViewport'
+import { PROFILE_PATH, requiredPasswordProfileLocation } from '@/views/profile/profileNavigation'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
-import ChangePasswordModal from './ChangePasswordModal.vue'
-import DisplayNameModal from './DisplayNameModal.vue'
 
 const router = useRouter()
 const route = useRoute()
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
-const displayNameModalOpen = ref(false)
-const displayNameSaving = ref(false)
-const displayNameForm = reactive({ displayName: '' })
-const passwordModalOpen = ref(false)
-const passwordSaving = ref(false)
-const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
-const whitespacePattern = /\s/
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
@@ -207,9 +194,8 @@ const openMenuKeys = computed(() => {
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
 const immersiveLayout = computed(() => !mustChangePassword.value && route.meta.immersive === true)
-const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
-const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
-const requireOldPasswordForPasswordChange = computed(() => !mustChangePassword.value)
+const currentPageTitle = computed(() => pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
+const currentPageDescription = computed(() => pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
 const canSwitchMenuMode = computed(() => isAdminRole(currentUser.value?.role))
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
 const userDisplayName = computed(() => currentUser.value?.displayName || '用户')
@@ -363,7 +349,7 @@ function handleMenuClick(event: { key: string | number }) {
   const key = String(event.key)
   if (key.startsWith('group:')) return
   if (mustChangePassword.value) {
-    openPasswordModal(false)
+    void openRequiredPasswordProfile(route.fullPath)
     sidebarOpen.value = false
     return
   }
@@ -387,21 +373,21 @@ function prefetchRouteComponent(path: string): void {
 }
 
 async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
-  if (mustChangePassword.value && event.key !== 'password' && event.key !== 'logout') {
+  if (mustChangePassword.value && event.key !== 'profile' && event.key !== 'logout') {
     message.warning('请先修改初始密码')
-    openPasswordModal(false)
+    await openRequiredPasswordProfile(route.fullPath)
+    return
+  }
+  if (event.key === 'profile') {
+    if (mustChangePassword.value) {
+      await openRequiredPasswordProfile(route.path === PROFILE_PATH ? undefined : route.fullPath)
+    } else {
+      await pushRouteSafely(PROFILE_PATH)
+    }
     return
   }
   if (event.key === 'switch-mode') {
     await switchMenuMode()
-    return
-  }
-  if (event.key === 'display-name') {
-    openDisplayNameModal()
-    return
-  }
-  if (event.key === 'password') {
-    openPasswordModal()
     return
   }
   if (event.key === 'logout') {
@@ -429,7 +415,7 @@ async function handleImmersiveMenuClick(event: Parameters<NonNullable<MenuProps[
 async function openAnnouncements() {
   if (mustChangePassword.value) {
     message.warning('请先修改初始密码')
-    openPasswordModal(false)
+    await openRequiredPasswordProfile(route.fullPath)
     return
   }
   resetAnnouncementContentSession()
@@ -443,7 +429,7 @@ async function openAnnouncements() {
 function openHelp() {
   if (mustChangePassword.value) {
     message.warning('请先修改初始密码')
-    openPasswordModal(false)
+    void openRequiredPasswordProfile(route.fullPath)
     return
   }
   const target = isAdminRole(currentUser.value?.role)
@@ -571,7 +557,7 @@ async function markAnnouncementsViewed(visibleAnnouncements = announcements.valu
 async function switchMenuMode() {
   if (mustChangePassword.value) {
     message.warning('请先修改初始密码')
-    openPasswordModal(false)
+    await openRequiredPasswordProfile(route.fullPath)
     return
   }
   const nextMode: AppMenuMode = appMenuMode.value === 'admin' ? 'self' : 'admin'
@@ -614,87 +600,8 @@ async function waitForRouteSwitchFeedbackPaint(): Promise<void> {
   })
 }
 
-async function handleUpdateDisplayName() {
-  if (displayNameSaving.value) return
-  const displayName = displayNameForm.displayName.trim()
-  if (!displayName) {
-    message.warning('请输入显示名称')
-    return
-  }
-  if (hasWhitespace(displayNameForm.displayName)) {
-    message.warning('显示名称不能包含空格')
-    return
-  }
-  if (displayName === currentUser.value?.displayName) {
-    displayNameModalOpen.value = false
-    return
-  }
-  displayNameSaving.value = true
-  try {
-    await updateProfile({ displayName })
-    message.success('显示名称已修改')
-    displayNameModalOpen.value = false
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '修改显示名称失败'))
-  } finally {
-    displayNameSaving.value = false
-  }
-}
-
-async function handleChangePassword() {
-  if (requireOldPasswordForPasswordChange.value && !passwordForm.oldPassword) {
-    message.warning('请输入当前密码')
-    return
-  }
-  if ((passwordForm.oldPassword && hasWhitespace(passwordForm.oldPassword)) || hasWhitespace(passwordForm.newPassword) || hasWhitespace(passwordForm.confirmPassword)) {
-    message.warning('登录密码不能包含空格')
-    return
-  }
-  if (passwordForm.newPassword.length < 4) {
-    message.warning('新密码至少 4 位')
-    return
-  }
-  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-    message.warning('两次输入的密码不一致')
-    return
-  }
-  passwordSaving.value = true
-  try {
-    await changePassword({
-      oldPassword: requireOldPasswordForPasswordChange.value ? passwordForm.oldPassword : undefined,
-      newPassword: passwordForm.newPassword
-    })
-    message.success('密码已修改')
-    passwordModalOpen.value = false
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '修改密码失败'))
-  } finally {
-    passwordSaving.value = false
-  }
-}
-
-function openDisplayNameModal() {
-  displayNameForm.displayName = currentUser.value?.displayName ?? ''
-  displayNameModalOpen.value = true
-}
-
-function resetPasswordForm() {
-  passwordForm.oldPassword = ''
-  passwordForm.newPassword = ''
-  passwordForm.confirmPassword = ''
-}
-
-function openPasswordModal(resetForm = true) {
-  if (resetForm) {
-    resetPasswordForm()
-  }
-  passwordModalOpen.value = true
-}
-
-function hasWhitespace(value: string): boolean {
-  return whitespacePattern.test(value)
+async function openRequiredPasswordProfile(redirectPath?: string): Promise<void> {
+  await router.push(requiredPasswordProfileLocation(redirectPath))
 }
 
 function updateViewport() {
@@ -785,7 +692,6 @@ watch(
       announcements.value = []
       resetAnnouncementContentSession()
       announcementsLoading.value = false
-      openPasswordModal()
     } else if (user) {
       void loadAnnouncements()
     } else {
@@ -801,27 +707,6 @@ watch(
     syncMenuModeWithUser(user)
   },
   { immediate: true }
-)
-
-watch(
-  mustChangePassword,
-  (required) => {
-    if (required) {
-      openPasswordModal(false)
-    } else if (passwordModalOpen.value && !passwordSaving.value) {
-      passwordModalOpen.value = false
-    }
-  },
-  { immediate: true }
-)
-
-watch(
-  passwordModalOpen,
-  (open) => {
-    if (!open && mustChangePassword.value) {
-      openPasswordModal(false)
-    }
-  }
 )
 
 watch(

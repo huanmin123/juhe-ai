@@ -75,6 +75,8 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
 
     const mockGroupIds = selectIds(database, 'SELECT id FROM groups WHERE name LIKE ?', likeName)
     const mockAccountIds = selectIds(database, 'SELECT id FROM accounts WHERE name LIKE ?', likeName)
+    deleteWhereIn(database, 'model_quality_schedules', 'account_id', mockAccountIds)
+    deleteWhereIn(database, 'account_quality_enforcements', 'account_id', mockAccountIds)
     deleteWhereIn(database, 'group_accounts', 'group_id', mockGroupIds)
     deleteWhereIn(database, 'group_accounts', 'account_id', mockAccountIds)
     deleteWhereIn(database, 'accounts', 'id', mockAccountIds)
@@ -193,6 +195,7 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
       WHERE job_name = 'model-trust-observation-aggregation'
     `).run()
     deleteWhereIn(database, 'account_quality_dirty_accounts', 'account_id', mockAccountIds)
+    deleteWhereIn(database, 'account_quality_health_hourly', 'account_id', mockAccountIds)
     database.prepare(`
       DELETE FROM client_ip_range_window_dirty_ips
       WHERE ip_hash IN (

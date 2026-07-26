@@ -8,7 +8,8 @@ import {
   normalizeRouteStrategyMode,
   parseRouteStrategyRuntimeConfigJson
 } from '../domain/route-strategy.js'
-import type { ApiKeyHybridRoutingConfig, RouteStrategyMode, RouteStrategyNormalRoutingConfig } from '../domain/types.js'
+import type { ApiKeyHybridRoutingConfig, RouteStrategyMode, RouteStrategyNormalRoutingConfig, UserRequestLimits } from '../domain/types.js'
+import { parseUserRequestLimitsJson } from '../domain/user-request-limits.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { hashSecret } from './crypto.js'
 import type { DatabaseClient } from './database-client.js'
@@ -30,6 +31,8 @@ export interface GatewayApiKeyRow {
   normal_routing_config?: RouteStrategyNormalRoutingConfig
   hybrid_routing_config?: ApiKeyHybridRoutingConfig
   system_account_image_generation_enabled: number
+  system_account_request_limits_json?: string | null
+  system_account_request_limits?: UserRequestLimits
   group_bindings?: GatewayApiKeyGroupBindingRow[]
 }
 
@@ -107,7 +110,8 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN route_strategies
@@ -160,7 +164,8 @@ export function loadGatewayApiKeyForValidationReadOnly(key: string): GatewayApiK
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN route_strategies
@@ -255,7 +260,8 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
     FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
     INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN ${gatewayApiKeyTable(client, 'route_strategies')} route_strategies
@@ -306,7 +312,8 @@ export async function prewarmGatewayApiKeyValidationCacheAsync(): Promise<number
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
     FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
     INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts
       ON system_accounts.id = api_keys.system_account_id
@@ -407,7 +414,8 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
       api_keys.status,
       api_keys.expires_at,
       api_keys.quota_limits_json,
-      system_accounts.image_generation_enabled AS system_account_image_generation_enabled
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     INNER JOIN route_strategies
@@ -437,6 +445,7 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
 }
 
 function normalizeGatewayApiKeyRouteFields(row: GatewayApiKeyRow): void {
+  row.system_account_request_limits = parseUserRequestLimitsJson(row.system_account_request_limits_json)
   row.route_strategy_mode = normalizeRouteStrategyMode(row.route_strategy_mode)
   const routeStrategyConfig = parseRouteStrategyRuntimeConfigJson(row.route_strategy_config_json)
   row.normal_routing_config = row.route_strategy_mode === 'normal'
@@ -576,7 +585,8 @@ function shouldInvalidateGatewayApiKeyProcessCache(reason: string): boolean {
     'team_authorization_changed',
     'team_members_changed',
     'system_account_status_changed',
-    'system_account_image_generation_changed'
+    'system_account_image_generation_changed',
+    'system_account_request_limits_changed'
   ]).has(reason)
 }
 

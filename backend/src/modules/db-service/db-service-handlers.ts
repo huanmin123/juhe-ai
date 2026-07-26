@@ -204,6 +204,8 @@ import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../mode
 import {
   deferAccountApiKeyRuntimeProbe,
   deferAccountApiKeyRuntimeProbeAsync,
+  listAccountApiKeyRuntimeStatesDueForProbe,
+  listAccountApiKeyRuntimeStatesDueForProbeAsync,
   recordAccountApiKeyRuntimeFailure,
   recordAccountApiKeyRuntimeFailureAsync,
   recordAccountApiKeyRuntimeSuccess,
@@ -956,6 +958,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await listAccountsDueForCooldownRetestPageAsync(operation.limit, operation.cursor)
       }
       return handleDbServiceOperationSync(operation)
+    case 'list_account_api_key_runtime_states_due_for_probe':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await listAccountApiKeyRuntimeStatesDueForProbeAsync(operation.limit)
+      }
+      return handleDbServiceOperationSync(operation)
     case 'find_account_for_cooldown_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForCooldownRetestAsync(operation.accountId)
@@ -1186,15 +1193,19 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return { kind: 'recovery_completed', recovery: await completeModelQualityRecoveryAsync(command.input) }
     }
     case 'cleanup_chat_retention': {
+      if (runtimeConfig.databaseDriver === 'postgres' && !operation.scheduledLease) {
+        throw new Error('PostgreSQL AI 问答保留清理缺少 scheduledLease')
+      }
       const client = await getChatDatabaseClient()
       const retention = await cleanupChatRetention(client, { ...operation, isActiveTurn: isActiveChatGeneration })
       const contextMaintenanceLimit = Math.max(1, Math.min(Math.trunc(operation.limit), chatContextMaintenanceMaxBatchSize))
       const recoveredCompactions = await recoverStaleChatContextCompactions(client, {
         now: operation.now,
         staleClaimBefore: operation.interruptedBefore,
-        limit: contextMaintenanceLimit
+        limit: contextMaintenanceLimit,
+        scheduledLease: operation.scheduledLease
       })
-      const context = await cleanupExpiredChatContextCheckpoints(client, { now: operation.now, limit: contextMaintenanceLimit })
+      const context = await cleanupExpiredChatContextCheckpoints(client, { now: operation.now, limit: contextMaintenanceLimit, scheduledLease: operation.scheduledLease })
       const assets = await cleanupExpiredChatAssets({ client, now: operation.now, limit: contextMaintenanceLimit })
       return { ...retention, recoveredCompactions, ...context, ...assets, hasMoreCheckpoints: context.hasMore, hasMore: retention.hasMore || context.hasMore || assets.hasMoreAssets }
     }
@@ -1601,6 +1612,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'list_accounts_due_for_cooldown_retest': {
       return listAccountsDueForCooldownRetestPage(operation.limit, operation.cursor)
     }
+    case 'list_account_api_key_runtime_states_due_for_probe':
+      return listAccountApiKeyRuntimeStatesDueForProbe(operation.limit)
     case 'find_account_for_cooldown_retest': {
       return findAccountForCooldownRetest(operation.accountId)
     }

@@ -35,6 +35,11 @@ export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 export interface GatewaySettings {
   gatewayTextRawBodyLimitMegabytes: number
   accountCircuitConfirmationFailuresRequired: number
+  gatewayUserRequestLimitPerMinute?: number
+  gatewayUserRequestLimitPerDay?: number
+  gatewayUserRequestLimitPerWeek?: number
+  gatewayUserRequestLimitPerMonth?: number
+  usageStatsTimezone?: string
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -100,6 +105,13 @@ function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): Gate
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
     accountCircuitConfirmationFailuresRequired: numberSetting(settings.accountCircuitConfirmationFailuresRequired, 'accountCircuitConfirmationFailuresRequired', 1, 5),
+    gatewayUserRequestLimitPerMinute: numberSetting(settings.gatewayUserRequestLimitPerMinute, 'gatewayUserRequestLimitPerMinute', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerDay: numberSetting(settings.gatewayUserRequestLimitPerDay, 'gatewayUserRequestLimitPerDay', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerWeek: numberSetting(settings.gatewayUserRequestLimitPerWeek, 'gatewayUserRequestLimitPerWeek', 0, 1_000_000_000),
+    gatewayUserRequestLimitPerMonth: numberSetting(settings.gatewayUserRequestLimitPerMonth, 'gatewayUserRequestLimitPerMonth', 0, 1_000_000_000),
+    usageStatsTimezone: typeof settings.usageStatsTimezone === 'string' && settings.usageStatsTimezone.trim()
+      ? settings.usageStatsTimezone.trim()
+      : 'UTC',
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -122,24 +134,7 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
     return withGatewaySettingsLocalDatabaseAccess(() => readGatewaySettings())
   }
   const settings = await getSettingsAsync()
-  return {
-    gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
-    accountCircuitConfirmationFailuresRequired: numberSetting(settings.accountCircuitConfirmationFailuresRequired, 'accountCircuitConfirmationFailuresRequired', 1, 5),
-    defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
-    temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
-    temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
-    streamCircuitBreakerEnabled: true,
-    textFirstResponseTimeoutSeconds: numberSetting(settings.textFirstResponseTimeoutSeconds, 'textFirstResponseTimeoutSeconds', 10, 3600),
-    textStreamIdleTimeoutSeconds: numberSetting(settings.textStreamIdleTimeoutSeconds, 'textStreamIdleTimeoutSeconds', 1, 3600),
-    textUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.textUncommittedAttemptMaxLifetimeSeconds, 'textUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
-    imageFirstResponseTimeoutSeconds: numberSetting(settings.imageFirstResponseTimeoutSeconds, 'imageFirstResponseTimeoutSeconds', 10, 3600),
-    imageStreamIdleTimeoutSeconds: numberSetting(settings.imageStreamIdleTimeoutSeconds, 'imageStreamIdleTimeoutSeconds', 1, 3600),
-    imageUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.imageUncommittedAttemptMaxLifetimeSeconds, 'imageUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
-    imageRequestWallTimeoutSeconds: numberSetting(settings.imageRequestWallTimeoutSeconds, 'imageRequestWallTimeoutSeconds', 60, 86400),
-    noAvailableAccountWaitTimeoutSeconds: numberSetting(settings.noAvailableAccountWaitTimeoutSeconds, 'noAvailableAccountWaitTimeoutSeconds', 10, 3600),
-    streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
-    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
-  }
+  return gatewaySettingsFromRawSettings(settings)
 }
 
 function withGatewaySettingsLocalDatabaseAccess<T>(operation: () => T): T {

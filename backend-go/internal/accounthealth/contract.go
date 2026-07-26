@@ -39,33 +39,131 @@ const (
 	ProbeOutcomeTaskFailure ProbeOutcome = "probe_task_failure"
 )
 
-// ProbeEvidence records the minimum evidence needed for a background probe
-// decision. ResponseObserved means a response header was received; it does not
-// merely mean a request was constructed or sent.
-type ProbeEvidence struct {
-	Success          bool
-	UpstreamURL      string
-	ResponseObserved bool
-	FramingComplete  bool
+// probeTransportKind records whether a real upstream exchange completed its
+// response framing, failed during transport, or produced no account-attributable
+// transport evidence. It deliberately does not infer completion from response
+// headers: a response body can still time out or be interrupted after headers.
+type probeTransportKind uint8
+
+const (
+	probeTransportFramingComplete probeTransportKind = iota + 1
+	probeTransportIncomplete
+	probeTransportUnknown
+)
+
+// ProbeTransportFailureKind contains only failures that can be attributed to a
+// real upstream attempt. Cancellation and executor failures use the separate
+// ProbeTaskFailureKind type so callers cannot pass them to IncompleteTransport.
+type ProbeTransportFailureKind uint8
+
+const (
+	ProbeTransportFailureTimeout ProbeTransportFailureKind = iota + 1
+	ProbeTransportFailureConnection
+	ProbeTransportFailureRead
+)
+
+// ProbeTaskFailureKind identifies non-account-attributable probe termination.
+type ProbeTaskFailureKind uint8
+
+const (
+	ProbeTaskFailureCanceled ProbeTaskFailureKind = iota + 1
+	ProbeTaskFailureExecutor
+)
+
+// ProbeTransportEvidence is the bounded transport fact produced by the probe
+// executor. Completed framing carries a status code; incomplete transport is
+// attributed from its typed failure rather than from whether headers arrived.
+type ProbeTransportEvidence struct {
+	kind             probeTransportKind
+	transportFailure ProbeTransportFailureKind
+	taskFailure      ProbeTaskFailureKind
+	statusCode       int
 }
 
-// ClassifyAutomaticProbeOutcome matches the Node runtime contract. A successful
-// probe wins. A fully framed diagnostic failure is neutral: it proves neither a
-// transport failure nor an account-state transition. Otherwise a failed probe
-// is account-attributable only after a real HTTP(S) upstream response has been
-// observed. Local synthetic failures, dial errors, malformed URLs, and requests
-// with no response evidence stay task failures.
+// FramingCompleteTransport records a fully consumed upstream response.
+func FramingCompleteTransport(statusCode int) ProbeTransportEvidence {
+	return ProbeTransportEvidence{kind: probeTransportFramingComplete, statusCode: statusCode}
+}
+
+// IncompleteTransport records a real upstream transport failure.
+func IncompleteTransport(failureKind ProbeTransportFailureKind) ProbeTransportEvidence {
+	return ProbeTransportEvidence{kind: probeTransportIncomplete, transportFailure: failureKind}
+}
+
+// UnknownTransport records cancellation or a local probe-executor failure.
+func UnknownTransport(failureKind ProbeTaskFailureKind) ProbeTransportEvidence {
+	return ProbeTransportEvidence{kind: probeTransportUnknown, taskFailure: failureKind}
+}
+
+// ProbeUpstreamAttempt identifies an exchange that was actually handed to the
+// real HTTP(S) upstream transport. Its zero value means no real attempt
+// happened, even if a URL was constructed locally.
+type ProbeUpstreamAttempt struct {
+	url     string
+	present bool
+}
+
+// NewProbeUpstreamAttempt records that execution handed this URL to the
+// upstream transport. URL validation remains part of classification so a
+// malformed or synthetic attempt still cannot affect account state.
+func NewProbeUpstreamAttempt(rawURL string) ProbeUpstreamAttempt {
+	return ProbeUpstreamAttempt{url: rawURL, present: true}
+}
+
+// ProbeEvidence records the minimum evidence needed for a background probe
+// decision. A local synthetic URL or an absent attempt is never account-
+// attributable.
+type ProbeEvidence struct {
+	Success         bool
+	UpstreamAttempt ProbeUpstreamAttempt
+	Transport       ProbeTransportEvidence
+}
+
+// ClassifyAutomaticProbeOutcome matches the Node runtime attribution contract.
+// A completed real upstream response may succeed or remain neutral on a
+// business-level failure. A real connection, timeout, or interrupted-read
+// failure is account-attributable even when framing never completed.
+// Cancellation, local synthetic errors, missing real attempts, and malformed or
+// contradictory evidence remain task failures.
 func ClassifyAutomaticProbeOutcome(evidence ProbeEvidence) ProbeOutcome {
-	if evidence.Success {
-		return ProbeOutcomeCompleteSuccess
+	if !evidence.UpstreamAttempt.present || !IsRealHTTPUpstreamURL(evidence.UpstreamAttempt.url) {
+		return ProbeOutcomeTaskFailure
 	}
-	if evidence.FramingComplete {
+
+	switch evidence.Transport.kind {
+	case probeTransportIncomplete:
+		if evidence.Transport.taskFailure == 0 && isAccountAttributableTransportFailure(evidence.Transport.transportFailure) {
+			return ProbeOutcomeUpstreamFailure
+		}
+	case probeTransportFramingComplete:
+		if evidence.Transport.transportFailure != 0 || evidence.Transport.taskFailure != 0 || !isHTTPStatusCode(evidence.Transport.statusCode) {
+			return ProbeOutcomeTaskFailure
+		}
+		if evidence.Success {
+			return ProbeOutcomeCompleteSuccess
+		}
 		return ProbeOutcomeFramingCompleteNeutral
+	case probeTransportUnknown:
+		return ProbeOutcomeTaskFailure
 	}
-	if evidence.ResponseObserved && IsRealHTTPUpstreamURL(evidence.UpstreamURL) {
-		return ProbeOutcomeUpstreamFailure
-	}
+
 	return ProbeOutcomeTaskFailure
+}
+
+func isAccountAttributableTransportFailure(kind ProbeTransportFailureKind) bool {
+	switch kind {
+	case ProbeTransportFailureTimeout, ProbeTransportFailureConnection, ProbeTransportFailureRead:
+		return true
+	default:
+		return false
+	}
+}
+
+func isHTTPStatusCode(statusCode int) bool {
+	// HTTP status codes are three digits. Keeping the syntactic upper bound
+	// accepts registered and extension codes without treating a zero value as
+	// proof that response framing completed.
+	return statusCode >= 100 && statusCode <= 999
 }
 
 func IsRealHTTPUpstreamURL(rawURL string) bool {

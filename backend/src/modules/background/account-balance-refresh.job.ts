@@ -4,7 +4,11 @@ import {
   listAccountsNeedingBalanceRefreshRecoveryAsync,
   type AccountBalanceRefreshCandidate
 } from '../../storage/account-balance.repository.js'
-import { refreshAccountBalanceCandidate } from '../accounts/account-balance-query.service.js'
+import {
+  refreshAccountBalanceCandidateWithOutcome,
+  type AccountBalanceRefreshOutcome,
+  type AccountBalanceRefreshResult
+} from '../accounts/account-balance-query.service.js'
 import { loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 
 const refreshBatchSize = 12
@@ -19,6 +23,11 @@ export interface AccountBalanceRefreshRunSummary {
   processedCount: number
   deferredCount: number
   candidateFailureCount: number
+  refreshedCount: number
+  leaseBusyCount: number
+  staleCount: number
+  failedCount: number
+  unsupportedCount: number
   durationMs: number
   warning?: string
 }
@@ -26,11 +35,15 @@ export interface AccountBalanceRefreshRunSummary {
 interface AccountBalanceRefreshDependencies {
   listRecoveryCandidates?: (options: { limit: number }) => Promise<AccountBalanceRefreshCandidate[]>
   listDueCandidates?: (options: { limit: number }) => Promise<AccountBalanceRefreshCandidate[]>
-  refreshCandidate?: (candidate: AccountBalanceRefreshCandidate) => Promise<unknown>
+  refreshCandidate?: (
+    candidate: AccountBalanceRefreshCandidate,
+    context: { signal: AbortSignal; deadlineAtMs: number }
+  ) => Promise<AccountBalanceRefreshResult | unknown>
   loadRuntimeAvailability?: typeof loadAccountRuntimeAvailabilityByKeys
   runBudgetMs?: number
   candidateTimeoutMs?: number
   now?: () => number
+  signal?: AbortSignal
 }
 
 class AccountBalanceRefreshCandidateTimeoutError extends Error {
@@ -41,12 +54,14 @@ class AccountBalanceRefreshCandidateTimeoutError extends Error {
 }
 
 export async function runAccountBalanceRefresh(
-  dependencies: AccountBalanceRefreshDependencies = {}
+  dependencies: AccountBalanceRefreshDependencies = {},
+  signal?: AbortSignal
 ): Promise<AccountBalanceRefreshRunSummary> {
+  const runSignal = signal ?? dependencies.signal
   const now = dependencies.now ?? Date.now
   const runBudgetMs = dependencies.runBudgetMs ?? refreshRunBudgetMs
   const candidateTimeoutMs = dependencies.candidateTimeoutMs ?? refreshCandidateTimeoutMs
-  const refreshCandidate = dependencies.refreshCandidate ?? refreshAccountBalanceCandidate
+  const refreshCandidate = dependencies.refreshCandidate ?? refreshAccountBalanceCandidateWithOutcome
   const startedAtMs = now()
   const recoveryCandidates = await (dependencies.listRecoveryCandidates ?? listAccountsNeedingBalanceRefreshRecoveryAsync)({ limit: recoveryBatchSize })
   const selectedCandidates = await (dependencies.listDueCandidates ?? listAccountsDueForBalanceRefreshAsync)({ limit: refreshBatchSize - recoveryCandidates.length })
@@ -57,45 +72,72 @@ export async function runAccountBalanceRefresh(
   )
   const runtimeDeferredCount = Math.max(0, selectedCandidates.length - candidates.length)
   let cursor = 0
-  let candidateFailureCount = 0
   let processedCount = 0
-  let taskFailed = false
-  let taskFailure: unknown
+  const outcomeCounts: Record<AccountBalanceRefreshOutcome, number> = {
+    refreshed: 0,
+    lease_busy: 0,
+    stale: 0,
+    failed: 0,
+    unsupported: 0
+  }
   await Promise.all(Array.from({ length: Math.min(refreshConcurrency, candidates.length) }, async () => {
     while (cursor < candidates.length) {
-      if (taskFailed) return
+      if (runSignal?.aborted) return
       const remainingRunMs = runBudgetMs - (now() - startedAtMs)
       if (remainingRunMs <= 0) return
       const candidate = candidates[cursor]
       cursor += 1
+      const candidateDeadlineAtMs = Math.min(startedAtMs + runBudgetMs, now() + candidateTimeoutMs)
+      const candidateDeadlineMs = Math.max(1, candidateDeadlineAtMs - now())
+      const candidateController = new AbortController()
+      const abortCandidate = () => candidateController.abort(runSignal?.reason)
+      runSignal?.addEventListener('abort', abortCandidate, { once: true })
+      if (runSignal?.aborted) abortCandidate()
+      const candidateTimeout = setTimeout(
+        () => candidateController.abort(new AccountBalanceRefreshCandidateTimeoutError(candidate.id)),
+        candidateDeadlineMs
+      )
       try {
-        await withTimeout(refreshCandidate(candidate), Math.min(candidateTimeoutMs, remainingRunMs), candidate.id)
+        const result = await refreshCandidate(candidate, {
+          signal: candidateController.signal,
+          deadlineAtMs: candidateDeadlineAtMs
+        })
+        const outcome = accountBalanceRefreshCandidateOutcome(result)
+        outcomeCounts[outcome] += 1
         processedCount += 1
       } catch (error) {
-        if (!(error instanceof AccountBalanceRefreshCandidateTimeoutError)) {
-          taskFailed = true
-          taskFailure = error
-          return
-        }
-        candidateFailureCount += 1
+        const outcome: AccountBalanceRefreshOutcome = candidateController.signal.aborted ? 'stale' : 'failed'
+        outcomeCounts[outcome] += 1
+        processedCount += 1
         logger.warn(errorLogFields(error, {
           event: 'account_balance_refresh_failed',
           accountId: candidate.id,
-          systemAccountId: candidate.systemAccountId
+          systemAccountId: candidate.systemAccountId,
+          outcome
         }), 'AI 账户上游余额刷新失败')
+      } finally {
+        clearTimeout(candidateTimeout)
+        runSignal?.removeEventListener('abort', abortCandidate)
       }
     }
   }))
-  if (taskFailed) throw taskFailure
+  const candidateFailureCount = outcomeCounts.stale + outcomeCounts.failed
+  const deferredCount = runtimeDeferredCount + Math.max(0, candidates.length - cursor)
+  const partial = candidateFailureCount > 0 || outcomeCounts.lease_busy > 0 || deferredCount > 0
   const summary: AccountBalanceRefreshRunSummary = {
-    outcome: candidateFailureCount > 0 ? 'partial' : 'success',
+    outcome: partial ? 'partial' : 'success',
     selectedCount: selectedCandidates.length,
     processedCount,
-    deferredCount: runtimeDeferredCount + Math.max(0, candidates.length - cursor),
+    deferredCount,
     candidateFailureCount,
+    refreshedCount: outcomeCounts.refreshed,
+    leaseBusyCount: outcomeCounts.lease_busy,
+    staleCount: outcomeCounts.stale,
+    failedCount: outcomeCounts.failed,
+    unsupportedCount: outcomeCounts.unsupported,
     durationMs: Math.max(0, now() - startedAtMs),
-    ...(candidateFailureCount > 0
-      ? { warning: `AI 账户余额刷新部分失败：${candidateFailureCount} 个候选失败，已完成 ${processedCount}/${candidates.length}` }
+    ...(partial
+      ? { warning: `AI 账户余额刷新部分完成：失败 ${candidateFailureCount}，租约占用 ${outcomeCounts.lease_busy}，延期 ${deferredCount}` }
       : {})
   }
   if (summary.outcome === 'partial') {
@@ -119,16 +161,14 @@ async function filterCallableBalanceRefreshCandidates(
   })
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, accountId: string): Promise<T> {
-  let timeout: NodeJS.Timeout | undefined
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new AccountBalanceRefreshCandidateTimeoutError(accountId)), Math.max(1, timeoutMs))
-      })
-    ])
-  } finally {
-    if (timeout) clearTimeout(timeout)
-  }
+function accountBalanceRefreshCandidateOutcome(result: unknown): AccountBalanceRefreshOutcome {
+  if (!result || typeof result !== 'object') return 'refreshed'
+  const outcome = (result as { outcome?: unknown }).outcome
+  return outcome === 'refreshed'
+    || outcome === 'lease_busy'
+    || outcome === 'stale'
+    || outcome === 'failed'
+    || outcome === 'unsupported'
+    ? outcome
+    : 'refreshed'
 }

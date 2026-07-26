@@ -17,11 +17,13 @@ import {
 } from '../../storage/runtime-logs.repository.js'
 import { setRotatedLogCleanupProtectionPredicate } from '../../shared/logger.js'
 import { writeBoundedProcessDiagnosticLineAsync } from '../../shared/process-fatal-diagnostic.js'
+import { parseRuntimeLogFileName } from '../../shared/runtime-log-file-name.js'
 import { parseRuntimeLogLineForIndex } from './runtime-log-line-parser.js'
 
 let importStarted = false
 let pollTimer: NodeJS.Timeout | undefined
 let activePollPromise: Promise<void> | undefined
+let pollRunCount = 0
 
 const runtimeLogTailPollIntervalMs = 1000
 const runtimeLogTailMaxBytesPerFile = 1024 * 1024
@@ -36,17 +38,6 @@ const runtimeLogFailureDiagnosticMaxBytes = 32 * 1024
 const runtimeLogFailureDiagnosticTextMaxBytes = 8 * 1024
 const runtimeLogFailureDiagnosticPathMaxBytes = 4 * 1024
 const runtimeLogFailureDiagnosticMaxCauseDepth = 4
-const runtimeLogCurrentRoles: Record<string, string> = {
-  'juhe-ai.log': 'server',
-  'juhe-ai.worker.log': 'worker',
-  'juhe-ai.db-service.log': 'db-service',
-  'juhe-ai.ingest-worker.log': 'ingest-worker',
-  'juhe-ai.usage-worker.log': 'usage-worker',
-  'juhe-ai.log-worker.log': 'log-worker',
-  'juhe-ai.stats-worker.log': 'stats-worker',
-  'juhe-ai.ops-worker.log': 'ops-worker',
-  'juhe-ai.temporary-maintenance-worker.log': 'temporary-maintenance-worker'
-}
 let runtimeLogDiscoveryDirectory: string | undefined
 let runtimeLogDiscoveryHandle: Dir | undefined
 let runtimeLogDiscoveryLastReadCount = 0
@@ -139,21 +130,36 @@ export function startRuntimeLogFileImport(): void {
   })
 
   setImmediate(() => {
-    void pollRuntimeLogFiles()
+    if (importStarted) void pollRuntimeLogFiles()
   })
 }
 
+export async function stopRuntimeLogFileImport(options: { drainTimeoutMs?: number } = {}): Promise<void> {
+  importStarted = false
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = undefined
+  }
+  const activePoll = activePollPromise
+  if (activePoll) {
+    await waitForRuntimeLogPoll(activePoll, options.drainTimeoutMs ?? 5_000)
+  }
+  await closeRuntimeLogDiscoveryHandle()
+}
+
 function pollRuntimeLogFiles(): Promise<void> {
+  if (!importStarted) return Promise.resolve()
   if (activePollPromise) return activePollPromise
   const promise = runRuntimeLogFilePoll().finally(() => {
     if (activePollPromise === promise) activePollPromise = undefined
-    scheduleNextPoll()
+    if (importStarted) scheduleNextPoll()
   })
   activePollPromise = promise
   return promise
 }
 
 async function runRuntimeLogFilePoll(): Promise<void> {
+  pollRunCount += 1
   try {
     const files = await discoverRuntimeLogFiles()
     runtimeLogFileImportRuntime.discoveredFileCount = files.length
@@ -163,6 +169,7 @@ async function runRuntimeLogFilePoll(): Promise<void> {
     runtimeLogFileImportRuntime.protectedRotatedFileCount = 0
     let pollError: string | undefined
     for (const file of files) {
+      if (!importStarted) break
       const succeeded = await importRuntimeLogFileDelta(file)
       if (!succeeded && !pollError) pollError = runtimeLogFileImportRuntime.lastError
     }
@@ -181,10 +188,10 @@ async function runRuntimeLogFilePoll(): Promise<void> {
 }
 
 function scheduleNextPoll(): void {
-  if (pollTimer) return
+  if (!importStarted || pollTimer) return
   pollTimer = setTimeout(() => {
     pollTimer = undefined
-    void pollRuntimeLogFiles()
+    if (importStarted) void pollRuntimeLogFiles()
   }, runtimeLogTailPollIntervalMs)
   pollTimer.unref()
 }
@@ -243,23 +250,23 @@ async function closeRuntimeLogDiscoveryHandle(): Promise<void> {
 }
 
 function runtimeLogFileRole(fileName: string): { role: string; kind: 'current' | 'rotated' } | undefined {
-  const currentRole = runtimeLogCurrentFileRole(fileName)
-  if (currentRole) return { role: currentRole, kind: 'current' }
-
-  const match = /^(.+?)\.(\d{8}T\d{6}Z)\.[0-9a-f-]+\.log$/i.exec(fileName)
-  if (!match) return undefined
-  const baseName = `${match[1]}.log`
-  const role = runtimeLogCurrentFileRole(baseName)
-  return role ? { role, kind: 'rotated' } : undefined
+  const match = parseRuntimeLogFileName(fileName)
+  return match ? { role: match.role, kind: match.kind } : undefined
 }
 
-function runtimeLogCurrentFileRole(fileName: string): string | undefined {
-  const legacyRole = runtimeLogCurrentRoles[fileName]
-  if (legacyRole) return legacyRole
-  const match = /^juhe-ai\.(worker|db-service|ingest-worker|usage-worker|log-worker|stats-worker|ops-worker|temporary-maintenance-worker)\.([A-Za-z0-9][A-Za-z0-9._-]{0,63})\.log$/.exec(fileName)
-  if (match) return `${match[1]}:${match[2]}`
-  const serverMatch = /^juhe-ai\.([A-Za-z0-9][A-Za-z0-9._-]{0,63})\.log$/.exec(fileName)
-  return serverMatch ? `server:${serverMatch[1]}` : undefined
+async function waitForRuntimeLogPoll(poll: Promise<void>, timeoutMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let settled = false
+    const settle = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolve()
+    }
+    const timeout = setTimeout(settle, Math.max(1, timeoutMs))
+    timeout.unref()
+    void poll.then(settle, settle)
+  })
 }
 
 async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencies: RuntimeLogFileImportTestDependencies = {}): Promise<boolean> {
@@ -806,7 +813,22 @@ export async function resetRuntimeLogFileDiscoveryForTest(): Promise<void> {
   await closeRuntimeLogDiscoveryHandle()
   runtimeLogDiscoveryDirectory = undefined
   runtimeLogDiscoveryLastReadCount = 0
+  pollRunCount = 0
   completedRuntimeLogFiles.clear()
+}
+
+export function getRuntimeLogFileImportLifecycleForTest(): {
+  started: boolean
+  pollScheduled: boolean
+  pollRunning: boolean
+  pollRunCount: number
+} {
+  return {
+    started: importStarted,
+    pollScheduled: Boolean(pollTimer),
+    pollRunning: Boolean(activePollPromise),
+    pollRunCount
+  }
 }
 
 export function getRuntimeLogDiscoveryReadCountForTest(): number {

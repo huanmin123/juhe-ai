@@ -585,6 +585,10 @@ export const DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS = [
 export const DEFAULT_SYSTEM_SETTINGS = [
   ['gatewayTextRawBodyLimitMegabytes', 16],
   ['accountCircuitConfirmationFailuresRequired', 2],
+  ['gatewayUserRequestLimitPerMinute', 0],
+  ['gatewayUserRequestLimitPerDay', 0],
+  ['gatewayUserRequestLimitPerWeek', 0],
+  ['gatewayUserRequestLimitPerMonth', 0],
   ['systemApiRateLimitIpReadPerMinute', 600],
   ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
   ['systemApiRateLimitIpWritePerMinute', 180],

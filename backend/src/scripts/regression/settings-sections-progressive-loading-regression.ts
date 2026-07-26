@@ -24,7 +24,17 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.sqliteReadWorkerPoolSize = 1
 
 const database = await import('../../storage/database.js')
-database.getBusinessDatabase()
+const businessDatabase = database.getBusinessDatabase()
+businessDatabase.prepare(`
+  DELETE FROM system_settings
+  WHERE system_account_id = 'sys_admin'
+    AND key IN (?, ?, ?, ?)
+`).run(
+  'gatewayUserRequestLimitPerMinute',
+  'gatewayUserRequestLimitPerDay',
+  'gatewayUserRequestLimitPerWeek',
+  'gatewayUserRequestLimitPerMonth'
+)
 const repository = await import('../../storage/settings.repository.js')
 const readWorkerPool = await import('../../storage/sqlite-read-worker-pool.js')
 let server: http.Server | undefined
@@ -37,6 +47,13 @@ try {
   const gatewayCore = await repository.getManagementSettingsSectionAsync('gateway-core')
   assert.equal(gatewayCore.imageRequestWallTimeoutSeconds, 3600, '通用网关图片整请求总时限默认值必须为 60 分钟')
   assert.equal(gatewayCore.chatImageGenerationTotalTimeoutSeconds, 900, 'AI 对话生图总超时默认值必须为 15 分钟')
+  const requestLimits = await repository.getManagementSettingsSectionAsync('user-request-limit')
+  assert.deepEqual(requestLimits, {
+    gatewayUserRequestLimitPerMinute: 0,
+    gatewayUserRequestLimitPerDay: 0,
+    gatewayUserRequestLimitPerWeek: 0,
+    gatewayUserRequestLimitPerMonth: 0
+  }, '旧数据库缺少新增限流设置行时必须兼容回退为无限制')
   assert(readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs > 0, 'SQLite section GET 必须实际经过 read-worker')
 
   const [{ createSystemApiApp }, repositories] = await Promise.all([

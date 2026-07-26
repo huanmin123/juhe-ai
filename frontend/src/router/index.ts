@@ -4,6 +4,7 @@ import { setMustChangePasswordHandler, setUnauthorizedHandler } from '@/api/clie
 import { clearAuthState, loadCurrentUser } from '@/composables/useAuth'
 import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { SystemAccountRole } from '@/types/domain'
+import { PROFILE_PATH, requiredPasswordProfileLocation } from '@/views/profile/profileNavigation'
 import { installRouteLoadRecovery, recoverRouteAssetLoadError } from './routeLoadRecovery'
 
 export { recoverRouteAssetLoadError }
@@ -590,6 +591,16 @@ export const router = createRouter({
         public: true
       }
     },
+    {
+      path: PROFILE_PATH,
+      component: () => import('@/views/profile/ProfileView.vue'),
+      meta: {
+        title: '个人信息',
+        description: '查看账号资料、权限能力并维护用户名称与登录密码。',
+        keepAlive: false,
+        viewScope: 'self'
+      }
+    },
     ...menuRoutes,
     {
       path: '/:pathMatch(.*)*',
@@ -639,10 +650,12 @@ router.beforeEach(async (to) => {
   }
   if (generation !== navigationGeneration) return false
   if (to.name === 'not-found') {
+    if (user?.mustChangePassword) return requiredPasswordProfileLocation('/')
     if (user) return getPreferredEntryPath(user)
     return { path: '/login', query: { redirect: '/' } }
   }
   if (to.meta.public) {
+    if (to.path === '/login' && user?.mustChangePassword) return requiredPasswordProfileLocation('/')
     if (to.path === '/login' && user) return getPreferredEntryPath(user)
     return true
   }
@@ -650,7 +663,11 @@ router.beforeEach(async (to) => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   if (to.path === '/') {
+    if (user.mustChangePassword) return requiredPasswordProfileLocation('/')
     return getPreferredEntryPath(user)
+  }
+  if (user.mustChangePassword && to.path !== PROFILE_PATH) {
+    return requiredPasswordProfileLocation(to.fullPath)
   }
   if (to.meta.roles?.length && !to.meta.roles.includes(user.role)) {
     return getPreferredEntryPath(user)
@@ -675,8 +692,8 @@ setMustChangePasswordHandler(() => {
   mustChangePasswordRefreshRunning = true
   void loadCurrentUser(true)
     .then((user) => {
-      if (user?.mustChangePassword && router.currentRoute.value.path === '/login') {
-        void router.replace(getPreferredEntryPath(user))
+      if (user?.mustChangePassword && router.currentRoute.value.path !== PROFILE_PATH) {
+        void router.replace(requiredPasswordProfileLocation(router.currentRoute.value.fullPath))
       }
     })
     .catch(() => undefined)

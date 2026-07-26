@@ -15,6 +15,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       password_hash TEXT NOT NULL,
       must_change_password INTEGER NOT NULL DEFAULT 0,
       image_generation_enabled INTEGER NOT NULL DEFAULT 0,
+      request_limits_json TEXT,
       last_login_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -392,6 +393,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       account_id TEXT NOT NULL,
       model TEXT NOT NULL,
       interval_minutes INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 10 AND 10080),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
       enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
       revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
       next_run_at TEXT NOT NULL,
@@ -415,7 +420,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'cleared')),
       action TEXT NOT NULL CHECK (action IN ('disable', 'fallback', 'quality_isolate')),
       trigger_run_id TEXT NOT NULL,
+      config_source TEXT NOT NULL DEFAULT 'manual' CHECK (config_source IN ('manual', 'schedule')),
+      config_source_id TEXT,
       policy_revision INTEGER NOT NULL CHECK (policy_revision >= 0),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      recovery_model TEXT,
       account_config_revision INTEGER NOT NULL CHECK (account_config_revision >= 1),
       before_status TEXT NOT NULL,
       after_status TEXT NOT NULL,
@@ -1238,6 +1249,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP TABLE IF EXISTS model_catalog_snapshot_rebuild_requests;
     DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
   `)
+  ensureSystemAccountRequestLimitsSchema(database)
   ensureApiKeyPurposeSchema(database)
   ensureProviderModelCacheStorageSchema(database)
   ensureCustomProviderModelCacheStorageSchema(database)
@@ -1247,6 +1259,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureSystemAccountRequestLimitsSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(system_accounts)').all() as Array<{ name?: string }>
+  if (columns.length === 0) return
+  if (!columns.some((column) => column.name === 'request_limits_json')) {
+    database.exec('ALTER TABLE system_accounts ADD COLUMN request_limits_json TEXT')
+  }
 }
 
 function ensureProviderModelCacheStorageSchema(database: DatabaseSync): void {

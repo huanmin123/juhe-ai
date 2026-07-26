@@ -26,8 +26,31 @@ interface NetworkCounterSnapshot {
   sampledAtMs: number
 }
 
+interface NetworkCounterTotals {
+  rxBytes: number
+  txBytes: number
+}
+
+export interface CachedNetworkMetricsSamplerOptions {
+  readCounters: () => Promise<NetworkCounterTotals | undefined>
+  now?: () => number
+  refreshIntervalMs?: number
+  failureRetryMs?: number
+  maxStaleMs?: number
+}
+
+const windowsNetworkRefreshIntervalMs = 60_000
+const windowsNetworkFailureRetryMs = 15_000
+const windowsNetworkMaxStaleMs = 5 * 60_000
+
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
+const windowsNetworkMetricsSampler = createCachedNetworkMetricsSampler({
+  readCounters: readWindowsNetworkCounters,
+  refreshIntervalMs: windowsNetworkRefreshIntervalMs,
+  failureRetryMs: windowsNetworkFailureRetryMs,
+  maxStaleMs: windowsNetworkMaxStaleMs
+})
 
 export async function currentMemoryMetrics(): Promise<MemoryMetricsSample> {
   const memoryTotalBytes = totalmem()
@@ -54,31 +77,68 @@ export function currentCpuPercent(): number | undefined {
 }
 
 export async function currentNetworkMetrics(): Promise<NetworkMetricsSample> {
+  if (platform() === 'win32') {
+    return await windowsNetworkMetricsSampler.current()
+  }
   const next = await readNetworkCounterSnapshot()
   if (!next) return {}
 
   const previous = previousNetworkSnapshot
   previousNetworkSnapshot = next
-  if (!previous) {
-    return {
-      networkRxTotalBytes: next.rxBytes,
-      networkTxTotalBytes: next.txBytes
-    }
-  }
+  return networkMetricsFromSnapshots(previous, next)
+}
 
-  const elapsedSeconds = (next.sampledAtMs - previous.sampledAtMs) / 1000
-  if (elapsedSeconds <= 0 || next.rxBytes < previous.rxBytes || next.txBytes < previous.txBytes) {
-    return {
-      networkRxTotalBytes: next.rxBytes,
-      networkTxTotalBytes: next.txBytes
-    }
+export function createCachedNetworkMetricsSampler(options: CachedNetworkMetricsSamplerOptions): {
+  current: () => Promise<NetworkMetricsSample>
+} {
+  const now = options.now ?? Date.now
+  const refreshIntervalMs = positiveInterval(options.refreshIntervalMs, windowsNetworkRefreshIntervalMs)
+  const failureRetryMs = positiveInterval(options.failureRetryMs, windowsNetworkFailureRetryMs)
+  const maxStaleMs = positiveInterval(options.maxStaleMs, windowsNetworkMaxStaleMs)
+  let previousSnapshot: NetworkCounterSnapshot | undefined
+  let latestMetrics: NetworkMetricsSample | undefined
+  let lastSuccessfulAtMs: number | undefined
+  let nextRefreshAtMs = 0
+  let refreshInFlight: Promise<void> | undefined
+
+  const refresh = (): void => {
+    if (refreshInFlight) return
+    refreshInFlight = Promise.resolve()
+      .then(() => options.readCounters())
+      .then((counters) => {
+        const sampledAtMs = now()
+        if (!counters) {
+          nextRefreshAtMs = sampledAtMs + failureRetryMs
+          return
+        }
+        const nextSnapshot = { ...counters, sampledAtMs }
+        latestMetrics = networkMetricsFromSnapshots(previousSnapshot, nextSnapshot)
+        previousSnapshot = nextSnapshot
+        lastSuccessfulAtMs = sampledAtMs
+        nextRefreshAtMs = sampledAtMs + refreshIntervalMs
+      })
+      .catch(() => {
+        nextRefreshAtMs = now() + failureRetryMs
+      })
+      .finally(() => {
+        refreshInFlight = undefined
+      })
+    refreshInFlight.catch(() => undefined)
   }
 
   return {
-    networkRxBytesPerSecond: (next.rxBytes - previous.rxBytes) / elapsedSeconds,
-    networkTxBytesPerSecond: (next.txBytes - previous.txBytes) / elapsedSeconds,
-    networkRxTotalBytes: next.rxBytes,
-    networkTxTotalBytes: next.txBytes
+    async current(): Promise<NetworkMetricsSample> {
+      const currentTimeMs = now()
+      if (currentTimeMs >= nextRefreshAtMs) refresh()
+      if (
+        !latestMetrics
+        || lastSuccessfulAtMs === undefined
+        || currentTimeMs - lastSuccessfulAtMs > maxStaleMs
+      ) {
+        return {}
+      }
+      return { ...latestMetrics }
+    }
   }
 }
 
@@ -143,11 +203,9 @@ function cpuSnapshot(): CpuSnapshot {
 
 async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | undefined> {
   const currentPlatform = platform()
-  const counters = currentPlatform === 'win32'
-    ? await readWindowsNetworkCounters()
-    : currentPlatform === 'darwin'
-      ? await readDarwinNetworkCounters()
-      : await readProcNetworkCounters()
+  const counters = currentPlatform === 'darwin'
+    ? await readDarwinNetworkCounters()
+    : await readProcNetworkCounters()
   if (!counters) return undefined
   return { ...counters, sampledAtMs: Date.now() }
 }
@@ -175,12 +233,18 @@ async function readProcNetworkCounters(): Promise<{ rxBytes: number; txBytes: nu
 
 async function readWindowsNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | undefined> {
   const command = `
-$adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.Name -notmatch 'Loopback' }
-$stats = foreach ($adapter in $adapters) { Get-NetAdapterStatistics -Name $adapter.Name -ErrorAction SilentlyContinue }
-$rx = ($stats | Measure-Object -Property ReceivedBytes -Sum).Sum
-$tx = ($stats | Measure-Object -Property SentBytes -Sum).Sum
-if ($null -eq $rx) { $rx = 0 }
-if ($null -eq $tx) { $tx = 0 }
+$rx = [double]0
+$tx = [double]0
+$adapters = [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()
+foreach ($adapter in $adapters) {
+  if ($adapter.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) { continue }
+  if ($adapter.NetworkInterfaceType -eq [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback) { continue }
+  try {
+    $stats = $adapter.GetIPv4Statistics()
+    $rx += [double]$stats.BytesReceived
+    $tx += [double]$stats.BytesSent
+  } catch {}
+}
 [pscustomobject]@{ rxBytes = [double]$rx; txBytes = [double]$tx } | ConvertTo-Json -Compress
 `.trim()
   try {
@@ -243,6 +307,35 @@ function percentUsed(memoryTotalBytes: number, memoryFreeBytes: number): number 
 function clampBytes(value: number, max: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.min(Math.max(Math.round(value), 0), max)
+}
+
+function networkMetricsFromSnapshots(
+  previous: NetworkCounterSnapshot | undefined,
+  next: NetworkCounterSnapshot
+): NetworkMetricsSample {
+  if (!previous) {
+    return {
+      networkRxTotalBytes: next.rxBytes,
+      networkTxTotalBytes: next.txBytes
+    }
+  }
+  const elapsedSeconds = (next.sampledAtMs - previous.sampledAtMs) / 1000
+  if (elapsedSeconds <= 0 || next.rxBytes < previous.rxBytes || next.txBytes < previous.txBytes) {
+    return {
+      networkRxTotalBytes: next.rxBytes,
+      networkTxTotalBytes: next.txBytes
+    }
+  }
+  return {
+    networkRxBytesPerSecond: (next.rxBytes - previous.rxBytes) / elapsedSeconds,
+    networkTxBytesPerSecond: (next.txBytes - previous.txBytes) / elapsedSeconds,
+    networkRxTotalBytes: next.rxBytes,
+    networkTxTotalBytes: next.txBytes
+  }
+}
+
+function positiveInterval(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
 }
 
 function numberValue(value: unknown): number | undefined {

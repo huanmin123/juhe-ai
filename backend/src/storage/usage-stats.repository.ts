@@ -9,12 +9,19 @@ import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type Acces
 import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import {
+  pinScheduledJobLeaseInTransaction,
+  ScheduledJobLeaseLostError,
+  type ScheduledJobLeaseFence
+} from './scheduled-job-lease.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
   refreshSystemMetricsTrendWindowSnapshotsStage,
-  refreshSystemMetricsTrendWindowSnapshotsStageAsync
+  refreshSystemMetricsTrendWindowSnapshotsStageAsync,
+  systemMetricsTrendSourceWatermark,
+  systemMetricsTrendSourceWatermarkAsync
 } from './system-metrics.repository.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, dateKeysInRange, hourKey, minuteKey, monthKey, usageStatsTimezone, usageStatsTimezoneAsync, weekKey } from './usage-stats-helpers.js'
@@ -113,7 +120,9 @@ export {
   insertProcessEventLoopSample,
   insertProcessEventLoopSampleAsync,
   insertSystemMetricsSample,
-  insertSystemMetricsSampleAsync
+  insertSystemMetricsSampleAsync,
+  insertSystemMetricsSampleBatchAsync,
+  insertSystemMetricsSampleBatchWithClientAsync
 } from './system-metrics.repository.js'
 export {
   GROUP_ACCOUNT_STATS_DIRTY_ALL,
@@ -243,7 +252,7 @@ export function aggregateUsageStatsBatch(limit = 2000, safeCreatedBeforeOverride
   return processedRows
 }
 
-export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBeforeOverride?: string): Promise<number> {
+export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBeforeOverride?: string, scheduledLease?: ScheduledJobLeaseFence): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return aggregateUsageStatsBatch(limit, safeCreatedBeforeOverride)
   }
@@ -254,6 +263,7 @@ export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBef
   const timezone = await usageStatsTimezoneAsync()
   try {
     return await client.transaction(async (tx) => {
+      await pinScheduledLeaseIfPresent(tx, scheduledLease)
       const state = await postgresStatsJobState(tx)
       const rows = (await tx.query<UsageStatsRecordRow>(`
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
@@ -285,8 +295,12 @@ export async function aggregateUsageStatsBatchAsync(limit = 2000, safeCreatedBef
       return rows.length
     })
   } catch (error) {
-    await updatePostgresStatsJobState(client, {
-      lastErrorMessage: error instanceof Error ? error.message : '用量统计 PG 聚合失败'
+    if (error instanceof ScheduledJobLeaseLostError) throw error
+    await client.transaction(async (tx) => {
+      await pinScheduledLeaseIfPresent(tx, scheduledLease)
+      await updatePostgresStatsJobState(tx, {
+        lastErrorMessage: error instanceof Error ? error.message : '用量统计 PG 聚合失败'
+      })
     }).catch(() => undefined)
     throw error
   }
@@ -404,6 +418,7 @@ async function aggregatePostgresUsageStatsRows(client: DatabaseClient, rows: Usa
   await upsertPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
   await upsertPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
   await upsertPostgresAccountHealthEntries(client, [...accountHealthEntries.values()], updatedAt)
+  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], updatedAt)
 }
 
 export async function subtractPostgresUsageStatsRows(
@@ -464,6 +479,82 @@ export async function subtractPostgresUsageStatsRows(
   await subtractPostgresUsageErrorEntries(client, [...errorEntries.values()], updatedAt)
   await subtractPostgresAccountQualityEntries(client, [...accountQualityEntries.values()], updatedAt)
   await deletePostgresAccountHealthRecords(client, accountHealthRecordIds)
+  await markPostgresDerivedWindowDirtyScopes(client, [...timeEntries.values()], updatedAt)
+}
+
+async function markPostgresDerivedWindowDirtyScopes(
+  client: DatabaseClient,
+  entries: PostgresAggregatedUsageStatsTimeEntry[],
+  updatedAt: string
+): Promise<void> {
+  const dailyEntries = entries.filter((entry) => entry.bucket.tableName === 'usage_stats_daily')
+  const overviewScopes = new Map<string, { systemAccountId: string; scopeId: string; minDate: string }>()
+  const aiPerformanceScopes = new Map<string, { systemAccountId: string; minDate: string; maxDate: string }>()
+  for (const entry of dailyEntries) {
+    if (entry.scopeType === 'system_account') {
+      const existing = overviewScopes.get(entry.systemAccountId)
+      overviewScopes.set(entry.systemAccountId, {
+        systemAccountId: entry.systemAccountId,
+        scopeId: entry.scopeId,
+        minDate: existing && existing.minDate < entry.timeValue ? existing.minDate : entry.timeValue
+      })
+    }
+    if (entry.scopeType === 'account') {
+      const existing = aiPerformanceScopes.get(entry.systemAccountId)
+      aiPerformanceScopes.set(entry.systemAccountId, {
+        systemAccountId: entry.systemAccountId,
+        minDate: existing && existing.minDate < entry.timeValue ? existing.minDate : entry.timeValue,
+        maxDate: existing && existing.maxDate > entry.timeValue ? existing.maxDate : entry.timeValue
+      })
+    }
+  }
+  for (const chunk of chunkValues([...overviewScopes.values()], 500)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.usage_overview_dirty_scopes (
+        system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+      ) VALUES ${postgresMultiRowPlaceholders(chunk.length, 6)}
+      ON CONFLICT(system_account_id) DO UPDATE SET
+        scope_id = EXCLUDED.scope_id,
+        min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
+        generation = usage_overview_dirty_scopes.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((scope) => [scope.systemAccountId, scope.scopeId, scope.minDate, 1, updatedAt, updatedAt]))
+  }
+  for (const chunk of chunkValues([...aiPerformanceScopes.values()], 500)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.ai_performance_summary_dirty_system_accounts (
+        system_account_id, min_stat_date, max_stat_date, generation, first_dirty_at, updated_at
+      ) VALUES ${postgresMultiRowPlaceholders(chunk.length, 6)}
+      ON CONFLICT(system_account_id) DO UPDATE SET
+        min_stat_date = LEAST(ai_performance_summary_dirty_system_accounts.min_stat_date, EXCLUDED.min_stat_date),
+        max_stat_date = GREATEST(ai_performance_summary_dirty_system_accounts.max_stat_date, EXCLUDED.max_stat_date),
+        generation = ai_performance_summary_dirty_system_accounts.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((scope) => [scope.systemAccountId, scope.minDate, scope.maxDate, 1, updatedAt, updatedAt]))
+  }
+
+  const quotaScopeTypes = new Set([
+    'api_key',
+    'account_authorization',
+    'group_authorization',
+    'account_authorization_team',
+    'group_authorization_team'
+  ])
+  const quotaScopes = new Map<string, PostgresAggregatedUsageStatsTimeEntry>()
+  for (const entry of entries) {
+    if (entry.bucket.tableName !== 'usage_stats_hourly' || !quotaScopeTypes.has(entry.scopeType)) continue
+    quotaScopes.set(postgresUsageStatsEntryKey(entry.systemAccountId, entry.scopeType, entry.scopeId), entry)
+  }
+  for (const chunk of chunkValues([...quotaScopes.values()], 500)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+        system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+      ) VALUES ${postgresMultiRowPlaceholders(chunk.length, 6)}
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+        generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((scope) => [scope.systemAccountId, scope.scopeType, scope.scopeId, 1, updatedAt, updatedAt]))
+  }
 }
 
 async function createPostgresUsageStatsAuthorizationLookup(
@@ -1641,6 +1732,7 @@ export interface RefreshUsageRankSnapshotsInStagesOptions {
   stageNames?: readonly UsageRankSnapshotStageName[]
   skipIfUnchanged?: boolean
   jobName?: string
+  scheduledLease?: ScheduledJobLeaseFence
 }
 
 export function refreshUsageRankSnapshots(): void {
@@ -1670,29 +1762,199 @@ export function refreshUsageQuotaHourlyWindowsCache(): void {
   }
 }
 
-export async function refreshUsageQuotaHourlyWindowsCacheAsync(): Promise<void> {
+export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: ScheduledJobLeaseFence): Promise<{ changed: boolean; hasMore: boolean }> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     refreshUsageQuotaHourlyWindowsCache()
-    return
+    return { changed: true, hasMore: false }
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const timezone = await usageStatsTimezoneAsync()
-  await client.transaction(async (tx) => {
+  return await client.transaction(async (tx) => {
+    await pinScheduledLeaseIfPresent(tx, scheduledLease)
     const updatedAt = nowIso()
-    await tx.execute('DELETE FROM juhe_stats.usage_quota_hourly_windows')
-    for (const hours of await listPostgresRequestQuotaHourlyWindowHours(tx)) {
+    const windows = await listPostgresRequestQuotaHourlyWindowHours(tx)
+    const configSeedHasMore = await seedPostgresQuotaWindowConfigDirtyScopes(tx, windows, updatedAt)
+    const nowMs = Date.now()
+    const currentHour = hourKey(new Date(nowMs), timezone)
+    const expiryState = await tx.one<{ cursor_id?: string | null }>(`
+      SELECT cursor_id FROM juhe_stats.stats_job_state
+      WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_quota_hourly_windows_expiry'
+    `)
+    if (expiryState?.cursor_id !== currentHour) {
+      const expiredHours = [...new Set(windows.map((hours) => hourKey(new Date(nowMs - (hours + 1) * HOUR_MS), timezone)))]
       await tx.execute(`
-        INSERT INTO juhe_stats.usage_quota_hourly_windows (
-          system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+        INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+          system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
         )
-        SELECT system_account_id, scope_type, scope_id, ?, COALESCE(SUM(total_cost_usd), 0), ?
+        SELECT DISTINCT system_account_id, scope_type, scope_id, 1, ?, ?
         FROM juhe_stats.usage_stats_hourly
-        WHERE stat_hour >= ?
-        GROUP BY system_account_id, scope_type, scope_id
-        HAVING COALESCE(SUM(total_cost_usd), 0) > 0
-      `, [hours, updatedAt, hourKey(new Date(Date.now() - hours * HOUR_MS), timezone)])
+        WHERE stat_hour = ANY(?::text[])
+          AND scope_type = ANY(?::text[])
+        ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+          generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+          updated_at = EXCLUDED.updated_at
+      `, [updatedAt, updatedAt, expiredHours, [
+        'api_key',
+        'account_authorization',
+        'group_authorization',
+        'account_authorization_team',
+        'group_authorization_team'
+      ]])
+      await tx.execute(`
+        INSERT INTO juhe_stats.stats_job_state (
+          scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+        ) VALUES ('global', '', 'usage_quota_hourly_windows_expiry', ?, ?, ?, ?)
+        ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+          cursor_created_at = EXCLUDED.cursor_created_at,
+          cursor_id = EXCLUDED.cursor_id,
+          last_success_at = EXCLUDED.last_success_at,
+          updated_at = EXCLUDED.updated_at
+      `, [updatedAt, currentHour, updatedAt, updatedAt])
+    }
+
+    const scopeLimit = Math.max(1, Math.min(128, Math.floor(4096 / Math.max(1, windows.length))))
+    const dirtyScopes = await tx.query<{
+      system_account_id: string
+      scope_type: string
+      scope_id: string
+      generation: number | string
+    }>(`
+      SELECT system_account_id, scope_type, scope_id, generation
+      FROM juhe_stats.usage_quota_hourly_window_dirty_scopes
+      ORDER BY updated_at, system_account_id, scope_type, scope_id
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+    `, [scopeLimit])
+    if (dirtyScopes.length === 0) return { changed: false, hasMore: configSeedHasMore }
+
+    const claimedValues = dirtyScopes.map(() => '(?, ?, ?)').join(', ')
+    const claimedParams = dirtyScopes.flatMap((scope) => [scope.system_account_id, scope.scope_type, scope.scope_id])
+    await tx.execute(`
+      WITH claimed(system_account_id, scope_type, scope_id) AS (VALUES ${claimedValues})
+      DELETE FROM juhe_stats.usage_quota_hourly_windows target
+      USING claimed
+      WHERE target.system_account_id = claimed.system_account_id
+        AND target.scope_type = claimed.scope_type
+        AND target.scope_id = claimed.scope_id
+    `, claimedParams)
+
+    const windowValues = windows.map(() => '(?::integer, ?::text)').join(', ')
+    const windowParams = windows.flatMap((hours) => [hours, hourKey(new Date(nowMs - hours * HOUR_MS), timezone)])
+    await tx.execute(`
+      WITH claimed(system_account_id, scope_type, scope_id) AS (VALUES ${claimedValues}),
+      windows(window_hours, cutoff_hour) AS (VALUES ${windowValues})
+      INSERT INTO juhe_stats.usage_quota_hourly_windows (
+        system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+      )
+      SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, windows.window_hours,
+        COALESCE(SUM(hourly.total_cost_usd), 0), ?
+      FROM claimed
+      CROSS JOIN windows
+      LEFT JOIN juhe_stats.usage_stats_hourly hourly
+        ON hourly.system_account_id = claimed.system_account_id
+        AND hourly.scope_type = claimed.scope_type
+        AND hourly.scope_id = claimed.scope_id
+        AND hourly.stat_hour >= windows.cutoff_hour
+      GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, windows.window_hours
+      HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
+      ON CONFLICT(system_account_id, scope_type, scope_id, window_hours) DO UPDATE SET
+        total_cost_usd = EXCLUDED.total_cost_usd,
+        updated_at = EXCLUDED.updated_at
+    `, [...claimedParams, ...windowParams, updatedAt])
+
+    const dirtyValues = dirtyScopes.map(() => '(?, ?, ?, ?::bigint)').join(', ')
+    await tx.execute(`
+      DELETE FROM juhe_stats.usage_quota_hourly_window_dirty_scopes dirty
+      USING (VALUES ${dirtyValues}) AS claimed(system_account_id, scope_type, scope_id, generation)
+      WHERE dirty.system_account_id = claimed.system_account_id
+        AND dirty.scope_type = claimed.scope_type
+        AND dirty.scope_id = claimed.scope_id
+        AND dirty.generation = claimed.generation
+    `, dirtyScopes.flatMap((scope) => [scope.system_account_id, scope.scope_type, scope.scope_id, scope.generation]))
+    return {
+      changed: true,
+      hasMore: configSeedHasMore || dirtyScopes.length >= scopeLimit
     }
   })
+}
+
+async function seedPostgresQuotaWindowConfigDirtyScopes(
+  client: DatabaseClient,
+  windows: number[],
+  updatedAt: string
+): Promise<boolean> {
+  const stateName = 'usage_quota_hourly_windows_config_seed'
+  const configSignature = windows.join(',')
+  const state = await client.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT cursor_created_at, cursor_id FROM juhe_stats.stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+  `, [stateName])
+  const cursor = state?.cursor_created_at === configSignature ? decodeQuotaWindowSeedCursor(state.cursor_id) : undefined
+  if (state?.cursor_created_at === configSignature && state.cursor_id === '__done__') return false
+  const rows = await client.query<{
+    system_account_id: string
+    scope_type: string
+    scope_id: string
+  }>(`
+    SELECT system_account_id, scope_type, scope_id
+    FROM juhe_stats.usage_stats_totals
+    WHERE scope_type = ANY(?::text[])
+      AND (
+        ? = ''
+        OR (system_account_id, scope_type, scope_id) > (?, ?, ?)
+      )
+    ORDER BY system_account_id, scope_type, scope_id
+    LIMIT 128
+  `, [[
+    'api_key',
+    'account_authorization',
+    'group_authorization',
+    'account_authorization_team',
+    'group_authorization_team'
+  ], cursor?.systemAccountId ?? '', cursor?.systemAccountId ?? '', cursor?.scopeType ?? '', cursor?.scopeId ?? ''])
+  for (const chunk of chunkValues(rows, 128)) {
+    await client.execute(`
+      INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+        system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+      ) VALUES ${postgresMultiRowPlaceholders(chunk.length, 6)}
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+        generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((row) => [row.system_account_id, row.scope_type, row.scope_id, 1, updatedAt, updatedAt]))
+  }
+  const nextCursor = rows.length < 128
+    ? '__done__'
+    : encodeQuotaWindowSeedCursor(rows.at(-1)!)
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('global', '', ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = EXCLUDED.cursor_created_at,
+      cursor_id = EXCLUDED.cursor_id,
+      last_success_at = EXCLUDED.last_success_at,
+      updated_at = EXCLUDED.updated_at
+  `, [stateName, configSignature, nextCursor, updatedAt, updatedAt])
+  return nextCursor !== '__done__'
+}
+
+function encodeQuotaWindowSeedCursor(cursor: { system_account_id: string; scope_type: string; scope_id: string }): string {
+  return JSON.stringify([cursor.system_account_id, cursor.scope_type, cursor.scope_id])
+}
+
+function decodeQuotaWindowSeedCursor(value: string | null | undefined): {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+} | undefined {
+  if (!value || value === '__done__') return undefined
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed) || parsed.length !== 3 || parsed.some((entry) => typeof entry !== 'string')) return undefined
+    return { systemAccountId: parsed[0], scopeType: parsed[1], scopeId: parsed[2] }
+  } catch {
+    return undefined
+  }
 }
 
 export async function refreshHotUsageWindowSnapshots(options: Omit<RefreshUsageRankSnapshotsInStagesOptions, 'stageNames'> = {}): Promise<UsageRankSnapshotRefreshResult> {
@@ -1779,7 +2041,9 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     ? await usageRankSnapshotRefreshJobStateAsync(client, jobName)
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
-  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+  const sourceUnchanged = Boolean(previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
+  const hasPendingDerivedWork = sourceUnchanged && await usageRankSnapshotStagesHavePendingWorkAsync(client, stages)
+  if (sourceUnchanged && !hasPendingDerivedWork) {
     return {
       durationMs: Date.now() - startedAt,
       stages: [],
@@ -1798,11 +2062,13 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     switch (stage.name) {
       case 'usage_overview_windows':
         await client.transaction(async (tx) => {
-          await refreshUsageOverviewTodayWindowSnapshotsAsync(tx, context)
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
+          await refreshUsageOverviewWindowSnapshotsIncrementalAsync(tx, context, context.previousSourceWatermark, context.sourceWatermark)
         })
         break
       case 'usage_scope_range_windows':
-        await refreshUsageScopeRangeTodayWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        if (sourceUnchanged) break
+        await refreshUsageScopeRangeTodayWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop, options.scheduledLease)
         break
       default:
         throw new Error(`热用量窗口刷新不支持阶段: ${stage.name}`)
@@ -1816,10 +2082,13 @@ async function refreshHotUsageWindowSnapshotsPostgres(options: Omit<RefreshUsage
     }
   }
   if (options.skipIfUnchanged && sourceWatermark !== undefined) {
-    await updateUsageRankSnapshotRefreshJobStateAsync(client, jobName, {
-      sourceWatermark,
-      refreshDate: context.todayKey,
-      lastSuccessAt: nowIso()
+    await client.transaction(async (tx) => {
+      await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
+      await updateUsageRankSnapshotRefreshJobStateAsync(tx, jobName, {
+        sourceWatermark,
+        refreshDate: context.todayKey,
+        lastSuccessAt: nowIso()
+      })
     })
   }
   return {
@@ -1918,7 +2187,9 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
     : undefined
   const context = await createUsageRankSnapshotContextAsync(client)
 
-  if (previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey) {
+  const sourceUnchanged = Boolean(previousState && previousState.cursor_created_at === sourceWatermark && previousState.cursor_id === context.todayKey)
+  const hasPendingDerivedWork = sourceUnchanged && await usageRankSnapshotStagesHavePendingWorkAsync(client, stages)
+  if (sourceUnchanged && !hasPendingDerivedWork) {
     return {
       durationMs: Date.now() - startedAt,
       stages: [],
@@ -1941,49 +2212,57 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
     switch (stage.name) {
       case 'account_last7d_request_rank':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshAccountLast7dRequestRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
         })
         break
       case 'caller_account_last7d_request_rank':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshCallerAccountLast7dRequestRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
         })
         break
       case 'api_key_current_month_cost_rank':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshApiKeyCurrentMonthCostRankSnapshotAsync(tx, context.snapshotAt, context.updatedAt, context.timezone)
         })
         break
       case 'account_authorization_current_month_cost_rank':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshAuthorizationCurrentMonthCostRankSnapshotAsync(tx, 'account_authorization', context.snapshotAt, context.updatedAt, context.timezone)
         })
         break
       case 'group_authorization_current_month_cost_rank':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshAuthorizationCurrentMonthCostRankSnapshotAsync(tx, 'group_authorization', context.snapshotAt, context.updatedAt, context.timezone)
         })
         break
       case 'usage_overview_windows':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshUsageOverviewWindowSnapshotsIncrementalAsync(tx, context, context.previousSourceWatermark, context.sourceWatermark)
         })
         break
       case 'ai_performance_summary_windows':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshAiPerformanceSummaryWindowSnapshotsAsync(tx, context)
         })
         break
       case 'system_metrics_trend_windows':
         await client.transaction(async (tx) => {
+          await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
           await refreshSystemMetricsTrendWindowSnapshotsStageAsync(tx, context)
         })
         break
       case 'usage_scope_range_windows':
-        await refreshUsageScopeRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark)
+        await refreshUsageScopeRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop, context.previousSourceWatermark, context.sourceWatermark, options.scheduledLease)
         break
       case 'authorization_usage_range_windows':
-        await refreshAuthorizationUsageRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop)
+        await refreshAuthorizationUsageRangeWindowSnapshotsAsync(client, context.updatedAt, context.timezone, yieldToEventLoop, options.scheduledLease)
         break
       default:
         throw new Error(`PostgreSQL 模式暂不支持刷新用量排行阶段: ${stage.name}`)
@@ -1997,10 +2276,13 @@ async function refreshUsageRankSnapshotsInStagesPostgres(options: RefreshUsageRa
     }
   }
   if (options.skipIfUnchanged && sourceWatermark !== undefined) {
-    await updateUsageRankSnapshotRefreshJobStateAsync(client, jobName, {
-      sourceWatermark,
-      refreshDate: context.todayKey,
-      lastSuccessAt: nowIso()
+    await client.transaction(async (tx) => {
+      await pinScheduledLeaseIfPresent(tx, options.scheduledLease)
+      await updateUsageRankSnapshotRefreshJobStateAsync(tx, jobName, {
+        sourceWatermark,
+        refreshDate: context.todayKey,
+        lastSuccessAt: nowIso()
+      })
     })
   }
   return {
@@ -2037,6 +2319,9 @@ function usageRankSnapshotDefaultJobName(stages: UsageRankSnapshotStage[]): stri
 }
 
 function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageRankSnapshotStage[]): string {
+  if (stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows') {
+    return systemMetricsTrendSourceWatermark(database)
+  }
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
   for (const table of sourceTables) {
@@ -2050,6 +2335,9 @@ function usageRankSnapshotSourceWatermark(database: DatabaseSync, stages: UsageR
 }
 
 async function usageRankSnapshotSourceWatermarkAsync(client: DatabaseClient, stages: UsageRankSnapshotStage[]): Promise<string> {
+  if (stages.length === 1 && stages[0]?.name === 'system_metrics_trend_windows') {
+    return await systemMetricsTrendSourceWatermarkAsync(client)
+  }
   const sourceTables = [...new Set(stages.flatMap((stage) => stage.sourceTables))]
   let watermark = USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK
   for (const table of sourceTables) {
@@ -2060,6 +2348,26 @@ async function usageRankSnapshotSourceWatermarkAsync(client: DatabaseClient, sta
     }
   }
   return watermark
+}
+
+async function usageRankSnapshotStagesHavePendingWorkAsync(
+  client: DatabaseClient,
+  stages: UsageRankSnapshotStage[]
+): Promise<boolean> {
+  const stageNames = new Set(stages.map((stage) => stage.name))
+  if (stageNames.has('usage_overview_windows')) {
+    const row = await client.one<{ pending?: number | string }>(`
+      SELECT 1 AS pending FROM ${statsTable(client, 'usage_overview_dirty_scopes')} LIMIT 1
+    `)
+    if (row) return true
+  }
+  if (stageNames.has('ai_performance_summary_windows')) {
+    const row = await client.one<{ pending?: number | string }>(`
+      SELECT 1 AS pending FROM ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')} LIMIT 1
+    `)
+    if (row) return true
+  }
+  return false
 }
 
 function usageRankSnapshotRefreshJobState(database: DatabaseSync, jobName: string): StatsJobStateRow | undefined {
@@ -2117,6 +2425,10 @@ async function updateUsageRankSnapshotRefreshJobStateAsync(client: DatabaseClien
     input.lastSuccessAt,
     nowIso()
   ])
+}
+
+async function pinScheduledLeaseIfPresent(client: DatabaseClient, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
+  if (scheduledLease) await pinScheduledJobLeaseInTransaction(client, scheduledLease)
 }
 
 async function runUsageRankSnapshotStageInBackground(
@@ -2246,12 +2558,99 @@ function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, cont
 }
 
 async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageRankSnapshotContext): Promise<void> {
-  await client.execute(`DELETE FROM ${statsTable(client, 'ai_performance_summary_windows')}`)
-  const rows: unknown[][] = []
-  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
-    rows.push(...await aiPerformanceSummaryWindowRowsAsync(client, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt))
+  await seedAiPerformanceSummaryRolloverDirtyAccountsAsync(client, context)
+  const dirtyRows = await client.query<{
+    system_account_id: string
+    min_stat_date: string
+    max_stat_date: string
+    generation: number | string
+  }>(`
+    SELECT system_account_id, min_stat_date, max_stat_date, generation
+    FROM ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')}
+    ORDER BY updated_at, system_account_id
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+  `)
+  if (dirtyRows.length === 0) return
+
+  for (const dirty of dirtyRows) {
+    const ranges = context.ranges.filter((range) => (
+      range.startDate <= dirty.max_stat_date && range.endDate >= dirty.min_stat_date
+    ))
+    if (ranges.length === 0) continue
+    const earliestDate = ranges.reduce((value, range) => range.startDate < value ? range.startDate : value, ranges[0]!.startDate)
+    const latestDate = ranges.reduce((value, range) => range.endDate > value ? range.endDate : value, ranges[0]!.endDate)
+    const rows = await aiPerformanceSummaryWindowRowsAsync(
+      client,
+      dirty.system_account_id,
+      ranges,
+      earliestDate,
+      latestDate,
+      context.updatedAt
+    )
+    await insertAiPerformanceSummaryWindowRowsAsync(client, rows)
   }
-  await insertAiPerformanceSummaryWindowRowsAsync(client, rows)
+  const claimedValues = dirtyRows.map(() => '(?, ?::bigint)').join(', ')
+  await client.execute(`
+    DELETE FROM ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')} dirty
+    USING (VALUES ${claimedValues}) AS claimed(system_account_id, generation)
+    WHERE dirty.system_account_id = claimed.system_account_id
+      AND dirty.generation = claimed.generation
+  `, dirtyRows.flatMap((row) => [row.system_account_id, row.generation]))
+}
+
+async function seedAiPerformanceSummaryRolloverDirtyAccountsAsync(
+  client: DatabaseClient,
+  context: UsageRankSnapshotContext
+): Promise<void> {
+  const stateTable = statsTable(client, 'stats_job_state')
+  const state = await client.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT cursor_created_at, cursor_id FROM ${stateTable}
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'ai_performance_summary_daily_seed'
+  `)
+  const cursor = state?.cursor_created_at === context.todayKey ? state.cursor_id ?? '' : ''
+  if (cursor === '__done__') return
+  const accounts = await client.query<{ system_account_id: string }>(`
+    SELECT system_account_id
+    FROM (
+      SELECT system_account_id
+      FROM ${statsTable(client, 'usage_stats_totals')}
+      WHERE scope_type = 'system_account'
+      UNION
+      SELECT system_account_id
+      FROM ${statsTable(client, 'ai_performance_summary_windows')}
+    ) existing_accounts
+    WHERE system_account_id > ?
+    ORDER BY system_account_id
+    LIMIT 128
+  `, [cursor])
+  if (cursor === '' && !accounts.some((account) => account.system_account_id === GLOBAL_STATS_SYSTEM_ACCOUNT_ID)) {
+    accounts.unshift({ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID })
+  }
+  for (const chunk of chunkValues(accounts, 128)) {
+    await client.execute(`
+      INSERT INTO ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')} (
+        system_account_id, min_stat_date, max_stat_date, generation, first_dirty_at, updated_at
+      ) VALUES ${chunk.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
+      ON CONFLICT(system_account_id) DO UPDATE SET
+        min_stat_date = LEAST(ai_performance_summary_dirty_system_accounts.min_stat_date, EXCLUDED.min_stat_date),
+        max_stat_date = GREATEST(ai_performance_summary_dirty_system_accounts.max_stat_date, EXCLUDED.max_stat_date),
+        generation = ai_performance_summary_dirty_system_accounts.generation + 1,
+        updated_at = EXCLUDED.updated_at
+    `, chunk.flatMap((account) => [account.system_account_id, context.todayKey, context.todayKey, context.updatedAt, context.updatedAt]))
+  }
+  const pageAccounts = accounts.filter((account) => account.system_account_id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID || cursor !== '')
+  const nextCursor = pageAccounts.length < 128 ? '__done__' : pageAccounts.at(-1)?.system_account_id ?? '__done__'
+  await client.execute(`
+    INSERT INTO ${stateTable} (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('global', '', 'ai_performance_summary_daily_seed', ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = EXCLUDED.cursor_created_at,
+      cursor_id = EXCLUDED.cursor_id,
+      last_success_at = EXCLUDED.last_success_at,
+      updated_at = EXCLUDED.updated_at
+  `, [context.todayKey, nextCursor, context.updatedAt, context.updatedAt])
 }
 
 function defaultUsageSnapshotYield(): Promise<void> {
@@ -2380,6 +2779,17 @@ async function insertAiPerformanceSummaryWindowRowsAsync(client: DatabaseClient,
         duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum,
         first_token_ms_count, first_token_ms_max, updated_at
       ) VALUES ${placeholders}
+      ON CONFLICT(system_account_id, window_key) DO UPDATE SET
+        start_date = EXCLUDED.start_date,
+        end_date = EXCLUDED.end_date,
+        request_count = EXCLUDED.request_count,
+        duration_ms_sum = EXCLUDED.duration_ms_sum,
+        duration_ms_count = EXCLUDED.duration_ms_count,
+        duration_ms_max = EXCLUDED.duration_ms_max,
+        first_token_ms_sum = EXCLUDED.first_token_ms_sum,
+        first_token_ms_count = EXCLUDED.first_token_ms_count,
+        first_token_ms_max = EXCLUDED.first_token_ms_max,
+        updated_at = EXCLUDED.updated_at
     `, chunk.flat())
   }
 }

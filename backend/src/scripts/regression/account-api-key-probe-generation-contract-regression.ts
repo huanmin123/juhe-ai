@@ -34,9 +34,10 @@ assert.match(repositorySource, /probe_claimed_until IS NULL OR[\s\S]{0,100}probe
 assert.match(repositorySource, /probe_claim_token = \?/, '探针回写必须核对当前 claim token')
 assert.match(
   accountProbeJobsSource,
-  /export async function runAccountApiKeyCooldownRetest[\s\S]*?const queueBeforeScan = getAccountApiKeyCooldownRetestQueueSnapshot\(\)[\s\S]*?const availableQueueSlots = Math\.max\(\s*0,\s*queueConcurrency - queueBeforeScan\.runningCount - queueBeforeScan\.pendingCount\s*\)[\s\S]*?if \(availableQueueSlots === 0\) return[\s\S]*?listAccountApiKeyRuntimeStatesDueForProbeAsync\(Math\.min\(batchSize, availableQueueSlots\)\)/,
-  'Key 探针 scheduler 必须同时扣除 running 与 pending，并且只 claim 实际空槽'
+  /export async function runAccountApiKeyCooldownRetest[\s\S]*?const queueBeforeScan = getAccountApiKeyCooldownRetestQueueSnapshot\(\)[\s\S]*?const availableQueueSlots = Math\.max\(\s*0,\s*queueConcurrency - queueBeforeScan\.runningCount - queueBeforeScan\.pendingCount\s*\)[\s\S]*?if \(availableQueueSlots === 0\) return[\s\S]*?type: 'list_account_api_key_runtime_states_due_for_probe'[\s\S]*?limit: Math\.min\(batchSize, availableQueueSlots\)/,
+  'Key 探针 scheduler 必须同时扣除 running 与 pending，并通过 DB service 只 claim 实际空槽'
 )
+assert.match(dbServiceHandlersSource, /case 'list_account_api_key_runtime_states_due_for_probe':[\s\S]{0,250}listAccountApiKeyRuntimeStatesDueForProbe/, 'Key 探针候选 claim 必须在 DB service 中执行')
 assert.doesNotMatch(cooldownServiceSource, /statusCode\s*===|\[\s*401|\[\s*429|statusCode\s*>?=/, 'Key 冷却探针不得按具体上游状态码解释账户语义')
 
 console.log('ACCOUNT_API_KEY_PROBE_GENERATION_CONTRACT_OK')

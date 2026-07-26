@@ -73,6 +73,12 @@
         <template v-else-if="column.key === 'skippedCount'">
           {{ formatInteger(record.skippedCount) }}
         </template>
+        <template v-else-if="column.key === 'schedulerEvents'">
+          {{ formatSchedulerEvents(record) }}
+        </template>
+        <template v-else-if="column.key === 'nextRunAt'">
+          {{ formatDateTime(record.nextRunAt) }}
+        </template>
         <template v-else-if="column.key === 'lastFinishedAt'">
           {{ formatDateTime(record.lastFinishedAt) }}
         </template>
@@ -145,6 +151,18 @@
               <strong>{{ formatInteger(record.skippedCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
+              <span>任务跳过 / 合并 / 超时</span>
+              <strong>{{ formatSchedulerEvents(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>下次运行</span>
+              <strong>{{ formatDateTime(record.nextRunAt) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>资源通道</span>
+              <strong>{{ record.resourceLane || '-' }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
               <span>最近完成</span>
               <strong>{{ formatDateTime(record.lastFinishedAt) }}</strong>
             </div>
@@ -214,6 +232,8 @@ const backgroundJobColumns = [
   { title: '累计失败（本进程）', key: 'failureCount', width: 148, align: 'right', sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend' },
   { title: '部分失败（本进程）', key: 'partialCount', width: 148, align: 'right', sorter: sortBackgroundJobNumber('partialCount') },
   { title: '跳过', key: 'skippedCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('skippedCount') },
+  { title: '任务跳过 / 合并 / 超时', key: 'schedulerEvents', width: 170 },
+  { title: '下次运行', key: 'nextRunAt', width: 168 },
   { title: '最近完成', key: 'lastFinishedAt', width: 168 },
   { title: '最近失败', key: 'lastErrorAt', width: 168 },
   { title: '最近错误', key: 'lastError', ellipsis: true },
@@ -230,6 +250,10 @@ function formatJobDuration(value?: number): string {
 
 function sortBackgroundJobNumber(field: 'runCount' | 'successCount' | 'failureCount' | 'partialCount' | 'skippedCount') {
   return (left: BackgroundJobRow, right: BackgroundJobRow) => numberValue(left[field]) - numberValue(right[field])
+}
+
+function formatSchedulerEvents(row: BackgroundJobRow): string {
+  return `${formatInteger(row.taskSkippedCount ?? 0)} / ${formatInteger(row.coalescedCount ?? 0)} / ${formatInteger(row.timedOutCount ?? 0)}`
 }
 
 function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {

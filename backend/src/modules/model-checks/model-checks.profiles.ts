@@ -18,6 +18,8 @@ import {
   normalizeProviderToken,
   type ProviderProtocolProfileDefinition
 } from '../../domain/provider-protocol.js'
+import type { AccountModelMapping } from '../../domain/types.js'
+import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 
 export type ModelCheckProbeProtocol = 'openai_responses' | 'openai_chat' | 'anthropic_messages' | 'gemini_native'
 
@@ -184,6 +186,34 @@ export function pairedModelForProfile(profile: ModelCheckProtocolProfile, model:
 
 export function modelCheckModelsForAccount(account: ProviderProtocolProfileDefinition | undefined): readonly string[] {
   return findModelCheckProfileForAccount(account)?.models ?? []
+}
+
+export function configuredModelCheckModelsForAccount(
+  account: ProviderProtocolProfileDefinition & {
+    supportedModels?: readonly string[]
+    modelMappings?: AccountModelMapping[]
+  }
+): string[] {
+  const profile = findModelCheckProfileForAccount(account)
+  if (!profile) return []
+  const supportedAccountModels = account.supportedModels?.map((item) => item.trim()).filter(Boolean) ?? []
+  if (!supportedAccountModels.length) return [...profile.models]
+  return profile.models.filter((model) => (
+    supportedAccountModels.includes(model)
+    || modelCheckSourceEndpointFamilies(profile).some((sourceEndpointFamily) => {
+      const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
+      return Boolean(mapping && supportedAccountModels.includes(mapping.upstreamModel))
+    })
+  ))
+}
+
+export function modelCheckSourceEndpointFamilies(
+  profile: ModelCheckProtocolProfile
+): Array<'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'> {
+  if (profile.protocol === 'openai_responses') return ['responses']
+  if (profile.protocol === 'openai_chat') return ['chat_completions']
+  if (profile.protocol === 'anthropic_messages') return ['messages']
+  return ['generate_content', 'stream_generate_content']
 }
 
 export function sameModelCheckComparisonProfile(

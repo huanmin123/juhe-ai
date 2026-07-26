@@ -1,9 +1,13 @@
 import { logger } from '../../shared/logger.js'
+import { listFailedModelQualityHealthSyncRunsAsync } from '../../storage/model-checks.repository.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { requestDatasetWriter } from './background-dataset-writer.js'
+import { requestStatsWriter } from './background-stats-writer.js'
 import { runModelCheck, type ModelCheckProgressEvent } from '../model-checks/model-checks.service.js'
 
 const scheduledModelQualityBatchSize = 3
 const scheduledModelQualityRunTimeoutMs = 5 * 60_000
+const modelQualityHealthSyncRetryBatchSize = 20
 
 export interface ModelQualityScheduledCheckBatchResult {
   claimed: number
@@ -11,7 +15,63 @@ export interface ModelQualityScheduledCheckBatchResult {
   failed: number
 }
 
-export async function runDueModelQualityScheduledChecks(): Promise<ModelQualityScheduledCheckBatchResult> {
+export interface ModelQualityHealthSyncRetryResult {
+  selected: number
+  completed: number
+  failed: number
+}
+
+export async function retryFailedModelQualityHealthSyncs(signal?: AbortSignal): Promise<ModelQualityHealthSyncRetryResult> {
+  if (signal?.aborted) {
+    return { selected: 0, completed: 0, failed: 0 }
+  }
+  const runs = await listFailedModelQualityHealthSyncRunsAsync(modelQualityHealthSyncRetryBatchSize)
+  const result: ModelQualityHealthSyncRetryResult = { selected: runs.length, completed: 0, failed: 0 }
+  for (const run of runs) {
+    if (signal?.aborted) break
+    const decision = run.qualityDecision
+    if (!run.accountId || !run.systemAccountId || !decision || decision.healthSyncResult !== 'failed') continue
+    try {
+      const health = await requestStatsWriter({
+        type: 'record_model_quality_health_failure',
+        input: {
+          accountId: run.accountId,
+          systemAccountId: run.systemAccountId,
+          providerCode: run.providerCode,
+          observedAt: run.finishedAt ?? decision.decidedAt,
+          runId: run.id,
+          model: run.model,
+          profile: run.profile,
+          score: run.score,
+          threshold: decision.threshold,
+          level: run.level,
+          errorCode: run.level === 'unavailable' ? 'model_quality_unavailable' : 'model_quality_failed',
+          errorMessage: decision.message
+        }
+      }, 10_000)
+      await requestDatasetWriter({
+        type: 'update_model_check_quality_decision',
+        runId: run.id,
+        decision: { ...decision, healthSyncResult: 'applied', healthStatHour: health.statHour }
+      })
+      result.completed += 1
+    } catch (error) {
+      result.failed += 1
+      logger.warn({
+        event: 'model_quality_health_sync_retry_failed',
+        runId: run.id,
+        accountId: run.accountId,
+        err: error
+      }, '模型质量健康小时补偿写入失败，保留失败状态等待下一轮重试')
+    }
+  }
+  return result
+}
+
+export async function runDueModelQualityScheduledChecks(signal?: AbortSignal): Promise<ModelQualityScheduledCheckBatchResult> {
+  if (signal?.aborted) {
+    return { claimed: 0, completed: 0, failed: 0 }
+  }
   const ownerId = `ops-worker:${process.pid}:${Date.now()}`
   const claimResult = await requestBackgroundWorkerDbService({
     type: 'model_quality_command',
@@ -90,7 +150,10 @@ export async function runDueModelQualityScheduledChecks(): Promise<ModelQualityS
   return result
 }
 
-export async function runDueModelQualityRecoveries(): Promise<ModelQualityScheduledCheckBatchResult> {
+export async function runDueModelQualityRecoveries(signal?: AbortSignal): Promise<ModelQualityScheduledCheckBatchResult> {
+  if (signal?.aborted) {
+    return { claimed: 0, completed: 0, failed: 0 }
+  }
   const ownerId = `ops-worker-recovery:${process.pid}:${Date.now()}`
   const claimResult = await requestBackgroundWorkerDbService({
     type: 'model_quality_command',
@@ -119,6 +182,7 @@ export async function runDueModelQualityRecoveries(): Promise<ModelQualitySchedu
         undefined,
         {
           triggerKind: 'quality_recovery',
+          scheduleId: candidate.scheduleId,
           policy: candidate.policy,
           recovery: {
             ownerId,

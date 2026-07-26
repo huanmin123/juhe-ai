@@ -3,6 +3,7 @@ import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync, renewBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import {
   evaluateIdentityTrust,
   hasHardTrustConflict,
@@ -176,7 +177,10 @@ export async function createModelCheckObservationsAsync(inputs: ModelCheckObserv
   return inputs.length
 }
 
-export async function aggregateModelTrustObservationsAsync(limit = 500): Promise<number> {
+export async function aggregateModelTrustObservationsAsync(limit = 500, scheduledLease?: ScheduledJobLeaseFence): Promise<number> {
+  if (scheduledLease) {
+    return await aggregateModelTrustObservationsWithLeaseAsync(limit, { scheduledLease })
+  }
   const ownerId = `${runtimeConfig.processRole}:${process.pid}:${newId('model_trust_lease')}`
   const acquired = await acquireBackgroundJobLeaseAsync({
     leaseKey: aggregationLeaseKey,
@@ -198,14 +202,17 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
   }, aggregationLeaseRenewIntervalMs)
   renewalTimer.unref()
   try {
-    return await aggregateModelTrustObservationsWithLeaseAsync(limit, ownerId)
+    return await aggregateModelTrustObservationsWithLeaseAsync(limit, { legacyOwnerId: ownerId })
   } finally {
     clearInterval(renewalTimer)
     await releaseBackgroundJobLeaseAsync(aggregationLeaseKey, ownerId)
   }
 }
 
-async function aggregateModelTrustObservationsWithLeaseAsync(limit: number, ownerId: string): Promise<number> {
+async function aggregateModelTrustObservationsWithLeaseAsync(
+  limit: number,
+  lease: { scheduledLease?: ScheduledJobLeaseFence; legacyOwnerId?: string }
+): Promise<number> {
   const dataset = await datasetClient()
   const stats = await statsClient()
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
@@ -217,6 +224,7 @@ async function aggregateModelTrustObservationsWithLeaseAsync(limit: number, owne
     LIMIT ?
   `, [state.createdAt, state.createdAt, state.id, boundedLimit(limit)])
   await stats.transaction(async (tx) => {
+    if (lease.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, lease.scheduledLease)
     for (const row of rows) {
       await upsertSource(tx, row)
       await upsertWindow(tx, row)
@@ -244,7 +252,7 @@ async function aggregateModelTrustObservationsWithLeaseAsync(limit: number, owne
       await refreshLatestResult(tx, key, rows, tokenContexts)
     }
     await deleteModelTrustLatestDirtyAccounts(tx, dirtyAccounts)
-    await assertAggregationLeaseOwner(tx, ownerId)
+    if (lease.legacyOwnerId) await assertAggregationLeaseOwner(tx, lease.legacyOwnerId)
     const last = rows.at(-1)
     if (last) await writeAggregationState(tx, last.created_at, last.id)
   })

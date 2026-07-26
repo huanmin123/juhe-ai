@@ -861,6 +861,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.CaptchaHandler != nil ||
 		handlers.LoginHandler != nil ||
 		handlers.CurrentUserHandler != nil ||
+		handlers.ProfileDetailHandler != nil ||
 		handlers.ProfileUpdateHandler != nil ||
 		handlers.PasswordChangeHandler != nil ||
 		handlers.LogoutHandler != nil ||
@@ -978,6 +979,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.CaptchaHandler == nil ||
 		handlers.LoginHandler == nil ||
 		handlers.CurrentUserHandler == nil ||
+		handlers.ProfileDetailHandler == nil ||
 		handlers.ProfileUpdateHandler == nil ||
 		handlers.PasswordChangeHandler == nil ||
 		handlers.LogoutHandler == nil ||

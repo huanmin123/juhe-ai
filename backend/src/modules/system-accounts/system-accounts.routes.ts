@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import { normalizeUserRequestLimitExpiresOn } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
@@ -11,6 +12,20 @@ import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
+const requestLimitsSchema = z.object({
+  perMinute: z.number().int().min(0).max(1_000_000_000).optional(),
+  perDay: z.number().int().min(0).max(1_000_000_000).optional(),
+  perWeek: z.number().int().min(0).max(1_000_000_000).optional(),
+  perMonth: z.number().int().min(0).max(1_000_000_000).optional(),
+  expiresOn: z.string().refine((value) => {
+    try {
+      normalizeUserRequestLimitExpiresOn(value)
+      return true
+    } catch {
+      return false
+    }
+  }, 'expiresOn 必须是 YYYY-MM-DD 格式的有效日期').optional()
+}).strict()
 
 const createSchema = z.object({
   username: z.string().min(2),
@@ -20,7 +35,8 @@ const createSchema = z.object({
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
-  imageGenerationEnabled: z.boolean().optional()
+  imageGenerationEnabled: z.boolean().optional(),
+  requestLimits: requestLimitsSchema.nullable().optional()
 }).strict()
 
 const updateSchema = z.object({
@@ -30,7 +46,8 @@ const updateSchema = z.object({
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
-  imageGenerationEnabled: z.boolean().optional()
+  imageGenerationEnabled: z.boolean().optional(),
+  requestLimits: requestLimitsSchema.nullable().optional()
 }).strict()
 
 systemAccountsRouter.get('/', requireAdmin, async (req, res, next) => {
@@ -110,6 +127,7 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
             safeChange('role', '角色', undefined, account.role),
             safeChange('status', '状态', undefined, account.status),
             safeChange('imageGenerationEnabled', '支持图像生成', undefined, account.imageGenerationEnabled),
+            safeChange('requestLimits', '用户请求限制', undefined, account.requestLimits),
             safeChange('password', '登录密码', undefined, parsed.data.password)
           ],
           viewers: viewer(account.id, 'admin_managed_my_resource')
@@ -167,7 +185,8 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
               role: '角色',
               status: '状态',
               mustChangePassword: '下次登录改密',
-              imageGenerationEnabled: '支持图像生成'
+              imageGenerationEnabled: '支持图像生成',
+              requestLimits: '用户请求限制'
             }),
             ...(parsed.data.password ? [safeChange('password', '登录密码', undefined, parsed.data.password)] : [])
           ],

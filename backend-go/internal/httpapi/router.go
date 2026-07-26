@@ -32,6 +32,7 @@ type RouterOptions struct {
 	ManagementCaptchaHandler                          http.Handler
 	ManagementLoginHandler                            http.Handler
 	ManagementCurrentUserHandler                      http.Handler
+	ManagementProfileDetailHandler                    http.Handler
 	ManagementProfileUpdateHandler                    http.Handler
 	ManagementPasswordChangeHandler                   http.Handler
 	ManagementLogoutHandler                           http.Handler
@@ -343,6 +344,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementCaptchaHandler == nil &&
 				opts.ManagementLoginHandler == nil &&
 				opts.ManagementCurrentUserHandler == nil &&
+				opts.ManagementProfileDetailHandler == nil &&
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
 				opts.ManagementLogoutHandler == nil &&
@@ -571,6 +573,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				}
 				if opts.ManagementCurrentUserHandler != nil {
 					system.Get("/auth/me", opts.ManagementCurrentUserHandler.ServeHTTP)
+				}
+				if opts.ManagementProfileDetailHandler != nil {
+					system.Get("/auth/profile", opts.ManagementProfileDetailHandler.ServeHTTP)
 				}
 				if opts.ManagementProfileUpdateHandler != nil {
 					system.With(managementAPIWriteAuthMiddleware).Patch("/auth/me", opts.ManagementProfileUpdateHandler.ServeHTTP)

@@ -1,4 +1,4 @@
-import { lstatSync, statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -23,6 +23,7 @@ import {
 } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
@@ -119,15 +120,32 @@ interface MonitoredDatabaseTarget {
   role: MonitoredDatabaseRole
   path: string
   database: DatabaseSync
-  aggregateDatabases?: DatabaseSync[]
+  aggregateDatabases?: AggregateMonitoredDatabase[]
+  aggregateMetadataComplete?: boolean
+}
+
+interface AggregateMonitoredDatabase {
+  shardIndex: number
+  shardKey: string
+  database?: DatabaseSync
+}
+
+interface AggregateTablePair {
+  shardKey: string
+  database: DatabaseSync
+  tableName: string
+  snapshotTableName: string
+  cursorId: string
+  indexNames: string[]
 }
 
 interface PreparedTableMonitorTarget {
   target: MonitoredDatabaseTarget
-  tables: string[]
-  indexesByTable: Map<string, string[]>
+  tableCount?: number
+  indexCount?: number
   tableRows: TableStorageSnapshotSummary[]
-  cursorTableName?: string
+  cursorId?: string
+  cursorJobName: TableMonitorCursorJobName
 }
 
 type PostgresMonitoredSchemaName = 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
@@ -144,16 +162,39 @@ interface PostgresTableStorageCatalogRow {
   parent_table_name: string | null
   is_partition: number | string | boolean | null
   row_count: number | string | null
+  table_pages: number | string | null
+  index_pages: number | string | null
+  index_count: number | string | null
+}
+
+interface PostgresTableStorageSizeRow {
+  table_name: string
   table_bytes: number | string | null
   index_bytes: number | string | null
   total_bytes: number | string | null
-  index_count: number | string | null
 }
 
 interface TableScanSelection {
   tableNames: string[]
   cursorTableName?: string
 }
+
+interface AggregateTableScanSelection {
+  pairs: AggregateTablePair[]
+  cursorId?: string
+  inspectedDatabases: AggregateMonitoredDatabase[]
+  tableCount?: number
+  indexCount?: number
+  metadataComplete: boolean
+}
+
+interface AggregateTableCatalog {
+  pairs: AggregateTablePair[]
+  indexCount: number
+}
+
+type TableMonitorCursorJobName = 'table_storage_snapshots' | 'table_storage_shard_pairs'
+const aggregateShardEndCursorTable = '\uffff'
 
 interface ObjectSizeRow {
   name: string
@@ -230,35 +271,27 @@ let tableStorageOverviewCache: { key: string; cachedAtMs: number; value: TableSt
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
   const targets = monitoredDatabaseTargets()
-  const preparedTargets: PreparedTableMonitorTarget[] = targets.map((target) => {
-    const tables = listTargetTables(target.database)
-    const indexesByTable = target.aggregateDatabases?.length
-      ? listAggregateIndexesByTable(target.aggregateDatabases, tables)
-      : listIndexesByTable(target.database)
-    const tableSelection = selectTableScan(getStatsDatabase(), target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
-    const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable)
-    return {
-      target,
-      tables,
-      indexesByTable,
-      tableRows,
-      cursorTableName: tableSelection.cursorTableName
-    }
-  })
-
+  const relationBudget = options.maxTablesPerDatabase ?? 4
   const statsDatabase = getStatsDatabase()
+  const preparedTargets = targets.map((target) => prepareSqliteTableMonitorTarget(
+    statsDatabase,
+    target,
+    sampledAt,
+    tableScanMode,
+    relationBudget
+  ))
+
   const transactionStarted = beginDatabaseTransaction(statsDatabase)
   let tableSnapshots = 0
   try {
     for (const prepared of preparedTargets) {
-      insertDatabaseSnapshot(statsDatabase, prepared.target, sampledAt, prepared.tables.length, countIndexes(prepared.indexesByTable))
+      insertDatabaseSnapshot(statsDatabase, prepared.target, sampledAt, prepared.tableCount, prepared.indexCount)
       insertTableSnapshots(statsDatabase, prepared.target, sampledAt, prepared.tableRows)
       if (tableScanMode === 'cursor') {
-        recordTableScanCursor(statsDatabase, prepared.target.role, prepared.cursorTableName, sampledAt)
+        recordTableScanCursor(statsDatabase, prepared.target.role, prepared.cursorJobName, prepared.cursorId, sampledAt)
       }
       tableSnapshots += prepared.tableRows.length
     }
-    cleanupOldTableStorageSnapshots(statsDatabase, sampledAt)
     commitDatabaseTransaction(statsDatabase, transactionStarted)
     return {
       sampledAt,
@@ -272,29 +305,29 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
   }
 }
 
-export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): Promise<CollectTableStorageSnapshotResult> {
+export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}, scheduledLease?: ScheduledJobLeaseFence): Promise<CollectTableStorageSnapshotResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return collectTableStorageSnapshot(sampledAt, options)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const tableScanMode = options.tableScanMode ?? 'cursor'
-  const maxTablesPerDatabase = options.maxTablesPerDatabase ?? 4
+  const relationBudget = options.maxTablesPerDatabase ?? 4
   return await client.transaction(async (tx) => {
+    if (scheduledLease) await pinScheduledJobLeaseInTransaction(tx, scheduledLease)
     const blockSize = await postgresBlockSize(tx)
     let tableSnapshots = 0
     for (const target of postgresMonitoredSchemaTargets) {
-      const catalogRows = await listPostgresSchemaTables(tx, target.schemaName)
+      const catalogRows = await listPostgresSchemaTableCatalog(tx, target.schemaName)
       const tableNames = catalogRows.map((row) => row.table_name)
-      const tableSelection = await selectPostgresTableScan(tx, target.role, tableNames, tableScanMode, maxTablesPerDatabase)
+      const tableSelection = await selectPostgresTableScan(tx, target.role, tableNames, tableScanMode, relationBudget)
       const tableRows = await collectPostgresTargetTableRows(tx, target, sampledAt, tableSelection.tableNames, catalogRows, blockSize)
       await insertPostgresDatabaseSnapshot(tx, target, sampledAt, catalogRows, blockSize)
       await insertPostgresTableSnapshots(tx, sampledAt, tableRows)
       if (tableScanMode === 'cursor') {
-        await recordPostgresTableScanCursor(tx, target.role, tableSelection.cursorTableName, sampledAt)
+        await recordPostgresTableScanCursor(tx, target.role, 'table_storage_snapshots', tableSelection.cursorTableName, sampledAt)
       }
       tableSnapshots += tableRows.length
     }
-    await cleanupOldPostgresTableStorageSnapshots(tx, sampledAt)
     return {
       sampledAt,
       databaseSnapshots: postgresMonitoredSchemaTargets.length,
@@ -571,8 +604,15 @@ export async function cleanupTableStorageSnapshotsBeforeAsync(cutoffIso: string,
 
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
   const codexContextStateShardDatabases = existingCodexContextStateShardIndexes()
-    .map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
-  const codexContextStatePrimaryDatabase = codexContextStateShardDatabases[0]
+    .map((shardIndex) => ({
+      shardIndex,
+      shardKey: basename(codexContextStateShardPath(shardIndex)),
+      database: undefined as DatabaseSync | undefined
+    }))
+  const primaryShard = codexContextStateShardDatabases[0]
+  const codexContextStatePrimaryDatabase = primaryShard
+    ? openAggregateDatabase(primaryShard)
+    : undefined
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
     { role: 'dataset', path: datasetDatabasePath(), database: getDatasetDatabase() },
@@ -587,6 +627,48 @@ function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
         }]
       : [])
   ]
+}
+
+function prepareSqliteTableMonitorTarget(
+  statsDatabase: DatabaseSync,
+  target: MonitoredDatabaseTarget,
+  sampledAt: string,
+  tableScanMode: 'full' | 'cursor' | 'none',
+  relationBudget: number
+): PreparedTableMonitorTarget {
+  if (target.aggregateDatabases?.length) {
+    const selection = selectAggregateTableScan(
+      statsDatabase,
+      target.role,
+      target.aggregateDatabases,
+      tableScanMode,
+      relationBudget
+    )
+    return {
+      target: {
+        ...target,
+        aggregateDatabases: selection.inspectedDatabases,
+        aggregateMetadataComplete: selection.metadataComplete
+      },
+      tableCount: selection.tableCount,
+      indexCount: selection.indexCount,
+      tableRows: collectAggregateTargetTableRows(target.role, sampledAt, selection.pairs),
+      cursorId: selection.cursorId,
+      cursorJobName: 'table_storage_shard_pairs'
+    }
+  }
+
+  const tables = listTargetTables(target.database)
+  const indexesByTable = listIndexesByTable(target.database)
+  const selection = selectTableScan(statsDatabase, target.role, tables, tableScanMode, relationBudget)
+  return {
+    target,
+    tableCount: tables.length,
+    indexCount: countIndexes(indexesByTable),
+    tableRows: collectTargetTableRows(target, sampledAt, selection.tableNames, indexesByTable),
+    cursorId: selection.cursorTableName,
+    cursorJobName: 'table_storage_snapshots'
+  }
 }
 
 function existingCodexContextStateShardIndexes(): number[] {
@@ -605,15 +687,10 @@ function existingCodexContextStateShardIndexes(): number[] {
       syscall: 'stat'
     })
   }
-  return codexContextStateShardIndexes().filter((shardIndex) => {
-    try {
-      lstatSync(codexContextStateShardPath(shardIndex))
-      return true
-    } catch (error) {
-      if (isMissingPathError(error)) return false
-      throw error
-    }
-  })
+  const existingNames = new Set(readdirSync(shardRoot))
+  return codexContextStateShardIndexes().filter((shardIndex) => (
+    existingNames.has(basename(codexContextStateShardPath(shardIndex)))
+  ))
 }
 
 function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
@@ -626,9 +703,6 @@ function collectTargetTableRows(
   tableNames: string[],
   indexesByTable: Map<string, string[]>
 ): TableStorageSnapshotSummary[] {
-  if (target.aggregateDatabases?.length) {
-    return collectAggregateTargetTableRows(target, sampledAt, tableNames)
-  }
   const objectNames = new Set<string>()
   for (const tableName of tableNames) {
     objectNames.add(tableName)
@@ -672,61 +746,64 @@ function collectTargetTableRows(
 }
 
 function collectAggregateTargetTableRows(
-  target: MonitoredDatabaseTarget,
+  databaseRole: MonitoredDatabaseRole,
   sampledAt: string,
-  tableNames: string[]
+  pairs: AggregateTablePair[]
 ): TableStorageSnapshotSummary[] {
-  const databases = target.aggregateDatabases?.length ? target.aggregateDatabases : [target.database]
-  return tableNames.map((tableName) => {
-    let rowCount = 0
-    let tableBytes = 0
-    let indexBytes = 0
-    let pageCount = 0
-    let indexCount = 0
-    let hasDbstat = true
-    for (const database of databases) {
-      rowCount += tableRowCount(database, tableName)
-      const indexNames = listIndexesByTable(database).get(tableName) ?? []
-      indexCount += indexNames.length
-      const dbstatSizes = loadDbstatObjectSizes(database, [tableName, ...indexNames])
-      if (!dbstatSizes) {
-        hasDbstat = false
-        continue
-      }
-      const tableSize = dbstatSizes.get(tableName)
-      tableBytes += Number(tableSize?.bytes ?? 0)
-      pageCount += Number(tableSize?.page_count ?? 0)
-      for (const indexName of indexNames) {
-        const indexSize = dbstatSizes.get(indexName)
-        indexBytes += Number(indexSize?.bytes ?? 0)
-        pageCount += Number(indexSize?.page_count ?? 0)
-      }
+  const pairsByShard = new Map<string, AggregateTablePair[]>()
+  for (const pair of pairs) {
+    pairsByShard.set(pair.shardKey, [...(pairsByShard.get(pair.shardKey) ?? []), pair])
+  }
+
+  const rows: TableStorageSnapshotSummary[] = []
+  for (const shardPairs of pairsByShard.values()) {
+    const database = shardPairs[0].database
+    const objectNames = shardPairs.flatMap((pair) => [pair.tableName, ...pair.indexNames])
+    const dbstatSizes = loadDbstatObjectSizes(database, objectNames)
+    for (const pair of shardPairs) {
+      const tableSize = dbstatSizes?.get(pair.tableName)
+      const indexNames = pair.indexNames
+      const indexSizes = indexNames.map((indexName) => dbstatSizes?.get(indexName)).filter((row): row is ObjectSizeRow => Boolean(row))
+      const tableBytes = dbstatSizes ? Number(tableSize?.bytes ?? 0) : undefined
+      const tablePages = dbstatSizes ? Number(tableSize?.page_count ?? 0) : undefined
+      const indexBytes = dbstatSizes ? indexSizes.reduce((sum, row) => sum + Number(row.bytes ?? 0), 0) : undefined
+      const indexPages = dbstatSizes ? indexSizes.reduce((sum, row) => sum + Number(row.page_count ?? 0), 0) : undefined
+      const totalBytes = tableBytes !== undefined && indexBytes !== undefined ? tableBytes + indexBytes : undefined
+      const pageCount = tablePages !== undefined && indexPages !== undefined ? tablePages + indexPages : undefined
+      const rowCount = dbstatRowCount(pair.tableName, tableSize)
+      const previous1h = findPreviousTableSnapshot(databaseRole, pair.snapshotTableName, sampledAt, 60)
+      const previous24h = findPreviousTableSnapshot(databaseRole, pair.snapshotTableName, sampledAt, 24 * 60)
+      rows.push({
+        databaseRole,
+        tableName: pair.snapshotTableName,
+        sampledAt,
+        tableKind: 'shard_table',
+        parentTableName: pair.tableName,
+        isPartition: true,
+        isArchive: false,
+        rowCount,
+        tableBytes,
+        indexBytes,
+        totalBytes,
+        pageCount,
+        indexCount: indexNames.length,
+        growthBytes1h: numericDelta(totalBytes, previous1h?.total_bytes),
+        growthRows1h: numericDelta(rowCount, previous1h?.row_count),
+        growthBytes24h: numericDelta(totalBytes, previous24h?.total_bytes),
+        growthRows24h: numericDelta(rowCount, previous24h?.row_count)
+      })
     }
-    const totalBytes = hasDbstat ? tableBytes + indexBytes : undefined
-    const previous1h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 60)
-    const previous24h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 24 * 60)
-    return {
-      databaseRole: target.role,
-      tableName,
-      sampledAt,
-      tableKind: 'table',
-      isPartition: false,
-      isArchive: false,
-      rowCount,
-      tableBytes: hasDbstat ? tableBytes : undefined,
-      indexBytes: hasDbstat ? indexBytes : undefined,
-      totalBytes,
-      pageCount: hasDbstat ? pageCount : undefined,
-      indexCount,
-      growthBytes1h: numericDelta(totalBytes, previous1h?.total_bytes),
-      growthRows1h: numericDelta(rowCount, previous1h?.row_count),
-      growthBytes24h: numericDelta(totalBytes, previous24h?.total_bytes),
-      growthRows24h: numericDelta(rowCount, previous24h?.row_count)
-    }
-  })
+  }
+  return rows
 }
 
-function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tableCount: number, indexCount: number): void {
+function insertDatabaseSnapshot(
+  database: DatabaseSync,
+  target: MonitoredDatabaseTarget,
+  sampledAt: string,
+  tableCount: number | undefined,
+  indexCount: number | undefined
+): void {
   const storageStats = databaseStorageStats(target)
   const pageSize = storageStats.pageSize
   const pageCount = storageStats.pageCount
@@ -752,14 +829,22 @@ function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabas
     freelistCount ?? null,
     usedBytes ?? null,
     freeBytes ?? null,
-    tableCount,
-    indexCount,
+    tableCount ?? null,
+    indexCount ?? null,
     sampledAt
   )
 }
 
 function databaseStorageStats(target: MonitoredDatabaseTarget): { pageSize?: number; pageCount?: number; freelistCount?: number } {
-  const databases = target.aggregateDatabases?.length ? target.aggregateDatabases : [target.database]
+  if (target.aggregateDatabases && !target.aggregateMetadataComplete) {
+    return {}
+  }
+  const databases = target.aggregateDatabases
+    ? target.aggregateDatabases.map(openAggregateDatabase)
+    : [target.database]
+  if (databases.length === 0) {
+    return {}
+  }
   if (databases.length === 1) {
     return {
       pageSize: pragmaNumber(databases[0], 'page_size'),
@@ -822,6 +907,45 @@ function listTargetTables(database: DatabaseSync): string[] {
   return rows.map((row) => row.name).filter((name): name is string => Boolean(name))
 }
 
+function listAggregateTableCatalog(databases: AggregateMonitoredDatabase[]): AggregateTableCatalog {
+  const pairs: AggregateTablePair[] = []
+  let indexCount = 0
+  for (const aggregateDatabase of databases) {
+    const { shardKey } = aggregateDatabase
+    const database = openAggregateDatabase(aggregateDatabase)
+    const rows = database.prepare(`
+      SELECT name, type, tbl_name
+      FROM sqlite_schema
+      WHERE type IN ('table', 'index')
+        AND name NOT LIKE 'sqlite_%'
+      ORDER BY type DESC, name ASC
+    `).all() as unknown as TableInfoRow[]
+    const indexesByTable = new Map<string, string[]>()
+    for (const row of rows) {
+      if (row.type !== 'index' || !row.name || !row.tbl_name) continue
+      indexesByTable.set(row.tbl_name, [...(indexesByTable.get(row.tbl_name) ?? []), row.name])
+      indexCount += 1
+    }
+    for (const row of rows) {
+      if (row.type !== 'table' || !row.name) continue
+      pairs.push({
+        shardKey,
+        database,
+        tableName: row.name,
+        snapshotTableName: `${shardKey}:${row.name}`,
+        cursorId: aggregateTableCursorId(shardKey, row.name),
+        indexNames: indexesByTable.get(row.name) ?? []
+      })
+    }
+  }
+  return { pairs, indexCount }
+}
+
+function openAggregateDatabase(aggregateDatabase: AggregateMonitoredDatabase): DatabaseSync {
+  aggregateDatabase.database ??= getCodexContextStateShardDatabase(aggregateDatabase.shardIndex)
+  return aggregateDatabase.database
+}
+
 function listIndexesByTable(database: DatabaseSync): Map<string, string[]> {
   const rows = database
     .prepare(`
@@ -839,30 +963,6 @@ function listIndexesByTable(database: DatabaseSync): Map<string, string[]> {
     result.set(row.tbl_name, [...(result.get(row.tbl_name) ?? []), row.name])
   }
   return result
-}
-
-function listAggregateIndexesByTable(databases: DatabaseSync[], tableNames: string[]): Map<string, string[]> {
-  const result = new Map<string, string[]>()
-  for (const [databaseIndex, database] of databases.entries()) {
-    const indexesByTable = listIndexesByTable(database)
-    for (const tableName of tableNames) {
-      const aggregateIndexes = result.get(tableName) ?? []
-      for (const indexName of indexesByTable.get(tableName) ?? []) {
-        aggregateIndexes.push(`${databaseIndex}:${indexName}`)
-      }
-      result.set(tableName, aggregateIndexes)
-    }
-  }
-  return result
-}
-
-function tableRowCount(database: DatabaseSync, tableName: string): number {
-  const row = database.prepare(`SELECT COUNT(*) AS total FROM ${quoteIdentifier(tableName)}`).get() as { total?: number } | undefined
-  return Number(row?.total ?? 0)
-}
-
-function quoteIdentifier(value: string): string {
-  return `"${value.replaceAll('"', '""')}"`
 }
 
 function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): Map<string, ObjectSizeRow> | undefined {
@@ -890,8 +990,20 @@ function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): M
   }
 }
 
-async function listPostgresSchemaTables(client: DatabaseClient, schemaName: PostgresMonitoredSchemaTarget['schemaName']): Promise<PostgresTableStorageCatalogRow[]> {
+async function listPostgresSchemaTableCatalog(client: DatabaseClient, schemaName: PostgresMonitoredSchemaTarget['schemaName']): Promise<PostgresTableStorageCatalogRow[]> {
   return await client.query<PostgresTableStorageCatalogRow>(`
+    WITH index_summary AS (
+      SELECT
+        i.indrelid,
+        COUNT(*)::integer AS index_count,
+        COALESCE(SUM(GREATEST(index_class.relpages, 0)), 0)::bigint AS index_pages
+      FROM pg_index i
+      JOIN pg_class index_class ON index_class.oid = i.indexrelid
+      JOIN pg_class table_class ON table_class.oid = i.indrelid
+      JOIN pg_namespace table_namespace ON table_namespace.oid = table_class.relnamespace
+      WHERE table_namespace.nspname = ?
+      GROUP BY i.indrelid
+    )
     SELECT
       c.relname AS table_name,
       CASE c.relkind
@@ -902,24 +1014,43 @@ async function listPostgresSchemaTables(client: DatabaseClient, schemaName: Post
       parent.relname AS parent_table_name,
       (parent.oid IS NOT NULL)::integer AS is_partition,
       GREATEST(COALESCE(s.n_live_tup::double precision, c.reltuples, 0), 0)::bigint AS row_count,
-      pg_relation_size(c.oid)::bigint AS table_bytes,
-      pg_indexes_size(c.oid)::bigint AS index_bytes,
-      pg_total_relation_size(c.oid)::bigint AS total_bytes,
+      GREATEST(c.relpages, 0)::bigint AS table_pages,
+      COALESCE(i.index_pages, 0)::bigint AS index_pages,
       COALESCE(i.index_count, 0)::integer AS index_count
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     LEFT JOIN pg_inherits inh ON inh.inhrelid = c.oid
     LEFT JOIN pg_class parent ON parent.oid = inh.inhparent
     LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
-    LEFT JOIN (
-      SELECT indrelid, COUNT(*)::integer AS index_count
-      FROM pg_index
-      GROUP BY indrelid
-    ) i ON i.indrelid = c.oid
+    LEFT JOIN index_summary i ON i.indrelid = c.oid
     WHERE n.nspname = ?
       AND c.relkind IN ('r', 'p', 'm')
     ORDER BY c.relname ASC
-  `, [schemaName])
+  `, [schemaName, schemaName])
+}
+
+async function loadPostgresTableSizes(
+  client: DatabaseClient,
+  schemaName: PostgresMonitoredSchemaTarget['schemaName'],
+  tableNames: string[]
+): Promise<Map<string, PostgresTableStorageSizeRow>> {
+  if (tableNames.length === 0) {
+    return new Map()
+  }
+  const rows = await client.query<PostgresTableStorageSizeRow>(`
+    SELECT
+      c.relname AS table_name,
+      pg_relation_size(c.oid)::bigint AS table_bytes,
+      pg_indexes_size(c.oid)::bigint AS index_bytes,
+      pg_total_relation_size(c.oid)::bigint AS total_bytes
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ?
+      AND c.relkind IN ('r', 'p', 'm')
+      AND c.relname = ANY(?::text[])
+    ORDER BY c.relname ASC
+  `, [schemaName, tableNames])
+  return new Map(rows.map((row) => [row.table_name, row]))
 }
 
 async function postgresBlockSize(client: DatabaseClient): Promise<number | undefined> {
@@ -936,14 +1067,16 @@ async function collectPostgresTargetTableRows(
   blockSize: number | undefined
 ): Promise<TableStorageSnapshotSummary[]> {
   const catalogByTable = new Map(catalogRows.map((row) => [row.table_name, row]))
+  const sizesByTable = await loadPostgresTableSizes(client, target.schemaName, tableNames)
   const previous1h = await findPreviousPostgresTableSnapshots(client, target.role, tableNames, sampledAt, 60)
   const previous24h = await findPreviousPostgresTableSnapshots(client, target.role, tableNames, sampledAt, 24 * 60)
   return tableNames.map((tableName) => {
     const row = catalogByTable.get(tableName)
+    const size = sizesByTable.get(tableName)
     const rowCount = optionalNumber(row?.row_count)
-    const tableBytes = optionalNumber(row?.table_bytes)
-    const indexBytes = optionalNumber(row?.index_bytes)
-    const totalBytes = optionalNumber(row?.total_bytes)
+    const tableBytes = optionalNumber(size?.table_bytes)
+    const indexBytes = optionalNumber(size?.index_bytes)
+    const totalBytes = optionalNumber(size?.total_bytes)
     const pageCount = estimatePageCount(totalBytes, blockSize)
     const indexCount = optionalNumber(row?.index_count) ?? 0
     const previousHour = previous1h.get(tableName)
@@ -977,8 +1110,10 @@ async function insertPostgresDatabaseSnapshot(
   catalogRows: PostgresTableStorageCatalogRow[],
   blockSize: number | undefined
 ): Promise<void> {
-  const totalBytes = catalogRows.reduce((sum, row) => sum + (optionalNumber(row.total_bytes) ?? 0), 0)
-  const pageCount = estimatePageCount(totalBytes, blockSize)
+  const pageCount = catalogRows.reduce((sum, row) => (
+    sum + (optionalNumber(row.table_pages) ?? 0) + (optionalNumber(row.index_pages) ?? 0)
+  ), 0)
+  const totalBytes = blockSize !== undefined ? pageCount * blockSize : undefined
   const indexCount = catalogRows.reduce((sum, row) => sum + (optionalNumber(row.index_count) ?? 0), 0)
   await client.execute(`
     INSERT INTO ${statsTable(client, 'database_storage_snapshots')} (
@@ -990,13 +1125,13 @@ async function insertPostgresDatabaseSnapshot(
     target.role,
     target.databasePath,
     sampledAt,
-    totalBytes,
+    totalBytes ?? null,
     null,
     null,
     blockSize ?? null,
-    pageCount ?? null,
+    blockSize !== undefined ? pageCount : null,
     null,
-    totalBytes,
+    totalBytes ?? null,
     null,
     catalogRows.length,
     indexCount,
@@ -1124,19 +1259,25 @@ async function latestPostgresTableScanCursor(client: DatabaseClient, databaseRol
   return row?.cursor_id || undefined
 }
 
-async function recordPostgresTableScanCursor(client: DatabaseClient, databaseRole: MonitoredDatabaseRole, tableName: string | undefined, sampledAt: string): Promise<void> {
-  if (!tableName) return
+async function recordPostgresTableScanCursor(
+  client: DatabaseClient,
+  databaseRole: MonitoredDatabaseRole,
+  jobName: TableMonitorCursorJobName,
+  cursorId: string | undefined,
+  sampledAt: string
+): Promise<void> {
+  if (!cursorId) return
   await client.execute(`
     INSERT INTO ${statsTable(client, 'stats_job_state')} (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, lag_seconds, updated_at
-    ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, NULL, ?)
+    ) VALUES ('table_monitor', ?, ?, ?, ?, ?, NULL, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
       cursor_created_at = excluded.cursor_created_at,
       cursor_id = excluded.cursor_id,
       last_success_at = excluded.last_success_at,
       lag_seconds = NULL,
       updated_at = excluded.updated_at
-  `, [databaseRole, sampledAt, tableName, sampledAt, sampledAt])
+  `, [databaseRole, jobName, sampledAt, cursorId, sampledAt, sampledAt])
 }
 
 async function findPreviousPostgresTableSnapshots(
@@ -1185,6 +1326,88 @@ function selectTableScan(
   return selectCursorTableNames(database, databaseRole, tables, maxTables)
 }
 
+function selectAggregateTableScan(
+  database: DatabaseSync,
+  databaseRole: MonitoredDatabaseRole,
+  aggregateDatabases: AggregateMonitoredDatabase[],
+  tableScanMode: 'full' | 'cursor' | 'none',
+  maxPairs: number
+): AggregateTableScanSelection {
+  if (tableScanMode === 'none') {
+    return { pairs: [], inspectedDatabases: [], metadataComplete: false }
+  }
+  if (tableScanMode === 'full') {
+    const catalog = listAggregateTableCatalog(aggregateDatabases)
+    return {
+      pairs: catalog.pairs,
+      cursorId: catalog.pairs.at(-1)?.cursorId,
+      inspectedDatabases: aggregateDatabases,
+      tableCount: catalog.pairs.length,
+      indexCount: catalog.indexCount,
+      metadataComplete: true
+    }
+  }
+  if (aggregateDatabases.length === 0 || maxPairs <= 0) {
+    return { pairs: [], inspectedDatabases: [], metadataComplete: false }
+  }
+
+  const normalizedMaxPairs = Math.max(1, Math.trunc(maxPairs))
+  const maxShardMetadataReads = Math.min(normalizedMaxPairs, aggregateDatabases.length)
+  const cursor = parseAggregateTableCursor(latestTableScanCursor(database, databaseRole, 'table_storage_shard_pairs'))
+  const cursorShardIndex = cursor
+    ? aggregateDatabases.findIndex((aggregateDatabase) => aggregateDatabase.shardKey === cursor.shardKey)
+    : -1
+  const resumeCurrentShard = cursorShardIndex >= 0 && cursor?.tableName !== aggregateShardEndCursorTable
+  const startIndex = cursorShardIndex >= 0
+    ? (resumeCurrentShard ? cursorShardIndex : (cursorShardIndex + 1) % aggregateDatabases.length)
+    : 0
+  const selectedPairs: AggregateTablePair[] = []
+  const inspectedDatabases: AggregateMonitoredDatabase[] = []
+  let nextCursorId: string | undefined
+
+  for (let offset = 0; offset < maxShardMetadataReads && selectedPairs.length < normalizedMaxPairs; offset += 1) {
+    const aggregateDatabase = aggregateDatabases[(startIndex + offset) % aggregateDatabases.length]
+    const catalog = listAggregateTableCatalog([aggregateDatabase])
+    inspectedDatabases.push(aggregateDatabase)
+    const resumeAfterTable = offset === 0 && resumeCurrentShard ? cursor?.tableName : undefined
+    const availablePairs = resumeAfterTable
+      ? catalog.pairs.filter((pair) => pair.tableName > resumeAfterTable)
+      : catalog.pairs
+    const remainingPairBudget = normalizedMaxPairs - selectedPairs.length
+    const shardPairs = availablePairs.slice(0, remainingPairBudget)
+    selectedPairs.push(...shardPairs)
+    const shardExhausted = shardPairs.length >= availablePairs.length
+    nextCursorId = shardExhausted
+      ? aggregateTableCursorId(aggregateDatabase.shardKey, aggregateShardEndCursorTable)
+      : shardPairs.at(-1)?.cursorId
+  }
+
+  return {
+    pairs: selectedPairs,
+    cursorId: nextCursorId,
+    inspectedDatabases,
+    metadataComplete: false
+  }
+}
+
+function aggregateTableCursorId(shardKey: string, tableName: string): string {
+  return JSON.stringify([shardKey, tableName])
+}
+
+function parseAggregateTableCursor(cursorId: string | undefined): { shardKey: string; tableName: string } | undefined {
+  if (!cursorId) return undefined
+  try {
+    const parsed = JSON.parse(cursorId) as unknown
+    if (!Array.isArray(parsed) || parsed.length !== 2) return undefined
+    const [shardKey, tableName] = parsed
+    return typeof shardKey === 'string' && typeof tableName === 'string'
+      ? { shardKey, tableName }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function selectCursorTableNames(
   database: DatabaseSync,
   databaseRole: MonitoredDatabaseRole,
@@ -1199,34 +1422,44 @@ function selectCursorTableNames(
     return { tableNames: tables, cursorTableName: tables.at(-1) }
   }
 
-  const cursor = latestTableScanCursor(database, databaseRole)
+  const cursor = latestTableScanCursor(database, databaseRole, 'table_storage_snapshots')
   const cursorIndex = cursor ? tables.indexOf(cursor) : -1
   const startIndex = cursorIndex >= 0 ? (cursorIndex + 1) % tables.length : 0
   const selected = Array.from({ length: normalizedMaxTables }, (_value, offset) => tables[(startIndex + offset) % tables.length])
   return { tableNames: selected, cursorTableName: selected.at(-1) }
 }
 
-function latestTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDatabaseRole): string | undefined {
+function latestTableScanCursor(
+  database: DatabaseSync,
+  databaseRole: MonitoredDatabaseRole,
+  jobName: TableMonitorCursorJobName
+): string | undefined {
   const row = database
     .prepare(`
       SELECT cursor_id
       FROM stats_job_state
       WHERE scope_type = 'table_monitor'
         AND scope_id = ?
-        AND job_name = 'table_storage_snapshots'
+        AND job_name = ?
       LIMIT 1
     `)
-    .get(databaseRole) as { cursor_id?: string | null } | undefined
+    .get(databaseRole, jobName) as { cursor_id?: string | null } | undefined
   return row?.cursor_id || undefined
 }
 
-function recordTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDatabaseRole, tableName: string | undefined, sampledAt: string): void {
-  if (!tableName) return
+function recordTableScanCursor(
+  database: DatabaseSync,
+  databaseRole: MonitoredDatabaseRole,
+  jobName: TableMonitorCursorJobName,
+  cursorId: string | undefined,
+  sampledAt: string
+): void {
+  if (!cursorId) return
   database
     .prepare(`
       INSERT INTO stats_job_state (
         scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, lag_seconds, updated_at
-      ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, NULL, ?)
+      ) VALUES ('table_monitor', ?, ?, ?, ?, ?, NULL, ?)
       ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
         cursor_created_at = excluded.cursor_created_at,
         cursor_id = excluded.cursor_id,
@@ -1234,7 +1467,7 @@ function recordTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDa
         lag_seconds = NULL,
         updated_at = excluded.updated_at
     `)
-    .run(databaseRole, sampledAt, tableName, sampledAt, sampledAt)
+    .run(databaseRole, jobName, sampledAt, cursorId, sampledAt, sampledAt)
 }
 
 function dbstatRowCount(tableName: string, tableSize: ObjectSizeRow | undefined): number | undefined {
@@ -1393,12 +1626,6 @@ function databaseRoleSortRank(databaseRole: MonitoredDatabaseRole): number {
   return index >= 0 ? index : monitoredDatabaseRoles.length
 }
 
-function cleanupOldTableStorageSnapshots(database: DatabaseSync, sampledAt: string): void {
-  const cutoff = new Date(Date.parse(sampledAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
-  deleteSnapshotRowsById(database, 'table_storage_snapshots', cutoff, 10000)
-  deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoff, 10000)
-}
-
 function pragmaNumber(database: DatabaseSync, pragmaName: 'page_size' | 'page_count' | 'freelist_count'): number | undefined {
   const row = database.prepare(`PRAGMA ${pragmaName}`).get() as unknown as Record<string, number> | undefined
   const value = row?.[pragmaName]
@@ -1454,12 +1681,6 @@ function deleteSnapshotRowsById(
   const placeholders = sqlPlaceholders(ids.length)
   const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
   return Number(result.changes ?? 0)
-}
-
-async function cleanupOldPostgresTableStorageSnapshots(client: DatabaseClient, sampledAt: string): Promise<void> {
-  const cutoff = new Date(Date.parse(sampledAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
-  await deletePostgresSnapshotRowsById(client, 'table_storage_snapshots', cutoff, 10000)
-  await deletePostgresSnapshotRowsById(client, 'database_storage_snapshots', cutoff, 10000)
 }
 
 async function deletePostgresSnapshotRowsById(

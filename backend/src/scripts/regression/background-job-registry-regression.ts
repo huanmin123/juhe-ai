@@ -34,6 +34,7 @@ const scheduledRegistryNames = new Set<string>(backgroundScheduledJobs.map((job)
 assertNoDuplicateRegistryNames()
 assertRegistryEntriesHaveRequiredFields()
 assertScheduledJobsAreRegisteredAndUsed()
+assertTopologySingleOwnerJobsAreEnforced()
 assertWorkerIpcMessagesAreRegistered()
 assertBackgroundIpcMessagesAreRegistered()
 assertWorkerEntrypointsAreRegistered()
@@ -43,6 +44,14 @@ console.log('后台 job registry 回归通过：定时任务、worker IPC、内�
 
 function assertNoDuplicateRegistryNames(): void {
   assert.equal(registryByName.size, backgroundWorkerRegistry.length, '后台 job registry 不允许重复 jobName')
+}
+
+function assertTopologySingleOwnerJobsAreEnforced(): void {
+  assert.match(
+    backgroundJobsSource,
+    /runtimeConfig\.cacheDriver === 'redis' && runtimeConfig\.workerReplicaIndex === 0[\s\S]*?backgroundScheduledJobName\('usage-record-first-page-prewarm'\)/,
+    'usage-record-first-page-prewarm 必须只由 replica 0 注册，避免 performance usage-worker 多副本重复预热'
+  )
 }
 
 function assertRegistryEntriesHaveRequiredFields(): void {

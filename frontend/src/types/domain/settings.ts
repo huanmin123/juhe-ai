@@ -1,6 +1,10 @@
 export interface SystemSettings {
   gatewayTextRawBodyLimitMegabytes: number
   accountCircuitConfirmationFailuresRequired: number
+  gatewayUserRequestLimitPerMinute: number
+  gatewayUserRequestLimitPerDay: number
+  gatewayUserRequestLimitPerWeek: number
+  gatewayUserRequestLimitPerMonth: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number

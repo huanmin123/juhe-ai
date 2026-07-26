@@ -64,6 +64,10 @@ type ManagementCurrentUserProfileWriter interface {
 	UpdateManagementCurrentUserProfile(ctx context.Context, input ManagementCurrentUserProfileUpdateInput) (ManagementCurrentUserProfileUpdateResult, bool, error)
 }
 
+type ManagementCurrentUserProfileReader interface {
+	FindManagementCurrentUserProfile(ctx context.Context, systemAccountID string) (ManagementSystemAccountSummary, bool, error)
+}
+
 type ManagementSystemAccountPasswordCredential struct {
 	ID           string
 	Username     string

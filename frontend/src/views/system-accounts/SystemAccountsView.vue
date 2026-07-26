@@ -62,7 +62,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="systemAccountSaving" :ok-button-props="{ disabled: systemAccountSaving }" @ok="handleSave">
+    <a-modal v-model:open="modalOpen" :width="760" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="systemAccountSaving" :ok-button-props="{ disabled: systemAccountSaving }" @ok="handleSave">
       <a-form layout="vertical">
         <a-form-item label="用户名" required>
           <a-input v-model:value="form.username" :disabled="Boolean(editingId)" placeholder="例如 user01" />
@@ -88,6 +88,30 @@
         <a-form-item label="支持图像生成">
           <a-switch v-model:checked="form.imageGenerationEnabled" checked-children="支持" un-checked-children="不支持" />
         </a-form-item>
+
+        <div class="request-limit-editor">
+          <div class="request-limit-editor-head">
+            <strong>用户请求限制</strong>
+            <span>留空继承全局，填写 0 表示该用户无限；到期日当天仍有效，次日自动继承全局。</span>
+          </div>
+          <div class="request-limit-grid">
+            <a-form-item label="每分钟请求数">
+              <a-input-number v-model:value="form.requestLimitPerMinute" :min="0" :max="1000000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="每日请求数">
+              <a-input-number v-model:value="form.requestLimitPerDay" :min="0" :max="1000000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="每周请求数">
+              <a-input-number v-model:value="form.requestLimitPerWeek" :min="0" :max="1000000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+            <a-form-item label="每月请求数">
+              <a-input-number v-model:value="form.requestLimitPerMonth" :min="0" :max="1000000000" :precision="0" :step="1" placeholder="继承全局" style="width: 100%" />
+            </a-form-item>
+          </div>
+          <a-form-item label="覆盖到期日" tooltip="可选。所选日期当天仍生效，次日 00:00 起按系统统计时区自动继承全局。">
+            <a-date-picker v-model:value="form.requestLimitExpiresOn" value-format="YYYY-MM-DD" placeholder="长期有效" allow-clear style="width: 100%" />
+          </a-form-item>
+        </div>
       </a-form>
     </a-modal>
 
@@ -119,7 +143,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import { isAdminRole, isSuperAdminRole, systemAccountRoleColor, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
-import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus } from '@/types/domain'
+import type { SystemAccountListItem, SystemAccountRole, SystemAccountStatus, UserRequestLimits } from '@/types/domain'
 
 interface SystemAccountsPageState {
   keyword: string
@@ -153,7 +177,12 @@ const form = reactive({
   role: 'user' as SystemAccountRole,
   status: 'active' as SystemAccountStatus,
   mustChangePassword: true,
-  imageGenerationEnabled: false
+  imageGenerationEnabled: false,
+  requestLimitPerMinute: null as number | null,
+  requestLimitPerDay: null as number | null,
+  requestLimitPerWeek: null as number | null,
+  requestLimitPerMonth: null as number | null,
+  requestLimitExpiresOn: null as string | null
 })
 
 const roleOptions = computed(() => {
@@ -206,7 +235,8 @@ const {
   loadData,
   loadMoreMobile: loadMoreMobileAccounts,
   refreshMobile: refreshMobileAccounts,
-  resetPagination
+  resetPagination,
+  updateItems
 } = useResponsivePagedList<SystemAccountListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
@@ -227,7 +257,11 @@ const {
 function openCreate() {
   if (!canManageSystemAccounts.value) return
   editingId.value = undefined
-  Object.assign(form, { username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true, imageGenerationEnabled: false })
+  Object.assign(form, {
+    username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true,
+    imageGenerationEnabled: false, requestLimitPerMinute: null, requestLimitPerDay: null, requestLimitPerWeek: null, requestLimitPerMonth: null,
+    requestLimitExpiresOn: null
+  })
   modalOpen.value = true
 }
 
@@ -242,7 +276,12 @@ function openEdit(record: SystemAccountListItem) {
     role: record.role,
     status: record.status,
     mustChangePassword: record.mustChangePassword,
-    imageGenerationEnabled: record.imageGenerationEnabled
+    imageGenerationEnabled: record.imageGenerationEnabled,
+    requestLimitPerMinute: record.requestLimits?.perMinute ?? null,
+    requestLimitPerDay: record.requestLimits?.perDay ?? null,
+    requestLimitPerWeek: record.requestLimits?.perWeek ?? null,
+    requestLimitPerMonth: record.requestLimits?.perMonth ?? null,
+    requestLimitExpiresOn: record.requestLimits?.expiresOn ?? null
   })
   modalOpen.value = true
 }
@@ -296,19 +335,26 @@ const handleSave = submitAction('system_accounts.save', async () => {
       status: SystemAccountStatus
       mustChangePassword: boolean
       imageGenerationEnabled: boolean
+      requestLimits: UserRequestLimits | null
     } = {
       displayName,
       description: form.description,
       role: form.role,
       status: form.status,
       mustChangePassword: isAdminRole(form.role) ? false : form.mustChangePassword,
-      imageGenerationEnabled: form.imageGenerationEnabled
+      imageGenerationEnabled: form.imageGenerationEnabled,
+      requestLimits: requestLimitsPayload()
     }
     if (basePayload.role === 'super_admin') {
       delete basePayload.role
     }
     if (editingId.value) {
-      await api.systemAccounts.update(editingId.value, basePayload)
+      const updated = await api.systemAccounts.update(editingId.value, basePayload)
+      updateItems((item) => item.id === updated.id, (item) => ({
+        ...item,
+        ...updated,
+        requestLimits: updated.requestLimits
+      }))
       message.success('系统账户已更新')
     } else {
       const payload = { ...basePayload, username, password: form.password }
@@ -316,8 +362,10 @@ const handleSave = submitAction('system_accounts.save', async () => {
       message.success('系统账户已创建')
     }
     modalOpen.value = false
-    resetPagination()
-    await loadData()
+    if (!editingId.value) {
+      resetPagination()
+      await loadData()
+    }
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存系统账户失败'))
@@ -370,6 +418,37 @@ function hasWhitespace(value: string): boolean {
   return whitespacePattern.test(value)
 }
 
+function requestLimitsPayload(): UserRequestLimits | null {
+  const values = {
+    perMinute: normalizedOptionalRequestLimit(form.requestLimitPerMinute, '每分钟请求数'),
+    perDay: normalizedOptionalRequestLimit(form.requestLimitPerDay, '每日请求数'),
+    perWeek: normalizedOptionalRequestLimit(form.requestLimitPerWeek, '每周请求数'),
+    perMonth: normalizedOptionalRequestLimit(form.requestLimitPerMonth, '每月请求数')
+  }
+  const entries = Object.entries(values).filter((entry): entry is [string, number] => entry[1] !== null)
+  if (!entries.length) return null
+  const output = Object.fromEntries(entries) as UserRequestLimits
+  const expiresOn = normalizedOptionalRequestLimitDate(form.requestLimitExpiresOn)
+  if (expiresOn) output.expiresOn = expiresOn
+  return output
+}
+
+function normalizedOptionalRequestLimit(value: number | null, label: string): number | null {
+  if (value === null) return null
+  if (!Number.isInteger(value) || value < 0 || value > 1_000_000_000) {
+    throw new Error(`${label}必须是 0 到 1000000000 之间的整数`)
+  }
+  return value
+}
+
+function normalizedOptionalRequestLimitDate(value: string | null): string | null {
+  if (value === null || value === '') return null
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('覆盖到期日必须是有效的年月日')
+  }
+  return value
+}
+
 function defaultSystemAccountsPageState(): SystemAccountsPageState {
   return {
     keyword: '',
@@ -406,5 +485,43 @@ watch(() => form.role, (role) => {
 <style scoped>
 .system-account-card {
   margin-top: 4px;
+}
+
+.request-limit-editor {
+  margin-top: 8px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e5eaf1;
+  border-radius: 8px;
+}
+
+.request-limit-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.request-limit-editor-head span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.request-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+}
+
+@media (max-width: 640px) {
+  .request-limit-editor-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .request-limit-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

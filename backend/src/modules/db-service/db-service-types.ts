@@ -23,6 +23,7 @@ import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
+import type { ScheduledJobLeaseFence } from '../../storage/scheduled-job-lease.repository.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
 import type {
@@ -160,6 +161,47 @@ export interface DbServiceRuntimeSnapshot {
   sqliteReadWorkerPool?: SqliteReadWorkerPoolRuntime
 }
 
+export interface DbServiceBackgroundScheduledJobSnapshot {
+  name: string
+  intervalMs: number
+  initialDelayMs?: number
+  stablePhaseOffsetMs?: number
+  scheduleMode?: 'fixedRate' | 'fixedDelay'
+  overlapPolicy?: 'skip' | 'coalesceOne'
+  timeoutMs?: number
+  resourceLane?: string
+  running: boolean
+  pending?: boolean
+  queuedForLane?: boolean
+  timedOut?: boolean
+  overdueMs?: number
+  nextRunAt?: string
+  runningSince?: string
+  lastScheduledAt?: string
+  lastStartedAt?: string
+  lastFinishedAt?: string
+  lastSuccessAt?: string
+  lastErrorAt?: string
+  lastError?: string
+  lastWarningAt?: string
+  lastWarning?: string
+  lastSkipAt?: string
+  lastSkipReason?: string
+  lastOutcome?: 'success' | 'partial' | 'failure' | 'timeout' | 'skipped'
+  leaseState?: 'not_required' | 'acquired' | 'busy' | 'lost'
+  lastDurationMs?: number
+  maxDurationMs?: number
+  consecutiveFailureCount?: number
+  runCount: number
+  successCount: number
+  failureCount: number
+  partialCount: number
+  skippedCount: number
+  taskSkippedCount?: number
+  coalescedCount?: number
+  timedOutCount?: number
+}
+
 export interface DbServiceServerRuntimeSnapshot {
   observedAt?: string
   runtimeLogAvailability?: {
@@ -199,25 +241,7 @@ export interface DbServiceServerRuntimeSnapshot {
       pid: number
       ready: boolean
       workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastWarningAt?: string
-        lastWarning?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        partialCount: number
-        skippedCount: number
-      }>
+      jobs?: DbServiceBackgroundScheduledJobSnapshot[]
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
       publicApiLogQueue: DbServiceRuntimeQueueSnapshot
@@ -238,25 +262,7 @@ export interface DbServiceServerRuntimeSnapshot {
       pid: number
       ready: boolean
       workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastWarningAt?: string
-        lastWarning?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        partialCount: number
-        skippedCount: number
-      }>
+      jobs?: DbServiceBackgroundScheduledJobSnapshot[]
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       accountQualityFailurePrecheckQueue?: {
         name: string
@@ -279,25 +285,7 @@ export interface DbServiceServerRuntimeSnapshot {
       pid: number
       ready: boolean
       workerRole?: string
-      jobs?: Array<{
-        name: string
-        intervalMs: number
-        running: boolean
-        lastStartedAt?: string
-        lastFinishedAt?: string
-        lastSuccessAt?: string
-        lastErrorAt?: string
-        lastError?: string
-        lastWarningAt?: string
-        lastWarning?: string
-        lastDurationMs?: number
-        maxDurationMs?: number
-        runCount: number
-        successCount: number
-        failureCount: number
-        partialCount: number
-        skippedCount: number
-      }>
+      jobs?: DbServiceBackgroundScheduledJobSnapshot[]
       accountHealthCheckQueue?: {
         name: string
         pendingCount: number
@@ -859,6 +847,10 @@ export type DbServiceOperation =
     cursor?: import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestCursor
   }
   | {
+    type: 'list_account_api_key_runtime_states_due_for_probe'
+    limit: number
+  }
+  | {
     type: 'find_account_for_cooldown_retest'
     accountId: string
   }
@@ -1014,6 +1006,7 @@ export type DbServiceOperation =
     interruptedBefore: string
     limit: number
     retentionDays: number
+    scheduledLease?: ScheduledJobLeaseFence
   }
   | {
     type: 'save_codex_context_response_state'
@@ -1167,6 +1160,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
+  T extends { type: 'list_account_api_key_runtime_states_due_for_probe' } ? import('../../storage/account-api-key-runtime-state.repository.js').AccountApiKeyRuntimeProbeCandidate[] :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
   T extends { type: 'record_cooldown_account_retest_success' } ? { changed: boolean; accountStatus?: string } :
   T extends { type: 'defer_cooldown_account_retest' } ? { changed: boolean; cooldownUntil?: string } :

@@ -391,6 +391,9 @@ function job(
     failureCount?: number
     partialCount?: number
     skippedCount?: number
+    taskSkippedCount?: number
+    coalescedCount?: number
+    timedOutCount?: number
     lastDurationMs?: number
     maxDurationMs?: number
     lastSuccessAt?: string
@@ -401,17 +404,29 @@ function job(
     name,
     workerRole,
     intervalMs,
+    initialDelayMs: 0,
+    stablePhaseOffsetMs: 0,
+    scheduleMode: 'fixedRate' as const,
+    overlapPolicy: 'skip' as const,
     running: input.running ?? false,
+    pending: false,
+    queuedForLane: false,
+    timedOut: false,
+    overdueMs: 0,
     lastStartedAt,
     lastFinishedAt: input.lastSuccessAt,
     lastSuccessAt: input.lastSuccessAt,
     lastDurationMs: input.lastDurationMs,
     maxDurationMs: input.maxDurationMs,
-    runCount: (input.successCount ?? 0) + (input.failureCount ?? 0) + (input.partialCount ?? 0) + (input.skippedCount ?? 0),
+    consecutiveFailureCount: 0,
+    runCount: (input.successCount ?? 0) + (input.failureCount ?? 0) + (input.partialCount ?? 0) + (input.taskSkippedCount ?? 0),
     successCount: input.successCount ?? 0,
     failureCount: input.failureCount ?? 0,
     partialCount: input.partialCount ?? 0,
-    skippedCount: input.skippedCount ?? 0
+    skippedCount: input.skippedCount ?? 0,
+    taskSkippedCount: input.taskSkippedCount ?? 0,
+    coalescedCount: input.coalescedCount ?? 0,
+    timedOutCount: input.timedOutCount ?? 0
   }
 }
 

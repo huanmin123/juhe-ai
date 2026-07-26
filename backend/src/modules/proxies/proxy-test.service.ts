@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ClientRequest, IncomingHttpHeaders, RequestOptions } from 'node:http'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
@@ -6,6 +7,7 @@ import { connect as tlsConnect, type ConnectionOptions as TlsConnectionOptions }
 
 import { HttpsProxyAgent } from 'https-proxy-agent'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import type { ProviderDefinition } from '../../domain/types.js'
 import { listProvidersAsync } from '../../storage/provider.repository.js'
 import {
@@ -14,6 +16,11 @@ import {
   type ProxyTestStateUpdateInput,
   type ProxyProfileTestConfig
 } from '../../storage/proxy.repository.js'
+import {
+  releaseScheduledJobLease,
+  tryAcquireScheduledJobLease,
+  type ScheduledJobLeaseIdentity
+} from '../../storage/scheduled-job-lease.repository.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
@@ -50,6 +57,31 @@ export interface ProxyTestReport {
 export interface ProxyTestExecution {
   report: ProxyTestReport
   configUpdatedAt: string
+}
+
+export interface ProxyLatencyRefreshBatchOptions {
+  limit?: number
+  concurrency?: number
+  runBudgetMs?: number
+  candidateDeadlineMs?: number
+  signal?: AbortSignal
+}
+
+export interface ProxyLatencyRefreshBatchSummary {
+  outcome: 'success' | 'partial'
+  selectedCount: number
+  targetCount: number
+  claimedCount: number
+  startedCount: number
+  processedCount: number
+  observationFailedCount: number
+  executionFailureCount: number
+  stalePersistCount: number
+  skippedLeaseCount: number
+  releaseFailureCount: number
+  deferredCount: number
+  durationMs: number
+  warning?: string
 }
 
 interface HttpProbeResult {
@@ -154,6 +186,11 @@ export const manualProxyTestDeadlineMs = 25_000
 const maxProxyProbeResponseBytes = 512 * 1024
 export const proxyLatencyRefreshIntervalSeconds = 60
 export const proxyLatencyRefreshBatchSize = 20
+export const proxyLatencyRefreshConcurrency = 2
+export const proxyLatencyRefreshRunBudgetMs = 45_000
+export const proxyLatencyRefreshCandidateDeadlineMs = 25_000
+const proxyLatencyRefreshCandidatePoolFactor = 4
+const proxyLatencyRefreshLeaseGraceMs = 5_000
 const outboundProbeTargets = [
   { url: 'http://ip-api.com/json/?lang=zh-CN', parser: 'ip-api' },
   { url: 'https://ipwho.is/', parser: 'ipwhois' },
@@ -177,34 +214,281 @@ export async function testProxyById(id: string, options: { persist?: boolean; de
   }
 }
 
-export async function refreshProxyLatencyBatch(limit: number): Promise<void> {
-  const proxies = await listEnabledProxyTestConfigsAsync(limit)
-  for (const proxy of proxies) {
-    const testedAt = new Date().toISOString()
-    try {
-      await testProxy(proxy, {
-        persist: true,
-        includeOutboundInfo: false,
-        deadlineAtMs: Date.now() + manualProxyTestDeadlineMs,
-        testedAt
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '代理检测失败'
-      await persistProxyTestState(proxy.id, refreshFailureState(message, {
-        expectedConfigUpdatedAt: proxy.configUpdatedAt,
-        lastTestedAt: testedAt
-      }))
+export async function refreshProxyLatencyBatch(
+  input: number | ProxyLatencyRefreshBatchOptions = proxyLatencyRefreshBatchSize
+): Promise<ProxyLatencyRefreshBatchSummary> {
+  return runProxyLatencyRefreshBatch(normalizeProxyLatencyRefreshOptions(input), defaultProxyLatencyRefreshDependencies)
+}
+
+interface ProxyLatencyRefreshCandidateResult {
+  observationStatus: ProxyTestOverallStatus
+  persisted: boolean
+  executionFailed: boolean
+}
+
+interface ProxyLatencyRefreshLease {
+  identity?: ScheduledJobLeaseIdentity
+}
+
+interface ProxyLatencyRefreshDependencies {
+  listCandidates: (limit: number) => Promise<ProxyProfileTestConfig[]>
+  runCandidate: (proxy: ProxyProfileTestConfig, deadlineAtMs: number, signal?: AbortSignal) => Promise<ProxyLatencyRefreshCandidateResult>
+  acquireLease: (proxy: ProxyProfileTestConfig, ownerId: string, ttlMs: number) => Promise<ProxyLatencyRefreshLease | undefined>
+  releaseLease: (lease: ProxyLatencyRefreshLease) => Promise<boolean>
+  now: () => number
+}
+
+const defaultProxyLatencyRefreshDependencies: ProxyLatencyRefreshDependencies = {
+  listCandidates: listEnabledProxyTestConfigsAsync,
+  runCandidate: runProxyLatencyRefreshCandidate,
+  acquireLease: acquireProxyLatencyRefreshLease,
+  releaseLease: releaseProxyLatencyRefreshLease,
+  now: Date.now
+}
+
+async function runProxyLatencyRefreshBatch(
+  options: NormalizedProxyLatencyRefreshBatchOptions,
+  dependencies: ProxyLatencyRefreshDependencies
+): Promise<ProxyLatencyRefreshBatchSummary> {
+  const startedAtMs = dependencies.now()
+  const runDeadlineAtMs = startedAtMs + options.runBudgetMs
+  const candidatePoolSize = Math.max(options.limit, options.limit * proxyLatencyRefreshCandidatePoolFactor)
+  const candidates = await dependencies.listCandidates(candidatePoolSize)
+  const targetCount = Math.min(options.limit, candidates.length)
+  const ownerId = `proxy-latency-refresh:${process.pid}:${randomUUID()}`
+  let nextCandidateIndex = 0
+  let claimedCount = 0
+  let startedCount = 0
+  let processedCount = 0
+  let observationFailedCount = 0
+  let executionFailureCount = 0
+  let stalePersistCount = 0
+  let skippedLeaseCount = 0
+  let releaseFailureCount = 0
+
+  const runWorker = async (): Promise<void> => {
+    while (
+      startedCount < targetCount
+      && dependencies.now() < runDeadlineAtMs
+      && !proxyLatencyRefreshAborted(options.signal)
+    ) {
+      const candidateIndex = nextCandidateIndex
+      nextCandidateIndex += 1
+      const proxy = candidates[candidateIndex]
+      if (!proxy) return
+
+      let lease: ProxyLatencyRefreshLease | undefined
+      try {
+        lease = await dependencies.acquireLease(
+          proxy,
+          ownerId,
+          options.candidateDeadlineMs + proxyLatencyRefreshLeaseGraceMs
+        )
+      } catch {
+        executionFailureCount += 1
+        continue
+      }
+      if (!lease) {
+        skippedLeaseCount += 1
+        continue
+      }
+      claimedCount += 1
+
+      if (
+        startedCount >= targetCount
+        || dependencies.now() >= runDeadlineAtMs
+        || proxyLatencyRefreshAborted(options.signal)
+      ) {
+        try {
+          if (!await dependencies.releaseLease(lease)) releaseFailureCount += 1
+        } catch {
+          releaseFailureCount += 1
+        }
+        continue
+      }
+
+      startedCount += 1
+      const candidateDeadlineAtMs = Math.min(
+        runDeadlineAtMs,
+        dependencies.now() + options.candidateDeadlineMs
+      )
+      try {
+        const result = await dependencies.runCandidate(proxy, candidateDeadlineAtMs, options.signal)
+        processedCount += 1
+        if (result.observationStatus === 'failed') observationFailedCount += 1
+        if (result.executionFailed) executionFailureCount += 1
+        if (!result.persisted) stalePersistCount += 1
+      } catch {
+        executionFailureCount += 1
+      } finally {
+        try {
+          if (!await dependencies.releaseLease(lease)) releaseFailureCount += 1
+        } catch {
+          releaseFailureCount += 1
+        }
+      }
     }
+  }
+
+  await Promise.all(Array.from(
+    { length: Math.min(options.concurrency, Math.max(1, targetCount)) },
+    runWorker
+  ))
+
+  const deferredCount = Math.max(0, targetCount - startedCount)
+  const partial = executionFailureCount > 0
+    || stalePersistCount > 0
+    || releaseFailureCount > 0
+    || deferredCount > 0
+  const summary: ProxyLatencyRefreshBatchSummary = {
+    outcome: partial ? 'partial' : 'success',
+    selectedCount: candidates.length,
+    targetCount,
+    claimedCount,
+    startedCount,
+    processedCount,
+    observationFailedCount,
+    executionFailureCount,
+    stalePersistCount,
+    skippedLeaseCount,
+    releaseFailureCount,
+    deferredCount,
+    durationMs: Math.max(0, dependencies.now() - startedAtMs),
+    ...(partial
+      ? { warning: proxyLatencyRefreshWarning({ executionFailureCount, stalePersistCount, releaseFailureCount, deferredCount }) }
+      : {})
+  }
+  return summary
+}
+
+async function runProxyLatencyRefreshCandidate(
+  proxy: ProxyProfileTestConfig,
+  deadlineAtMs: number,
+  signal?: AbortSignal
+): Promise<ProxyLatencyRefreshCandidateResult> {
+  const testedAt = new Date().toISOString()
+  let report: ProxyTestReport
+  try {
+    report = await testProxy(proxy, {
+      persist: false,
+      includeOutboundInfo: false,
+      deadlineAtMs,
+      testedAt,
+      signal
+    })
+  } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason ?? error
+    }
+    const message = error instanceof Error ? error.message : '代理检测失败'
+    const persisted = await persistProxyTestState(proxy.id, refreshFailureState(message, {
+      expectedConfigUpdatedAt: proxy.configUpdatedAt,
+      lastTestedAt: testedAt
+    }))
+    return {
+      observationStatus: 'unknown',
+      persisted,
+      executionFailed: true
+    }
+  }
+  const persisted = await persistProxyTestState(proxy.id, proxyTestStateFromReport(proxy, report, testedAt))
+  return {
+    observationStatus: report.status,
+    persisted,
+    executionFailed: false
   }
 }
 
-async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: boolean; includeOutboundInfo: boolean; deadlineAtMs?: number; testedAt?: string }): Promise<ProxyTestReport> {
+async function acquireProxyLatencyRefreshLease(
+  proxy: ProxyProfileTestConfig,
+  ownerId: string,
+  ttlMs: number
+): Promise<ProxyLatencyRefreshLease | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return {}
+  const result = await tryAcquireScheduledJobLease({
+    jobName: 'proxy-latency-refresh',
+    shardKey: proxy.id,
+    ownerId,
+    ttlMs
+  })
+  return result.acquired ? { identity: result.lease } : undefined
+}
+
+async function releaseProxyLatencyRefreshLease(lease: ProxyLatencyRefreshLease): Promise<boolean> {
+  if (!lease.identity) return true
+  return await releaseScheduledJobLease(lease.identity)
+}
+
+function proxyTestStateFromReport(
+  proxy: ProxyProfileTestConfig,
+  report: ProxyTestReport,
+  testedAt: string
+): ProxyTestStateUpdateInput {
+  return {
+    testStatus: report.status,
+    latencyMs: report.baseLatencyMs,
+    lastTestMessage: report.message,
+    lastTestedAt: testedAt,
+    expectedConfigUpdatedAt: proxy.configUpdatedAt
+  }
+}
+
+function normalizeProxyLatencyRefreshOptions(
+  input: number | ProxyLatencyRefreshBatchOptions
+): NormalizedProxyLatencyRefreshBatchOptions {
+  const options = typeof input === 'number' ? { limit: input } : input
+  return {
+    limit: boundedPositiveInteger(options.limit, proxyLatencyRefreshBatchSize, 1, 200),
+    concurrency: boundedPositiveInteger(options.concurrency, proxyLatencyRefreshConcurrency, 1, 16),
+    runBudgetMs: boundedPositiveInteger(options.runBudgetMs, proxyLatencyRefreshRunBudgetMs, 1, 10 * 60_000),
+    candidateDeadlineMs: boundedPositiveInteger(options.candidateDeadlineMs, proxyLatencyRefreshCandidateDeadlineMs, 1, 60_000),
+    signal: options.signal
+  }
+}
+
+interface NormalizedProxyLatencyRefreshBatchOptions {
+  limit: number
+  concurrency: number
+  runBudgetMs: number
+  candidateDeadlineMs: number
+  signal?: AbortSignal
+}
+
+function boundedPositiveInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+  const candidate = value ?? fallback
+  if (!Number.isFinite(candidate)) return fallback
+  return Math.max(min, Math.min(max, Math.trunc(candidate)))
+}
+
+function proxyLatencyRefreshAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
+}
+
+function proxyLatencyRefreshWarning(input: {
+  executionFailureCount: number
+  stalePersistCount: number
+  releaseFailureCount: number
+  deferredCount: number
+}): string {
+  return [
+    input.executionFailureCount > 0 ? `执行失败 ${input.executionFailureCount}` : '',
+    input.stalePersistCount > 0 ? `过期写回 ${input.stalePersistCount}` : '',
+    input.releaseFailureCount > 0 ? `租约释放失败 ${input.releaseFailureCount}` : '',
+    input.deferredCount > 0 ? `预算延期 ${input.deferredCount}` : ''
+  ].filter(Boolean).join('，') || '代理延迟刷新部分完成'
+}
+
+async function testProxy(proxy: ProxyProfileTestConfig, options: { persist: boolean; includeOutboundInfo: boolean; deadlineAtMs?: number; testedAt?: string; signal?: AbortSignal }): Promise<ProxyTestReport> {
   const testedAt = options.testedAt ?? new Date().toISOString()
+  options.signal?.throwIfAborted()
   const enabledProviders = (await listProvidersAsync()).filter((provider) => provider.enabled)
-  const outboundInfoPromise = options.includeOutboundInfo ? probeOutboundInfo(proxy, options.deadlineAtMs) : Promise.resolve(undefined)
+  const outboundInfoPromise = options.includeOutboundInfo
+    ? probeOutboundInfo(proxy, options.deadlineAtMs, options.signal)
+    : Promise.resolve(undefined)
   const providerItems: ProxyTestItem[] = []
   for (const provider of enabledProviders) {
-    providerItems.push(await testProvider(proxy, provider, options.deadlineAtMs))
+    options.signal?.throwIfAborted()
+    providerItems.push(await testProvider(proxy, provider, options.deadlineAtMs, options.signal))
   }
   const outboundInfo = await outboundInfoPromise
   const baseItem = baseConnectivityItem(providerItems, enabledProviders.length)
@@ -262,7 +546,8 @@ async function persistProxyTestState(
 async function testProvider(
   proxy: Pick<ProxyProfileTestConfig, 'proxyUrl'>,
   provider: Pick<ProviderDefinition, 'name' | 'baseUrl'>,
-  deadlineAtMs?: number
+  deadlineAtMs?: number,
+  signal?: AbortSignal
 ): Promise<ProxyTestItem> {
   const targetUrl = provider.baseUrl
   if (proxyTestDeadlineReached(deadlineAtMs)) {
@@ -275,7 +560,8 @@ async function testProvider(
   }
   try {
     const response = await requestWithProxy(targetUrl, proxy.proxyUrl, {
-      timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs)
+      timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs),
+      signal
     })
     return {
       name: provider.name,
@@ -286,6 +572,9 @@ async function testProvider(
       targetUrl
     }
   } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason ?? error
+    }
     const transportFailure = error instanceof ProxyProbeTransportFailure
     return {
       name: provider.name,
@@ -298,14 +587,16 @@ async function testProvider(
   }
 }
 
-async function probeOutboundInfo(proxy: ProxyProfileTestConfig, deadlineAtMs?: number): Promise<ProxyOutboundInfo | undefined> {
+async function probeOutboundInfo(proxy: ProxyProfileTestConfig, deadlineAtMs?: number, signal?: AbortSignal): Promise<ProxyOutboundInfo | undefined> {
   for (const target of outboundProbeTargets) {
+    signal?.throwIfAborted()
     if (proxyTestDeadlineReached(deadlineAtMs)) {
       return undefined
     }
     try {
       const response = await requestWithProxy(target.url, proxy.proxyUrl, {
-        timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs)
+        timeoutMs: remainingProxyProbeTimeoutMs(deadlineAtMs),
+        signal
       })
       if (response.statusCode !== 200) {
         continue
@@ -314,7 +605,10 @@ async function probeOutboundInfo(proxy: ProxyProfileTestConfig, deadlineAtMs?: n
       if (parsed.outboundIp) {
         return parsed
       }
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason ?? error
+      }
       // 出口信息是报告补充项，失败不影响供应商默认地址检测结果。
     }
   }
@@ -514,7 +808,7 @@ function withTlsServername<T extends TlsConnectionOptions>(options: T): T {
   return { ...options, servername: options.host }
 }
 
-function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeoutMs?: number } = {}): Promise<HttpProbeResult> {
+function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<HttpProbeResult> {
   const startedAt = Date.now()
   const timeoutMs = boundedProxyProbeTimeoutMs(options.timeoutMs)
   const connectionAbortController = new AbortController()
@@ -540,6 +834,10 @@ function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeou
     return Promise.reject(new ProxyProbeUnknownFailure(errorMessage(error, '代理检测配置无效')))
   }
 
+  if (options.signal?.aborted) {
+    return Promise.reject(options.signal.reason ?? new ProxyProbeTransportFailure('代理检测请求已取消'))
+  }
+
   return new Promise((resolve, reject) => {
     let settled = false
     let request: ClientRequest | undefined
@@ -551,6 +849,7 @@ function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeou
         clearTimeout(deadlineTimer)
         deadlineTimer = undefined
       }
+      options.signal?.removeEventListener('abort', abortFromParent)
     }
     const finish = (input: { statusCode: number; headers: IncomingHttpHeaders; body: BoundedBufferCollector }) => {
       if (settled) return
@@ -572,6 +871,10 @@ function requestWithProxy(targetUrl: string, proxyUrl: string, options: { timeou
       request?.destroy()
       reject(error)
     }
+    const abortFromParent = () => {
+      fail(new ProxyProbeTransportFailure('代理检测请求已取消'))
+    }
+    options.signal?.addEventListener('abort', abortFromParent, { once: true })
 
     try {
       const requestOptions: RequestOptions = forwardProxyRequestOptions ?? {
@@ -819,6 +1122,13 @@ function countryDisplayName(countryValue: unknown, countryCodeValue: unknown): s
 }
 
 export const proxyTestServiceTestHooks = {
+  refreshBatch: async (
+    options: ProxyLatencyRefreshBatchOptions,
+    dependencies: Partial<ProxyLatencyRefreshDependencies> = {}
+  ): Promise<ProxyLatencyRefreshBatchSummary> => await runProxyLatencyRefreshBatch(
+    normalizeProxyLatencyRefreshOptions(options),
+    { ...defaultProxyLatencyRefreshDependencies, ...dependencies }
+  ),
   testTarget: async (input: {
     name: string
     targetUrl: string
@@ -833,8 +1143,10 @@ export const proxyTestServiceTestHooks = {
     targetUrl: string
     proxyUrl: string
     timeoutMs?: number
+    signal?: AbortSignal
   }): Promise<HttpProbeResult> => await requestWithProxy(input.targetUrl, input.proxyUrl, {
-    timeoutMs: input.timeoutMs
+    timeoutMs: input.timeoutMs,
+    signal: input.signal
   }),
   baseConnectivityItem,
   summarizeItems,

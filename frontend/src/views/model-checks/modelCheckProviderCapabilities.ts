@@ -22,7 +22,7 @@ import type { AccountOptionSummary } from '@/types/domain'
 export type ModelCheckAccountProfile = Pick<
   AccountOptionSummary,
   'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'
->
+> & { modelCheckModels?: string[] }
 
 interface ModelCheckAccountProfileRule {
   providerCode: string
@@ -59,6 +59,7 @@ export function canSelectModelCheckAccount(
 }
 
 export function modelCheckModelsForAccount(account: ModelCheckAccountProfile | undefined): string[] {
+  if (account?.modelCheckModels) return [...account.modelCheckModels]
   return [...(modelCheckRuleForAccount(account)?.models ?? [])]
 }
 

@@ -3,7 +3,14 @@ import type { SystemMetricsRuntimeOverview } from '@/types/domain'
 export type BackgroundJobRow = NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]
 
 export function backgroundJobStatusText(row: BackgroundJobRow): string {
+  if (row.timedOut) return '超时取消中'
   if (row.running) return '运行中'
+  if (row.queuedForLane) return '等待资源'
+  if (row.pending) return '待补跑'
+  if (row.leaseState === 'lost') return '租约丢失'
+  if (row.leaseState === 'busy') return '其他实例执行'
+  if (row.lastOutcome === 'timeout') return '上次超时'
+  if (row.lastOutcome === 'skipped') return '上次跳过'
   if (row.lastError) return '上次失败'
   if (row.lastWarning) return '部分失败'
   const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
@@ -14,7 +21,9 @@ export function backgroundJobStatusText(row: BackgroundJobRow): string {
 }
 
 export function backgroundJobStatusColor(row: BackgroundJobRow): string {
-  if (row.running) return 'processing'
+  if (row.timedOut || row.leaseState === 'lost') return 'error'
+  if (row.running || row.queuedForLane || row.pending) return 'processing'
+  if (row.leaseState === 'busy' || row.lastOutcome === 'skipped' || row.lastOutcome === 'timeout') return 'warning'
   if (row.lastError || row.lastWarning) return 'warning'
   const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
   if (latestProblemAt && !isAfter(row.lastSuccessAt, latestProblemAt)) return 'warning'
