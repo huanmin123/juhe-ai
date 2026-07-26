@@ -10,6 +10,11 @@ const usageRecordQueueSource = readFileSync(resolve('src/modules/gateway/usage/r
 const backgroundIpcSource = readFileSync(resolve('src/modules/background/background-ipc.ts'), 'utf8')
 const sqliteDoc = readFileSync(resolve('../docs/functions/SQLite存储说明.md'), 'utf8')
 const coreDoc = readFileSync(resolve('../docs/functions/核心功能设计.md'), 'utf8')
+const usageStatsDispatchSource = sourceBetween(
+  statsWriterSource,
+  "case 'aggregate_usage_stats':",
+  "case 'aggregate_client_ip_stats':"
+)
 
 assert(
   statsWriterSource.includes('const statsAggregationBatchPauseMs = 25'),
@@ -32,7 +37,8 @@ assert(
   'client IP 统计聚合必须是异步批次，不能用同步 for 循环连续占用 stats-worker'
 )
 assert(
-  statsWriterSource.includes('return await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)'),
+  usageStatsDispatchSource.includes('const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)')
+    && usageStatsDispatchSource.includes('return result'),
   'handleStatsWriteOperation 必须等待 usage 统计异步批次并传入运行预算和安全读取上界'
 )
 assert(
@@ -112,3 +118,10 @@ assert(
 )
 
 console.log('统计聚合批间让出回归通过：usage/client IP 聚合不会同步连续占用 stats-worker，usage 在线聚合有批次硬上限和运行预算')
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const startIndex = source.indexOf(startMarker)
+  const endIndex = source.indexOf(endMarker, startIndex + startMarker.length)
+  assert(startIndex >= 0 && endIndex > startIndex, `源码区间不存在：${startMarker} -> ${endMarker}`)
+  return source.slice(startIndex, endIndex)
+}

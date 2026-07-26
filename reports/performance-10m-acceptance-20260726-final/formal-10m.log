@@ -1,0 +1,46 @@
+
+> juhe-ai-backend@0.1.0 test:performance-10m-acceptance /home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/source/juhe-ai/backend
+> tsx src/scripts/performance/performance-10m-acceptance.ts
+
+外部资源采集命令/格式清单：/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-resource-collection-2026-07-26T15-51-18-479Z.txt
+此入口不会伪装成 sysstat/ps/Redis/PostgreSQL 采集器；必须由独立 shell 在测试期间写入指定 JSONL。
+高性能网关真实链路压测启动
+- 后端：http://127.0.0.1:43199
+- 模拟上游：http://127.0.0.1:37357/v1
+- scenarios=responses,chat,responses_stream concurrency=64 duration=600s warmup=0s settle=60s
+- promptSizeProfile=historical promptContentMode=deterministic_entropy tiers=historical_5k:5120B/900‰,historical_500k:512000B/80‰,historical_2m:2097152B/15‰,historical_4m:4194304B/5‰
+- upstream stream chunks=60 interval=10ms randomTotal=3000-30000ms
+- accounts=32 queue=redis_stream cache=redis state=redis
+请求结束，等待 60s 观察 Redis Stream/worker 消化
+performance-control-plane-probe passed
+report=/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-control-plane-probe-2026-07-26T15-51-18-479Z.json
+requests=13800/13800 coverage=1 success=13800 errors=0 timeouts=0 unavailable=0
+health-1 total p95=4.63ms p99=6.79ms max=31.69ms ttfbP99=6.62ms driftMax=7.49ms statuses={"200":1380}
+health-2 total p95=8.25ms p99=10.89ms max=17.81ms ttfbP99=10.75ms driftMax=18.69ms statuses={"200":1380}
+health-3 total p95=3.72ms p99=6.14ms max=15.36ms ttfbP99=5.97ms driftMax=19.33ms statuses={"200":1380}
+health-4 total p95=3.84ms p99=6.59ms max=18.9ms ttfbP99=6.45ms driftMax=19.86ms statuses={"200":1380}
+health-5 total p95=3.83ms p99=6.13ms max=22.31ms ttfbP99=5.86ms driftMax=20.46ms statuses={"200":1380}
+management-1:usage-records total p95=60.06ms p99=66.08ms max=79.2ms ttfbP99=65.26ms driftMax=21.12ms statuses={"200":1380}
+management-2:stats-usage-overview total p95=49.84ms p99=57.14ms max=78.96ms ttfbP99=55.99ms driftMax=21.51ms statuses={"200":1380}
+management-3:accounts total p95=62.49ms p99=67.34ms max=80.83ms ttfbP99=67.07ms driftMax=21.96ms statuses={"200":1380}
+management-4:audit-logs total p95=54.88ms p99=60.64ms max=70.66ms ttfbP99=58.85ms driftMax=22.29ms statuses={"200":1380}
+management-5:runtime-logs total p95=49.13ms p99=55.35ms max=64.43ms ttfbP99=46.65ms driftMax=23.06ms statuses={"200":1380}
+压测报告已写入：/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-gateway-load-2026-07-26T15-51-18-479Z.json
+
+高性能网关压测汇总
+- pass=true
+- requests started=6804 total=6804 success=6804 inFlight=0 peakInFlight=64 qps=10.85 p95=26330.22ms errorRate=0
+- scenario=responses count=2247 success=2247 errors=0 p95=133.2ms p99=190.41ms max=416.43ms
+- scenario=chat count=2269 success=2269 errors=0 p95=124.2ms p99=241.81ms max=393.11ms
+- scenario=responses_stream count=2288 success=2288 errors=0 p95=28865.55ms p99=29983.45ms max=30158.22ms headersP99=262.62ms ttfbP99=262.78ms ttfbMax=394.44ms
+- promptSize=historical_5k configuredBytes=5120 count=6123 totalPromptBytes=31349760 errors=0 p95=26276.46ms p99=29274.41ms max=30158.22ms
+- promptSize=historical_500k configuredBytes=512000 count=545 totalPromptBytes=279040000 errors=0 p95=26608.3ms p99=29819.41ms max=30141.89ms
+- promptSize=historical_2m configuredBytes=2097152 count=102 totalPromptBytes=213909504 errors=0 p95=25207.24ms p99=27898.49ms max=28368.76ms
+- promptSize=historical_4m configuredBytes=4194304 count=34 totalPromptBytes=142606336 errors=0 p95=27321.73ms p99=28489.43ms max=28489.43ms
+- upstream total=6862 peakActive=65 stream=2346 peakActiveStream=65 completedStream=2319 abortedStream=27
+- storage delta={"usageRecords":6804,"usageCatalogEntries":0,"auditLogs":6804,"operationLogs":0,"publicApiLogs":0,"usageStatsTotalsRowsForFixture":89,"expectedUsageRecords":6804,"expectedAuditLogs":6804,"auditReconciliationMode":"success_hot_retention_1h"}
+- postgres deadlocksDelta=0 maxLockWaiters=1 maxLockWait=2.25ms lockQueryTypes={"unique_coordination":1} maxXactAge=0.82s maxActiveQuery=0.82s
+- redis usageStream length=0 pending=0 lag=0; auditStream length=0 pending=0 lag=0; operationStream length=0 pending=0 lag=0; publicApiStream length=0 pending=0 lag=0; recordMaintenanceStream length=0 pending=0 lag=0; totalPending=0 totalBacklog=0
+- redis delta positivePending=0 positiveBacklog=0 netBacklogDelta=0
+- accountConcurrency maxRedisSlots=65/320000 assert=true
+10 分钟正式验收汇总：/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-10m-acceptance-2026-07-26T15-51-18-479Z.json

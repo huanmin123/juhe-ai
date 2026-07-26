@@ -53,6 +53,13 @@ try {
     name: 'usage writer pool 回归 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }]
   }, access)
+  const ownedUsageScope = {
+    systemAccountId: access.systemAccountId,
+    accountOwnerSystemAccountId: access.systemAccountId,
+    accountAccessType: 'owner' as const,
+    groupOwnerSystemAccountId: access.systemAccountId,
+    groupAccessType: 'owner' as const
+  }
 
   const createdAtBase = Date.now() - 60_000
   const records = Array.from({ length: 80 }, (_, index) => {
@@ -64,6 +71,7 @@ try {
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
+      ...ownedUsageScope,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
       model: 'gpt-5.5-mini',
@@ -93,6 +101,7 @@ try {
       apiKeyId: apiKey.id,
       groupId: group.id,
       accountId: account.id,
+      ...ownedUsageScope,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
       model: 'gpt-5.5-mini',
@@ -110,8 +119,38 @@ try {
   usageRecordQueue.flushUsageRecordQueue()
   await usageRecordQueue.flushUsageRecordQueueForShutdown()
 
+  const concurrentRecords = Array.from({ length: 24 }, (_, index) => {
+    const createdAt = new Date(createdAtBase + records.length + 2_000 + index).toISOString()
+    return {
+      id: usageRecordShards.generateUsageRecordId(createdAt, `writer-pool-concurrent-${index}`),
+      traceId: `trace-usage-writer-pool-concurrent-${index}`,
+      trafficSource: 'gateway' as const,
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      ...ownedUsageScope,
+      endpoint: '/v1/responses',
+      providerCode: 'gpt',
+      model: 'gpt-5.5-mini',
+      stream: index % 2 === 0,
+      statusCode: 200,
+      success: true,
+      durationMs: 200 + index,
+      inputTokens: 40,
+      outputTokens: 20,
+      costUsd: 0.003,
+      createdAt
+    }
+  })
+  await Promise.all(concurrentRecords
+    .slice()
+    .reverse()
+    .map(async (record) => {
+      await repositories.createUsageRecordsBatchAsync([record])
+    }))
+
   const runtime = usageWriterPool.getUsageRecordWriterPoolRuntime()
-  const expectedRecordCount = records.length + shutdownRecords.length
+  const expectedRecordCount = records.length + shutdownRecords.length + concurrentRecords.length
 
   assert.equal(runtime.enabled, true, 'usage writer pool 应在 ingest-worker 中启用')
   assert(runtime.handledJobs > 1, 'usage writer pool 应按 shard 拆分处理多个写任务')
@@ -127,7 +166,7 @@ try {
   const shutdownDetail = repositories.getUsageRecordDetail(shutdownRecords[13].id, access)
   assert.equal(shutdownDetail?.traceId, shutdownRecords[13].traceId, 'shutdown 等待 active flush 后详情应可读')
   const accountAfterUse = repositories.findAccountSummary(account.id, access)
-  assert.equal(accountAfterUse?.lastUsedAt, shutdownRecords[shutdownRecords.length - 1]?.createdAt, '账号 last_used_at 应由 ingest-worker 合并副作用写入业务库，重复 usage id 也能补回副作用')
+  assert.equal(accountAfterUse?.lastUsedAt, concurrentRecords[concurrentRecords.length - 1]?.createdAt, '账号 last_used_at 应由 ingest-worker 单调合并副作用，并发批次完成顺序不得让时间回退')
 
   console.log('使用记录 writer pool 回归通过：明细 shard 并行写，usage catalog 单写补齐，账号副作用合并落库')
 } finally {

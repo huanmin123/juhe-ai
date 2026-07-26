@@ -343,12 +343,12 @@ async function runHttpSmoke(): Promise<void> {
     assert.deepEqual(granteeAccounts.map((account) => account.id), ['sys_admin'], 'performance smoke 应能读取授权被授权账号选项')
     const granteeTeams = await getEnvelope<Array<{ id: string; name: string }>>(baseUrl, '/__aisys__/api/authorization-options/grantee-teams?limit=5', cookie)
     assert.ok(Array.isArray(granteeTeams), 'performance smoke 应能读取授权被授权团队选项')
-    const granteeGroups = await getEnvelope<Array<{ id: string; providerCode: string }>>(
+    const granteeGroups = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
       '/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_admin&providerCode=gpt&preferDefault=true&limit=20',
       cookie
     )
-    assert.ok(granteeGroups.some((group) => group.id === createdGroup.id && group.providerCode === 'gpt'), 'performance smoke 应能读取授权目标分组选项')
+    assert.ok(granteeGroups.some((group) => group.id === createdGroup.id), 'performance smoke 应能读取授权目标分组选项')
 
     console.log(`[performance-system-api-smoke:${label}] authorizations`)
     const authorizationsPage = await getEnvelope<{ items: Array<{ id: string }>; page: number; pageSize: number; hasMore: boolean }>(
@@ -490,12 +490,12 @@ async function runHttpSmoke(): Promise<void> {
       status: 'active'
     }, cookie)
     assert.equal(activeUsageGrantee.status, 'active', 'performance smoke 授权 usage 夹具应使用启用的被授权账号')
-    const createdAccountGranteeGroups = await getEnvelope<Array<{ id: string; providerCode: string }>>(
+    const createdAccountGranteeGroups = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
       `/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=${encodeURIComponent(createdAccount.id)}&providerCode=gpt&preferDefault=true&limit=20`,
       cookie
     )
-    const createdAccountTargetGroup = createdAccountGranteeGroups.find((group) => group.providerCode === 'gpt')
+    const createdAccountTargetGroup = createdAccountGranteeGroups[0]
     assert.ok(createdAccountTargetGroup?.id, 'performance smoke 授权创建应能读取被授权账号目标分组')
     const createdAuthorization = await postEnvelope<{
       id: string

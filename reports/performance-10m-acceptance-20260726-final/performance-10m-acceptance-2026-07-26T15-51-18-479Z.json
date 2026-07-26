@@ -1,0 +1,1886 @@
+{
+  "generatedAt": "2026-07-26T16:03:07.958Z",
+  "pass": true,
+  "topology": {
+    "ingressUrl": "http://127.0.0.1:43199",
+    "controlBaseUrl": "http://127.0.0.1:43300",
+    "gatewayHealthUrls": [
+      "http://127.0.0.1:43311/__aisys__/health",
+      "http://127.0.0.1:43312/__aisys__/health",
+      "http://127.0.0.1:43313/__aisys__/health"
+    ],
+    "externalGatewayCount": 3,
+    "independentProbeProcess": true,
+    "singleServerFallbackAllowed": false
+  },
+  "durationSeconds": 600,
+  "settleSeconds": 60,
+  "artifacts": {
+    "loadReportPath": "/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-gateway-load-2026-07-26T15-51-18-479Z.json",
+    "probeReportPath": "/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-control-plane-probe-2026-07-26T15-51-18-479Z.json",
+    "resourceSamplesPath": "/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/resource-samples-20260726T155116Z.jsonl",
+    "resourceChecklistPath": "/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-resource-collection-2026-07-26T15-51-18-479Z.txt"
+  },
+  "children": {
+    "load": {
+      "code": 0,
+      "stdoutTail": "高性能网关真实链路压测启动\n- 后端：http://127.0.0.1:43199\n- 模拟上游：http://127.0.0.1:37357/v1\n- scenarios=responses,chat,responses_stream concurrency=64 duration=600s warmup=0s settle=60s\n- promptSizeProfile=historical promptContentMode=deterministic_entropy tiers=historical_5k:5120B/900‰,historical_500k:512000B/80‰,historical_2m:2097152B/15‰,historical_4m:4194304B/5‰\n- upstream stream chunks=60 interval=10ms randomTotal=3000-30000ms\n- accounts=32 queue=redis_stream cache=redis state=redis\n请求结束，等待 60s 观察 Redis Stream/worker 消化\n压测报告已写入：/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-gateway-load-2026-07-26T15-51-18-479Z.json\n\n高性能网关压测汇总\n- pass=true\n- requests started=6804 total=6804 success=6804 inFlight=0 peakInFlight=64 qps=10.85 p95=26330.22ms errorRate=0\n- scenario=responses count=2247 success=2247 errors=0 p95=133.2ms p99=190.41ms max=416.43ms\n- scenario=chat count=2269 success=2269 errors=0 p95=124.2ms p99=241.81ms max=393.11ms\n- scenario=responses_stream count=2288 success=2288 errors=0 p95=28865.55ms p99=29983.45ms max=30158.22ms headersP99=262.62ms ttfbP99=262.78ms ttfbMax=394.44ms\n- promptSize=historical_5k configuredBytes=5120 count=6123 totalPromptBytes=31349760 errors=0 p95=26276.46ms p99=29274.41ms max=30158.22ms\n- promptSize=historical_500k configuredBytes=512000 count=545 totalPromptBytes=279040000 errors=0 p95=26608.3ms p99=29819.41ms max=30141.89ms\n- promptSize=historical_2m configuredBytes=2097152 count=102 totalPromptBytes=213909504 errors=0 p95=25207.24ms p99=27898.49ms max=28368.76ms\n- promptSize=historical_4m configuredBytes=4194304 count=34 totalPromptBytes=142606336 errors=0 p95=27321.73ms p99=28489.43ms max=28489.43ms\n- upstream total=6862 peakActive=65 stream=2346 peakActiveStream=65 completedStream=2319 abortedStream=27\n- storage delta={\"usageRecords\":6804,\"usageCatalogEntries\":0,\"auditLogs\":6804,\"operationLogs\":0,\"publicApiLogs\":0,\"usageStatsTotalsRowsForFixture\":89,\"expectedUsageRecords\":6804,\"expectedAuditLogs\":6804,\"auditReconciliationMode\":\"success_hot_retention_1h\"}\n- postgres deadlocksDelta=0 maxLockWaiters=1 maxLockWait=2.25ms lockQueryTypes={\"unique_coordination\":1} maxXactAge=0.82s maxActiveQuery=0.82s\n- redis usageStream length=0 pending=0 lag=0; auditStream length=0 pending=0 lag=0; operationStream length=0 pending=0 lag=0; publicApiStream length=0 pending=0 lag=0; recordMaintenanceStream length=0 pending=0 lag=0; totalPending=0 totalBacklog=0\n- redis delta positivePending=0 positiveBacklog=0 netBacklogDelta=0\n- accountConcurrency maxRedisSlots=65/320000 assert=true\n",
+      "stderrTail": ""
+    },
+    "probe": {
+      "code": 0,
+      "stdoutTail": "performance-control-plane-probe passed\nreport=/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/formal-20260726T155116Z/performance-control-plane-probe-2026-07-26T15-51-18-479Z.json\nrequests=13800/13800 coverage=1 success=13800 errors=0 timeouts=0 unavailable=0\nhealth-1 total p95=4.63ms p99=6.79ms max=31.69ms ttfbP99=6.62ms driftMax=7.49ms statuses={\"200\":1380}\nhealth-2 total p95=8.25ms p99=10.89ms max=17.81ms ttfbP99=10.75ms driftMax=18.69ms statuses={\"200\":1380}\nhealth-3 total p95=3.72ms p99=6.14ms max=15.36ms ttfbP99=5.97ms driftMax=19.33ms statuses={\"200\":1380}\nhealth-4 total p95=3.84ms p99=6.59ms max=18.9ms ttfbP99=6.45ms driftMax=19.86ms statuses={\"200\":1380}\nhealth-5 total p95=3.83ms p99=6.13ms max=22.31ms ttfbP99=5.86ms driftMax=20.46ms statuses={\"200\":1380}\nmanagement-1:usage-records total p95=60.06ms p99=66.08ms max=79.2ms ttfbP99=65.26ms driftMax=21.12ms statuses={\"200\":1380}\nmanagement-2:stats-usage-overview total p95=49.84ms p99=57.14ms max=78.96ms ttfbP99=55.99ms driftMax=21.51ms statuses={\"200\":1380}\nmanagement-3:accounts total p95=62.49ms p99=67.34ms max=80.83ms ttfbP99=67.07ms driftMax=21.96ms statuses={\"200\":1380}\nmanagement-4:audit-logs total p95=54.88ms p99=60.64ms max=70.66ms ttfbP99=58.85ms driftMax=22.29ms statuses={\"200\":1380}\nmanagement-5:runtime-logs total p95=49.13ms p99=55.35ms max=64.43ms ttfbP99=46.65ms driftMax=23.06ms statuses={\"200\":1380}\n",
+      "stderrTail": ""
+    }
+  },
+  "resourceAnalysis": {
+    "pass": true,
+    "sampleCount": 142,
+    "firstSampleAt": "2026-07-26T15:51:17.603059Z",
+    "lastSampleAt": "2026-07-26T16:03:06.861508Z",
+    "coverageSeconds": 709,
+    "boundedSamples": [
+      {
+        "sampledAt": "2026-07-26T15:51:17.603059Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 9732,
+          "final-gateway-2": 9763,
+          "final-gateway-3": 9887
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          0.7431640625,
+          0.87353515625,
+          1.06396484375
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 131444,
+            "cpuTicks": 10051
+          },
+          "db-service:530514": {
+            "rssKb": 311904,
+            "cpuTicks": 18222
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 136076,
+            "cpuTicks": 10677
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154556,
+            "cpuTicks": 9479
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 207072,
+            "cpuTicks": 34093
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 180148,
+            "cpuTicks": 24614
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173300,
+            "cpuTicks": 6863
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 130640,
+            "cpuTicks": 5034
+          },
+          "final-gateway-1": {
+            "rssKb": 505432,
+            "cpuTicks": 26711
+          },
+          "db-service:530734": {
+            "rssKb": 203884,
+            "cpuTicks": 3965
+          },
+          "final-gateway-2": {
+            "rssKb": 489420,
+            "cpuTicks": 26932
+          },
+          "db-service:530733": {
+            "rssKb": 206908,
+            "cpuTicks": 3979
+          },
+          "final-gateway-3": {
+            "rssKb": 480300,
+            "cpuTicks": 27237
+          },
+          "db-service:530747": {
+            "rssKb": 209000,
+            "cpuTicks": 3962
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:51:52.776325Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 9846,
+          "final-gateway-2": 9884,
+          "final-gateway-3": 9980
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          0.57763671875,
+          0.8232421875,
+          1.0390625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 141476,
+            "cpuTicks": 10165
+          },
+          "db-service:530514": {
+            "rssKb": 312352,
+            "cpuTicks": 18508
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 139600,
+            "cpuTicks": 10781
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 155084,
+            "cpuTicks": 9570
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 219448,
+            "cpuTicks": 34471
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 180172,
+            "cpuTicks": 24876
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173300,
+            "cpuTicks": 6879
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 131216,
+            "cpuTicks": 5056
+          },
+          "final-gateway-1": {
+            "rssKb": 507400,
+            "cpuTicks": 27116
+          },
+          "db-service:530734": {
+            "rssKb": 204412,
+            "cpuTicks": 3984
+          },
+          "final-gateway-2": {
+            "rssKb": 505000,
+            "cpuTicks": 27339
+          },
+          "db-service:530733": {
+            "rssKb": 208492,
+            "cpuTicks": 3998
+          },
+          "final-gateway-3": {
+            "rssKb": 482392,
+            "cpuTicks": 27535
+          },
+          "db-service:530747": {
+            "rssKb": 209792,
+            "cpuTicks": 3982
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:52:32.970939Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10013,
+          "final-gateway-2": 10049,
+          "final-gateway-3": 10122
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.0751953125,
+          0.92431640625,
+          1.06396484375
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 156516,
+            "cpuTicks": 10290
+          },
+          "db-service:530514": {
+            "rssKb": 312616,
+            "cpuTicks": 18832
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 153540,
+            "cpuTicks": 10907
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 155612,
+            "cpuTicks": 9684
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224908,
+            "cpuTicks": 34995
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 180220,
+            "cpuTicks": 25269
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173300,
+            "cpuTicks": 6925
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 131216,
+            "cpuTicks": 5088
+          },
+          "final-gateway-1": {
+            "rssKb": 534388,
+            "cpuTicks": 27612
+          },
+          "db-service:530734": {
+            "rssKb": 204412,
+            "cpuTicks": 4001
+          },
+          "final-gateway-2": {
+            "rssKb": 559340,
+            "cpuTicks": 27819
+          },
+          "db-service:530733": {
+            "rssKb": 208492,
+            "cpuTicks": 4014
+          },
+          "final-gateway-3": {
+            "rssKb": 482836,
+            "cpuTicks": 27918
+          },
+          "db-service:530747": {
+            "rssKb": 209792,
+            "cpuTicks": 3999
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:53:08.161495Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10146,
+          "final-gateway-2": 10179,
+          "final-gateway-3": 10258
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          2.10107421875,
+          1.2265625,
+          1.16259765625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 157308,
+            "cpuTicks": 10370
+          },
+          "db-service:530514": {
+            "rssKb": 312928,
+            "cpuTicks": 19078
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 155428,
+            "cpuTicks": 11005
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 155612,
+            "cpuTicks": 9777
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 231564,
+            "cpuTicks": 35429
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 184192,
+            "cpuTicks": 25588
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173300,
+            "cpuTicks": 6940
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 131216,
+            "cpuTicks": 5111
+          },
+          "final-gateway-1": {
+            "rssKb": 599148,
+            "cpuTicks": 27965
+          },
+          "db-service:530734": {
+            "rssKb": 204412,
+            "cpuTicks": 4013
+          },
+          "final-gateway-2": {
+            "rssKb": 616508,
+            "cpuTicks": 28173
+          },
+          "db-service:530733": {
+            "rssKb": 208492,
+            "cpuTicks": 4025
+          },
+          "final-gateway-3": {
+            "rssKb": 488896,
+            "cpuTicks": 28294
+          },
+          "db-service:530747": {
+            "rssKb": 209792,
+            "cpuTicks": 4011
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:53:48.404654Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10282,
+          "final-gateway-2": 10329,
+          "final-gateway-3": 10408
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          2.15625,
+          1.32861328125,
+          1.19970703125
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 158364,
+            "cpuTicks": 10465
+          },
+          "db-service:530514": {
+            "rssKb": 312928,
+            "cpuTicks": 19385
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 157048,
+            "cpuTicks": 11123
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 155356,
+            "cpuTicks": 9898
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224244,
+            "cpuTicks": 35972
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 183412,
+            "cpuTicks": 25928
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173560,
+            "cpuTicks": 7014
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 131216,
+            "cpuTicks": 5141
+          },
+          "final-gateway-1": {
+            "rssKb": 511916,
+            "cpuTicks": 28391
+          },
+          "db-service:530734": {
+            "rssKb": 204412,
+            "cpuTicks": 4029
+          },
+          "final-gateway-2": {
+            "rssKb": 605564,
+            "cpuTicks": 28617
+          },
+          "db-service:530733": {
+            "rssKb": 208492,
+            "cpuTicks": 4042
+          },
+          "final-gateway-3": {
+            "rssKb": 489096,
+            "cpuTicks": 28738
+          },
+          "db-service:530747": {
+            "rssKb": 209792,
+            "cpuTicks": 4029
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:54:23.608933Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10427,
+          "final-gateway-2": 10467,
+          "final-gateway-3": 10547
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          2.150390625,
+          1.4189453125,
+          1.234375
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 158196,
+            "cpuTicks": 10553
+          },
+          "db-service:530514": {
+            "rssKb": 312156,
+            "cpuTicks": 19629
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 157932,
+            "cpuTicks": 11238
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154292,
+            "cpuTicks": 9996
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224668,
+            "cpuTicks": 36468
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 186408,
+            "cpuTicks": 26276
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173316,
+            "cpuTicks": 7080
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 130512,
+            "cpuTicks": 5158
+          },
+          "final-gateway-1": {
+            "rssKb": 538564,
+            "cpuTicks": 28843
+          },
+          "db-service:530734": {
+            "rssKb": 204288,
+            "cpuTicks": 4043
+          },
+          "final-gateway-2": {
+            "rssKb": 640140,
+            "cpuTicks": 28983
+          },
+          "db-service:530733": {
+            "rssKb": 208396,
+            "cpuTicks": 4057
+          },
+          "final-gateway-3": {
+            "rssKb": 495932,
+            "cpuTicks": 29117
+          },
+          "db-service:530747": {
+            "rssKb": 209700,
+            "cpuTicks": 4041
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:55:03.861645Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10575,
+          "final-gateway-2": 10607,
+          "final-gateway-3": 10688
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.49169921875,
+          1.34765625,
+          1.21826171875
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 158712,
+            "cpuTicks": 10653
+          },
+          "db-service:530514": {
+            "rssKb": 312144,
+            "cpuTicks": 19958
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158708,
+            "cpuTicks": 11349
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 155072,
+            "cpuTicks": 10119
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224928,
+            "cpuTicks": 36987
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 186292,
+            "cpuTicks": 26697
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173304,
+            "cpuTicks": 7098
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 130156,
+            "cpuTicks": 5188
+          },
+          "final-gateway-1": {
+            "rssKb": 550276,
+            "cpuTicks": 29263
+          },
+          "db-service:530734": {
+            "rssKb": 204276,
+            "cpuTicks": 4059
+          },
+          "final-gateway-2": {
+            "rssKb": 608648,
+            "cpuTicks": 29438
+          },
+          "db-service:530733": {
+            "rssKb": 208384,
+            "cpuTicks": 4073
+          },
+          "final-gateway-3": {
+            "rssKb": 483148,
+            "cpuTicks": 29555
+          },
+          "db-service:530747": {
+            "rssKb": 209684,
+            "cpuTicks": 4058
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:55:39.061423Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10712,
+          "final-gateway-2": 10755,
+          "final-gateway-3": 10806
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.50244140625,
+          1.3583984375,
+          1.2255859375
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 159424,
+            "cpuTicks": 10734
+          },
+          "db-service:530514": {
+            "rssKb": 311876,
+            "cpuTicks": 20229
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158968,
+            "cpuTicks": 11459
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153676,
+            "cpuTicks": 10233
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224876,
+            "cpuTicks": 37455
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 179216,
+            "cpuTicks": 27095
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173264,
+            "cpuTicks": 7158
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 128984,
+            "cpuTicks": 5220
+          },
+          "final-gateway-1": {
+            "rssKb": 533280,
+            "cpuTicks": 29646
+          },
+          "db-service:530734": {
+            "rssKb": 204236,
+            "cpuTicks": 4074
+          },
+          "final-gateway-2": {
+            "rssKb": 607188,
+            "cpuTicks": 29857
+          },
+          "db-service:530733": {
+            "rssKb": 208344,
+            "cpuTicks": 4088
+          },
+          "final-gateway-3": {
+            "rssKb": 475388,
+            "cpuTicks": 29898
+          },
+          "db-service:530747": {
+            "rssKb": 209644,
+            "cpuTicks": 4072
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:56:14.240096Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10839,
+          "final-gateway-2": 10873,
+          "final-gateway-3": 10917
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.76708984375,
+          1.4306640625,
+          1.25341796875
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 159624,
+            "cpuTicks": 10810
+          },
+          "db-service:530514": {
+            "rssKb": 311556,
+            "cpuTicks": 20476
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159632,
+            "cpuTicks": 11552
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153400,
+            "cpuTicks": 10317
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 225076,
+            "cpuTicks": 37880
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 184428,
+            "cpuTicks": 27423
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173216,
+            "cpuTicks": 7203
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 128512,
+            "cpuTicks": 5243
+          },
+          "final-gateway-1": {
+            "rssKb": 561640,
+            "cpuTicks": 29986
+          },
+          "db-service:530734": {
+            "rssKb": 204212,
+            "cpuTicks": 4086
+          },
+          "final-gateway-2": {
+            "rssKb": 588076,
+            "cpuTicks": 30201
+          },
+          "db-service:530733": {
+            "rssKb": 208320,
+            "cpuTicks": 4099
+          },
+          "final-gateway-3": {
+            "rssKb": 489840,
+            "cpuTicks": 30224
+          },
+          "db-service:530747": {
+            "rssKb": 209620,
+            "cpuTicks": 4085
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:56:54.459725Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 10985,
+          "final-gateway-2": 11014,
+          "final-gateway-3": 11047
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.62255859375,
+          1.451171875,
+          1.26806640625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 159928,
+            "cpuTicks": 10917
+          },
+          "db-service:530514": {
+            "rssKb": 310784,
+            "cpuTicks": 20788
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158804,
+            "cpuTicks": 11664
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153968,
+            "cpuTicks": 10432
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 226392,
+            "cpuTicks": 38390
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178900,
+            "cpuTicks": 27780
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173064,
+            "cpuTicks": 7235
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127720,
+            "cpuTicks": 5269
+          },
+          "final-gateway-1": {
+            "rssKb": 551624,
+            "cpuTicks": 30407
+          },
+          "db-service:530734": {
+            "rssKb": 204084,
+            "cpuTicks": 4104
+          },
+          "final-gateway-2": {
+            "rssKb": 593344,
+            "cpuTicks": 30613
+          },
+          "db-service:530733": {
+            "rssKb": 208084,
+            "cpuTicks": 4119
+          },
+          "final-gateway-3": {
+            "rssKb": 479988,
+            "cpuTicks": 30611
+          },
+          "db-service:530747": {
+            "rssKb": 209492,
+            "cpuTicks": 4100
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:57:29.684938Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11125,
+          "final-gateway-2": 11133,
+          "final-gateway-3": 11189
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.3203125,
+          1.38623046875,
+          1.2529296875
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 159916,
+            "cpuTicks": 11008
+          },
+          "db-service:530514": {
+            "rssKb": 310772,
+            "cpuTicks": 21079
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158744,
+            "cpuTicks": 11774
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154484,
+            "cpuTicks": 10530
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 230364,
+            "cpuTicks": 38849
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 181932,
+            "cpuTicks": 28153
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173644,
+            "cpuTicks": 7307
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 128352,
+            "cpuTicks": 5308
+          },
+          "final-gateway-1": {
+            "rssKb": 546832,
+            "cpuTicks": 30797
+          },
+          "db-service:530734": {
+            "rssKb": 204072,
+            "cpuTicks": 4119
+          },
+          "final-gateway-2": {
+            "rssKb": 511260,
+            "cpuTicks": 30987
+          },
+          "db-service:530733": {
+            "rssKb": 208072,
+            "cpuTicks": 4135
+          },
+          "final-gateway-3": {
+            "rssKb": 490112,
+            "cpuTicks": 31049
+          },
+          "db-service:530747": {
+            "rssKb": 209480,
+            "cpuTicks": 4115
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:58:09.891625Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11276,
+          "final-gateway-2": 11287,
+          "final-gateway-3": 11344
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.25439453125,
+          1.35400390625,
+          1.248046875
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 160444,
+            "cpuTicks": 11101
+          },
+          "db-service:530514": {
+            "rssKb": 310772,
+            "cpuTicks": 21387
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158744,
+            "cpuTicks": 11889
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154996,
+            "cpuTicks": 10650
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 225424,
+            "cpuTicks": 39368
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 180280,
+            "cpuTicks": 28566
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173644,
+            "cpuTicks": 7345
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 128352,
+            "cpuTicks": 5341
+          },
+          "final-gateway-1": {
+            "rssKb": 544984,
+            "cpuTicks": 31221
+          },
+          "db-service:530734": {
+            "rssKb": 204336,
+            "cpuTicks": 4135
+          },
+          "final-gateway-2": {
+            "rssKb": 506656,
+            "cpuTicks": 31436
+          },
+          "db-service:530733": {
+            "rssKb": 208072,
+            "cpuTicks": 4149
+          },
+          "final-gateway-3": {
+            "rssKb": 475932,
+            "cpuTicks": 31523
+          },
+          "db-service:530747": {
+            "rssKb": 209480,
+            "cpuTicks": 4130
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:58:45.057684Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11399,
+          "final-gateway-2": 11407,
+          "final-gateway-3": 11486
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.20166015625,
+          1.337890625,
+          1.24853515625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 156800,
+            "cpuTicks": 11184
+          },
+          "db-service:530514": {
+            "rssKb": 310568,
+            "cpuTicks": 21625
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158732,
+            "cpuTicks": 11996
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154724,
+            "cpuTicks": 10745
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 225240,
+            "cpuTicks": 39805
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178684,
+            "cpuTicks": 28902
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173704,
+            "cpuTicks": 7383
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 128080,
+            "cpuTicks": 5364
+          },
+          "final-gateway-1": {
+            "rssKb": 553144,
+            "cpuTicks": 31583
+          },
+          "db-service:530734": {
+            "rssKb": 204132,
+            "cpuTicks": 4149
+          },
+          "final-gateway-2": {
+            "rssKb": 524568,
+            "cpuTicks": 31769
+          },
+          "db-service:530733": {
+            "rssKb": 207868,
+            "cpuTicks": 4165
+          },
+          "final-gateway-3": {
+            "rssKb": 500092,
+            "cpuTicks": 31940
+          },
+          "db-service:530747": {
+            "rssKb": 209276,
+            "cpuTicks": 4145
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T15:59:20.220457Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11532,
+          "final-gateway-2": 11548,
+          "final-gateway-3": 11607
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.36279296875,
+          1.3759765625,
+          1.265625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 157608,
+            "cpuTicks": 11264
+          },
+          "db-service:530514": {
+            "rssKb": 310320,
+            "cpuTicks": 21868
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158868,
+            "cpuTicks": 12099
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 154456,
+            "cpuTicks": 10845
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 230328,
+            "cpuTicks": 40253
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178444,
+            "cpuTicks": 29285
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173720,
+            "cpuTicks": 7453
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127804,
+            "cpuTicks": 5383
+          },
+          "final-gateway-1": {
+            "rssKb": 550212,
+            "cpuTicks": 31983
+          },
+          "db-service:530734": {
+            "rssKb": 203876,
+            "cpuTicks": 4160
+          },
+          "final-gateway-2": {
+            "rssKb": 549844,
+            "cpuTicks": 32137
+          },
+          "db-service:530733": {
+            "rssKb": 207608,
+            "cpuTicks": 4177
+          },
+          "final-gateway-3": {
+            "rssKb": 488536,
+            "cpuTicks": 32289
+          },
+          "db-service:530747": {
+            "rssKb": 209028,
+            "cpuTicks": 4157
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:00:00.486440Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11691,
+          "final-gateway-2": 11693,
+          "final-gateway-3": 11771
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.01806640625,
+          1.29443359375,
+          1.244140625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 158392,
+            "cpuTicks": 11358
+          },
+          "db-service:530514": {
+            "rssKb": 310048,
+            "cpuTicks": 22156
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 158180,
+            "cpuTicks": 12217
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153416,
+            "cpuTicks": 10954
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 231296,
+            "cpuTicks": 40793
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 184776,
+            "cpuTicks": 29694
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173444,
+            "cpuTicks": 7469
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127512,
+            "cpuTicks": 5409
+          },
+          "final-gateway-1": {
+            "rssKb": 549376,
+            "cpuTicks": 32377
+          },
+          "db-service:530734": {
+            "rssKb": 203604,
+            "cpuTicks": 4177
+          },
+          "final-gateway-2": {
+            "rssKb": 562128,
+            "cpuTicks": 32539
+          },
+          "db-service:530733": {
+            "rssKb": 207336,
+            "cpuTicks": 4193
+          },
+          "final-gateway-3": {
+            "rssKb": 490224,
+            "cpuTicks": 32784
+          },
+          "db-service:530747": {
+            "rssKb": 208756,
+            "cpuTicks": 4173
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:00:35.717711Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11826,
+          "final-gateway-2": 11812,
+          "final-gateway-3": 11905
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.39892578125,
+          1.35693359375,
+          1.267578125
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 157304,
+            "cpuTicks": 11452
+          },
+          "db-service:530514": {
+            "rssKb": 309992,
+            "cpuTicks": 22442
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159472,
+            "cpuTicks": 12330
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153360,
+            "cpuTicks": 11056
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 226100,
+            "cpuTicks": 41225
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178660,
+            "cpuTicks": 30057
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173652,
+            "cpuTicks": 7542
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127456,
+            "cpuTicks": 5437
+          },
+          "final-gateway-1": {
+            "rssKb": 552936,
+            "cpuTicks": 32760
+          },
+          "db-service:530734": {
+            "rssKb": 203548,
+            "cpuTicks": 4191
+          },
+          "final-gateway-2": {
+            "rssKb": 569424,
+            "cpuTicks": 32939
+          },
+          "db-service:530733": {
+            "rssKb": 207280,
+            "cpuTicks": 4207
+          },
+          "final-gateway-3": {
+            "rssKb": 483692,
+            "cpuTicks": 33154
+          },
+          "db-service:530747": {
+            "rssKb": 208700,
+            "cpuTicks": 4187
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:01:15.922366Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 11996,
+          "final-gateway-2": 11970,
+          "final-gateway-3": 12075
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.64990234375,
+          1.42236328125,
+          1.29296875
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 157144,
+            "cpuTicks": 11537
+          },
+          "db-service:530514": {
+            "rssKb": 309832,
+            "cpuTicks": 22706
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159500,
+            "cpuTicks": 12452
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153720,
+            "cpuTicks": 11179
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 231168,
+            "cpuTicks": 41721
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178500,
+            "cpuTicks": 30502
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173492,
+            "cpuTicks": 7596
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127288,
+            "cpuTicks": 5460
+          },
+          "final-gateway-1": {
+            "rssKb": 558824,
+            "cpuTicks": 33236
+          },
+          "db-service:530734": {
+            "rssKb": 203388,
+            "cpuTicks": 4205
+          },
+          "final-gateway-2": {
+            "rssKb": 588656,
+            "cpuTicks": 33394
+          },
+          "db-service:530733": {
+            "rssKb": 207120,
+            "cpuTicks": 4222
+          },
+          "final-gateway-3": {
+            "rssKb": 486196,
+            "cpuTicks": 33592
+          },
+          "db-service:530747": {
+            "rssKb": 208540,
+            "cpuTicks": 4201
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:01:51.213084Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 12046,
+          "final-gateway-2": 12021,
+          "final-gateway-3": 12119
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.6201171875,
+          1.439453125,
+          1.302734375
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 130112,
+            "cpuTicks": 11715
+          },
+          "db-service:530514": {
+            "rssKb": 309832,
+            "cpuTicks": 23041
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159212,
+            "cpuTicks": 12526
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153720,
+            "cpuTicks": 11232
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224572,
+            "cpuTicks": 41999
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178500,
+            "cpuTicks": 30654
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173492,
+            "cpuTicks": 7623
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127288,
+            "cpuTicks": 5487
+          },
+          "final-gateway-1": {
+            "rssKb": 458904,
+            "cpuTicks": 33408
+          },
+          "db-service:530734": {
+            "rssKb": 203388,
+            "cpuTicks": 4221
+          },
+          "final-gateway-2": {
+            "rssKb": 458056,
+            "cpuTicks": 33607
+          },
+          "db-service:530733": {
+            "rssKb": 207120,
+            "cpuTicks": 4238
+          },
+          "final-gateway-3": {
+            "rssKb": 476484,
+            "cpuTicks": 33720
+          },
+          "db-service:530747": {
+            "rssKb": 208540,
+            "cpuTicks": 4216
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:02:31.597374Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 12046,
+          "final-gateway-2": 12021,
+          "final-gateway-3": 12119
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          1.91748046875,
+          1.52783203125,
+          1.33642578125
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 148580,
+            "cpuTicks": 11885
+          },
+          "db-service:530514": {
+            "rssKb": 310896,
+            "cpuTicks": 23471
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159212,
+            "cpuTicks": 12556
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153720,
+            "cpuTicks": 11259
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224572,
+            "cpuTicks": 42127
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178500,
+            "cpuTicks": 30685
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173492,
+            "cpuTicks": 7688
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127288,
+            "cpuTicks": 5526
+          },
+          "final-gateway-1": {
+            "rssKb": 458904,
+            "cpuTicks": 33451
+          },
+          "db-service:530734": {
+            "rssKb": 203388,
+            "cpuTicks": 4243
+          },
+          "final-gateway-2": {
+            "rssKb": 458584,
+            "cpuTicks": 33648
+          },
+          "db-service:530733": {
+            "rssKb": 207120,
+            "cpuTicks": 4262
+          },
+          "final-gateway-3": {
+            "rssKb": 476484,
+            "cpuTicks": 33755
+          },
+          "db-service:530747": {
+            "rssKb": 208540,
+            "cpuTicks": 4238
+          }
+        }
+      },
+      {
+        "sampledAt": "2026-07-26T16:03:06.861508Z",
+        "gatewayInstanceIds": [
+          "final-gateway-1",
+          "final-gateway-2",
+          "final-gateway-3"
+        ],
+        "gatewayRequestCounts": {
+          "final-gateway-1": 12046,
+          "final-gateway-2": 12021,
+          "final-gateway-3": 12119
+        },
+        "roles": [
+          "control:final-control",
+          "db-service:530514",
+          "usage-worker:final-control-usage-worker-1",
+          "usage-worker:final-control-usage-worker-2",
+          "log-worker:final-control-log-worker-1",
+          "log-worker:final-control-log-worker-2",
+          "stats-worker:final-control-stats-worker-1",
+          "ops-worker:final-control-ops-worker-1",
+          "gateway:final-gateway-1",
+          "db-service:530734",
+          "gateway:final-gateway-2",
+          "db-service:530733",
+          "gateway:final-gateway-3",
+          "db-service:530747"
+        ],
+        "loadAvg": [
+          2.71142578125,
+          1.744140625,
+          1.4150390625
+        ],
+        "processes": {
+          "final-control": {
+            "rssKb": 150164,
+            "cpuTicks": 11982
+          },
+          "db-service:530514": {
+            "rssKb": 250672,
+            "cpuTicks": 23723
+          },
+          "usage-worker:final-control-usage-worker-1": {
+            "rssKb": 159212,
+            "cpuTicks": 12581
+          },
+          "usage-worker:final-control-usage-worker-2": {
+            "rssKb": 153720,
+            "cpuTicks": 11278
+          },
+          "log-worker:final-control-log-worker-1": {
+            "rssKb": 224572,
+            "cpuTicks": 42213
+          },
+          "log-worker:final-control-log-worker-2": {
+            "rssKb": 178500,
+            "cpuTicks": 30711
+          },
+          "stats-worker:final-control-stats-worker-1": {
+            "rssKb": 173492,
+            "cpuTicks": 7705
+          },
+          "ops-worker:final-control-ops-worker-1": {
+            "rssKb": 127288,
+            "cpuTicks": 5557
+          },
+          "final-gateway-1": {
+            "rssKb": 458904,
+            "cpuTicks": 33477
+          },
+          "db-service:530734": {
+            "rssKb": 203388,
+            "cpuTicks": 4261
+          },
+          "final-gateway-2": {
+            "rssKb": 459112,
+            "cpuTicks": 33675
+          },
+          "db-service:530733": {
+            "rssKb": 207120,
+            "cpuTicks": 4279
+          },
+          "final-gateway-3": {
+            "rssKb": 476484,
+            "cpuTicks": 33778
+          },
+          "db-service:530747": {
+            "rssKb": 208540,
+            "cpuTicks": 4256
+          }
+        }
+      }
+    ]
+  },
+  "violations": []
+}

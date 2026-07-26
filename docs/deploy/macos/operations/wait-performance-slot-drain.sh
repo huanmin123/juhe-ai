@@ -54,8 +54,29 @@ assert_number "$POLL_SECONDS" 1 60 poll-seconds
 command -v curl >/dev/null
 command -v lsof >/dev/null
 
+assert_lsof_capability() {
+  probe_output="$(lsof -nP -a -p "$$" -d cwd -Fn 2>&1)" || {
+    echo "lsof capability probe failed: ${probe_output:-no diagnostic}" >&2
+    return 1
+  }
+  printf '%s\n' "$probe_output" | grep -qx "p$$" \
+    && printf '%s\n' "$probe_output" | grep -q '^n/' || {
+      echo 'lsof capability probe did not return the current process cwd' >&2
+      return 1
+    }
+  probe_output="$(lsof -nP -a -c nginx -iTCP:"$INGRESS_PORT" -sTCP:LISTEN -Fn 2>&1)" || {
+    echo "lsof cannot inspect the nginx ingress listener on port $INGRESS_PORT: ${probe_output:-no diagnostic}" >&2
+    return 1
+  }
+  printf '%s\n' "$probe_output" | grep -q '^p[0-9][0-9]*$' \
+    && printf '%s\n' "$probe_output" | grep -Eq "^n.*:${INGRESS_PORT}$" || {
+      echo "lsof did not prove a visible nginx ingress listener on port $INGRESS_PORT" >&2
+      return 1
+    }
+}
+
 active_slot() {
-  curl -sS --max-time 3 -D - -o /dev/null "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" \
+  curl -fsS --max-time 3 -D - -o /dev/null "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" \
     | tr -d '\r' \
     | sed -n 's/^X-Juhe-Active-Upstream:[[:space:]]*performance-\(main\|temporary\)[[:space:]]*$/\1/ip' \
     | head -1
@@ -63,10 +84,24 @@ active_slot() {
 
 established_count() {
   port="$1"
-  { lsof -nP -a -c nginx -iTCP:"$port" -sTCP:ESTABLISHED 2>/dev/null || true; } \
-    | sed '1d' \
-    | wc -l \
-    | tr -d '[:space:]'
+  error_file="$(mktemp -t juhe-ai-drain-lsof.XXXXXX)" || return 1
+  if output="$(lsof -nP -a -c nginx -iTCP:"$port" -sTCP:ESTABLISHED 2>"$error_file")"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -gt 1 ] || [ -s "$error_file" ]; then
+    echo "lsof connection probe failed for port $port" >&2
+    [ ! -s "$error_file" ] || sed 's/^/lsof: /' "$error_file" >&2
+    rm -f -- "$error_file"
+    return 1
+  fi
+  rm -f -- "$error_file"
+  if [ "$status" -eq 1 ]; then
+    printf '0'
+    return 0
+  fi
+  printf '%s\n' "$output" | sed '1d' | wc -l | tr -d '[:space:]'
 }
 
 slot_connection_count() {
@@ -82,13 +117,18 @@ slot_connection_count() {
 
 started_at="$(date +%s)"
 stable_zero=0
-if [ "$MODE" = wait ]; then required_stable_zero=3; else required_stable_zero=1; fi
+required_stable_zero=3
+assert_lsof_capability
 while :; do
-  active="$(active_slot || true)"
-  if [ "$active" = "$SLOT" ]; then
-    echo "slot $SLOT is still active on ingress $INGRESS_PORT; refusing to call it drained" >&2
+  if ! active="$(active_slot)"; then
+    echo "could not query ingress $INGRESS_PORT; refusing to infer a drained slot" >&2
     exit 1
   fi
+  case "$SLOT:$active" in
+    main:temporary|temporary:main|standalone:main|standalone:temporary) ;;
+    "$SLOT:$SLOT") echo "slot $SLOT is still active on ingress $INGRESS_PORT; refusing to call it drained" >&2; exit 1 ;;
+    *) echo "ingress $INGRESS_PORT did not explicitly identify another active performance slot; got ${active:-no route identity}" >&2; exit 1 ;;
+  esac
   connections="$(slot_connection_count)"
   printf 'slot=%s active=%s established_nginx_connections=%s\n' "$SLOT" "${active:-unknown}" "$connections"
   if [ "$connections" -eq 0 ]; then stable_zero=$((stable_zero + 1)); else stable_zero=0; fi
@@ -96,9 +136,9 @@ while :; do
     printf 'PERFORMANCE_SLOT_DRAINED slot=%s\n' "$SLOT"
     exit 0
   fi
-  [ "$MODE" = wait ] || exit 1
+  if [ "$MODE" = check ] && [ "$connections" -ne 0 ]; then exit 1; fi
   now="$(date +%s)"
-  [ "$((now - started_at))" -lt "$TIMEOUT_SECONDS" ] || {
+  [ "$MODE" = check ] || [ "$((now - started_at))" -lt "$TIMEOUT_SECONDS" ] || {
     echo "slot $SLOT did not drain within $TIMEOUT_SECONDS seconds" >&2
     exit 1
   }

@@ -14,11 +14,17 @@ HEALTH_PATH='/__aisys__/health'
 API_HEALTH_PATH='/__aisys__/api/health'
 INGRESS_HEALTH_URL=''
 ROUTE_HEADER_NAME='X-Juhe-Active-Upstream'
-MAIN_HEADER_VALUE=main
-TEMP_HEADER_VALUE=temporary
+MAIN_HEADER_VALUE=performance-main
+TEMP_HEADER_VALUE=performance-temporary
 SWITCH_ATTEMPTED=0
 ROLLBACK_OK=0
 TMP_HEADERS=''
+MODEL_READINESS_KEY_FILE=''
+MODEL_READINESS_RUNNER=''
+MODEL_READINESS_INGRESS_BASE_URL=''
+SKIP_MODEL_READINESS=0
+MAIN_MODEL_BASE_URL=''
+TEMP_MODEL_BASE_URL=''
 
 usage() {
   cat <<'EOF'
@@ -27,6 +33,12 @@ Usage: temporary-cutover.sh --action <takeover|switchback> --switch-script <path
   --temporary-release <path> --temporary-pid <pid> --temporary-port <port>
   [--health-path <path>] [--api-health-path <path>]
   [--ingress-health-url <url>] [--dry-run|--apply]
+  [--model-readiness-key-file <absolute-mode-0600-file>]
+  [--model-readiness-runner <absolute-new-release-runner-path>]
+  [--model-readiness-ingress-base-url <loopback-http-base-url>]
+  [--main-model-base-url <loopback-http-base-url>]
+  [--temporary-model-base-url <loopback-http-base-url>]
+  [--skip-model-readiness-for-non-business-test]
 
 The switch adapter must accept exactly one argument: main or temporary.
 Dry-run prints the plan and does not inspect processes or change routing.
@@ -51,6 +63,12 @@ while [ "$#" -gt 0 ]; do
     --route-header-name) ROUTE_HEADER_NAME="${2:?missing header name}"; shift 2 ;;
     --main-header-value) MAIN_HEADER_VALUE="${2:?missing main header value}"; shift 2 ;;
     --temporary-header-value) TEMP_HEADER_VALUE="${2:?missing temporary header value}"; shift 2 ;;
+    --model-readiness-key-file) MODEL_READINESS_KEY_FILE="${2:?missing model readiness key file}"; shift 2 ;;
+    --model-readiness-runner) MODEL_READINESS_RUNNER="${2:?missing model readiness runner}"; shift 2 ;;
+    --model-readiness-ingress-base-url) MODEL_READINESS_INGRESS_BASE_URL="${2:?missing model readiness ingress base URL}"; shift 2 ;;
+    --main-model-base-url) MAIN_MODEL_BASE_URL="${2:?missing main model base URL}"; shift 2 ;;
+    --temporary-model-base-url) TEMP_MODEL_BASE_URL="${2:?missing temporary model base URL}"; shift 2 ;;
+    --skip-model-readiness-for-non-business-test) SKIP_MODEL_READINESS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -80,16 +98,65 @@ case "$TEMP_HEADER_VALUE" in ''|*[!A-Za-z0-9._~-]*) echo 'temporary header value
 if [ -n "$INGRESS_HEALTH_URL" ]; then
   case "$INGRESS_HEALTH_URL" in http://*|https://*) ;; *) echo 'ingress health URL must use http or https' >&2; exit 2;; esac
 fi
+if [ -n "$MODEL_READINESS_KEY_FILE" ]; then
+  case "$MODEL_READINESS_KEY_FILE" in /*) ;; *) echo 'model readiness key file must be absolute' >&2; exit 2;; esac
+fi
+if [ -n "$MODEL_READINESS_RUNNER" ]; then
+  case "$MODEL_READINESS_RUNNER" in /*) ;; *) echo 'model readiness runner must be absolute' >&2; exit 2;; esac
+fi
+[ -z "$MODEL_READINESS_KEY_FILE" ] || [ "$SKIP_MODEL_READINESS" = 0 ] || {
+  echo 'model readiness key file and skip flag are mutually exclusive' >&2
+  exit 2
+}
+[ -n "$MODEL_READINESS_KEY_FILE" ] || [ "$SKIP_MODEL_READINESS" = 1 ] || {
+  echo 'provide --model-readiness-key-file, or explicitly skip only for a non-business test' >&2
+  exit 2
+}
+if [ "$SKIP_MODEL_READINESS" = 0 ]; then
+  [ -n "$MODEL_READINESS_INGRESS_BASE_URL" ] || { echo 'missing --model-readiness-ingress-base-url' >&2; exit 2; }
+  [ -n "$MODEL_READINESS_RUNNER" ] || { echo 'missing --model-readiness-runner' >&2; exit 2; }
+fi
+if [ -z "$MAIN_MODEL_BASE_URL" ]; then MAIN_MODEL_BASE_URL="http://127.0.0.1:$MAIN_PORT"; fi
+if [ -z "$TEMP_MODEL_BASE_URL" ]; then TEMP_MODEL_BASE_URL="http://127.0.0.1:$TEMP_PORT"; fi
+assert_loopback_model_base_url() {
+  local name="$1" value="$2" port
+  printf '%s' "$value" | grep -Eq '^http://127\.0\.0\.1:[0-9]+$' || {
+    echo "$name must be an http://127.0.0.1:PORT base URL" >&2
+    exit 2
+  }
+  port="${value##*:}"
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { echo "$name port is out of range" >&2; exit 2; }
+}
+if [ "$SKIP_MODEL_READINESS" = 0 ]; then
+  assert_loopback_model_base_url main-model-base-url "$MAIN_MODEL_BASE_URL"
+  assert_loopback_model_base_url temporary-model-base-url "$TEMP_MODEL_BASE_URL"
+  assert_loopback_model_base_url model-readiness-ingress-base-url "$MODEL_READINESS_INGRESS_BASE_URL"
+fi
 
 if [ "$ACTION" = takeover ]; then TARGET=temporary; rollback_target=main; else TARGET=main; rollback_target=temporary; fi
 printf 'mode=%s action=%s target=%s rollback_target=%s switch_adapter=%s\n' "$MODE" "$ACTION" "$TARGET" "$rollback_target" "$SWITCH_SCRIPT"
 printf 'plan: verify both instances by PID/cwd/port/health -> switch -> prove ingress -> rollback on failure\n'
 [ "$MODE" = apply ] || exit 0
 
+assert_model_readiness_key_file() {
+  local key_mode
+  key_mode="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
+  case "$key_mode" in [0-7][0-7][0-7]) ;; *) key_mode="$(stat -c '%a' "$1" 2>/dev/null || true)" ;; esac
+  [ "$key_mode" = 600 ] || { echo 'model readiness API key file mode must be 0600' >&2; return 1; }
+}
+
 [ -x "$SWITCH_SCRIPT" ] || { echo "switch adapter is not executable: $SWITCH_SCRIPT" >&2; exit 1; }
 [ -n "$INGRESS_HEALTH_URL" ] || { echo '--ingress-health-url is required with --apply' >&2; exit 1; }
 command -v lsof >/dev/null
 command -v curl >/dev/null
+if [ "$SKIP_MODEL_READINESS" = 0 ]; then
+  [ -f "$MODEL_READINESS_KEY_FILE" ] || { echo 'model readiness API key file does not exist' >&2; exit 1; }
+  assert_model_readiness_key_file "$MODEL_READINESS_KEY_FILE"
+  [ -f "$MODEL_READINESS_RUNNER" ] || { echo 'model readiness runner does not exist' >&2; exit 1; }
+  command -v node >/dev/null
+else
+  echo 'warning: model catalog business readiness is skipped for this non-business test' >&2
+fi
 
 pid_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true; }
 assert_pid_cwd_port_health() {
@@ -120,6 +187,12 @@ verify_ingress() {
   TMP_HEADERS=''
 }
 
+verify_model_catalog() {
+  local base_url="$1"
+  [ "$SKIP_MODEL_READINESS" = 0 ] || return 0
+  node "$MODEL_READINESS_RUNNER" --base-url "$base_url" --api-key-file "$MODEL_READINESS_KEY_FILE"
+}
+
 on_exit() {
   local exit_code="$1"
   set +e
@@ -127,7 +200,10 @@ on_exit() {
   if [ "$exit_code" -ne 0 ] && [ "$SWITCH_ATTEMPTED" = 1 ]; then
     echo "cutover failed; rolling routing back to $rollback_target" >&2
     if "$SWITCH_SCRIPT" "$rollback_target"; then
-      verify_ingress "$rollback_target" && ROLLBACK_OK=1
+      if verify_ingress "$rollback_target" \
+        && verify_model_catalog "$MODEL_READINESS_INGRESS_BASE_URL"; then
+        ROLLBACK_OK=1
+      fi
     fi
     [ "$ROLLBACK_OK" = 1 ] || echo 'automatic routing rollback could not be proven; keep both services running and escalate' >&2
   fi
@@ -140,7 +216,10 @@ assert_pid_cwd_port_health temporary "$TEMP_PID" "$TEMP_RELEASE" "$TEMP_PORT"
 MAIN_REAL_RELEASE="$(cd "$MAIN_RELEASE" && pwd -P)"
 TEMP_REAL_RELEASE="$(cd "$TEMP_RELEASE" && pwd -P)"
 [ "$MAIN_REAL_RELEASE" != "$TEMP_REAL_RELEASE" ] || { echo 'main and temporary releases resolve to the same directory' >&2; exit 1; }
+verify_model_catalog "$MAIN_MODEL_BASE_URL"
+verify_model_catalog "$TEMP_MODEL_BASE_URL"
 verify_ingress "$rollback_target"
+verify_model_catalog "$MODEL_READINESS_INGRESS_BASE_URL"
 SWITCH_ATTEMPTED=1
 "$SWITCH_SCRIPT" "$TARGET"
 if [ "$TARGET" = main ]; then
@@ -149,6 +228,7 @@ else
   assert_pid_cwd_port_health temporary "$TEMP_PID" "$TEMP_RELEASE" "$TEMP_PORT"
 fi
 verify_ingress "$TARGET"
+verify_model_catalog "$MODEL_READINESS_INGRESS_BASE_URL"
 SWITCH_ATTEMPTED=0
 trap - EXIT
 printf 'CUTOVER_OK target=%s; source service remains running until explicit cleanup\n' "$TARGET"

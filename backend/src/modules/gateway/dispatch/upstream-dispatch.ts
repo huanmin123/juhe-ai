@@ -702,9 +702,11 @@ export async function fetchFirstAvailableUpstream(
                 failedAccountIds.add(account.id)
                 if (
                   requestErrorResult.action === 'skip_account'
-                  && automaticAccountStateMutationAllowed
                   && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
                 ) {
+                  // Request-scoped recovery is independent from shared account-state mutation.
+                  // Normal gateway traffic must be allowed to absorb a transient transport failure
+                  // even when automatic suppression and health transitions are probe-only.
                   recoverableFailedAccountIds.add(account.id)
                   cycleRecoverableAccountIds.add(account.id)
                 }

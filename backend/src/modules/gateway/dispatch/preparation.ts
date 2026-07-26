@@ -471,7 +471,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       return { outcome: 'completed' }
     }
     const statusCode = 503
-    const responsePayload = gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', 'upstream_retryable_error')
+    const responsePayload = gatewayErrorPayload('没有可用的上游账户', 'service_unavailable', 'no_available_upstream_account')
     await sendGatewayFailureResponse({
       req: input.req,
       res: input.res,
@@ -484,7 +484,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
         outcome: 'gateway_failed',
         errorPhase: 'dispatch',
         errorCode: 'service_unavailable',
-        errorMessage: '上游暂时不可用，请重试'
+        errorMessage: '没有可用的上游账户'
       }
     })
     return { outcome: 'completed' }

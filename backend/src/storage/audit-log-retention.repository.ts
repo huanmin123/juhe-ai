@@ -211,7 +211,16 @@ function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit: number): 
   const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (ids.length === 0) return 0
   const placeholders = ids.map(() => '?').join(',')
-  const result = database.prepare(`DELETE FROM audit_error_groups WHERE id IN (${placeholders})`).run(...ids)
+  const result = database.prepare(`
+    DELETE FROM audit_error_groups
+    WHERE id IN (${placeholders})
+      AND updated_at < ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM audit_logs
+        WHERE audit_logs.error_group_id = audit_error_groups.id
+      )
+  `).run(...ids, cutoffUpdatedAt)
   return Number(result.changes ?? 0)
 }
 
@@ -233,7 +242,16 @@ async function cleanupAuditErrorGroupsBeforeAsync(cutoffUpdatedAt: string, limit
   if (ids.length === 0) return 0
   let deleted = 0
   for (const chunk of chunkStringIds(ids, postgresAuditErrorGroupDeleteSubBatchLimit)) {
-    deleted += Number((await client.execute('DELETE FROM juhe_dataset.audit_error_groups WHERE id = ANY(?::text[])', [chunk])).changes ?? 0)
+    deleted += Number((await client.execute(`
+      DELETE FROM juhe_dataset.audit_error_groups
+      WHERE id = ANY(?::text[])
+        AND updated_at < ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM juhe_dataset.audit_logs
+          WHERE audit_logs.error_group_id = audit_error_groups.id
+        )
+    `, [chunk, cutoffUpdatedAt])).changes ?? 0)
     await yieldToEventLoop()
   }
   return deleted

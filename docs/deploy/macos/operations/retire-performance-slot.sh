@@ -89,14 +89,12 @@ printf 'mode=%s scope=%s slot=%s control=%s gateways=%s-%s ingress=%s\n' \
 
 [ -f "$DRAIN_SCRIPT" ] || { echo 'slot drain script is missing' >&2; exit 1; }
 if [ "$SCOPE" = system ]; then [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }; fi
+command -v launchctl >/dev/null
 if [ -n "$DEPLOYMENT_LOCK_LIBRARY" ]; then
   [ -f "$DEPLOYMENT_LOCK_LIBRARY" ] || { echo 'deployment lock library does not exist' >&2; exit 1; }
   # shellcheck source=/dev/null
   source "$DEPLOYMENT_LOCK_LIBRARY"
 fi
-
-/bin/bash "$DRAIN_SCRIPT" --check --slot "$SLOT" --control-port "$CONTROL_PORT" \
-  --gateway-base-port "$GATEWAY_BASE_PORT" --gateway-count "$GATEWAY_COUNT" --ingress-port "$INGRESS_PORT"
 
 service_names() {
   printf '%s\n' control-1
@@ -107,18 +105,39 @@ service_label() { printf '%s.%s.%s' "$LABEL_PREFIX" "$SLOT" "$1"; }
 service_plist_path() { printf '%s/%s.plist' "$PLIST_DIR" "$(service_label "$1")"; }
 service_run_path() { printf '%s/%s.sh' "$BIN_DIR" "$1"; }
 
+/bin/bash "$DRAIN_SCRIPT" --check --slot "$SLOT" --control-port "$CONTROL_PORT" \
+  --gateway-base-port "$GATEWAY_BASE_PORT" --gateway-count "$GATEWAY_COUNT" --ingress-port "$INGRESS_PORT"
+launchctl print "$DOMAIN" >/dev/null 2>&1 || {
+  echo "launchctl domain is unavailable: $DOMAIN" >&2
+  exit 1
+}
+for name in $(service_names); do
+  plist="$(service_plist_path "$name")"
+  run_script="$(service_run_path "$name")"
+  [ -f "$plist" ] || { echo "missing slot plist: $plist" >&2; exit 1; }
+  [ -f "$run_script" ] || { echo "missing slot run script: $run_script" >&2; exit 1; }
+  launchctl print "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1 || {
+    echo "slot service is not provably loaded before retirement: $(service_label "$name")" >&2
+    exit 1
+  }
+done
+
 RETIRE_DIR=
 MUTATED=0
 rollback() {
   set +e
   [ -n "$RETIRE_DIR" ] || return 0
+  rollback_failed=0
   for name in $(service_names); do
     plist="$(service_plist_path "$name")"
     run_script="$(service_run_path "$name")"
-    [ ! -f "$RETIRE_DIR/$name.plist" ] || mv -f -- "$RETIRE_DIR/$name.plist" "$plist"
-    [ ! -f "$RETIRE_DIR/$name.sh" ] || mv -f -- "$RETIRE_DIR/$name.sh" "$run_script"
-    [ ! -f "$plist" ] || launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1 || true
+    [ ! -f "$RETIRE_DIR/$name.plist" ] || mv -f -- "$RETIRE_DIR/$name.plist" "$plist" || rollback_failed=1
+    [ ! -f "$RETIRE_DIR/$name.sh" ] || mv -f -- "$RETIRE_DIR/$name.sh" "$run_script" || rollback_failed=1
+    if [ -f "$plist" ] && ! launchctl print "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1; then
+      launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1 || rollback_failed=1
+    fi
   done
+  [ "$rollback_failed" = 0 ] || echo 'slot retirement rollback could not restore every launchd job; recovery files were preserved for manual recovery' >&2
 }
 on_exit() {
   code="$?"
@@ -136,19 +155,26 @@ RETIRE_DIR="$BASE_DIR/retired/performance-$SLOT-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$RETIRE_DIR"
 MUTATED=1
 for name in $(service_names); do
-  plist="$(service_plist_path "$name")"
-  run_script="$(service_run_path "$name")"
-  [ -f "$plist" ] || { echo "missing slot plist: $plist" >&2; exit 1; }
-  [ -f "$run_script" ] || { echo "missing slot run script: $run_script" >&2; exit 1; }
-  launchctl bootout "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1 || true
-  mv -f -- "$plist" "$RETIRE_DIR/$name.plist"
-  mv -f -- "$run_script" "$RETIRE_DIR/$name.sh"
+  launchctl bootout "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1 || {
+    echo "failed to boot out slot service: $(service_label "$name")" >&2
+    exit 1
+  }
 done
 for name in $(service_names); do
   if launchctl print "$DOMAIN/$(service_label "$name")" >/dev/null 2>&1; then
     echo "slot service is still loaded: $(service_label "$name")" >&2
     exit 1
   fi
+done
+launchctl print "$DOMAIN" >/dev/null 2>&1 || {
+  echo "launchctl domain became unavailable while verifying retirement: $DOMAIN" >&2
+  exit 1
+}
+for name in $(service_names); do
+  plist="$(service_plist_path "$name")"
+  run_script="$(service_run_path "$name")"
+  mv -f -- "$plist" "$RETIRE_DIR/$name.plist"
+  mv -f -- "$run_script" "$RETIRE_DIR/$name.sh"
 done
 MUTATED=0
 if [ -n "$DEPLOYMENT_LOCK_LIBRARY" ]; then

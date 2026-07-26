@@ -1,12 +1,7 @@
-import type { DatabaseSync } from 'node:sqlite'
-
 import { newId } from './database.js'
 import {
   prepareAuditPayloadBlob,
   prepareAuditPayloadBlobAsync,
-  planAuditPayloadBlobPersistence,
-  type AuditPayloadBlobPersistencePlan,
-  type AuditPayloadBlobStatements,
   type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
 import type {
@@ -25,8 +20,6 @@ export interface PreparedAuditPayload {
   contentEncoding?: string
   headersBlob?: PreparedAuditPayloadBlob
   bodyBlob?: PreparedAuditPayloadBlob
-  headersBlobPlan?: AuditPayloadBlobPersistencePlan
-  bodyBlobPlan?: AuditPayloadBlobPersistencePlan
   headersSha256?: string
   bodySha256?: string
   rawSizeBytes: number
@@ -99,33 +92,6 @@ export async function preparePayloadInputAsync(
     captureStatus: payload.captureStatus ?? 'complete',
     createdAt: payload.createdAt ?? fallbackCreatedAt
   }
-}
-
-export function planAuditPayloadBlobPersistenceForBatch(
-  database: DatabaseSync,
-  blob: PreparedAuditPayloadBlob | undefined,
-  statements: AuditPayloadBlobStatements,
-  batchPlans: Map<string, AuditPayloadBlobPersistencePlan>
-): AuditPayloadBlobPersistencePlan | undefined {
-  if (!blob) return undefined
-  const key = auditPayloadBlobBatchKey(blob)
-  const existingPlan = batchPlans.get(key)
-  if (existingPlan) {
-    return {
-      ...existingPlan,
-      existing: true,
-      shouldWriteFile: false
-    }
-  }
-  const plan = planAuditPayloadBlobPersistence(database, blob, statements)
-  if (plan) {
-    batchPlans.set(key, plan)
-  }
-  return plan
-}
-
-function auditPayloadBlobBatchKey(blob: PreparedAuditPayloadBlob): string {
-  return `${blob.sha256}\u0000${blob.rawSizeBytes}\u0000${blob.contentType}`
 }
 
 function bodyToBuffer(body: Buffer | string | undefined): Buffer | undefined {

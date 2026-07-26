@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { createProcessLocalResourceCache, createSharedJsonCache } from '../../shared/cache.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
@@ -229,6 +231,168 @@ export function rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(
   })
   allRebuildInFlight = settled
   return settled
+}
+
+export interface EnsurePublishedModelCatalogSnapshotsResult {
+  action: 'unchanged' | 'initialized'
+  modelCount: number
+  snapshotOwners: number
+}
+
+interface EnsurePublishedModelCatalogSnapshotsDependencies {
+  findInitialSnapshot: () => Promise<GatewayModelCatalogSnapshot | undefined>
+  rebuildAll: () => Promise<number>
+  acquireInitializationLease?: (token: string, ttlMs: number) => Promise<boolean>
+  releaseInitializationLease?: (token: string) => Promise<void>
+  delay?: (milliseconds: number) => Promise<void>
+  now?: () => number
+  leaseCommandTimeoutMs?: number
+  initializationWaitTimeoutMs?: number
+  initializationWaitIntervalMs?: number
+}
+
+const publishedModelCatalogInitializationLeaseKey = 'initialization:v1'
+const publishedModelCatalogInitializationLeaseTtlMs = 10 * 60_000
+const publishedModelCatalogInitializationLeaseCommandTimeoutMs = 2_000
+const publishedModelCatalogInitializationWaitTimeoutMs = publishedModelCatalogInitializationLeaseTtlMs
+const publishedModelCatalogInitializationWaitIntervalMs = 100
+const ensurePublishedModelCatalogSnapshotsInFlight = new WeakMap<
+  EnsurePublishedModelCatalogSnapshotsDependencies,
+  Promise<EnsurePublishedModelCatalogSnapshotsResult>
+>()
+const findGlobalOpenAIPublishedModelCatalogSnapshotAsync = () => findGatewayModelCatalogSnapshotAsync({
+  systemAccountId: '',
+  protocol: 'openai',
+  variant: 'default'
+})
+const defaultEnsurePublishedModelCatalogSnapshotsDependencies: EnsurePublishedModelCatalogSnapshotsDependencies = {
+  findInitialSnapshot: findGlobalOpenAIPublishedModelCatalogSnapshotAsync,
+  // Initialization must not enter the public full-rebuild coalescer. Doing so
+  // while another full rebuild is active would set allRebuildAgain and rebuild
+  // the whole catalog a second time after the first initialization succeeds.
+  rebuildAll: () => enqueueSnapshotRebuild(async () => {
+    if (await findGlobalOpenAIPublishedModelCatalogSnapshotAsync()) return 0
+    return rebuildPublishedModelCatalogSnapshotsAfterModelChangeInternalAsync()
+  })
+}
+
+export async function ensurePublishedModelCatalogSnapshotsInitializedAsync(
+  dependencies: EnsurePublishedModelCatalogSnapshotsDependencies = defaultEnsurePublishedModelCatalogSnapshotsDependencies
+): Promise<EnsurePublishedModelCatalogSnapshotsResult> {
+  const existing = await dependencies.findInitialSnapshot()
+  if (existing) return unchangedPublishedModelCatalogInitializationResult(existing)
+
+  const current = ensurePublishedModelCatalogSnapshotsInFlight.get(dependencies)
+  if (current) return current
+
+  const run = ensurePublishedModelCatalogSnapshotsInitializedInternalAsync(dependencies)
+  const settled = run.finally(() => {
+    if (ensurePublishedModelCatalogSnapshotsInFlight.get(dependencies) === settled) {
+      ensurePublishedModelCatalogSnapshotsInFlight.delete(dependencies)
+    }
+  })
+  ensurePublishedModelCatalogSnapshotsInFlight.set(dependencies, settled)
+  return settled
+}
+
+async function ensurePublishedModelCatalogSnapshotsInitializedInternalAsync(
+  dependencies: EnsurePublishedModelCatalogSnapshotsDependencies
+): Promise<EnsurePublishedModelCatalogSnapshotsResult> {
+  const leaseToken = randomUUID()
+  const leaseCommandTimeoutMs = dependencies.leaseCommandTimeoutMs
+    ?? publishedModelCatalogInitializationLeaseCommandTimeoutMs
+  const acquired = await withPublishedModelCatalogInitializationTimeoutAsync(
+    (dependencies.acquireInitializationLease
+      ? dependencies.acquireInitializationLease(leaseToken, publishedModelCatalogInitializationLeaseTtlMs)
+      : publishedModelCatalogCache.acquireLease(publishedModelCatalogInitializationLeaseKey, {
+          ttlMs: publishedModelCatalogInitializationLeaseTtlMs,
+          token: leaseToken
+        })),
+    leaseCommandTimeoutMs,
+    '发布模型目录首次初始化失败：初始化租约获取超时'
+  )
+
+  if (!acquired) {
+    const initialized = await waitForPublishedModelCatalogInitializationAsync(dependencies)
+    return unchangedPublishedModelCatalogInitializationResult(initialized)
+  }
+
+  try {
+    const existing = await dependencies.findInitialSnapshot()
+    if (existing) return unchangedPublishedModelCatalogInitializationResult(existing)
+
+    const snapshotOwners = await dependencies.rebuildAll()
+    const initialized = await dependencies.findInitialSnapshot()
+    if (!initialized) {
+      throw new Error('发布模型目录首次初始化失败：全局 OpenAI 快照仍不存在')
+    }
+    if (snapshotOwners === 0) return unchangedPublishedModelCatalogInitializationResult(initialized)
+    return {
+      action: 'initialized',
+      modelCount: initialized.modelCount,
+      snapshotOwners
+    }
+  } finally {
+    await withPublishedModelCatalogInitializationTimeoutAsync(
+      dependencies.releaseInitializationLease
+        ? dependencies.releaseInitializationLease(leaseToken)
+        : publishedModelCatalogCache.releaseLease(publishedModelCatalogInitializationLeaseKey, leaseToken),
+      leaseCommandTimeoutMs,
+      '发布模型目录首次初始化失败：初始化租约释放超时'
+    )
+  }
+}
+
+async function waitForPublishedModelCatalogInitializationAsync(
+  dependencies: EnsurePublishedModelCatalogSnapshotsDependencies
+): Promise<GatewayModelCatalogSnapshot> {
+  const now = dependencies.now ?? Date.now
+  const delay = dependencies.delay ?? delayAsync
+  const timeoutMs = dependencies.initializationWaitTimeoutMs
+    ?? publishedModelCatalogInitializationWaitTimeoutMs
+  const intervalMs = dependencies.initializationWaitIntervalMs
+    ?? publishedModelCatalogInitializationWaitIntervalMs
+  const deadline = now() + timeoutMs
+
+  while (true) {
+    const initialized = await dependencies.findInitialSnapshot()
+    if (initialized) return initialized
+    const remainingMs = deadline - now()
+    if (remainingMs <= 0) {
+      throw new Error('发布模型目录首次初始化失败：等待持锁进程生成全局 OpenAI 快照超时')
+    }
+    await delay(Math.min(intervalMs, remainingMs))
+  }
+}
+
+function unchangedPublishedModelCatalogInitializationResult(
+  snapshot: GatewayModelCatalogSnapshot
+): EnsurePublishedModelCatalogSnapshotsResult {
+  return {
+    action: 'unchanged',
+    modelCount: snapshot.modelCount,
+    snapshotOwners: 0
+  }
+}
+
+async function withPublishedModelCatalogInitializationTimeoutAsync<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+  })
+  try {
+    return await Promise.race([operation, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function delayAsync(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
 async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeInternalAsync(

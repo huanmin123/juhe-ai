@@ -85,6 +85,7 @@ export interface RuntimeConfig {
     replayBatchSize: number
     replayIntervalMs: number
   }
+  auditPayloadBlobRoot: string
   databasePath: string
   chatDatabasePath: string
   datasetDatabasePath: string
@@ -219,6 +220,7 @@ export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageSpoolDirectory = resolve(backendRoot, 'data', 'usage-spool')
+export const defaultAuditPayloadBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
 export const defaultChatAssetsRoot = resolve(backendRoot, 'data', 'chat-assets')
@@ -374,6 +376,7 @@ export const runtimeConfig: RuntimeConfig = {
     replayBatchSize: numberConfig('JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE', 500, 1, 5_000),
     replayIntervalMs: numberConfig('JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS', 1_000, 100, 60_000)
   },
+  auditPayloadBlobRoot: pathConfig('JUHE_AI_AUDIT_BLOB_ROOT', defaultAuditPayloadBlobRoot),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   chatDatabasePath: pathConfig('JUHE_AI_CHAT_DATABASE_PATH', defaultChatDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),

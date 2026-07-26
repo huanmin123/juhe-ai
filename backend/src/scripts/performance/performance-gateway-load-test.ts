@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
@@ -10,22 +11,42 @@ import { performance } from 'node:perf_hooks'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
+import { rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync } from '../../modules/model-pricing/published-model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
+import { cleanupUnreferencedAuditPayloadBlobsByIdsAsync } from '../../storage/audit-log-payload-blobs.js'
 import { closeStorageDatabases } from '../../storage/database.js'
+import { findGatewayModelCatalogSnapshotAsync } from '../../storage/gateway-model-catalog-snapshot.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
   createAccountAsync,
   createApiKeyRecordAsync,
   createGroupAsync,
   createRouteStrategyAsync,
+  forceActivatePendingAccountAsync,
   getSettingsAsync,
   updateSettingsAsync
 } from '../../storage/repositories.js'
 
 type ScenarioName = 'models' | 'responses' | 'chat' | 'responses_stream'
+type RequestShape = 'simple' | 'historical_responses'
+type PromptSizeProfile = 'fixed' | 'historical'
+type PromptContentMode = 'repetitive' | 'deterministic_entropy'
+type PromptSizeTierName = 'fixed' | 'historical_5k' | 'historical_500k' | 'historical_2m' | 'historical_4m'
+
+interface PromptSizeTierConfig {
+  name: Exclude<PromptSizeTierName, 'fixed'>
+  bytes: number
+  permille: number
+}
+
+interface SelectedPromptSize {
+  tier: PromptSizeTierName
+  bytes: number
+}
 
 interface GatewayLoadConfig {
+  targetBaseUrl?: string
   scenarios: ScenarioName[]
   durationSeconds: number
   warmupSeconds: number
@@ -47,13 +68,24 @@ interface GatewayLoadConfig {
   groupMaxQueueWaitMs: number
   model: string
   promptBytes: number
+  promptSizeProfile: PromptSizeProfile
+  historicalPromptSizeTiers: PromptSizeTierConfig[]
+  promptContentMode: PromptContentMode
+  requestShape: RequestShape
   enableStatsWorkerObservation: boolean
   cleanup: boolean
   assertAccountConcurrency: boolean
   maxAllowedErrorRate: number
-  maxAllowedP95Ms: number
+  maxAllowedNonStreamP95Ms: number
+  maxAllowedNonStreamP99Ms?: number
+  maxAllowedNonStreamMaxMs?: number
+  maxAllowedSseTtfbP99Ms?: number
+  maxAllowedSseTtfbMaxMs?: number
+  maxAllowedSseTotalP99Ms?: number
+  maxAllowedSseTotalMaxMs?: number
   maxAllowedDeadlocks: number
   maxAllowedLockWaiters: number
+  maxAllowedKnownCoordinationWaitMs: number
   maxAllowedRedisPending: number
   resetPgStatStatements: boolean
   reportPath: string
@@ -69,6 +101,7 @@ interface SeededGateway {
 
 interface LoadStats {
   startedAtMs: number
+  loadDurationMs: number
   startedRequests: number
   inFlightRequests: number
   peakInFlightRequests: number
@@ -80,6 +113,32 @@ interface LoadStats {
   errorCounts: Map<string, number>
   statusSamples: Map<string, string>
   responseBytes: number
+  successfulTraceIds: string[]
+  scenarioStats: Map<ScenarioName, ScenarioLoadStats>
+  promptSizeSequence: number
+  promptSizeStats: Map<PromptSizeTierName, PromptSizeLoadStats>
+}
+
+interface ScenarioLoadStats {
+  totalRequests: number
+  successRequests: number
+  failedRequests: number
+  latenciesMs: number[]
+  headersLatenciesMs: number[]
+  firstByteLatenciesMs: number[]
+  terminalSamples: number
+  statusCounts: Map<string, number>
+  errorCounts: Map<string, number>
+  responseBytes: number
+}
+
+interface PromptSizeLoadStats {
+  count: number
+  success: number
+  errors: number
+  totalPromptBytes: number
+  latenciesMs: number[]
+  errorCounts: Map<string, number>
 }
 
 interface PostgresSample {
@@ -90,6 +149,34 @@ interface PostgresSample {
   notGrantedLocks: number
   maxXactAgeSeconds: number
   maxActiveQuerySeconds: number
+  uniqueCoordinationLockWaiters: number
+  accountLastUsedCoordinationLockWaiters: number
+  otherLockWaiters: number
+  lockWaits: PostgresLockWait[]
+}
+
+interface PostgresLockWait {
+  pid: number
+  queryStart?: string
+  waitEvent?: string
+  waitDurationMs: number
+  queryType: 'unique_coordination' | 'account_last_used_coordination' | 'other'
+  query: string
+}
+
+interface PostgresLockObservation extends PostgresLockWait {
+  samples: number
+  maxWaitDurationMs: number
+}
+
+interface PostgresLockAnalysis {
+  maxWaitDurationMs: number
+  maxKnownCoordinationWaitDurationMs: number
+  maxOtherWaiters: number
+  queryTypes: Record<string, number>
+  transientKnownCoordinationWaits: PostgresLockObservation[]
+  persistentOrSlowKnownCoordinationWaits: PostgresLockObservation[]
+  observations: PostgresLockObservation[]
 }
 
 interface StorageSnapshot {
@@ -197,6 +284,38 @@ interface LatencySummary {
   max: number
 }
 
+interface ScenarioSummary {
+  count: number
+  success: number
+  errors: number
+  errorRate: number
+  totalLatencyMs: LatencySummary
+  statusCounts: Record<string, number>
+  errorCounts: Record<string, number>
+  responseBytes: number
+  stream?: {
+    headersSamples: number
+    ttfbSamples: number
+    terminalSamples: number
+    incompleteTerminalSamples: number
+    headersLatencyMs: LatencySummary
+    ttfbMs: LatencySummary
+    totalLatencyMs: LatencySummary
+  }
+}
+
+interface PromptSizeSummary {
+  configuredBytes: number
+  configuredPermille: number
+  count: number
+  success: number
+  errors: number
+  errorRate: number
+  totalPromptBytes: number
+  totalLatencyMs: LatencySummary
+  errorCounts: Record<string, number>
+}
+
 interface UpstreamRuntime {
   totalRequests: number
   activeRequests: number
@@ -254,10 +373,12 @@ end
 return redis.call('ZCARD', KEYS[1])
 `
 const childOutput: ProcessOutput = { stdout: '', stderr: '' }
+let deterministicEntropyCorpus = ''
 
 logger.level = 'silent'
 
 const config = loadConfig()
+initializePromptContent(config)
 let exitCode = 0
 
 try {
@@ -310,6 +431,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
 
     await cleanupStaleFixtures()
     seeded = await seedGatewayData(input, upstreamBaseUrl)
+    await ensurePublishedModelCatalogFixture(input)
 
     if (input.resetPgStatStatements) {
       await resetPgStatStatements()
@@ -318,9 +440,13 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     const redisBefore = await sampleRedisStreams()
     const storageBefore = await sampleStorage(seeded)
 
-    const port = await freePort()
-    backendProcess = startBackendServer(port)
-    const baseUrl = `http://127.0.0.1:${port}`
+    let baseUrl = input.targetBaseUrl
+    if (!input.targetBaseUrl) {
+      const port = await freePort()
+      backendProcess = startBackendServer(port)
+      baseUrl = `http://127.0.0.1:${port}`
+    }
+    assert.ok(baseUrl)
     await waitForHealth(`${baseUrl}/__aisys__/health`, backendProcess)
     await waitForHealth(`${baseUrl}/__aisys__/api/health`, backendProcess)
 
@@ -328,6 +454,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     console.log(`- 后端：${baseUrl}`)
     console.log(`- 模拟上游：${upstreamBaseUrl}`)
     console.log(`- scenarios=${input.scenarios.join(',')} concurrency=${input.concurrency} duration=${input.durationSeconds}s warmup=${input.warmupSeconds}s settle=${input.settleSeconds}s`)
+    console.log(`- promptSizeProfile=${input.promptSizeProfile} promptContentMode=${input.promptContentMode} tiers=${promptSizeTierConfigs(input).map((tier) => `${tier.tier}:${tier.bytes}B/${tier.permille}‰`).join(',')}`)
     console.log(`- upstream stream chunks=${input.upstreamStreamChunks} interval=${input.upstreamStreamChunkIntervalMs}ms randomTotal=${input.upstreamStreamTotalMinMs}-${input.upstreamStreamTotalMaxMs}ms`)
     console.log(`- accounts=${seeded.accountIds.length} queue=${runtimeConfig.queueDriver} cache=${runtimeConfig.cacheDriver} state=${runtimeConfig.runtimeStateDriver}`)
 
@@ -360,6 +487,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
       stats: loadStats,
       record: true
     })
+    loadStats.loadDurationMs = performance.now() - loadStats.startedAtMs
     if (input.settleSeconds > 0) {
       console.log(`请求结束，等待 ${input.settleSeconds}s 观察 Redis Stream/worker 消化`)
       await sleep(input.settleSeconds * 1000)
@@ -370,6 +498,10 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
 
     await stopProcessTree(backendProcess)
     backendProcess = undefined
+    if (input.cleanup) {
+      await quiesceGatewayFixture(seeded)
+      await sleep(2000)
+    }
     await closeServer(upstreamServer)
     upstreamServer = undefined
 
@@ -404,6 +536,10 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
     return report
   } finally {
     await stopProcessTree(backendProcess)
+    if (input.cleanup && seeded && upstreamServer) {
+      await quiesceGatewayFixture(seeded)
+      await sleep(2000)
+    }
     await closeServer(upstreamServer)
     if (settingsSnapshot) {
       await restoreLoadTestSettings(settingsSnapshot).catch((error) => {
@@ -411,9 +547,7 @@ async function runGatewayLoadTest(input: GatewayLoadConfig): Promise<Record<stri
       })
     }
     if (input.cleanup && seeded) {
-      await cleanupFixtureAndRecords(seeded).catch((error) => {
-        console.error(`清理压测数据失败：${error instanceof Error ? error.message : String(error)}`)
-      })
+      await cleanupFixtureAndRecords(seeded)
     }
   }
 }
@@ -462,6 +596,9 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
       priority: index,
       notes: `performance gateway load test ${runId}`
     }, access)
+    const activation = await forceActivatePendingAccountAsync(account.id, access)
+    assert.equal(activation.account?.status, 'active', `压测账号未能进入 active：${account.id}`)
+    assert.equal(activation.account?.schedulable, true, `压测账号未能进入 schedulable：${account.id}`)
     accountIds.push(account.id)
   }
   const routeStrategy = await createRouteStrategyAsync({
@@ -484,6 +621,31 @@ async function seedGatewayData(input: GatewayLoadConfig, upstreamBaseUrl: string
     groupId: group.id,
     accountIds
   }
+}
+
+async function ensurePublishedModelCatalogFixture(input: GatewayLoadConfig): Promise<void> {
+  if (!input.scenarios.includes('models')) return
+  const personalSnapshot = await findGatewayModelCatalogSnapshotAsync({
+    systemAccountId: access.systemAccountId,
+    protocol: 'openai',
+    variant: 'default'
+  })
+  const globalSnapshot = personalSnapshot
+    ? undefined
+    : await findGatewayModelCatalogSnapshotAsync({
+        systemAccountId: '',
+        protocol: 'openai',
+        variant: 'default'
+      })
+  if (personalSnapshot || globalSnapshot) return
+
+  await rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(access.systemAccountId)
+  const rebuiltSnapshot = await findGatewayModelCatalogSnapshotAsync({
+    systemAccountId: access.systemAccountId,
+    protocol: 'openai',
+    variant: 'default'
+  })
+  assert.ok(rebuiltSnapshot, 'models 压测夹具首次运行必须生成 sys_admin 发布模型目录快照')
 }
 
 async function applyLoadTestSettings(input: GatewayLoadConfig): Promise<void> {
@@ -591,22 +753,27 @@ async function loadWorker(
     sequence += 1
     const scenario = input.config.scenarios[(workerIndex + sequence) % input.config.scenarios.length] ?? 'responses'
     const requestId = `${workerIndex}-${sequence}`
+    const traceId = `${tracePrefix}-${requestId}`
+    const promptSize = scenario === 'models' ? undefined : selectPromptSize(input.stats, input.config)
     const started = performance.now()
     if (input.record) {
       beginLoadRequest(input.stats)
     }
     try {
-      const response = await fetchScenarioWithTimeout(input.baseUrl, input.apiKey, scenario, input.config, requestId)
-      const bytes = Buffer.byteLength(response.text, 'utf8')
+      const response = await fetchScenarioWithTimeout(input.baseUrl, input.apiKey, scenario, input.config, requestId, promptSize?.bytes)
       if (input.record) {
-        const latencyMs = performance.now() - started
-        input.stats.latenciesMs.push(latencyMs)
+        input.stats.latenciesMs.push(response.totalLatencyMs)
         input.stats.totalRequests += 1
-        input.stats.responseBytes += bytes
+        input.stats.responseBytes += response.responseBytes
         increment(input.stats.statusCounts, String(response.status))
         rememberStatusSample(input.stats.statusSamples, response.status, response.text)
+        recordScenarioResponse(input.stats, scenario, response)
+        if (promptSize) {
+          recordPromptSizeResponse(input.stats, promptSize, response)
+        }
         if (response.ok) {
           input.stats.successRequests += 1
+          input.stats.successfulTraceIds.push(traceId)
         } else {
           input.stats.failedRequests += 1
           increment(input.stats.errorCounts, `HTTP ${response.status}`)
@@ -614,10 +781,16 @@ async function loadWorker(
       }
     } catch (error) {
       if (input.record) {
-        input.stats.latenciesMs.push(performance.now() - started)
+        const latencyMs = performance.now() - started
+        input.stats.latenciesMs.push(latencyMs)
         input.stats.totalRequests += 1
         input.stats.failedRequests += 1
-        increment(input.stats.errorCounts, formatLoadError(error))
+        const formattedError = formatLoadError(error)
+        increment(input.stats.errorCounts, formattedError)
+        recordScenarioError(input.stats, scenario, latencyMs, formattedError)
+        if (promptSize) {
+          recordPromptSizeError(input.stats, promptSize, latencyMs, formattedError)
+        }
       }
     } finally {
       if (input.record) {
@@ -631,6 +804,11 @@ interface FetchScenarioResult {
   status: number
   ok: boolean
   text: string
+  responseBytes: number
+  headersLatencyMs: number
+  firstByteLatencyMs?: number
+  streamTerminalSeen?: boolean
+  totalLatencyMs: number
 }
 
 async function fetchScenarioWithTimeout(
@@ -638,12 +816,14 @@ async function fetchScenarioWithTimeout(
   apiKey: string,
   scenario: ScenarioName,
   input: GatewayLoadConfig,
-  requestId: string
+  requestId: string,
+  promptBytes = input.promptBytes
 ): Promise<FetchScenarioResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error('请求超时')), input.requestTimeoutMs)
+  const startedAt = performance.now()
   try {
-    const request = buildScenarioRequest(scenario, input, requestId)
+    const request = buildScenarioRequest(scenario, input, requestId, promptBytes)
     const response = await fetch(`${baseUrl}${request.path}`, {
       method: request.method,
       headers: {
@@ -654,17 +834,77 @@ async function fetchScenarioWithTimeout(
       body: request.body,
       signal: controller.signal
     })
+    const headersLatencyMs = performance.now() - startedAt
+    if (scenario === 'responses_stream') {
+      const streamedBody = await readStreamResponseBody(response, startedAt)
+      return {
+        status: response.status,
+        ok: response.ok,
+        text: streamedBody.preview,
+        responseBytes: streamedBody.bytes,
+        headersLatencyMs,
+        firstByteLatencyMs: streamedBody.firstByteLatencyMs,
+        streamTerminalSeen: streamedBody.terminalSeen,
+        totalLatencyMs: performance.now() - startedAt
+      }
+    }
+    const text = await response.text()
     return {
       status: response.status,
       ok: response.ok,
-      text: await response.text()
+      text,
+      responseBytes: Buffer.byteLength(text, 'utf8'),
+      headersLatencyMs,
+      totalLatencyMs: performance.now() - startedAt
     }
   } finally {
     clearTimeout(timeout)
   }
 }
 
-function buildScenarioRequest(scenario: ScenarioName, input: GatewayLoadConfig, requestId: string): {
+async function readStreamResponseBody(response: Response, startedAt: number): Promise<{
+  preview: string
+  bytes: number
+  firstByteLatencyMs?: number
+  terminalSeen: boolean
+}> {
+  if (!response.body) {
+    return { preview: '', bytes: 0, terminalSeen: false }
+  }
+
+  const reader = response.body.getReader()
+  const previewChunks: Buffer[] = []
+  const maxPreviewBytes = 500
+  let previewBytes = 0
+  let bytes = 0
+  let firstByteLatencyMs: number | undefined
+  let searchTail = ''
+  let terminalSeen = false
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value.byteLength === 0) continue
+    firstByteLatencyMs ??= performance.now() - startedAt
+    bytes += value.byteLength
+    searchTail = `${searchTail}${Buffer.from(value).toString('utf8')}`.slice(-8192)
+    terminalSeen ||= searchTail.includes('event: response.completed')
+      || searchTail.includes('"type":"response.completed"')
+      || searchTail.includes('data: [DONE]')
+    if (previewBytes < maxPreviewBytes) {
+      const chunk = Buffer.from(value.subarray(0, maxPreviewBytes - previewBytes))
+      previewChunks.push(chunk)
+      previewBytes += chunk.byteLength
+    }
+  }
+  return {
+    preview: Buffer.concat(previewChunks).toString('utf8'),
+    bytes,
+    firstByteLatencyMs,
+    terminalSeen
+  }
+}
+
+function buildScenarioRequest(scenario: ScenarioName, input: GatewayLoadConfig, requestId: string, promptBytes: number): {
   method: string
   path: string
   headers?: Record<string, string>
@@ -680,7 +920,7 @@ function buildScenarioRequest(scenario: ScenarioName, input: GatewayLoadConfig, 
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model: input.model,
-        messages: [{ role: 'user', content: promptText(input.promptBytes, requestId) }],
+        messages: [{ role: 'user', content: promptText(promptBytes, requestId, input.promptContentMode) }],
         max_tokens: 16,
         stream: false
       })
@@ -690,12 +930,45 @@ function buildScenarioRequest(scenario: ScenarioName, input: GatewayLoadConfig, 
     method: 'POST',
     path: '/v1/responses',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+    body: JSON.stringify(buildResponsesRequestBody(input, requestId, scenario === 'responses_stream', promptBytes))
+  }
+}
+
+function buildResponsesRequestBody(
+  input: GatewayLoadConfig,
+  requestId: string,
+  stream: boolean,
+  promptBytes: number
+): Record<string, unknown> {
+  const prompt = promptText(promptBytes, requestId, input.promptContentMode)
+  if (input.requestShape === 'historical_responses') {
+    return {
+      client_metadata: {
+        client: 'codex_cli_rs',
+        request_id: `load-${requestId}`,
+        turn_metadata: { turn_id: requestId }
+      },
+      include: ['reasoning.encrypted_content'],
+      input: [{
+        role: 'user',
+        content: [{ type: 'input_text', text: prompt }]
+      }],
       model: input.model,
-      input: promptText(input.promptBytes, requestId),
-      max_output_tokens: 16,
-      stream: scenario === 'responses_stream'
-    })
+      parallel_tool_calls: true,
+      prompt_cache_key: `juhe-ai-load-${requestId}`,
+      reasoning: { effort: 'medium', summary: 'auto' },
+      service_tier: 'auto',
+      store: false,
+      stream,
+      text: { format: { type: 'text' }, verbosity: 'medium' },
+      tool_choice: 'auto'
+    }
+  }
+  return {
+    model: input.model,
+    input: prompt,
+    max_output_tokens: 16,
+    stream
   }
 }
 
@@ -953,6 +1226,7 @@ async function sampleLoop(input: {
 
 async function collectSnapshot(stats: LoadStats, seeded: SeededGateway, upstreamRuntime: UpstreamRuntime): Promise<MetricSnapshot> {
   const elapsedSeconds = Math.max(0.001, (performance.now() - stats.startedAtMs) / 1000)
+  const loadElapsedSeconds = formalLoadElapsedSeconds(stats, elapsedSeconds)
   const [storage, postgres, redis, accountConcurrency] = await Promise.all([
     sampleStorage(seeded),
     samplePostgres(),
@@ -968,8 +1242,8 @@ async function collectSnapshot(stats: LoadStats, seeded: SeededGateway, upstream
       peakInFlight: stats.peakInFlightRequests,
       success: stats.successRequests,
       failed: stats.failedRequests,
-      qps: round(stats.totalRequests / elapsedSeconds, 2),
-      successQps: round(stats.successRequests / elapsedSeconds, 2),
+      qps: round(stats.totalRequests / loadElapsedSeconds, 2),
+      successQps: round(stats.successRequests / loadElapsedSeconds, 2),
       latencyMs: latencySummary(stats.latenciesMs),
       statusCounts: objectFromCounts(stats.statusCounts),
       errorCounts: objectFromCounts(stats.errorCounts)
@@ -1035,7 +1309,7 @@ async function sampleStorage(seeded: SeededGateway): Promise<StorageSnapshot> {
 
 async function samplePostgres(): Promise<PostgresSample> {
   const pool = await getPostgresPool()
-  const activity = await pool.query(`
+  const [activity, locks, lockWaitRows] = await Promise.all([pool.query(`
     SELECT
       count(*) FILTER (WHERE state = 'active') AS active,
       count(*) FILTER (WHERE state = 'idle in transaction') AS idle_in_transaction,
@@ -1045,15 +1319,39 @@ async function samplePostgres(): Promise<PostgresSample> {
     FROM pg_stat_activity
     WHERE datname = current_database()
       AND pid <> pg_backend_pid()
-  `)
-  const locks = await pool.query(`
+  `), pool.query(`
     SELECT count(*) AS not_granted_locks
     FROM pg_locks
     WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database())
       AND granted = false
-  `)
+  `), pool.query(`
+    SELECT
+      pid,
+      query_start,
+      wait_event,
+      GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000, 0) AS wait_duration_ms,
+      LEFT(regexp_replace(query, '\\s+', ' ', 'g'), 500) AS query
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid()
+      AND wait_event_type = 'Lock'
+    ORDER BY query_start ASC
+    LIMIT 100
+  `)])
   const activityRow = activity.rows[0] ?? {}
   const locksRow = locks.rows[0] ?? {}
+  const lockWaits = lockWaitRows.rows.map((row) => {
+    const query = optionalText(row.query) ?? ''
+    const waitEvent = optionalText(row.wait_event)
+    return {
+      pid: numberValue(row.pid),
+      queryStart: row.query_start instanceof Date ? row.query_start.toISOString() : optionalText(row.query_start),
+      waitEvent,
+      waitDurationMs: round(numberValue(row.wait_duration_ms)),
+      queryType: postgresLockWaitQueryType(query, waitEvent),
+      query
+    } satisfies PostgresLockWait
+  })
   return {
     sampledAt: new Date().toISOString(),
     active: numberValue(activityRow.active),
@@ -1061,8 +1359,26 @@ async function samplePostgres(): Promise<PostgresSample> {
     lockWaiters: numberValue(activityRow.lock_waiters),
     notGrantedLocks: numberValue(locksRow.not_granted_locks),
     maxXactAgeSeconds: round(numberValue(activityRow.max_xact_age_seconds)),
-    maxActiveQuerySeconds: round(numberValue(activityRow.max_active_query_seconds))
+    maxActiveQuerySeconds: round(numberValue(activityRow.max_active_query_seconds)),
+    uniqueCoordinationLockWaiters: lockWaits.filter((wait) => wait.queryType === 'unique_coordination').length,
+    accountLastUsedCoordinationLockWaiters: lockWaits.filter((wait) => wait.queryType === 'account_last_used_coordination').length,
+    otherLockWaiters: lockWaits.filter((wait) => wait.queryType === 'other').length,
+    lockWaits
   }
+}
+
+function postgresLockWaitQueryType(query: string, waitEvent: string | undefined): PostgresLockWait['queryType'] {
+  const normalized = query.toLowerCase()
+  if (waitEvent?.toLowerCase() !== 'transactionid') return 'other'
+  if (normalized.includes('insert ') && normalized.includes('on conflict')) return 'unique_coordination'
+  if (
+    normalized.includes('update juhe_business.accounts')
+    && normalized.includes('set last_used_at =')
+    && normalized.includes('(last_used_at is null or last_used_at <')
+  ) {
+    return 'account_last_used_coordination'
+  }
+  return 'other'
 }
 
 async function sampleRedisStreams(): Promise<RedisStreamsSnapshot> {
@@ -1177,23 +1493,35 @@ async function sampleRedisAccountConcurrency(client: RedisSampleClient, accountI
 }
 
 async function sampleRedisStream(client: RedisSampleClient, streamKey: string, groupName: string): Promise<RedisStreamSnapshot> {
-  const [lengthRaw, pendingRaw, groupsRaw] = await Promise.all([
-    client.sendCommand(['XLEN', streamKey]).catch(() => 0),
-    client.sendCommand(['XPENDING', streamKey, groupName]).catch((error) => ({ error })),
-    client.sendCommand(['XINFO', 'GROUPS', streamKey]).catch((error) => ({ error }))
+  const [lengthResult, pendingRaw, groupsRaw] = await Promise.all([
+    redisSampleCommand(client, ['XLEN', streamKey], `XLEN ${streamKey}`),
+    redisSampleCommand(client, ['XPENDING', streamKey, groupName], `XPENDING ${streamKey} ${groupName}`),
+    redisSampleCommand(client, ['XINFO', 'GROUPS', streamKey], `XINFO GROUPS ${streamKey}`)
   ])
   const pending = parsePendingSummary(pendingRaw)
   const group = parseStreamGroupInfo(groupsRaw, groupName)
   const lagCount = Math.max(0, group.lagCount)
   return {
-    length: numberValue(lengthRaw),
+    length: numberValue(lengthResult.value),
     pendingCount: pending.pendingCount,
     lagCount,
     backlogCount: pending.pendingCount + lagCount,
     minPendingId: pending.minPendingId,
     maxPendingId: pending.maxPendingId,
     consumers: pending.consumers,
-    error: pending.error ?? group.error
+    error: lengthResult.error ?? pending.error ?? group.error
+  }
+}
+
+async function redisSampleCommand(
+  client: RedisSampleClient,
+  command: string[],
+  label: string
+): Promise<{ value?: unknown; error?: string }> {
+  try {
+    return { value: await client.sendCommand(command) }
+  } catch (error) {
+    return { error: `${label}: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 
@@ -1234,8 +1562,11 @@ function parsePendingSummary(value: unknown): {
     return {
       pendingCount: 0,
       consumers: [],
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : optionalText(error) ?? String(error)
     }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'value' in value) {
+    return parsePendingSummary((value as { value?: unknown }).value)
   }
   if (Array.isArray(value)) {
     return {
@@ -1276,8 +1607,11 @@ function parseStreamGroupInfo(value: unknown, groupName: string): { lagCount: nu
     const error = (value as { error?: unknown }).error
     return {
       lagCount: 0,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : optionalText(error) ?? String(error)
     }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'value' in value) {
+    return parseStreamGroupInfo((value as { value?: unknown }).value, groupName)
   }
   const groups = Array.isArray(value) ? value : []
   for (const group of groups) {
@@ -1290,7 +1624,7 @@ function parseStreamGroupInfo(value: unknown, groupName: string): { lagCount: nu
       lagCount: numberValue(record.lag ?? record.lagCount)
     }
   }
-  return { lagCount: 0 }
+  return { lagCount: 0, error: `未找到 Redis Stream consumer group：${groupName}` }
 }
 
 function redisInfoGroupRecord(value: unknown): Record<string, unknown> {
@@ -1366,17 +1700,27 @@ function buildReport(input: {
   slowStatements: Array<Record<string, unknown>>
   upstreamRuntime: UpstreamRuntime
 }): Record<string, unknown> & { pass: boolean; violations: string[] } {
-  const elapsedSeconds = Math.max(0.001, (performance.now() - input.stats.startedAtMs) / 1000)
+  const loadDurationSeconds = Math.max(0.001, input.stats.loadDurationMs / 1000)
   const latency = latencySummary(input.stats.latenciesMs)
+  const scenarioSummaries = buildScenarioSummaries(input.stats, input.input.scenarios)
+  const promptSizeSummaries = buildPromptSizeSummaries(input.stats, input.input)
+  const sseMetrics = scenarioSummaries.responses_stream?.stream
   const totalRequests = input.stats.totalRequests
   const errorRate = totalRequests > 0 ? round(input.stats.failedRequests / totalRequests, 4) : 0
   const maxLockWaiters = maxSample(input.postgresSamples, 'lockWaiters')
   const maxNotGrantedLocks = maxSample(input.postgresSamples, 'notGrantedLocks')
   const maxXactAgeSeconds = round(maxSample(input.postgresSamples, 'maxXactAgeSeconds'))
   const maxActiveQuerySeconds = round(maxSample(input.postgresSamples, 'maxActiveQuerySeconds'))
+  const postgresLockAnalysis = analyzePostgresLockWaits(
+    input.postgresSamples,
+    input.input.maxAllowedKnownCoordinationWaitMs
+  )
   const deadlocksDelta = Math.max(0, input.deadlocksAfter - input.deadlocksBefore)
   const usageRecordsDelta = input.storageAfter.usageRecords - input.storageBefore.usageRecords
   const auditLogsDelta = input.storageAfter.auditLogs - input.storageBefore.auditLogs
+  const expectedUsageRecords = (['responses', 'chat', 'responses_stream'] as const)
+    .reduce((total, scenario) => total + (scenarioSummaries[scenario]?.success ?? 0), 0)
+  const auditReconciliation = expectedAuditLogCount(input.stats.successfulTraceIds)
   const redisDelta = redisStreamsDelta(input.redisBefore, input.redisAfter)
   const accountConcurrencySamples = input.samples.map((sample) => sample.accountConcurrency)
   const maxAccountConcurrencyTotal = Math.max(0, ...accountConcurrencySamples.map((sample) => sample.total))
@@ -1386,30 +1730,110 @@ function buildReport(input: {
   if (errorRate > input.input.maxAllowedErrorRate) {
     violations.push(`错误率 ${errorRate} 超过阈值 ${input.input.maxAllowedErrorRate}`)
   }
-  if (latency.p95 > input.input.maxAllowedP95Ms) {
-    violations.push(`P95 ${latency.p95}ms 超过阈值 ${input.input.maxAllowedP95Ms}ms`)
+  for (const scenario of input.input.scenarios) {
+    const summary = scenarioSummaries[scenario]
+    if (!summary || summary.count === 0) {
+      violations.push(`配置场景 ${scenario} 没有正式 load 样本`)
+      continue
+    }
+    if (summary.errors > 0) {
+      violations.push(`配置场景 ${scenario} 存在 ${summary.errors} 个错误，正式验收要求零错误`)
+    }
+    if (scenario === 'chat' || scenario === 'responses') {
+      if (summary.totalLatencyMs.p95 > input.input.maxAllowedNonStreamP95Ms) {
+        violations.push(`${scenario} P95 ${summary.totalLatencyMs.p95}ms 超过普通请求阈值 ${input.input.maxAllowedNonStreamP95Ms}ms`)
+      }
+      if (
+        input.input.maxAllowedNonStreamP99Ms !== undefined
+        && summary.totalLatencyMs.p99 > input.input.maxAllowedNonStreamP99Ms
+      ) {
+        violations.push(`${scenario} P99 ${summary.totalLatencyMs.p99}ms 超过普通请求阈值 ${input.input.maxAllowedNonStreamP99Ms}ms`)
+      }
+      if (
+        input.input.maxAllowedNonStreamMaxMs !== undefined
+        && summary.totalLatencyMs.max > input.input.maxAllowedNonStreamMaxMs
+      ) {
+        violations.push(`${scenario} Max ${summary.totalLatencyMs.max}ms 超过普通请求阈值 ${input.input.maxAllowedNonStreamMaxMs}ms`)
+      }
+    }
+  }
+  if (input.input.scenarios.some((scenario) => scenario !== 'models')) {
+    for (const [tier, summary] of Object.entries(promptSizeSummaries)) {
+      if (!summary || summary.count === 0) {
+        violations.push(`历史请求体档位 ${tier} 没有正式 load 样本`)
+      } else if (summary.errors > 0) {
+        violations.push(`历史请求体档位 ${tier} 存在 ${summary.errors} 个错误，正式验收要求零错误`)
+      }
+    }
+  }
+  if (sseMetrics && sseMetrics.ttfbSamples !== scenarioSummaries.responses_stream?.success) {
+    violations.push(`SSE TTFB 样本不完整：ttfb=${sseMetrics.ttfbSamples}, success=${scenarioSummaries.responses_stream?.success ?? 0}`)
+  }
+  if (sseMetrics && sseMetrics.terminalSamples !== scenarioSummaries.responses_stream?.success) {
+    violations.push(`SSE 终态样本不完整：terminal=${sseMetrics.terminalSamples}, success=${scenarioSummaries.responses_stream?.success ?? 0}`)
+  }
+  if (
+    input.input.maxAllowedSseTtfbP99Ms !== undefined
+    && sseMetrics
+    && sseMetrics.ttfbSamples > 0
+    && sseMetrics.ttfbMs.p99 > input.input.maxAllowedSseTtfbP99Ms
+  ) {
+    violations.push(`SSE TTFB P99 ${sseMetrics.ttfbMs.p99}ms 超过阈值 ${input.input.maxAllowedSseTtfbP99Ms}ms`)
+  }
+  if (
+    input.input.maxAllowedSseTtfbMaxMs !== undefined
+    && sseMetrics
+    && sseMetrics.ttfbSamples > 0
+    && sseMetrics.ttfbMs.max > input.input.maxAllowedSseTtfbMaxMs
+  ) {
+    violations.push(`SSE TTFB Max ${sseMetrics.ttfbMs.max}ms 超过阈值 ${input.input.maxAllowedSseTtfbMaxMs}ms`)
+  }
+  if (
+    input.input.maxAllowedSseTotalP99Ms !== undefined
+    && sseMetrics
+    && sseMetrics.totalLatencyMs.p99 > input.input.maxAllowedSseTotalP99Ms
+  ) {
+    violations.push(`SSE 总时长 P99 ${sseMetrics.totalLatencyMs.p99}ms 超过慢流阈值 ${input.input.maxAllowedSseTotalP99Ms}ms`)
+  }
+  if (
+    input.input.maxAllowedSseTotalMaxMs !== undefined
+    && sseMetrics
+    && sseMetrics.totalLatencyMs.max > input.input.maxAllowedSseTotalMaxMs
+  ) {
+    violations.push(`SSE 总时长 Max ${sseMetrics.totalLatencyMs.max}ms 超过慢流阈值 ${input.input.maxAllowedSseTotalMaxMs}ms`)
   }
   if (deadlocksDelta > input.input.maxAllowedDeadlocks) {
     violations.push(`PostgreSQL deadlocks 增量 ${deadlocksDelta} 超过阈值 ${input.input.maxAllowedDeadlocks}`)
   }
-  if (maxLockWaiters > input.input.maxAllowedLockWaiters || maxNotGrantedLocks > input.input.maxAllowedLockWaiters) {
-    violations.push(`PostgreSQL 锁等待过高：lockWaiters=${maxLockWaiters}, notGranted=${maxNotGrantedLocks}`)
+  if (postgresLockAnalysis.maxOtherWaiters > input.input.maxAllowedLockWaiters) {
+    violations.push(`PostgreSQL 非 unique 协调锁等待过高：maxOtherWaiters=${postgresLockAnalysis.maxOtherWaiters}`)
+  }
+  if (postgresLockAnalysis.persistentOrSlowKnownCoordinationWaits.length > 0) {
+    violations.push(`PostgreSQL 已知协调锁等待持续或超过阈值：count=${postgresLockAnalysis.persistentOrSlowKnownCoordinationWaits.length}, threshold=${input.input.maxAllowedKnownCoordinationWaitMs}ms`)
   }
   if (redisDelta.positiveBacklogDelta > input.input.maxAllowedRedisPending) {
     violations.push(`本轮新增 Redis Stream backlog=${redisDelta.positiveBacklogDelta} 超过阈值 ${input.input.maxAllowedRedisPending}（新增 pending=${redisDelta.positivePendingDelta}，当前总 backlog=${input.redisAfter.backlogCount}）`)
   }
-  if (input.stats.successRequests > 0 && usageRecordsDelta < Math.floor(input.stats.successRequests * 0.95)) {
-    violations.push(`使用记录消化不足：usageRecordsDelta=${usageRecordsDelta}, successRequests=${input.stats.successRequests}`)
+  const redisSamplingErrors = collectRedisSamplingErrors(input.redisBefore, input.redisAfter, input.samples)
+  if (redisSamplingErrors.length > 0) {
+    violations.push(`Redis 采样失败：${redisSamplingErrors.slice(0, 5).join('；')}`)
   }
-  const expectedAuditLogs = expectedAuditLogMinimum(input.stats.successRequests)
-  if (input.stats.successRequests > 0 && auditLogsDelta < expectedAuditLogs) {
-    violations.push(`审计日志消化不足：auditLogsDelta=${auditLogsDelta}, expectedMinimum=${expectedAuditLogs}, successRequests=${input.stats.successRequests}`)
+  for (const [name, stream] of redisStreamEntries(input.redisAfter)) {
+    if (stream.length !== 0 || stream.pendingCount !== 0 || stream.lagCount !== 0 || stream.backlogCount !== 0) {
+      violations.push(`settle 后 Redis Stream ${name} 未清零：length=${stream.length}, pending=${stream.pendingCount}, lag=${stream.lagCount}, backlog=${stream.backlogCount}`)
+    }
+  }
+  if (usageRecordsDelta !== expectedUsageRecords) {
+    violations.push(`使用记录未精确对账：actual=${usageRecordsDelta}, expected=${expectedUsageRecords}`)
+  }
+  if (auditLogsDelta !== auditReconciliation.expected) {
+    violations.push(`审计日志未精确对账：actual=${auditLogsDelta}, expected=${auditReconciliation.expected}, mode=${auditReconciliation.mode}`)
+  }
+  const accountConcurrencyError = accountConcurrencySamples.find((sample) => sample.error)
+  if (accountConcurrencyError) {
+    violations.push(`Redis 账号并发槽采样失败：${accountConcurrencyError.error}`)
   }
   if (input.input.assertAccountConcurrency) {
-    const accountConcurrencyError = accountConcurrencySamples.find((sample) => sample.error)
-    if (accountConcurrencyError) {
-      violations.push(`Redis 账号并发槽采样失败：${accountConcurrencyError.error}`)
-    }
     if (maxAccountConcurrencyTotal > accountConcurrencyCapacity) {
       violations.push(`Redis 账号并发槽峰值 ${maxAccountConcurrencyTotal} 超过配置总槽位 ${accountConcurrencyCapacity}`)
     }
@@ -1451,14 +1875,17 @@ function buildReport(input: {
       failed: input.stats.failedRequests,
       inFlight: input.stats.inFlightRequests,
       peakInFlight: input.stats.peakInFlightRequests,
-      qps: round(totalRequests / elapsedSeconds, 2),
-      successQps: round(input.stats.successRequests / elapsedSeconds, 2),
+      loadDurationMs: round(input.stats.loadDurationMs, 3),
+      qps: round(totalRequests / loadDurationSeconds, 2),
+      successQps: round(input.stats.successRequests / loadDurationSeconds, 2),
       errorRate,
       latencyMs: latency,
       statusCounts: objectFromCounts(input.stats.statusCounts),
       errorCounts: objectFromCounts(input.stats.errorCounts),
       statusSamples: Object.fromEntries(input.stats.statusSamples.entries()),
-      responseBytes: input.stats.responseBytes
+      responseBytes: input.stats.responseBytes,
+      byScenario: scenarioSummaries,
+      byPromptSize: promptSizeSummaries
     },
     storage: {
       before: input.storageBefore,
@@ -1470,7 +1897,9 @@ function buildReport(input: {
         operationLogs: input.storageAfter.operationLogs - input.storageBefore.operationLogs,
         publicApiLogs: input.storageAfter.publicApiLogs - input.storageBefore.publicApiLogs,
         usageStatsTotalsRowsForFixture: input.storageAfter.usageStatsTotalsRowsForFixture - input.storageBefore.usageStatsTotalsRowsForFixture,
-        expectedAuditLogsMinimum: expectedAuditLogs
+        expectedUsageRecords,
+        expectedAuditLogs: auditReconciliation.expected,
+        auditReconciliationMode: auditReconciliation.mode
       }
     },
     postgres: {
@@ -1483,6 +1912,7 @@ function buildReport(input: {
       maxNotGrantedLocks,
       maxXactAgeSeconds,
       maxActiveQuerySeconds,
+      lockWaitAnalysis: postgresLockAnalysis,
       samples: input.postgresSamples,
       slowStatements: input.slowStatements
     },
@@ -1519,20 +1949,101 @@ function buildReport(input: {
   }
 }
 
-function expectedAuditLogMinimum(successRequests: number): number {
-  if (successRequests <= 0) return 0
-  const settings = readAuditLogSettings()
-  if (settings.successHotRetentionHours > 0) {
-    return Math.floor(successRequests * 0.95)
+function buildScenarioSummaries(
+  stats: LoadStats,
+  configuredScenarios: ScenarioName[]
+): Partial<Record<ScenarioName, ScenarioSummary>> {
+  const summaries: Partial<Record<ScenarioName, ScenarioSummary>> = {}
+  for (const scenario of configuredScenarios) {
+    const scenarioStats = stats.scenarioStats.get(scenario)
+    const count = scenarioStats?.totalRequests ?? 0
+    const totalLatencyMs = latencySummary(scenarioStats?.latenciesMs ?? [])
+    const summary: ScenarioSummary = {
+      count,
+      success: scenarioStats?.successRequests ?? 0,
+      errors: scenarioStats?.failedRequests ?? 0,
+      errorRate: count > 0 ? round((scenarioStats?.failedRequests ?? 0) / count, 4) : 0,
+      totalLatencyMs,
+      statusCounts: objectFromCounts(scenarioStats?.statusCounts ?? new Map()),
+      errorCounts: objectFromCounts(scenarioStats?.errorCounts ?? new Map()),
+      responseBytes: scenarioStats?.responseBytes ?? 0
+    }
+    if (scenario === 'responses_stream') {
+      summary.stream = {
+        headersSamples: scenarioStats?.headersLatenciesMs.length ?? 0,
+        ttfbSamples: scenarioStats?.firstByteLatenciesMs.length ?? 0,
+        terminalSamples: scenarioStats?.terminalSamples ?? 0,
+        incompleteTerminalSamples: Math.max(0, (scenarioStats?.successRequests ?? 0) - (scenarioStats?.terminalSamples ?? 0)),
+        headersLatencyMs: latencySummary(scenarioStats?.headersLatenciesMs ?? []),
+        ttfbMs: latencySummary(scenarioStats?.firstByteLatenciesMs ?? []),
+        totalLatencyMs
+      }
+    }
+    summaries[scenario] = summary
   }
-  const sampledSuccesses = Math.floor(successRequests * settings.successSampleRate)
-  return Math.floor(sampledSuccesses * 0.7)
+  return summaries
+}
+
+function buildPromptSizeSummaries(
+  stats: LoadStats,
+  config: GatewayLoadConfig
+): Partial<Record<PromptSizeTierName, PromptSizeSummary>> {
+  const summaries: Partial<Record<PromptSizeTierName, PromptSizeSummary>> = {}
+  for (const tier of promptSizeTierConfigs(config)) {
+    const tierStats = stats.promptSizeStats.get(tier.tier)
+    const count = tierStats?.count ?? 0
+    summaries[tier.tier] = {
+      configuredBytes: tier.bytes,
+      configuredPermille: tier.permille,
+      count,
+      success: tierStats?.success ?? 0,
+      errors: tierStats?.errors ?? 0,
+      errorRate: count > 0 ? round((tierStats?.errors ?? 0) / count, 4) : 0,
+      totalPromptBytes: tierStats?.totalPromptBytes ?? 0,
+      totalLatencyMs: latencySummary(tierStats?.latenciesMs ?? []),
+      errorCounts: objectFromCounts(tierStats?.errorCounts ?? new Map())
+    }
+  }
+  return summaries
+}
+
+function promptSizeTierConfigs(config: GatewayLoadConfig): Array<{
+  tier: PromptSizeTierName
+  bytes: number
+  permille: number
+}> {
+  if (config.promptSizeProfile === 'fixed') {
+    return [{ tier: 'fixed', bytes: config.promptBytes, permille: 1000 }]
+  }
+  return config.historicalPromptSizeTiers.map((tier) => ({
+    tier: tier.name,
+    bytes: tier.bytes,
+    permille: tier.permille
+  }))
+}
+
+function expectedAuditLogCount(successfulTraceIds: string[]): { expected: number; mode: string } {
+  const settings = readAuditLogSettings()
+  if (!settings.enabled) return { expected: 0, mode: 'audit_disabled' }
+  if (settings.successHotRetentionHours > 0) {
+    return { expected: successfulTraceIds.length, mode: `success_hot_retention_${settings.successHotRetentionHours}h` }
+  }
+  const threshold = Math.round(settings.successSampleRate * 10_000)
+  return {
+    expected: successfulTraceIds.filter((traceId) => auditSampleBucket(traceId) < threshold).length,
+    mode: `deterministic_success_sample_${settings.successSampleRate}`
+  }
+}
+
+function auditSampleBucket(traceId: string): number {
+  return createHash('sha256').update(traceId).digest().readUInt32BE(0) % 10_000
 }
 
 function printReport(report: Record<string, unknown> & { pass: boolean; violations: string[] }): void {
   const requests = report.requests as Record<string, unknown>
   const storage = report.storage as Record<string, unknown>
   const postgres = report.postgres as Record<string, unknown>
+  const postgresLockWaitAnalysis = postgres.lockWaitAnalysis as PostgresLockAnalysis | undefined
   const redis = report.redis as Record<string, unknown>
   const redisAfter = redis.after as RedisStreamsSnapshot | undefined
   const redisDelta = redis.delta as RedisStreamsDeltaSnapshot | undefined
@@ -1543,12 +2054,23 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const operationStream = redisAfter?.operationLogs
   const publicApiStream = redisAfter?.publicApiLogs
   const recordMaintenanceStream = redisAfter?.recordMaintenance
+  const scenarioSummaries = requests.byScenario as Partial<Record<ScenarioName, ScenarioSummary>> | undefined
+  const promptSizeSummaries = requests.byPromptSize as Partial<Record<PromptSizeTierName, PromptSizeSummary>> | undefined
   console.log('\n高性能网关压测汇总')
   console.log(`- pass=${report.pass}`)
   console.log(`- requests started=${requests.started} total=${requests.total} success=${requests.success} inFlight=${requests.inFlight} peakInFlight=${requests.peakInFlight} qps=${requests.successQps} p95=${(requests.latencyMs as LatencySummary).p95}ms errorRate=${requests.errorRate}`)
+  for (const [scenario, summary] of Object.entries(scenarioSummaries ?? {})) {
+    const streamMetrics = summary.stream
+      ? ` headersP99=${summary.stream.headersLatencyMs.p99}ms ttfbP99=${summary.stream.ttfbMs.p99}ms ttfbMax=${summary.stream.ttfbMs.max}ms`
+      : ''
+    console.log(`- scenario=${scenario} count=${summary.count} success=${summary.success} errors=${summary.errors} p95=${summary.totalLatencyMs.p95}ms p99=${summary.totalLatencyMs.p99}ms max=${summary.totalLatencyMs.max}ms${streamMetrics}`)
+  }
+  for (const [tier, summary] of Object.entries(promptSizeSummaries ?? {})) {
+    console.log(`- promptSize=${tier} configuredBytes=${summary.configuredBytes} count=${summary.count} totalPromptBytes=${summary.totalPromptBytes} errors=${summary.errors} p95=${summary.totalLatencyMs.p95}ms p99=${summary.totalLatencyMs.p99}ms max=${summary.totalLatencyMs.max}ms`)
+  }
   console.log(`- upstream total=${upstream?.totalRequests ?? 0} peakActive=${upstream?.peakActiveRequests ?? 0} stream=${upstream?.streamRequests ?? 0} peakActiveStream=${upstream?.peakActiveStreamRequests ?? 0} completedStream=${upstream?.completedStreamRequests ?? 0} abortedStream=${upstream?.abortedStreamRequests ?? 0}`)
   console.log(`- storage delta=${JSON.stringify((storage.delta as Record<string, unknown>) ?? {})}`)
-  console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
+  console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxLockWait=${postgresLockWaitAnalysis?.maxWaitDurationMs ?? 0}ms lockQueryTypes=${JSON.stringify(postgresLockWaitAnalysis?.queryTypes ?? {})} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
   console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
   console.log(`- redis delta positivePending=${redisDelta?.positivePendingDelta ?? 0} positiveBacklog=${redisDelta?.positiveBacklogDelta ?? 0} netBacklogDelta=${redisDelta?.backlogDelta ?? 0}`)
   console.log(`- accountConcurrency maxRedisSlots=${redisAccountConcurrency?.maxTotal ?? 0}/${redisAccountConcurrency?.capacity ?? 0} assert=${redisAccountConcurrency?.assertEnabled === true}`)
@@ -1588,28 +2110,136 @@ function redisStreamDelta(before: RedisStreamSnapshot, after: RedisStreamSnapsho
   }
 }
 
+function redisStreamEntries(snapshot: RedisStreamsSnapshot): Array<[string, RedisStreamSnapshot]> {
+  return [
+    ['usageRecords', snapshot.usageRecords],
+    ['auditLogs', snapshot.auditLogs],
+    ['operationLogs', snapshot.operationLogs],
+    ['publicApiLogs', snapshot.publicApiLogs],
+    ['recordMaintenance', snapshot.recordMaintenance]
+  ]
+}
+
+function collectRedisSamplingErrors(
+  before: RedisStreamsSnapshot,
+  after: RedisStreamsSnapshot,
+  samples: MetricSnapshot[]
+): string[] {
+  const errors = new Set<string>()
+  for (const [label, snapshot] of [
+    ['before', before],
+    ...samples.map((sample, index) => [`sample-${index + 1}`, sample.redis] as const),
+    ['after', after]
+  ] as Array<readonly [string, RedisStreamsSnapshot]>) {
+    if (snapshot.error) errors.add(`${label}: ${snapshot.error}`)
+    for (const [name, stream] of redisStreamEntries(snapshot)) {
+      if (stream.error) errors.add(`${label}/${name}: ${stream.error}`)
+    }
+  }
+  return [...errors]
+}
+
+function analyzePostgresLockWaits(samples: PostgresSample[], knownCoordinationWaitThresholdMs: number): PostgresLockAnalysis {
+  const observations = new Map<string, PostgresLockObservation>()
+  const queryTypes: Record<string, number> = {}
+  for (const sample of samples) {
+    for (const wait of sample.lockWaits) {
+      queryTypes[wait.queryType] = (queryTypes[wait.queryType] ?? 0) + 1
+      const key = `${wait.pid}|${wait.queryStart ?? ''}|${wait.queryType}`
+      const existing = observations.get(key)
+      if (existing) {
+        existing.samples += 1
+        existing.maxWaitDurationMs = Math.max(existing.maxWaitDurationMs, wait.waitDurationMs)
+      } else {
+        observations.set(key, {
+          ...wait,
+          samples: 1,
+          maxWaitDurationMs: wait.waitDurationMs
+        })
+      }
+    }
+  }
+  const entries = [...observations.values()]
+  const knownCoordinationWaits = entries.filter((entry) => entry.queryType !== 'other')
+  const persistentOrSlowKnownCoordinationWaits = knownCoordinationWaits.filter((entry) => (
+    entry.samples > 1 || entry.maxWaitDurationMs > knownCoordinationWaitThresholdMs
+  ))
+  return {
+    maxWaitDurationMs: Math.max(0, ...entries.map((entry) => entry.maxWaitDurationMs)),
+    maxKnownCoordinationWaitDurationMs: Math.max(0, ...knownCoordinationWaits.map((entry) => entry.maxWaitDurationMs)),
+    maxOtherWaiters: maxSample(samples, 'otherLockWaiters'),
+    queryTypes,
+    transientKnownCoordinationWaits: knownCoordinationWaits.filter((entry) => !persistentOrSlowKnownCoordinationWaits.includes(entry)),
+    persistentOrSlowKnownCoordinationWaits,
+    observations: entries
+  }
+}
+
 async function cleanupFixtureAndRecords(seeded: SeededGateway): Promise<void> {
   const pool = await getPostgresPool()
   const traceLike = `${tracePrefix}-%`
-  const shardRows = await pool.query('SELECT DISTINCT shard_key FROM juhe_usage.usage_record_shard_entries WHERE trace_id LIKE $1', [traceLike])
+  const shardRows = await pool.query(`
+    SELECT DISTINCT shard_key
+    FROM juhe_usage.usage_record_shard_entries
+    WHERE trace_id LIKE $1
+      OR account_id = ANY($2::text[])
+      OR api_key_id = $3
+      OR group_id = $4
+  `, [traceLike, seeded.accountIds, seeded.apiKeyId, seeded.groupId])
   const shardKeys = shardRows.rows.map((row) => row.shard_key).filter((value): value is string => typeof value === 'string' && value.length > 0)
-  const auditIds = await pool.query('SELECT id FROM juhe_dataset.audit_logs WHERE trace_id LIKE $1', [traceLike])
+  const auditIds = await pool.query(`
+    SELECT id
+    FROM juhe_dataset.audit_logs
+    WHERE trace_id LIKE $1
+      OR account_id = ANY($2::text[])
+      OR api_key_id = $3
+      OR group_id = $4
+  `, [traceLike, seeded.accountIds, seeded.apiKeyId, seeded.groupId])
   const auditLogIds = auditIds.rows.map((row) => row.id).filter((value): value is string => typeof value === 'string' && value.length > 0)
   if (auditLogIds.length > 0) {
+    const auditBlobRows = await pool.query(`
+      SELECT DISTINCT blob_id
+      FROM (
+        SELECT headers_blob_id AS blob_id
+        FROM juhe_dataset.audit_payload_refs
+        WHERE audit_log_id = ANY($1::text[]) AND headers_blob_id IS NOT NULL
+        UNION
+        SELECT body_blob_id AS blob_id
+        FROM juhe_dataset.audit_payload_refs
+        WHERE audit_log_id = ANY($1::text[]) AND body_blob_id IS NOT NULL
+      ) scoped_blobs
+    `, [auditLogIds])
+    const auditBlobIds = auditBlobRows.rows.map((row) => row.blob_id).filter(isNonEmptyString)
     await pool.query('DELETE FROM juhe_dataset.audit_log_attempts WHERE audit_log_id = ANY($1::text[])', [auditLogIds])
     await pool.query('DELETE FROM juhe_dataset.audit_payload_refs WHERE audit_log_id = ANY($1::text[])', [auditLogIds])
     await pool.query('DELETE FROM juhe_dataset.audit_logs WHERE id = ANY($1::text[])', [auditLogIds])
-    await pool.query(`
-      DELETE FROM juhe_dataset.audit_payload_blobs blobs
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM juhe_dataset.audit_payload_refs refs
-        WHERE refs.headers_blob_id = blobs.id OR refs.body_blob_id = blobs.id
-      )
-    `)
+    await cleanupAuditPayloadBlobsByIds(auditBlobIds)
+    const remainingUnreferencedBlobs = await pool.query(`
+      SELECT COUNT(*) AS total
+      FROM juhe_dataset.audit_payload_blobs blobs
+      WHERE blobs.id = ANY($1::text[])
+        AND NOT EXISTS (
+          SELECT 1
+          FROM juhe_dataset.audit_payload_refs refs
+          WHERE refs.headers_blob_id = blobs.id OR refs.body_blob_id = blobs.id
+        )
+    `, [auditBlobIds])
+    assert.equal(numberValue(remainingUnreferencedBlobs.rows[0]?.total), 0, '本轮压测遗留了未清理的审计 payload blob')
   }
-  await pool.query('DELETE FROM juhe_usage.usage_record_shard_entries WHERE trace_id LIKE $1', [traceLike])
-  await pool.query('DELETE FROM juhe_usage.usage_records WHERE trace_id LIKE $1', [traceLike])
+  await pool.query(`
+    DELETE FROM juhe_usage.usage_record_shard_entries
+    WHERE trace_id LIKE $1
+      OR account_id = ANY($2::text[])
+      OR api_key_id = $3
+      OR group_id = $4
+  `, [traceLike, seeded.accountIds, seeded.apiKeyId, seeded.groupId])
+  await pool.query(`
+    DELETE FROM juhe_usage.usage_records
+    WHERE trace_id LIKE $1
+      OR account_id = ANY($2::text[])
+      OR api_key_id = $3
+      OR group_id = $4
+  `, [traceLike, seeded.accountIds, seeded.apiKeyId, seeded.groupId])
   if (seeded.accountIds.length > 0) {
     await pool.query('DELETE FROM juhe_usage.usage_record_account_shards WHERE account_id = ANY($1::text[])', [seeded.accountIds])
   }
@@ -1643,6 +2273,42 @@ async function cleanupFixtureAndRecords(seeded: SeededGateway): Promise<void> {
     await pool.query('DELETE FROM juhe_business.accounts WHERE id = ANY($1::text[])', [seeded.accountIds])
   }
   await pool.query('DELETE FROM juhe_business.groups WHERE id = $1', [seeded.groupId])
+  await sleep(500)
+  const residual = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM juhe_business.accounts WHERE id = ANY($1::text[])) AS accounts,
+      (SELECT COUNT(*) FROM juhe_business.groups WHERE id = $2) AS groups,
+      (SELECT COUNT(*) FROM juhe_business.api_keys WHERE id = $3) AS api_keys,
+      (SELECT COUNT(*) FROM juhe_business.route_strategies WHERE id = $4) AS route_strategies,
+      (SELECT COUNT(*) FROM juhe_usage.usage_record_shard_entries WHERE account_id = ANY($1::text[]) OR api_key_id = $3 OR group_id = $2) AS usage_entries,
+      (SELECT COUNT(*) FROM juhe_usage.usage_records WHERE account_id = ANY($1::text[]) OR api_key_id = $3 OR group_id = $2) AS usage_records,
+      (SELECT COUNT(*) FROM juhe_dataset.audit_logs WHERE account_id = ANY($1::text[]) OR api_key_id = $3 OR group_id = $2) AS audit_logs
+  `, [seeded.accountIds, seeded.groupId, seeded.apiKeyId, seeded.routeStrategyId])
+  const remaining = residual.rows[0] ?? {}
+  for (const [name, count] of Object.entries(remaining)) {
+    assert.equal(numberValue(count), 0, `压测清理后仍残留 ${name}=${numberValue(count)}`)
+  }
+}
+
+async function quiesceGatewayFixture(seeded: SeededGateway): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET status = 'disabled',
+        schedulable = 0,
+        next_health_check_at = NULL,
+        updated_at = $2
+    WHERE id = ANY($1::text[])
+  `, [seeded.accountIds, new Date().toISOString()])
+  await pool.query('UPDATE juhe_business.groups SET enabled = 0, updated_at = $2 WHERE id = $1', [seeded.groupId, new Date().toISOString()])
+}
+
+async function cleanupAuditPayloadBlobsByIds(blobIds: string[]): Promise<void> {
+  const batchSize = 500
+  for (let offset = 0; offset < blobIds.length; offset += batchSize) {
+    const batch = blobIds.slice(offset, offset + batchSize)
+    await cleanupUnreferencedAuditPayloadBlobsByIdsAsync(batch, batch.length)
+  }
 }
 
 async function cleanupStaleFixtures(): Promise<void> {
@@ -1697,11 +2363,18 @@ function validateRuntime(): void {
   assert.ok(runtimeConfig.redis.queueUrl, '高性能网关压测需要 JUHE_AI_REDIS_QUEUE_URL')
   assert.equal(process.env.JUHE_AI_GATEWAY_LOAD_ALLOW_SETTINGS_WRITE, '1', '高性能网关压测会写入临时系统设置，必须显式设置 JUHE_AI_GATEWAY_LOAD_ALLOW_SETTINGS_WRITE=1')
   assert.equal(process.env.JUHE_AI_GATEWAY_LOAD_ALLOW_PRIVATE_UPSTREAM, '1', '高性能网关压测使用本机 mock upstream，必须显式设置 JUHE_AI_GATEWAY_LOAD_ALLOW_PRIVATE_UPSTREAM=1')
+  if (config.targetBaseUrl) {
+    const target = new URL(config.targetBaseUrl)
+    assert.ok(['127.0.0.1', 'localhost', '::1'].includes(target.hostname), '外部压测目标只允许回环地址，避免误压生产或公网服务')
+  }
   runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 }
 
 function loadConfig(): GatewayLoadConfig {
+  const promptSizeProfile = parsePromptSizeProfile(envText('JUHE_AI_GATEWAY_LOAD_PROMPT_SIZE_PROFILE', 'fixed'))
+  const historicalPromptSizeTiers = loadHistoricalPromptSizeTiers(promptSizeProfile)
   return {
+    targetBaseUrl: optionalLoopbackBaseUrl('JUHE_AI_GATEWAY_LOAD_BASE_URL'),
     scenarios: scenarioList(envText('JUHE_AI_GATEWAY_LOAD_SCENARIOS', 'responses,chat')),
     durationSeconds: envInteger('JUHE_AI_GATEWAY_LOAD_DURATION_SECONDS', 30, 1, 3600),
     warmupSeconds: envInteger('JUHE_AI_GATEWAY_LOAD_WARMUP_SECONDS', 5, 0, 600),
@@ -1715,25 +2388,102 @@ function loadConfig(): GatewayLoadConfig {
     upstreamStreamChunkIntervalMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_CHUNK_INTERVAL_MS', 10, 0, 600_000),
     upstreamStreamTotalMinMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_TOTAL_MIN_MS', 0, 0, 600_000),
     upstreamStreamTotalMaxMs: envInteger('JUHE_AI_GATEWAY_LOAD_STREAM_TOTAL_MAX_MS', 0, 0, 600_000),
-    upstreamBodyBytes: envInteger('JUHE_AI_GATEWAY_LOAD_UPSTREAM_BODY_BYTES', 512, 0, 2 * 1024 * 1024),
+    upstreamBodyBytes: envInteger('JUHE_AI_GATEWAY_LOAD_UPSTREAM_BODY_BYTES', 512, 0, 8 * 1024 * 1024),
     upstreamErrorRate: envFloat('JUHE_AI_GATEWAY_LOAD_UPSTREAM_ERROR_RATE', 0, 0, 1),
     accountCount: envInteger('JUHE_AI_GATEWAY_LOAD_ACCOUNT_COUNT', 32, 1, 1000),
     accountConcurrencyLimit: envInteger('JUHE_AI_GATEWAY_LOAD_ACCOUNT_CONCURRENCY', 10000, 1, 1000000),
     clientIpConcurrencyLimit: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_CLIENT_IP_CONCURRENCY', 0, 1_000_000),
     groupMaxQueueWaitMs: envInteger('JUHE_AI_GATEWAY_LOAD_GROUP_MAX_QUEUE_WAIT_MS', 30_000, 0, 3_600_000),
     model: envText('JUHE_AI_GATEWAY_LOAD_MODEL', 'gpt-5-mini'),
-    promptBytes: envInteger('JUHE_AI_GATEWAY_LOAD_PROMPT_BYTES', 64, 1, 1024 * 1024),
+    promptBytes: envInteger('JUHE_AI_GATEWAY_LOAD_PROMPT_BYTES', 64, 1, 8 * 1024 * 1024),
+    promptSizeProfile,
+    historicalPromptSizeTiers,
+    promptContentMode: parsePromptContentMode(envText('JUHE_AI_GATEWAY_LOAD_PROMPT_CONTENT_MODE', 'repetitive')),
+    requestShape: requestShape(envText('JUHE_AI_GATEWAY_LOAD_REQUEST_SHAPE', 'simple')),
     enableStatsWorkerObservation: envBoolean('JUHE_AI_GATEWAY_LOAD_ENABLE_STATS_WORKER', false),
     cleanup: envBoolean('JUHE_AI_GATEWAY_LOAD_CLEANUP', true),
     assertAccountConcurrency: envBoolean('JUHE_AI_GATEWAY_LOAD_ASSERT_ACCOUNT_CONCURRENCY', false),
     maxAllowedErrorRate: envFloat('JUHE_AI_GATEWAY_LOAD_MAX_ERROR_RATE', 0.01, 0, 1),
-    maxAllowedP95Ms: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_P95_MS', 3000, 1, 600_000),
+    maxAllowedNonStreamP95Ms: envInteger(
+      'JUHE_AI_GATEWAY_LOAD_MAX_NON_STREAM_P95_MS',
+      envInteger('JUHE_AI_GATEWAY_LOAD_MAX_P95_MS', 3000, 1, 600_000),
+      1,
+      600_000
+    ),
+    maxAllowedNonStreamP99Ms: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_NON_STREAM_P99_MS', 1, 600_000),
+    maxAllowedNonStreamMaxMs: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_NON_STREAM_MAX_MS', 1, 600_000),
+    maxAllowedSseTtfbP99Ms: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_SSE_TTFB_P99_MS', 1, 600_000),
+    maxAllowedSseTtfbMaxMs: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_SSE_TTFB_MAX_MS', 1, 600_000),
+    maxAllowedSseTotalP99Ms: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_SSE_TOTAL_P99_MS', 1, 600_000),
+    maxAllowedSseTotalMaxMs: optionalEnvInteger('JUHE_AI_GATEWAY_LOAD_MAX_SSE_TOTAL_MAX_MS', 1, 600_000),
     maxAllowedDeadlocks: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_DEADLOCKS', 0, 0, 1000),
     maxAllowedLockWaiters: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_LOCK_WAITERS', 0, 0, 1000),
+    maxAllowedKnownCoordinationWaitMs: envInteger(
+      'JUHE_AI_GATEWAY_LOAD_MAX_KNOWN_COORDINATION_WAIT_MS',
+      envInteger('JUHE_AI_GATEWAY_LOAD_MAX_UNIQUE_COORDINATION_WAIT_MS', 1500, 1, 600_000),
+      1,
+      600_000
+    ),
     maxAllowedRedisPending: envInteger('JUHE_AI_GATEWAY_LOAD_MAX_REDIS_PENDING', 100, 0, 1_000_000),
     resetPgStatStatements: envBoolean('JUHE_AI_GATEWAY_LOAD_RESET_PG_STAT_STATEMENTS', true),
     reportPath: resolve(envText('JUHE_AI_GATEWAY_LOAD_REPORT_PATH', resolve(backendRoot, '..', 'reports', `performance-gateway-load-${runId}.json`)))
   }
+}
+
+function optionalLoopbackBaseUrl(name: string): string | undefined {
+  const value = process.env[name]?.trim()
+  if (!value) return undefined
+  const parsed = new URL(value)
+  assert.ok(['http:', 'https:'].includes(parsed.protocol), `${name} 只允许 http/https`)
+  assert.ok(['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname), `${name} 只允许回环地址`)
+  parsed.pathname = parsed.pathname.replace(/\/$/, '')
+  parsed.search = ''
+  parsed.hash = ''
+  return parsed.toString().replace(/\/$/, '')
+}
+
+function requestShape(value: string): RequestShape {
+  assert.ok(value === 'simple' || value === 'historical_responses', 'JUHE_AI_GATEWAY_LOAD_REQUEST_SHAPE 必须为 simple 或 historical_responses')
+  return value
+}
+
+function parsePromptSizeProfile(value: string): PromptSizeProfile {
+  assert.ok(value === 'fixed' || value === 'historical', 'JUHE_AI_GATEWAY_LOAD_PROMPT_SIZE_PROFILE 必须为 fixed 或 historical')
+  return value
+}
+
+function parsePromptContentMode(value: string): PromptContentMode {
+  assert.ok(
+    value === 'repetitive' || value === 'deterministic_entropy',
+    'JUHE_AI_GATEWAY_LOAD_PROMPT_CONTENT_MODE 必须为 repetitive 或 deterministic_entropy'
+  )
+  return value
+}
+
+function loadHistoricalPromptSizeTiers(profile: PromptSizeProfile): PromptSizeTierConfig[] {
+  const defaults: PromptSizeTierConfig[] = [
+    { name: 'historical_5k', bytes: 5 * 1024, permille: 900 },
+    { name: 'historical_500k', bytes: 500 * 1024, permille: 80 },
+    { name: 'historical_2m', bytes: 2 * 1024 * 1024, permille: 15 },
+    { name: 'historical_4m', bytes: 4 * 1024 * 1024, permille: 5 }
+  ]
+  if (profile === 'fixed') return defaults
+
+  const envTiers = [
+    ['5K', defaults[0]],
+    ['500K', defaults[1]],
+    ['2M', defaults[2]],
+    ['4M', defaults[3]]
+  ] as const
+  const tiers = envTiers.map(([envTier, fallback]) => ({
+    name: fallback.name,
+    bytes: strictEnvInteger(`JUHE_AI_GATEWAY_LOAD_PROMPT_SIZE_${envTier}_BYTES`, fallback.bytes, 1, 8 * 1024 * 1024),
+    permille: strictEnvInteger(`JUHE_AI_GATEWAY_LOAD_PROMPT_SIZE_${envTier}_PERMILLE`, fallback.permille, 0, 1000)
+  }))
+  const totalPermille = tiers.reduce((total, tier) => total + tier.permille, 0)
+  assert.equal(totalPermille, 1000, `历史请求体四档 permille 合计必须为 1000，当前为 ${totalPermille}`)
+  assert.ok(tiers.every((tier) => tier.permille > 0), '正式历史请求体分布要求四个 tier 的 permille 都大于 0')
+  return tiers
 }
 
 function scenarioList(value: string): ScenarioName[] {
@@ -1748,6 +2498,7 @@ function scenarioList(value: string): ScenarioName[] {
 function createLoadStats(): LoadStats {
   return {
     startedAtMs: performance.now(),
+    loadDurationMs: 0,
     startedRequests: 0,
     inFlightRequests: 0,
     peakInFlightRequests: 0,
@@ -1758,8 +2509,130 @@ function createLoadStats(): LoadStats {
     statusCounts: new Map(),
     errorCounts: new Map(),
     statusSamples: new Map(),
+    responseBytes: 0,
+    successfulTraceIds: [],
+    scenarioStats: new Map(),
+    promptSizeSequence: 0,
+    promptSizeStats: new Map()
+  }
+}
+
+function formalLoadElapsedSeconds(stats: LoadStats, currentElapsedSeconds: number): number {
+  const formalDurationSeconds = stats.loadDurationMs > 0 ? stats.loadDurationMs / 1000 : currentElapsedSeconds
+  return Math.max(0.001, Math.min(currentElapsedSeconds, formalDurationSeconds))
+}
+
+function selectPromptSize(stats: LoadStats, config: GatewayLoadConfig): SelectedPromptSize {
+  const sequence = stats.promptSizeSequence
+  stats.promptSizeSequence += 1
+  if (config.promptSizeProfile === 'fixed') {
+    return { tier: 'fixed', bytes: config.promptBytes }
+  }
+
+  // The coprime step covers every permille slot once; the offset also spreads rare tiers into short runs.
+  const slot = (((sequence + 1) * 21) + 506) % 1000
+  let upperBound = 0
+  for (const tier of config.historicalPromptSizeTiers) {
+    upperBound += tier.permille
+    if (slot < upperBound) {
+      return { tier: tier.name, bytes: tier.bytes }
+    }
+  }
+  const fallback = config.historicalPromptSizeTiers[config.historicalPromptSizeTiers.length - 1]
+  assert.ok(fallback, '历史请求体大小分布不能为空')
+  return { tier: fallback.name, bytes: fallback.bytes }
+}
+
+function promptSizeLoadStats(stats: LoadStats, tier: PromptSizeTierName): PromptSizeLoadStats {
+  const existing = stats.promptSizeStats.get(tier)
+  if (existing) return existing
+  const created: PromptSizeLoadStats = {
+    count: 0,
+    success: 0,
+    errors: 0,
+    totalPromptBytes: 0,
+    latenciesMs: [],
+    errorCounts: new Map()
+  }
+  stats.promptSizeStats.set(tier, created)
+  return created
+}
+
+function recordPromptSizeResponse(stats: LoadStats, promptSize: SelectedPromptSize, response: FetchScenarioResult): void {
+  const tierStats = promptSizeLoadStats(stats, promptSize.tier)
+  tierStats.count += 1
+  tierStats.totalPromptBytes += promptSize.bytes
+  tierStats.latenciesMs.push(response.totalLatencyMs)
+  if (response.ok) {
+    tierStats.success += 1
+  } else {
+    tierStats.errors += 1
+    increment(tierStats.errorCounts, `HTTP ${response.status}`)
+  }
+}
+
+function recordPromptSizeError(
+  stats: LoadStats,
+  promptSize: SelectedPromptSize,
+  latencyMs: number,
+  error: string
+): void {
+  const tierStats = promptSizeLoadStats(stats, promptSize.tier)
+  tierStats.count += 1
+  tierStats.errors += 1
+  tierStats.totalPromptBytes += promptSize.bytes
+  tierStats.latenciesMs.push(latencyMs)
+  increment(tierStats.errorCounts, error)
+}
+
+function scenarioLoadStats(stats: LoadStats, scenario: ScenarioName): ScenarioLoadStats {
+  const existing = stats.scenarioStats.get(scenario)
+  if (existing) return existing
+  const created: ScenarioLoadStats = {
+    totalRequests: 0,
+    successRequests: 0,
+    failedRequests: 0,
+    latenciesMs: [],
+    headersLatenciesMs: [],
+    firstByteLatenciesMs: [],
+    terminalSamples: 0,
+    statusCounts: new Map(),
+    errorCounts: new Map(),
     responseBytes: 0
   }
+  stats.scenarioStats.set(scenario, created)
+  return created
+}
+
+function recordScenarioResponse(stats: LoadStats, scenario: ScenarioName, response: FetchScenarioResult): void {
+  const scenarioStats = scenarioLoadStats(stats, scenario)
+  scenarioStats.totalRequests += 1
+  scenarioStats.latenciesMs.push(response.totalLatencyMs)
+  scenarioStats.responseBytes += response.responseBytes
+  increment(scenarioStats.statusCounts, String(response.status))
+  if (scenario === 'responses_stream') {
+    scenarioStats.headersLatenciesMs.push(response.headersLatencyMs)
+    if (response.firstByteLatencyMs !== undefined) {
+      scenarioStats.firstByteLatenciesMs.push(response.firstByteLatencyMs)
+    }
+    if (response.streamTerminalSeen) {
+      scenarioStats.terminalSamples += 1
+    }
+  }
+  if (response.ok) {
+    scenarioStats.successRequests += 1
+  } else {
+    scenarioStats.failedRequests += 1
+    increment(scenarioStats.errorCounts, `HTTP ${response.status}`)
+  }
+}
+
+function recordScenarioError(stats: LoadStats, scenario: ScenarioName, latencyMs: number, error: string): void {
+  const scenarioStats = scenarioLoadStats(stats, scenario)
+  scenarioStats.totalRequests += 1
+  scenarioStats.failedRequests += 1
+  scenarioStats.latenciesMs.push(latencyMs)
+  increment(scenarioStats.errorCounts, error)
 }
 
 function beginLoadRequest(stats: LoadStats): void {
@@ -1772,10 +2645,46 @@ function finishLoadRequest(stats: LoadStats): void {
   stats.inFlightRequests = Math.max(0, stats.inFlightRequests - 1)
 }
 
-function promptText(bytes: number, requestId: string): string {
+function initializePromptContent(config: GatewayLoadConfig): void {
+  if (config.promptContentMode !== 'deterministic_entropy') return
+  const maximumPromptBytes = config.promptSizeProfile === 'historical'
+    ? Math.max(...config.historicalPromptSizeTiers.map((tier) => tier.bytes))
+    : config.promptBytes
+  const corpusBytes = Math.max(1024 * 1024, Math.min(16 * 1024 * 1024, maximumPromptBytes * 2))
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const corpus = Buffer.allocUnsafe(corpusBytes)
+  let state = 0x9e3779b9
+  for (let index = 0; index < corpus.length; index += 1) {
+    state ^= state << 13
+    state ^= state >>> 17
+    state ^= state << 5
+    state >>>= 0
+    corpus[index] = alphabet.charCodeAt((state >>> 26) & 63)
+  }
+  deterministicEntropyCorpus = corpus.toString('ascii')
+}
+
+function promptText(bytes: number, requestId: string, contentMode: PromptContentMode): string {
   const prefix = `request ${requestId}: `
+  if (contentMode === 'deterministic_entropy') {
+    if (bytes <= prefix.length) return prefix.slice(0, bytes)
+    assert.ok(deterministicEntropyCorpus, '确定性高熵 prompt corpus 未初始化')
+    const contentBytes = bytes - prefix.length
+    const maximumOffset = deterministicEntropyCorpus.length - contentBytes
+    assert.ok(maximumOffset >= 0, `prompt bytes ${bytes} 超过高熵 corpus 容量`)
+    const offset = stablePromptCorpusOffset(requestId, maximumOffset + 1)
+    return prefix + deterministicEntropyCorpus.slice(offset, offset + contentBytes)
+  }
   const target = Math.max(prefix.length, bytes)
   return (prefix + 'please only output OK. '.repeat(Math.ceil(target / 23))).slice(0, target)
+}
+
+function stablePromptCorpusOffset(requestId: string, range: number): number {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < requestId.length; index += 1) {
+    hash = Math.imul(hash ^ requestId.charCodeAt(index), 0x01000193)
+  }
+  return (hash >>> 0) % Math.max(1, range)
 }
 
 function responseText(bytes: number): string {
@@ -1882,6 +2791,14 @@ function optionalEnvInteger(name: string, min: number, max: number): number | un
   return Math.min(max, Math.max(min, Math.trunc(value)))
 }
 
+function strictEnvInteger(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const value = Number(raw)
+  assert.ok(Number.isInteger(value) && value >= min && value <= max, `${name} 必须是 ${min}-${max} 之间的整数`)
+  return value
+}
+
 function envFloat(name: string, fallback: number, min: number, max: number): number {
   const value = Number(envText(name, String(fallback)))
   if (!Number.isFinite(value)) return fallback
@@ -1979,11 +2896,11 @@ async function freePort(): Promise<number> {
   return address.port
 }
 
-async function waitForHealth(url: string, child: ChildProcess): Promise<void> {
+async function waitForHealth(url: string, child?: ChildProcess): Promise<void> {
   const startedAt = Date.now()
   let lastError: unknown
   while (Date.now() - startedAt < 30_000) {
-    if (child.exitCode !== null) {
+    if (child && child.exitCode !== null) {
       throw new Error(`临时后端提前退出：exitCode=${child.exitCode}\nstdout=${childOutput.stdout}\nstderr=${childOutput.stderr}`)
     }
     try {
@@ -1996,7 +2913,8 @@ async function waitForHealth(url: string, child: ChildProcess): Promise<void> {
     }
     await sleep(250)
   }
-  throw new Error(`等待健康检查超时：${lastError instanceof Error ? lastError.message : String(lastError)}\nstdout=${childOutput.stdout}\nstderr=${childOutput.stderr}`)
+  const childDiagnostics = child ? `\nstdout=${childOutput.stdout}\nstderr=${childOutput.stderr}` : ''
+  throw new Error(`等待健康检查超时：${lastError instanceof Error ? lastError.message : String(lastError)}${childDiagnostics}`)
 }
 
 async function stopProcessTree(child: ChildProcess | undefined): Promise<void> {

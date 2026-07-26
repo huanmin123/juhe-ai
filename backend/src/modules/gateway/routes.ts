@@ -1269,7 +1269,9 @@ export async function handleOpenAIGatewayRequest(
       : undefined
     const statusCode = diagnosticError?.statusCode ?? 503
     const responsePayload = diagnosticError?.payload
-      ?? gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode)
+      ?? (message === '没有可用的上游账户'
+        ? gatewayErrorPayload(message, 'service_unavailable', 'no_available_upstream_account')
+        : gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode))
     await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
     await sendGatewayFailureResponse({
       req,

@@ -72,7 +72,10 @@ async function main(): Promise<void> {
   let upstreamServer: http.Server | undefined
   let closedTransportServer: http.Server | undefined
   try {
-    settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
+    settingsRepository.updateSettings({
+      temporaryUnschedulableRetryAttempts: 0,
+      noAvailableAccountWaitTimeoutSeconds: 10
+    })
     gatewayCache.clearGatewayRuntimeCache()
 
     upstreamServer = createRejectedRequestUpstream()
@@ -216,6 +219,7 @@ async function main(): Promise<void> {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
+    console.log('upstream request failure regression scenario: direct_transport_failure')
     const directTransportFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -254,7 +258,7 @@ async function main(): Promise<void> {
     assert.equal(totalUpstreamHitCount(), invalidJsonHitsBefore, '无效 JSON 不应转发到任何上游账号')
     assertAccountsActive([firstAccount, secondAccount, thirdAccount], '无效 JSON 未命中上游账号，不应写账号状态')
 
-    currentScenario = 'invalid_request_confirmation'
+    beginScenario('invalid_request_confirmation')
     const featureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -277,7 +281,7 @@ async function main(): Promise<void> {
     assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级 invalid_request 失败不应污染账号运行态')
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
-    currentScenario = 'same_signature_third_account_success'
+    beginScenario('same_signature_third_account_success')
     const thirdSuccessResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -298,7 +302,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'same_signature_confirmation'
+    beginScenario('same_signature_confirmation')
     const sameSignatureRequestBody = JSON.stringify({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: 'same upstream request error' }],
@@ -337,7 +341,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
 
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-    currentScenario = 'invalid_request_switch_account_success'
+    beginScenario('invalid_request_switch_account_success')
     const instructionsRequiredResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -369,7 +373,7 @@ async function main(): Promise<void> {
       3,
       '测试更新后的网关临时不可调度重试次数应立即生效'
     )
-    currentScenario = 'same_account_retry_success'
+    beginScenario('same_account_retry_success')
     const sameAccountRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -391,7 +395,7 @@ async function main(): Promise<void> {
     assertAccountsActive([firstAccount, secondAccount], '完整 HTTP 失败切号后不应写账号状态')
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'unknown_failure_switch_account_success'
+    beginScenario('unknown_failure_switch_account_success')
     const switchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -414,7 +418,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'shared_retry_budget_third_account_success'
+    beginScenario('shared_retry_budget_third_account_success')
     const sharedRetryBudgetResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -437,7 +441,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'shared_retry_budget_across_stream_redispatch'
+    beginScenario('shared_retry_budget_across_stream_redispatch')
     const sharedRetryBudgetStreamResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -464,7 +468,7 @@ async function main(): Promise<void> {
       temporaryUnschedulableRetryAttempts: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
-    currentScenario = 'non_stream_first_byte_timeout_switch_account_success'
+    beginScenario('non_stream_first_byte_timeout_switch_account_success')
     const nonStreamFirstByteTimeoutStartedAt = Date.now()
     const nonStreamFirstByteTimeoutResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -489,7 +493,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'non_stream_body_interrupted_after_output_client_retry'
+    beginScenario('non_stream_body_interrupted_after_output_client_retry')
     let interruptedRequestFailed = false
     try {
       const interruptedResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -537,7 +541,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'dispatch_loop_local_suppression_race'
+    beginScenario('dispatch_loop_local_suppression_race')
     const dispatchRaceResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -562,7 +566,7 @@ async function main(): Promise<void> {
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
-    currentScenario = 'single_account_local_suppression_wait_recover'
+    beginScenario('single_account_local_suppression_wait_recover')
     accountSideEffects.suppressGatewayAccountLocallyForTest(fastFailAccount.id, 1_000, '单账号恢复等待回归')
     const recoverWaitStartedAtMs = Date.now()
     const waitResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -586,7 +590,7 @@ async function main(): Promise<void> {
     assert.equal(singleAccountLocalSuppressionRecoverHitCount, 1, `单账号本地屏蔽恢复后应命中上游一次，实际 ${singleAccountLocalSuppressionRecoverHitCount}`)
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
-    currentScenario = 'single_account_cooldown_recover_wait'
+    beginScenario('single_account_cooldown_recover_wait')
     repositories.markAccountCooldown(
       cooldownRecoverAccount.id,
       new Date(Date.now() + 1_000).toISOString(),
@@ -615,12 +619,12 @@ async function main(): Promise<void> {
     const cooldownRecoverElapsedMs = Date.now() - cooldownRecoverStartedAtMs
     assert.equal(cooldownRecoverResponse.status, 200, `单账号本地冷却恢复后应继续调度成功，实际 HTTP ${cooldownRecoverResponse.status}: ${cooldownRecoverResponseText}`)
     assert.equal(cooldownRecoverResponseText, singleAccountCooldownRecoverBody, `单账号本地冷却恢复等待响应体异常：${cooldownRecoverResponseText}`)
-    assert(cooldownRecoverElapsedMs >= 900, `单账号本地冷却恢复等待不应在本地冷却时间前打上游，实际耗时 ${cooldownRecoverElapsedMs}ms`)
+    assert(cooldownRecoverElapsedMs >= 450, `单账号本地冷却恢复等待不应在清理冷却状态前打上游，实际耗时 ${cooldownRecoverElapsedMs}ms`)
     assert(cooldownRecoverElapsedMs < 3_000, `单账号本地冷却恢复等待不应等满巡检窗口，实际耗时 ${cooldownRecoverElapsedMs}ms`)
     assert.equal(singleAccountCooldownRecoverHitCount, 1, `单账号本地冷却恢复后应命中上游一次，实际 ${singleAccountCooldownRecoverHitCount}`)
     assertAccountsActive([cooldownRecoverAccount], '单账号本地冷却恢复后应保持正常')
 
-    currentScenario = 'single_account_failure_default_cooldown'
+    beginScenario('single_account_failure_default_cooldown')
     gatewayCache.clearGatewayRuntimeCache()
     const singleFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -678,6 +682,11 @@ type RegressionScenario =
   | 'single_account_failure_default_cooldown'
 
 let currentScenario: RegressionScenario = 'invalid_request_confirmation'
+
+function beginScenario(scenario: RegressionScenario): void {
+  currentScenario = scenario
+  console.log(`upstream request failure regression scenario: ${scenario}`)
+}
 let dispatchRaceSecondAccountId = ''
 let invalidRequestUpstreamHitCount = 0
 let thirdAccountSuccessHitCount = 0

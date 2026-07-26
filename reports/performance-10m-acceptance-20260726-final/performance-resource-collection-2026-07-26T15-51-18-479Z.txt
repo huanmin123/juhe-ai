@@ -1,0 +1,10 @@
+高性能 10 分钟验收外部资源采集清单
+
+目标 JSONL：/home/huanmin/juhe-ai-validation/20260726T140212Z-final-candidate/reports/resource-samples-20260726T155116Z.jsonl
+覆盖窗口：至少 600 秒，建议每 5 秒一个样本。
+必须由独立 shell/采集器完成；不要在 Gateway、mock upstream 或控制面探针进程内采样。
+可使用 macOS ps/top/vm_stat、Redis CLI、psql 或现有监控导出，但本脚本不会假装执行这些系统工具。
+每行必须是一个 JSON 对象，至少包含：
+{"sampledAt":"ISO-8601","gatewayInstanceIds":["gateway-1","gateway-2","gateway-3"],"gatewayRequestCounts":{"gateway-1":0,"gateway-2":0,"gateway-3":0},"roles":["gateway:gateway-1","gateway:gateway-2","gateway:gateway-3","control:control-1","db-service:db-service-1","usage-worker:1","usage-worker:2","log-worker:1","log-worker:2","stats-worker:1","ops-worker:1"],"cpu":{},"memory":{},"eventLoop":{},"redis":{},"postgres":{}}
+最后一个样本相对第一个样本，三个 gatewayRequestCounts 都必须有正增量，用于证明 ingress 真实分发到完整 3 Gateway。
+禁止把 Redis/PostgreSQL 密码、Cookie、API Key 或完整连接串写入 JSONL。

@@ -1,10 +1,10 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { appendAuditHotSearchEntries, appendAuditHotSearchEntriesAsync } from './audit-log-hot-search-files.js'
-import { prepareAuditErrorGroupStatements, upsertAuditErrorGroup, upsertAuditErrorGroupAsync } from './audit-log-error-groups.repository.js'
+import { auditErrorGroupLockKey, prepareAuditErrorGroupStatements, upsertAuditErrorGroup, upsertAuditErrorGroupAsync } from './audit-log-error-groups.repository.js'
 import {
-  applyAuditPayloadBlobPersistencePlan,
   cleanupCreatedAuditBlobFiles,
   cleanupCreatedAuditBlobFilesAsync,
+  incrementAuditPayloadBlobReference,
   persistAuditPayloadBlob,
   prepareAuditPayloadBlobStatements,
   writeAuditPayloadBlobFileForPlan,
@@ -12,7 +12,6 @@ import {
   type PreparedAuditPayloadBlob
 } from './audit-log-payload-blobs.js'
 import {
-  planAuditPayloadBlobPersistenceForBatch,
   preparePayloadInput,
   preparePayloadInputAsync,
   type PreparedAuditPayload
@@ -41,11 +40,6 @@ interface PreparedAuditLogForWrite {
   rawPayloadBytes: number
   compressedPayloadBytes: number
   compressionSavedBytes: number
-}
-
-interface AuditPayloadBlobWriteTask {
-  blob: PreparedAuditPayloadBlob | undefined
-  plan: AuditPayloadBlobPersistencePlan | undefined
 }
 
 export { cleanupUnreferencedAuditPayloadBlobs, cleanupUnreferencedAuditPayloadBlobsAsync } from './audit-log-payload-blobs.js'
@@ -123,14 +117,17 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
+  const updateLogErrorGroup = database.prepare('UPDATE audit_logs SET error_group_id = ? WHERE id = ?')
 
   const createdStorageKeys: string[] = []
+  const unusedCreatedStorageKeys: string[] = []
   const insertedHotSearchLogs: AuditLogInput[] = []
   const existingLogIds = loadExistingAuditLogIds(database, inputs)
   const seenLogIds = new Set<string>()
   const payloadBlobStatements = prepareAuditPayloadBlobStatements(database)
   const errorGroupStatements = prepareAuditErrorGroupStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
+  let transactionCommitted = false
   try {
     for (const input of inputs) {
       const id = input.id ?? newId('audit')
@@ -152,7 +149,6 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       const compressedPayloadBytes = payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
       const compressionSavedBytes = Math.max(0, rawPayloadBytes - compressedPayloadBytes)
       const trafficSource = normalizeAuditTrafficSource(input.trafficSource)
-      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
         id,
@@ -189,7 +185,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         rawPayloadBytes,
         compressedPayloadBytes,
         compressionSavedBytes,
-        errorGroupId,
+        null,
         input.captureStatus ?? 'complete',
         input.startedAt,
         input.endedAt,
@@ -203,9 +199,12 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         continue
       }
       insertedHotSearchLogs.push({ ...input, id, createdAt })
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
+      if (errorGroupId) updateLogErrorGroup.run(errorGroupId, id)
 
+      const insertedAttemptIds = new Set<string>()
       for (const attempt of preparedAttempts) {
-        insertAttempt.run(
+        const result = insertAttempt.run(
           attempt.id,
           id,
           attempt.attemptIndex,
@@ -232,15 +231,17 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
           attempt.endedAt ?? null,
           attempt.durationMs ?? null
         )
+        if (Number(result.changes ?? 0) > 0) insertedAttemptIds.add(attempt.id)
       }
 
       for (const payload of payloads) {
         const headersBlobId = persistAuditPayloadBlob(database, payload.headersBlob, createdAt, createdStorageKeys, payloadBlobStatements)
         const bodyBlobId = persistAuditPayloadBlob(database, payload.bodyBlob, createdAt, createdStorageKeys, payloadBlobStatements)
-        insertPayloadRef.run(
+        const attemptId = payload.attemptTempId ? attemptIds.get(payload.attemptTempId) : undefined
+        const result = insertPayloadRef.run(
           payload.id,
           id,
-          payload.attemptTempId ? attemptIds.get(payload.attemptTempId) ?? null : null,
+          attemptId && insertedAttemptIds.has(attemptId) ? attemptId : null,
           payload.partType,
           payload.sequenceIndex,
           payload.contentType ?? null,
@@ -254,17 +255,26 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
           payload.captureStatus,
           payload.createdAt
         )
+        if (Number(result.changes ?? 0) > 0) {
+          incrementAuditPayloadBlobReference(headersBlobId, payload.createdAt, payloadBlobStatements)
+          incrementAuditPayloadBlobReference(bodyBlobId, payload.createdAt, payloadBlobStatements)
+        }
       }
     }
 
+    unusedCreatedStorageKeys.push(...deleteUnusedCreatedAuditPayloadBlobsSqlite(database, createdStorageKeys))
     commitDatabaseTransaction(database, transactionStarted)
+    transactionCommitted = true
+    cleanupCreatedAuditBlobFiles(unusedCreatedStorageKeys)
     appendAuditHotSearchEntries(insertedHotSearchLogs)
   } catch (error) {
-    try {
-      rollbackDatabaseTransaction(database, transactionStarted)
-    } catch {
+    if (!transactionCommitted) {
+      try {
+        rollbackDatabaseTransaction(database, transactionStarted)
+      } catch {
+      }
+      cleanupCreatedAuditBlobFiles(createdStorageKeys)
     }
-    cleanupCreatedAuditBlobFiles(createdStorageKeys)
     throw error
   }
 }
@@ -313,21 +323,6 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   }
   if (preparedLogs.length === 0) return
   const payloadBlobStatements = prepareAuditPayloadBlobStatements(database)
-  const batchBlobPlans = new Map<string, AuditPayloadBlobPersistencePlan>()
-  for (const prepared of preparedLogs) {
-    for (const payload of prepared.payloads) {
-      payload.headersBlobPlan = planAuditPayloadBlobPersistenceForBatch(database, payload.headersBlob, payloadBlobStatements, batchBlobPlans)
-      payload.bodyBlobPlan = planAuditPayloadBlobPersistenceForBatch(database, payload.bodyBlob, payloadBlobStatements, batchBlobPlans)
-    }
-  }
-
-  const plannedStorageKeys = new Set<string>()
-  try {
-    await writeAuditPayloadBlobFilesForPreparedLogs(preparedLogs, plannedStorageKeys)
-  } catch (error) {
-    await cleanupCreatedAuditBlobFilesAsync([...plannedStorageKeys])
-    throw error
-  }
 
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
@@ -356,16 +351,18 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
+  const updateLogErrorGroup = database.prepare('UPDATE audit_logs SET error_group_id = ? WHERE id = ?')
 
   const createdStorageKeys: string[] = []
+  const unusedCreatedStorageKeys: string[] = []
   const insertedHotSearchLogs: AuditLogInput[] = []
   const errorGroupStatements = prepareAuditErrorGroupStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
+  let transactionCommitted = false
   try {
     for (const prepared of preparedLogs) {
       const { input, id, createdAt, attemptIds, preparedAttempts, payloads, rawPayloadBytes, compressedPayloadBytes, compressionSavedBytes } = prepared
       const trafficSource = normalizeAuditTrafficSource(input.trafficSource)
-      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
         id,
@@ -402,7 +399,7 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         rawPayloadBytes,
         compressedPayloadBytes,
         compressionSavedBytes,
-        errorGroupId,
+        null,
         input.captureStatus ?? 'complete',
         input.startedAt,
         input.endedAt,
@@ -416,9 +413,12 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         continue
       }
       insertedHotSearchLogs.push({ ...input, id, createdAt })
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, trafficSource, errorGroupStatements)
+      if (errorGroupId) updateLogErrorGroup.run(errorGroupId, id)
 
+      const insertedAttemptIds = new Set<string>()
       for (const attempt of preparedAttempts) {
-        insertAttempt.run(
+        const result = insertAttempt.run(
           attempt.id,
           id,
           attempt.attemptIndex,
@@ -445,15 +445,17 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
           attempt.endedAt ?? null,
           attempt.durationMs ?? null
         )
+        if (Number(result.changes ?? 0) > 0) insertedAttemptIds.add(attempt.id)
       }
 
       for (const payload of payloads) {
-        const headersBlobId = applyAuditPayloadBlobPersistencePlan(payload.headersBlob, payload.headersBlobPlan, createdAt, createdStorageKeys, payloadBlobStatements)
-        const bodyBlobId = applyAuditPayloadBlobPersistencePlan(payload.bodyBlob, payload.bodyBlobPlan, createdAt, createdStorageKeys, payloadBlobStatements)
-        insertPayloadRef.run(
+        const headersBlobId = persistAuditPayloadBlob(database, payload.headersBlob, createdAt, createdStorageKeys, payloadBlobStatements)
+        const bodyBlobId = persistAuditPayloadBlob(database, payload.bodyBlob, createdAt, createdStorageKeys, payloadBlobStatements)
+        const attemptId = payload.attemptTempId ? attemptIds.get(payload.attemptTempId) : undefined
+        const result = insertPayloadRef.run(
           payload.id,
           id,
-          payload.attemptTempId ? attemptIds.get(payload.attemptTempId) ?? null : null,
+          attemptId && insertedAttemptIds.has(attemptId) ? attemptId : null,
           payload.partType,
           payload.sequenceIndex,
           payload.contentType ?? null,
@@ -467,17 +469,28 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
           payload.captureStatus,
           payload.createdAt
         )
+        if (Number(result.changes ?? 0) > 0) {
+          incrementAuditPayloadBlobReference(headersBlobId, payload.createdAt, payloadBlobStatements)
+          incrementAuditPayloadBlobReference(bodyBlobId, payload.createdAt, payloadBlobStatements)
+        }
       }
     }
 
+    unusedCreatedStorageKeys.push(...deleteUnusedCreatedAuditPayloadBlobsSqlite(database, createdStorageKeys))
     commitDatabaseTransaction(database, transactionStarted)
+    transactionCommitted = true
+    await cleanupCreatedAuditBlobFilesAsync(unusedCreatedStorageKeys).catch((error) => {
+      logger.warn(errorLogFields(error, { event: 'audit_payload_sqlite_orphan_file_cleanup_failed' }), 'SQLite 审计 payload 未引用文件清理失败')
+    })
     await appendAuditHotSearchEntriesAsync(insertedHotSearchLogs)
   } catch (error) {
-    try {
-      rollbackDatabaseTransaction(database, transactionStarted)
-    } catch {
+    if (!transactionCommitted) {
+      try {
+        rollbackDatabaseTransaction(database, transactionStarted)
+      } catch {
+      }
+      await cleanupCreatedAuditBlobFilesAsync(createdStorageKeys)
     }
-    await cleanupCreatedAuditBlobFilesAsync(createdStorageKeys)
     throw error
   }
 }
@@ -518,37 +531,99 @@ async function createAuditLogsBatchPostgres(inputs: AuditLogInput[]): Promise<vo
   }
   if (preparedLogs.length === 0) return
 
-  const plannedStorageKeys = new Set<string>()
-  const blobPlans = await planPostgresAuditPayloadBlobPersistence(client, preparedLogs)
-  try {
-    await writePostgresAuditPayloadBlobFiles(blobPlans, plannedStorageKeys)
-  } catch (error) {
-    await cleanupCreatedAuditBlobFilesAsync([...plannedStorageKeys])
-    throw error
-  }
-
-  const createdStorageKeys: string[] = []
+  const createdStorageKeys = new Set<string>()
+  const unusedCreatedStorageKeys: string[] = []
   const insertedHotSearchLogs: AuditLogInput[] = []
+  let transactionCommitted = false
   try {
+    let blobPlans: PostgresAuditPayloadBlobPlans | undefined
+    const createdBlobPlans = new Set<AuditPayloadBlobPersistencePlan>()
     await client.transaction(async (tx) => {
-      for (const prepared of preparedLogs) {
+      blobPlans = await planPostgresAuditPayloadBlobPersistence(tx, preparedLogs)
+      await persistPostgresAuditPayloadBlobMetadata(tx, preparedLogs, blobPlans, createdBlobPlans)
+    })
+    if (!blobPlans) throw new Error('审计 payload 元数据规划未完成')
+    const resolvedBlobPlans = blobPlans
+
+    // 文件系统 I/O 不得占用 PostgreSQL 事务。元数据先以短事务确定，文件写入成功后
+    // 才创建审计日志和引用；任一后续失败只会留下可由维护任务回收的无引用 blob。
+    await writePostgresAuditPayloadBlobFiles(resolvedBlobPlans, createdBlobPlans, createdStorageKeys)
+    reconcilePostgresAuditPayloadCompressionStats(preparedLogs, resolvedBlobPlans)
+
+    await client.transaction(async (tx) => {
+      const insertedPreparedLogs: PreparedAuditLogForWrite[] = []
+      const orderedPreparedLogs = preparedLogs.slice().sort(comparePreparedAuditLogsById)
+      for (const prepared of orderedPreparedLogs) {
         const inserted = await insertPostgresAuditLog(tx, prepared)
         if (!inserted) continue
-        const trafficSource = normalizeAuditTrafficSource(prepared.input.trafficSource)
+        insertedPreparedLogs.push(prepared)
+      }
+      const errorGroupLogs = insertedPreparedLogs
+        .map((prepared) => {
+          const trafficSource = normalizeAuditTrafficSource(prepared.input.trafficSource)
+          return {
+            prepared,
+            trafficSource,
+            lockKey: auditErrorGroupLockKey(prepared.input, prepared.payloads, prepared.createdAt, trafficSource)
+          }
+        })
+        .filter((entry): entry is typeof entry & { lockKey: string } => Boolean(entry.lockKey))
+        .sort((left, right) => compareText(left.lockKey, right.lockKey) || comparePreparedAuditLogsById(left.prepared, right.prepared))
+      for (const { prepared, trafficSource } of errorGroupLogs) {
         const errorGroupId = await upsertAuditErrorGroupAsync(tx, prepared.input, prepared.id, prepared.payloads, prepared.createdAt, trafficSource)
         if (errorGroupId) {
           await updatePostgresAuditLogErrorGroup(tx, prepared.id, errorGroupId)
         }
-        insertedHotSearchLogs.push({ ...prepared.input, id: prepared.id, createdAt: prepared.createdAt })
-        await insertPostgresAuditLogAttempts(tx, prepared)
-        await insertPostgresAuditPayloadRefs(tx, prepared, blobPlans, createdStorageKeys)
       }
+
+      const insertedAttemptOwners = await insertPostgresAuditLogAttemptsBatch(tx, insertedPreparedLogs)
+      // PostgreSQL 以 audit_payload_refs 为唯一事实源；兼容字段 ref_count 不在热路径更新，避免公共 headers blob 形成全局行锁热点。
+      const referencedPlans = new Set<AuditPayloadBlobPersistencePlan>()
+      await insertPostgresAuditPayloadRefsBatch(tx, insertedPreparedLogs, resolvedBlobPlans, insertedAttemptOwners, referencedPlans)
+      unusedCreatedStorageKeys.push(...await deleteUnusedCreatedPostgresAuditPayloadBlobs(tx, createdBlobPlans, referencedPlans))
+
+      for (const prepared of insertedPreparedLogs) {
+        insertedHotSearchLogs.push({ ...prepared.input, id: prepared.id, createdAt: prepared.createdAt })
+      }
+    })
+    transactionCommitted = true
+    await cleanupCreatedAuditBlobFilesAsync([...new Set(unusedCreatedStorageKeys)]).catch((error) => {
+      logger.warn(errorLogFields(error, { event: 'audit_payload_orphan_file_cleanup_failed' }), '审计 payload 并发去重产生的孤立文件清理失败，等待后续维护清理')
     })
     await appendAuditHotSearchEntriesAsync(insertedHotSearchLogs)
   } catch (error) {
-    await cleanupCreatedAuditBlobFilesAsync([...new Set([...createdStorageKeys, ...plannedStorageKeys])])
+    if (!transactionCommitted && createdStorageKeys.size > 0) {
+      // PostgreSQL 在网络中断等场景下可能已经提交但客户端未收到 COMMIT ACK。
+      // 此处保守保留文件，避免误删已提交引用；无引用文件由后续维护清理回收。
+      logger.warn({
+        event: 'audit_payload_commit_outcome_uncertain_files_retained',
+        retainedFileCount: createdStorageKeys.size
+      }, '审计 payload 写入失败，保留已创建文件等待引用对账或维护清理')
+    }
     throw error
   }
+}
+
+function reconcilePostgresAuditPayloadCompressionStats(
+  preparedLogs: PreparedAuditLogForWrite[],
+  plans: PostgresAuditPayloadBlobPlans
+): void {
+  for (const prepared of preparedLogs) {
+    for (const payload of prepared.payloads) {
+      payload.compressedSizeBytes = (postgresAuditPayloadBlobPlan(plans, payload.headersBlob)?.compressedSizeBytes ?? 0)
+        + (postgresAuditPayloadBlobPlan(plans, payload.bodyBlob)?.compressedSizeBytes ?? 0)
+    }
+    prepared.compressedPayloadBytes = prepared.payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
+    prepared.compressionSavedBytes = Math.max(0, prepared.rawPayloadBytes - prepared.compressedPayloadBytes)
+  }
+}
+
+function comparePreparedAuditLogsById(left: PreparedAuditLogForWrite, right: PreparedAuditLogForWrite): number {
+  return compareText(left.id, right.id)
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 async function enrichPostgresAuditLogPricing(inputs: AuditLogInput[]): Promise<AuditLogInput[]> {
@@ -608,61 +683,75 @@ async function planPostgresAuditPayloadBlobPersistence(
     byBlob: new WeakMap(),
     writeTasks: []
   }
-  const plannedByFingerprint = new Map<string, AuditPayloadBlobPersistencePlan>()
+  const blobsByFingerprint = new Map<string, PreparedAuditPayloadBlob[]>()
   for (const prepared of preparedLogs) {
     for (const payload of prepared.payloads) {
-      await planPostgresAuditPayloadBlob(client, payload.headersBlob, plans, plannedByFingerprint)
-      await planPostgresAuditPayloadBlob(client, payload.bodyBlob, plans, plannedByFingerprint)
+      collectPostgresAuditPayloadBlobForPlanning(blobsByFingerprint, payload.headersBlob)
+      collectPostgresAuditPayloadBlobForPlanning(blobsByFingerprint, payload.bodyBlob)
+    }
+  }
+  for (const [, blobs] of [...blobsByFingerprint.entries()].sort((left, right) => compareText(left[0], right[0]))) {
+    const blob = blobs[0]
+    if (!blob) continue
+    const plan = await planPostgresAuditPayloadBlob(client, blob)
+    for (const matchingBlob of blobs) {
+      plans.byBlob.set(matchingBlob, plan)
+    }
+    if (plan.shouldWriteFile) {
+      plans.writeTasks.push({ blob, plan })
     }
   }
   return plans
 }
 
-async function planPostgresAuditPayloadBlob(
-  client: DatabaseClient,
-  blob: PreparedAuditPayloadBlob | undefined,
-  plans: PostgresAuditPayloadBlobPlans,
-  plannedByFingerprint: Map<string, AuditPayloadBlobPersistencePlan>
-): Promise<void> {
+function collectPostgresAuditPayloadBlobForPlanning(
+  blobsByFingerprint: Map<string, PreparedAuditPayloadBlob[]>,
+  blob: PreparedAuditPayloadBlob | undefined
+): void {
   if (!blob) return
   const fingerprint = `${blob.sha256}\u0000${blob.rawSizeBytes}\u0000${blob.contentType}`
-  const existingPlan = plannedByFingerprint.get(fingerprint)
-  if (existingPlan) {
-    plans.byBlob.set(blob, existingPlan)
-    return
-  }
-  const row = await client.one<{ id?: string; storage_key?: string }>(`
-    SELECT id, storage_key
+  const blobs = blobsByFingerprint.get(fingerprint) ?? []
+  blobs.push(blob)
+  blobsByFingerprint.set(fingerprint, blobs)
+}
+
+async function planPostgresAuditPayloadBlob(
+  client: DatabaseClient,
+  blob: PreparedAuditPayloadBlob
+): Promise<AuditPayloadBlobPersistencePlan> {
+  const row = await client.one<{ id?: string; storage_key?: string; compression?: string; compressed_size_bytes?: number }>(`
+    SELECT id, storage_key, compression, compressed_size_bytes
     FROM juhe_dataset.audit_payload_blobs
     WHERE sha256 = ? AND raw_size_bytes = ? AND content_type = ?
     LIMIT 1
   `, [blob.sha256, blob.rawSizeBytes, blob.contentType])
-  const plan = row?.id
+  const plan: AuditPayloadBlobPersistencePlan = row?.id
     ? {
         blobId: row.id,
         storageKey: row.storage_key ?? '',
         existing: true,
-        shouldWriteFile: Boolean(row.storage_key)
+        shouldWriteFile: Boolean(row.storage_key),
+        compression: row.compression === 'gzip' ? 'gzip' : 'none',
+        compressedSizeBytes: Math.max(0, Math.trunc(Number(row.compressed_size_bytes ?? 0)))
       }
     : {
         blobId: newId('audblob'),
         storageKey: '',
         existing: false,
-        shouldWriteFile: true
+        shouldWriteFile: true,
+        compression: blob.compression,
+        compressedSizeBytes: blob.compressedSizeBytes
       }
   if (!plan.existing) {
     plan.storageKey = storageKeyForPostgresAuditPayloadBlob(plan.blobId, blob.compression)
   }
-  plannedByFingerprint.set(fingerprint, plan)
-  plans.byBlob.set(blob, plan)
-  if (plan.shouldWriteFile) {
-    plans.writeTasks.push({ blob, plan })
-  }
+  return plan
 }
 
 async function writePostgresAuditPayloadBlobFiles(
   plans: PostgresAuditPayloadBlobPlans,
-  plannedStorageKeys: Set<string>
+  createdPlans: Set<AuditPayloadBlobPersistencePlan>,
+  createdStorageKeys: Set<string>
 ): Promise<void> {
   const tasks = plans.writeTasks
   let cursor = 0
@@ -675,8 +764,8 @@ async function writePostgresAuditPayloadBlobFiles(
       if (!task) continue
       try {
         await writeAuditPayloadBlobFileForPlan(task.blob, task.plan)
-        if (!task.plan.existing && task.plan.shouldWriteFile && task.plan.storageKey) {
-          plannedStorageKeys.add(task.plan.storageKey)
+        if (createdPlans.has(task.plan) && task.plan.storageKey) {
+          createdStorageKeys.add(task.plan.storageKey)
         }
       } catch (error) {
         firstError ??= error
@@ -751,9 +840,16 @@ async function updatePostgresAuditLogErrorGroup(client: DatabaseClient, auditLog
   await client.execute('UPDATE juhe_dataset.audit_logs SET error_group_id = ? WHERE id = ?', [errorGroupId, auditLogId])
 }
 
-async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: PreparedAuditLogForWrite): Promise<void> {
-  for (const attempt of prepared.preparedAttempts) {
-    await client.execute(`
+async function insertPostgresAuditLogAttemptsBatch(
+  client: DatabaseClient,
+  preparedLogs: PreparedAuditLogForWrite[]
+): Promise<Map<string, string>> {
+  const insertedAttemptOwners = new Map<string, string>()
+  const attempts = preparedLogs
+    .flatMap((prepared) => prepared.preparedAttempts.map((attempt) => ({ prepared, attempt })))
+    .sort((left, right) => compareText(left.attempt.id, right.attempt.id) || comparePreparedAuditLogsById(left.prepared, right.prepared))
+  for (const { prepared, attempt } of attempts) {
+    const inserted = await client.one<{ id?: string }>(`
       INSERT INTO juhe_dataset.audit_log_attempts (
         id, audit_log_id, attempt_index, account_id, account_owner_system_account_id, group_id, proxy_url, provider_code,
         attempt_model, attempt_upstream_model, attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
@@ -762,6 +858,7 @@ async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: 
         started_at, ended_at, duration_ms
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
+      RETURNING id
     `, [
       attempt.id,
       prepared.id,
@@ -789,28 +886,36 @@ async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: 
       attempt.endedAt ?? null,
       attempt.durationMs ?? null
     ])
+    if (inserted?.id) insertedAttemptOwners.set(inserted.id, prepared.id)
   }
+  return insertedAttemptOwners
 }
 
-async function insertPostgresAuditPayloadRefs(
+async function insertPostgresAuditPayloadRefsBatch(
   client: DatabaseClient,
-  prepared: PreparedAuditLogForWrite,
+  preparedLogs: PreparedAuditLogForWrite[],
   plans: PostgresAuditPayloadBlobPlans,
-  createdStorageKeys: string[]
+  insertedAttemptOwners: Map<string, string>,
+  referencedPlans: Set<AuditPayloadBlobPersistencePlan>
 ): Promise<void> {
-  for (const payload of prepared.payloads) {
-    const headersBlobId = await applyPostgresAuditPayloadBlobPersistencePlan(client, payload.headersBlob, postgresAuditPayloadBlobPlan(plans, payload.headersBlob), prepared.createdAt, createdStorageKeys)
-    const bodyBlobId = await applyPostgresAuditPayloadBlobPersistencePlan(client, payload.bodyBlob, postgresAuditPayloadBlobPlan(plans, payload.bodyBlob), prepared.createdAt, createdStorageKeys)
-    await client.execute(`
+  const payloadRefs = preparedLogs
+    .flatMap((prepared) => prepared.payloads.map((payload) => ({ prepared, payload })))
+    .sort((left, right) => compareText(left.payload.id, right.payload.id) || comparePreparedAuditLogsById(left.prepared, right.prepared))
+  for (const { prepared, payload } of payloadRefs) {
+    const attemptId = payload.attemptTempId ? prepared.attemptIds.get(payload.attemptTempId) : undefined
+    const headersBlobId = postgresAuditPayloadBlobPlan(plans, payload.headersBlob)?.blobId ?? null
+    const bodyBlobId = postgresAuditPayloadBlobPlan(plans, payload.bodyBlob)?.blobId ?? null
+    const inserted = await client.one<{ id?: string }>(`
       INSERT INTO juhe_dataset.audit_payload_refs (
         id, audit_log_id, attempt_id, part_type, sequence_index, content_type, content_encoding, headers_blob_id,
         body_blob_id, headers_sha256, body_sha256, raw_size_bytes, compressed_size_bytes, capture_status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
+      RETURNING id
     `, [
       payload.id,
       prepared.id,
-      payload.attemptTempId ? prepared.attemptIds.get(payload.attemptTempId) ?? null : null,
+      attemptId && insertedAttemptOwners.get(attemptId) === prepared.id ? attemptId : null,
       payload.partType,
       payload.sequenceIndex,
       payload.contentType ?? null,
@@ -824,7 +929,161 @@ async function insertPostgresAuditPayloadRefs(
       payload.captureStatus,
       payload.createdAt
     ])
+    if (!inserted?.id) continue
+    recordPostgresAuditPayloadBlobReference(referencedPlans, postgresAuditPayloadBlobPlan(plans, payload.headersBlob))
+    recordPostgresAuditPayloadBlobReference(referencedPlans, postgresAuditPayloadBlobPlan(plans, payload.bodyBlob))
   }
+}
+
+interface PostgresAuditPayloadBlobMetadataEntry {
+  blob: PreparedAuditPayloadBlob
+  plan: AuditPayloadBlobPersistencePlan
+  fingerprint: string
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
+async function persistPostgresAuditPayloadBlobMetadata(
+  client: DatabaseClient,
+  preparedLogs: PreparedAuditLogForWrite[],
+  plans: PostgresAuditPayloadBlobPlans,
+  createdPlans: Set<AuditPayloadBlobPersistencePlan>
+): Promise<void> {
+  const entries = new Map<AuditPayloadBlobPersistencePlan, PostgresAuditPayloadBlobMetadataEntry>()
+  for (const prepared of preparedLogs) {
+    for (const payload of prepared.payloads) {
+      for (const blob of [payload.headersBlob, payload.bodyBlob]) {
+        const plan = postgresAuditPayloadBlobPlan(plans, blob)
+        if (!blob || !plan) continue
+        const existing = entries.get(plan)
+        if (existing) {
+          if (prepared.createdAt < existing.firstSeenAt) existing.firstSeenAt = prepared.createdAt
+          if (prepared.createdAt > existing.lastSeenAt) existing.lastSeenAt = prepared.createdAt
+          continue
+        }
+        entries.set(plan, {
+          blob,
+          plan,
+          fingerprint: `${blob.sha256}\u0000${blob.rawSizeBytes}\u0000${blob.contentType}`,
+          firstSeenAt: prepared.createdAt,
+          lastSeenAt: prepared.createdAt
+        })
+      }
+    }
+  }
+
+  const orderedEntries = [...entries.values()].sort((left, right) => compareText(left.fingerprint, right.fingerprint))
+  for (const entry of orderedEntries) {
+    const candidateBlobId = entry.plan.existing ? newId('audblob') : entry.plan.blobId
+    const candidateStorageKey = entry.plan.existing
+      ? storageKeyForPostgresAuditPayloadBlob(candidateBlobId, entry.blob.compression)
+      : entry.plan.storageKey
+    const resolved = await resolvePostgresAuditPayloadBlobMetadata(client, entry, candidateBlobId, candidateStorageKey)
+    if (resolved.created) createdPlans.add(entry.plan)
+    entry.plan.blobId = resolved.id
+    entry.plan.storageKey = resolved.storageKey
+    entry.plan.existing = true
+    entry.plan.compression = resolved.compression
+    entry.plan.compressedSizeBytes = resolved.compressedSizeBytes
+  }
+}
+
+interface ResolvedPostgresAuditPayloadBlobMetadata {
+  id: string
+  storageKey: string
+  compression: PreparedAuditPayloadBlob['compression']
+  compressedSizeBytes: number
+  created: boolean
+}
+
+async function resolvePostgresAuditPayloadBlobMetadata(
+  client: DatabaseClient,
+  entry: PostgresAuditPayloadBlobMetadataEntry,
+  candidateBlobId: string,
+  candidateStorageKey: string
+): Promise<ResolvedPostgresAuditPayloadBlobMetadata> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const inserted = await client.one<{ id?: string; storage_key?: string; compression?: string; compressed_size_bytes?: number }>(`
+      INSERT INTO juhe_dataset.audit_payload_blobs (
+        id, sha256, raw_size_bytes, compressed_size_bytes, content_type, content_encoding, compression,
+        storage_key, ref_count, first_seen_at, last_seen_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sha256, raw_size_bytes, content_type) DO NOTHING
+      RETURNING id, storage_key, compression, compressed_size_bytes
+    `, [
+      candidateBlobId,
+      entry.blob.sha256,
+      entry.blob.rawSizeBytes,
+      entry.blob.compressedSizeBytes,
+      entry.blob.contentType,
+      entry.blob.contentEncoding ?? null,
+      entry.blob.compression,
+      candidateStorageKey,
+      0,
+      entry.firstSeenAt,
+      entry.lastSeenAt,
+      entry.firstSeenAt
+    ])
+    if (inserted?.id && inserted.storage_key) {
+      return resolvedPostgresAuditPayloadBlobMetadata(inserted, true)
+    }
+
+    const existing = await client.one<{ id?: string; storage_key?: string; compression?: string; compressed_size_bytes?: number }>(`
+      SELECT id, storage_key, compression, compressed_size_bytes
+      FROM juhe_dataset.audit_payload_blobs
+      WHERE sha256 = ? AND raw_size_bytes = ? AND content_type = ?
+      FOR KEY SHARE
+    `, [entry.blob.sha256, entry.blob.rawSizeBytes, entry.blob.contentType])
+    if (existing?.id && existing.storage_key) {
+      return resolvedPostgresAuditPayloadBlobMetadata(existing, false)
+    }
+  }
+  throw new Error(`审计 payload 元数据并发解析失败：${entry.blob.sha256}`)
+}
+
+function resolvedPostgresAuditPayloadBlobMetadata(
+  row: { id?: string; storage_key?: string; compression?: string; compressed_size_bytes?: number },
+  created: boolean
+): ResolvedPostgresAuditPayloadBlobMetadata {
+  if (!row.id || !row.storage_key) throw new Error('审计 payload 元数据缺少 id 或 storage_key')
+  return {
+    id: row.id,
+    storageKey: row.storage_key,
+    compression: row.compression === 'gzip' ? 'gzip' : 'none',
+    compressedSizeBytes: Math.max(0, Math.trunc(Number(row.compressed_size_bytes ?? 0))),
+    created
+  }
+}
+
+function recordPostgresAuditPayloadBlobReference(
+  referencedPlans: Set<AuditPayloadBlobPersistencePlan>,
+  plan: AuditPayloadBlobPersistencePlan | undefined
+): void {
+  if (plan) referencedPlans.add(plan)
+}
+
+async function deleteUnusedCreatedPostgresAuditPayloadBlobs(
+  client: DatabaseClient,
+  createdPlans: Set<AuditPayloadBlobPersistencePlan>,
+  referencedPlans: Set<AuditPayloadBlobPersistencePlan>
+): Promise<string[]> {
+  const ids = [...createdPlans]
+    .filter((plan) => !referencedPlans.has(plan))
+    .map((plan) => plan.blobId)
+    .sort(compareText)
+  if (ids.length === 0) return []
+  const rows = await client.query<{ storage_key?: string }>(`
+    DELETE FROM juhe_dataset.audit_payload_blobs b
+    WHERE b.id = ANY(?::text[])
+      AND b.ref_count = 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM juhe_dataset.audit_payload_refs r
+        WHERE r.headers_blob_id = b.id OR r.body_blob_id = b.id
+      )
+    RETURNING b.storage_key
+  `, [ids])
+  return rows.map((row) => row.storage_key?.trim()).filter((value): value is string => Boolean(value))
 }
 
 function postgresAuditPayloadBlobPlan(
@@ -834,87 +1093,33 @@ function postgresAuditPayloadBlobPlan(
   return blob ? plans.byBlob.get(blob) : undefined
 }
 
-async function applyPostgresAuditPayloadBlobPersistencePlan(
-  client: DatabaseClient,
-  blob: PreparedAuditPayloadBlob | undefined,
-  plan: AuditPayloadBlobPersistencePlan | undefined,
-  timestamp: string,
-  createdStorageKeys: string[]
-): Promise<string | null> {
-  if (!blob || !plan) return null
-  if (plan.existing) {
-    await client.execute('UPDATE juhe_dataset.audit_payload_blobs SET ref_count = ref_count + 1, last_seen_at = ? WHERE id = ?', [timestamp, plan.blobId])
-    return plan.blobId
-  }
-  const row = await client.one<{ id?: string }>(`
-    INSERT INTO juhe_dataset.audit_payload_blobs (
-      id, sha256, raw_size_bytes, compressed_size_bytes, content_type, content_encoding, compression,
-      storage_key, ref_count, first_seen_at, last_seen_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    ON CONFLICT(sha256, raw_size_bytes, content_type) DO UPDATE SET
-      ref_count = audit_payload_blobs.ref_count + 1,
-      last_seen_at = EXCLUDED.last_seen_at
-    RETURNING id
-  `, [
-    plan.blobId,
-    blob.sha256,
-    blob.rawSizeBytes,
-    blob.compressedSizeBytes,
-    blob.contentType,
-    blob.contentEncoding ?? null,
-    blob.compression,
-    plan.storageKey,
-    timestamp,
-    timestamp,
-    timestamp
-  ])
-  const resolvedId = row?.id ?? plan.blobId
-  if (resolvedId === plan.blobId) {
-    createdStorageKeys.push(plan.storageKey)
-  }
-  plan.blobId = resolvedId
-  plan.existing = true
-  return resolvedId
-}
-
 function storageKeyForPostgresAuditPayloadBlob(id: string, compression: PreparedAuditPayloadBlob['compression']): string {
   const suffix = compression === 'gzip' ? 'gz' : 'blob'
   return `${id.slice(0, 2)}/${id}.${suffix}`
 }
 
-async function writeAuditPayloadBlobFilesForPreparedLogs(
-  preparedLogs: PreparedAuditLogForWrite[],
-  plannedStorageKeys: Set<string>
-): Promise<void> {
-  const tasks: AuditPayloadBlobWriteTask[] = []
-  for (const prepared of preparedLogs) {
-    for (const payload of prepared.payloads) {
-      tasks.push({ blob: payload.headersBlob, plan: payload.headersBlobPlan })
-      tasks.push({ blob: payload.bodyBlob, plan: payload.bodyBlobPlan })
+function deleteUnusedCreatedAuditPayloadBlobsSqlite(
+  database: ReturnType<typeof getDatasetDatabase>,
+  storageKeys: string[]
+): string[] {
+  const deletedStorageKeys: string[] = []
+  for (const chunk of chunkValues([...new Set(storageKeys)], 900)) {
+    if (chunk.length === 0) continue
+    const rows = database.prepare(`
+      DELETE FROM audit_payload_blobs
+      WHERE storage_key IN (${sqlPlaceholders(chunk.length)})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM audit_payload_refs refs
+          WHERE refs.headers_blob_id = audit_payload_blobs.id OR refs.body_blob_id = audit_payload_blobs.id
+        )
+      RETURNING storage_key
+    `).all(...chunk) as Array<{ storage_key?: string }>
+    for (const row of rows) {
+      if (row.storage_key) deletedStorageKeys.push(row.storage_key)
     }
   }
-  let cursor = 0
-  let firstError: unknown
-  const workerCount = Math.min(auditPayloadBlobWriteConcurrency, Math.max(1, tasks.length))
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (cursor < tasks.length) {
-      const task = tasks[cursor]
-      cursor += 1
-      if (!task) continue
-      try {
-        await writeAuditPayloadBlobFileForPlan(task.blob, task.plan)
-        if (task.plan?.shouldWriteFile && task.plan.storageKey) {
-          plannedStorageKeys.add(task.plan.storageKey)
-        }
-      } catch (error) {
-        firstError ??= error
-      }
-    }
-  })
-  await Promise.all(workers)
-  if (firstError) {
-    throw firstError
-  }
+  return deletedStorageKeys
 }
 
 function loadExistingAuditLogIds(database: ReturnType<typeof getDatasetDatabase>, inputs: AuditLogInput[]): Set<string> {

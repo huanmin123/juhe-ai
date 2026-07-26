@@ -21,6 +21,8 @@ SERVICE_GROUP=
 DEPLOYMENT_LOCK_LIBRARY=
 DRAIN_SCRIPT="$(cd "$(dirname "$0")" && pwd)/wait-performance-slot-drain.sh"
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+MODEL_READINESS_KEY_FILE=
+SKIP_MODEL_READINESS=0
 
 usage() {
   cat <<'EOF'
@@ -44,6 +46,8 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --deployment-lock-library ABSOLUTE_DEPLOYMENT_LOCK_SH
   --drain-script ABSOLUTE_WAIT_SLOT_DRAIN_SH
   --node-path PATH_VALUE
+  --model-readiness-key-file ABSOLUTE_MODE_0600_FILE
+  --skip-model-readiness-for-non-business-test
 EOF
 }
 
@@ -70,6 +74,8 @@ while [ "$#" -gt 0 ]; do
     --deployment-lock-library) DEPLOYMENT_LOCK_LIBRARY="${2:-}"; shift 2 ;;
     --drain-script) DRAIN_SCRIPT="${2:-}"; shift 2 ;;
     --node-path) NODE_PATH="${2:-}"; shift 2 ;;
+    --model-readiness-key-file) MODEL_READINESS_KEY_FILE="${2:-}"; shift 2 ;;
+    --skip-model-readiness-for-non-business-test) SKIP_MODEL_READINESS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -77,6 +83,7 @@ done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
 case "$SLOT" in main|temporary) ;; *) echo '--slot must be main or temporary' >&2; exit 2 ;; esac
+if [ "$SLOT" = main ]; then ROLLBACK_SLOT=temporary; else ROLLBACK_SLOT=main; fi
 case "$NGINX_CONFIG_KIND" in included|main) ;; *) echo '--nginx-config-kind must be included or main' >&2; exit 2 ;; esac
 case "$BASE_DIR" in /*) ;; *) echo '--base-dir must be absolute' >&2; exit 2 ;; esac
 if [ -z "$RELEASE_DIR" ]; then RELEASE_DIR="$BASE_DIR/current"; fi
@@ -93,6 +100,17 @@ fi
 if [ -n "$DEPLOYMENT_LOCK_LIBRARY" ]; then
   case "$DEPLOYMENT_LOCK_LIBRARY" in /*) ;; *) echo '--deployment-lock-library must be absolute' >&2; exit 2 ;; esac
 fi
+if [ -n "$MODEL_READINESS_KEY_FILE" ]; then
+  case "$MODEL_READINESS_KEY_FILE" in /*) ;; *) echo '--model-readiness-key-file must be absolute' >&2; exit 2 ;; esac
+fi
+[ -z "$MODEL_READINESS_KEY_FILE" ] || [ "$SKIP_MODEL_READINESS" = 0 ] || {
+  echo 'model readiness key file and skip flag are mutually exclusive' >&2
+  exit 2
+}
+[ -n "$MODEL_READINESS_KEY_FILE" ] || [ "$SKIP_MODEL_READINESS" = 1 ] || {
+  echo 'provide --model-readiness-key-file, or explicitly skip only for a non-business test' >&2
+  exit 2
+}
 case "$DRAIN_SCRIPT" in /*) ;; *) [ "$MODE" = dry-run ] || { echo '--drain-script must be absolute' >&2; exit 2; } ;; esac
 if [ "$SCOPE" = system ]; then
   [ -n "$SERVICE_USER" ] || { echo '--service-user is required for system scope' >&2; exit 2; }
@@ -100,7 +118,7 @@ if [ "$SCOPE" = system ]; then
   printf '%s' "$SERVICE_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$' || { echo 'invalid service user' >&2; exit 2; }
   printf '%s' "$SERVICE_GROUP" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$' || { echo 'invalid service group' >&2; exit 2; }
 fi
-case "$BASE_DIR$RELEASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_MAIN_CONFIG$SERVICE_USER$SERVICE_GROUP$DEPLOYMENT_LOCK_LIBRARY$DRAIN_SCRIPT" in
+case "$BASE_DIR$RELEASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_MAIN_CONFIG$SERVICE_USER$SERVICE_GROUP$DEPLOYMENT_LOCK_LIBRARY$DRAIN_SCRIPT$MODEL_READINESS_KEY_FILE" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
     exit 2
@@ -134,6 +152,8 @@ BIN_DIR="$BASE_DIR/bin/performance/$SLOT"
 LOG_DIR="$BASE_DIR/logs"
 RUNTIME_LOG_DIR="$LOG_DIR/runtime"
 SPOOL_DIR="$BASE_DIR/shared/usage-spool"
+AUDIT_BLOB_DIR="$BASE_DIR/shared/audit/blobs"
+MODEL_READINESS_RUNNER="$CURRENT_DIR/backend/dist/scripts/operations/model-catalog-readiness.js"
 if [ "$SCOPE" = user ]; then
   DOMAIN="gui/$(id -u)"
   PLIST_DIR="$HOME/Library/LaunchAgents"
@@ -157,9 +177,23 @@ printf 'mode=%s scope=%s slot=%s base=%s release=%s control=%s gateways=%s-%s us
 printf 'plan: 1 control + %s gateway launchd jobs, then nginx least_conn cutover after every local health check\n' "$GATEWAY_COUNT"
 [ "$MODE" = apply ] || exit 0
 
+assert_model_readiness_key_file() {
+  local key_mode
+  key_mode="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
+  case "$key_mode" in [0-7][0-7][0-7]) ;; *) key_mode="$(stat -c '%a' "$1" 2>/dev/null || true)" ;; esac
+  [ "$key_mode" = 600 ] || { echo 'model readiness API key file mode must be 0600' >&2; return 1; }
+}
+
 [ -f "$CURRENT_DIR/backend/dist/server.js" ] || { echo "missing built server: $CURRENT_DIR/backend/dist/server.js" >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" ] || { echo 'missing runtime preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/.env" ] || { echo 'missing current/backend/.env' >&2; exit 1; }
+if [ "$SKIP_MODEL_READINESS" = 0 ]; then
+  [ -f "$MODEL_READINESS_RUNNER" ] || { echo 'missing model catalog readiness runner' >&2; exit 1; }
+  [ -f "$MODEL_READINESS_KEY_FILE" ] || { echo 'model readiness API key file does not exist' >&2; exit 1; }
+  assert_model_readiness_key_file "$MODEL_READINESS_KEY_FILE"
+else
+  echo 'warning: model catalog business readiness is skipped for this non-business test' >&2
+fi
 command -v node >/dev/null
 command -v launchctl >/dev/null
 command -v plutil >/dev/null
@@ -180,6 +214,7 @@ fi
 STAGE_DIR=
 MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
+NGINX_CANDIDATE_RECOVERY="$NGINX_CONFIG.performance-candidate-failed.$$"
 
 service_names() {
   printf '%s\n' control-1
@@ -245,6 +280,7 @@ render_run_script() {
     printf 'export JUHE_AI_OPS_WORKER_REPLICAS=1\n'
     printf 'export JUHE_AI_LOG_DIR="%s"\n' "$RUNTIME_LOG_DIR"
     printf 'export JUHE_AI_USAGE_SPOOL_DIR="%s"\n' "$SPOOL_DIR"
+    printf 'export JUHE_AI_AUDIT_BLOB_ROOT="%s"\n' "$AUDIT_BLOB_DIR"
     printf 'cd "%s"\n' "$CURRENT_DIR"
     printf '%s\n' 'node backend/dist/scripts/preflight/check-node-sqlite.js'
     printf '%s\n' 'exec node backend/dist/server.js'
@@ -458,24 +494,64 @@ health_identity_matches() {
   ' "$1" "$2" "$3" >/dev/null 2>&1
 }
 
+verify_model_catalog() {
+  [ "$SKIP_MODEL_READINESS" = 0 ] || return 0
+  node "$MODEL_READINESS_RUNNER" --base-url "$1" --api-key-file "$MODEL_READINESS_KEY_FILE"
+}
+
+verify_ingress_route() {
+  expected="performance-$1"
+  headers="$(mktemp -t juhe-ai-performance-rollback.XXXXXX)" || return 1
+  if curl -fsS --max-time 8 -D "$headers" -o /dev/null "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" \
+    && grep -Eiq "^X-Juhe-Active-Upstream:[[:space:]]*${expected}[[:space:]]*$" "$headers"; then
+    result=0
+  else
+    result=1
+  fi
+  rm -f -- "$headers"
+  return "$result"
+}
+
 rollback() {
   set +e
+  rollback_proven=0
   remove_empty_nginx_config=0
+  if [ ! -f "$STAGE_DIR/nginx.conf" ] && [ -f "$NGINX_CONFIG" ]; then
+    cp -p -- "$NGINX_CONFIG" "$NGINX_CANDIDATE_RECOVERY" || true
+  fi
   if [ -f "$NGINX_BACKUP" ]; then
     mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"
   else
     : > "$NGINX_CONFIG"
     remove_empty_nginx_config=1
   fi
-  nginx_test >/dev/null 2>&1 && nginx_reload >/dev/null 2>&1 || true
+  if nginx_test >/dev/null 2>&1 \
+    && nginx_reload >/dev/null 2>&1 \
+    && verify_ingress_route "$ROLLBACK_SLOT" >/dev/null 2>&1 \
+    && verify_model_catalog "http://127.0.0.1:$INGRESS_PORT" >/dev/null 2>&1; then
+    rollback_proven=1
+  fi
+  if [ "$rollback_proven" != 1 ]; then
+    echo "automatic nginx rollback could not prove both the previous ingress route identity and model readiness; retaining the candidate slot and recovery files (candidate nginx: $NGINX_CANDIDATE_RECOVERY) for fail-closed dual-slot recovery" >&2
+    return 1
+  fi
+  rm -f -- "$NGINX_CANDIDATE_RECOVERY"
   [ "$remove_empty_nginx_config" = 0 ] || rm -f -- "$NGINX_CONFIG"
   for name in $(service_names); do
     plist="$(service_plist_path "$name")"
     run_script="$(service_run_path "$name")"
-    launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
+    launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || {
+      echo "failed to boot out candidate service after rollback proof: $(service_label "$name"); retaining remaining candidate services" >&2
+      return 1
+    }
     if [ -f "$plist.performance-backup.$$" ]; then mv -f -- "$plist.performance-backup.$$" "$plist"; else rm -f -- "$plist"; fi
     if [ -f "$run_script.performance-backup.$$" ]; then mv -f -- "$run_script.performance-backup.$$" "$run_script"; else rm -f -- "$run_script"; fi
-    if [ -f "$STAGE_DIR/$name.was-loaded" ] && [ -f "$plist" ]; then launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1 || true; fi
+    if [ -f "$STAGE_DIR/$name.was-loaded" ] && [ -f "$plist" ]; then
+      launchctl bootstrap "$DOMAIN" "$plist" >/dev/null 2>&1 || {
+        echo "failed to restore previous candidate-slot service: $(service_label "$name")" >&2
+        return 1
+      }
+    fi
   done
 }
 
@@ -498,9 +574,9 @@ if [ -n "$DEPLOYMENT_LOCK_LIBRARY" ]; then
   assert_retired_watchdog_disabled
   acquire_deployment_lock "$BASE_DIR" "performance-topology-$SLOT"
 fi
-mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
+mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$AUDIT_BLOB_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
 if [ "$SCOPE" = system ]; then
-  chown "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"
+  chown "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$AUDIT_BLOB_DIR"
 fi
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/juhe-ai-performance.XXXXXX")"
 
@@ -531,11 +607,15 @@ for name in $(service_names); do
   launchctl kickstart -k "$DOMAIN/$(service_label "$name")"
 done
 for name in $(service_names); do wait_for_health "$name"; done
+for name in $(service_names); do
+  case "$name" in gateway-*) verify_model_catalog "http://127.0.0.1:$(service_port "$name")" ;; esac
+done
 
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
 nginx_test
 nginx_reload
 wait_for_ingress
+verify_model_catalog "http://127.0.0.1:$INGRESS_PORT"
 
 for name in $(service_names); do
   rm -f -- "$(service_plist_path "$name").performance-backup.$$" "$(service_run_path "$name").performance-backup.$$"
