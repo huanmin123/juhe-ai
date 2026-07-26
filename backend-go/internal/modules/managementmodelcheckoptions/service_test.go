@@ -23,7 +23,7 @@ func TestServiceOptionsMatchesNodeContract(t *testing.T) {
 	if !reflect.DeepEqual(gotModels, wantModels) {
 		t.Fatalf("supported models = %#v, want %#v", gotModels, wantModels)
 	}
-	if result.DefaultModel != wantModels[0] || result.DefaultProfile != "full" {
+	if result.DefaultModel != wantModels[0] || result.DefaultProfile != "quick" {
 		t.Fatalf("defaults = %q/%q", result.DefaultModel, result.DefaultProfile)
 	}
 	if len(result.SupportedProfiles) != 2 {

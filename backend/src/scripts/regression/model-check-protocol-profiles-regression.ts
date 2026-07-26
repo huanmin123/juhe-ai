@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
@@ -22,12 +23,40 @@ import {
 import { longContextProbeDefinitions, longContextProbeDefinitionsForModel } from '../../modules/model-checks/model-checks.probes.js'
 import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
 import {
+  defaultModel,
+  defaultProfile,
   findModelCheckProfileForAccountModel,
+  modelCheckProtocolProfiles,
+  modelCheckSourceEndpointFamilies,
   pairedModelForProfile,
   supportedModels
 } from '../../modules/model-checks/model-checks.profiles.js'
 import { hasFunctionCall } from '../../modules/model-checks/model-checks-parsing.js'
 import { estimateTokenCountFromText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
+
+const sharedGoContract = JSON.parse(readFileSync(new URL(
+  '../../../../backend-go/internal/modelcheckprofile/testdata/node-model-check-profile-contract.json',
+  import.meta.url
+), 'utf8')) as {
+  defaultModel: string
+  defaultProfile: string
+  profiles: Array<{
+    providerCode: string
+    profileIds: string[]
+    models: string[]
+    sourceEndpointFamilies: string[]
+  }>
+}
+assert.deepEqual({
+  defaultModel,
+  defaultProfile,
+  profiles: modelCheckProtocolProfiles.map((profile) => ({
+    providerCode: profile.providerCode,
+    profileIds: [...profile.providerProtocolProfileIds],
+    models: [...profile.models],
+    sourceEndpointFamilies: modelCheckSourceEndpointFamilies(profile)
+  }))
+}, sharedGoContract, 'Node/Go 模型检测 profile、模型、source family 与默认值必须共用同一契约')
 
 assert(supportedModels.includes('gpt-5.6-sol'), '应注册 GPT-5.6 Sol 完整模型 ID gpt-5.6-sol')
 assert(supportedModels.includes('gpt-5.6-terra'), '应注册 GPT-5.6 Terra 完整模型 ID gpt-5.6-terra')

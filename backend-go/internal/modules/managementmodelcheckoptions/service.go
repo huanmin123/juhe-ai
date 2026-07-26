@@ -1,20 +1,6 @@
 package managementmodelcheckoptions
 
-var supportedModels = [...]string{
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-5.6-luna",
-	"gpt-5.5",
-	"gpt-5.4",
-	"deepseek-v4-flash",
-	"deepseek-v4-pro",
-	"glm-5.2",
-	"glm-5.1",
-	"claude-opus-4-8",
-	"claude-opus-4-7",
-	"gemini-3.5-flash",
-	"gemini-3.1-pro-preview",
-}
+import "juhe-ai/backend-go/internal/modelcheckprofile"
 
 type Service struct{}
 
@@ -44,6 +30,7 @@ func NewService() *Service {
 }
 
 func (*Service) Options() Result {
+	supportedModels := modelcheckprofile.SupportedModels()
 	models := make([]Option, 0, len(supportedModels))
 	for _, model := range supportedModels {
 		models = append(models, Option{Value: model, Label: model})
@@ -62,8 +49,8 @@ func (*Service) Options() Result {
 				Description: "准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针",
 			},
 		},
-		DefaultModel:   supportedModels[0],
-		DefaultProfile: "full",
+		DefaultModel:   modelcheckprofile.DefaultModel,
+		DefaultProfile: modelcheckprofile.DefaultProfile,
 		TrustedComparison: TrustedComparison{
 			Available: true,
 			Message:   "可信对比默认关闭；选择一个你信任的可用 OpenAI Responses / OpenAI Chat Completions / Anthropic Messages / Gemini native 协议账户后，会额外消耗该账户额度",

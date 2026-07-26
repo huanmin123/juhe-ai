@@ -1,9 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"time"
@@ -11,12 +14,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/modelquality"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-const modelQualityEnforcementMaximumMessageBytes = 64 << 10
+const (
+	modelQualityEnforcementMaximumMessageBytes  = 64 << 10
+	modelQualityEnforcementMaximumSnapshotBytes = 64 << 10
+)
 
 type modelQualityEnforcementIDGenerator func() (string, error)
 
@@ -75,6 +82,16 @@ func applyModelQualityEnforcement(
 		before, after := account.Status, account.Status
 		return commitModelQualityEnforcementResult(ctx, tx, &committed, port.ModelQualityEnforcementApplyResult{
 			Status: status, BeforeStatus: &before, AfterStatus: &after, Enforcement: &prior,
+		})
+	}
+	runMatches, err := lockAndValidateModelQualityEnforcementRun(ctx, tx, input)
+	if err != nil {
+		return port.ModelQualityEnforcementApplyResult{}, err
+	}
+	if !runMatches {
+		before := account.Status
+		return commitModelQualityEnforcementResult(ctx, tx, &committed, port.ModelQualityEnforcementApplyResult{
+			Status: port.ModelQualityEnforcementStale, BeforeStatus: &before, AfterStatus: &before,
 		})
 	}
 
@@ -173,6 +190,255 @@ func applyModelQualityEnforcement(
 	})
 }
 
+type modelQualityEnforcementRunSnapshot struct {
+	PolicyRevision           modelquality.PolicyRevision
+	ConfigSource             port.ModelQualityConfigSource
+	Profile                  modelquality.Profile
+	ManualEnforcementEnabled bool
+	PenaltyThreshold         int
+	Action                   modelquality.Action
+	RecoveryInterval         time.Duration
+	ScheduleID               string
+	AccountConfigRevision    modelquality.AccountRevision
+}
+
+func lockAndValidateModelQualityEnforcementRun(
+	ctx context.Context,
+	tx pgx.Tx,
+	input port.ModelQualityEnforcementApplyInput,
+) (bool, error) {
+	var (
+		systemAccountID, targetType, targetID              string
+		model, profileRaw, triggerRaw, statusRaw           string
+		accountID, targetOwnerID, scheduleID, snapshotJSON pgtype.Text
+		snapshotBytes                                      int64
+	)
+	err := tx.QueryRow(ctx, lockModelQualityEnforcementRunSQL,
+		input.RunID, modelQualityEnforcementMaximumSnapshotBytes,
+	).Scan(
+		&systemAccountID, &accountID, &targetType, &targetID, &targetOwnerID,
+		&model, &profileRaw, &triggerRaw,
+		&scheduleID, &statusRaw, &snapshotJSON, &snapshotBytes,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock model quality enforcement run: %w", err)
+	}
+	if snapshotBytes < 1 || snapshotBytes > modelQualityEnforcementMaximumSnapshotBytes || !snapshotJSON.Valid {
+		return false, fmt.Errorf("persisted model quality enforcement policy snapshot exceeds its bounded contract")
+	}
+	if !validModelQualityScheduleText(systemAccountID, 256) || !validModelQualityScheduleText(model, 4096) {
+		return false, fmt.Errorf("persisted model quality enforcement run identity is invalid")
+	}
+	// account_id is nullable for legitimate group/API-key diagnostic runs. Such
+	// a run cannot authorize an account mutation, but it is not corrupt durable
+	// state and should resolve as stale instead of becoming a retrying error.
+	if !accountID.Valid {
+		return false, nil
+	}
+	if !validModelQualityScheduleText(accountID.String, 256) {
+		return false, fmt.Errorf("persisted model quality enforcement run account identity is invalid")
+	}
+	if !validModelQualityScheduleText(targetType, 64) || !validModelQualityScheduleText(targetID, 256) {
+		return false, fmt.Errorf("persisted model quality enforcement run target identity is invalid")
+	}
+	if targetOwnerID.Valid && !validModelQualityScheduleText(targetOwnerID.String, 256) {
+		return false, fmt.Errorf("persisted model quality enforcement run target owner is invalid")
+	}
+	profile := modelquality.Profile(profileRaw)
+	if profile != modelquality.ProfileQuick && profile != modelquality.ProfileFull {
+		return false, fmt.Errorf("persisted model quality enforcement run profile is invalid")
+	}
+	trigger := modelquality.Trigger(triggerRaw)
+	if trigger != modelquality.TriggerManual && trigger != modelquality.TriggerScheduled && trigger != modelquality.TriggerQualityRecovery {
+		return false, fmt.Errorf("persisted model quality enforcement run trigger is invalid")
+	}
+	status := modelquality.RunStatus(statusRaw)
+	if status != modelquality.RunStatusRunning && status != modelquality.RunStatusCompleted &&
+		status != modelquality.RunStatusFailed && status != modelquality.RunStatusCanceled {
+		return false, fmt.Errorf("persisted model quality enforcement run status is invalid")
+	}
+	if scheduleID.Valid && !validModelQualityScheduleText(scheduleID.String, 256) {
+		return false, fmt.Errorf("persisted model quality enforcement run schedule is invalid")
+	}
+	snapshot, err := decodeModelQualityEnforcementRunSnapshot(snapshotJSON.String)
+	if err != nil {
+		return false, fmt.Errorf("invalid persisted model quality enforcement policy snapshot: %w", err)
+	}
+	if snapshot.Profile != profile {
+		return false, fmt.Errorf("persisted model quality enforcement run profile conflicts with its policy snapshot")
+	}
+	if trigger == modelquality.TriggerManual {
+		if scheduleID.Valid || snapshot.ConfigSource != port.ModelQualityConfigSourceManual || snapshot.ScheduleID != "" {
+			return false, fmt.Errorf("persisted manual model quality enforcement run has a schedule source")
+		}
+	} else if trigger == modelquality.TriggerScheduled {
+		if !scheduleID.Valid || snapshot.ConfigSource != port.ModelQualityConfigSourceSchedule || snapshot.ScheduleID != scheduleID.String {
+			return false, fmt.Errorf("persisted scheduled model quality enforcement run source is inconsistent")
+		}
+	}
+	callerSource := modelQualityEnforcementConfigSource(input)
+	callerScheduleID := input.ScheduleID
+	return systemAccountID == input.SystemAccountID && accountID.String == input.AccountID &&
+		targetType == "account" && targetID == accountID.String && targetID == input.AccountID &&
+		targetOwnerID.Valid && targetOwnerID.String == input.SystemAccountID &&
+		model == input.RecoveryModel && profile == input.Profile && trigger == input.Trigger &&
+		status == modelquality.RunStatusCompleted && snapshot.ConfigSource == callerSource &&
+		snapshot.ScheduleID == callerScheduleID && snapshot.PolicyRevision == input.ExpectedPolicyRevision &&
+		snapshot.Profile == input.Profile && snapshot.PenaltyThreshold == input.PenaltyThreshold &&
+		snapshot.Action == input.Action && snapshot.RecoveryInterval == input.RecoveryInterval &&
+		snapshot.AccountConfigRevision == input.ExpectedAccountConfigRevision &&
+		(input.Trigger != modelquality.TriggerManual || snapshot.ManualEnforcementEnabled), nil
+}
+
+func decodeModelQualityEnforcementRunSnapshot(raw string) (modelQualityEnforcementRunSnapshot, error) {
+	fields, err := decodeUniqueModelQualityEnforcementSnapshotObject(raw)
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	policyRevision, err := requiredModelQualityEnforcementSnapshotInt(fields, "policyRevision", 0, math.MaxInt32)
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	configSourceRaw, err := requiredModelQualityEnforcementSnapshotString(fields, "configSource")
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	configSource := port.ModelQualityConfigSource(configSourceRaw)
+	if configSource != port.ModelQualityConfigSourceManual && configSource != port.ModelQualityConfigSourceSchedule {
+		return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("policy snapshot configSource is invalid")
+	}
+	profileRaw, err := requiredModelQualityEnforcementSnapshotString(fields, "profile")
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	profile := modelquality.Profile(profileRaw)
+	if profile != modelquality.ProfileQuick && profile != modelquality.ProfileFull {
+		return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("policy snapshot profile is invalid")
+	}
+	manualEnforcementEnabled, err := requiredModelQualityEnforcementSnapshotBool(fields, "manualEnforcementEnabled")
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	threshold, err := requiredModelQualityEnforcementSnapshotInt(fields, "threshold", 40, 100)
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	actionRaw, err := requiredModelQualityEnforcementSnapshotString(fields, "action")
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	action := modelquality.Action(actionRaw)
+	if action != modelquality.ActionDisable && action != modelquality.ActionFallback && action != modelquality.ActionQualityIsolate {
+		return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("policy snapshot action is invalid")
+	}
+	recoveryMinutes, err := requiredModelQualityEnforcementSnapshotInt(fields, "recoveryIntervalMinutes", 10, 10080)
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	accountRevision, err := requiredModelQualityEnforcementSnapshotInt(fields, "accountConfigRevision", 1, math.MaxInt32)
+	if err != nil {
+		return modelQualityEnforcementRunSnapshot{}, err
+	}
+	var scheduleID string
+	if value, ok := fields["scheduleId"]; ok && string(value) != "null" {
+		if err := json.Unmarshal(value, &scheduleID); err != nil || !validModelQualityScheduleText(scheduleID, 256) {
+			return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("policy snapshot scheduleId is invalid")
+		}
+	}
+	if configSource == port.ModelQualityConfigSourceManual && scheduleID != "" {
+		return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("manual policy snapshot cannot name a schedule")
+	}
+	if configSource == port.ModelQualityConfigSourceSchedule && scheduleID == "" {
+		return modelQualityEnforcementRunSnapshot{}, fmt.Errorf("scheduled policy snapshot requires a schedule")
+	}
+	return modelQualityEnforcementRunSnapshot{
+		PolicyRevision: modelquality.PolicyRevision(policyRevision), ConfigSource: configSource,
+		Profile: profile, ManualEnforcementEnabled: manualEnforcementEnabled,
+		PenaltyThreshold: threshold, Action: action,
+		RecoveryInterval: time.Duration(recoveryMinutes) * time.Minute, ScheduleID: scheduleID,
+		AccountConfigRevision: modelquality.AccountRevision(accountRevision),
+	}, nil
+}
+
+func decodeUniqueModelQualityEnforcementSnapshotObject(raw string) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewBufferString(raw))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		return nil, fmt.Errorf("policy snapshot must be a JSON object")
+	}
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, fmt.Errorf("policy snapshot field name must be a string")
+		}
+		if _, duplicate := fields[name]; duplicate {
+			return nil, fmt.Errorf("policy snapshot contains a duplicate top-level field")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[name] = value
+	}
+	token, err = decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok = token.(json.Delim)
+	if !ok || delim != '}' {
+		return nil, fmt.Errorf("policy snapshot object is not terminated")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("policy snapshot contains trailing data")
+	}
+	return fields, nil
+}
+
+func requiredModelQualityEnforcementSnapshotString(fields map[string]json.RawMessage, name string) (string, error) {
+	var value string
+	raw, ok := fields[name]
+	if !ok || json.Unmarshal(raw, &value) != nil || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
+		return "", fmt.Errorf("policy snapshot %s is invalid", name)
+	}
+	return value, nil
+}
+
+func requiredModelQualityEnforcementSnapshotInt(fields map[string]json.RawMessage, name string, minimum, maximum int64) (int, error) {
+	var value int64
+	raw, ok := fields[name]
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("policy snapshot %s is invalid", name)
+	}
+	return int(value), nil
+}
+
+func requiredModelQualityEnforcementSnapshotBool(fields map[string]json.RawMessage, name string) (bool, error) {
+	raw, ok := fields[name]
+	if !ok {
+		return false, fmt.Errorf("policy snapshot %s is invalid", name)
+	}
+	switch string(bytes.TrimSpace(raw)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("policy snapshot %s is invalid", name)
+	}
+}
+
 func lockModelQualityEnforcementAccount(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -185,7 +451,11 @@ func lockModelQualityEnforcementAccount(
 		fallbackEnabled, superPriority bool
 		notDeleted, ownPhysical        bool
 	)
-	err := tx.QueryRow(ctx, lockModelQualityEnforcementAccountSQL, input.AccountID).Scan(
+	lockSQL := lockModelQualityEnforcementAccountSQL
+	if input.Trigger == modelquality.TriggerManual {
+		lockSQL = lockManualModelQualityEnforcementAccountSQL
+	}
+	err := tx.QueryRow(ctx, lockSQL, input.AccountID, input.SystemAccountID).Scan(
 		&systemAccountID, &status, &configRevision, &fallbackEnabled, &superPriority, &notDeleted, &ownPhysical,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -289,7 +559,7 @@ func validateModelQualityEnforcementApplyInput(input port.ModelQualityEnforcemen
 
 func readModelQualityEnforcementConfiguration(ctx context.Context, tx pgx.Tx, input port.ModelQualityEnforcementApplyInput) (port.ModelQualityPolicyRecord, bool, error) {
 	if input.Trigger != modelquality.TriggerScheduled {
-		policy, err := readModelQualityPolicy(ctx, tx, input.SystemAccountID)
+		policy, err := readLockedModelQualityEnforcementPolicy(ctx, tx, input.SystemAccountID)
 		if err != nil {
 			return port.ModelQualityPolicyRecord{}, false, fmt.Errorf("read manual model quality enforcement policy: %w", err)
 		}
@@ -310,6 +580,24 @@ func readModelQualityEnforcementConfiguration(ctx context.Context, tx pgx.Tx, in
 		return port.ModelQualityPolicyRecord{}, false, fmt.Errorf("read scheduled model quality enforcement configuration: %w", err)
 	}
 	return modelQualitySchedulePolicy(schedule), schedule.Model == input.RecoveryModel, nil
+}
+
+func readLockedModelQualityEnforcementPolicy(
+	ctx context.Context,
+	tx pgx.Tx,
+	systemAccountID string,
+) (port.ModelQualityPolicyRecord, error) {
+	record, err := scanModelQualityPolicy(tx.QueryRow(ctx, lockModelQualityEnforcementPolicySQL, systemAccountID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ModelQualityPolicyRecord{
+			Policy:    modelquality.DefaultPolicy(systemAccountID),
+			Persisted: false,
+		}, nil
+	}
+	if err != nil {
+		return port.ModelQualityPolicyRecord{}, err
+	}
+	return record, nil
 }
 
 func modelQualityEnforcementConfigSource(input port.ModelQualityEnforcementApplyInput) port.ModelQualityConfigSource {

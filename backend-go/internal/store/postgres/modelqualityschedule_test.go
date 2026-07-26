@@ -19,6 +19,28 @@ import (
 
 func TestModelQualityScheduleSQLUsesLockedRowsAndOpaqueCompletionFence(t *testing.T) {
 	for _, fragment := range []string{
+		"accounts.provider_code",
+		"accounts.provider_protocol_profile_id",
+		"accounts.protocol_code",
+		"accounts.protocol_version",
+		"accounts.config_revision",
+		"FOR UPDATE OF accounts",
+	} {
+		if !strings.Contains(lockModelQualityScheduleAccountSQL, fragment) {
+			t.Fatalf("account lock SQL missing %q", fragment)
+		}
+	}
+	for name, sql := range map[string]string{
+		"supported models": listModelQualityScheduleSupportedModelsSQL,
+		"model mappings":   listModelQualityScheduleModelMappingsSQL,
+	} {
+		for _, fragment := range []string{"WHERE account_id = $1", "LIMIT $2"} {
+			if !strings.Contains(sql, fragment) {
+				t.Fatalf("%s SQL missing %q", name, fragment)
+			}
+		}
+	}
+	for _, fragment := range []string{
 		"FOR UPDATE OF mqs SKIP LOCKED",
 		"accounts.authorization_instance_authorization_id IS NULL",
 		"accounts.status = 'active'",
@@ -177,10 +199,15 @@ func TestCompleteModelQualityScheduleUsesAllFencesAndIgnoresCallerClock(t *testi
 func TestUpsertModelQualityScheduleReturnsLockedConflictWithoutWriting(t *testing.T) {
 	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
 	expected := modelquality.ScheduleRevision(3)
-	tx := &modelQualityScheduleTxStub{queryRowQueue: []pgx.Row{
-		modelQualityScheduleRowStub{values: []any{"account_1"}},
-		modelQualityScheduleRowStub{values: modelQualityScheduleRowValues("mqs_1", 4, 60, 1, now.Add(time.Hour), pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, now.Add(-time.Hour), now.Add(-time.Hour))},
-	}}
+	tx := &modelQualityScheduleTxStub{
+		queryRowsQueue: []pgx.Rows{
+			&modelQualityScheduleRowsStub{},
+			&modelQualityScheduleRowsStub{},
+		},
+		queryRowQueue: []pgx.Row{
+			modelQualityScheduleRowStub{values: modelQualityScheduleAccountRowValues()},
+			modelQualityScheduleRowStub{values: modelQualityScheduleRowValues("mqs_1", 4, 60, 1, now.Add(time.Hour), pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, now.Add(-time.Hour), now.Add(-time.Hour))},
+		}}
 	result, err := upsertModelQualitySchedule(
 		context.Background(),
 		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
@@ -189,6 +216,112 @@ func TestUpsertModelQualityScheduleReturnsLockedConflictWithoutWriting(t *testin
 	)
 	if err != nil || result.Status != port.ModelQualityScheduleConflict || result.Schedule == nil || result.Schedule.Revision != 4 || len(tx.execCalls) != 0 || tx.commitCalls != 1 {
 		t.Fatalf("result=%+v error=%v exec=%d commit=%d", result, err, len(tx.execCalls), tx.commitCalls)
+	}
+}
+
+func TestUpsertModelQualityScheduleAcceptsMappedConfiguredModel(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	supportedRows := &modelQualityScheduleRowsStub{rows: [][]any{{" upstream-model "}}}
+	mappingRows := &modelQualityScheduleRowsStub{rows: [][]any{{
+		"gpt-5.6-sol", "responses", "upstream-model", "chat_completions", true,
+	}}}
+	tx := &modelQualityScheduleTxStub{
+		queryRowsQueue: []pgx.Rows{supportedRows, mappingRows},
+		queryRowQueue: []pgx.Row{
+			modelQualityScheduleRowStub{values: modelQualityScheduleAccountRowValues()},
+			modelQualityScheduleRowStub{err: pgx.ErrNoRows},
+			modelQualityScheduleRowStub{values: modelQualityScheduleRowValues(
+				"mqs_new", 1, 60, 1, now.Add(time.Hour),
+				pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{},
+				now, now,
+			)},
+		},
+	}
+	input := modelQualityScheduleUpsertTestInput(now, nil)
+	result, err := upsertModelQualitySchedule(
+		context.Background(),
+		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+		input,
+		func(string) (string, error) { return "mqs_new", nil },
+	)
+	if err != nil || result.Status != port.ModelQualityScheduleWritten || result.Schedule == nil || result.Schedule.Model != input.Model {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 0 || !supportedRows.closed || !mappingRows.closed {
+		t.Fatalf("commit/rollback/exec/closed=%d/%d/%d/%t/%t", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls), supportedRows.closed, mappingRows.closed)
+	}
+	if len(tx.queryCalls) != 5 {
+		t.Fatalf("query calls = %d, want account + models + mappings + schedule + insert", len(tx.queryCalls))
+	}
+}
+
+func TestUpsertModelQualityScheduleRejectsUnsupportedModelBeforeScheduleWrite(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	tx := &modelQualityScheduleTxStub{
+		queryRowsQueue: []pgx.Rows{
+			&modelQualityScheduleRowsStub{rows: [][]any{{"gpt-5.4"}}},
+			&modelQualityScheduleRowsStub{},
+		},
+		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: modelQualityScheduleAccountRowValues()}},
+	}
+	result, err := upsertModelQualitySchedule(
+		context.Background(),
+		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+		modelQualityScheduleUpsertTestInput(now, nil),
+		func(string) (string, error) { return "mqs_new", nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "账户模型限制或供应商协议不支持定时检查模型 gpt-5.6-sol；可选模型：gpt-5.4") {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if tx.commitCalls != 0 || tx.rollbackCalls != 1 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 3 {
+		t.Fatalf("commit/rollback/exec/query=%d/%d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls), len(tx.queryCalls))
+	}
+}
+
+func TestUpsertModelQualityScheduleFailsClosedOnOverflowOrInvalidModelFacts(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	overflowRows := make([][]any, modelQualityScheduleMaximumAccountModelFacts+1)
+	for index := range overflowRows {
+		overflowRows[index] = []any{"gpt-model"}
+	}
+	tests := []struct {
+		name      string
+		rows      []pgx.Rows
+		wantError string
+	}{
+		{
+			name:      "supported model overflow",
+			rows:      []pgx.Rows{&modelQualityScheduleRowsStub{rows: overflowRows}},
+			wantError: "supported models exceed 500 rows",
+		},
+		{
+			name: "invalid mapping family",
+			rows: []pgx.Rows{
+				&modelQualityScheduleRowsStub{rows: [][]any{{"upstream-model"}}},
+				&modelQualityScheduleRowsStub{rows: [][]any{{"gpt-5.6-sol", "unknown", "upstream-model", "chat_completions", true}}},
+			},
+			wantError: "invalid persisted model quality schedule model mapping",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := &modelQualityScheduleTxStub{
+				queryRowsQueue: tt.rows,
+				queryRowQueue:  []pgx.Row{modelQualityScheduleRowStub{values: modelQualityScheduleAccountRowValues()}},
+			}
+			_, err := upsertModelQualitySchedule(
+				context.Background(),
+				func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+				modelQualityScheduleUpsertTestInput(now, nil),
+				func(string) (string, error) { return "mqs_new", nil },
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error=%v, want %q", err, tt.wantError)
+			}
+			if tx.commitCalls != 0 || tx.rollbackCalls != 1 || len(tx.execCalls) != 0 {
+				t.Fatalf("commit/rollback/exec=%d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls))
+			}
+		})
 	}
 }
 
@@ -274,7 +407,7 @@ func modelQualityScheduleRowValues(
 	tail ...any,
 ) []any {
 	values := []any{
-		id, "sys_admin", "account_1", "gpt-5", intervalMinutes,
+		id, "sys_admin", "account_1", "gpt-5.6-sol", intervalMinutes,
 		"full", int64(80), "quality_isolate", int64(30), enabled, revision,
 		modelQualityPolicyTimeText(nextRun), lastRunID, lastRunAt, lastRunStatus,
 		leaseOwner, leaseToken, leaseUntil,
@@ -283,9 +416,20 @@ func modelQualityScheduleRowValues(
 	return append(values, tail...)
 }
 
+func modelQualityScheduleAccountRowValues() []any {
+	return []any{
+		"account_1",
+		"gpt",
+		"profile_gpt_openai_v1",
+		"openai",
+		"v1",
+		int64(9),
+	}
+}
+
 func modelQualityScheduleUpsertTestInput(now time.Time, expected *modelquality.ScheduleRevision) port.ModelQualityScheduleUpsertInput {
 	return port.ModelQualityScheduleUpsertInput{
-		SystemAccountID: "sys_admin", AccountID: "account_1", Model: "gpt-5",
+		SystemAccountID: "sys_admin", AccountID: "account_1", Model: "gpt-5.6-sol",
 		Interval: time.Hour, Profile: modelquality.ProfileFull, PenaltyThreshold: 80,
 		PenaltyAction: modelquality.ActionQualityIsolate, RecoveryInterval: 30 * time.Minute,
 		Enabled: true, ExpectedRevision: expected, UpdatedAt: now,
@@ -299,19 +443,25 @@ type modelQualityScheduleQueryCall struct {
 
 type modelQualityScheduleTxStub struct {
 	pgx.Tx
-	queryRows     pgx.Rows
-	queryRowsErr  error
-	queryRowQueue []pgx.Row
-	execTags      []pgconn.CommandTag
-	execErrs      []error
-	queryCalls    []modelQualityScheduleQueryCall
-	execCalls     []modelQualityScheduleQueryCall
-	commitCalls   int
-	rollbackCalls int
+	queryRows      pgx.Rows
+	queryRowsQueue []pgx.Rows
+	queryRowsErr   error
+	queryRowQueue  []pgx.Row
+	execTags       []pgconn.CommandTag
+	execErrs       []error
+	queryCalls     []modelQualityScheduleQueryCall
+	execCalls      []modelQualityScheduleQueryCall
+	commitCalls    int
+	rollbackCalls  int
 }
 
 func (s *modelQualityScheduleTxStub) Query(_ context.Context, query string, args ...any) (pgx.Rows, error) {
 	s.queryCalls = append(s.queryCalls, modelQualityScheduleQueryCall{query: query, args: args})
+	if len(s.queryRowsQueue) > 0 {
+		rows := s.queryRowsQueue[0]
+		s.queryRowsQueue = s.queryRowsQueue[1:]
+		return rows, nil
+	}
 	return s.queryRows, s.queryRowsErr
 }
 
@@ -400,6 +550,8 @@ func assignModelQualityScheduleScan(dest []any, values []any) error {
 			*target = value.(int64)
 		case *pgtype.Text:
 			*target = value.(pgtype.Text)
+		case *bool:
+			*target = value.(bool)
 		default:
 			return errors.New("unexpected scan destination")
 		}

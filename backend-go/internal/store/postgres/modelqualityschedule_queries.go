@@ -18,7 +18,13 @@ next_run_at, last_run_id, last_run_at, last_run_status,
 lease_owner, lease_token, lease_until, created_at, updated_at`
 
 const lockModelQualityScheduleAccountSQL = `
-SELECT accounts.id
+SELECT
+  accounts.id,
+  accounts.provider_code,
+  accounts.provider_protocol_profile_id,
+  accounts.protocol_code,
+  accounts.protocol_version,
+  accounts.config_revision
 FROM juhe_business.accounts AS accounts
 WHERE accounts.id = $1
   AND accounts.system_account_id = $2
@@ -26,6 +32,25 @@ WHERE accounts.id = $1
   AND accounts.authorization_instance_authorization_id IS NULL
 LIMIT 1
 FOR UPDATE OF accounts`
+
+const listModelQualityScheduleSupportedModelsSQL = `
+SELECT model
+FROM juhe_business.account_supported_models
+WHERE account_id = $1
+ORDER BY model ASC
+LIMIT $2`
+
+const listModelQualityScheduleModelMappingsSQL = `
+SELECT
+  source_model,
+  source_endpoint_family,
+  upstream_model,
+  upstream_endpoint_family,
+  enabled
+FROM juhe_business.account_model_mappings
+WHERE account_id = $1
+ORDER BY source_model ASC, source_endpoint_family ASC
+LIMIT $2`
 
 const lockModelQualityScheduleByScopeSQL = `
 SELECT ` + modelQualityScheduleColumns + `

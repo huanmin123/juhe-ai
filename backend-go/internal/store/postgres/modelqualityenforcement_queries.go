@@ -11,6 +11,30 @@ SELECT
   accounts.authorization_instance_authorization_id IS NULL AS own_physical
 FROM juhe_business.accounts AS accounts
 WHERE accounts.id = $1
+  AND accounts.system_account_id = $2
+LIMIT 1
+FOR UPDATE OF accounts`
+
+const lockManualModelQualityEnforcementAccountSQL = `
+WITH locked_owner AS MATERIALIZED (
+  SELECT id
+  FROM juhe_business.system_accounts
+  WHERE id = $2
+  LIMIT 1
+  FOR UPDATE
+)
+SELECT
+  accounts.system_account_id,
+  accounts.status,
+  accounts.config_revision,
+  accounts.fallback_enabled,
+  accounts.super_priority_enabled,
+  accounts.deleted_at IS NULL AS not_deleted,
+  accounts.authorization_instance_authorization_id IS NULL AS own_physical
+FROM juhe_business.accounts AS accounts
+JOIN locked_owner ON locked_owner.id = accounts.system_account_id
+WHERE accounts.id = $1
+  AND accounts.system_account_id = $2
 LIMIT 1
 FOR UPDATE OF accounts`
 
@@ -27,6 +51,40 @@ FROM juhe_business.account_quality_enforcements AS aqe
 WHERE aqe.account_id = $1
 LIMIT 1
 FOR UPDATE`
+
+// The run is locked after the account and prior enforcement generation. This
+// keeps the cross-schema lock order deterministic while preventing retention
+// or a late run rewrite from changing the durable fact used by a new penalty.
+// The CASE keeps an oversized legacy JSON value out of the Go process; its
+// byte length is still returned so the adapter can fail closed explicitly.
+const lockModelQualityEnforcementRunSQL = `
+SELECT
+  runs.system_account_id,
+  runs.account_id,
+  runs.target_type,
+  runs.target_id,
+  runs.target_owner_system_account_id,
+  runs.model,
+  runs.profile,
+  runs.trigger_kind,
+  runs.schedule_id,
+  runs.status,
+  CASE
+    WHEN OCTET_LENGTH(runs.policy_snapshot_json) BETWEEN 1 AND $2
+      THEN runs.policy_snapshot_json
+    ELSE NULL
+  END AS bounded_policy_snapshot_json,
+  OCTET_LENGTH(runs.policy_snapshot_json) AS policy_snapshot_bytes
+FROM juhe_dataset.model_check_runs AS runs
+WHERE runs.id = $1
+LIMIT 1
+FOR SHARE OF runs`
+
+const lockModelQualityEnforcementPolicySQL = `
+SELECT ` + modelQualityPolicyColumns + `
+FROM juhe_business.model_quality_policies
+WHERE system_account_id = $1
+FOR SHARE`
 
 // modelQualityEnforcementConfigFenceSQL is shared by the account mutation and
 // generation write. Manual runs fence the current manual policy; scheduled

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"juhe-ai/backend-go/internal/modelcheckprofile"
 	"juhe-ai/backend-go/internal/modelquality"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -26,9 +27,15 @@ type modelQualityScheduleExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+type modelQualityScheduleQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 type modelQualityScheduleScanner interface {
 	Scan(...any) error
 }
+
+const modelQualityScheduleMaximumAccountModelFacts = 500
 
 func (s *Store) UpsertModelQualitySchedule(ctx context.Context, input port.ModelQualityScheduleUpsertInput) (port.ModelQualityScheduleWriteResult, error) {
 	return upsertModelQualitySchedule(ctx, s.pool.BeginTx, input, func(prefix string) (string, error) {
@@ -59,13 +66,54 @@ func upsertModelQualitySchedule(
 	committed := false
 	defer rollbackModelQualityScheduleTx(tx, &committed)()
 
-	var accountID string
-	err = tx.QueryRow(ctx, lockModelQualityScheduleAccountSQL, input.AccountID, input.SystemAccountID).Scan(&accountID)
+	var (
+		accountID, providerCode, providerProfileID string
+		protocolCode, protocolVersion              string
+		accountRevision                            int64
+	)
+	err = tx.QueryRow(ctx, lockModelQualityScheduleAccountSQL, input.AccountID, input.SystemAccountID).Scan(
+		&accountID,
+		&providerCode,
+		&providerProfileID,
+		&protocolCode,
+		&protocolVersion,
+		&accountRevision,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.ModelQualityScheduleWriteResult{Status: port.ModelQualityScheduleMissing}, nil
 	}
 	if err != nil {
 		return port.ModelQualityScheduleWriteResult{}, fmt.Errorf("lock model quality schedule account: %w", err)
+	}
+	if !validModelQualityScheduleAccountFacts(accountID, providerCode, providerProfileID, protocolCode, protocolVersion, accountRevision) {
+		return port.ModelQualityScheduleWriteResult{}, fmt.Errorf("invalid persisted model quality schedule account facts")
+	}
+	supportedModels, err := readModelQualityScheduleSupportedModels(ctx, tx, accountID)
+	if err != nil {
+		return port.ModelQualityScheduleWriteResult{}, err
+	}
+	modelMappings, err := readModelQualityScheduleModelMappings(ctx, tx, accountID)
+	if err != nil {
+		return port.ModelQualityScheduleWriteResult{}, err
+	}
+	allowedModels := modelcheckprofile.ConfiguredModels(modelcheckprofile.Account{
+		ProviderCode:              providerCode,
+		ProviderProtocolProfileID: providerProfileID,
+		ProtocolCode:              protocolCode,
+		ProtocolVersion:           protocolVersion,
+		SupportedModels:           supportedModels,
+		ModelMappings:             modelMappings,
+	})
+	if !modelQualityScheduleContainsExact(allowedModels, input.Model) {
+		allowedModelText := ""
+		if len(allowedModels) != 0 {
+			allowedModelText = "；可选模型：" + strings.Join(allowedModels, "、")
+		}
+		return port.ModelQualityScheduleWriteResult{}, fmt.Errorf(
+			"账户模型限制或供应商协议不支持定时检查模型 %s%s",
+			input.Model,
+			allowedModelText,
+		)
 	}
 
 	existing, found, err := findLockedModelQualitySchedule(ctx, tx, lockModelQualityScheduleByScopeSQL, input.SystemAccountID, input.AccountID)
@@ -443,6 +491,129 @@ func validateModelQualityScheduleUpsertInput(input port.ModelQualityScheduleUpse
 		return fmt.Errorf("model quality schedule expected revision is outside PostgreSQL INTEGER range")
 	}
 	return nil
+}
+
+func readModelQualityScheduleSupportedModels(
+	ctx context.Context,
+	q modelQualityScheduleQueryer,
+	accountID string,
+) ([]string, error) {
+	rows, err := q.Query(
+		ctx,
+		listModelQualityScheduleSupportedModelsSQL,
+		accountID,
+		modelQualityScheduleMaximumAccountModelFacts+1,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list model quality schedule supported models: %w", err)
+	}
+	defer rows.Close()
+
+	models := make([]string, 0, 16)
+	for rows.Next() {
+		if len(models) >= modelQualityScheduleMaximumAccountModelFacts {
+			return nil, fmt.Errorf("model quality schedule supported models exceed %d rows", modelQualityScheduleMaximumAccountModelFacts)
+		}
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, fmt.Errorf("scan model quality schedule supported model: %w", err)
+		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if !validModelQualityScheduleText(model, 4096) {
+			return nil, fmt.Errorf("invalid persisted model quality schedule supported model")
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model quality schedule supported models: %w", err)
+	}
+	return models, nil
+}
+
+func readModelQualityScheduleModelMappings(
+	ctx context.Context,
+	q modelQualityScheduleQueryer,
+	accountID string,
+) ([]modelcheckprofile.ModelMapping, error) {
+	rows, err := q.Query(
+		ctx,
+		listModelQualityScheduleModelMappingsSQL,
+		accountID,
+		modelQualityScheduleMaximumAccountModelFacts+1,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list model quality schedule model mappings: %w", err)
+	}
+	defer rows.Close()
+
+	mappings := make([]modelcheckprofile.ModelMapping, 0, 16)
+	for rows.Next() {
+		if len(mappings) >= modelQualityScheduleMaximumAccountModelFacts {
+			return nil, fmt.Errorf("model quality schedule model mappings exceed %d rows", modelQualityScheduleMaximumAccountModelFacts)
+		}
+		var (
+			sourceModel, sourceFamily     string
+			upstreamModel, upstreamFamily string
+			enabled                       bool
+		)
+		if err := rows.Scan(&sourceModel, &sourceFamily, &upstreamModel, &upstreamFamily, &enabled); err != nil {
+			return nil, fmt.Errorf("scan model quality schedule model mapping: %w", err)
+		}
+		if !validModelQualityScheduleText(sourceModel, 4096) ||
+			!validModelQualityScheduleText(upstreamModel, 4096) ||
+			!validModelQualityScheduleSourceEndpointFamily(sourceFamily) ||
+			!validModelQualityScheduleUpstreamEndpointFamily(upstreamFamily) {
+			return nil, fmt.Errorf("invalid persisted model quality schedule model mapping")
+		}
+		mappings = append(mappings, modelcheckprofile.ModelMapping{
+			SourceModel:            sourceModel,
+			SourceEndpointFamily:   modelcheckprofileEndpointFamily(sourceFamily),
+			UpstreamModel:          upstreamModel,
+			UpstreamEndpointFamily: modelcheckprofileEndpointFamily(upstreamFamily),
+			Enabled:                enabled,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model quality schedule model mappings: %w", err)
+	}
+	return mappings, nil
+}
+
+func validModelQualityScheduleAccountFacts(
+	accountID, providerCode, providerProfileID, protocolCode, protocolVersion string,
+	accountRevision int64,
+) bool {
+	return validModelQualityScheduleText(accountID, 256) &&
+		validModelQualityScheduleText(providerCode, 256) &&
+		validModelQualityScheduleText(providerProfileID, 256) &&
+		validModelQualityScheduleText(protocolCode, 256) &&
+		validModelQualityScheduleText(protocolVersion, 256) &&
+		accountRevision >= 1 && accountRevision <= math.MaxInt32
+}
+
+func validModelQualityScheduleSourceEndpointFamily(value string) bool {
+	return value == "chat_completions" || value == "responses" || value == "messages" ||
+		value == "generate_content" || value == "stream_generate_content"
+}
+
+func validModelQualityScheduleUpstreamEndpointFamily(value string) bool {
+	return value == "chat_completions" || value == "responses" || value == "messages" || value == "generate_content"
+}
+
+func modelcheckprofileEndpointFamily(value string) modelcheckprofile.EndpointFamily {
+	return modelcheckprofile.EndpointFamily(value)
+}
+
+func modelQualityScheduleContainsExact(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func modelQualitySchedulePolicy(schedule port.ModelQualitySchedule) port.ModelQualityPolicyRecord {
