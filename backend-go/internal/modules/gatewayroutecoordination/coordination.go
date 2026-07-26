@@ -36,6 +36,16 @@ type Plan struct {
 	StateAdvanced bool
 }
 
+// SharedState is the complete serializable state needed for one route scope.
+// A future shared-store adapter must atomically load this value, call Advance,
+// and persist Next only when Plan.StateAdvanced is true. Revision mismatch
+// deliberately resets both sequence and smooth-weight debt.
+type SharedState struct {
+	Revision string
+	Sequence int64
+	Weighted map[string]int
+}
+
 type Coordinator interface {
 	Plan(context.Context, Snapshot) (Plan, error)
 }
@@ -45,60 +55,64 @@ type Coordinator interface {
 // must provide a shared Store rather than silently using this implementation.
 type MemoryStore struct {
 	mu     sync.Mutex
-	states map[string]state
-}
-
-type state struct {
-	sequence int64
-	weighted map[string]int
+	states map[string]SharedState
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{states: make(map[string]state)}
+	return &MemoryStore{states: make(map[string]SharedState)}
 }
 
 func (s *MemoryStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error) {
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
-	revision, err := Revision(snapshot)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	scopeKey := snapshot.Scope.SystemAccountID + "\x00" + snapshot.Scope.RouteStrategyID
+	plan, next, err := Advance(snapshot, s.states[scopeKey])
 	if err != nil {
 		return Plan{}, err
 	}
+	if plan.StateAdvanced {
+		s.states[scopeKey] = cloneSharedState(next)
+	} else {
+		delete(s.states, scopeKey)
+	}
+	return plan, nil
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	scopeKey := snapshot.Scope.SystemAccountID + "\x00" + snapshot.Scope.RouteStrategyID + "\x00"
-	key := scopeKey + revision
-	current := s.states[key]
+// Advance is the side-effect-free shared-state transition. It is intentionally
+// separate from MemoryStore so a future Redis Lua/CAS adapter can use the same
+// revision fence and smooth weighted behavior without reimplementing routing.
+func Advance(snapshot Snapshot, current SharedState) (Plan, SharedState, error) {
+	revision, err := Revision(snapshot)
+	if err != nil {
+		return Plan{}, SharedState{}, err
+	}
+	next := SharedState{Revision: revision}
+	if current.Revision == revision {
+		next.Sequence = current.Sequence
+		next.Weighted = cloneState(current.Weighted)
+	}
 	input := gatewayrouting.OrderInput{Mode: snapshot.Mode, Bindings: cloneBindings(snapshot.Bindings)}
 	advanced := false
 	switch snapshot.Mode {
 	case gatewayrouting.ModeRoundRobin:
-		input.Sequence = current.sequence
+		input.Sequence = next.Sequence
+		next.Sequence++
 		advanced = true
 	case gatewayrouting.ModeWeighted:
-		input.WeightedState = cloneState(current.weighted)
+		input.WeightedState = cloneState(next.Weighted)
 		advanced = true
 	}
 	ordered, err := gatewayrouting.OrderBindings(input)
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, SharedState{}, err
 	}
-	if advanced {
-		for oldKey := range s.states {
-			if strings.HasPrefix(oldKey, scopeKey) && oldKey != key {
-				delete(s.states, oldKey)
-			}
-		}
-		if snapshot.Mode == gatewayrouting.ModeRoundRobin {
-			current.sequence++
-		} else {
-			current.weighted = cloneState(ordered.NextWeightedState)
-		}
-		s.states[key] = current
+	if snapshot.Mode == gatewayrouting.ModeWeighted {
+		next.Weighted = cloneState(ordered.NextWeightedState)
 	}
-	return Plan{Scope: snapshot.Scope, Revision: revision, Mode: snapshot.Mode, Ordered: cloneBindings(ordered.Bindings), StateAdvanced: advanced}, nil
+	return Plan{Scope: snapshot.Scope, Revision: revision, Mode: snapshot.Mode, Ordered: cloneBindings(ordered.Bindings), StateAdvanced: advanced}, next, nil
 }
 
 // Revision is a semantic SHA-256 fingerprint of the complete route snapshot.
@@ -184,4 +198,8 @@ func cloneState(input map[string]int) map[string]int {
 		result[key] = value
 	}
 	return result
+}
+
+func cloneSharedState(input SharedState) SharedState {
+	return SharedState{Revision: input.Revision, Sequence: input.Sequence, Weighted: cloneState(input.Weighted)}
 }

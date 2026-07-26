@@ -61,6 +61,44 @@ func TestMemoryStoreWeightedIsConcurrencySafe(t *testing.T) {
 	}
 }
 
+func TestAdvanceResetsStateOnRevisionChange(t *testing.T) {
+	t.Parallel()
+	snapshot := testSnapshot(gatewayrouting.ModeRoundRobin, 1, 1)
+	plan, next, err := Advance(snapshot, SharedState{Revision: "stale", Sequence: 7, Weighted: map[string]int{"a": 99}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := bindingIDs(plan.Ordered), []string{"a", "b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("stale plan = %v, want %v", got, want)
+	}
+	if !plan.StateAdvanced || next.Revision != plan.Revision || next.Sequence != 1 || next.Weighted != nil {
+		t.Fatalf("next state = %#v, plan = %#v", next, plan)
+	}
+
+	plan, next, err = Advance(snapshot, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := bindingIDs(plan.Ordered), []string{"b", "a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("next plan = %v, want %v", got, want)
+	}
+	if next.Sequence != 2 {
+		t.Fatalf("next sequence = %d, want 2", next.Sequence)
+	}
+}
+
+func TestAdvanceDoesNotAdvancePassThroughModes(t *testing.T) {
+	t.Parallel()
+	snapshot := testSnapshot(gatewayrouting.ModeNormal, 1, 1)
+	plan, next, err := Advance(snapshot, SharedState{Revision: "stale", Sequence: 7, Weighted: map[string]int{"a": 99}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StateAdvanced || next.Sequence != 0 || next.Weighted != nil || next.Revision != plan.Revision {
+		t.Fatalf("pass-through state = %#v, plan = %#v", next, plan)
+	}
+}
+
 func TestRevisionIsOrderStableButChangesWithSemantics(t *testing.T) {
 	t.Parallel()
 	base := testSnapshot(gatewayrouting.ModeWeighted, 2, 1)
