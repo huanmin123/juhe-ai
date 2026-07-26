@@ -2,12 +2,16 @@ package gatewayattemptloop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"juhe-ai/backend-go/internal/gatewayaudit"
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
@@ -45,10 +49,12 @@ type Attempt struct {
 	Candidate          gatewaycandidatewindow.Candidate
 	APIKeyIndex        int
 	HasAlternativeKeys bool
+	StartedAt          time.Time
 	Budget             AttemptBudget
 	PolicySettings     PolicySettings
 	PolicyNow          time.Time
 	ReplayAllowed      bool
+	OnFirstByte        func(time.Time)
 }
 
 type AttemptResult struct {
@@ -64,6 +70,43 @@ type AttemptResult struct {
 
 type AttemptExecutor interface {
 	Execute(context.Context, Attempt) (AttemptResult, error)
+}
+
+// AttemptObservation is the deliberately redacted value exposed to an
+// observation sink. ModelBucket is a SHA-256-derived bucket, never the raw
+// requested model; it and the remaining scope hints can build a future
+// hot-quality scope without exposing Candidate or CredentialSet.
+type AttemptObservation struct {
+	ID              string
+	AttemptIndex    int
+	CandidateIndex  int
+	APIKeyIndex     int
+	AccountRuntime  string
+	ProtocolProfile string
+	RequestLane     string
+	ModelBucket     string
+	StartedAt       time.Time
+}
+
+type AttemptTerminalObservation struct {
+	Valid              bool
+	Success            bool
+	Committed          bool
+	RetryAllowed       bool
+	StatusCode         int
+	ErrorCode          string
+	FailureAttribution gatewayusage.FailureAttribution
+	CompletedAt        time.Time
+}
+
+// AttemptObserver is an opt-in, best-effort observation seam. It receives one
+// Start and one Terminal per actual executor call; FirstByte is emitted only
+// after a downstream write makes a transport byte visible. It receives only
+// redacted facts and owns no retry or policy decision.
+type AttemptObserver interface {
+	Start(context.Context, AttemptObservation)
+	FirstByte(context.Context, AttemptObservation, time.Time)
+	Terminal(context.Context, AttemptObservation, AttemptTerminalObservation)
 }
 
 type PolicyMutation struct {
@@ -123,6 +166,7 @@ type Input struct {
 	Request    protocolgateway.RequestShape
 	Profile    *protocolgateway.Profile
 	Tracker    *AttemptTracker
+	Observer   AttemptObserver
 }
 
 type Result struct {
@@ -237,12 +281,28 @@ func (s *Service) Run(input Input) (Result, error) {
 			attempt := Attempt{
 				Index: attemptIndex, CandidateIndex: candidateIndex, Candidate: candidate,
 				APIKeyIndex: keyIndex, HasAlternativeKeys: hasClaimableKey(tracker, candidate, keyIndices[keyOffset+1:], input.Request),
+				StartedAt:      attemptStartedAt,
 				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout, FirstByteDeadline: firstByteDeadline},
 				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: replayPolicy.Allowed,
 			}
+			var observation AttemptObservation
+			if input.Observer != nil {
+				observation = newAttemptObservation(attempt, input.Request)
+				var firstByteOnce sync.Once
+				attempt.OnFirstByte = func(observedAt time.Time) {
+					firstByteOnce.Do(func() { observeFirstByte(input.Observer, ctx, observation, observedAt) })
+				}
+				observeStart(input.Observer, ctx, observation)
+			}
 			attemptResult, attemptErr := s.executor.Execute(ctx, attempt)
 			if validationErr := validateAttemptResult(attemptResult, attemptErr); validationErr != nil {
+				if input.Observer != nil {
+					observeTerminal(input.Observer, ctx, observation, invalidTerminalObservation())
+				}
 				return Result{}, validationErr
+			}
+			if input.Observer != nil {
+				observeTerminal(input.Observer, ctx, observation, terminalObservation(attemptResult))
 			}
 			if !replayPolicy.Allowed {
 				attemptResult.RetryAllowed = false
@@ -325,6 +385,85 @@ func (s *Service) Run(input Input) (Result, error) {
 		return s.finish(result, OutcomeMaxAttempts, result.LastAttempt, nil), nil
 	}
 	return s.finish(result, OutcomeCandidatesExhausted, result.LastAttempt, nil), nil
+}
+
+func observeStart(observer AttemptObserver, ctx context.Context, observation AttemptObservation) {
+	defer func() { _ = recover() }()
+	observer.Start(ctx, observation)
+}
+
+func observeFirstByte(observer AttemptObserver, ctx context.Context, observation AttemptObservation, observedAt time.Time) {
+	defer func() { _ = recover() }()
+	observer.FirstByte(ctx, observation, observedAt)
+}
+
+func observeTerminal(observer AttemptObserver, ctx context.Context, observation AttemptObservation, terminal AttemptTerminalObservation) {
+	defer func() { _ = recover() }()
+	observer.Terminal(ctx, observation, terminal)
+}
+
+func newAttemptObservation(attempt Attempt, request protocolgateway.RequestShape) AttemptObservation {
+	return AttemptObservation{
+		ID:              "hotq:" + uuid.NewString(),
+		AttemptIndex:    attempt.Index,
+		CandidateIndex:  attempt.CandidateIndex,
+		APIKeyIndex:     attempt.APIKeyIndex,
+		AccountRuntime:  runtimeKey(attempt.Candidate),
+		ProtocolProfile: protocolProfile(attempt.Candidate),
+		RequestLane:     requestLane(request),
+		ModelBucket:     modelBucket(request.Model),
+		StartedAt:       attempt.StartedAt.UTC(),
+	}
+}
+
+func terminalObservation(result AttemptResult) AttemptTerminalObservation {
+	completedAt := result.Usage.CompletedAt.UTC()
+	return AttemptTerminalObservation{
+		Valid:   true,
+		Success: result.Success, Committed: result.Committed, RetryAllowed: result.RetryAllowed,
+		StatusCode: result.Failure.StatusCode, ErrorCode: boundedText(result.Failure.ErrorCode, 256),
+		FailureAttribution: result.Usage.FailureAttribution, CompletedAt: completedAt,
+	}
+}
+
+func invalidTerminalObservation() AttemptTerminalObservation {
+	return AttemptTerminalObservation{ErrorCode: "invalid_attempt_result"}
+}
+
+func protocolProfile(candidate gatewaycandidatewindow.Candidate) string {
+	projection := candidate.Projection
+	for _, value := range []string{projection.ResourceProviderProtocolProfileID, projection.ProviderProtocolProfileID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	code, version := strings.TrimSpace(projection.ResourceProtocolCode), strings.TrimSpace(projection.ResourceProtocolVersion)
+	if code == "" {
+		code, version = strings.TrimSpace(projection.ProtocolCode), strings.TrimSpace(projection.ProtocolVersion)
+	}
+	if code == "" {
+		return "unknown"
+	}
+	if version == "" {
+		return code
+	}
+	return code + ":" + version
+}
+
+func requestLane(request protocolgateway.RequestShape) string {
+	if request.ImageGenerationHint {
+		return "image"
+	}
+	return "text"
+}
+
+func modelBucket(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "unknown"
+	}
+	sum := sha256.Sum256([]byte(model))
+	return "model-bucket-" + hex.EncodeToString(sum[:1])
 }
 
 func validateAttemptResult(result AttemptResult, err error) error {

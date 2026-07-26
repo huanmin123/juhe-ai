@@ -52,6 +52,34 @@ func TestHTTPExecutorComposesDispatchAndJSONResponse(t *testing.T) {
 	}
 }
 
+func TestHTTPExecutorEmitsFirstByteOnlyAfterDownstreamWrite(t *testing.T) {
+	client := doerStub{response: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"response_1"}`))}}
+	dispatcher := gatewaydispatch.Dispatcher{Client: client}
+	credential, err := gatewayupstream.NewCredential("sk-test", gatewayupstream.CredentialOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	var writes, firstBytes int
+	var observedAt time.Time
+	executor := HTTPExecutor{
+		Dispatcher: dispatcher, Handler: gatewayresponse.Handler{Dispatcher: dispatcher}, Now: func() time.Time { return now },
+		Prepare: func(_ context.Context, attempt Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
+			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{
+				Transport: gatewayresponse.TransportJSON,
+				Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) {
+					writes++
+					return len(body), nil
+				}),
+			}, nil
+		},
+	}
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: gatewaycandidate("a"), OnFirstByte: func(value time.Time) { firstBytes++; observedAt = value }})
+	if err != nil || !result.Success || writes != 1 || firstBytes != 1 || !observedAt.Equal(now) {
+		t.Fatalf("result=%+v err=%v writes=%d first=%d at=%v", result, err, writes, firstBytes, observedAt)
+	}
+}
+
 func TestHTTPExecutorReturnsRetryableTransportFailure(t *testing.T) {
 	executor := HTTPExecutor{Prepare: func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
 		return gatewayupstream.Input{}, gatewayresponse.Input{}, nil

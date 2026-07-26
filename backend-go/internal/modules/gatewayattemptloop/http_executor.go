@@ -28,6 +28,7 @@ type HTTPExecutor struct {
 	Dispatcher gatewaydispatch.Dispatcher
 	Handler    gatewayresponse.Handler
 	Prepare    PrepareHTTPAttempt
+	Now        func() time.Time
 }
 
 func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResult, error) {
@@ -56,9 +57,13 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	responseInput.Dispatch = dispatchResult
 	preparedOnFirstByte := responseInput.OnFirstByte
 	responseInput.OnFirstByte = func() {
+		observedAt := e.now()
 		deadline.MarkVisible()
 		if preparedOnFirstByte != nil {
 			preparedOnFirstByte()
+		}
+		if attempt.OnFirstByte != nil {
+			attempt.OnFirstByte(observedAt)
 		}
 	}
 	preparedOnTransportCommit := responseInput.OnTransportCommit
@@ -132,6 +137,13 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		Audit:            handled.Handoff.Audit,
 		PolicyDecision:   policyDecision,
 	}, handleErr
+}
+
+func (e HTTPExecutor) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
 }
 
 func firstByteDeadlineResult(attempt Attempt, base AttemptResult) AttemptResult {
