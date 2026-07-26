@@ -7,7 +7,7 @@ import type {
   UsageFailureAttribution
 } from '../../../storage/repositories.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
-import { enqueueUsageRecord } from './record-queue.service.js'
+import { enqueueUsageRecord, persistUsageRecordForQueueOverflow } from './record-queue.service.js'
 import { dispatchGatewayUsageFinalization } from './failure-finalization.service.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import {
@@ -123,9 +123,12 @@ export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<
   }
 }
 
-export function dispatchUsageRecord(input: Parameters<typeof enqueueUsageRecord>[0]): void {
-  dispatchGatewayUsageFinalization({
+export async function dispatchUsageRecord(input: Parameters<typeof enqueueUsageRecord>[0]): Promise<void> {
+  await dispatchGatewayUsageFinalization({
     taskFactory: () => enqueueUsageRecord(input),
+    ...(runtimeConfig.runtimeMode === 'performance'
+      ? { overflowFactory: () => persistUsageRecordForQueueOverflow(input) }
+      : {}),
     bytes: estimateJsonLikeBytes(input, { maxBytes: 2 * 1024 * 1024, maxNodes: 20_000 })
   })
 }

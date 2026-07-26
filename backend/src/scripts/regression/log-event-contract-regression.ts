@@ -12,6 +12,12 @@ import {
   captureUnexpectedFailureContext
 } from '../../shared/logging/log-failure-context.js'
 import {
+  DB_SERVICE_SLOW_REQUEST_THRESHOLD_MS,
+  GATEWAY_SLOW_STAGE_THRESHOLD_MS,
+  dbServiceSuccessLogLevel,
+  gatewayRequestStageLogLevel
+} from '../../shared/logging/runtime-log-policy.js'
+import {
   GATEWAY_REQUEST_STAGES,
   buildRequestStageLogFields,
   logRequestStage,
@@ -19,6 +25,7 @@ import {
   parseTraceParent,
   recordRequestTimingLogDrops,
   resolveRequestSummaryOutcome,
+  shouldWriteGatewayStageDetail,
   withRequestContext,
   type RequestContext
 } from '../../shared/request-context.js'
@@ -133,6 +140,16 @@ const expected = captureExpectedFailureContext('quota_exceeded', {
 assert.equal(expected.failureClass, 'expected')
 assert.equal(expected.decisionInputs.current, 101)
 
+assert.equal(dbServiceSuccessLogLevel(DB_SERVICE_SLOW_REQUEST_THRESHOLD_MS - 0.001), 'debug')
+assert.equal(dbServiceSuccessLogLevel(DB_SERVICE_SLOW_REQUEST_THRESHOLD_MS), 'info')
+assert.equal(gatewayRequestStageLogLevel('success', GATEWAY_SLOW_STAGE_THRESHOLD_MS - 0.001), 'debug')
+assert.equal(gatewayRequestStageLogLevel('skipped', GATEWAY_SLOW_STAGE_THRESHOLD_MS), 'info')
+assert.equal(gatewayRequestStageLogLevel('expected_failure', 0), 'warn')
+assert.equal(gatewayRequestStageLogLevel('aborted', 0), 'warn')
+assert.equal(gatewayRequestStageLogLevel('unexpected_failure', 0), 'error')
+assert.equal(shouldWriteGatewayStageDetail(undefined, 'expected_failure', Number.MAX_SAFE_INTEGER), true)
+assert.equal(shouldWriteGatewayStageDetail(undefined, 'unexpected_failure', Number.MAX_SAFE_INTEGER), true)
+
 const reserved = buildRequestStageLogFields(undefined, 'model.capability_filter', {
   traceId: 'trace-stage-1',
   event: 'overridden',
@@ -156,11 +173,19 @@ assert.equal((unexpectedStage.error as { message?: string }).message, 'upstream 
 assert.equal((unexpectedStage.retryState as { attempt?: number }).attempt, 2)
 assert.equal('error' in unexpectedStage, true)
 
-const clockSafeStages: Record<string, unknown>[] = []
+const debugStageEvents: Record<string, unknown>[] = []
+const slowStageEvents: Record<string, unknown>[] = []
+const warningStageEvents: Record<string, unknown>[] = []
 const failureLaneEvents: Record<string, unknown>[] = []
 const clockSafeLogger = {
+  debug(fields: Record<string, unknown>) {
+    debugStageEvents.push(fields)
+  },
   info(fields: Record<string, unknown>) {
-    clockSafeStages.push(fields)
+    slowStageEvents.push(fields)
+  },
+  warn(fields: Record<string, unknown>) {
+    warningStageEvents.push(fields)
   },
   error(fields: Record<string, unknown>) {
     failureLaneEvents.push(fields)
@@ -185,9 +210,22 @@ withRequestContext(clockSafeContext, () => {
     error: new Error('unexpected dispatch failure'),
     queueSnapshot: { pending: 4 }
   }, 'unexpected_failure')
+  logRequestStage(
+    'upstream.fetch_headers',
+    {},
+    'success',
+    performance.now() - GATEWAY_SLOW_STAGE_THRESHOLD_MS - 1
+  )
+  logRequestStage('route.group_access', { failureReason: 'no_route' }, 'expected_failure')
 })
-assert((clockSafeStages[0]?.startedOffsetMs as number) < 1_000)
-assert((clockSafeStages[0]?.durationMs as number) < 1_000)
+assert.equal(debugStageEvents.length, 1, '快速成功阶段只能写入 debug')
+assert((debugStageEvents[0]?.startedOffsetMs as number) < 1_000)
+assert((debugStageEvents[0]?.durationMs as number) < 1_000)
+assert.equal(slowStageEvents.length, 1, '超过阈值的成功阶段必须写入 info')
+assert.equal(slowStageEvents[0]?.stage, 'upstream.fetch_headers')
+assert(Number(slowStageEvents[0]?.durationMs) >= GATEWAY_SLOW_STAGE_THRESHOLD_MS)
+assert.equal(warningStageEvents.length, 1, '预期失败阶段必须写入 warn')
+assert.equal(warningStageEvents[0]?.stage, 'route.group_access')
 assert.equal(failureLaneEvents.length, 1)
 assert.equal(failureLaneEvents[0]?.event, 'gateway.request.failure')
 assert.equal(failureLaneEvents[0]?.failureClass, 'unexpected')
@@ -263,6 +301,13 @@ assert.equal(requestContextRawProbe.status, 0, requestContextRawProbe.stderr)
 const requestContextRawLines = requestContextRawProbe.stdout
   .split(/\r?\n/)
   .filter((line) => line.startsWith('{'))
+const stageInfoLines = requestContextRawLines.filter((line) => (
+  line.includes('"event":"gateway.request.stage"') && line.includes('"probeIndex":')
+))
+assert.equal(stageInfoLines.length, 1, '70 个成功阶段在 info 级别下只能保留 1 个慢阶段')
+const slowStageInfo = JSON.parse(stageInfoLines[0] ?? '{}') as Record<string, unknown>
+assert.equal(slowStageInfo.probeIndex, 69)
+assert(Number(slowStageInfo.durationMs) >= GATEWAY_SLOW_STAGE_THRESHOLD_MS)
 const expectedContextEvents = [
   'gateway.request.stage',
   'gateway.request.timing_summary',
@@ -306,5 +351,49 @@ for (const key of [
 assert.equal(timingSummary.stageCount, 70, 'stageCount 必须保留超过摘要数组上限后的真实阶段总数')
 assert.equal((timingSummary.stages as unknown[]).length, 64, 'summary 内嵌阶段数组必须保持有界')
 assert.equal(timingSummary.droppedStageSummaries, 6, 'summary 必须明确内嵌阶段摘要丢弃数')
+
+const performanceRequestContextProbe = spawnSync(process.execPath, [
+  '--import',
+  'tsx',
+  'src/scripts/regression/log-event-contract-raw-probe.ts'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    NODE_ENV: 'test',
+    JUHE_AI_RUNTIME_MODE: 'performance',
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_DATABASE_DRIVER: 'postgres',
+    JUHE_AI_CACHE_DRIVER: 'redis',
+    JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+    JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+    JUHE_AI_POSTGRES_URL: 'postgres://test:test@127.0.0.1:5432/test',
+    JUHE_AI_REDIS_CACHE_URL: 'redis://127.0.0.1:6379/0',
+    JUHE_AI_REDIS_STATE_URL: 'redis://127.0.0.1:6380/0',
+    JUHE_AI_REDIS_QUEUE_URL: 'redis://127.0.0.1:6381/0',
+    JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE: '0',
+    JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
+    JUHE_AI_LOG_FILE_ENABLED: 'false',
+    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: 'false',
+    JUHE_AI_LOG_LEVEL: 'info',
+    JUHE_AI_PROCESS_ROLE: 'server'
+  }
+})
+assert.equal(performanceRequestContextProbe.status, 0, performanceRequestContextProbe.stderr)
+const performanceProbeLines = performanceRequestContextProbe.stdout
+  .split(/\r?\n/)
+  .filter((line) => line.startsWith('{'))
+assert.equal(
+  performanceProbeLines.some((line) => line.includes('"event":"gateway.request.stage"') && line.includes('"probeIndex":69')),
+  false,
+  '高性能模式未采样请求不得因事件循环延迟把正常阶段放大成 info 日志'
+)
+const performanceTimingLine = performanceProbeLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
+assert(performanceTimingLine, '高性能模式未采样请求仍必须保留 timing summary')
+const performanceTiming = JSON.parse(performanceTimingLine) as Record<string, unknown>
+assert.equal(performanceTiming.stageDetailsSampled, false)
+assert.equal(performanceTiming.stageCount, 70)
+assert.deepEqual(performanceTiming.stages, [])
 
 console.log('日志事件契约回归通过')

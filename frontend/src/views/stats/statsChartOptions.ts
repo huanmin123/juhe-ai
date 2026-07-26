@@ -438,8 +438,7 @@ function processMemoryTooltip(params: unknown) {
 }
 
 function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
-  const roles = new Set(trend.map((item) => item.processRole))
-  return (['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'] as const).filter((role) => roles.has(role))
+  return [...new Set(trend.map((item) => item.processRole))].sort()
 }
 
 function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
@@ -470,6 +469,18 @@ export function processRoleLabel(processRole: string) {
   if (processRole === 'stats-worker') return '统计 worker'
   if (processRole === 'ops-worker') return '运维 worker'
   if (processRole === 'db-service') return 'DB service'
+  const separatorIndex = processRole.indexOf(':')
+  if (separatorIndex > 0) {
+    const baseRole = processRole.slice(0, separatorIndex)
+    const instance = processRole.slice(separatorIndex + 1)
+    if (baseRole === 'gateway') return `Gateway ${instance}`
+    if (baseRole === 'control') return `Control ${instance}`
+    if (baseRole === 'db-service') return `DB service ${instance}`
+    if (baseRole === 'usage-worker') return `Usage Worker ${instance}`
+    if (baseRole === 'log-worker') return `Log Worker ${instance}`
+    if (baseRole === 'stats-worker') return `Stats Worker ${instance}`
+    if (baseRole === 'ops-worker') return `Ops Worker ${instance}`
+  }
   return processRole
 }
 

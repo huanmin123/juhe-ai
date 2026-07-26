@@ -2,7 +2,13 @@ import { hostname } from 'node:os'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
-import { createDedicatedRedisClient, getRedisClient, type RedisCommandClient } from './redis-client.js'
+import {
+  createDedicatedRedisClient,
+  getRedisClient,
+  invalidateRedisClient,
+  isRecoverableRedisClientError,
+  type RedisCommandClient
+} from './redis-client.js'
 import { redisNamespacedGroup, redisNamespacedKey } from './redis-namespace.js'
 import { redisQueueFenceKey } from './redis-queue-fence.js'
 
@@ -79,11 +85,18 @@ export class RedisStreamQueue<T> {
 
   async enqueueEncoded(encodedPayload: string): Promise<string> {
     const client = await this.producerClient()
-    const id = await client.eval(redisEnqueueWithFenceScript, {
-      keys: [this.fenceKey, this.streamKey],
-      arguments: ['payload', encodedPayload]
-    })
-    return String(id ?? '')
+    try {
+      const id = await client.eval(redisEnqueueWithFenceScript, {
+        keys: [this.fenceKey, this.streamKey],
+        arguments: ['payload', encodedPayload]
+      })
+      return String(id ?? '')
+    } catch (error) {
+      if (isRecoverableRedisClientError(error)) {
+        await invalidateRedisClient(this.redisUrl, client)
+      }
+      throw error
+    }
   }
 
   async readNew(): Promise<Array<RedisStreamMessage<T>>> {
@@ -93,6 +106,9 @@ export class RedisStreamQueue<T> {
       const result = await this.readNewUnsafe(client)
       return this.parseStreamReadResult(result)
     } catch (error) {
+      if (isRecoverableRedisClientError(error)) {
+        this.resetConsumerClient(client)
+      }
       if (!isRedisNoGroupError(error)) {
         throw error
       }
@@ -109,6 +125,9 @@ export class RedisStreamQueue<T> {
       const result = await this.claimPendingUnsafe(client)
       return this.parseAutoClaimResult(result)
     } catch (error) {
+      if (isRecoverableRedisClientError(error)) {
+        this.resetConsumerClient(client)
+      }
       if (!isRedisNoGroupError(error)) {
         throw error
       }
@@ -273,6 +292,20 @@ export class RedisStreamQueue<T> {
       })
     }
     return this.consumerClientPromise
+  }
+
+  private resetConsumerClient(expectedClient: RedisCommandClient): void {
+    const clientPromise = this.consumerClientPromise
+    if (!clientPromise) return
+    void clientPromise.then((client) => {
+      if (client !== expectedClient || this.consumerClientPromise !== clientPromise) return
+      this.consumerClientPromise = undefined
+      client.destroy?.()
+    }, () => {
+      if (this.consumerClientPromise === clientPromise) {
+        this.consumerClientPromise = undefined
+      }
+    })
   }
 
   private parseStreamReadResult(result: unknown): Array<RedisStreamMessage<T>> {

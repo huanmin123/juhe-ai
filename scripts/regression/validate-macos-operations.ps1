@@ -11,6 +11,7 @@ $operationsRoot = Join-Path $repoRoot 'docs\deploy\macos\operations'
 $requiredFiles = @(
   'README.md',
   'install-launchd-service.sh',
+  'install-performance-topology.sh',
   'manage-sing-box.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
@@ -44,6 +45,16 @@ $healthCheckIndex = $launchdInstaller.LastIndexOf('wait_for_main_health', [Strin
 $healthStableIndex = $launchdInstaller.LastIndexOf('INSTALL_MUTATED=0', [StringComparison]::Ordinal)
 if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -gt $healthStableIndex) {
   throw 'Launchd installer must verify stable local health before marking installation complete'
+}
+
+$performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
+foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'wait_for_ingress', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+  if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+$performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
+$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
+if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex) {
+  throw 'Performance topology must verify every Node service before switching nginx'
 }
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
@@ -85,6 +96,10 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-ops-test' --label 'com.example.juhe-ai'
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --control-port 3102 --gateway-base-port 3101 --gateway-count 3 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted overlapping control and gateway ports' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai|unsafe' --label 'com.example.juhe-ai' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'launchd installer accepted a sed-unsafe base path' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai$(id)' --label 'com.example.juhe-ai' 2>$null

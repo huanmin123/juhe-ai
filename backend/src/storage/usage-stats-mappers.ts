@@ -1,4 +1,4 @@
-import type { ProcessEventLoopRole } from '../shared/process-event-loop-monitor.js'
+import { processEventLoopRoleFromUnknown as parseProcessEventLoopRole, type ProcessEventLoopRole } from '../shared/process-event-loop-monitor.js'
 import type { AccountUsageSummary } from '../domain/types.js'
 import { averageFromSum, numberFromUnknown, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import type { AccountUsageAggregateRow, StatsAggregateMathRow, SystemMetricsOverview } from './usage-stats-types.js'
@@ -95,14 +95,7 @@ export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemM
 }
 
 function processRoleFromUnknown(value: unknown): ProcessEventLoopRole {
-  if (
-    value === 'server'
-    || value === 'ingest-worker'
-    || value === 'stats-worker'
-    || value === 'ops-worker'
-    || value === 'db-service'
-  ) {
-    return value
-  }
+  const processRole = parseProcessEventLoopRole(value)
+  if (processRole) return processRole
   throw new Error(`非法进程角色：${String(value)}`)
 }

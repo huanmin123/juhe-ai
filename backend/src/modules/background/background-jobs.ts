@@ -3,6 +3,7 @@ import { stat as statFile } from 'node:fs/promises'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import { readPerformanceProcessEventLoopSamples } from '../../shared/performance-process-metrics-registry.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
 import { getSettings, getSettingsAsync, listSystemAccountsAsync, listUsageRecordsAsync } from '../../storage/repositories.js'
 import {
@@ -120,20 +121,15 @@ export function startBackgroundJobs(): void {
 
 function scheduleBackgroundJobs(): void {
   switch (runtimeConfig.workerRole) {
+    case 'usage-worker':
+      scheduleUsageIngestJobs()
+      return
+    case 'log-worker':
+      scheduleLogIngestJobs()
+      return
     case 'ingest-worker':
-      scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, task: runUsageRecordFirstPagePrewarm })
-      scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
-      scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
-      scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
-      scheduler.schedule({
-        name: backgroundScheduledJobName('data-retention-cleanup'),
-        intervalMs: DATA_RETENTION_CLEANUP_INTERVAL_MINUTES * minuteMs,
-        initialDelayMs: 13 * minuteMs,
-        task: runDataRetentionCleanup
-      })
-      if (runtimeConfig.log.indexEnabled) {
-        scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
-      }
+      scheduleUsageIngestJobs()
+      scheduleLogIngestJobs()
       return
     case 'stats-worker':
       scheduler.schedule({
@@ -193,6 +189,24 @@ function scheduleBackgroundJobs(): void {
   }
 }
 
+function scheduleUsageIngestJobs(): void {
+  scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, task: runUsageRecordFirstPagePrewarm })
+  scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
+  scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
+  scheduler.schedule({
+    name: backgroundScheduledJobName('data-retention-cleanup'),
+    intervalMs: DATA_RETENTION_CLEANUP_INTERVAL_MINUTES * minuteMs,
+    initialDelayMs: 13 * minuteMs,
+    task: runDataRetentionCleanup
+  })
+}
+
+function scheduleLogIngestJobs(): void {
+  scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
+  if (runtimeConfig.log.indexEnabled) {
+    scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+  }
+}
 async function runUsageRecordFirstPagePrewarm(): Promise<void> {
   const accounts = await listSystemAccountsAsync()
   const timezone = await usageStatsTimezoneAsync()
@@ -554,12 +568,29 @@ async function runSystemMetricsSample(): Promise<void> {
   const memoryMetrics = await currentMemoryMetrics()
   const memoryUsage = process.memoryUsage()
   const networkMetrics = await currentNetworkMetrics()
-  const remoteProcessSamples = await requestServerProcessEventLoopSamples().catch((error) => {
+  const registryProcessSamples = runtimeConfig.runtimeMode === 'performance'
+    ? await readPerformanceProcessEventLoopSamples().catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'background_system_metrics_registry_event_loop_sample_failed'
+      }), '高性能进程指标注册表读取失败，回退 IPC 采样')
+      return []
+    })
+    : []
+  const registryExpectedProcessCount = performanceRegistryExpectedProcessCount()
+  const registryComplete = runtimeConfig.runtimeMode === 'performance'
+    && registryProcessSamples.length >= registryExpectedProcessCount
+  const ipcProcessSamples = registryComplete
+    ? undefined
+    : await requestServerProcessEventLoopSamples().catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'background_system_metrics_remote_event_loop_sample_failed'
     }), '系统指标远端事件循环采样失败')
     return undefined
   })
+  const remoteProcessSamples = [
+    ...registryProcessSamples,
+    ...(ipcProcessSamples ?? [])
+  ]
   if (!remoteProcessSamples || remoteProcessSamples.length === 0) {
     missingRemoteProcessEventLoopSampleWarningCount += 1
     if (missingRemoteProcessEventLoopSampleWarningCount === 1 || missingRemoteProcessEventLoopSampleWarningCount % 10 === 0) {
@@ -571,8 +602,11 @@ async function runSystemMetricsSample(): Promise<void> {
   } else {
     missingRemoteProcessEventLoopSampleWarningCount = 0
   }
-  const processEventLoopSamples = remoteProcessSamples ?? []
   const localProcessEventLoopSample = buildProcessEventLoopSample()
+  const processEventLoopSamples = mergeProcessEventLoopSamples([
+    localProcessEventLoopSample,
+    ...(remoteProcessSamples ?? [])
+  ])
   try {
     await requestStatsWriter({
       type: 'record_system_metrics_sample',
@@ -589,12 +623,33 @@ async function runSystemMetricsSample(): Promise<void> {
       dbFileBytes: await databaseFileBytes(),
       statsLagSeconds: await latestUsageStatsLagSecondsForRuntime()
       },
-      processEventLoopSamples: [localProcessEventLoopSample, ...processEventLoopSamples]
+      processEventLoopSamples
     })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), '系统指标采样失败')
     throw error
   }
+}
+
+function performanceRegistryExpectedProcessCount(): number {
+  if (runtimeConfig.runtimeMode !== 'performance') return 0
+  return 2
+    + runtimeConfig.topology.gatewayReplicas * 2
+    + runtimeConfig.topology.usageWorkerReplicas
+    + runtimeConfig.topology.logWorkerReplicas
+    + runtimeConfig.topology.statsWorkerReplicas
+    + runtimeConfig.topology.opsWorkerReplicas
+}
+
+function mergeProcessEventLoopSamples(samples: ReturnType<typeof buildProcessEventLoopSample>[]): ReturnType<typeof buildProcessEventLoopSample>[] {
+  const latestByRole = new Map<string, ReturnType<typeof buildProcessEventLoopSample>>()
+  for (const sample of samples) {
+    const existing = latestByRole.get(sample.processRole)
+    if (!existing || sample.sampledAt > existing.sampledAt) {
+      latestByRole.set(sample.processRole, sample)
+    }
+  }
+  return [...latestByRole.values()]
 }
 
 async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {

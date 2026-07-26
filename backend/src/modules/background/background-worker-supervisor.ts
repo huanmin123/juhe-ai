@@ -13,21 +13,37 @@ import {
   supervisorRestartDelayMs,
   type SupervisorRestartState
 } from '../../shared/supervisor-restart-policy.js'
-import { attachBackgroundWorkerProcess, type BackgroundWorkerProcessRole } from './background-ipc.js'
+import {
+  attachBackgroundAuxiliaryWorkerProcess,
+  attachBackgroundWorkerProcess,
+  type BackgroundWorkerProcessRole
+} from './background-ipc.js'
 
 interface SupervisedWorkerState {
   process?: ChildProcess
   restartTimer?: NodeJS.Timeout
   restartState: SupervisorRestartState
+  ready: boolean
 }
 
-const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = [
-  'ingest-worker',
-  'stats-worker',
-  'ops-worker'
-]
-const supervisedWorkers = new Map<BackgroundWorkerProcessRole, SupervisedWorkerState>(
-  supervisedWorkerRoles.map((role) => [role, { restartState: createSupervisorRestartState() }])
+export interface BackgroundWorkerSupervisorProcessRuntime {
+  key: string
+  role: BackgroundWorkerProcessRole
+  replicaIndex: number
+  pid?: number
+  ready: boolean
+}
+
+interface SupervisedWorkerSpec {
+  key: string
+  role: BackgroundWorkerProcessRole
+  replicaIndex: number
+  ipcRole?: BackgroundWorkerProcessRole
+}
+
+const supervisedWorkerSpecs = buildSupervisedWorkerSpecs()
+const supervisedWorkers = new Map<string, SupervisedWorkerState>(
+  supervisedWorkerSpecs.map((spec) => [spec.key, { restartState: createSupervisorRestartState(), ready: false }])
 )
 let stopping = false
 let shutdownHooksInstalled = false
@@ -42,7 +58,7 @@ const workerStartupReadyTimeoutMs = 1_500
 const workerStartupStaggerMs = 250
 
 export function startBackgroundWorkerSupervisor(): void {
-  if (runtimeConfig.processRole !== 'server') {
+  if (runtimeConfig.processRole !== 'server' || !runtimeConfig.topology.backgroundWorkerSupervisorEnabled) {
     return
   }
 
@@ -62,13 +78,13 @@ function startWorkerProcessesInSequence(): void {
       startupSequenceRunning = false
       return
     }
-    const role = supervisedWorkerRoles[index]
+    const spec = supervisedWorkerSpecs[index]
     index += 1
-    if (!role) {
+    if (!spec) {
       startupSequenceRunning = false
       return
     }
-    startWorkerProcess(role, {
+    startWorkerProcess(spec, {
       onStartupSettled: () => {
         const timer = setTimeout(startNext, workerStartupStaggerMs)
         timer.unref()
@@ -79,10 +95,10 @@ function startWorkerProcessesInSequence(): void {
 }
 
 function startWorkerProcess(
-  role: BackgroundWorkerProcessRole,
+  spec: SupervisedWorkerSpec,
   options: { onStartupSettled?: () => void } = {}
 ): void {
-  const state = supervisedWorkerState(role)
+  const state = supervisedWorkerState(spec.key)
   if (state.process) {
     options.onStartupSettled?.()
     return
@@ -109,7 +125,9 @@ function startWorkerProcess(
     env: {
       ...process.env,
       JUHE_AI_PROCESS_ROLE: 'worker',
-      JUHE_AI_WORKER_ROLE: role
+      JUHE_AI_WORKER_ROLE: spec.role,
+      JUHE_AI_WORKER_REPLICA_INDEX: String(spec.replicaIndex),
+      JUHE_AI_INSTANCE_ID: `${runtimeConfig.instanceId}-${spec.role}-${spec.replicaIndex + 1}`
     },
     execArgv: entry.execArgv,
     serialization: 'advanced',
@@ -117,40 +135,58 @@ function startWorkerProcess(
   })
 
   state.process = child
-  attachBackgroundWorkerProcess(child, {
-    role,
-    onReady: () => {
-      state.restartState = recordSupervisorChildReady(state.restartState, Date.now())
-      settleStartup()
-    }
-  })
+  state.ready = false
+  if (spec.ipcRole) {
+    attachBackgroundWorkerProcess(child, {
+      role: spec.ipcRole,
+      onReady: () => {
+        state.ready = true
+        state.restartState = recordSupervisorChildReady(state.restartState, Date.now())
+        settleStartup()
+      }
+    })
+  } else if (spec.role === 'usage-worker' || spec.role === 'log-worker') {
+    attachBackgroundAuxiliaryWorkerProcess(child, {
+      role: spec.role,
+      onReady: () => {
+        state.ready = true
+        state.restartState = recordSupervisorChildReady(state.restartState, Date.now())
+        settleStartup()
+      }
+    })
+  }
   pipeWorkerOutput(child)
 
   logger.info({
     event: 'background_worker_spawned',
-    workerRole: role,
+    workerRole: spec.role,
+    workerReplicaIndex: spec.replicaIndex,
+    workerInstanceKey: spec.key,
     pid: child.pid,
     modulePath: entry.modulePath,
     execArgv: entry.execArgv
-  }, backgroundWorkerRoleMessage(role, '已创建'))
+  }, backgroundWorkerRoleMessage(spec, '已创建'))
 
   child.once('exit', (code, signal) => {
     settleStartup()
     logger.warn({
       event: 'background_worker_exited',
-      workerRole: role,
+      workerRole: spec.role,
+      workerReplicaIndex: spec.replicaIndex,
+      workerInstanceKey: spec.key,
       pid: child.pid,
       code,
       signal,
       stopping
-    }, backgroundWorkerRoleMessage(role, '已退出'))
+    }, backgroundWorkerRoleMessage(spec, '已退出'))
     if (state.process !== child) {
       return
     }
     state.process = undefined
+    state.ready = false
     if (!stopping) {
       state.restartState = recordSupervisorChildStopped(state.restartState, Date.now())
-      scheduleWorkerRestart(role)
+      scheduleWorkerRestart(spec)
     }
   })
 
@@ -158,15 +194,18 @@ function startWorkerProcess(
     settleStartup()
     logger.error(errorLogFields(error, {
       event: 'background_worker_spawn_failed',
-      workerRole: role
-    }), backgroundWorkerRoleMessage(role, '启动失败'))
+      workerRole: spec.role,
+      workerReplicaIndex: spec.replicaIndex,
+      workerInstanceKey: spec.key
+    }), backgroundWorkerRoleMessage(spec, '启动失败'))
     if (state.process !== child) {
       return
     }
     state.process = undefined
+    state.ready = false
     if (!stopping) {
       state.restartState = recordSupervisorChildStopped(state.restartState, Date.now())
-      scheduleWorkerRestart(role)
+      scheduleWorkerRestart(spec)
     }
   })
 }
@@ -194,8 +233,8 @@ function pipeWorkerOutput(child: ChildProcess): void {
   })
 }
 
-function scheduleWorkerRestart(role: BackgroundWorkerProcessRole): void {
-  const state = supervisedWorkerState(role)
+function scheduleWorkerRestart(spec: SupervisedWorkerSpec): void {
+  const state = supervisedWorkerState(spec.key)
   if (state.restartTimer) {
     return
   }
@@ -203,7 +242,7 @@ function scheduleWorkerRestart(role: BackgroundWorkerProcessRole): void {
   const delayMs = supervisorRestartDelayMs(state.restartState.restartAttempts)
   state.restartTimer = setTimeout(() => {
     state.restartTimer = undefined
-    startWorkerProcess(role)
+    startWorkerProcess(spec)
   }, delayMs)
   state.restartTimer.unref()
 }
@@ -230,17 +269,67 @@ export function stopBackgroundWorkerSupervisor(): void {
   }
 }
 
-function supervisedWorkerState(role: BackgroundWorkerProcessRole): SupervisedWorkerState {
-  const state = supervisedWorkers.get(role)
+function supervisedWorkerState(key: string): SupervisedWorkerState {
+  const state = supervisedWorkers.get(key)
   if (!state) {
-    throw new Error(`未知后台 worker 角色：${role}`)
+    throw new Error(`未知后台 worker 实例：${key}`)
   }
   return state
 }
 
-function backgroundWorkerRoleMessage(role: BackgroundWorkerProcessRole, action: string): string {
-  if (role === 'ingest-worker') return `后台 ingest-worker ${action}`
-  if (role === 'stats-worker') return `后台 stats-worker ${action}`
-  if (role === 'ops-worker') return `后台 ops-worker ${action}`
-  return `后台 worker ${action}`
+export function getBackgroundWorkerSupervisorRuntime(): BackgroundWorkerSupervisorProcessRuntime[] {
+  if (!runtimeConfig.topology.backgroundWorkerSupervisorEnabled) return []
+  return supervisedWorkerSpecs.map((spec) => {
+    const state = supervisedWorkerState(spec.key)
+    return {
+      key: spec.key,
+      role: spec.role,
+      replicaIndex: spec.replicaIndex,
+      pid: state.process?.pid,
+      ready: state.ready
+    }
+  })
+}
+
+function backgroundWorkerRoleMessage(spec: SupervisedWorkerSpec, action: string): string {
+  return `后台 ${spec.role}#${spec.replicaIndex + 1} ${action}`
+}
+
+function buildSupervisedWorkerSpecs(): SupervisedWorkerSpec[] {
+  if (runtimeConfig.runtimeMode !== 'performance') {
+    return [
+      workerSpec('ingest-worker', 0, 'ingest-worker'),
+      workerSpec('stats-worker', 0, 'stats-worker'),
+      workerSpec('ops-worker', 0, 'ops-worker')
+    ]
+  }
+
+  return [
+    ...replicatedWorkerSpecs('usage-worker', runtimeConfig.topology.usageWorkerReplicas, 'ingest-worker'),
+    ...replicatedWorkerSpecs('log-worker', runtimeConfig.topology.logWorkerReplicas),
+    ...replicatedWorkerSpecs('stats-worker', runtimeConfig.topology.statsWorkerReplicas, 'stats-worker'),
+    ...replicatedWorkerSpecs('ops-worker', runtimeConfig.topology.opsWorkerReplicas, 'ops-worker')
+  ]
+}
+
+function replicatedWorkerSpecs(
+  role: BackgroundWorkerProcessRole,
+  count: number,
+  primaryIpcRole?: BackgroundWorkerProcessRole
+): SupervisedWorkerSpec[] {
+  return Array.from({ length: count }, (_value, replicaIndex) =>
+    workerSpec(role, replicaIndex, replicaIndex === 0 ? primaryIpcRole : undefined))
+}
+
+function workerSpec(
+  role: BackgroundWorkerProcessRole,
+  replicaIndex: number,
+  ipcRole?: BackgroundWorkerProcessRole
+): SupervisedWorkerSpec {
+  return {
+    key: `${role}:${replicaIndex}`,
+    role,
+    replicaIndex,
+    ipcRole
+  }
 }

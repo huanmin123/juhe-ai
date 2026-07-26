@@ -1,12 +1,14 @@
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 
-import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
+import { runtimeConfig, type ProcessRole, type WorkerRuntimeRole } from '../config/runtime.js'
 
 export type ProcessEventLoopRole =
   | ProcessRole
-  | 'ingest-worker'
-  | 'stats-worker'
-  | 'ops-worker'
+  | WorkerRuntimeRole
+  | `gateway:${string}`
+  | `control:${string}`
+  | `db-service:${string}`
+  | `${Exclude<WorkerRuntimeRole, 'worker'>}:${number}`
 
 export interface ProcessEventLoopSample {
   processRole: ProcessEventLoopRole
@@ -57,7 +59,18 @@ export function buildProcessEventLoopSample(processRole: ProcessEventLoopRole = 
   }
 }
 
-function currentProcessEventLoopRole(): ProcessEventLoopRole {
+export function currentProcessEventLoopRole(): ProcessEventLoopRole {
+  if (runtimeConfig.runtimeMode === 'performance') {
+    if (runtimeConfig.processRole === 'server') {
+      return `${runtimeConfig.performanceNodeRole === 'gateway' ? 'gateway' : 'control'}:${runtimeConfig.instanceId}`
+    }
+    if (runtimeConfig.processRole === 'db-service') {
+      return `db-service:${runtimeConfig.instanceId}`
+    }
+    if (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'worker') {
+      return `${runtimeConfig.workerRole}:${runtimeConfig.workerReplicaIndex + 1}`
+    }
+  }
   if (runtimeConfig.processRole !== 'worker') {
     return runtimeConfig.processRole
   }
@@ -69,6 +82,26 @@ function currentProcessEventLoopRole(): ProcessEventLoopRole {
     return runtimeConfig.workerRole
   }
   return 'worker'
+}
+
+export function processEventLoopRoleFromUnknown(value: unknown): ProcessEventLoopRole | undefined {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 96) return undefined
+  if (
+    value === 'server'
+    || value === 'ingest-worker'
+    || value === 'stats-worker'
+    || value === 'ops-worker'
+    || value === 'db-service'
+  ) {
+    return value
+  }
+  if (/^(?:gateway|control|db-service):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
+    return value as ProcessEventLoopRole
+  }
+  if (/^(?:ingest-worker|usage-worker|log-worker|stats-worker|ops-worker):(?:[1-9]|[1-5][0-9]|6[0-4])$/.test(value)) {
+    return value as ProcessEventLoopRole
+  }
+  return undefined
 }
 
 function roundMetricMs(value: number): number | undefined {

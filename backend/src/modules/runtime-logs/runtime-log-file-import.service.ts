@@ -41,6 +41,8 @@ const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.worker.log': 'worker',
   'juhe-ai.db-service.log': 'db-service',
   'juhe-ai.ingest-worker.log': 'ingest-worker',
+  'juhe-ai.usage-worker.log': 'usage-worker',
+  'juhe-ai.log-worker.log': 'log-worker',
   'juhe-ai.stats-worker.log': 'stats-worker',
   'juhe-ai.ops-worker.log': 'ops-worker',
   'juhe-ai.temporary-maintenance-worker.log': 'temporary-maintenance-worker'
@@ -241,14 +243,23 @@ async function closeRuntimeLogDiscoveryHandle(): Promise<void> {
 }
 
 function runtimeLogFileRole(fileName: string): { role: string; kind: 'current' | 'rotated' } | undefined {
-  const currentRole = runtimeLogCurrentRoles[fileName]
+  const currentRole = runtimeLogCurrentFileRole(fileName)
   if (currentRole) return { role: currentRole, kind: 'current' }
 
   const match = /^(.+?)\.(\d{8}T\d{6}Z)\.[0-9a-f-]+\.log$/i.exec(fileName)
   if (!match) return undefined
   const baseName = `${match[1]}.log`
-  const role = runtimeLogCurrentRoles[baseName]
+  const role = runtimeLogCurrentFileRole(baseName)
   return role ? { role, kind: 'rotated' } : undefined
+}
+
+function runtimeLogCurrentFileRole(fileName: string): string | undefined {
+  const legacyRole = runtimeLogCurrentRoles[fileName]
+  if (legacyRole) return legacyRole
+  const match = /^juhe-ai\.(worker|db-service|ingest-worker|usage-worker|log-worker|stats-worker|ops-worker|temporary-maintenance-worker)\.([A-Za-z0-9][A-Za-z0-9._-]{0,63})\.log$/.exec(fileName)
+  if (match) return `${match[1]}:${match[2]}`
+  const serverMatch = /^juhe-ai\.([A-Za-z0-9][A-Za-z0-9._-]{0,63})\.log$/.exec(fileName)
+  return serverMatch ? `server:${serverMatch[1]}` : undefined
 }
 
 async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencies: RuntimeLogFileImportTestDependencies = {}): Promise<boolean> {

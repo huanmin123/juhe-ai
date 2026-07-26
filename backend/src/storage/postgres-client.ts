@@ -16,7 +16,10 @@ export interface PostgresQueryClient {
 }
 
 export interface PostgresPoolClient extends PostgresQueryClient {
-  release(): void
+  release(error?: Error): void
+  on?(event: 'error', listener: (error: Error) => void): unknown
+  off?(event: 'error', listener: (error: Error) => void): unknown
+  removeListener?(event: 'error', listener: (error: Error) => void): unknown
 }
 
 type PostgresPool = PostgresQueryClient & {

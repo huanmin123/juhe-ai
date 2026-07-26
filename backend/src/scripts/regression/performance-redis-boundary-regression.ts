@@ -61,6 +61,11 @@ assert.match(functionBody(cacheSource, 'createAppCache'), /set:\s*\([^)]*\)\s*=>
 assert.match(functionBody(cacheSource, 'createAppCache'), /get:\s*\([^)]*\)\s*=>\s*\{[\s\S]*canUseProcessLocalAppCacheAsFactSource\(\) \? store\.get\(key\) : undefined/, 'Redis cache driver 下 createAppCache.get 必须返回 undefined')
 assert.doesNotMatch(functionBody(cacheSource, 'createProcessLocalResourceCache'), /canUseProcessLocalAppCacheAsFactSource/, '进程本地资源缓存不得被 Redis cache driver 事实源开关禁用')
 assert.match(source('modules/gateway/upstream/request.ts'), /createProcessLocalResourceCache<string,\s*http\.Agent>/, '代理 Agent 连接复用必须使用进程本地资源缓存，而不是业务事实源 AppCache')
+const gatewayRuntimeCacheSource = source('modules/gateway/runtime/runtime-cache.service.ts')
+assert.match(gatewayRuntimeCacheSource, /gatewayRuntimeCache = createProcessLocalResourceCache<string, GatewayRuntimeCacheEntry>/, '包含解密凭据的网关运行时必须保留在各网关进程的有界内存快照，禁止每请求穿透 DB service')
+assert.match(gatewayRuntimeCacheSource, /updateAgeOnGet: runtimeConfig\.runtimeMode === 'standalone'/, '高性能模式最后可用运行时快照必须有严格保留上限，不能被持续访问无限续期')
+assert.match(functionBody(gatewayRuntimeCacheSource, 'shouldAllowStaleGatewayRuntimeFallback'), /return true/, 'DB service 短暂不可用时必须允许使用仍在保留窗口内的最后可用运行时快照')
+assert.match(functionBody(gatewayRuntimeCacheSource, 'syncGatewayCacheInvalidationsBestEffort'), /catch[\s\S]*cache coordination is not a request gate/, 'Redis 缓存失效协调失败不得直接中断 AI 请求')
 assert.match(cacheSource, /export function createSharedJsonCache[\s\S]*new DriverSharedJsonCache/, 'SharedJsonCache 必须通过 driver wrapper 按运行模式选择底座')
 assert.match(cacheSource, /private cache\(\): SharedJsonCache<V> \{[\s\S]*runtimeConfig\.cacheDriver !== 'redis'[\s\S]*return this\.memoryCache[\s\S]*new RedisSharedJsonCache/, 'SharedJsonCache 在 Redis cache driver 下必须直接使用 Redis')
 assert.match(cacheSource, /class RedisSharedJsonCache[\s\S]*runtimeConfig\.redis\.cacheUrl/, 'Redis shared cache 必须使用 JUHE_AI_REDIS_CACHE_URL')
@@ -298,13 +303,22 @@ function assertAppCacheClassification(): void {
 }
 
 function assertStrictRedisCacheBoundaries(): void {
-  const productionSource = listSourceFiles(srcRoot)
+  const productionFiles = listSourceFiles(srcRoot)
     .filter((filePath) => !slash(relative(srcRoot, filePath)).startsWith('scripts/'))
+  const gatewayRuntimeCacheRelativePath = 'modules/gateway/runtime/runtime-cache.service.ts'
+  const productionSource = productionFiles
+    .map((filePath) => readFileSync(filePath, 'utf8'))
+    .join('\n')
+  const strictSharedCacheSource = productionFiles
+    .filter((filePath) => slash(relative(srcRoot, filePath)) !== gatewayRuntimeCacheRelativePath)
     .map((filePath) => readFileSync(filePath, 'utf8'))
     .join('\n')
   assert.doesNotMatch(productionSource, /throwIfRedisCacheIsRequired/, '生产代码不能保留 Redis shared cache fail-open helper')
-  assert.doesNotMatch(productionSource, /shared_cache_(read|write)_failed/, 'Redis shared cache 读写失败不能被日志吞掉后当 cache miss')
-  assert.doesNotMatch(productionSource, /(读取|写入)[^\n]*Redis[^\n]*(共享缓存|shared cache)[^\n]*失败/, 'Redis shared cache 读写失败必须直接抛错，不能 warn 后回退其他事实源')
+  assert.doesNotMatch(strictSharedCacheSource, /shared_cache_(read|write)_failed/, '除网关可重建运行快照外，Redis shared cache 读写失败不能被日志吞掉后当 cache miss')
+  assert.doesNotMatch(strictSharedCacheSource, /(读取|写入)[^\n]*Redis[^\n]*(共享缓存|shared cache)[^\n]*失败/, '认证、额度和共享运行态的 Redis cache 失败必须直接抛错')
+  const runtimeCacheSource = source(gatewayRuntimeCacheRelativePath)
+  assert.match(functionBody(runtimeCacheSource, 'readGatewaySharedCacheBestEffort'), /catch[\s\S]*return undefined/, '网关可重建 shared cache 读取失败必须显式退化为 miss')
+  assert.match(functionBody(runtimeCacheSource, 'writeGatewaySharedCacheBestEffort'), /catch[\s\S]*logGatewaySharedCacheFailure/, '网关可重建 shared cache 写失败必须保留节流告警')
   assert.doesNotMatch(productionSource, /void \w+SharedCache\.clear\(\)/, 'Redis shared cache 清理不能裸 fire-and-forget，必须使用受控后台清理 helper')
   assert.match(source('shared/cache.ts'), /export function clearSharedJsonCacheInBackground[\s\S]*cache\.clear\(\)\.catch[\s\S]*logger\.warn/, '同步失效入口的 Redis shared cache 清理必须捕获并记录失败，避免未处理 Promise')
 

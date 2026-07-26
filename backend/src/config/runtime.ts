@@ -9,8 +9,19 @@ import { loadRuntimeBaseEnv, loadRuntimeEnvFile } from './runtime-base-env.js'
 
 export interface RuntimeConfig {
   runtimeMode: RuntimeMode
+  performanceNodeRole: PerformanceNodeRole
   processRole: ProcessRole
   workerRole: WorkerRuntimeRole
+  instanceId: string
+  workerReplicaIndex: number
+  topology: {
+    backgroundWorkerSupervisorEnabled: boolean
+    gatewayReplicas: number
+    usageWorkerReplicas: number
+    logWorkerReplicas: number
+    statsWorkerReplicas: number
+    opsWorkerReplicas: number
+  }
   databaseDriver: DatabaseDriver
   cacheDriver: CacheDriver
   runtimeStateDriver: RuntimeStateDriver
@@ -66,6 +77,13 @@ export interface RuntimeConfig {
     redisStreamReadCount: number
     redisStreamBlockMs: number
     redisStreamClaimIdleMs: number
+  }
+  usageSpool: {
+    directory: string
+    maxItems: number
+    maxBytes: number
+    replayBatchSize: number
+    replayIntervalMs: number
   }
   databasePath: string
   chatDatabasePath: string
@@ -161,6 +179,8 @@ export interface RuntimeConfig {
     retentionDays: number
     maxFiles: number
     cleanupIntervalMinutes: number
+    gatewayTimingDetailSamplePermille: number
+    gatewayStagePressureMaxPendingBytes: number
   }
   smokeTest: {
     backendUrl: string
@@ -174,6 +194,7 @@ export interface RuntimeConfig {
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
 export type RuntimeMode = 'standalone' | 'performance'
+export type PerformanceNodeRole = 'combined' | 'gateway' | 'control'
 export type ProcessRole = 'server' | 'worker' | 'db-service'
 export type DatabaseDriver = 'sqlite' | 'postgres'
 export type CacheDriver = 'memory' | 'redis'
@@ -182,6 +203,8 @@ export type QueueDriver = 'memory' | 'redis_stream'
 export type WorkerRuntimeRole =
   | 'worker'
   | 'ingest-worker'
+  | 'usage-worker'
+  | 'log-worker'
   | 'stats-worker'
   | 'ops-worker'
   | 'temporary-maintenance-worker'
@@ -195,6 +218,7 @@ export const defaultChatDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-cha
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
+export const defaultUsageSpoolDirectory = resolve(backendRoot, 'data', 'usage-spool')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
 export const defaultChatAssetsRoot = resolve(backendRoot, 'data', 'chat-assets')
@@ -216,6 +240,9 @@ const hasPerformanceDriverHints = hasAnyRawConfig([
   'JUHE_AI_REDIS_QUEUE_URL'
 ])
 const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', hasPerformanceDriverHints ? 'performance' : 'standalone')
+const configuredPerformanceNodeRole = configuredRuntimeMode === 'performance'
+  ? performanceNodeRoleConfig('JUHE_AI_PERFORMANCE_NODE_ROLE', 'combined')
+  : 'combined'
 const defaultSystemApiDbServiceMaxInFlight =
   configuredRuntimeMode === 'performance'
     ? defaultPerformanceSystemApiDbServiceMaxInFlight
@@ -273,8 +300,30 @@ assertRuntimeLogFileIndexingConfig({
 
 export const runtimeConfig: RuntimeConfig = {
   runtimeMode: configuredRuntimeMode,
+  performanceNodeRole: configuredPerformanceNodeRole,
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
   workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
+  instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID'),
+  workerReplicaIndex: numberConfig('JUHE_AI_WORKER_REPLICA_INDEX', 0, 0, 63),
+  topology: {
+    backgroundWorkerSupervisorEnabled: configuredRuntimeMode === 'standalone'
+      || configuredPerformanceNodeRole !== 'gateway',
+    gatewayReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_GATEWAY_REPLICAS', 3, 1, 32)
+      : 1,
+    usageWorkerReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_USAGE_WORKER_REPLICAS', 2, 1, 32)
+      : 1,
+    logWorkerReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_LOG_WORKER_REPLICAS', 2, 1, 32)
+      : 1,
+    statsWorkerReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_STATS_WORKER_REPLICAS', 1, 1, 1)
+      : 1,
+    opsWorkerReplicas: configuredRuntimeMode === 'performance'
+      ? numberConfig('JUHE_AI_OPS_WORKER_REPLICAS', 1, 1, 1)
+      : 1
+  },
   databaseDriver: configuredDatabaseDriver,
   cacheDriver: configuredCacheDriver,
   runtimeStateDriver: configuredRuntimeStateDriver,
@@ -317,6 +366,13 @@ export const runtimeConfig: RuntimeConfig = {
     redisStreamReadCount: numberConfig('JUHE_AI_REDIS_STREAM_READ_COUNT', 1000, 1, 5000),
     redisStreamBlockMs: numberConfig('JUHE_AI_REDIS_STREAM_BLOCK_MS', 1000, 100, 60000),
     redisStreamClaimIdleMs: numberConfig('JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS', 60000, 1000, 3600000)
+  },
+  usageSpool: {
+    directory: pathConfig('JUHE_AI_USAGE_SPOOL_DIR', defaultUsageSpoolDirectory),
+    maxItems: numberConfig('JUHE_AI_USAGE_SPOOL_MAX_ITEMS', 250_000, 1_000, 5_000_000),
+    maxBytes: numberConfig('JUHE_AI_USAGE_SPOOL_MAX_MB', 4_096, 64, 102_400) * 1024 * 1024,
+    replayBatchSize: numberConfig('JUHE_AI_USAGE_SPOOL_REPLAY_BATCH_SIZE', 500, 1, 5_000),
+    replayIntervalMs: numberConfig('JUHE_AI_USAGE_SPOOL_REPLAY_INTERVAL_MS', 1_000, 100, 60_000)
   },
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
   chatDatabasePath: pathConfig('JUHE_AI_CHAT_DATABASE_PATH', defaultChatDatabasePath),
@@ -401,7 +457,19 @@ export const runtimeConfig: RuntimeConfig = {
     maxFileBytes: numberConfig('JUHE_AI_LOG_MAX_FILE_MB', 100, 1, 1024) * 1024 * 1024,
     retentionDays: numberConfig('JUHE_AI_LOG_RETENTION_DAYS', 30, 1, 30),
     maxFiles: numberConfig('JUHE_AI_LOG_MAX_FILES', 500, 1, 500),
-    cleanupIntervalMinutes: numberConfig('JUHE_AI_LOG_CLEANUP_INTERVAL_MINUTES', 60, 1, 1440)
+    cleanupIntervalMinutes: numberConfig('JUHE_AI_LOG_CLEANUP_INTERVAL_MINUTES', 60, 1, 1440),
+    gatewayTimingDetailSamplePermille: numberConfig(
+      'JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE',
+      configuredRuntimeMode === 'performance' ? 50 : 1000,
+      0,
+      1000
+    ),
+    gatewayStagePressureMaxPendingBytes: numberConfig(
+      'JUHE_AI_GATEWAY_STAGE_PRESSURE_MAX_PENDING_MB',
+      8,
+      1,
+      1024
+    ) * 1024 * 1024
   },
   smokeTest: {
     backendUrl: stringConfig('JUHE_AI_BACKEND_URL', 'http://127.0.0.1:3000'),
@@ -486,6 +554,22 @@ function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {
   if (!value) return fallback
   if (value === 'standalone' || value === 'performance') return value
   throw new Error(`${name} 只能配置为 standalone 或 performance`)
+}
+
+function performanceNodeRoleConfig(name: string, fallback: PerformanceNodeRole): PerformanceNodeRole {
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (value === 'combined' || value === 'gateway' || value === 'control') return value
+  throw new Error(`${name} 只能配置为 combined、gateway 或 control`)
+}
+
+function runtimeInstanceIdConfig(name: string): string {
+  const configured = rawStringConfig(name)?.trim()
+  if (!configured) return `process-${process.pid}`
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(configured)) {
+    throw new Error(`${name} 必须以字母或数字开头，且只能包含字母、数字、点、下划线或连字符，最长 64 字符`)
+  }
+  return configured
 }
 
 function databaseDriverConfig(name: string, fallback: DatabaseDriver): DatabaseDriver {
@@ -656,10 +740,12 @@ function workerRoleConfig(name: string, fallback: WorkerRuntimeRole): WorkerRunt
   if (!value) return fallback
   if (value === 'worker') return 'worker'
   if (value === 'ingest-worker') return 'ingest-worker'
+  if (value === 'usage-worker') return 'usage-worker'
+  if (value === 'log-worker') return 'log-worker'
   if (value === 'stats-worker') return 'stats-worker'
   if (value === 'ops-worker') return 'ops-worker'
   if (value === 'temporary-maintenance-worker') return 'temporary-maintenance-worker'
-  throw new Error(`${name} 只能配置为 worker、ingest-worker、stats-worker、ops-worker 或 temporary-maintenance-worker`)
+  throw new Error(`${name} 只能配置为 worker、ingest-worker、usage-worker、log-worker、stats-worker、ops-worker 或 temporary-maintenance-worker`)
 }
 
 function numberConfig(name: string, fallback: number, min: number, max: number): number {

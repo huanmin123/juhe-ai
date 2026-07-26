@@ -113,6 +113,11 @@ const auditStageLogger = {
     if (fields.event === 'gateway.request.stage' && fields.stage === 'audit.finalize') {
       auditStageEvents.push(fields)
     }
+  },
+  debug(fields: Record<string, unknown>) {
+    if (fields.event === 'gateway.request.stage' && fields.stage === 'audit.finalize') {
+      auditStageEvents.push(fields)
+    }
   }
 } as unknown as Logger
 const auditResponse = new MockResponse() as unknown as Response
@@ -241,25 +246,29 @@ let startedBoundedUsageTasks = 0
 const boundedUsageGate = new Promise<void>((resolvePromise) => {
   releaseBoundedUsageTasks = resolvePromise
 })
-let acceptedBoundedUsageTasks = 0
+const boundedUsageTasks: Promise<void>[] = []
+let overflowSpoolCalls = 0
 for (let index = 0; index < 2_081; index += 1) {
-  if (failureUsageFinalization.dispatchGatewayUsageFinalization({
+  boundedUsageTasks.push(failureUsageFinalization.dispatchGatewayUsageFinalization({
     taskFactory: async () => {
       startedBoundedUsageTasks += 1
       await boundedUsageGate
     },
+    overflowFactory: async () => {
+      overflowSpoolCalls += 1
+    },
     bytes: 1
-  })) {
-    acceptedBoundedUsageTasks += 1
-  }
+  }))
 }
-assert.equal(acceptedBoundedUsageTasks, 2_080, 'usage 异步收尾必须在数量上限处拒绝多余投递')
 await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
 assert.equal(startedBoundedUsageTasks, 32, 'usage 异步收尾并发必须受上限保护')
 releaseBoundedUsageTasks?.()
+await Promise.all(boundedUsageTasks)
 assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '有界 usage 收尾队列应可排空')
 const usageFinalizationRuntime = failureUsageFinalization.getGatewayUsageFinalizationRuntime()
-assert.equal(usageFinalizationRuntime.droppedCount, 1, '有界 usage 收尾溢出必须暴露累计 dropped 计数')
+assert.equal(usageFinalizationRuntime.admissionWaitCount, 0, '高性能持久补偿可用时不得用等待者压住网关事件循环')
+assert.equal(usageFinalizationRuntime.overflowSpoolCount, 1, 'usage 收尾满水位时必须转入持久补偿')
+assert.equal(overflowSpoolCalls, 1, 'usage 收尾满水位持久补偿必须且只能执行一次')
 assert.equal(usageFinalizationRuntime.pendingCount, 0, '有界 usage 收尾排空后运行态 pending 必须归零')
 assert.equal(usageFinalizationRuntime.queuedBytes, 0, '有界 usage 收尾排空后运行态 queued bytes 必须归零')
 

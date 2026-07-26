@@ -33,11 +33,23 @@ const processEventLoopRoleOrder = new Map([
   ['db-service', 4]
 ])
 
+function processEventLoopRoleSortKey(role: string): string {
+  const baseRole = role.split(':', 1)[0] ?? role
+  const baseOrder = processEventLoopRoleOrder.get(baseRole) ?? (
+    baseRole === 'control' ? 0
+      : baseRole === 'gateway' ? 1
+        : baseRole === 'usage-worker' ? 2
+          : baseRole === 'log-worker' ? 3
+            : 99
+  )
+  return `${String(baseOrder).padStart(3, '0')}:${role}`
+}
+
 export function buildProcessEventLoopRows(metrics?: SystemMetricsOverview): ProcessEventLoopRow[] {
   const latestByRole = new Map((metrics?.processEventLoopLatestStatus ?? []).map((row) => [row.processRole, row]))
   const peakByRole = new Map((metrics?.processEventLoopPeakStatus ?? []).map((row) => [row.processRole, row]))
   const roles = [...new Set([...latestByRole.keys(), ...peakByRole.keys()])]
-    .sort((left, right) => (processEventLoopRoleOrder.get(left) ?? 99) - (processEventLoopRoleOrder.get(right) ?? 99))
+    .sort((left, right) => processEventLoopRoleSortKey(left).localeCompare(processEventLoopRoleSortKey(right)))
 
   return roles.map((processRole) => {
     const latest = latestByRole.get(processRole)

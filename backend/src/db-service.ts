@@ -16,7 +16,9 @@ import { shutdownChatGenerationRegistry } from './modules/chat/chat-generation-r
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
 import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { dbServiceSuccessLogLevel } from './shared/logging/runtime-log-policy.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
+import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 
 const systemApiPrefix = '/__aisys__/api'
 const publicApiPrefix = '/__aipublic__'
@@ -64,6 +66,7 @@ let dbServiceShutdownPromise: Promise<void> | undefined
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
+  startPerformanceProcessMetricsPublisher()
   startLogMaintenance()
   setDbServiceQueueRuntimeProvider(buildDbServiceQueueRuntimeMetrics)
   if (runtimeConfig.databaseDriver === 'sqlite') {
@@ -88,7 +91,7 @@ async function startDbService(): Promise<void> {
     httpPort: httpEndpoint.port
   })
 
-  logger.info({
+  logger.debug({
     event: 'db_service_started',
     pid: process.pid,
     processRole: runtimeConfig.processRole,
@@ -134,6 +137,7 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'db_service_storage_shutdown_failed' }), 'DB service 退出时关闭数据库连接失败')
   }
+  stopPerformanceProcessMetricsPublisher()
   await closeLogger()
   process.exit(exitCode)
 }
@@ -456,7 +460,8 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
   }, 'DB service 请求开始')
   try {
     const result = await handleDbServiceOperation(message.operation)
-    logger.info({
+    const durationMs = Date.now() - startedAt
+    const completeFields = {
       event: 'db_service.request.complete',
       service: 'juhe-ai',
       role: 'db-service',
@@ -467,8 +472,14 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       parentId: message.parentId,
       operation: operationType,
       outcome: 'success',
-      durationMs: Date.now() - startedAt
-    }, 'DB service 请求完成')
+      durationMs
+    }
+    const completeMessage = `DB service 请求完成：${operationType}，${durationMs}ms`
+    if (dbServiceSuccessLogLevel(durationMs) === 'info') {
+      logger.info(completeFields, completeMessage)
+    } else {
+      logger.debug(completeFields, completeMessage)
+    }
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,

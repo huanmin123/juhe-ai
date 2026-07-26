@@ -18,6 +18,12 @@ import { runRedisEnqueueWithBoundedRetry } from '../../../shared/redis-enqueue-r
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
+import {
+  getUsageRecordSpoolRuntime,
+  persistUsageRecordToSpool,
+  startUsageRecordSpoolReplay,
+  stopUsageRecordSpoolReplay
+} from './usage-record-spool.js'
 
 const usageRecordFlushIntervalMs = 500
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
@@ -90,6 +96,10 @@ export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void>
   enqueueUsageRecordLocal(queuedInput)
 }
 
+export async function persistUsageRecordForQueueOverflow(input: UsageRecordInput): Promise<void> {
+  await persistUsageRecordToSpool(normalizeUsageRecordInput(input))
+}
+
 export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordsLocal')
   for (const input of inputs) {
@@ -122,6 +132,14 @@ export async function stopUsageRecordRedisStreamConsumer(): Promise<void> {
   if (usageRecordRedisConsumerPromise) {
     await usageRecordRedisConsumerPromise.catch(() => undefined)
   }
+}
+
+export function startUsageRecordRedisSpoolReplay(): void {
+  startUsageRecordSpoolReplay(enqueueUsageRecordToRedisStreamWithoutSpool)
+}
+
+export async function stopUsageRecordRedisSpoolReplay(): Promise<void> {
+  await stopUsageRecordSpoolReplay()
 }
 
 function enqueueUsageRecordLocal(input: UsageRecordInput): void {
@@ -465,16 +483,35 @@ function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean 
 
 async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise<void> {
   try {
-    await runRedisEnqueueWithBoundedRetry(() => usageRecordRedisStreamQueue().enqueue(input))
+    await enqueueUsageRecordToRedisStreamWithoutSpool(input)
   } catch (error) {
-    logger.error(errorLogFields(error, {
-      event: 'usage_record_redis_stream_enqueue_failed',
-      traceId: input.traceId,
-      apiKeyId: input.apiKeyId,
-      accountId: input.accountId
-    }), '使用记录写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列')
-    throw error
+    try {
+      await persistUsageRecordToSpool(input)
+      logger.warn(errorLogFields(error, {
+        event: 'usage_record_redis_stream_enqueue_spooled',
+        traceId: input.traceId,
+        usageRecordId: input.id,
+        apiKeyId: input.apiKeyId,
+        accountId: input.accountId,
+        spool: getUsageRecordSpoolRuntime()
+      }), '使用记录写入 Redis Stream 失败，已持久化等待 Usage worker 补写')
+    } catch (spoolError) {
+      logger.error(errorLogFields(spoolError, {
+        event: 'usage_record_redis_stream_enqueue_failed',
+        traceId: input.traceId,
+        usageRecordId: input.id,
+        apiKeyId: input.apiKeyId,
+        accountId: input.accountId,
+        redisError: error instanceof Error ? error.message : String(error),
+        spool: getUsageRecordSpoolRuntime()
+      }), '使用记录 Redis 入队和本机持久补偿均失败')
+      throw spoolError
+    }
   }
+}
+
+async function enqueueUsageRecordToRedisStreamWithoutSpool(input: UsageRecordInput): Promise<void> {
+  await runRedisEnqueueWithBoundedRetry(() => usageRecordRedisStreamQueue().enqueue(input))
 }
 
 async function runUsageRecordRedisStreamConsumer(): Promise<void> {
@@ -1092,7 +1129,8 @@ function isLocalUsageRecordWriteAllowed(): boolean {
 }
 
 function isUsageRecordIngestWorker(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'usage-worker')
 }
 
 function isDbServiceLocalUsageRecordWriteAllowedForTest(): boolean {
@@ -1101,5 +1139,7 @@ function isDbServiceLocalUsageRecordWriteAllowedForTest(): boolean {
 
 function shouldDispatchUsageRecordToIngestWorker(): boolean {
   return runtimeConfig.processRole === 'server'
-    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
+    || (runtimeConfig.processRole === 'worker'
+      && runtimeConfig.workerRole !== 'ingest-worker'
+      && runtimeConfig.workerRole !== 'usage-worker')
 }

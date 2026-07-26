@@ -20,6 +20,8 @@ import type { PageDataChangeEvent, PageDataDomain } from '../page-data/page-data
 export type BackgroundWorkerProcessRole =
   | 'worker'
   | 'ingest-worker'
+  | 'usage-worker'
+  | 'log-worker'
   | 'stats-worker'
   | 'ops-worker'
 

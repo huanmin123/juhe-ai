@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { Request, Response } from 'express'
 
 import { closeLogger } from '../../shared/logger.js'
+import { GATEWAY_SLOW_STAGE_THRESHOLD_MS } from '../../shared/logging/runtime-log-policy.js'
 import {
   bindRequestContextFields,
   getRequestLogger,
@@ -47,7 +48,9 @@ requestContextMiddleware(req, res, () => {
       groupId: 'group-raw-probe',
       trafficSource: 'openai_compatible',
       probeIndex: index
-    })
+    }, 'success', index === 69
+      ? performance.now() - GATEWAY_SLOW_STAGE_THRESHOLD_MS - 1
+      : performance.now())
   }
   getRequestLogger().info({ event: 'request_logger_context_probe' }, 'probe')
   res.emit('finish')

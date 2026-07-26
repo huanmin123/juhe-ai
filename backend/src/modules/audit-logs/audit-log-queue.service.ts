@@ -964,7 +964,8 @@ function isLocalAuditLogWriteAllowed(): boolean {
 }
 
 function isAuditLogIngestWorker(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'log-worker')
 }
 
 function isDbServiceLocalAuditLogWriteAllowedForTest(): boolean {
@@ -973,5 +974,7 @@ function isDbServiceLocalAuditLogWriteAllowedForTest(): boolean {
 
 function shouldDispatchAuditLogToIngestWorker(): boolean {
   return runtimeConfig.processRole === 'server'
-    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
+    || (runtimeConfig.processRole === 'worker'
+      && runtimeConfig.workerRole !== 'ingest-worker'
+      && runtimeConfig.workerRole !== 'log-worker')
 }

@@ -480,7 +480,8 @@ function assertLocalOperationLogWriteAllowed(operation: string): void {
 }
 
 function isOperationLogIngestWorker(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'log-worker')
 }
 
 function shouldUseRedisStreamOperationLogQueue(): boolean {
@@ -493,7 +494,9 @@ function shouldEnqueueOperationLogToRedisStream(): boolean {
 
 function shouldDispatchOperationLogToIngestWorker(): boolean {
   return runtimeConfig.processRole === 'server'
-    || (runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole !== 'ingest-worker')
+    || (runtimeConfig.processRole === 'worker'
+      && runtimeConfig.workerRole !== 'ingest-worker'
+      && runtimeConfig.workerRole !== 'log-worker')
 }
 
 function delay(ms: number): Promise<void> {

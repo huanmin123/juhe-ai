@@ -40,10 +40,11 @@ try {
     '无最近 24 小时采样时应显式返回每个进程角色的峰值不可用状态'
   )
 
+  const latestBaseAtMs = Date.now() - 30_000
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1001,
-    sampledAt: '2026-01-01T00:00:00.000Z',
+    sampledAt: new Date(latestBaseAtMs).toISOString(),
     eventLoopLagMs: 11,
     processRssBytes: 1100,
     processHeapUsedBytes: 510,
@@ -52,25 +53,25 @@ try {
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'db-service',
     processPid: 3001,
-    sampledAt: '2026-01-01T00:00:01.000Z',
+    sampledAt: new Date(latestBaseAtMs + 1_000).toISOString(),
     eventLoopLagMs: 31
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'ingest-worker',
     processPid: 5001,
-    sampledAt: '2026-01-01T00:00:03.000Z',
+    sampledAt: new Date(latestBaseAtMs + 3_000).toISOString(),
     eventLoopLagMs: 9
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'stats-worker',
     processPid: 5101,
-    sampledAt: '2026-01-01T00:00:04.000Z',
+    sampledAt: new Date(latestBaseAtMs + 4_000).toISOString(),
     eventLoopLagMs: 10
   })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'ops-worker',
     processPid: 5201,
-    sampledAt: '2026-01-01T00:00:05.000Z',
+    sampledAt: new Date(latestBaseAtMs + 5_000).toISOString(),
     eventLoopLagMs: 12
   })
 
@@ -96,6 +97,8 @@ try {
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本应按自身角色读取')
 
+  databaseModule.getStatsDatabase().prepare('DELETE FROM process_event_loop_samples').run()
+  databaseModule.getStatsDatabase().prepare('DELETE FROM process_event_loop_hourly').run()
   const recentMinute = new Date(Date.now() - 60_000)
   recentMinute.setSeconds(0, 0)
   const staleHighLagAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()

@@ -1,7 +1,7 @@
 # 后台 Worker 多角色拆分设计
 
 > 面向后端实现、部署和 AI 维护者。
-> 本文记录当前 worker 拓扑决策：从旧的多常驻角色收敛为 `ingest-worker`、`stats-worker`、`ops-worker` 三类常驻 worker。使用规则见 [后台任务使用说明](后台任务使用说明.md)，执行计划见 [PLAN-0055 后台 Worker 三角色收敛](../../plans/计划-0055-后台Worker三角色收敛.md) 与 [PLAN-0056 ops-worker 外部 I/O 并发控制](../../plans/计划-0056-opsWorker外部IO并发控制.md)，单写者边界见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
+> 本文的三角色拓扑只描述 `standalone`。`performance` 使用 `usage-worker`、`log-worker`、`stats-worker`、`ops-worker`，默认副本数为 `2/2/1/1`，并由 3 个独立 gateway 事件循环承接 AI 流量；权威设计见 [高性能模式同机多进程拓扑设计](../../functions/高性能模式同机多进程拓扑设计.md)。
 
 ## 背景
 
@@ -16,7 +16,8 @@
 
 ## 设计目标
 
-- 常驻后台 worker 固定为三类：`ingest-worker`、`stats-worker`、`ops-worker`。
+- `standalone` 常驻后台 worker 固定为三类：`ingest-worker`、`stats-worker`、`ops-worker`。
+- `performance` 把 ingest 拆为可扩容的 `usage-worker` 与 `log-worker`，Stats/Ops 各保持一个主副本。
 - 保持轻量部署：外部进程管理器只守护 `server`，由 server supervisor 拉起 DB service 和三类 worker。
 - 热写入优先：使用记录、审计、日志和 record maintenance 不被重统计或外部探测拖住。
 - 重统计隔离：所有统计聚合、窗口刷新、系统指标和表监控集中在 `stats-worker`，便于定位慢任务。
