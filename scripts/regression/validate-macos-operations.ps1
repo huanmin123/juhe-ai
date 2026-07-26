@@ -119,6 +119,40 @@ if ($bash) {
     if ($LASTEXITCODE -eq 0) { throw 'performance slot drain accepted an invalid slot' }
     & $bash.Source ((Join-Path $operationsRoot 'retire-performance-slot.sh') -replace '\\', '/') --dry-run --scope system --slot temporary --base-dir '/tmp/juhe-ai-performance-test' --drain-script '/tmp/wait-performance-slot-drain.sh'
     if ($LASTEXITCODE -ne 0) { throw 'performance slot retire dry-run failed' }
+    $renderNginx = @'
+set -euo pipefail
+installer="$1"
+slot="$2"
+control_port="$3"
+gateway_base_port="$4"
+source <(sed -n '/^render_nginx_http_body()/,/^wait_for_health()/p' "$installer" | sed '$d')
+NGINX_CONFIG_KIND=main
+BASE_DIR=/tmp/juhe-ai-performance-render
+LOG_DIR=/tmp/juhe-ai-performance-render/logs
+GATEWAY_COUNT=3
+GATEWAY_BASE_PORT="$gateway_base_port"
+CONTROL_PORT="$control_port"
+INGRESS_PORT=3099
+SLOT="$slot"
+render_nginx /dev/fd/1
+'@
+    $installerForBash = (Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/'
+    $mainNginx = (& $bash.Source -c $renderNginx bash $installerForBash main 3200 3211) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'main slot nginx rendering failed' }
+    $temporaryNginx = (& $bash.Source -c $renderNginx bash $installerForBash temporary 3300 3311) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw 'temporary slot nginx rendering failed' }
+    foreach ($contract in @('worker_processes auto;', 'listen 127.0.0.1:3099;', 'server 127.0.0.1:3200;', 'server 127.0.0.1:3211 ', 'server 127.0.0.1:3212 ', 'server 127.0.0.1:3213 ', 'X-Juhe-Active-Upstream performance-main', 'location ^~ /__aisys__', 'location / {', 'least_conn;')) {
+      if (-not $mainNginx.Contains($contract, [StringComparison]::Ordinal)) { throw "rendered main nginx contract missing: $contract" }
+    }
+    foreach ($contract in @('server 127.0.0.1:3300;', 'server 127.0.0.1:3311 ', 'server 127.0.0.1:3312 ', 'server 127.0.0.1:3313 ', 'X-Juhe-Active-Upstream performance-temporary')) {
+      if (-not $temporaryNginx.Contains($contract, [StringComparison]::Ordinal)) { throw "rendered temporary nginx contract missing: $contract" }
+    }
+    if ($mainNginx.Contains('127.0.0.1:33', [StringComparison]::Ordinal) -or $temporaryNginx.Contains('127.0.0.1:32', [StringComparison]::Ordinal)) {
+      throw 'rendered nginx configurations mixed main and temporary slot ports'
+    }
+    if (($mainNginx.ToCharArray() | Where-Object { $_ -eq '{' }).Count -ne ($mainNginx.ToCharArray() | Where-Object { $_ -eq '}' }).Count) {
+      throw 'rendered main nginx braces are unbalanced'
+    }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai|unsafe' --label 'com.example.juhe-ai' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'launchd installer accepted a sed-unsafe base path' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai$(id)' --label 'com.example.juhe-ai' 2>$null
