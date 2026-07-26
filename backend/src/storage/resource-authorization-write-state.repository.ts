@@ -17,7 +17,7 @@ import { clearResourceAuthorizationLookupCaches } from './authorization-read-loa
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { loadRuntimeAuthorizationForUserGrant } from './resource-authorization-read.repository.js'
 import { maxAuthorizationExpirySweepBatchSize } from './authorization-sweep-limits.js'
-import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
+import { syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings } from './request-quota-hourly-windows.repository.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import type {
@@ -159,7 +159,6 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
       ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
   }
-  rememberRequestQuotaHourlyWindowsFromJson(nextLimitsJson, input.database, input.now)
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {
     input.database.prepare(`
@@ -708,7 +707,6 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
         input.now
       )
   }
-  rememberRequestQuotaHourlyWindowsFromJson(nextLimitsJson, input.database, input.now)
   const row = input.database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(id) as unknown as ResourceAuthorizationGrantRow | undefined
   if (!row) throw new Error('创建资源授权失败')
   invalidateAuthorizationLookupCaches()
@@ -732,12 +730,12 @@ export function returnResourceAuthorizationGrant(grant: ResourceAuthorizationGra
 }
 
 export function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
-  rememberRequestQuotaHourlyWindowsFromJson(grant.limits_json, database, now)
   if (grant.grantee_type === 'system_account') {
     syncUserGrantRuntime(grant, actor, database, now)
-    return
+  } else {
+    syncTeamGrantMemberAuthorizations(grant, actor, database, now)
   }
-  syncTeamGrantMemberAuthorizations(grant, actor, database, now)
+  syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(grant), database, now)
 }
 
 function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
