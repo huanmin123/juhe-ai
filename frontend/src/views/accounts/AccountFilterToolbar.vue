@@ -254,7 +254,7 @@ const emit = defineEmits<{
   (event: 'update:type', value: string): void
 }>()
 
-const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
+const accountStatusValues = new Set<AccountStatus>(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated'])
 const resolvedProviders = computed(() => props.providers.length ? props.providers : FALLBACK_PROVIDERS)
 const exportTooltip = computed(() => props.selectedCount
   ? `已选择 ${props.selectedCount} 个账户，将优先导出已选自有账户`

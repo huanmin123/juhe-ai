@@ -373,6 +373,66 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
     );
 
+    CREATE TABLE IF NOT EXISTS model_quality_policies (
+      system_account_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      profile TEXT NOT NULL DEFAULT 'quick' CHECK (profile IN ('quick', 'full')),
+      manual_enforcement_enabled INTEGER NOT NULL DEFAULT 1 CHECK (manual_enforcement_enabled IN (0, 1)),
+      penalty_threshold INTEGER NOT NULL DEFAULT 70 CHECK (penalty_threshold BETWEEN 40 AND 100),
+      penalty_action TEXT NOT NULL DEFAULT 'fallback' CHECK (penalty_action IN ('disable', 'fallback', 'quality_isolate')),
+      recovery_interval_minutes INTEGER NOT NULL DEFAULT 10 CHECK (recovery_interval_minutes BETWEEN 10 AND 10080),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS model_quality_schedules (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      interval_minutes INTEGER NOT NULL DEFAULT 60 CHECK (interval_minutes BETWEEN 10 AND 10080),
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+      revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+      next_run_at TEXT NOT NULL,
+      last_run_id TEXT,
+      last_run_at TEXT,
+      last_run_status TEXT CHECK (last_run_status IS NULL OR last_run_status IN ('completed', 'failed', 'canceled')),
+      lease_owner TEXT,
+      lease_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      UNIQUE (system_account_id, account_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS account_quality_enforcements (
+      account_id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      enforcement_id TEXT NOT NULL UNIQUE,
+      generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+      state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'cleared')),
+      action TEXT NOT NULL CHECK (action IN ('disable', 'fallback', 'quality_isolate')),
+      trigger_run_id TEXT NOT NULL,
+      policy_revision INTEGER NOT NULL CHECK (policy_revision >= 0),
+      account_config_revision INTEGER NOT NULL CHECK (account_config_revision >= 1),
+      before_status TEXT NOT NULL,
+      after_status TEXT NOT NULL,
+      fallback_was_enabled INTEGER NOT NULL DEFAULT 0 CHECK (fallback_was_enabled IN (0, 1)),
+      super_priority_was_enabled INTEGER NOT NULL DEFAULT 0 CHECK (super_priority_was_enabled IN (0, 1)),
+      started_at TEXT NOT NULL,
+      recovery_due_at TEXT,
+      recovery_lease_owner TEXT,
+      recovery_lease_until TEXT,
+      last_recovery_run_id TEXT,
+      cleared_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS account_circuit_incidents (
       circuit_scope_key TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -1003,6 +1063,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
         AND status IN ('active', 'pending_test')
         AND (status = 'pending_test' OR schedulable = 1)
         AND type IN ('api_key', 'oauth', 'google_oauth');
+    CREATE INDEX IF NOT EXISTS idx_model_quality_schedules_due
+      ON model_quality_schedules(enabled, next_run_at, id);
+    CREATE INDEX IF NOT EXISTS idx_model_quality_schedules_scope
+      ON model_quality_schedules(system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_account_quality_enforcements_recovery
+      ON account_quality_enforcements(state, action, recovery_due_at, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_quality_enforcements_scope
+      ON account_quality_enforcements(system_account_id, updated_at DESC, account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_candidate_order
       ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
       WHERE deleted_at IS NULL

@@ -153,7 +153,22 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
       : api.myModelChecks.list(params),
     detail: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.detail(id, params)
-      : api.myModelChecks.detail(id)
+      : api.myModelChecks.detail(id),
+    qualityPolicy: (params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.qualityPolicy(params)
+      : api.myModelChecks.qualityPolicy(),
+    saveQualityPolicy: (payload: Parameters<typeof api.modelChecks.saveQualityPolicy>[0], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.saveQualityPolicy(payload, params)
+      : api.myModelChecks.saveQualityPolicy(payload),
+    qualitySchedules: (params?: ModelCheckScopeParams & { page?: number; pageSize?: number }) => isManagementView.value
+      ? api.modelChecks.qualitySchedules(params)
+      : api.myModelChecks.qualitySchedules(params),
+    saveQualitySchedule: (payload: Parameters<typeof api.modelChecks.saveQualitySchedule>[0], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.saveQualitySchedule(payload, params)
+      : api.myModelChecks.saveQualitySchedule(payload),
+    deleteQualitySchedule: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.deleteQualitySchedule(id, params)
+      : api.myModelChecks.deleteQualitySchedule(id)
   }
 }
 

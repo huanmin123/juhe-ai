@@ -67,6 +67,15 @@ import type {
   CompareAndSetAccountCircuitIncidentInput,
   CompareAndSetAccountCircuitIncidentResult
 } from '../../storage/account-circuit-control-plane.repository.js'
+import type {
+  ModelQualityEnforcementInput,
+  ModelQualityEnforcementWriteResult,
+  ModelQualityRecoveryCandidate,
+  ModelQualityRecoveryCompletionResult,
+  ModelQualityScheduledRunCandidate,
+  ModelQualityScheduleMutationInput
+} from '../../storage/model-quality.repository.js'
+import type { ModelQualityPolicy, ModelQualityPolicyUpdateInput, ModelQualitySchedule } from '../../domain/types.js'
 
 export type DbServiceRequestPriority = 'high' | 'normal' | 'low'
 
@@ -449,6 +458,26 @@ export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'pr
     message: string
   }
 }
+
+export type ModelQualityDbServiceCommand =
+  | { kind: 'save_policy'; systemAccountId: string; input: ModelQualityPolicyUpdateInput }
+  | { kind: 'upsert_schedule'; systemAccountId: string; input: ModelQualityScheduleMutationInput }
+  | { kind: 'delete_schedule'; systemAccountId: string; scheduleId: string }
+  | { kind: 'apply_enforcement'; input: ModelQualityEnforcementInput }
+  | { kind: 'claim_due_schedules'; ownerId: string; now?: string; limit?: number; leaseMinutes?: number }
+  | { kind: 'complete_schedule_run'; input: { ownerId: string; scheduleId: string; scheduleRevision: number; intervalMinutes: number; runId?: string; status: 'completed' | 'failed' | 'canceled'; completedAt?: string } }
+  | { kind: 'claim_due_recoveries'; ownerId: string; now?: string; limit?: number; leaseMinutes?: number }
+  | { kind: 'complete_recovery'; input: { ownerId: string; accountId: string; enforcementId: string; generation: number; policyRevision: number; runId: string; passed: boolean; recoveryIntervalMinutes: number; completedAt?: string } }
+
+export type ModelQualityDbServiceResult =
+  | { kind: 'policy'; policy: ModelQualityPolicy }
+  | { kind: 'schedule'; schedule: ModelQualitySchedule }
+  | { kind: 'deleted'; deleted: boolean }
+  | { kind: 'enforcement'; enforcement: ModelQualityEnforcementWriteResult }
+  | { kind: 'claimed'; candidates: ModelQualityScheduledRunCandidate[] }
+  | { kind: 'completed'; completed: boolean }
+  | { kind: 'recoveries_claimed'; candidates: ModelQualityRecoveryCandidate[] }
+  | { kind: 'recovery_completed'; recovery: ModelQualityRecoveryCompletionResult }
 
 export type DbServiceOperation =
   | {
@@ -1070,6 +1099,10 @@ export type DbServiceOperation =
     hits: ClientIpPolicyHitInput[]
   }
   | {
+    type: 'model_quality_command'
+    command: ModelQualityDbServiceCommand
+  }
+  | {
     type: 'list_runtime_logs'
     options: RuntimeLogListOptions
   }
@@ -1158,6 +1191,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_account_circuit_incidents_by_runtime_keys' } ? AccountCircuitIncidentRecord[] :
   T extends { type: 'list_account_circuit_projection_gaps' } ? AccountCircuitProjectionGaps :
   T extends { type: 'cleanup_account_circuit_control_plane' } ? AccountCircuitControlPlaneCleanupResult :
+  T extends { type: 'model_quality_command' } ? ModelQualityDbServiceResult :
   T extends { type: 'cleanup_chat_retention' } ? import('../../storage/chat.repository.js').ChatRetentionCleanupResult :
   T extends { type: 'save_codex_context_response_state' } ? CodexContextResponseStateIndex :
   T extends { type: 'save_codex_context_compact_state' } ? CodexContextCompactStateIndex :

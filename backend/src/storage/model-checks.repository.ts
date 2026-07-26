@@ -7,25 +7,31 @@ import type {
   ModelCheckRunListResult,
   ModelCheckRunStatus,
   ModelCheckRunSummary,
-  ModelCheckTargetType
+  ModelCheckTargetType,
+  ModelCheckTriggerKind,
+  ModelQualityDecision,
+  ModelQualityPolicySnapshot
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { logger } from '../shared/logger.js'
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { getDatasetDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
+import { getDatasetDatabase, getStatsDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadAccountNameMapAsync } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
-const maxModelCheckListWindowRows = 1001
 const maxSummaryStringLength = 500
 const maxSummaryArrayLength = 20
 const maxSummaryObjectKeys = 32
 const maxSummaryDepth = 4
+const maximumModelCheckRunsPerAccount = 1000
+const modelCheckRunTrimBatchSize = 100
+const modelTrustAggregationJobName = 'model-trust-observation-aggregation'
 
 export interface ModelCheckRunCreateInput {
   id?: string
@@ -41,12 +47,15 @@ export interface ModelCheckRunCreateInput {
   apiKeyId?: string
   model: string
   profile?: ModelCheckProfile
+  triggerKind?: ModelCheckTriggerKind
+  scheduleId?: string
   trustedComparison: boolean
   trustedComparisonAvailable?: boolean
   traceId?: string
   probeSetVersion: string
   startedAt?: string
   requestSummary?: unknown
+  policySnapshot?: ModelQualityPolicySnapshot
 }
 
 export interface ModelCheckRunFinishInput {
@@ -85,6 +94,7 @@ export interface ModelCheckRunListOptions {
   model?: string
   level?: ModelCheckLevel
   status?: ModelCheckRunStatus
+  triggerKind?: ModelCheckTriggerKind
   startAt?: string
   endAt?: string
 }
@@ -97,6 +107,7 @@ interface NormalizedModelCheckRunListOptions {
   model?: string
   level?: ModelCheckLevel
   status?: ModelCheckRunStatus
+  triggerKind?: ModelCheckTriggerKind
   startAt?: string
   endAt?: string
 }
@@ -115,6 +126,8 @@ interface ModelCheckRunRow {
   api_key_id: string | null
   model: string
   profile: ModelCheckProfile
+  trigger_kind: ModelCheckTriggerKind
+  schedule_id: string | null
   trusted_comparison_enabled: number
   trusted_comparison_available: number
   level: ModelCheckLevel
@@ -129,6 +142,8 @@ interface ModelCheckRunRow {
   duration_ms: number | null
   request_summary_json: string
   result_summary_json: string
+  policy_snapshot_json: string
+  quality_decision_json: string
   error_code: string | null
   error_message: string | null
   created_at: string
@@ -168,6 +183,8 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     api_key_id: input.apiKeyId ?? null,
     model: input.model,
     profile: input.profile ?? 'quick',
+    trigger_kind: input.triggerKind ?? 'manual',
+    schedule_id: input.scheduleId ?? null,
     trusted_comparison_enabled: input.trustedComparison ? 1 : 0,
     trusted_comparison_available: input.trustedComparisonAvailable ? 1 : 0,
     level: 'unavailable',
@@ -182,22 +199,26 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     duration_ms: null,
     request_summary_json: safeJson(input.requestSummary ?? {}),
     result_summary_json: '{}',
+    policy_snapshot_json: safeJson(input.policySnapshot ?? {}),
+    quality_decision_json: '{}',
     error_code: null,
     error_message: null,
     created_at: now,
     updated_at: now
   }
-  getDatasetDatabase()
-    .prepare(`
+  const database = getDatasetDatabase()
+  const insert = database.prepare(`
       INSERT INTO model_check_runs (
         id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, target_name,
-        target_owner_system_account_id, account_id, group_id, api_key_id, model, profile,
+        target_owner_system_account_id, account_id, group_id, api_key_id, model, profile, trigger_kind, schedule_id,
         trusted_comparison_enabled, trusted_comparison_available, level, score, max_score, status, message,
         trace_id, probe_set_version, started_at, finished_at, duration_ms, request_summary_json,
-        result_summary_json, error_code, error_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        result_summary_json, policy_snapshot_json, quality_decision_json, error_code, error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(
+  runInDatabaseTransaction(() => {
+    ensureModelCheckRunCapacity(database, run.account_id)
+    insert.run(
       run.id,
       run.system_account_id,
       run.actor_system_account_id,
@@ -211,6 +232,8 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
       run.api_key_id,
       run.model,
       run.profile,
+      run.trigger_kind,
+      run.schedule_id,
       run.trusted_comparison_enabled,
       run.trusted_comparison_available,
       run.level,
@@ -225,11 +248,14 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
       run.duration_ms,
       run.request_summary_json,
       run.result_summary_json,
+      run.policy_snapshot_json,
+      run.quality_decision_json,
       run.error_code,
       run.error_message,
       run.created_at,
       run.updated_at
     )
+  }, database)
   return modelCheckRunFromRow(run, includeSystemAccountFields())
 }
 
@@ -253,6 +279,8 @@ export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput):
     api_key_id: input.apiKeyId ?? null,
     model: input.model,
     profile: input.profile ?? 'quick',
+    trigger_kind: input.triggerKind ?? 'manual',
+    schedule_id: input.scheduleId ?? null,
     trusted_comparison_enabled: input.trustedComparison ? 1 : 0,
     trusted_comparison_available: input.trustedComparisonAvailable ? 1 : 0,
     level: 'unavailable',
@@ -267,20 +295,24 @@ export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput):
     duration_ms: null,
     request_summary_json: safeJson(input.requestSummary ?? {}),
     result_summary_json: '{}',
+    policy_snapshot_json: safeJson(input.policySnapshot ?? {}),
+    quality_decision_json: '{}',
     error_code: null,
     error_message: null,
     created_at: now,
     updated_at: now
   }
-  await client.execute(`
-    INSERT INTO ${modelCheckTable(client, 'model_check_runs')} (
+  await client.transaction(async (tx) => {
+    await ensureModelCheckRunCapacityAsync(tx, run.account_id)
+    await tx.execute(`
+    INSERT INTO ${modelCheckTable(tx, 'model_check_runs')} (
       id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, target_name,
-      target_owner_system_account_id, account_id, group_id, api_key_id, model, profile,
+      target_owner_system_account_id, account_id, group_id, api_key_id, model, profile, trigger_kind, schedule_id,
       trusted_comparison_enabled, trusted_comparison_available, level, score, max_score, status, message,
       trace_id, probe_set_version, started_at, finished_at, duration_ms, request_summary_json,
-      result_summary_json, error_code, error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
+      result_summary_json, policy_snapshot_json, quality_decision_json, error_code, error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
     run.id,
     run.system_account_id,
     run.actor_system_account_id,
@@ -294,6 +326,8 @@ export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput):
     run.api_key_id,
     run.model,
     run.profile,
+    run.trigger_kind,
+    run.schedule_id,
     run.trusted_comparison_enabled,
     run.trusted_comparison_available,
     run.level,
@@ -308,11 +342,14 @@ export async function createModelCheckRunAsync(input: ModelCheckRunCreateInput):
     run.duration_ms,
     run.request_summary_json,
     run.result_summary_json,
+    run.policy_snapshot_json,
+    run.quality_decision_json,
     run.error_code,
     run.error_message,
     run.created_at,
-    run.updated_at
-  ])
+      run.updated_at
+    ])
+  })
   return modelCheckRunFromRow(run, includeSystemAccountFields())
 }
 
@@ -476,6 +513,26 @@ export async function finishModelCheckRunAsync(runId: string, input: ModelCheckR
   return result.changes > 0 ? findModelCheckRunAsync(runId) : undefined
 }
 
+export function updateModelCheckQualityDecision(runId: string, decision: ModelQualityDecision): ModelCheckRunSummary | undefined {
+  const result = getDatasetDatabase().prepare(`
+    UPDATE model_check_runs
+    SET quality_decision_json = ?, updated_at = ?
+    WHERE id = ?
+  `).run(safeJson(decision), nowIso(), runId)
+  return result.changes > 0 ? findModelCheckRun(runId) : undefined
+}
+
+export async function updateModelCheckQualityDecisionAsync(runId: string, decision: ModelQualityDecision): Promise<ModelCheckRunSummary | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return updateModelCheckQualityDecision(runId, decision)
+  const client = await modelCheckDatabaseClient()
+  const result = await client.execute(`
+    UPDATE ${modelCheckTable(client, 'model_check_runs')}
+    SET quality_decision_json = ?, updated_at = ?
+    WHERE id = ?
+  `, [safeJson(decision), nowIso(), runId])
+  return result.changes > 0 ? findModelCheckRunAsync(runId) : undefined
+}
+
 export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunListOptions = {}): ModelCheckRunListResult {
   const normalized = normalizeListOptions(options)
   const filters = buildModelCheckRunFilters(access, normalized)
@@ -600,6 +657,117 @@ export async function listModelCheckRunsAsync(access?: AccessScope, options: Mod
   }
 }
 
+function ensureModelCheckRunCapacity(database: ReturnType<typeof getDatasetDatabase>, accountId: string | null): void {
+  if (!accountId) return
+  let count = modelCheckRunCount(database, accountId)
+  while (count >= maximumModelCheckRunsPerAccount) {
+    trimOldestModelCheckRunBatch(database, accountId)
+    const nextCount = modelCheckRunCount(database, accountId)
+    if (nextCount >= count) throwModelCheckRetentionBlocked(accountId, '清理批次未减少日志数量')
+    count = nextCount
+  }
+}
+
+async function ensureModelCheckRunCapacityAsync(client: DatabaseClient, accountId: string | null): Promise<void> {
+  if (!accountId) return
+  if (client.driver === 'postgres') {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext(?))', [`model-check-retention:${accountId}`])
+  }
+  const runs = modelCheckTable(client, 'model_check_runs')
+  const observations = modelCheckTable(client, 'model_check_observations')
+  let count = await modelCheckRunCountAsync(client, runs, accountId)
+  while (count >= maximumModelCheckRunsPerAccount) {
+    await trimOldestModelCheckRunBatchAsync(client, runs, observations, accountId)
+    const nextCount = await modelCheckRunCountAsync(client, runs, accountId)
+    if (nextCount >= count) throwModelCheckRetentionBlocked(accountId, '清理批次未减少日志数量')
+    count = nextCount
+  }
+}
+
+function modelCheckRunCount(database: ReturnType<typeof getDatasetDatabase>, accountId: string): number {
+  return Number((database.prepare('SELECT COUNT(*) AS count FROM model_check_runs WHERE account_id = ?').get(accountId) as { count?: number } | undefined)?.count ?? 0)
+}
+
+function trimOldestModelCheckRunBatch(database: ReturnType<typeof getDatasetDatabase>, accountId: string): void {
+  const candidates = database.prepare(`
+    SELECT id FROM model_check_runs
+    WHERE account_id = ? AND status <> 'running'
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `).all(accountId, modelCheckRunTrimBatchSize) as unknown as Array<{ id: string }>
+  if (candidates.length < modelCheckRunTrimBatchSize) {
+    throwModelCheckRetentionBlocked(accountId, '可清理的已结束运行不足 100 条，暂缓清理')
+  }
+  const ids = candidates.map((row) => row.id)
+  const cursor = getStatsDatabase().prepare(`
+    SELECT cursor_created_at, cursor_id FROM stats_job_state
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+    LIMIT 1
+  `).get(modelTrustAggregationJobName) as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+  const observation = database.prepare(`
+    SELECT created_at, id FROM model_check_observations
+    WHERE run_id IN (${sqlPlaceholders(ids.length)})
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(...ids) as { created_at: string; id: string } | undefined
+  if (observation && !cursorHasConsumed(cursor, observation)) {
+    throwModelCheckRetentionBlocked(accountId, '最老 100 条运行仍有 observation 尚未被统计聚合消费')
+  }
+  database.prepare(`DELETE FROM model_check_runs WHERE id IN (${sqlPlaceholders(ids.length)}) AND account_id = ? AND status <> 'running'`).run(...ids, accountId)
+}
+
+async function modelCheckRunCountAsync(client: DatabaseClient, runs: string, accountId: string): Promise<number> {
+  const countRow = await client.one<{ count: number }>(`SELECT COUNT(*) AS count FROM ${runs} WHERE account_id = ?`, [accountId])
+  return Number(countRow?.count ?? 0)
+}
+
+async function trimOldestModelCheckRunBatchAsync(client: DatabaseClient, runs: string, observations: string, accountId: string): Promise<void> {
+  const candidates = await client.query<{ id: string }>(`
+    SELECT id FROM ${runs}
+    WHERE account_id = ? AND status <> 'running'
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+    FOR UPDATE
+  `, [accountId, modelCheckRunTrimBatchSize])
+  if (candidates.length < modelCheckRunTrimBatchSize) {
+    throwModelCheckRetentionBlocked(accountId, '可清理的已结束运行不足 100 条，暂缓清理')
+  }
+  const ids = candidates.map((row) => row.id)
+  const cursor = await client.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
+    SELECT cursor_created_at, cursor_id FROM ${client.dialect.qualifyTable('juhe_stats', 'stats_job_state')}
+    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+    LIMIT 1
+  `, [modelTrustAggregationJobName])
+  const observation = await client.one<{ created_at: string; id: string }>(`
+    SELECT created_at, id FROM ${observations}
+    WHERE run_id IN (${client.dialect.bindPlaceholders(ids.length)})
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `, ids)
+  if (observation && !cursorHasConsumed(cursor, observation)) {
+    throwModelCheckRetentionBlocked(accountId, '最老 100 条运行仍有 observation 尚未被统计聚合消费')
+  }
+  await client.execute(`
+    DELETE FROM ${runs}
+    WHERE id IN (${client.dialect.bindPlaceholders(ids.length)}) AND account_id = ? AND status <> 'running'
+  `, [...ids, accountId])
+}
+
+function cursorHasConsumed(
+  cursor: { cursor_created_at?: string | null; cursor_id?: string | null } | undefined,
+  observation: { created_at: string; id: string }
+): boolean {
+  const cursorCreatedAt = cursor?.cursor_created_at ?? ''
+  const cursorId = cursor?.cursor_id ?? ''
+  return cursorCreatedAt > observation.created_at
+    || (cursorCreatedAt === observation.created_at && cursorId >= observation.id)
+}
+
+function throwModelCheckRetentionBlocked(accountId: string, reason: string): never {
+  logger.warn({ event: 'model_check_account_retention_blocked', accountId, maximumRuns: maximumModelCheckRunsPerAccount, trimBatchSize: modelCheckRunTrimBatchSize, reason }, '模型检测账户日志达到上限但暂不能安全清理')
+  throw new Error(`账户模型质量测试日志已达到 ${maximumModelCheckRunsPerAccount} 条；${reason}，请等待后台聚合后重试`)
+}
+
 function findModelCheckRun(runId: string): ModelCheckRunSummary | undefined {
   const row = getDatasetDatabase()
     .prepare('SELECT * FROM model_check_runs WHERE id = ? LIMIT 1')
@@ -646,6 +814,10 @@ function buildModelCheckRunFilters(access: AccessScope | undefined, options: Nor
     clauses.push('mcr.status = ?')
     params.push(options.status)
   }
+  if (options.triggerKind) {
+    clauses.push('mcr.trigger_kind = ?')
+    params.push(options.triggerKind)
+  }
   if (options.startAt) {
     clauses.push('mcr.created_at >= ?')
     params.push(options.startAt)
@@ -662,15 +834,15 @@ function buildModelCheckRunFilters(access: AccessScope | undefined, options: Nor
 
 function normalizeListOptions(options: ModelCheckRunListOptions): NormalizedModelCheckRunListOptions {
   const pageSize = boundedInteger(options.pageSize, defaultModelCheckPageSize, 1, maxModelCheckPageSize)
-  const maxPage = Math.max(1, Math.floor((maxModelCheckListWindowRows - 1) / pageSize))
   return {
-    page: boundedInteger(options.page, 1, 1, maxPage),
+    page: boundedInteger(options.page, 1, 1, Number.MAX_SAFE_INTEGER),
     pageSize,
     targetType: isTargetType(options.targetType) ? options.targetType : undefined,
     targetId: trimText(options.targetId),
     model: trimText(options.model),
     level: isLevel(options.level) ? options.level : undefined,
     status: isStatus(options.status) ? options.status : undefined,
+    triggerKind: isTriggerKind(options.triggerKind) ? options.triggerKind : undefined,
     startAt: trimText(options.startAt),
     endAt: trimText(options.endAt)
   }
@@ -710,6 +882,8 @@ function modelCheckRunListSelectColumns(alias: string): string {
     'api_key_id',
     'model',
     'profile',
+    'trigger_kind',
+    'schedule_id',
     'trusted_comparison_enabled',
     'trusted_comparison_available',
     'level',
@@ -728,7 +902,9 @@ function modelCheckRunListSelectColumns(alias: string): string {
     'updated_at'
   ].map((column) => `${prefix}${column}`).concat([
     "'{}' AS request_summary_json",
-    "'{}' AS result_summary_json"
+    "'{}' AS result_summary_json",
+    "'{}' AS policy_snapshot_json",
+    "'{}' AS quality_decision_json"
   ]).join(', ')
 }
 
@@ -753,6 +929,8 @@ function modelCheckRunFromRow(
     apiKeyId: row.api_key_id ?? undefined,
     model: row.model,
     profile: row.profile,
+    triggerKind: row.trigger_kind,
+    scheduleId: row.schedule_id ?? undefined,
     trustedComparison: row.trusted_comparison_enabled === 1,
     trustedComparisonAvailable: row.trusted_comparison_available === 1,
     level: row.level,
@@ -767,7 +945,9 @@ function modelCheckRunFromRow(
     durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
     ...(options.includeSummaries === false ? {} : {
       requestSummary: parseJsonRecord(row.request_summary_json),
-      resultSummary: parseJsonRecord(row.result_summary_json)
+      resultSummary: parseJsonRecord(row.result_summary_json),
+      policySnapshot: parseJsonRecord(row.policy_snapshot_json) as unknown as ModelQualityPolicySnapshot,
+      qualityDecision: parseOptionalJsonRecord(row.quality_decision_json) as ModelQualityDecision | undefined
     }),
     errorCode: row.error_code ?? undefined,
     errorMessage: row.error_message ?? undefined,
@@ -828,6 +1008,11 @@ function parseJsonRecord(text: string): Record<string, unknown> {
   }
 }
 
+function parseOptionalJsonRecord(text: string): Record<string, unknown> | undefined {
+  const value = parseJsonRecord(text)
+  return Object.keys(value).length ? value : undefined
+}
+
 function boundedString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
@@ -864,4 +1049,8 @@ function isLevel(value: unknown): value is ModelCheckLevel {
 
 function isStatus(value: unknown): value is ModelCheckRunStatus {
   return value === 'running' || value === 'completed' || value === 'failed' || value === 'canceled'
+}
+
+function isTriggerKind(value: unknown): value is ModelCheckTriggerKind {
+  return value === 'manual' || value === 'scheduled' || value === 'quality_recovery'
 }

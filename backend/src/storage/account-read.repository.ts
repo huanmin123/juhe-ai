@@ -46,11 +46,11 @@ function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = 
     WHEN account_rows.source_last_error_code = 'account_expired'
       OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+    WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.source_status
     WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN account_rows.source_schedulable <> 1 THEN 'disabled'
     WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql} THEN 'disabled'
-    WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+    WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.status
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN ${accountApiKeyPoolAllUnavailableSql({
@@ -86,7 +86,7 @@ function ownerAccountEffectiveStatusExpression(): string {
     WHEN account_rows.last_error_code = 'account_expired'
       OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+    WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.status
     WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN account_rows.schedulable <> 1 THEN 'disabled'
     WHEN ${accountApiKeyPoolAllUnavailableSql({
@@ -128,14 +128,14 @@ function authorizedSourceAccountAvailableExpression(): string {
 
 function authorizedAccountHardUnavailableExpression(): string {
   return `account_rows.schedulable <> 1
-    OR account_rows.status IN ('pending_test', 'disabled', 'error')
+    OR account_rows.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
     OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${currentIsoSql})`
 }
 
 function authorizedSourceAccountHardUnavailableExpression(): string {
   return `account_rows.source_status IS NULL
     OR COALESCE(account_rows.source_schedulable, 0) <> 1
-    OR account_rows.source_status IN ('pending_test', 'disabled', 'error')
+    OR account_rows.source_status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
     OR COALESCE(account_rows.source_last_error_code, '') = 'account_expired'
     OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${currentIsoSql})`
 }

@@ -31,12 +31,24 @@
         <a-descriptions-item label="账户名称">{{ targetDisplayName(run) }}</a-descriptions-item>
         <a-descriptions-item label="模型">{{ modelText(run.model) }}</a-descriptions-item>
         <a-descriptions-item label="检测模式">{{ profileText(run.profile) }}</a-descriptions-item>
+        <a-descriptions-item label="检查来源">{{ triggerText(run.triggerKind) }}</a-descriptions-item>
         <a-descriptions-item label="创建时间">{{ formatDateTime(run.createdAt) }}</a-descriptions-item>
         <a-descriptions-item label="完成时间">{{ formatDateTime(run.finishedAt) }}</a-descriptions-item>
         <a-descriptions-item label="耗时">{{ formatDuration(run.durationMs) }}</a-descriptions-item>
         <a-descriptions-item label="证据完整度">{{ evidenceCompletenessText(run) }}</a-descriptions-item>
         <a-descriptions-item label="结论">{{ run.message || run.errorMessage || '-' }}</a-descriptions-item>
         <a-descriptions-item label="Trace ID">{{ run.traceId || '-' }}</a-descriptions-item>
+      </a-descriptions>
+
+      <a-descriptions v-if="run.qualityDecision" bordered size="small" :column="descriptionColumns" class="run-descriptions" title="质量判定与处罚">
+        <a-descriptions-item label="判定">{{ run.qualityDecision.triggered ? '质量不达标' : '质量达标 / 未处罚' }}</a-descriptions-item>
+        <a-descriptions-item label="分数 / 阈值">{{ run.qualityDecision.score }} / {{ run.qualityDecision.threshold }}</a-descriptions-item>
+        <a-descriptions-item label="处罚方式">{{ penaltyActionText(run.qualityDecision.configuredAction) }}</a-descriptions-item>
+        <a-descriptions-item label="执行结果">{{ enforcementResultText(run.qualityDecision.result) }}</a-descriptions-item>
+        <a-descriptions-item label="账户状态">{{ run.qualityDecision.beforeStatus || '-' }} → {{ run.qualityDecision.afterStatus || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="健康监控同步">{{ healthSyncText(run.qualityDecision.healthSyncResult) }}</a-descriptions-item>
+        <a-descriptions-item v-if="run.qualityDecision.recoveryDueAt" label="下次质量恢复">{{ formatDateTime(run.qualityDecision.recoveryDueAt) }}</a-descriptions-item>
+        <a-descriptions-item label="处罚详情">{{ run.qualityDecision.message }}</a-descriptions-item>
       </a-descriptions>
 
       <a-descriptions v-if="trustReport" bordered size="small" :column="descriptionColumns" class="run-descriptions" title="可信度分项">
@@ -171,6 +183,13 @@ const reasonCodesText = (codes: string[]) => codes.length
       population_drift_protected: '群体发生共同漂移，已暂停强身份结论'
     }[code] ?? `未知原因码：${code}`)).join('；')
   : '未发现已知异常原因'
+
+const triggerText = (value: ModelCheckRunDetail['triggerKind']) => value === 'scheduled' ? '定时检查' : value === 'quality_recovery' ? '质量恢复' : '手动检查'
+const penaltyActionText = (value: NonNullable<ModelCheckRunDetail['qualityDecision']>['configuredAction']) => ({ fallback: '降级备用', disable: '停用', quality_isolate: '质量隔离' }[value])
+const enforcementResultText = (value: NonNullable<ModelCheckRunDetail['qualityDecision']>['result']) => ({
+  not_triggered: '未触发', applied: '已执行', already_effective: '状态已生效', skipped: '已跳过', stale: '因配置变化忽略', pending_retry: '等待重试', failed: '执行失败'
+}[value])
+const healthSyncText = (value: NonNullable<ModelCheckRunDetail['qualityDecision']>['healthSyncResult']) => value === 'applied' ? '当前小时已标记不可用' : value === 'pending_retry' ? '等待重试' : value === 'failed' ? '同步失败' : '无需同步'
 
 function modelText(value: string) {
   return modelCheckModelText(value, props.supportedModels)

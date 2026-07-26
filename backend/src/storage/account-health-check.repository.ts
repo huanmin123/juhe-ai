@@ -1284,7 +1284,7 @@ function healthCheckScanLimit(limit: number): number {
 
 function normalizedIntervalHours(value: unknown): number {
   const parsed = Math.trunc(Number(value))
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(parsed, 168)) : 12
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(parsed, 168)) : 1
 }
 
 function normalizedJitterMinutes(value: unknown): number {
@@ -1293,7 +1293,7 @@ function normalizedJitterMinutes(value: unknown): number {
 
 function normalizedJitterMinutesValue(value: unknown): number {
   const parsed = Math.trunc(Number(value))
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, 1440)) : 120
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, 1440)) : 10
 }
 
 function normalizedFailureThreshold(value: unknown): number {

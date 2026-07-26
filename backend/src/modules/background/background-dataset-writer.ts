@@ -6,12 +6,15 @@ import {
   createModelCheckRunAsync,
   finishModelCheckRun,
   finishModelCheckRunAsync,
+  updateModelCheckQualityDecision,
+  updateModelCheckQualityDecisionAsync,
   type ModelCheckItemCreateInput,
   type ModelCheckRunCreateInput,
   type ModelCheckRunFinishInput
 } from '../../storage/model-checks.repository.js'
 import { sqliteWriterBoundaryStrictModeEnabled } from '../../storage/database.js'
 import type { ModelCheckItemSummary, ModelCheckRunSummary } from '../../domain/types.js'
+import type { ModelQualityDecision } from '../../domain/types.js'
 import { requestBackgroundWorkerDatasetWrite } from './background-ipc.js'
 import { createModelCheckObservationsAsync, type ModelCheckObservationInput } from '../../storage/model-trust.repository.js'
 
@@ -34,12 +37,18 @@ export type BackgroundDatasetWriteOperation =
     type: 'create_model_check_observations'
     observations: ModelCheckObservationInput[]
   }
+  | {
+    type: 'update_model_check_quality_decision'
+    runId: string
+    decision: ModelQualityDecision
+  }
 
 export type BackgroundDatasetWriteOperationResult<T extends BackgroundDatasetWriteOperation = BackgroundDatasetWriteOperation> =
   T extends { type: 'create_model_check_run' } ? ModelCheckRunSummary :
   T extends { type: 'create_model_check_items' } ? ModelCheckItemSummary[] :
   T extends { type: 'finish_model_check_run' } ? ModelCheckRunSummary | undefined :
   T extends { type: 'create_model_check_observations' } ? number :
+  T extends { type: 'update_model_check_quality_decision' } ? ModelCheckRunSummary | undefined :
   unknown
 
 export async function requestDatasetWriter<T extends BackgroundDatasetWriteOperation>(
@@ -72,6 +81,10 @@ export async function handleDatasetWriteOperation(operation: BackgroundDatasetWr
         : finishModelCheckRun(operation.runId, operation.input)
     case 'create_model_check_observations':
       return await createModelCheckObservationsAsync(operation.observations)
+    case 'update_model_check_quality_decision':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await updateModelCheckQualityDecisionAsync(operation.runId, operation.decision)
+        : updateModelCheckQualityDecision(operation.runId, operation.decision)
     default:
       return assertNever(operation)
   }

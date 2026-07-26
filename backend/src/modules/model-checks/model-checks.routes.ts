@@ -4,9 +4,15 @@ import { z } from 'zod'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
+import { manageableSystemAccountId } from '../../storage/access-scope.js'
+import {
+  getModelQualityPolicyAsync,
+  listModelQualitySchedulesAsync
+} from '../../storage/model-quality.repository.js'
 import { activateModelTokenInterceptBaselineAsync } from '../../storage/model-trust.repository.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
@@ -42,6 +48,23 @@ const modelCheckRunSchema = z.object({
   profile: z.enum(['quick', 'full']).optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
+}).strict()
+
+const modelQualityPolicySchema = z.object({
+  expectedRevision: z.number().int().min(0),
+  profile: z.enum(['quick', 'full']),
+  manualEnforcementEnabled: z.boolean(),
+  penaltyThreshold: z.number().int().min(40).max(100),
+  penaltyAction: z.enum(['disable', 'fallback', 'quality_isolate']),
+  recoveryIntervalMinutes: z.number().int().min(10).max(10080)
+}).strict()
+
+const modelQualityScheduleSchema = z.object({
+  accountId: z.string().trim().min(1),
+  model: z.string().trim().min(1).max(200),
+  intervalMinutes: z.number().int().min(10).max(10080),
+  enabled: z.boolean().optional(),
+  expectedRevision: z.number().int().min(0).optional()
 }).strict()
 
 const tokenInterceptBaselineActivationSchema = z.object({
@@ -82,6 +105,79 @@ modelChecksRouter.get('/options', (req, res, next) => {
     res.json(ok(getModelCheckOptions(getRequestAccessScope(req.query.systemAccountId))))
   } catch (error) {
     next(error)
+  }
+})
+
+modelChecksRouter.get('/quality-policy', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = requireModelQualitySystemAccountId(access)
+    res.json(ok(await getModelQualityPolicyAsync(systemAccountId)))
+  } catch (error) {
+    handleModelQualityRouteError(error, res, next)
+  }
+})
+
+modelChecksRouter.put('/quality-policy', async (req, res, next) => {
+  const parsed = modelQualityPolicySchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型质量检测配置无效'))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = requireModelQualitySystemAccountId(access)
+    const result = await requestDbService({ type: 'model_quality_command', command: { kind: 'save_policy', systemAccountId, input: parsed.data } })
+    if (result.kind !== 'policy') throw new Error('模型质量检测配置保存返回类型无效')
+    res.json(ok(result.policy))
+  } catch (error) {
+    handleModelQualityRouteError(error, res, next)
+  }
+})
+
+modelChecksRouter.get('/quality-schedules', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = requireModelQualitySystemAccountId(access)
+    res.json(ok(await listModelQualitySchedulesAsync(systemAccountId, {
+      page: optionalPositiveInteger(req.query.page),
+      pageSize: optionalPositiveInteger(req.query.pageSize)
+    })))
+  } catch (error) {
+    handleModelQualityRouteError(error, res, next)
+  }
+})
+
+modelChecksRouter.post('/quality-schedules', async (req, res, next) => {
+  const parsed = modelQualityScheduleSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '定时检查配置无效'))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = requireModelQualitySystemAccountId(access)
+    const result = await requestDbService({ type: 'model_quality_command', command: { kind: 'upsert_schedule', systemAccountId, input: parsed.data } })
+    if (result.kind !== 'schedule') throw new Error('定时检查配置保存返回类型无效')
+    res.json(ok(result.schedule))
+  } catch (error) {
+    handleModelQualityRouteError(error, res, next)
+  }
+})
+
+modelChecksRouter.delete('/quality-schedules/:id', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = requireModelQualitySystemAccountId(access)
+    const result = await requestDbService({ type: 'model_quality_command', command: { kind: 'delete_schedule', systemAccountId, scheduleId: req.params.id } })
+    if (result.kind !== 'deleted') throw new Error('定时检查配置删除返回类型无效')
+    if (!result.deleted) {
+      sendNotFound(res, '定时检查配置不存在')
+      return
+    }
+    res.json(ok(result))
+  } catch (error) {
+    handleModelQualityRouteError(error, res, next)
   }
 })
 
@@ -351,4 +447,37 @@ function activeModelCheckProgressUpdater(key: string): (event: ModelCheckProgres
       })
     }
   }
+}
+
+function requireModelQualitySystemAccountId(access: ReturnType<typeof getRequestAccessScope>): string {
+  const systemAccountId = manageableSystemAccountId(access)
+  if (!systemAccountId) {
+    throw new ModelCheckRequestError(400, '请先选择具体系统账户')
+  }
+  return systemAccountId
+}
+
+function optionalPositiveInteger(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  const raw = Array.isArray(value) ? value[0] : value
+  const parsed = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new ModelCheckRequestError(400, '分页参数无效')
+  return parsed
+}
+
+function handleModelQualityRouteError(error: unknown, res: Response, next: NextFunction): void {
+  const message = error instanceof Error ? error.message : '模型质量配置操作失败'
+  if (error instanceof ModelCheckRequestError) {
+    res.status(error.statusCode).json({ message })
+    return
+  }
+  if (/已变化|已被其他操作修改/.test(message)) {
+    res.status(409).json({ message })
+    return
+  }
+  if (/无效|必须|不能为空|不存在|无权|不是当前/.test(message)) {
+    res.status(400).json({ message })
+    return
+  }
+  next(error)
 }

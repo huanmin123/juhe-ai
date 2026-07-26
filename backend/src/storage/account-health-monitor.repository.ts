@@ -27,6 +27,7 @@ interface AccountHealthHourRow {
   status_code: number | null
   error_code: string | null
   error_message: string | null
+  source_order?: number
 }
 
 export function getAiHealthList(access?: AccessScope, options: AiHealthListOptions = {}): AiHealthListResult {
@@ -84,12 +85,21 @@ function loadAccountHealthRows(database: DatabaseSync, accountIds: string[], hou
   const endHour = hourBuckets[hourBuckets.length - 1]
   for (const chunk of chunkValues(accountIds, 900)) {
     rows.push(...database.prepare(`
-      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message
-      FROM account_health_hourly
-      WHERE account_id IN (${sqlPlaceholders(chunk.length)})
-        AND stat_hour >= ? AND stat_hour <= ?
-      ORDER BY account_id ASC, stat_hour ASC
-    `).all(...chunk, startHour, endHour) as unknown as AccountHealthHourRow[])
+      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, source_order
+      FROM (
+        SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
+        FROM account_health_hourly
+        WHERE account_id IN (${sqlPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
+        UNION ALL
+        SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at,
+               NULL AS status_code, 'model_quality_failed' AS error_code,
+               '模型质量检查不达标：' || score || ' 分，阈值 ' || threshold || ' 分' AS error_message,
+               1 AS source_order
+        FROM account_quality_health_hourly
+        WHERE account_id IN (${sqlPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
+      ) merged_health
+      ORDER BY account_id ASC, stat_hour ASC, source_order ASC
+    `).all(...chunk, startHour, endHour, ...chunk, startHour, endHour) as unknown as AccountHealthHourRow[])
   }
   return rows
 }
@@ -101,12 +111,21 @@ async function loadAccountHealthRowsAsync(client: DatabaseClient, accountIds: st
   const endHour = hourBuckets[hourBuckets.length - 1]
   for (const chunk of chunkValues(accountIds, 900)) {
     rows.push(...await client.query<AccountHealthHourRow>(`
-      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message
-      FROM ${client.dialect.qualifyTable('juhe_stats', 'account_health_hourly')}
-      WHERE account_id IN (${client.dialect.bindPlaceholders(chunk.length)})
-        AND stat_hour >= ? AND stat_hour <= ?
-      ORDER BY account_id ASC, stat_hour ASC
-    `, [...chunk, startHour, endHour]))
+      SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, source_order
+      FROM (
+        SELECT account_id, stat_hour, status, last_observed_at, status_code, error_code, error_message, 0 AS source_order
+        FROM ${client.dialect.qualifyTable('juhe_stats', 'account_health_hourly')}
+        WHERE account_id IN (${client.dialect.bindPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
+        UNION ALL
+        SELECT account_id, stat_hour, 'failure' AS status, observed_at AS last_observed_at,
+               NULL AS status_code, 'model_quality_failed' AS error_code,
+               '模型质量检查不达标：' || score || ' 分，阈值 ' || threshold || ' 分' AS error_message,
+               1 AS source_order
+        FROM ${client.dialect.qualifyTable('juhe_stats', 'account_quality_health_hourly')}
+        WHERE account_id IN (${client.dialect.bindPlaceholders(chunk.length)}) AND stat_hour >= ? AND stat_hour <= ?
+      ) merged_health
+      ORDER BY account_id ASC, stat_hour ASC, source_order ASC
+    `, [...chunk, startHour, endHour, ...chunk, startHour, endHour]))
   }
   return rows
 }

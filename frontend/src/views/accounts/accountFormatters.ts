@@ -55,6 +55,7 @@ export function statusColor(status: AccountStatus) {
   if (status === 'error') return 'red'
   if (status === 'rate_limited') return 'orange'
   if (status === 'temporary_unavailable') return 'gold'
+  if (status === 'quality_isolated') return 'red'
   return 'default'
 }
 
@@ -64,6 +65,7 @@ export function statusText(status: AccountStatus) {
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
   if (status === 'temporary_unavailable') return '临时不可调用'
+  if (status === 'quality_isolated') return '质量隔离'
   return '停用'
 }
 
@@ -356,6 +358,7 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   }
   if (sourceStatus === 'rate_limited') return { color: 'orange', label: '来源限流中' }
   if (sourceStatus === 'temporary_unavailable') return { color: 'gold', label: '来源临时不可调用' }
+  if (sourceStatus === 'quality_isolated') return { color: 'red', label: '来源质量隔离' }
   if (isFutureTime(account.authorizationInstanceSourceAccountCooldownUntil)) return { color: 'gold', label: '来源冷却' }
   if (account.authorizationInstanceSourceAccountSchedulable === false) return { color: 'orange', label: '来源停调' }
   return undefined
@@ -452,6 +455,7 @@ function directAccountStatusText(account: AccountSummary): string {
   if (isLongTermUnavailableAccount(account)) return '长期不可用'
   if (status === 'instance_rate_limited') return '限流中'
   if (status === 'instance_temporary_unavailable') return '临时不可调用'
+  if (status === 'instance_quality_isolated') return '质量隔离'
   if (status === 'instance_cooldown') return '冷却中'
   if (status === 'instance_unschedulable') return '停调'
   return statusText(account.status)

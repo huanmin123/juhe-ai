@@ -6,7 +6,8 @@ const accountStatusValues = new Set<AccountStatus>([
   'disabled',
   'error',
   'rate_limited',
-  'temporary_unavailable'
+  'temporary_unavailable',
+  'quality_isolated'
 ])
 
 export function accountStatusFilterForEffectiveAvailabilityStatus(
@@ -15,6 +16,7 @@ export function accountStatusFilterForEffectiveAvailabilityStatus(
   if (status === 'available' || status === 'runtime_degraded') return 'active'
   if (status === 'source_pending_test' || status === 'instance_pending_test') return 'pending_test'
   if (status === 'source_error' || status === 'instance_error') return 'error'
+  if (status === 'source_quality_isolated' || status === 'instance_quality_isolated') return 'quality_isolated'
   if (
     status === 'authorization_quota_exceeded'
     || status === 'source_rate_limited'

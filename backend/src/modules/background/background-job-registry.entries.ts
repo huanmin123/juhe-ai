@@ -321,6 +321,32 @@ export const backgroundScheduledJobs = [
     writes: ['business:accounts', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   scheduled({
+    jobName: 'model-quality-scheduled-check',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:model_quality_schedules', 'business:accounts', 'business:account_quality_enforcements', 'dataset:model_check_runs', 'stats:account_quality_health_hourly']
+  }),
+  scheduled({
+    jobName: 'model-quality-recovery',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: true,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'business:account_quality_enforcements', 'dataset:model_check_runs', 'stats:account_quality_health_hourly']
+  }),
+  scheduled({
     jobName: 'cooldown-account-retest',
     category: 'scheduled',
     kind: 'probe',

@@ -84,14 +84,14 @@ export function readUsageHealthCheckSettingsSnapshot(): Promise<AccountHealthChe
 
 function healthCheckSettingsFromSystemSettings(settings: Record<string, unknown>): AccountHealthCheckSettings {
   return {
-    intervalHours: boundedInteger(settings.accountHealthCheckIntervalHours, 12, 1, 168),
-    jitterMinutes: boundedInteger(settings.accountHealthCheckJitterMinutes, 120, 0, 1440),
+    intervalHours: boundedInteger(settings.accountHealthCheckIntervalHours, 1, 1, 168),
+    jitterMinutes: boundedInteger(settings.accountHealthCheckJitterMinutes, 10, 0, 1440),
     failureThreshold: boundedInteger(settings.accountHealthCheckFailureThreshold, 3, 1, 10)
   }
 }
 
 function defaultHealthCheckSettings(): AccountHealthCheckSettings {
-  return { intervalHours: 12, jitterMinutes: 120, failureThreshold: 3 }
+  return { intervalHours: 1, jitterMinutes: 10, failureThreshold: 3 }
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {

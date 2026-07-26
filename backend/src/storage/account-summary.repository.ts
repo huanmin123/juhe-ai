@@ -1253,11 +1253,11 @@ function accountListEffectiveStatusSql(): string {
         WHEN account_rows.source_last_error_code = 'account_expired'
           OR (account_rows.source_account_expires_at IS NOT NULL AND account_rows.source_account_expires_at <= ${current})
         THEN 'disabled'
-        WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.source_status
+        WHEN account_rows.source_status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.source_status
         WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${current} THEN 'temporary_unavailable'
         WHEN COALESCE(account_rows.source_schedulable, 0) <> 1 THEN 'disabled'
         WHEN account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${current} THEN 'disabled'
-        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.status
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current} THEN 'temporary_unavailable'
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
         ELSE account_rows.status
@@ -1267,7 +1267,7 @@ function accountListEffectiveStatusSql(): string {
         WHEN account_rows.last_error_code = 'account_expired'
           OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${current})
         THEN 'disabled'
-        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN account_rows.status
+        WHEN account_rows.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN account_rows.status
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current} THEN 'temporary_unavailable'
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
         ELSE account_rows.status
@@ -1413,7 +1413,7 @@ function ownerAccountEffectiveStatusSql(): string {
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at::timestamptz <= now())
     THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     ELSE accounts.status

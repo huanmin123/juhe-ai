@@ -17,7 +17,7 @@ import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 interface ScheduledAccountAvailabilityRow {
   id: string
-  status: 'active' | 'disabled' | 'pending_test' | 'error' | 'rate_limited' | 'temporary_unavailable'
+  status: 'active' | 'disabled' | 'pending_test' | 'error' | 'rate_limited' | 'temporary_unavailable' | 'quality_isolated'
   availability_schedule_json: string | null
   availability_schedule_next_check_at: string | null
 }
@@ -109,6 +109,12 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
         AND deleted_at IS NULL
         AND status IN ('active', 'disabled')
         AND status <> ?
+        AND NOT EXISTS (
+          SELECT 1 FROM account_quality_enforcements aqe
+          WHERE aqe.account_id = accounts.id
+            AND aqe.state = 'active'
+            AND aqe.action = 'disable'
+        )
     `)
     const updateNextCheck = database.prepare(`
       UPDATE accounts
@@ -246,6 +252,12 @@ export async function syncAccountAvailabilityScheduleStatusesAsync(now = new Dat
           AND deleted_at IS NULL
           AND status IN ('active', 'disabled')
           AND status <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM ${accountScheduleStatusTable(tx, 'account_quality_enforcements')} aqe
+            WHERE aqe.account_id = accounts.id
+              AND aqe.state = 'active'
+              AND aqe.action = 'disable'
+          )
       `, [update.status, update.nextCheckAt, updatedAt, update.id, update.status])
       if (changes.changes <= 0) {
         await updateAccountNextCheckAtAsync(tx, update)

@@ -101,6 +101,7 @@
     "test:ai-health-monitor": "tsx src/scripts/regression/ai-health-monitor-regression.ts",
     "test:account-health-check-postgres-settings-boundary": "tsx src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts",
     "test:account-quality-refresh": "tsx src/scripts/regression/account-quality-refresh-regression.ts",
+    "test:model-quality-enforcement": "tsx src/scripts/regression/model-quality-enforcement-regression.ts",
     "test:account-quality-gateway-status": "tsx src/scripts/regression/account-quality-gateway-status-regression.ts",
     "test:account-status-snapshot": "tsx src/scripts/regression/account-status-snapshot-contract-regression.ts",
     "test:account-list-stable-sort": "tsx src/scripts/regression/account-list-stable-sort-regression.ts",

@@ -73,8 +73,8 @@ function activateMockAccountIfRequested(
     return repositories.findAccountSummary(account.id, access) ?? account
   }
   if (!repositories.recordAccountHealthCheckSuccess(account.id, {
-    intervalHours: 12,
-    jitterMinutes: 0,
+    intervalHours: 1,
+    jitterMinutes: 10,
     failureThreshold: 3,
     statusCode: 200
   })) {

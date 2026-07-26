@@ -719,7 +719,7 @@ function ownerAccountOptionEffectiveStatusSql(): string {
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at::timestamptz <= now())
     THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     ELSE accounts.status
@@ -759,13 +759,13 @@ function authorizedAccountOptionEffectiveStatusSql(includeAuthorizationQuota: bo
     WHEN source_accounts.last_error_code = 'account_expired'
       OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at::timestamptz <= now())
     THEN 'disabled'
-    WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
+    WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN source_accounts.status
     WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
     WHEN source_accounts.schedulable <> 1 THEN 'disabled'
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at::timestamptz <= now())
     THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until::timestamptz > now() THEN 'temporary_unavailable'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     ELSE accounts.status
@@ -808,7 +808,7 @@ function authorizedAccountOptionAuthorizationAvailableSql(): string {
 function authorizedAccountOptionHardUnavailableSql(alias: 'accounts' | 'source_accounts'): string {
   return `${alias}.id IS NULL
     OR ${alias}.schedulable <> 1
-    OR ${alias}.status IN ('pending_test', 'disabled', 'error')
+    OR ${alias}.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
     OR ${alias}.last_error_code = 'account_expired'
     OR (${alias}.account_expires_at IS NOT NULL AND ${alias}.account_expires_at::timestamptz <= now())`
 }
@@ -1078,13 +1078,13 @@ function buildAccountOptionFilters(
     WHEN source_accounts.last_error_code = 'account_expired'
       OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
+    WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN source_accounts.status
     WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN source_accounts.schedulable <> 1 THEN 'disabled'
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${authorizedOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'
@@ -1110,12 +1110,12 @@ function buildAccountOptionFilters(
     AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ${currentIsoSql})
     AND (accounts.last_error_code IS NULL OR accounts.last_error_code <> 'account_expired')`
   const authorizedAccountHardUnavailableExpression = `accounts.schedulable <> 1
-    OR accounts.status IN ('pending_test', 'disabled', 'error')
+    OR accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
     OR accounts.last_error_code = 'account_expired'
     OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})`
   const authorizedSourceAccountHardUnavailableExpression = `source_accounts.id IS NULL
     OR source_accounts.schedulable <> 1
-    OR source_accounts.status IN ('pending_test', 'disabled', 'error')
+    OR source_accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
     OR source_accounts.last_error_code = 'account_expired'
     OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= ${currentIsoSql})`
   const authorizedAccountCoolingExpression = `accounts.status IN ('rate_limited', 'temporary_unavailable')
@@ -1185,7 +1185,7 @@ function ownerOptionStatusExpression(): string {
     WHEN accounts.last_error_code = 'account_expired'
       OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= ${currentIsoSql})
     THEN 'disabled'
-    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+    WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
     WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ${currentIsoSql} THEN 'temporary_unavailable'
     WHEN accounts.schedulable <> 1 THEN 'disabled'
     WHEN ${ownerOptionApiKeyPoolAllUnavailableExpression()} THEN 'temporary_unavailable'

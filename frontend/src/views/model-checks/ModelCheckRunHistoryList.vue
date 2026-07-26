@@ -44,6 +44,14 @@
           placeholder="全部级别"
           @change="handleLevelChange"
         />
+        <a-select
+          :value="filters.triggerKind"
+          allow-clear
+          class="history-filter"
+          :options="triggerOptions"
+          placeholder="全部来源"
+          @change="handleTriggerChange"
+        />
         <AccountSelect
           :value="filters.targetId"
           :selected-account="selectedHistoryTargetAccount"
@@ -117,6 +125,9 @@
         <template v-else-if="column.key === 'profile'">
           <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
         </template>
+        <template v-else-if="column.key === 'triggerKind'">
+          <a-tag :color="triggerColor(record.triggerKind)">{{ triggerText(record.triggerKind) }}</a-tag>
+        </template>
         <template v-else-if="column.key === 'createdAt'">
           {{ formatDateTime(record.createdAt) }}
         </template>
@@ -140,6 +151,7 @@
             <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
             <a-tag>{{ modelText(record.model) }}</a-tag>
             <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
+            <a-tag :color="triggerColor(record.triggerKind)">{{ triggerText(record.triggerKind) }}</a-tag>
             <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
             <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
           </div>
@@ -185,6 +197,7 @@ import type {
   ModelCheckOption,
   ModelCheckRunSummary,
   ModelCheckStatus,
+  ModelCheckTriggerKind,
   SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
@@ -211,6 +224,7 @@ export interface ModelCheckRunHistoryFilters {
   model?: ModelCheckModel
   level?: ModelCheckLevel
   status?: ModelCheckStatus
+  triggerKind?: ModelCheckTriggerKind
 }
 
 const props = defineProps<{
@@ -248,6 +262,7 @@ const emit = defineEmits<{
   (event: 'update:model', value?: ModelCheckModel): void
   (event: 'update:selectedHistoryTargetAccount', value?: AccountSelection): void
   (event: 'update:status', value?: ModelCheckStatus): void
+  (event: 'update:triggerKind', value?: ModelCheckTriggerKind): void
   (event: 'update:systemAccountFilter', value?: string): void
   (event: 'update:systemAccountFilterSelection', value?: PrincipalSelection): void
   (event: 'update:targetId', value?: string): void
@@ -255,6 +270,11 @@ const emit = defineEmits<{
 }>()
 
 const columns = modelCheckHistoryColumns
+const triggerOptions = [
+  { label: '手动检查', value: 'manual' },
+  { label: '定时检查', value: 'scheduled' },
+  { label: '质量恢复', value: 'quality_recovery' }
+]
 
 function handleModelChange(value: SelectValue) {
   emit('update:model', typeof value === 'string' ? value as ModelCheckModel : undefined)
@@ -269,6 +289,19 @@ function handleStatusChange(value: SelectValue) {
 function handleLevelChange(value: SelectValue) {
   emit('update:level', typeof value === 'string' ? value as ModelCheckLevel : undefined)
   emit('reload')
+}
+
+function handleTriggerChange(value: SelectValue) {
+  emit('update:triggerKind', typeof value === 'string' ? value as ModelCheckTriggerKind : undefined)
+  emit('reload')
+}
+
+function triggerText(value: ModelCheckTriggerKind) {
+  return value === 'scheduled' ? '定时检查' : value === 'quality_recovery' ? '质量恢复' : '手动检查'
+}
+
+function triggerColor(value: ModelCheckTriggerKind) {
+  return value === 'scheduled' ? 'purple' : value === 'quality_recovery' ? 'orange' : 'blue'
 }
 
 function handleSystemAccountChange(value: SelectValue) {

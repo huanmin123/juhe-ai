@@ -156,6 +156,7 @@ export interface UsageRecordsCleanupPreviewResult {
 export interface UsageStatsRetentionCleanupResult {
   accountQualityMinuteStats: number
   accountHealthHourly: number
+  accountQualityHealthHourly: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -850,6 +851,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
   return {
     accountQualityMinuteStats: deleteRowsBeforeByRowid(database, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     accountHealthHourly: deleteRowsBeforeByRowid(database, 'account_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    accountQualityHealthHourly: deleteRowsBeforeByRowid(database, 'account_quality_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     usageStatsMinute: deleteRowsBeforeByRowid(database, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: deleteRowsBeforeByRowid(database, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageErrorMinute: deleteRowsBeforeByRowid(database, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
@@ -900,6 +902,7 @@ export async function cleanupUsageStatsBucketsBeforeAsync(input: Parameters<type
   return await client.transaction(async (tx) => ({
     accountQualityMinuteStats: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     accountHealthHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    accountQualityHealthHourly: await deletePostgresStatsRowsBeforeByCtid(tx, 'account_quality_health_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     usageStatsMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageErrorMinute: await deletePostgresStatsRowsBeforeByCtid(tx, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),

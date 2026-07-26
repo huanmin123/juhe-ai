@@ -12,6 +12,10 @@
       :model="form.model"
       :model-options="runModelOptions"
       :options-loading="optionsLoading"
+      :quality-actions-disabled="qualityActionsDisabled"
+      :quality-policy="qualityPolicy"
+      :quality-policy-loading="qualityPolicyLoading"
+      :quality-policy-saving="qualityPolicySaving"
       :selected-comparison-account="selectedComparisonAccount"
       :selected-target-account="selectedTargetAccount"
       :submitting="submitting"
@@ -31,9 +35,12 @@
       @comparison-dropdown-visible-change="handleComparisonDropdownVisibleChange"
       @comparison-search="handleComparisonSearch"
       @refresh="loadOptions"
+      @quality-policy-open="loadQualityPolicy"
+      @quality-policy-save="saveQualityPolicy"
       @reset="resetRunForm"
       @stop="stopCurrentModelCheck()"
       @submit="submitRun"
+      @schedules-open="openSchedules"
       @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown-visible-change="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
@@ -42,7 +49,6 @@
       @target-search="handleTargetSearch"
       @target-value-update="handleTargetValueUpdate"
       @update:model="handleModelUpdate"
-      @update:deep-detection="handleDeepDetectionUpdate"
       @update:selected-comparison-account="selectedComparisonAccount = $event"
       @update:selected-target-account="selectedTargetAccount = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
@@ -82,6 +88,7 @@
       @update:model="filters.model = $event"
       @update:selected-history-target-account="selectedHistoryTargetAccount = $event"
       @update:status="filters.status = $event"
+      @update:trigger-kind="filters.triggerKind = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
       @update:system-account-filter-selection="systemAccountFilterSelection = $event"
       @update:target-id="filters.targetId = $event"
@@ -95,6 +102,23 @@
       :run="currentRun"
       :supported-models="options.supportedModels"
       :target-display-name="targetDisplayName"
+    />
+
+    <ModelQualitySchedulesModal
+      v-model:open="schedulesOpen"
+      :account-options="scheduleAccountOptions"
+      :account-options-loading="scheduleAccountOptionsLoading"
+      :loading="schedulesLoading"
+      :model-options="historyModelOptions"
+      :page="schedulesPage"
+      :page-size="schedulesPageSize"
+      :saving="scheduleSaving"
+      :schedules="schedules"
+      :total="schedulesTotal"
+      @account-search="loadScheduleAccountOptions"
+      @delete="deleteSchedule"
+      @page-change="handleSchedulePageChange"
+      @save="saveSchedule"
     />
   </div>
 </template>
@@ -128,7 +152,12 @@ import type {
   ModelCheckRunDetail,
   ModelCheckRunPayload,
   ModelCheckRunSummary,
-  ModelCheckStatus
+  ModelCheckStatus,
+  ModelCheckTriggerKind,
+  ModelQualityPolicy,
+  ModelQualityPolicyUpdateInput,
+  ModelQualitySchedule,
+  ModelQualityScheduleMutationInput
 } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
@@ -157,6 +186,7 @@ import type { ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
 import ModelCheckRunPanel from './ModelCheckRunPanel.vue'
 import ModelCheckRunHistoryList from './ModelCheckRunHistoryList.vue'
 import ModelCheckRunDetailDrawer from './ModelCheckRunDetailDrawer.vue'
+import ModelQualitySchedulesModal from './ModelQualitySchedulesModal.vue'
 import { useModelCheckAccountOptions } from './useModelCheckAccountOptions'
 
 interface ModelChecksPageState {
@@ -165,6 +195,7 @@ interface ModelChecksPageState {
     model?: ModelCheckModel
     level?: ModelCheckLevel
     status?: ModelCheckStatus
+    triggerKind?: ModelCheckTriggerKind
   }
   historyTargetAccount?: AccountSelection
   pagination: PagePaginationState
@@ -201,6 +232,26 @@ const {
   selectedIds: () => [systemAccountFilter.value]
 })
 const optionsLoading = ref(false)
+const qualityPolicyLoading = ref(false)
+const qualityPolicySaving = ref(false)
+const schedulesOpen = ref(false)
+const schedulesLoading = ref(false)
+const scheduleSaving = ref(false)
+const scheduleAccountOptionsLoading = ref(false)
+const schedules = ref<ModelQualitySchedule[]>([])
+const schedulesTotal = ref(0)
+const schedulesPage = ref(1)
+const schedulesPageSize = 10
+const scheduleAccountOptions = ref<Array<{ label: string; value: string }>>([])
+const qualityPolicy = ref<ModelQualityPolicy>({
+  systemAccountId: '',
+  revision: 0,
+  profile: 'quick',
+  manualEnforcementEnabled: true,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+})
 const submitting = computed(() => modelCheckRunSession.submitting)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
@@ -221,6 +272,7 @@ const filters = reactive<{
   model?: ModelCheckModel
   level?: ModelCheckLevel
   status?: ModelCheckStatus
+  triggerKind?: ModelCheckTriggerKind
 }>({ ...initialPageState.filters })
 const {
   items: runs,
@@ -260,6 +312,7 @@ const modelCheckScopeParams = computed(() => {
   const systemAccountId = selectedManagementSystemAccountId.value
   return isManagementView.value && systemAccountId ? { systemAccountId } : undefined
 })
+const qualityActionsDisabled = computed(() => submitting.value || (isManagementView.value && !selectedManagementSystemAccountId.value))
 
 function modelCheckRunListParams(pageState: { current: number; pageSize: number }) {
   return {
@@ -270,7 +323,8 @@ function modelCheckRunListParams(pageState: { current: number; pageSize: number 
     targetId: filters.targetId?.trim() || undefined,
     model: filters.model,
     level: filters.level,
-    status: filters.status
+    status: filters.status,
+    triggerKind: filters.triggerKind
   }
 }
 const deepDetection = computed(() => form.profile === 'full')
@@ -337,7 +391,7 @@ async function loadOptions() {
     const nextOptions = await modelChecksApi.options(modelCheckScopeParams.value)
     options.value = nextOptions
     form.model = nextOptions.defaultModel
-    form.profile = 'quick'
+    form.profile = qualityPolicy.value.profile
     ensureRunModelMatchesTarget()
   } catch (error) {
     console.error(error)
@@ -352,8 +406,96 @@ function handleModelUpdate(model: ModelCheckModel) {
   clearIncompatibleComparisonAccount()
 }
 
-function handleDeepDetectionUpdate(enabled: boolean) {
-  form.profile = enabled ? 'full' : 'quick'
+async function loadQualityPolicy() {
+  if (isManagementView.value && !selectedManagementSystemAccountId.value) return
+  qualityPolicyLoading.value = true
+  try {
+    qualityPolicy.value = await modelChecksApi.qualityPolicy(modelCheckScopeParams.value)
+    form.profile = qualityPolicy.value.profile
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载模型质量检测配置失败'))
+  } finally {
+    qualityPolicyLoading.value = false
+  }
+}
+
+async function saveQualityPolicy(input: ModelQualityPolicyUpdateInput) {
+  qualityPolicySaving.value = true
+  try {
+    qualityPolicy.value = await modelChecksApi.saveQualityPolicy(input, modelCheckScopeParams.value)
+    form.profile = qualityPolicy.value.profile
+    message.success('模型质量检测配置已保存')
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '保存模型质量检测配置失败'))
+    await loadQualityPolicy()
+  } finally {
+    qualityPolicySaving.value = false
+  }
+}
+
+async function openSchedules() {
+  if (qualityActionsDisabled.value) return
+  schedulesOpen.value = true
+  schedulesPage.value = 1
+  await Promise.all([loadSchedules(), loadScheduleAccountOptions('')])
+}
+
+async function loadSchedules() {
+  schedulesLoading.value = true
+  try {
+    const page = await modelChecksApi.qualitySchedules({ ...modelCheckScopeParams.value, page: schedulesPage.value, pageSize: schedulesPageSize })
+    schedules.value = page.items
+    schedulesTotal.value = page.total
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载定时检查计划失败'))
+  } finally {
+    schedulesLoading.value = false
+  }
+}
+
+async function loadScheduleAccountOptions(keyword: string) {
+  scheduleAccountOptionsLoading.value = true
+  try {
+    const items = await accountsApi.options({ ...modelCheckScopeParams.value, purpose: 'run', keyword: keyword.trim() || undefined, limit: 50 })
+    scheduleAccountOptions.value = items.map((item) => ({ label: item.name, value: item.id }))
+  } catch (error) {
+    console.error(error)
+  } finally {
+    scheduleAccountOptionsLoading.value = false
+  }
+}
+
+async function saveSchedule(input: ModelQualityScheduleMutationInput) {
+  scheduleSaving.value = true
+  try {
+    await modelChecksApi.saveQualitySchedule(input, modelCheckScopeParams.value)
+    message.success('定时检查计划已保存')
+    await loadSchedules()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '保存定时检查计划失败'))
+  } finally {
+    scheduleSaving.value = false
+  }
+}
+
+async function deleteSchedule(id: string) {
+  try {
+    await modelChecksApi.deleteQualitySchedule(id, modelCheckScopeParams.value)
+    message.success('定时检查计划已删除')
+    await loadSchedules()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '删除定时检查计划失败'))
+  }
+}
+
+async function handleSchedulePageChange(page: number) {
+  schedulesPage.value = page
+  await loadSchedules()
 }
 
 function handleTargetChange() {
@@ -483,7 +625,7 @@ function handleSystemAccountFilterChange() {
   }
   resetSystemAccountOptionsSearch()
   resetModelCheckScopedState()
-  void loadOptions()
+  void Promise.all([loadOptions(), loadQualityPolicy()])
   void reloadRuns()
 }
 
@@ -493,12 +635,15 @@ function resetModelCheckScopedState() {
   selectedHistoryTargetAccount.value = undefined
   currentRun.value = undefined
   detailOpen.value = false
+  schedulesOpen.value = false
+  schedules.value = []
+  schedulesTotal.value = 0
 }
 
 function resetRunForm() {
   resetRunAccountSelection()
   form.model = options.value.defaultModel
-  form.profile = 'quick'
+  form.profile = qualityPolicy.value.profile
   ensureRunModelMatchesTarget()
 }
 
@@ -550,7 +695,8 @@ function sanitizeModelChecksPageState(value: unknown, fallback: ModelChecksPageS
       targetId: optionalString(sourceFilters.targetId),
       model: optionalString(sourceFilters.model),
       level: optionalUnion(sourceFilters.level, ['high_confidence', 'likely', 'uncertain', 'suspicious', 'unavailable']),
-      status: optionalUnion(sourceFilters.status, ['running', 'completed', 'failed', 'canceled'])
+      status: optionalUnion(sourceFilters.status, ['running', 'completed', 'failed', 'canceled']),
+      triggerKind: optionalUnion(sourceFilters.triggerKind, ['manual', 'scheduled', 'quality_recovery'])
     },
     historyTargetAccount: sanitizeAccountSelection(source.historyTargetAccount),
     pagination: sanitizePaginationState(source.pagination, fallback.pagination),
@@ -637,6 +783,22 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
     appendTerminalLine(terminalLevelForCheckStatus(event.status), `${progressItemTitle(event.itemKey, event.itemType)} 评分：${checkStatusText(event.status)}，${event.score}/${event.maxScore}，${event.message}`)
     return
   }
+  if (event.type === 'quality_decision') {
+    appendTerminalLine(event.triggered ? 'warning' : 'success', event.message)
+    return
+  }
+  if (event.type === 'quality_enforcement_started') {
+    appendTerminalLine('warning', event.message)
+    return
+  }
+  if (event.type === 'quality_enforcement_completed') {
+    appendTerminalLine(event.result === 'failed' ? 'error' : event.result === 'applied' ? 'success' : 'warning', event.message)
+    return
+  }
+  if (event.type === 'quality_health_sync') {
+    appendTerminalLine(event.result === 'applied' ? 'success' : 'error', event.message)
+    return
+  }
   if (event.type === 'run_completed') {
     appendTerminalLine(event.status === 'completed' ? 'success' : 'error', `检测结束：${statusText(event.status)}，${levelText(event.level)}，${event.score}/${event.maxScore}，${event.message}`)
   }
@@ -700,7 +862,7 @@ function isAbortError(error: unknown): boolean {
 onMounted(async () => {
   updateViewportWidth()
   window.addEventListener('resize', updateViewportWidth)
-  await Promise.all([loadOptions(), loadRuns()])
+  await Promise.all([loadOptions(), loadQualityPolicy(), loadRuns()])
   await syncActiveModelCheckRun()
 })
 

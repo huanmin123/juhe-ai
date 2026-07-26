@@ -1,6 +1,6 @@
 import type { AccountStatus } from '../domain/types.js'
 
-const accountStatusValues: readonly AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
+const accountStatusValues: readonly AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
 export function normalizeAccountStatus(value: unknown): AccountStatus {
@@ -23,5 +23,5 @@ export function isCoolingAccountStatus(status: AccountStatus): boolean {
 }
 
 export function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
-  return status === 'disabled' || status === 'pending_test' || status === 'error'
+  return status === 'disabled' || status === 'pending_test' || status === 'error' || status === 'quality_isolated'
 }

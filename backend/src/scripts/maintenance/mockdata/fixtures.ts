@@ -58,8 +58,8 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
       notes: `${options.label}通过 Mockdata 共享夹具生成，使用后可按造数前缀清理`
     }, access)
     if (!repositories.recordAccountHealthCheckSuccess(account.id, {
-      intervalHours: 12,
-      jitterMinutes: 0,
+      intervalHours: 1,
+      jitterMinutes: 10,
       failureThreshold: 3,
       statusCode: 200
     })) {

@@ -57,6 +57,9 @@ func (s *RedisStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error) 
 	if s.ttl <= 0 || s.maxCASRetries <= 0 {
 		return Plan{}, fmt.Errorf("redis route coordination store has invalid limits")
 	}
+	if snapshot.DispatchGeneration < 1 {
+		return Plan{}, fmt.Errorf("redis route coordination requires a persistent dispatch generation")
+	}
 	key, err := redisStateKey(snapshot.Scope)
 	if err != nil {
 		return Plan{}, err
@@ -67,7 +70,7 @@ func (s *RedisStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error) 
 		return Plan{}, err
 	}
 	if !baseline.StateAdvanced {
-		return s.deleteStaleState(ctx, key, baseline)
+		return s.deleteStaleState(ctx, key, snapshot, baseline)
 	}
 
 	for attempt := 0; attempt < s.maxCASRetries; attempt++ {
@@ -109,7 +112,7 @@ func (s *RedisStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error) 
 	return Plan{}, fmt.Errorf("redis route coordination state changed too often")
 }
 
-func (s *RedisStore) deleteStaleState(ctx context.Context, key string, plan Plan) (Plan, error) {
+func (s *RedisStore) deleteStaleState(ctx context.Context, key string, snapshot Snapshot, plan Plan) (Plan, error) {
 	for attempt := 0; attempt < s.maxCASRetries; attempt++ {
 		raw, err := s.get(ctx, key)
 		if errors.Is(err, redisplatform.ErrNotFound) {
@@ -117,6 +120,13 @@ func (s *RedisStore) deleteStaleState(ctx context.Context, key string, plan Plan
 		}
 		if err != nil {
 			return Plan{}, fmt.Errorf("load stale redis route coordination state: %w", err)
+		}
+		current, err := decodeRedisState(raw)
+		if err != nil {
+			return Plan{}, err
+		}
+		if _, _, err := Advance(snapshot, current); err != nil {
+			return Plan{}, err
 		}
 		swapped, err := s.compareAndSwap(ctx, key, raw, nil, s.ttl)
 		if err != nil {
@@ -170,8 +180,8 @@ func decodeRedisState(raw []byte) (SharedState, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return SharedState{}, fmt.Errorf("redis route coordination state has trailing data")
 	}
-	state := SharedState{Revision: record.Revision, Sequence: record.Sequence, Weighted: record.Weighted}
-	if record.Version != redisStateWireVersion || len(state.Revision) == 0 || len(state.Revision) > 128 || state.Sequence < 0 || state.Sequence == maxRouteSequence || len(state.Weighted) > MaxBindings {
+	state := SharedState{DispatchGeneration: record.DispatchGeneration, Revision: record.Revision, Sequence: record.Sequence, Weighted: record.Weighted}
+	if record.Version != redisStateWireVersion || state.DispatchGeneration < 1 || len(state.Revision) == 0 || len(state.Revision) > 128 || state.Sequence < 0 || state.Sequence == maxRouteSequence || len(state.Weighted) > MaxBindings {
 		return SharedState{}, fmt.Errorf("redis route coordination state exceeds limits")
 	}
 	for key, value := range state.Weighted {
@@ -183,7 +193,7 @@ func decodeRedisState(raw []byte) (SharedState, error) {
 }
 
 func encodeRedisState(state SharedState) ([]byte, error) {
-	if len(state.Revision) == 0 || len(state.Revision) > 128 || state.Sequence < 0 || state.Sequence == maxRouteSequence || len(state.Weighted) > MaxBindings {
+	if state.DispatchGeneration < 1 || len(state.Revision) == 0 || len(state.Revision) > 128 || state.Sequence < 0 || state.Sequence == maxRouteSequence || len(state.Weighted) > MaxBindings {
 		return nil, fmt.Errorf("redis route coordination state exceeds limits")
 	}
 	for key, value := range state.Weighted {
@@ -191,7 +201,7 @@ func encodeRedisState(state SharedState) ([]byte, error) {
 			return nil, fmt.Errorf("redis route coordination state has invalid weighted entry")
 		}
 	}
-	raw, err := json.Marshal(redisStateRecord{Version: redisStateWireVersion, Revision: state.Revision, Sequence: state.Sequence, Weighted: cloneState(state.Weighted)})
+	raw, err := json.Marshal(redisStateRecord{Version: redisStateWireVersion, DispatchGeneration: state.DispatchGeneration, Revision: state.Revision, Sequence: state.Sequence, Weighted: cloneState(state.Weighted)})
 	if err != nil {
 		return nil, fmt.Errorf("encode redis route coordination state: %w", err)
 	}
@@ -202,8 +212,9 @@ func encodeRedisState(state SharedState) ([]byte, error) {
 }
 
 type redisStateRecord struct {
-	Version  int            `json:"v"`
-	Revision string         `json:"r"`
-	Sequence int64          `json:"s"`
-	Weighted map[string]int `json:"w,omitempty"`
+	Version            int            `json:"v"`
+	DispatchGeneration int64          `json:"g"`
+	Revision           string         `json:"r"`
+	Sequence           int64          `json:"s"`
+	Weighted           map[string]int `json:"w,omitempty"`
 }

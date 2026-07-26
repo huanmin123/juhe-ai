@@ -86,6 +86,32 @@ func TestRedisStoreResetsRevisionAndSkipsPassThroughRedis(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRejectsUnknownAndStaleDispatchGeneration(t *testing.T) {
+	t.Parallel()
+	server := miniredis.RunT(t)
+	store, _, closeStore := newRedisStore(t, server, "generation")
+	defer closeStore()
+	snapshot := testSnapshot(gatewayrouting.ModeRoundRobin, 1, 1)
+	snapshot.DispatchGeneration = 0
+	if _, err := store.Plan(t.Context(), snapshot); err == nil {
+		t.Fatal("Plan() accepted unknown dispatch generation")
+	}
+	snapshot.DispatchGeneration = 2
+	if _, err := store.Plan(t.Context(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	stale := snapshot
+	stale.DispatchGeneration = 1
+	if _, err := store.Plan(t.Context(), stale); !errors.Is(err, ErrStaleDispatchGeneration) {
+		t.Fatalf("Plan() error = %v, want stale dispatch generation", err)
+	}
+	staleNormal := stale
+	staleNormal.Mode = gatewayrouting.ModeNormal
+	if _, err := store.Plan(t.Context(), staleNormal); !errors.Is(err, ErrStaleDispatchGeneration) {
+		t.Fatalf("Plan() stale normal error = %v, want stale dispatch generation", err)
+	}
+}
+
 func TestRedisStoreWeightedStateIsSharedAndConcurrencySafe(t *testing.T) {
 	server := miniredis.RunT(t)
 	store, _, closeStore := newRedisStore(t, server, "weighted")
@@ -150,10 +176,11 @@ func TestRedisStoreRejectsContentionAndMalformedState(t *testing.T) {
 		t.Fatal("malformed state Plan() error = nil")
 	}
 	for _, raw := range [][]byte{
-		[]byte(`{"v":2,"r":"revision","s":0}`),
-		[]byte(`{"v":1,"r":"revision","s":0,"extra":true}`),
-		[]byte(`{"v":1,"r":"revision","s":-1}`),
-		[]byte(`{"v":1,"r":"revision","s":0} trailing`),
+		[]byte(`{"v":2,"g":1,"r":"revision","s":0}`),
+		[]byte(`{"v":1,"g":1,"r":"revision","s":0,"extra":true}`),
+		[]byte(`{"v":1,"g":1,"r":"revision","s":-1}`),
+		[]byte(`{"v":1,"g":1,"r":"revision","s":0} trailing`),
+		[]byte(`{"v":1,"r":"revision","s":0}`),
 	} {
 		if _, err := decodeRedisState(raw); err == nil {
 			t.Fatalf("decodeRedisState(%q) error = nil", raw)

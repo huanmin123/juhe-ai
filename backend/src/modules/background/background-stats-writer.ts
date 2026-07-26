@@ -81,12 +81,21 @@ import {
   acquireBackgroundJobLeaseAsync,
   releaseBackgroundJobLeaseAsync
 } from '../../storage/background-task-runs.repository.js'
+import {
+  recordModelQualityHealthFailureAsync,
+  type ModelQualityHealthFailureInput,
+  type ModelQualityHealthFailureResult
+} from '../../storage/model-quality-health.repository.js'
 
 const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
 const usageStatsAggregationMaxRunMsCap = 60_000
 
 export type BackgroundStatsWriteOperation =
+  | {
+    type: 'record_model_quality_health_failure'
+    input: ModelQualityHealthFailureInput
+  }
   | {
     type: 'aggregate_model_trust_observations'
     batchSize: number
@@ -215,6 +224,7 @@ export type BackgroundStatsWriteOperation =
   }
 
 export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOperation = BackgroundStatsWriteOperation> =
+  T extends { type: 'record_model_quality_health_failure' } ? ModelQualityHealthFailureResult :
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
   T extends { type: 'aggregate_client_ip_stats' } ? { processed: number } :
   T extends { type: 'refresh_group_account_stats' } ? { refreshed: true } :
@@ -260,6 +270,8 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
 
 export async function handleStatsWriteOperation(operation: BackgroundStatsWriteOperation): Promise<unknown> {
   switch (operation.type) {
+    case 'record_model_quality_health_failure':
+      return await recordModelQualityHealthFailureAsync(operation.input)
     case 'aggregate_model_trust_observations':
       return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize) }
     case 'aggregate_usage_stats': {

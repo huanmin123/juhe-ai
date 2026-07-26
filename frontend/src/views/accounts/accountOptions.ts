@@ -392,5 +392,6 @@ export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
   { label: '停用', value: 'disabled' },
   { label: '异常', value: 'error' },
   { label: '限流中', value: 'rate_limited' },
-  { label: '临时不可调用', value: 'temporary_unavailable' }
+  { label: '临时不可调用', value: 'temporary_unavailable' },
+  { label: '质量隔离', value: 'quality_isolated' }
 ]

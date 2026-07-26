@@ -12,6 +12,11 @@ import {
   type ModelCheckOptions,
   type ModelCheckAccountOption,
   type ModelCheckProfile,
+  type ModelCheckTriggerKind,
+  type ModelQualityDecision,
+  type ModelQualityPenaltyAction,
+  type ModelQualityPolicy,
+  type ModelQualityPolicySnapshot,
   type ModelCheckRunDetail,
   type ModelCheckRunListResult,
   type ModelCheckRunRequest,
@@ -23,6 +28,7 @@ import { createTraceId } from '../../shared/request-context.js'
 import {
   accountTestUnavailableMessage,
   findAccountForTestAsync,
+  findOpenAIAccountForGroupAsync,
   listOpenAIAccountsForGroupResultAsync,
   getModelCheckRunDetailAsync,
   listModelCheckRunsAsync,
@@ -113,6 +119,11 @@ import {
   createControlledBehaviorObservations,
   executeModelIdentityObservationProbes
 } from './model-checks-identity-features.js'
+import { getModelQualityPolicyAsync } from '../../storage/model-quality.repository.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
+import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -134,6 +145,8 @@ type ModelCheckTarget = {
   accountId?: string
   groupId?: string
   apiKeyId?: string
+  accountConfigRevision?: number
+  ownPhysicalAccount: boolean
 }
 
 type ProbeTarget = ModelCheckGatewayProbeTarget
@@ -188,6 +201,31 @@ export type ModelCheckProgressEvent = {
   traceId?: string
   durationMs?: number
 } | {
+  type: 'quality_decision'
+  triggered: boolean
+  score: number
+  threshold: number
+  hardFailure: boolean
+  configuredAction: ModelQualityPenaltyAction
+  message: string
+} | {
+  type: 'quality_enforcement_started'
+  action: ModelQualityPenaltyAction
+  message: string
+} | {
+  type: 'quality_enforcement_completed'
+  action: ModelQualityPenaltyAction
+  result: ModelQualityDecision['result']
+  beforeStatus?: ModelQualityDecision['beforeStatus']
+  afterStatus?: ModelQualityDecision['afterStatus']
+  recoveryDueAt?: string
+  message: string
+} | {
+  type: 'quality_health_sync'
+  result: 'applied' | 'pending_retry' | 'failed'
+  statHour: string
+  message: string
+} | {
   type: 'run_completed'
   message: string
   runId: string
@@ -200,6 +238,17 @@ export type ModelCheckProgressEvent = {
 }
 
 type ModelCheckProgressReporter = (event: ModelCheckProgressEvent) => void
+
+export interface ModelCheckExecutionContext {
+  triggerKind?: ModelCheckTriggerKind
+  scheduleId?: string
+  policy?: ModelQualityPolicy
+  recovery?: {
+    ownerId: string
+    enforcementId: string
+    generation: number
+  }
+}
 
 export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
   void access
@@ -233,13 +282,13 @@ export async function listModelCheckAccountOptions(access: AccessScope | undefin
   return listModelCheckAccountOptionsAsync(access, { purpose: options.purpose, keyword: options.keyword?.trim() || undefined, selectedIds, limit: options.limit ?? 50 })
 }
 
-export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckRunDetail> {
+export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter, execution: ModelCheckExecutionContext = {}): Promise<ModelCheckRunDetail> {
   const model = normalizeModel(input.model)
   if (!model) {
     throw new ModelCheckRequestError(400, modelCheckUnsupportedModelMessage())
   }
-  const profile: ModelCheckProfile = input.profile ?? defaultProfile
-  if (profile !== 'quick' && profile !== 'full') {
+  const requestedProfile: ModelCheckProfile = input.profile ?? defaultProfile
+  if (requestedProfile !== 'quick' && requestedProfile !== 'full') {
     throw new ModelCheckRequestError(400, '检测 profile 仅支持 quick 或 full')
   }
   const targetId = input.targetId.trim()
@@ -252,7 +301,20 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (trustedComparison && !trustedComparisonAccountId) {
     throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
-  const target = await resolveModelCheckTargetAsync({ ...input, model, targetId }, access)
+  const triggerKind = execution.triggerKind ?? 'manual'
+  const target = await resolveModelCheckTargetAsync({ ...input, model, targetId }, access, triggerKind === 'quality_recovery')
+  const policy = execution.policy ?? await getModelQualityPolicyAsync(target.identity.systemAccountId)
+  const profile = policy.profile
+  const policySnapshot: ModelQualityPolicySnapshot = {
+    policyRevision: policy.revision,
+    profile,
+    manualEnforcementEnabled: policy.manualEnforcementEnabled,
+    threshold: policy.penaltyThreshold,
+    action: policy.penaltyAction,
+    recoveryIntervalMinutes: policy.recoveryIntervalMinutes,
+    scheduleId: execution.scheduleId,
+    accountConfigRevision: target.accountConfigRevision ?? 0
+  }
   if (trustedComparisonAccountId && trustedComparisonAccountId === target.targetId) {
     throw new ModelCheckRequestError(400, '可信对比账户不能和检测目标相同')
   }
@@ -289,11 +351,14 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       apiKeyId: target.apiKeyId,
       model,
       profile,
+      triggerKind,
+      scheduleId: execution.scheduleId,
       trustedComparison,
       trustedComparisonAvailable: Boolean(comparison),
       traceId: runTraceId,
       probeSetVersion,
       startedAt,
+      policySnapshot,
       requestSummary: {
         targetType: target.targetType,
         targetId: target.targetId,
@@ -304,6 +369,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         modelCheckProtocol: target.modelCheckProfile.protocol,
         model,
         profile,
+        triggerKind,
+        scheduleId: execution.scheduleId,
         trustedComparison,
         trustedComparisonAccountId: comparison?.targetId,
         trustedComparisonAccountName: comparison?.targetName
@@ -508,18 +575,249 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     throw new ModelCheckRequestError(500, '模型检测报告生成失败')
   }
   const enrichedDetail = await withLatestModelTrustResult(detail, target.identity.systemAccountId)
+  const completedDetail = await applyModelQualityOutcome(enrichedDetail, target, policySnapshot, triggerKind, progress, execution)
   emitModelCheckProgress(progress, {
     type: 'run_completed',
-    message: detail.message || detail.errorMessage || '模型检测已结束',
-    runId: detail.id,
-    status: detail.status,
-    profile: detail.profile,
-    level: detail.level,
-    score: detail.score,
-    maxScore: detail.maxScore,
-    durationMs: detail.durationMs
+    message: completedDetail.message || completedDetail.errorMessage || '模型检测已结束',
+    runId: completedDetail.id,
+    status: completedDetail.status,
+    profile: completedDetail.profile,
+    level: completedDetail.level,
+    score: completedDetail.score,
+    maxScore: completedDetail.maxScore,
+    durationMs: completedDetail.durationMs
   })
-  return enrichedDetail
+  return completedDetail
+}
+
+async function applyModelQualityOutcome(
+  detail: ModelCheckRunDetail,
+  target: ModelCheckTarget,
+  snapshot: ModelQualityPolicySnapshot,
+  triggerKind: ModelCheckTriggerKind,
+  progress?: ModelCheckProgressReporter,
+  execution: ModelCheckExecutionContext = {}
+): Promise<ModelCheckRunDetail> {
+  const decidedAt = new Date().toISOString()
+  const trustReport = recordValue(detail.resultSummary.trustReport)
+  const hardFailure = detail.level === 'suspicious'
+    || textValue(trustReport?.mappingStatus) === 'undeclared_mismatch'
+    || textValue(trustReport?.protocolStatus) === 'failed'
+  const completed = detail.status === 'completed'
+  const unavailable = completed && detail.level === 'unavailable'
+  const qualityFailed = completed && !unavailable && (hardFailure || detail.score < snapshot.threshold)
+  const decisionReasonCodes = [
+    ...reasonCodes(trustReport?.reasonCodes),
+    ...(hardFailure ? ['hard_quality_conflict'] : []),
+    ...(!hardFailure && qualityFailed ? ['score_below_threshold'] : []),
+    ...(unavailable ? ['quality_evidence_unavailable'] : [])
+  ]
+  const decisionMessage = unavailable
+    ? '未形成有效质量证据，本次不执行质量处罚'
+    : qualityFailed
+      ? `质量判定不达标：${detail.score} 分，处罚阈值 ${snapshot.threshold} 分${hardFailure ? '，并命中硬失败证据' : ''}`
+      : completed
+        ? `质量达标：${detail.score} 分，处罚阈值 ${snapshot.threshold} 分，未触发处罚`
+        : `检测未正常完成（${detail.status}），不执行质量处罚`
+  emitModelCheckProgress(progress, {
+    type: 'quality_decision',
+    triggered: qualityFailed,
+    score: detail.score,
+    threshold: snapshot.threshold,
+    hardFailure,
+    configuredAction: snapshot.action,
+    message: decisionMessage
+  })
+
+  let result: ModelQualityDecision['result'] = 'not_triggered'
+  let enforcement: Awaited<ReturnType<typeof requestModelQualityEnforcement>> | undefined
+  if (triggerKind === 'quality_recovery' && execution.recovery && target.accountId) {
+    emitModelCheckProgress(progress, {
+      type: 'quality_enforcement_started',
+      action: 'quality_isolate',
+      message: qualityFailed || unavailable ? '质量恢复检查未达标，正在续期隔离' : '质量恢复检查达标，正在解除隔离'
+    })
+    try {
+      const recovery = await requestModelQualityRecoveryCompletion({
+        ownerId: execution.recovery.ownerId,
+        accountId: target.accountId,
+        enforcementId: execution.recovery.enforcementId,
+        generation: execution.recovery.generation,
+        policyRevision: snapshot.policyRevision,
+        runId: detail.id,
+        passed: completed && !unavailable && !qualityFailed,
+        recoveryIntervalMinutes: snapshot.recoveryIntervalMinutes,
+        completedAt: decidedAt
+      })
+      result = recovery.result === 'recovered' ? 'applied' : recovery.result === 'stale' ? 'stale' : 'already_effective'
+      enforcement = {
+        result,
+        beforeStatus: recovery.beforeStatus,
+        afterStatus: recovery.afterStatus,
+        recoveryDueAt: recovery.nextRecoveryAt,
+        enforcementId: execution.recovery.enforcementId,
+        generation: execution.recovery.generation,
+        message: recovery.message
+      }
+      emitModelCheckProgress(progress, {
+        type: 'quality_enforcement_completed',
+        action: 'quality_isolate',
+        result,
+        beforeStatus: recovery.beforeStatus,
+        afterStatus: recovery.afterStatus,
+        recoveryDueAt: recovery.nextRecoveryAt,
+        message: recovery.message
+      })
+    } catch (error) {
+      result = 'failed'
+      logger.error({ event: 'model_quality_recovery_completion_failed', runId: detail.id, accountId: target.accountId, err: error }, '质量隔离恢复写回失败')
+    }
+  } else if (qualityFailed) {
+    const enforcementAllowed = triggerKind !== 'manual'
+      || (snapshot.manualEnforcementEnabled && target.ownPhysicalAccount)
+    if (!enforcementAllowed) {
+      result = 'skipped'
+    } else if (!target.accountId || !target.accountConfigRevision) {
+      result = 'skipped'
+    } else {
+      emitModelCheckProgress(progress, {
+        type: 'quality_enforcement_started',
+        action: snapshot.action,
+        message: `开始执行质量处罚：${qualityPenaltyActionLabel(snapshot.action)}`
+      })
+      try {
+        const appliedEnforcement = await requestModelQualityEnforcement({
+          systemAccountId: target.identity.systemAccountId,
+          accountId: target.accountId,
+          runId: detail.id,
+          action: snapshot.action,
+          policyRevision: snapshot.policyRevision,
+          accountConfigRevision: snapshot.accountConfigRevision,
+          recoveryIntervalMinutes: snapshot.recoveryIntervalMinutes,
+          message: decisionMessage,
+          decidedAt
+        })
+        if (!appliedEnforcement) throw new Error('DB service 未返回质量处罚结果')
+        enforcement = appliedEnforcement
+        result = appliedEnforcement.result
+        emitModelCheckProgress(progress, {
+          type: 'quality_enforcement_completed',
+          action: snapshot.action,
+          result,
+          beforeStatus: appliedEnforcement.beforeStatus,
+          afterStatus: appliedEnforcement.afterStatus,
+          recoveryDueAt: appliedEnforcement.recoveryDueAt,
+          message: appliedEnforcement.message
+        })
+      } catch (error) {
+        result = 'failed'
+        const message = error instanceof Error ? error.message : '质量处罚执行失败'
+        logger.error({ event: 'model_quality_enforcement_failed', runId: detail.id, accountId: target.accountId, err: error }, '模型质量处罚执行失败')
+        emitModelCheckProgress(progress, {
+          type: 'quality_enforcement_completed',
+          action: snapshot.action,
+          result,
+          message: `处罚执行失败：${message}`
+        })
+      }
+    }
+  }
+
+  let healthSyncResult: ModelQualityDecision['healthSyncResult']
+  let healthStatHour: string | undefined
+  if (target.accountId && completed && (qualityFailed || unavailable)) {
+    try {
+      const health = await requestStatsWriter({
+        type: 'record_model_quality_health_failure',
+        input: {
+          accountId: target.accountId,
+          systemAccountId: target.identity.systemAccountId,
+          providerCode: target.providerCode,
+          observedAt: detail.finishedAt ?? decidedAt,
+          runId: detail.id,
+          model: detail.model,
+          profile: detail.profile,
+          score: detail.score,
+          threshold: snapshot.threshold,
+          level: detail.level,
+          errorCode: unavailable ? 'model_quality_unavailable' : 'model_quality_failed',
+          errorMessage: decisionMessage
+        }
+      }, 10_000)
+      healthSyncResult = 'applied'
+      healthStatHour = health.statHour
+      emitModelCheckProgress(progress, {
+        type: 'quality_health_sync',
+        result: 'applied',
+        statHour: health.statHour,
+        message: '健康监控当前小时已标记为不可用'
+      })
+    } catch (error) {
+      healthSyncResult = 'failed'
+      healthStatHour = (detail.finishedAt ?? decidedAt).slice(0, 13)
+      logger.error({ event: 'model_quality_health_sync_failed', runId: detail.id, accountId: target.accountId, err: error }, '模型质量健康小时同步失败')
+      emitModelCheckProgress(progress, {
+        type: 'quality_health_sync',
+        result: 'failed',
+        statHour: healthStatHour,
+        message: '健康监控当前小时同步失败，已记录错误等待后台复查'
+      })
+    }
+  }
+
+  const skipMessage = qualityFailed && result === 'skipped'
+    ? triggerKind === 'manual' && !snapshot.manualEnforcementEnabled
+      ? '手工检测处罚已关闭，本次仅生成诊断报告'
+      : triggerKind === 'manual' && !target.ownPhysicalAccount
+        ? '授权账户仅诊断，未执行处罚'
+        : '当前账户不满足自动处罚条件，本次仅保留质量事实'
+    : undefined
+  const decision: ModelQualityDecision = {
+    triggerKind,
+    triggered: qualityFailed,
+    hardFailure,
+    threshold: snapshot.threshold,
+    score: detail.score,
+    configuredAction: snapshot.action,
+    result,
+    reasonCodes: [...new Set(decisionReasonCodes)],
+    beforeStatus: enforcement?.beforeStatus,
+    afterStatus: enforcement?.afterStatus,
+    recoveryDueAt: enforcement?.recoveryDueAt,
+    enforcementId: enforcement?.enforcementId,
+    generation: enforcement?.generation,
+    healthSyncResult,
+    healthStatHour,
+    message: skipMessage ?? enforcement?.message ?? decisionMessage,
+    decidedAt
+  }
+  await requestDatasetWriter({ type: 'update_model_check_quality_decision', runId: detail.id, decision })
+  const persisted = await getModelCheckRunDetailAsync(detail.id)
+  return persisted ? await withLatestModelTrustResult(persisted, target.identity.systemAccountId) : { ...detail, policySnapshot: snapshot, qualityDecision: decision }
+}
+
+async function requestModelQualityEnforcement(input: import('../../storage/model-quality.repository.js').ModelQualityEnforcementInput) {
+  const operation = { type: 'model_quality_command' as const, command: { kind: 'apply_enforcement' as const, input } }
+  const result = runtimeConfig.processRole === 'worker'
+    ? await requestBackgroundWorkerDbService(operation)
+    : await requestDbService(operation)
+  if (!result || result.kind !== 'enforcement') throw new Error('模型质量处罚返回类型无效')
+  return result.enforcement
+}
+
+async function requestModelQualityRecoveryCompletion(input: Parameters<typeof import('../../storage/model-quality.repository.js').completeModelQualityRecoveryAsync>[0]) {
+  const operation = { type: 'model_quality_command' as const, command: { kind: 'complete_recovery' as const, input } }
+  const response = runtimeConfig.processRole === 'worker'
+    ? await requestBackgroundWorkerDbService(operation)
+    : await requestDbService(operation)
+  if (!response || response.kind !== 'recovery_completed') throw new Error('质量恢复写回返回类型无效')
+  return response.recovery
+}
+
+function qualityPenaltyActionLabel(action: ModelQualityPenaltyAction): string {
+  if (action === 'disable') return '停用'
+  if (action === 'quality_isolate') return '质量隔离'
+  return '降级备用'
 }
 
 export async function listModelCheckRunPage(access?: AccessScope, query: Record<string, unknown> = {}): Promise<ModelCheckRunListResult> {
@@ -531,6 +829,7 @@ export async function listModelCheckRunPage(access?: AccessScope, query: Record<
     model: normalizeModel(query.model),
     level: modelCheckLevelValue(query.level),
     status: modelCheckStatusValue(query.status),
+    triggerKind: modelCheckTriggerKindValue(query.triggerKind),
     startAt: textValue(query.startAt),
     endAt: textValue(query.endAt)
   })
@@ -569,14 +868,18 @@ function reasonCodes(value: unknown): string[] {
     : []
 }
 
-async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string; model: string }, access?: AccessScope): Promise<ModelCheckTarget> {
+function modelCheckTriggerKindValue(value: unknown): ModelCheckTriggerKind | undefined {
+  return value === 'manual' || value === 'scheduled' || value === 'quality_recovery' ? value : undefined
+}
+
+async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string; model: string }, access?: AccessScope, allowQualityIsolated = false): Promise<ModelCheckTarget> {
   if (input.targetType === 'account') {
-    return await resolveAccountTargetAsync(input.targetId, input.model, access)
+    return await resolveAccountTargetAsync(input.targetId, input.model, access, allowQualityIsolated)
   }
   throw new ModelCheckRequestError(400, '模型检测目标只能选择 AI 账户')
 }
 
-async function resolveAccountTargetAsync(accountId: string, model: string, access?: AccessScope): Promise<ModelCheckTarget> {
+async function resolveAccountTargetAsync(accountId: string, model: string, access?: AccessScope, allowQualityIsolated = false): Promise<ModelCheckTarget> {
   const account = await findAccountForTestAsync(accountId, access)
   if (!account) {
     throw new ModelCheckRequestError(404, '账户不存在或无权检测')
@@ -594,7 +897,7 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
   if (account.status === 'disabled') {
     throw new ModelCheckRequestError(400, '账户已停用，无法执行模型检测')
   }
-  const unavailableMessage = accountTestUnavailableMessage(account)
+  const unavailableMessage = allowQualityIsolated && account.status === 'quality_isolated' ? undefined : accountTestUnavailableMessage(account)
   if (unavailableMessage) {
     throw new ModelCheckRequestError(400, unavailableMessage)
   }
@@ -602,9 +905,11 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
     throw new ModelCheckRequestError(400, '账户未绑定可用分组，无法按真实链路执行模型检测')
   }
   const systemAccountId = effectiveAccountTargetSystemAccountId(account, access)
-  const candidate = (await listOpenAIAccountsForGroupResultAsync(account.boundGroupId, systemAccountId, {
-    includeUnavailable: true
-  })).accounts.find((item) => item.id === account.id || item.credentialSourceAccountId === account.id)
+  const candidate = allowQualityIsolated && account.status === 'quality_isolated'
+    ? await findOpenAIAccountForGroupAsync(account.boundGroupId, account.id, systemAccountId, { includeUnavailable: true, ignoreAvailability: true })
+    : (await listOpenAIAccountsForGroupResultAsync(account.boundGroupId, systemAccountId, {
+        includeUnavailable: true
+      })).accounts.find((item) => item.id === account.id || item.credentialSourceAccountId === account.id)
   if (!candidate) {
     throw new ModelCheckRequestError(400, '账户不在当前分组或凭据不可用，无法执行模型检测')
   }
@@ -622,7 +927,10 @@ async function resolveAccountTargetAsync(accountId: string, model: string, acces
     },
     candidateAccounts: [candidate],
     accountId: account.id,
-    groupId: account.boundGroupId
+    groupId: account.boundGroupId,
+    accountConfigRevision: account.configRevision,
+    ownPhysicalAccount: account.accessType !== 'authorized'
+      && (account.ownerSystemAccountId ?? account.systemAccountId) === systemAccountId
   }
 }
 

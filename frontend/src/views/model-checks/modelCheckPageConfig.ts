@@ -31,6 +31,7 @@ export const modelCheckHistoryColumns: Array<Record<string, any>> = [
   { title: '供应商', key: 'providerCode', width: 110 },
   { title: '模型', key: 'model', width: 130 },
   { title: '模式', key: 'profile', width: 110 },
+  { title: '来源', key: 'triggerKind', width: 110 },
   { title: '状态', key: 'status', width: 110 },
   { title: '级别', key: 'level', width: 100 },
   { title: '摘要', key: 'summary', width: 320 },

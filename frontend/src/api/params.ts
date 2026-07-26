@@ -236,6 +236,7 @@ export function modelCheckRunListParams(params?: ModelCheckRunListParams): Recor
   if (params.model) output.model = params.model
   if (params.level) output.level = params.level
   if (params.status) output.status = params.status
+  if (params.triggerKind) output.triggerKind = params.triggerKind
   if (params.startAt?.trim()) output.startAt = params.startAt.trim()
   if (params.endAt?.trim()) output.endAt = params.endAt.trim()
   return Object.keys(output).length ? output : undefined

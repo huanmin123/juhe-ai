@@ -38,6 +38,7 @@ function accountStatusFallbackLabel(status: AccountSummary['status']): string {
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
   if (status === 'temporary_unavailable') return '临时不可调用'
+  if (status === 'quality_isolated') return '质量隔离'
   return '状态异常'
 }
 

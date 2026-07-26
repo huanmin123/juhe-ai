@@ -40,6 +40,26 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE custom_provider_models ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
   },
   {
+    schemaName: 'juhe_dataset',
+    source: 'model-quality-pg-columns',
+    sql: "ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS trigger_kind text NOT NULL DEFAULT 'manual'"
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'model-quality-pg-columns',
+    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS schedule_id text'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'model-quality-pg-columns',
+    sql: "ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS policy_snapshot_json text NOT NULL DEFAULT '{}'"
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'model-quality-pg-columns',
+    sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text'
+  },
+  {
     schemaName: 'juhe_business',
     source: 'account-circuit-confirmation-pg-constraints',
     sql: `DO $$
@@ -530,7 +550,9 @@ function orderSchemaStatements(statements: PostgresSchemaStatement[]): PostgresS
     const tableStatements = group
       .map((statement) => ({ statement, tableName: extractCreatedTableName(statement.sql) }))
       .filter((entry): entry is { statement: PostgresSchemaStatement; tableName: string } => Boolean(entry.tableName))
-    const nonTableStatements = group.filter((statement) => !extractCreatedTableName(statement.sql))
+    const nonTableStatements = group
+      .filter((statement) => !extractCreatedTableName(statement.sql))
+      .sort((left, right) => schemaStatementPhase(left.sql) - schemaStatementPhase(right.sql))
     const tableNames = new Set(tableStatements.map((entry) => entry.tableName))
     const resolvedTables = new Set<string>()
     const remaining = [...tableStatements]
@@ -551,6 +573,13 @@ function orderSchemaStatements(statements: PostgresSchemaStatement[]): PostgresS
   }
 
   return ordered
+}
+
+function schemaStatementPhase(sql: string): number {
+  const normalized = sql.trim().toUpperCase()
+  if (normalized.startsWith('ALTER TABLE') || normalized.startsWith('DO $$')) return 0
+  if (normalized.startsWith('CREATE INDEX') || normalized.startsWith('CREATE UNIQUE INDEX')) return 2
+  return 1
 }
 
 function extractCreatedTableName(sql: string): string | undefined {

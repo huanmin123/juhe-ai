@@ -37,6 +37,22 @@ const healthSettings = {
 }
 
 try {
+  const defaultHealthSettings = healthCheckRepository.normalizedHealthCheckSettings()
+  assert.equal(defaultHealthSettings.intervalHours, 1, '默认健康检查基础间隔应为 1 小时')
+  assert.equal(defaultHealthSettings.jitterMinutes, 10, '默认健康检查应按账户稳定错峰 0 到 10 分钟')
+  const scheduleBaseAt = '2026-07-26T00:00:00.000Z'
+  const staggeredSchedules = ['account-alpha', 'account-beta', 'account-gamma', 'account-delta'].map((accountId) => (
+    healthCheckRepository.accountHealthSuccessSignalSchedule(accountId, scheduleBaseAt, defaultHealthSettings).nextHealthCheckAt
+  ))
+  const staggeredOffsets = staggeredSchedules.map((nextCheckAt) => Date.parse(nextCheckAt) - Date.parse(scheduleBaseAt))
+  assert.ok(staggeredOffsets.every((offset) => offset >= 60 * 60_000 && offset < 70 * 60_000), '默认下次检查必须落在 1 小时后的 10 分钟错峰窗口内')
+  assert.ok(new Set(staggeredOffsets).size > 1, '不同账户不能全部集中在同一个检查时间点')
+  assert.equal(
+    healthCheckRepository.accountHealthSuccessSignalSchedule('account-alpha', scheduleBaseAt, defaultHealthSettings).nextHealthCheckAt,
+    staggeredSchedules[0],
+    '同一账户的错峰偏移必须稳定，不能因重复计算改变'
+  )
+
   const postgresFailureStartedAt = new Date('2026-07-16T20:13:55.032Z')
   assert.equal(
     healthCheckRepository.accountHealthCheckDatabaseDateTimeIso(postgresFailureStartedAt),

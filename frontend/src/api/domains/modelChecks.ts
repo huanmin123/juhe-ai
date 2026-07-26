@@ -6,7 +6,12 @@ import type {
   ModelCheckRunListResult,
   ModelCheckRunPayload,
   ModelCheckStopResult,
-  ActiveModelCheckRunSummary
+  ActiveModelCheckRunSummary,
+  ModelQualityPolicy,
+  ModelQualityPolicyUpdateInput,
+  ModelQualitySchedule,
+  ModelQualityScheduleListResult,
+  ModelQualityScheduleMutationInput
 } from '@/types/domain'
 import type { ModelCheckScopeParams, ModelCheckStreamOptions } from '../contracts'
 import { http, noTimeout, unwrap } from '../http'
@@ -21,7 +26,12 @@ export const modelChecksApi = {
   runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions, params?: ModelCheckScopeParams) => runModelCheckStream('/model-checks/run/stream', payload, options, params),
   stop: (params?: ModelCheckScopeParams) => unwrap<ModelCheckStopResult>(http.post('/model-checks/run/stop', {}, { params })),
   list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/model-checks/runs', { params: modelCheckRunListParams(params) })),
-  detail: (id: string, params?: ModelCheckScopeParams) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`, { params }))
+  detail: (id: string, params?: ModelCheckScopeParams) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`, { params })),
+  qualityPolicy: (params?: ModelCheckScopeParams) => unwrap<ModelQualityPolicy>(http.get('/model-checks/quality-policy', { params })),
+  saveQualityPolicy: (payload: ModelQualityPolicyUpdateInput, params?: ModelCheckScopeParams) => unwrap<ModelQualityPolicy>(http.put('/model-checks/quality-policy', payload, { params })),
+  qualitySchedules: (params?: ModelCheckScopeParams & { page?: number; pageSize?: number }) => unwrap<ModelQualityScheduleListResult>(http.get('/model-checks/quality-schedules', { params })),
+  saveQualitySchedule: (payload: ModelQualityScheduleMutationInput, params?: ModelCheckScopeParams) => unwrap<ModelQualitySchedule>(http.post('/model-checks/quality-schedules', payload, { params })),
+  deleteQualitySchedule: (id: string, params?: ModelCheckScopeParams) => unwrap<{ deleted: boolean }>(http.delete(`/model-checks/quality-schedules/${id}`, { params }))
 }
 
 export const myModelChecksApi = {
@@ -32,5 +42,10 @@ export const myModelChecksApi = {
   runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => runModelCheckStream('/my-model-checks/run/stream', payload, options),
   stop: () => unwrap<ModelCheckStopResult>(http.post('/my-model-checks/run/stop', {})),
   list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/my-model-checks/runs', { params: modelCheckRunListParams(params) })),
-  detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/my-model-checks/runs/${id}`))
+  detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/my-model-checks/runs/${id}`)),
+  qualityPolicy: () => unwrap<ModelQualityPolicy>(http.get('/my-model-checks/quality-policy')),
+  saveQualityPolicy: (payload: ModelQualityPolicyUpdateInput) => unwrap<ModelQualityPolicy>(http.put('/my-model-checks/quality-policy', payload)),
+  qualitySchedules: (params?: { page?: number; pageSize?: number }) => unwrap<ModelQualityScheduleListResult>(http.get('/my-model-checks/quality-schedules', { params })),
+  saveQualitySchedule: (payload: ModelQualityScheduleMutationInput) => unwrap<ModelQualitySchedule>(http.post('/my-model-checks/quality-schedules', payload)),
+  deleteQualitySchedule: (id: string) => unwrap<{ deleted: boolean }>(http.delete(`/my-model-checks/quality-schedules/${id}`))
 }

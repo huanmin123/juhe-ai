@@ -1,6 +1,6 @@
 export type ProviderCode = string
 export type AccountType = string
-export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type AccountStatus = 'active' | 'pending_test' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' | 'quality_isolated'
 export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled' | 'unchanged'
 export type SystemAccountRole = 'super_admin' | 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'

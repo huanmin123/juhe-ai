@@ -2,6 +2,7 @@ package gatewayroutecoordination
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -87,6 +88,23 @@ func TestAdvanceResetsStateOnRevisionChange(t *testing.T) {
 	}
 }
 
+func TestAdvanceRejectsStaleDispatchGenerationAndResetsOnAdvance(t *testing.T) {
+	t.Parallel()
+	snapshot := testSnapshot(gatewayrouting.ModeRoundRobin, 1, 1)
+	snapshot.DispatchGeneration = 7
+
+	if _, _, err := Advance(snapshot, SharedState{DispatchGeneration: 8, Revision: "newer", Sequence: 4}); !errors.Is(err, ErrStaleDispatchGeneration) {
+		t.Fatalf("Advance() error = %v, want stale dispatch generation", err)
+	}
+	plan, next, err := Advance(snapshot, SharedState{DispatchGeneration: 6, Revision: "older", Sequence: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := bindingIDs(plan.Ordered), []string{"a", "b"}; !reflect.DeepEqual(got, want) || next.DispatchGeneration != 7 || next.Sequence != 1 {
+		t.Fatalf("generation reset = plan %#v next %#v", plan, next)
+	}
+}
+
 func TestAdvanceDoesNotAdvancePassThroughModes(t *testing.T) {
 	t.Parallel()
 	snapshot := testSnapshot(gatewayrouting.ModeNormal, 1, 1)
@@ -148,7 +166,7 @@ func TestSnapshotRejectsIncompleteOrUnsafeState(t *testing.T) {
 }
 
 func testSnapshot(mode gatewayrouting.Mode, firstWeight, secondWeight int) Snapshot {
-	return Snapshot{Scope: Scope{SystemAccountID: "system", RouteStrategyID: "route"}, Mode: mode, Bindings: []gatewayrouting.Binding{
+	return Snapshot{Scope: Scope{SystemAccountID: "system", RouteStrategyID: "route"}, DispatchGeneration: 1, Mode: mode, Bindings: []gatewayrouting.Binding{
 		{ID: "a", GroupID: "group-a", Priority: 1, Weight: firstWeight, Active: true, GroupEnabled: true},
 		{ID: "b", GroupID: "group-b", Priority: 2, Weight: secondWeight, Active: true, GroupEnabled: true},
 	}}

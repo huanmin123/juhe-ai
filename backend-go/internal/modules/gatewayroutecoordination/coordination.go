@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,33 +20,39 @@ const MaxBindings = 20
 
 const maxRouteSequence int64 = 1<<63 - 1
 
+var ErrStaleDispatchGeneration = errors.New("route coordination snapshot dispatch generation is stale")
+
 type Scope struct {
 	SystemAccountID string
 	RouteStrategyID string
 }
 
 type Snapshot struct {
-	Scope    Scope
-	Mode     gatewayrouting.Mode
-	Bindings []gatewayrouting.Binding
+	Scope              Scope
+	DispatchGeneration int64
+	Mode               gatewayrouting.Mode
+	Bindings           []gatewayrouting.Binding
 }
 
 type Plan struct {
-	Scope         Scope
-	Revision      string
-	Mode          gatewayrouting.Mode
-	Ordered       []gatewayrouting.Binding
-	StateAdvanced bool
+	Scope              Scope
+	DispatchGeneration int64
+	Revision           string
+	Mode               gatewayrouting.Mode
+	Ordered            []gatewayrouting.Binding
+	StateAdvanced      bool
 }
 
 // SharedState is the complete serializable state needed for one route scope.
 // A future shared-store adapter must atomically load this value, call Advance,
-// and persist Next only when Plan.StateAdvanced is true. Revision mismatch
-// deliberately resets both sequence and smooth-weight debt.
+// and persist Next only when Plan.StateAdvanced is true. A revision mismatch
+// or dispatch-generation advance deliberately resets both sequence and
+// smooth-weight debt.
 type SharedState struct {
-	Revision string
-	Sequence int64
-	Weighted map[string]int
+	DispatchGeneration int64
+	Revision           string
+	Sequence           int64
+	Weighted           map[string]int
 }
 
 type Coordinator interface {
@@ -88,14 +95,21 @@ func (s *MemoryStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error)
 
 // Advance is the side-effect-free shared-state transition. It is intentionally
 // separate from MemoryStore so a future Redis Lua/CAS adapter can use the same
-// revision fence and smooth weighted behavior without reimplementing routing.
+// dispatch-generation fence and smooth weighted behavior without reimplementing
+// routing. A positive dispatch generation is supplied by the future durable
+// preflight owner. Zero remains valid only for the process-local compatibility
+// seam; RedisStore rejects it instead of treating it as a safe distributed
+// generation.
 func Advance(snapshot Snapshot, current SharedState) (Plan, SharedState, error) {
 	revision, err := Revision(snapshot)
 	if err != nil {
 		return Plan{}, SharedState{}, err
 	}
-	next := SharedState{Revision: revision}
-	if current.Revision == revision {
+	if snapshot.DispatchGeneration > 0 && current.DispatchGeneration > snapshot.DispatchGeneration {
+		return Plan{}, SharedState{}, ErrStaleDispatchGeneration
+	}
+	next := SharedState{DispatchGeneration: snapshot.DispatchGeneration, Revision: revision}
+	if current.DispatchGeneration == snapshot.DispatchGeneration && current.Revision == revision {
 		next.Sequence = current.Sequence
 		next.Weighted = cloneState(current.Weighted)
 	}
@@ -120,7 +134,7 @@ func Advance(snapshot Snapshot, current SharedState) (Plan, SharedState, error) 
 	if snapshot.Mode == gatewayrouting.ModeWeighted {
 		next.Weighted = cloneState(ordered.NextWeightedState)
 	}
-	return Plan{Scope: snapshot.Scope, Revision: revision, Mode: snapshot.Mode, Ordered: cloneBindings(ordered.Bindings), StateAdvanced: advanced}, next, nil
+	return Plan{Scope: snapshot.Scope, DispatchGeneration: snapshot.DispatchGeneration, Revision: revision, Mode: snapshot.Mode, Ordered: cloneBindings(ordered.Bindings), StateAdvanced: advanced}, next, nil
 }
 
 // Revision is a semantic SHA-256 fingerprint of the complete route snapshot.
@@ -155,6 +169,9 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	if len(snapshot.Bindings) == 0 || len(snapshot.Bindings) > MaxBindings {
 		return fmt.Errorf("route coordination bindings must be between 1 and %d", MaxBindings)
+	}
+	if snapshot.DispatchGeneration < 0 {
+		return fmt.Errorf("route coordination dispatch generation must not be negative")
 	}
 	switch snapshot.Mode {
 	case gatewayrouting.ModeNormal, gatewayrouting.ModeFailover, gatewayrouting.ModeHybridSmart, gatewayrouting.ModeRoundRobin, gatewayrouting.ModeWeighted:
@@ -209,5 +226,5 @@ func cloneState(input map[string]int) map[string]int {
 }
 
 func cloneSharedState(input SharedState) SharedState {
-	return SharedState{Revision: input.Revision, Sequence: input.Sequence, Weighted: cloneState(input.Weighted)}
+	return SharedState{DispatchGeneration: input.DispatchGeneration, Revision: input.Revision, Sequence: input.Sequence, Weighted: cloneState(input.Weighted)}
 }

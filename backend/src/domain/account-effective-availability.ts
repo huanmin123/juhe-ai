@@ -158,6 +158,9 @@ function sourceAccountAvailability(account: AccountEffectiveAvailabilityInput, n
   if (sourceStatus === 'temporary_unavailable') {
     return blocked('source_temporary_unavailable', '来源临时不可调用', 'gold', 'source_account', sourceReason(account, '授权方原账户临时不可调用，当前账户不能调用'))
   }
+  if (sourceStatus === 'quality_isolated') {
+    return blocked('source_quality_isolated', '来源质量隔离', 'red', 'source_account', sourceReason(account, '授权方原账户因模型质量不达标已隔离，恢复前不能调用'))
+  }
   if (isFuture(account.authorizationInstanceSourceAccountCooldownUntil, now)) {
     return blocked('source_cooldown', '来源冷却', 'gold', 'source_account', '授权方原账户正在冷却，恢复前当前账户不能调用', account.authorizationInstanceSourceAccountCooldownUntil)
   }
@@ -197,6 +200,9 @@ function instanceAccountAvailability(account: AccountEffectiveAvailabilityInput,
   }
   if (account.status === 'temporary_unavailable') {
     return blocked('instance_temporary_unavailable', `${instanceLabel}临时不可调用`, 'gold', blockerScope, account.lastErrorMessage || `${instanceReasonPrefix}临时不可调用，恢复前不会参与调度`)
+  }
+  if (account.status === 'quality_isolated') {
+    return blocked('instance_quality_isolated', `${instanceLabel}质量隔离`, 'red', blockerScope, account.lastErrorMessage || `${instanceReasonPrefix}因模型质量不达标已隔离，质量恢复检查通过前不会参与调度`)
   }
   if (isFuture(account.cooldownUntil, now)) {
     return blocked('instance_cooldown', `${instanceLabel}冷却`, 'gold', blockerScope, `${instanceReasonPrefix}正在冷却，恢复前不会参与调度`, account.cooldownUntil)

@@ -77,15 +77,23 @@
         </div>
 
         <div class="model-checks-toolbar">
-          <a-space align="center">
-            <span class="model-checks-deep-label">深度检测</span>
-            <a-switch :checked="deepDetection" :disabled="submitting" @change="handleDeepDetectionChange" />
-          </a-space>
+          <ModelQualityConfigPopover
+            :disabled="qualityActionsDisabled"
+            :loading="qualityPolicyLoading"
+            :policy="qualityPolicy"
+            :saving="qualityPolicySaving"
+            @open="emit('quality-policy-open')"
+            @save="emit('quality-policy-save', $event)"
+          />
           <a-button type="primary" :loading="submitting" @click="emit('submit')">
             <template #icon>
               <ExperimentOutlined />
             </template>
             {{ deepDetection ? '开始深度检测' : '快速检测' }}
+          </a-button>
+          <a-button :disabled="qualityActionsDisabled" @click="emit('schedules-open')">
+            <template #icon><ClockCircleOutlined /></template>
+            定时检查
           </a-button>
         </div>
       </div>
@@ -104,14 +112,15 @@
 </template>
 
 <script setup lang="ts">
-import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { ClockCircleOutlined, ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 
 import AccountSelect from '@/components/AccountSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { AccountSelection, SelectOption } from '@/shared/accountLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ModelCheckModel, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { ModelCheckModel, ModelQualityPolicy, ModelQualityPolicyUpdateInput, SystemAccountPrincipalSummary } from '@/types/domain'
 import ModelCheckTerminal, { type ModelCheckTerminalLine } from './ModelCheckTerminal.vue'
+import ModelQualityConfigPopover from './ModelQualityConfigPopover.vue'
 
 type SelectValue = string | string[] | undefined
 
@@ -127,6 +136,10 @@ defineProps<{
   model: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
   optionsLoading: boolean
+  qualityPolicy: ModelQualityPolicy
+  qualityActionsDisabled: boolean
+  qualityPolicyLoading: boolean
+  qualityPolicySaving: boolean
   selectedComparisonAccount?: AccountSelection
   selectedTargetAccount?: AccountSelection
   submitting: boolean
@@ -150,6 +163,9 @@ const emit = defineEmits<{
   (event: 'comparison-search', value: string): void
   (event: 'refresh'): void
   (event: 'reset'): void
+  (event: 'quality-policy-open'): void
+  (event: 'quality-policy-save', value: ModelQualityPolicyUpdateInput): void
+  (event: 'schedules-open'): void
   (event: 'stop'): void
   (event: 'submit'): void
   (event: 'system-account-change'): void
@@ -160,7 +176,6 @@ const emit = defineEmits<{
   (event: 'target-search', value: string): void
   (event: 'target-value-update', value: SelectValue): void
   (event: 'update:model', value: ModelCheckModel): void
-  (event: 'update:deepDetection', value: boolean): void
   (event: 'update:selectedComparisonAccount', value?: AccountSelection): void
   (event: 'update:selectedTargetAccount', value?: AccountSelection): void
   (event: 'update:systemAccountFilter', value?: string): void
@@ -184,10 +199,6 @@ function handleModelValueUpdate(value: SelectValue) {
 
 function handleComparisonValueUpdate(value: SelectValue) {
   emit('update:trustedComparisonAccountId', selectStringValue(value))
-}
-
-function handleDeepDetectionChange(value: boolean) {
-  emit('update:deepDetection', value)
 }
 
 function selectStringValue(value: SelectValue): string | undefined {

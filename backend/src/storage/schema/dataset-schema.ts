@@ -20,6 +20,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           api_key_id TEXT,
           model TEXT NOT NULL,
           profile TEXT NOT NULL DEFAULT 'quick',
+          trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN ('manual', 'scheduled', 'quality_recovery')),
+          schedule_id TEXT,
           trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0,
           trusted_comparison_available INTEGER NOT NULL DEFAULT 0,
           level TEXT NOT NULL DEFAULT 'unavailable',
@@ -34,6 +36,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           duration_ms INTEGER,
           request_summary_json TEXT NOT NULL DEFAULT '{}',
           result_summary_json TEXT NOT NULL DEFAULT '{}',
+          policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          quality_decision_json TEXT NOT NULL DEFAULT '{}',
           error_code TEXT,
           error_message TEXT,
           created_at TEXT NOT NULL,
@@ -423,6 +427,10 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_status_created ON model_check_runs(status, created_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_target_created ON model_check_runs(target_type, target_id, created_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_account_created ON model_check_runs(account_id, created_at DESC, id DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_trigger_created ON model_check_runs(trigger_kind, created_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_model_created ON model_check_runs(system_account_id, model, created_at DESC, id DESC);
 
