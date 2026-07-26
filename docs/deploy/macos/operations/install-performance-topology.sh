@@ -12,6 +12,8 @@ USAGE_WORKERS=2
 LOG_WORKERS=2
 INGRESS_PORT=3000
 NGINX_CONFIG=
+NGINX_BIN=nginx
+NGINX_MAIN_CONFIG=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 usage() {
@@ -27,6 +29,8 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --log-workers 1..32
   --ingress-port PORT
   --nginx-config ABSOLUTE_INCLUDED_CONF_PATH
+  --nginx-bin ABSOLUTE_PATH
+  --nginx-main-config ABSOLUTE_PATH
   --node-path PATH_VALUE
 EOF
 }
@@ -45,6 +49,8 @@ while [ "$#" -gt 0 ]; do
     --log-workers) LOG_WORKERS="${2:-}"; shift 2 ;;
     --ingress-port) INGRESS_PORT="${2:-}"; shift 2 ;;
     --nginx-config) NGINX_CONFIG="${2:-}"; shift 2 ;;
+    --nginx-bin) NGINX_BIN="${2:-}"; shift 2 ;;
+    --nginx-main-config) NGINX_MAIN_CONFIG="${2:-}"; shift 2 ;;
     --node-path) NODE_PATH="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -53,7 +59,7 @@ done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
 case "$BASE_DIR" in /*) ;; *) echo '--base-dir must be absolute' >&2; exit 2 ;; esac
-case "$BASE_DIR$NODE_PATH$NGINX_CONFIG" in
+case "$BASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
     exit 2
@@ -98,6 +104,12 @@ if [ -z "$NGINX_CONFIG" ]; then
   NGINX_CONFIG="$BASE_DIR/config/nginx/juhe-ai-performance.conf"
 fi
 case "$NGINX_CONFIG" in /*) ;; *) echo '--nginx-config must be absolute' >&2; exit 2 ;; esac
+if [ "$NGINX_BIN" != nginx ]; then
+  case "$NGINX_BIN" in /*) ;; *) echo '--nginx-bin must be absolute' >&2; exit 2 ;; esac
+fi
+if [ -n "$NGINX_MAIN_CONFIG" ]; then
+  case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
+fi
 
 printf 'mode=%s scope=%s base=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s\n' \
   "$MODE" "$SCOPE" "$BASE_DIR" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
@@ -112,7 +124,12 @@ command -v node >/dev/null
 command -v launchctl >/dev/null
 command -v plutil >/dev/null
 command -v curl >/dev/null
-command -v nginx >/dev/null
+if [ "$NGINX_BIN" = nginx ]; then NGINX_BIN="$(command -v nginx)"; fi
+[ -x "$NGINX_BIN" ] || { echo "nginx binary is not executable: $NGINX_BIN" >&2; exit 1; }
+if [ -n "$NGINX_MAIN_CONFIG" ]; then
+  [ -f "$NGINX_MAIN_CONFIG" ] && [ ! -L "$NGINX_MAIN_CONFIG" ] \
+    || { echo "nginx main config is not a regular file: $NGINX_MAIN_CONFIG" >&2; exit 1; }
+fi
 if [ "$SCOPE" = system ]; then [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }; fi
 
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
@@ -127,6 +144,22 @@ service_names() {
     printf 'gateway-%s\n' "$index"
     index=$((index + 1))
   done
+}
+
+nginx_test() {
+  if [ -n "$NGINX_MAIN_CONFIG" ]; then
+    "$NGINX_BIN" -t -c "$NGINX_MAIN_CONFIG"
+  else
+    "$NGINX_BIN" -t
+  fi
+}
+
+nginx_reload() {
+  if [ -n "$NGINX_MAIN_CONFIG" ]; then
+    "$NGINX_BIN" -s reload -c "$NGINX_MAIN_CONFIG"
+  else
+    "$NGINX_BIN" -s reload
+  fi
 }
 
 service_port() {
@@ -303,7 +336,7 @@ health_identity_matches() {
 rollback() {
   set +e
   if [ -f "$NGINX_BACKUP" ]; then mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"; else rm -f -- "$NGINX_CONFIG"; fi
-  nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 || true
+  nginx_test >/dev/null 2>&1 && nginx_reload >/dev/null 2>&1 || true
   for name in $(service_names); do
     plist="$(service_plist_path "$name")"
     run_script="$(service_run_path "$name")"
@@ -361,8 +394,8 @@ TOPOLOGY_VERIFIER="$CURRENT_DIR/docs/deploy/macos/operations/verify-performance-
   --usage-workers "$USAGE_WORKERS" --log-workers "$LOG_WORKERS" --ingress-port "$INGRESS_PORT" --samples 3
 
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
-nginx -t
-nginx -s reload
+nginx_test
+nginx_reload
 /bin/bash "$TOPOLOGY_VERIFIER" --apply \
   --release "$CURRENT_DIR" --scope "$SCOPE" --label-prefix "$LABEL_PREFIX" \
   --control-port "$CONTROL_PORT" --gateway-base-port "$GATEWAY_BASE_PORT" --gateway-count "$GATEWAY_COUNT" \

@@ -60,7 +60,9 @@ bash ./install-performance-topology.sh --dry-run \
   --usage-workers 2 \
   --log-workers 2 \
   --ingress-port 3000 \
-  --nginx-config /opt/homebrew/etc/nginx/servers/juhe-ai-performance.conf
+  --nginx-config /opt/homebrew/etc/nginx/servers/juhe-ai-performance.conf \
+  --nginx-bin /opt/homebrew/bin/nginx \
+  --nginx-main-config /opt/homebrew/etc/nginx/nginx.conf
 
 bash ./verify-performance-topology.sh --apply \
   --release "$HOME/juhe-ai-lite/releases/<commit>/juhe-ai-release" \

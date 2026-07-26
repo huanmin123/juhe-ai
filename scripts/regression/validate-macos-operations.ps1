@@ -50,7 +50,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'X-Juhe-Topology-Slot', 'verify-performance-topology.sh', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'X-Juhe-Topology-Slot', 'verify-performance-topology.sh', 'nginx_test', 'nginx_reload', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
@@ -70,7 +70,7 @@ foreach ($contract in @('JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_I
   if (-not $operationsReadme.Contains($contract, [StringComparison]::Ordinal)) { throw "macOS operations README contract missing: $contract" }
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
-$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
+$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx_reload', [StringComparison]::Ordinal)
 if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex) {
   throw 'Performance topology must verify every Node service before switching nginx'
 }
