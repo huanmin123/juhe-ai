@@ -17,6 +17,8 @@ import (
 
 const MaxBindings = 20
 
+const maxRouteSequence int64 = 1<<63 - 1
+
 type Scope struct {
 	SystemAccountID string
 	RouteStrategyID string
@@ -63,6 +65,9 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Plan(ctx context.Context, snapshot Snapshot) (Plan, error) {
+	if ctx == nil {
+		return Plan{}, fmt.Errorf("route coordination context is required")
+	}
 	if err := ctx.Err(); err != nil {
 		return Plan{}, err
 	}
@@ -99,6 +104,9 @@ func Advance(snapshot Snapshot, current SharedState) (Plan, SharedState, error) 
 	switch snapshot.Mode {
 	case gatewayrouting.ModeRoundRobin:
 		input.Sequence = next.Sequence
+		if next.Sequence == maxRouteSequence {
+			return Plan{}, SharedState{}, fmt.Errorf("route coordination sequence exhausted")
+		}
 		next.Sequence++
 		advanced = true
 	case gatewayrouting.ModeWeighted:

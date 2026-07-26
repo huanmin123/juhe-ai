@@ -227,6 +227,27 @@ func TestRouteCounterConstructorAndLuaContract(t *testing.T) {
 	}
 }
 
+func TestClientCompareAndSwapUsesExactBytesAndCanDelete(t *testing.T) {
+	server := miniredis.RunT(t)
+	client, err := NewClient("redis://"+server.Addr()+"/0", "cas:test")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	defer func() { _ = client.Close() }()
+	if swapped, err := client.CompareAndSwap(t.Context(), "state", nil, []byte("one"), time.Hour); err != nil || !swapped {
+		t.Fatalf("create CompareAndSwap() = %v, %v", swapped, err)
+	}
+	if swapped, err := client.CompareAndSwap(t.Context(), "state", []byte("stale"), []byte("two"), time.Hour); err != nil || swapped {
+		t.Fatalf("stale CompareAndSwap() = %v, %v", swapped, err)
+	}
+	if swapped, err := client.CompareAndSwap(t.Context(), "state", []byte("one"), nil, time.Hour); err != nil || !swapped {
+		t.Fatalf("delete CompareAndSwap() = %v, %v", swapped, err)
+	}
+	if _, err := server.Get(client.Key("state")); err == nil {
+		t.Fatal("CompareAndSwap() did not delete state")
+	}
+}
+
 func newMiniredisRouteCounter(t *testing.T, server *miniredis.Miniredis, namespace string) (*RouteCounter, func()) {
 	t.Helper()
 	client, err := NewClient("redis://"+server.Addr()+"/0", fmt.Sprintf("%s:state", namespace))

@@ -24,6 +24,25 @@ end
 return value
 `)
 
+var compareAndSwapScript = goredis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '0' then
+  if current then
+    return 0
+  end
+else
+  if not current or current ~= ARGV[2] then
+    return 0
+  end
+end
+if ARGV[3] == 'delete' then
+  redis.call('DEL', KEYS[1])
+else
+  redis.call('SET', KEYS[1], ARGV[4], 'PX', ARGV[5])
+end
+return 1
+`)
+
 var fixedWindowRateLimitScript = goredis.NewScript(`
 local retry_after_ms = 0
 for i = 1, #KEYS do
@@ -353,6 +372,38 @@ func (c *Client) SetRaw(ctx context.Context, key string, value []byte, ttl time.
 		return err
 	}
 	return c.client.Set(ctx, key, value, ttl).Err()
+}
+
+// CompareAndSwap replaces one namespaced value only when it is still absent
+// (expected nil) or byte-for-byte equal to expected. A nil replacement deletes
+// the key. It is a low-level state primitive; callers own record formats and
+// retry policy.
+func (c *Client) CompareAndSwap(ctx context.Context, key string, expected, value []byte, ttl time.Duration) (bool, error) {
+	if c == nil || c.client == nil {
+		return false, fmt.Errorf("redis client is required")
+	}
+	if err := validateKeyAndTTL(key, ttl); err != nil {
+		return false, err
+	}
+	if ctx == nil {
+		return false, fmt.Errorf("redis context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	state := "1"
+	if expected == nil {
+		state = "0"
+	}
+	writeMode := "set"
+	if value == nil {
+		writeMode = "delete"
+	}
+	result, err := compareAndSwapScript.Run(ctx, c.client, []string{c.Key(key)}, state, expected, writeMode, value, ttl.Milliseconds()).Int64()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
 }
 
 func (c *Client) SetPersistent(ctx context.Context, key string, value []byte) error {
