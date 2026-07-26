@@ -117,10 +117,43 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000086_w7_model_quality_configuration_snapshots.sql",
+		Name:    "000087_w7_model_quality_health_sync_candidate_indexes.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
+	}
+}
+
+func TestModelQualityHealthSyncCandidateIndexesSeparateCanonicalAndMalformedQueues(t *testing.T) {
+	const migrationName = "000087_w7_model_quality_health_sync_candidate_indexes.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	for _, want := range []string{
+		"DROP INDEX IF EXISTS juhe_dataset.idx_model_check_runs_quality_health_sync_due",
+		"CREATE INDEX idx_model_check_runs_quality_health_sync_due",
+		"COALESCE(quality_health_sync_next_attempt_at, updated_at),\n    updated_at,\n    id",
+		"AND updated_at ~ '",
+		"quality_health_sync_next_attempt_at ~ '",
+		"quality_health_sync_claim_until ~ '",
+		"CREATE INDEX idx_model_check_runs_quality_health_sync_invalid_time\n  ON juhe_dataset.model_check_runs (id)",
+		"updated_at !~ '",
+		"quality_health_sync_next_attempt_at !~ '",
+		"quality_health_sync_claim_until !~ '",
+		"quality_health_sync_last_error_class IS DISTINCT FROM 'invalid_durable_timestamp'",
+		"quality_health_sync_claim_epoch < 9223372036854775807",
+		"quality_health_sync_attempt_count < 9223372036854775807",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+	if strings.Count(sql, "CREATE INDEX idx_model_check_runs_quality_health_sync_due") != 1 ||
+		strings.Count(sql, "CREATE INDEX idx_model_check_runs_quality_health_sync_invalid_time") != 1 {
+		t.Fatalf("%s must create exactly one canonical and one malformed queue index", migrationName)
 	}
 }
 

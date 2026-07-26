@@ -175,6 +175,7 @@ function assertRejectsInvalidCurrentStates(): void {
     { label: 'version 68', currentRows: [{ version_id: '68', is_applied: true }] },
     { label: 'version 69', currentRows: [{ version_id: '69', is_applied: true }] },
     { label: 'version 70', currentRows: [{ version_id: '70', is_applied: true }] },
+    { label: 'version 86', currentRows: [{ version_id: '86', is_applied: true }] },
     { label: 'not applied', currentRows: [{ version_id: String(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION), is_applied: false }] },
     { label: 'empty result', currentRows: [] }
   ]

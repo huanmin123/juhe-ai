@@ -58,6 +58,17 @@ func TestClaimFailedModelQualityHealthSyncsDefaultsAndBoundsBatch(t *testing.T) 
 			if !reflect.DeepEqual(tx.queryCalls[0].args, wantArgs) {
 				t.Fatalf("candidate args=%#v, want %#v", tx.queryCalls[0].args, wantArgs)
 			}
+			if len(tx.execCalls) != 1 || tx.execCalls[0].query != quarantineMalformedModelQualityHealthSyncTimesSQL {
+				t.Fatalf("malformed timestamp quarantine calls=%+v", tx.execCalls)
+			}
+			wantQuarantineArgs := []any{
+				modelQualityHealthSyncBadTimeQuarantineLimit,
+				int64(modelQualityHealthSyncQuarantineDelay / time.Millisecond),
+				modelQualityHealthSyncBadTimeErrorMessage,
+			}
+			if !reflect.DeepEqual(tx.execCalls[0].args, wantQuarantineArgs) {
+				t.Fatalf("malformed timestamp quarantine args=%#v, want %#v", tx.execCalls[0].args, wantQuarantineArgs)
+			}
 		})
 	}
 
@@ -84,15 +95,19 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBadDecisionWithoutStarving
 	leaseUntil := now.Add(2 * time.Minute)
 	badDecision := `{"threshold":70,"threshold":71,"healthSyncResult":"failed","message":"bad","decidedAt":"2026-07-26T08:00:00.000Z"}`
 	goodDecision := modelQualityHealthSyncDecisionJSON()
-	tx := &modelQualityScheduleTxStub{
-		queryRows: &modelQualityScheduleRowsStub{rows: [][]any{
-			modelQualityHealthSyncCandidateValues("run-bad", badDecision, int64(len(badDecision)), 3, 4),
-			modelQualityHealthSyncCandidateValues("run-good", goodDecision, int64(len(goodDecision)), 7, 9),
-		}},
-		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: []any{
-			int64(8), modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now),
-		}}},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+	rows := &modelQualityScheduleRowsStub{rows: [][]any{
+		modelQualityHealthSyncCandidateValues("run-bad", badDecision, int64(len(badDecision)), 3, 4),
+		modelQualityHealthSyncCandidateValues("run-good", goodDecision, int64(len(goodDecision)), 7, 9),
+	}}
+	tx := &modelQualityHealthSyncCloseAwareTx{
+		modelQualityScheduleTxStub: &modelQualityScheduleTxStub{
+			queryRows: rows,
+			queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: []any{
+				int64(8), modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now),
+			}}},
+			execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+		},
+		rows: rows,
 	}
 	generatedTokens := []string{"mqhs_claim_token_bad", "mqhs_claim_token_good"}
 	tokenIndex := 0
@@ -121,7 +136,8 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBadDecisionWithoutStarving
 		!claim.Failure.ObservedAt.Equal(time.Date(2026, 7, 26, 8, 9, 10, 123000000, time.UTC)) || !claim.Failure.UpdatedAt.Equal(now) {
 		t.Fatalf("failure=%+v", claim.Failure)
 	}
-	if len(tx.execCalls) != 1 || tx.execCalls[0].query != quarantineModelQualityHealthSyncRunSQL {
+	if len(tx.execCalls) != 2 || tx.execCalls[0].query != quarantineModelQualityHealthSyncRunSQL ||
+		tx.execCalls[1].query != quarantineMalformedModelQualityHealthSyncTimesSQL {
 		t.Fatalf("quarantine calls=%+v", tx.execCalls)
 	}
 	quarantineArgs := tx.execCalls[0].args
@@ -140,7 +156,7 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBadDecisionWithoutStarving
 	if !reflect.DeepEqual(tx.queryCalls[1].args, wantClaimArgs) {
 		t.Fatalf("claim args=%#v, want %#v", tx.queryCalls[1].args, wantClaimArgs)
 	}
-	if rows := tx.queryRows.(*modelQualityScheduleRowsStub); !rows.closed {
+	if !rows.closed || tx.writeBeforeRowsClosed {
 		t.Fatal("candidate rows were not closed before quarantine and claim writes")
 	}
 }
@@ -160,12 +176,86 @@ func TestClaimFailedModelQualityHealthSyncsQuarantinesBoundedTextByLockedCTID(t 
 		port.ModelQualityHealthSyncClaimInput{OwnerID: "health-sync-1", LeaseDuration: 2 * time.Minute, Limit: 1},
 		func() (string, error) { return "mqhs_claim_token_1", nil },
 	)
-	if err != nil || batch.Quarantined != 1 || len(batch.Claims) != 0 || tx.commitCalls != 1 || len(tx.execCalls) != 1 {
+	if err != nil || batch.Quarantined != 1 || len(batch.Claims) != 0 || tx.commitCalls != 1 || len(tx.execCalls) != 2 {
 		t.Fatalf("batch=%+v error=%v commit=%d exec=%d", batch, err, tx.commitCalls, len(tx.execCalls))
 	}
 	if got := tx.execCalls[0].args[3]; got != "(0,1)" {
 		t.Fatalf("quarantine row ref=%#v, want locked ctid", got)
 	}
+}
+
+func TestClaimFailedModelQualityHealthSyncsBoundsMalformedTimeQuarantineSeparately(t *testing.T) {
+	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	decision := modelQualityHealthSyncDecisionJSON()
+	rows := &modelQualityScheduleRowsStub{rows: [][]any{
+		modelQualityHealthSyncCandidateValues("run-valid", decision, int64(len(decision)), 2, 3),
+	}}
+	tx := &modelQualityHealthSyncCloseAwareTx{
+		modelQualityScheduleTxStub: &modelQualityScheduleTxStub{
+			queryRows: rows,
+			queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: []any{
+				int64(3), modelQualityPolicyTimeText(now.Add(2 * time.Minute)), modelQualityPolicyTimeText(now),
+			}}},
+			execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 4")},
+		},
+		rows: rows,
+	}
+	batch, err := claimFailedModelQualityHealthSyncs(
+		context.Background(),
+		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
+		port.ModelQualityHealthSyncClaimInput{OwnerID: "health-sync-1", Limit: 1},
+		func() (string, error) { return "mqhs_claim_token_1", nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Claims) != 1 || batch.Claims[0].RunID != "run-valid" ||
+		batch.Quarantined != modelQualityHealthSyncBadTimeQuarantineLimit {
+		t.Fatalf("batch=%+v", batch)
+	}
+	if !rows.closed || tx.writeBeforeRowsClosed {
+		t.Fatal("canonical candidate rows must be closed before malformed timestamp quarantine writes")
+	}
+	if len(tx.execCalls) != 1 || tx.execCalls[0].query != quarantineMalformedModelQualityHealthSyncTimesSQL {
+		t.Fatalf("exec calls=%+v", tx.execCalls)
+	}
+	if tx.commitCalls != 1 || tx.rollbackCalls != 0 {
+		t.Fatalf("commit/rollback=%d/%d", tx.commitCalls, tx.rollbackCalls)
+	}
+
+	overLimitTx := &modelQualityScheduleTxStub{
+		queryRows: &modelQualityScheduleRowsStub{},
+		execTags:  []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 5")},
+	}
+	_, err = claimFailedModelQualityHealthSyncs(
+		context.Background(),
+		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return overLimitTx, nil },
+		port.ModelQualityHealthSyncClaimInput{OwnerID: "health-sync-1", Limit: 1},
+		func() (string, error) { return "mqhs_claim_token_1", nil },
+	)
+	if err == nil || overLimitTx.commitCalls != 0 || overLimitTx.rollbackCalls != 1 {
+		t.Fatalf("over-limit error=%v commit/rollback=%d/%d", err, overLimitTx.commitCalls, overLimitTx.rollbackCalls)
+	}
+}
+
+type modelQualityHealthSyncCloseAwareTx struct {
+	*modelQualityScheduleTxStub
+	rows                  *modelQualityScheduleRowsStub
+	writeBeforeRowsClosed bool
+}
+
+func (s *modelQualityHealthSyncCloseAwareTx) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	if s.rows != nil && !s.rows.closed {
+		s.writeBeforeRowsClosed = true
+	}
+	return s.modelQualityScheduleTxStub.QueryRow(ctx, query, args...)
+}
+
+func (s *modelQualityHealthSyncCloseAwareTx) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	if s.rows != nil && !s.rows.closed {
+		s.writeBeforeRowsClosed = true
+	}
+	return s.modelQualityScheduleTxStub.Exec(ctx, query, args...)
 }
 
 func TestClaimFailedModelQualityHealthSyncsRejectsInvalidTokenOrEpoch(t *testing.T) {
@@ -415,6 +505,7 @@ func TestModelQualityHealthSyncDecisionRejectsDuplicatesPreservesUnknownFieldsAn
 
 func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 	for _, fragment := range []string{
+		"WITH db_clock AS (",
 		"FOR UPDATE OF runs SKIP LOCKED",
 		"runs.ctid::text AS row_ref",
 		"octet_length(runs.id) <= $3",
@@ -426,9 +517,11 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 		"octet_length(runs.level) <= $9",
 		"octet_length(runs.finished_at) <= $10",
 		"octet_length(runs.updated_at) <= $11",
-		"quality_health_sync_next_attempt_at !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
-		"quality_health_sync_claim_until !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
-		"THEN 0",
+		"runs.updated_at ~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"runs.quality_health_sync_next_attempt_at ~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"runs.quality_health_sync_claim_until ~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"COALESCE(runs.quality_health_sync_next_attempt_at, runs.updated_at) <= db_clock.now_text",
+		"ORDER BY\n  COALESCE(runs.quality_health_sync_next_attempt_at, runs.updated_at) ASC,\n  runs.updated_at ASC,\n  runs.id ASC",
 		"clock_timestamp() AT TIME ZONE 'UTC'",
 		"quality_health_sync_claim_epoch < 9223372036854775807",
 		"quality_health_sync_attempt_count < 9223372036854775807",
@@ -437,6 +530,11 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 			t.Fatalf("candidate SQL missing %q", fragment)
 		}
 	}
+	if strings.Contains(claimModelQualityHealthSyncCandidatesSQL, "!~ '") ||
+		strings.Contains(claimModelQualityHealthSyncCandidatesSQL, "NULLS FIRST") ||
+		strings.Contains(claimModelQualityHealthSyncCandidatesSQL, "runs.ctid ASC") {
+		t.Fatal("canonical due query must not mix malformed timestamps or fallback ordering into the indexed queue")
+	}
 	for _, fragment := range []string{
 		"quality_health_sync_claim_epoch = quality_health_sync_claim_epoch + 1",
 		"quality_health_sync_claim_until = db_clock.lease_until_text",
@@ -444,7 +542,7 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 		"quality_health_sync_claim_epoch = $5",
 		"quality_health_sync_attempt_count = $6",
 		"RETURNING\n  quality_health_sync_claim_epoch",
-		"quality_health_sync_claim_until !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"quality_health_sync_claim_until ~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
 	} {
 		if !strings.Contains(claimModelQualityHealthSyncRunSQL, fragment) {
 			t.Fatalf("claim SQL missing %q", fragment)
@@ -469,6 +567,22 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 	}
 	if !strings.Contains(quarantineModelQualityHealthSyncRunSQL, "ctid = $4::tid") {
 		t.Fatal("quarantine must use locked ctid plus epoch/attempt fences")
+	}
+	for _, fragment := range []string{
+		"runs.updated_at !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"runs.quality_health_sync_next_attempt_at !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"runs.quality_health_sync_claim_until !~ '" + modelQualityHealthSyncCanonicalTimestampRegex + "'",
+		"quality_health_sync_last_error_class IS DISTINCT FROM '" + modelQualityHealthSyncBadTimeErrorClass + "'",
+		"quality_health_sync_claim_epoch < 9223372036854775807",
+		"quality_health_sync_attempt_count < 9223372036854775807",
+		"ORDER BY runs.id ASC\n  LIMIT $1\n  FOR UPDATE OF runs SKIP LOCKED",
+		"runs.ctid = malformed.row_ref",
+		"runs.quality_health_sync_claim_epoch = malformed.claim_epoch",
+		"runs.quality_health_sync_attempt_count = malformed.attempt_count",
+	} {
+		if !strings.Contains(quarantineMalformedModelQualityHealthSyncTimesSQL, fragment) {
+			t.Fatalf("malformed timestamp quarantine SQL missing %q", fragment)
+		}
 	}
 }
 

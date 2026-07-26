@@ -36,6 +36,9 @@ const (
 	modelQualityHealthSyncMaximumUpdatedAtBytes       = 64
 	modelQualityHealthSyncQuarantineDelay             = time.Hour
 	modelQualityHealthSyncMaximumRetryDelay           = 24 * time.Hour
+	modelQualityHealthSyncBadTimeQuarantineLimit      = 4
+	modelQualityHealthSyncBadTimeErrorClass           = "invalid_durable_timestamp"
+	modelQualityHealthSyncBadTimeErrorMessage         = "持久化的 health-sync 时间字段不是 canonical UTC 毫秒格式，已隔离等待修复"
 )
 
 type modelQualityHealthSyncBeginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error)
@@ -221,12 +224,36 @@ func claimFailedModelQualityHealthSyncs(
 		claim.Failure.UpdatedAt = claimedAt
 		result.Claims = append(result.Claims, claim)
 	}
+	badTimeQuarantined, err := quarantineMalformedModelQualityHealthSyncTimes(ctx, tx)
+	if err != nil {
+		return port.ModelQualityHealthSyncClaimBatch{}, err
+	}
+	result.Quarantined += badTimeQuarantined
 
 	if err := tx.Commit(ctx); err != nil {
 		return port.ModelQualityHealthSyncClaimBatch{}, fmt.Errorf("commit model quality health-sync claim: %w", err)
 	}
 	committed = true
 	return result, nil
+}
+
+func quarantineMalformedModelQualityHealthSyncTimes(
+	ctx context.Context,
+	execer modelQualityHealthSyncExecer,
+) (int, error) {
+	command, err := execer.Exec(ctx, quarantineMalformedModelQualityHealthSyncTimesSQL,
+		modelQualityHealthSyncBadTimeQuarantineLimit,
+		int64(modelQualityHealthSyncQuarantineDelay/time.Millisecond),
+		modelQualityHealthSyncBadTimeErrorMessage,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("quarantine malformed model quality health-sync times: %w", err)
+	}
+	quarantined := command.RowsAffected()
+	if quarantined < 0 || quarantined > int64(modelQualityHealthSyncBadTimeQuarantineLimit) {
+		return 0, fmt.Errorf("quarantine malformed model quality health-sync times affected %d rows", quarantined)
+	}
+	return int(quarantined), nil
 }
 
 func prepareModelQualityHealthSyncClaim(

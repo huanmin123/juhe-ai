@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process'
 
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
+import { createPostgresDatabaseClient } from '../../storage/database-client.js'
+import { ensurePostgresUsageRecordPartitions } from '../../storage/postgres-usage-record-partitions.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
@@ -150,6 +152,7 @@ try {
 
 async function seedUsageRecords(createdAt: string): Promise<void> {
   const pool = await getPostgresPool()
+  await ensurePostgresUsageRecordPartitions(createPostgresDatabaseClient(pool), [createdAt])
   const values = [
     { suffix: 'a', success: 1, statusCode: 200, cost: 0.001, errorCode: null, errorMessage: null, failureAttribution: null },
     { suffix: 'b', success: 1, statusCode: 200, cost: 0.002, errorCode: null, errorMessage: null, failureAttribution: null },

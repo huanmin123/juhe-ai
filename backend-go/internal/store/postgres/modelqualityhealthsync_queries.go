@@ -9,6 +9,9 @@ to_char(
 const modelQualityHealthSyncCanonicalTimestampRegex = `^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][.][0-9]{3}Z$`
 
 const claimModelQualityHealthSyncCandidatesSQL = `
+WITH db_clock AS (
+  SELECT ` + modelQualityHealthSyncDatabaseNowExpression + ` AS now_text
+)
 SELECT
   runs.ctid::text AS row_ref,
   CASE WHEN octet_length(runs.id) <= $3 THEN runs.id ELSE NULL END AS bounded_id,
@@ -39,40 +42,30 @@ SELECT
   runs.quality_health_sync_claim_epoch,
   runs.quality_health_sync_attempt_count
 FROM juhe_dataset.model_check_runs AS runs
+CROSS JOIN db_clock
 WHERE runs.account_id IS NOT NULL
   AND runs.status = 'completed'
   AND runs.quality_health_sync_status = 'failed'
-  AND CASE
-    WHEN runs.quality_health_sync_claim_until IS NOT NULL
-      AND runs.quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN TRUE
-    WHEN runs.updated_at IS NULL OR runs.updated_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN TRUE
-    WHEN runs.quality_health_sync_next_attempt_at IS NULL THEN runs.updated_at <= ` + modelQualityHealthSyncDatabaseNowExpression + `
-    WHEN runs.quality_health_sync_next_attempt_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN TRUE
-    ELSE runs.quality_health_sync_next_attempt_at <= ` + modelQualityHealthSyncDatabaseNowExpression + `
-  END
-  AND CASE
-    WHEN runs.quality_health_sync_claim_until IS NULL THEN TRUE
-    WHEN runs.quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN TRUE
-    ELSE runs.quality_health_sync_claim_until <= ` + modelQualityHealthSyncDatabaseNowExpression + `
-  END
+  AND runs.updated_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+  AND (
+    runs.quality_health_sync_next_attempt_at IS NULL
+    OR runs.quality_health_sync_next_attempt_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+  )
+  AND (
+    runs.quality_health_sync_claim_until IS NULL
+    OR runs.quality_health_sync_claim_until ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+  )
   AND runs.quality_health_sync_claim_epoch < 9223372036854775807
   AND runs.quality_health_sync_attempt_count < 9223372036854775807
+  AND COALESCE(runs.quality_health_sync_next_attempt_at, runs.updated_at) <= db_clock.now_text
+  AND (
+    runs.quality_health_sync_claim_until IS NULL
+    OR runs.quality_health_sync_claim_until <= db_clock.now_text
+  )
 ORDER BY
-  CASE
-    WHEN runs.updated_at IS NULL OR runs.updated_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
-      OR (runs.quality_health_sync_next_attempt_at IS NOT NULL AND runs.quality_health_sync_next_attempt_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `')
-      OR (runs.quality_health_sync_claim_until IS NOT NULL AND runs.quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `')
-      THEN 0
-    ELSE 1
-  END ASC,
-  CASE
-    WHEN runs.quality_health_sync_next_attempt_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN runs.quality_health_sync_next_attempt_at
-    WHEN runs.updated_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN runs.updated_at
-    ELSE NULL
-  END ASC NULLS FIRST,
-  CASE WHEN runs.updated_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN runs.updated_at ELSE NULL END ASC NULLS FIRST,
-  CASE WHEN octet_length(runs.id) <= $3 THEN runs.id ELSE NULL END ASC NULLS FIRST,
-  runs.ctid ASC
+  COALESCE(runs.quality_health_sync_next_attempt_at, runs.updated_at) ASC,
+  runs.updated_at ASC,
+  runs.id ASC
 LIMIT $1
 FOR UPDATE OF runs SKIP LOCKED`
 
@@ -102,15 +95,96 @@ WHERE id = $4
   AND quality_health_sync_status = 'failed'
   AND quality_health_sync_claim_epoch = $5
   AND quality_health_sync_attempt_count = $6
-  AND CASE
-    WHEN quality_health_sync_claim_until IS NULL THEN TRUE
-    WHEN quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `' THEN TRUE
-    ELSE quality_health_sync_claim_until <= db_clock.now_text
-  END
+  AND updated_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+  AND (
+    quality_health_sync_next_attempt_at IS NULL
+    OR quality_health_sync_next_attempt_at ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+  )
+  AND COALESCE(quality_health_sync_next_attempt_at, updated_at) <= db_clock.now_text
+  AND (
+    quality_health_sync_claim_until IS NULL
+    OR (
+      quality_health_sync_claim_until ~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+      AND quality_health_sync_claim_until <= db_clock.now_text
+    )
+  )
 RETURNING
   quality_health_sync_claim_epoch,
   quality_health_sync_claim_until,
   quality_health_sync_updated_at`
+
+const quarantineMalformedModelQualityHealthSyncTimesSQL = `
+WITH fixed_clock AS (
+  SELECT clock_timestamp() AS now
+), db_clock AS (
+  SELECT
+    to_char(
+      fixed_clock.now AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ) AS now_text,
+    to_char(
+      (fixed_clock.now + ($2::bigint * interval '1 millisecond')) AT TIME ZONE 'UTC',
+      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+    ) AS retry_at_text
+  FROM fixed_clock
+), malformed AS (
+  SELECT
+    runs.ctid AS row_ref,
+    runs.quality_health_sync_claim_epoch AS claim_epoch,
+    runs.quality_health_sync_attempt_count AS attempt_count
+  FROM juhe_dataset.model_check_runs AS runs
+  WHERE runs.account_id IS NOT NULL
+    AND runs.status = 'completed'
+    AND runs.quality_health_sync_status = 'failed'
+    AND (
+      runs.updated_at IS NULL
+      OR runs.updated_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+      OR (
+        runs.quality_health_sync_next_attempt_at IS NOT NULL
+        AND runs.quality_health_sync_next_attempt_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+      )
+      OR (
+        runs.quality_health_sync_claim_until IS NOT NULL
+        AND runs.quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+      )
+    )
+    AND runs.quality_health_sync_last_error_class IS DISTINCT FROM '` + modelQualityHealthSyncBadTimeErrorClass + `'
+    AND runs.quality_health_sync_claim_epoch < 9223372036854775807
+    AND runs.quality_health_sync_attempt_count < 9223372036854775807
+  ORDER BY runs.id ASC
+  LIMIT $1
+  FOR UPDATE OF runs SKIP LOCKED
+)
+UPDATE juhe_dataset.model_check_runs AS runs
+SET quality_health_sync_claim_owner = NULL,
+    quality_health_sync_claim_token = NULL,
+    quality_health_sync_claim_until = NULL,
+    quality_health_sync_next_attempt_at = db_clock.retry_at_text,
+    quality_health_sync_attempt_count = runs.quality_health_sync_attempt_count + 1,
+    quality_health_sync_last_error_class = '` + modelQualityHealthSyncBadTimeErrorClass + `',
+    quality_health_sync_last_error_message = $3,
+    quality_health_sync_updated_at = db_clock.now_text
+FROM malformed, db_clock
+WHERE runs.ctid = malformed.row_ref
+  AND runs.status = 'completed'
+  AND runs.quality_health_sync_status = 'failed'
+  AND runs.quality_health_sync_claim_epoch = malformed.claim_epoch
+  AND runs.quality_health_sync_attempt_count = malformed.attempt_count
+  AND (
+    runs.updated_at IS NULL
+    OR runs.updated_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+    OR (
+      runs.quality_health_sync_next_attempt_at IS NOT NULL
+      AND runs.quality_health_sync_next_attempt_at !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+    )
+    OR (
+      runs.quality_health_sync_claim_until IS NOT NULL
+      AND runs.quality_health_sync_claim_until !~ '` + modelQualityHealthSyncCanonicalTimestampRegex + `'
+    )
+  )
+  AND runs.quality_health_sync_last_error_class IS DISTINCT FROM '` + modelQualityHealthSyncBadTimeErrorClass + `'
+  AND runs.quality_health_sync_claim_epoch < 9223372036854775807
+  AND runs.quality_health_sync_attempt_count < 9223372036854775807`
 
 const quarantineModelQualityHealthSyncRunSQL = `
 UPDATE juhe_dataset.model_check_runs
