@@ -289,12 +289,21 @@ async function main(): Promise<void> {
     await verifyContract(contractFailures, 'hard pre-header request timeout 应按请求预算原地重试', async () => {
       configureRetry(1, 0, { textFirstResponseTimeoutSeconds: 10 })
       const offset = hits.length
-      const response = await withAcceleratedTimeout(10_000, 80, () => postChat(
+      // Do not globally accelerate the hard timeout here. Under a busy event
+      // loop an artificial 80ms timer can win against response-header I/O even
+      // after the mock has synchronously sent success, creating a false retry.
+      const response = await postChat(
         gatewayBaseUrl,
         hardTimeout.apiKey,
-        'hard request timeout may retry in place'
-      ))
+        'hard request timeout may retry in place',
+        AbortSignal.timeout(15_000)
+      )
       assert.equal(response.status, 200, `hard timeout 原地重试应成功：${response.status} ${response.text}`)
+      assert.match(
+        response.text,
+        /mock success from sk-hard-timeout"/,
+        `原地重试已产生可交付成功后必须立即停止，不能继续命中后备账户：${response.text}`
+      )
       assert.deepEqual(
         hitKeys(offset),
         ['sk-hard-timeout', 'sk-hard-timeout'],

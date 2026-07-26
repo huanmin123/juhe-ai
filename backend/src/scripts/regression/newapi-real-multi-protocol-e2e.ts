@@ -118,6 +118,7 @@ const mockHits: MockHit[] = []
 const scenarioResults: ScenarioResult[] = []
 const executedRuntimeLabels = new Set<string>()
 const upstreamDiagnostics: UpstreamDiagnostic[] = []
+const createdRuntimes: RuntimeInfo[] = []
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -309,6 +310,7 @@ try {
   const diagnosticSummary = JSON.stringify({
     scenarioResults,
     upstreamDiagnostics,
+    accountSelectionDiagnostics: realE2EAccountSelectionDiagnostics(),
     mockHitCount: mockHits.length,
     mockHits: mockHits.map((hit) => ({
       path: hit.path,
@@ -381,8 +383,8 @@ function createRuntime(input: {
         groupId: group.id,
         modelMappings: input.modelMappings,
         priority: 0,
-        status: 'active',
-        schedulable: true,
+        status: 'pending_test',
+        schedulable: false,
         supportedModels: input.supportedModels
       }, access)
   const realAccountIds = channels.map((channel, index) => repositories.createAccount({
@@ -398,24 +400,77 @@ function createRuntime(input: {
     groupId: group.id,
     modelMappings: input.modelMappings,
     priority: (index + 1) * 10,
-    status: 'active',
-    schedulable: true,
+    status: 'pending_test',
+    schedulable: false,
     concurrencyLimit: 4,
     supportedModels: input.supportedModels
   }, access).id)
+  activateAccountsForGatewayFixture([
+    ...(badAccount ? [badAccount.id] : []),
+    ...realAccountIds
+  ])
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: input.keyName,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
   assert(apiKey.key, `${input.keyName} 未返回明文密钥`)
-  return {
+  const runtime = {
     apiKey: apiKey.key,
     badAccountId: badAccount?.id ?? '',
     groupId: group.id,
     label: input.label,
     realAccountIds
   }
+  createdRuntimes.push(runtime)
+  return runtime
+}
+
+function activateAccountsForGatewayFixture(accountIds: string[]): void {
+  if (!accountIds.length) return
+  const placeholders = accountIds.map(() => '?').join(', ')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1
+    WHERE id IN (${placeholders})
+  `).run(...accountIds)
+  gatewayCache.clearGatewayRuntimeCache()
+}
+
+function realE2EAccountSelectionDiagnostics(): Array<Record<string, unknown>> {
+  return createdRuntimes.map((runtime) => {
+    const requestedModel = runtime.label === 'openai-responses'
+      ? openAIResponsesModel
+      : runtime.label === 'openai-chat'
+        ? openAIChatModel
+        : undefined
+    const requestedEndpointFamily = runtime.label === 'openai-responses'
+      ? 'responses' as const
+      : runtime.label === 'openai-chat'
+        ? 'chat_completions' as const
+        : undefined
+    const selection = repositories.listOpenAIAccountsForGroupResult(runtime.groupId, access.systemAccountId, {
+      requestedEndpointFamily,
+      requestedModel
+    })
+    const accountIds = new Set([runtime.badAccountId, ...runtime.realAccountIds])
+    return {
+      label: runtime.label,
+      selection: selection.diagnostics,
+      selectedAccountCount: selection.accounts.length,
+      selectedAccountIds: selection.accounts.map((account) => account.id),
+      accounts: repositories.listAccounts(access)
+        .filter((account) => accountIds.has(account.id))
+        .map((account) => ({
+          id: account.id,
+          effectiveAvailability: account.effectiveAvailability,
+          schedulable: account.schedulable,
+          status: account.status,
+          supportedEndpointModes: account.credentials.supported_endpoint_modes,
+          supportedModels: account.supportedModels
+        }))
+    }
+  })
 }
 
 function registerModels(): void {

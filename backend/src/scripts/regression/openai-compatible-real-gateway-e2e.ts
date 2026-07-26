@@ -74,7 +74,7 @@ try {
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const account = repositories.createAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: '通用 OpenAI 兼容真实网关 E2E 账户',
@@ -92,10 +92,11 @@ try {
         upstreamEndpointFamily: 'chat_completions',
         enabled: true
       }],
-      status: 'active',
-      schedulable: true,
+      status: 'pending_test',
+      schedulable: false,
       supportedModels: [chatModel]
     }, access)
+    activateAccountForGatewayFixture(account.id)
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '通用 OpenAI 兼容真实网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -282,6 +283,15 @@ function registerCustomModels(): void {
     cachedInputUsdPer1M: 0.0002,
     actorSystemAccountId: access.systemAccountId
   })
+}
+
+function activateAccountForGatewayFixture(accountId: string): void {
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1
+    WHERE id = ?
+  `).run(accountId)
+  gatewayCache.clearGatewayRuntimeCache()
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {

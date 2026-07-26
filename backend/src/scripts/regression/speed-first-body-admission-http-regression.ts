@@ -5,7 +5,10 @@ import express, { type NextFunction, type Request, type Response } from 'express
 
 import type { GatewayRuntimeRequest } from '../../modules/gateway/request/pre-auth.js'
 import { admitSpeedFirstRequestBody } from '../../modules/gateway/request/speed-first-body-admission.middleware.js'
-import { clearSpeedFirstBodyAdmissionsForTest } from '../../modules/gateway/runtime/speed-first-body-admission.service.js'
+import {
+  clearSpeedFirstBodyAdmissionsForTest,
+  speedFirstBodyAdmissionSnapshot
+} from '../../modules/gateway/runtime/speed-first-body-admission.service.js'
 
 let handlerHitCount = 0
 let releaseFirstHandler: (() => void) | undefined
@@ -62,30 +65,41 @@ try {
   const body = JSON.stringify({ model: 'gpt-5.4', input: 'x'.repeat(4 * 1024 * 1024) })
   const firstPromise = postJson(url, body)
   await waitUntil(() => handlerHitCount === 1)
+
+  const imageResponse = await postJson(
+    `http://127.0.0.1:${serverPort(server)}/v1/images/generations`,
+    JSON.stringify({ model: 'gpt-image-1', prompt: 'speed first must not gate images' })
+  )
+  assert.equal(imageResponse.status, 200)
+  assert.equal(imageResponse.payload.hit, 2, '直接图片请求不得等待 speed-first 正文 admission lease')
+
   const secondPromise = postJson(url, body)
-  await waitMs(100)
-  assert.equal(handlerHitCount, 1, '第一个响应结束前，第二个大 Body 不得通过 express.raw 进入业务处理')
+  await waitUntil(() => speedFirstBodyAdmissionSnapshot().some((state) => (
+    state.active === 1 && state.queued === 1
+  )))
+  assert.equal(handlerHitCount, 2, '第一个文本响应结束前，第二个大文本 Body 不得通过 express.raw 进入业务处理')
   releaseFirstHandler?.()
   const [first, second] = await Promise.all([firstPromise, secondPromise])
   assert.equal(first.status, 200)
   assert.equal(second.status, 200)
   assert.equal(first.payload.bytes, Buffer.byteLength(body))
   assert.equal(second.payload.bytes, Buffer.byteLength(body))
-  assert.equal(handlerHitCount, 2, 'lease 释放后第二个大 Body 应继续处理')
-  console.log('速度优先正文 admission HTTP 回归通过：4MB 请求在 lease 前未进入 express.raw，释放后按序处理')
+  assert.equal(second.payload.hit, 3, 'lease 释放后第二个大文本 Body 应继续处理')
+  assert.equal(handlerHitCount, 3, '图片绕过 admission 不得破坏文本 admission 的按序释放')
+  console.log('速度优先正文 admission HTTP 回归通过：图片绕过；4MB 文本请求在 lease 前未进入 express.raw，释放后按序处理')
 } finally {
   releaseFirstHandler?.()
   await close(server)
   clearSpeedFirstBodyAdmissionsForTest()
 }
 
-async function postJson(url: string, body: string): Promise<{ status: number; payload: { bytes: number } }> {
+async function postJson(url: string, body: string): Promise<{ status: number; payload: { hit: number; bytes: number } }> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer sk-body-http', connection: 'close' },
     body
   })
-  return { status: response.status, payload: await response.json() as { bytes: number } }
+  return { status: response.status, payload: await response.json() as { hit: number; bytes: number } }
 }
 
 async function listen(server: Server): Promise<void> {

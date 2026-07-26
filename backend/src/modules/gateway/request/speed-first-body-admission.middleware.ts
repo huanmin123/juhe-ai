@@ -5,6 +5,7 @@ import { logRequestStage } from '../../../shared/request-context.js'
 import { gatewayAccountConcurrencyLimitsByAccountId } from '../dispatch/account-concurrency-identity.js'
 import { gatewayErrorPayload, sendGatewayJsonError } from '../response/responses.js'
 import { acquireSpeedFirstBodyAdmission } from '../runtime/speed-first-body-admission.service.js'
+import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { recordGatewayBodyRejection } from './body-middleware.js'
 import type { GatewayRuntimeRequest } from './pre-auth.js'
 
@@ -17,16 +18,19 @@ export async function admitSpeedFirstRequestBody(
   const runtime = req.gatewayRuntime
   const apiKey = runtime?.apiKey
   const groupAccess = runtime?.groupAccess
+  const requestLane = resolveOpenAIGatewayRequestLane(req)
   if (
     !apiKey
     || apiKey.route_strategy_mode !== 'normal'
     || apiKey.normal_routing_config?.schedulingPreference !== 'speed_first'
     || groupAccess?.groupType !== 'high_concurrency'
     || runtime.accounts.length === 0
+    || requestLane === 'image'
   ) {
     logRequestStage('body.speed_first_admission', {
       admissionMode: 'speed_first_high_concurrency',
-      applicable: false
+      applicable: false,
+      requestLane
     }, 'skipped', stageStartedAt)
     next()
     return
