@@ -28,6 +28,9 @@ func resolveOpenAIClientProfile(request RequestShape) ClientProfileResolution {
 		(downstream == DownstreamResponsesSSE || isCodexCompactRequest(request)) {
 		return ClientProfileResolution{Profile: ClientProfileCodex, Source: ClientProfileSourceCodexTurnMetadata, Compatibility: CompatibilityCodexResponses}
 	}
+	if explicitClientProfile(request) == ClientProfileCodex {
+		return ClientProfileResolution{Profile: ClientProfileCodex, Source: ClientProfileSourceExplicitHeader, Compatibility: CompatibilityOpenAIStandard}
+	}
 	return ClientProfileResolution{Profile: ClientProfileGenericOpenAI, Source: ClientProfileSourceDefault, Compatibility: CompatibilityOpenAIStandard}
 }
 
@@ -62,6 +65,8 @@ func resolveGeminiClientProfile(request RequestShape) ClientProfileResolution {
 func explicitClientProfile(request RequestShape) ClientProfile {
 	normalized := normalizeExplicitProfile(request.Header("x-juhe-client-profile"))
 	switch normalized {
+	case string(ClientProfileCodex):
+		return ClientProfileCodex
 	case string(ClientProfileClaudeCode):
 		return ClientProfileClaudeCode
 	case string(ClientProfileGeminiCLI):

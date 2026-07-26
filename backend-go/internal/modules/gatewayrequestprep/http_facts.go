@@ -38,20 +38,21 @@ func PrepareHTTPRequest(request *http.Request, facts HTTPFacts) (Result, error) 
 		query = request.URL.Query()
 	}
 	return Prepare(Input{
-		Method:                 request.Method,
-		Path:                   path,
-		FallbackProtocol:       facts.FallbackProtocol,
-		StreamRequested:        facts.StreamRequested,
-		AcceptsEventStream:     protocolgateway.AcceptsEventStream(strings.Join(request.Header.Values("Accept"), ",")),
-		GeminiAltSSE:           strings.EqualFold(query.Get("alt"), "sse"),
-		ExplicitClientProfile:  request.Header.Get("X-Juhe-Client-Profile"),
-		UserAgent:              request.Header.Get("User-Agent"),
-		HasAnthropicBeta:       headerHasNonEmptyValue(request.Header, "Anthropic-Beta"),
-		HasAnthropicBetaQuery:  query.Get("beta") == "true",
-		HasClaudeSessionID:     headerHasNonEmptyValue(request.Header, "X-Claude-Code-Session-Id"),
-		HasClaudeAgentID:       headerHasNonEmptyValue(request.Header, "X-Claude-Code-Agent-Id"),
-		HasGeminiCredential:    hasGeminiCredentialPresence(request, query),
-		CodexTurnMetadataValid: facts.CodexTurnMetadataValid,
+		Method:                  request.Method,
+		Path:                    path,
+		FallbackProtocol:        facts.FallbackProtocol,
+		StreamRequested:         facts.StreamRequested,
+		AcceptsEventStream:      protocolgateway.AcceptsEventStream(strings.Join(request.Header.Values("Accept"), ",")),
+		GeminiAltSSE:            strings.EqualFold(query.Get("alt"), "sse"),
+		GeminiInteractionStream: strings.EqualFold(query.Get("stream"), "true"),
+		ExplicitClientProfile:   request.Header.Get("X-Juhe-Client-Profile"),
+		UserAgent:               request.Header.Get("User-Agent"),
+		HasClaudeCodeBeta:       hasClaudeCodeBetaHeader(request.Header),
+		HasAnthropicBetaQuery:   query.Get("beta") == "true",
+		HasClaudeSessionID:      headerHasNonEmptyValue(request.Header, "X-Claude-Code-Session-Id"),
+		HasClaudeAgentID:        headerHasNonEmptyValue(request.Header, "X-Claude-Code-Agent-Id"),
+		HasGeminiCredential:     hasGeminiCredentialPresence(request, query),
+		CodexTurnMetadataValid:  facts.CodexTurnMetadataValid,
 	}), nil
 }
 
@@ -59,6 +60,17 @@ func headerHasNonEmptyValue(header http.Header, name string) bool {
 	for _, value := range header.Values(name) {
 		if strings.TrimSpace(value) != "" {
 			return true
+		}
+	}
+	return false
+}
+
+func hasClaudeCodeBetaHeader(header http.Header) bool {
+	for _, value := range header.Values("Anthropic-Beta") {
+		for _, item := range strings.Split(strings.ToLower(value), ",") {
+			if strings.HasPrefix(strings.TrimSpace(item), "claude-code-") {
+				return true
+			}
 		}
 	}
 	return false

@@ -88,13 +88,14 @@ type Input struct {
 	Path             string
 	FallbackProtocol Protocol
 
-	StreamRequested       bool
-	AcceptsEventStream    bool
-	GeminiAltSSE          bool
-	ExplicitClientProfile string
-	UserAgent             string
+	StreamRequested         bool
+	AcceptsEventStream      bool
+	GeminiAltSSE            bool
+	GeminiInteractionStream bool
+	ExplicitClientProfile   string
+	UserAgent               string
 
-	HasAnthropicBeta      bool
+	HasClaudeCodeBeta     bool
 	HasAnthropicBetaQuery bool
 	HasClaudeSessionID    bool
 	HasClaudeAgentID      bool
@@ -153,16 +154,6 @@ func Prepare(input Input) Result {
 
 	result := Result{protocol: definition.Code, downstream: protocolgateway.ResolveDownstreamProtocol(definition.Code, shape), upstreamAdapter: upstreamAdapter(definition.Code)}
 	profile, _ := protocolgateway.ResolveClientProfile(definition.Code, shape)
-	if definition.Code == ProtocolOpenAI && profile.Profile != ClientProfileCodex && explicitCodex(input.ExplicitClientProfile) {
-		profile = protocolgateway.ClientProfileResolution{
-			Profile: ClientProfileCodex, Source: ClientProfileSourceExplicitHeader, Compatibility: RequestClientCompatibilityOpenAI,
-		}
-	}
-	if definition.Code == ProtocolGemini && profile.Profile != ClientProfileGeminiCLI && explicitGeminiCLI(input.ExplicitClientProfile) && result.downstream != DownstreamUnknownStream {
-		profile = protocolgateway.ClientProfileResolution{
-			Profile: ClientProfileGeminiCLI, Source: ClientProfileSourceExplicitHeader, Compatibility: RequestClientCompatibilityOpenAI,
-		}
-	}
 	result.clientProfile = profile.Profile
 	result.clientProfileSource = profile.Source
 	result.compatibility = profile.Compatibility
@@ -178,7 +169,7 @@ func requestShape(input Input) protocolgateway.RequestShape {
 	if input.AcceptsEventStream {
 		headers["Accept"] = "text/event-stream"
 	}
-	if input.HasAnthropicBeta {
+	if input.HasClaudeCodeBeta {
 		headers["Anthropic-Beta"] = "claude-code-present"
 	}
 	if input.HasClaudeSessionID {
@@ -204,6 +195,9 @@ func sanitizedPath(input Input) string {
 	query := url.Values{}
 	if input.GeminiAltSSE {
 		query.Set("alt", "sse")
+	}
+	if input.GeminiInteractionStream {
+		query.Set("stream", "true")
 	}
 	if input.HasAnthropicBetaQuery {
 		query.Set("beta", "true")
@@ -252,22 +246,5 @@ func (r *Result) resolveRetryCoordination() {
 		r.preCommitSignal = PreCommitFailureSignalProtocolEvent
 		r.committedSignal = gatewaystreamrelay.CommittedFailureSignalProtocolEvent
 		r.controlledFailureType = gatewaystreamrelay.ControlledFailureProtocolGemini
-	}
-}
-
-func explicitCodex(value string) bool { return normalizedExplicitProfile(value) == ClientProfileCodex }
-func explicitGeminiCLI(value string) bool {
-	return normalizedExplicitProfile(value) == ClientProfileGeminiCLI
-}
-
-func normalizedExplicitProfile(value string) ClientProfile {
-	value = strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(value)))
-	switch value {
-	case string(ClientProfileCodex):
-		return ClientProfileCodex
-	case string(ClientProfileGeminiCLI):
-		return ClientProfileGeminiCLI
-	default:
-		return ClientProfileUnknown
 	}
 }

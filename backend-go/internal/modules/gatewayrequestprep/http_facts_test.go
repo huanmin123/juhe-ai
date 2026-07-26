@@ -45,6 +45,7 @@ func TestPrepareHTTPRequestUsesSSEAndNativeFactsOnly(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
+		method      string
 		url         string
 		prepare     func(*http.Request)
 		facts       HTTPFacts
@@ -69,11 +70,31 @@ func TestPrepareHTTPRequestUsesSSEAndNativeFactsOnly(t *testing.T) {
 			},
 			facts: HTTPFacts{StreamRequested: true}, wantStream: DownstreamMessagesSSE, wantProfile: ClientProfileClaudeCode,
 		},
+		{
+			name: "ordinary Anthropic beta does not grant Claude Code", url: "http://gateway.test/v1/messages",
+			prepare: func(request *http.Request) {
+				request.Header.Set("User-Agent", "claude-cli/1.0")
+				request.Header.Set("Anthropic-Beta", "tools-2025-01")
+			},
+			facts: HTTPFacts{StreamRequested: true}, wantStream: DownstreamMessagesSSE, wantProfile: ClientProfileGenericAnthropic,
+		},
+		{
+			name: "Gemini interaction stream query is retained", method: http.MethodGet, url: "http://gateway.test/v1beta/interactions/interaction-1?stream=true&key=opaque",
+			prepare: func(request *http.Request) {
+				request.Header.Set("User-Agent", "GeminiCLI/1.0")
+				request.Header.Set("X-Juhe-Client-Profile", "gemini_cli")
+			},
+			wantStream: DownstreamGeminiInteractionsSSE, wantProfile: ClientProfileGeminiCLI,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			request := httptest.NewRequest(http.MethodPost, test.url, nil)
+			method := test.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			request := httptest.NewRequest(method, test.url, nil)
 			test.prepare(request)
 			got, err := PrepareHTTPRequest(request, test.facts)
 			if err != nil || got.DownstreamProtocol() != test.wantStream || got.ClientProfile() != test.wantProfile {

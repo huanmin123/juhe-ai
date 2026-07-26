@@ -40,7 +40,7 @@ func TestPrepareDerivesProtocolProfileAndFailureCapability(t *testing.T) {
 		},
 		{
 			name:     "Claude Code signature needs two independent signals",
-			input:    Input{Method: "POST", Path: "/v1/messages", StreamRequested: true, UserAgent: "claude-cli/1.2", HasAnthropicBeta: true},
+			input:    Input{Method: "POST", Path: "/v1/messages", StreamRequested: true, UserAgent: "claude-cli/1.2", HasClaudeCodeBeta: true},
 			protocol: ProtocolAnthropic, downstream: DownstreamMessagesSSE, profile: ClientProfileClaudeCode,
 			compatibility: RequestClientCompatibilityClaude, committed: gatewaystreamrelay.CommittedFailureSignalProtocolEvent,
 			codec: gatewaystreamrelay.ControlledFailureProtocolAnthropic, codecOK: true,

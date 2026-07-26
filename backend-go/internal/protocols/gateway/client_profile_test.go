@@ -30,6 +30,12 @@ func TestResolveClientProfile(t *testing.T) {
 			want:     ClientProfileResolution{Profile: ClientProfileGenericOpenAI, Source: ClientProfileSourceDefault, Compatibility: CompatibilityOpenAIStandard},
 		},
 		{
+			name:     "explicit codex uses canonical OpenAI compatibility",
+			protocol: ProtocolOpenAI,
+			request:  RequestShape{Method: "POST", Path: "/responses", Headers: map[string]string{"x-juhe-client-profile": "codex"}},
+			want:     ClientProfileResolution{Profile: ClientProfileCodex, Source: ClientProfileSourceExplicitHeader, Compatibility: CompatibilityOpenAIStandard},
+		},
+		{
 			name:     "explicit claude code",
 			protocol: ProtocolAnthropic,
 			request:  RequestShape{Method: "POST", Path: "/v1/messages", Headers: map[string]string{"x-juhe-client-profile": " Claude--Code "}},
