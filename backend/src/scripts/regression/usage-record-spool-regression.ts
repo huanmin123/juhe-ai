@@ -35,6 +35,12 @@ const input = {
 const replayed: UsageRecordInput[] = []
 
 try {
+  startUsageRecordSpoolReplay(async (record) => {
+    replayed.push(record)
+  })
+  await stopUsageRecordSpoolReplay()
+  assert.equal(replayed.length, 0, '空 spool 扫描尚未返回时发出的停止信号不得被后续退避休眠漏掉')
+
   await persistUsageRecordToSpool(input)
   const instanceDirectory = join(tempRoot, runtimeConfig.instanceId)
   assert.equal(readdirSync(instanceDirectory).filter((name) => name.endsWith('.json')).length, 1)
