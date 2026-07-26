@@ -78,6 +78,7 @@ type APIKey struct {
 	routeStrategyStatus     string
 	routeStrategyMode       string
 	routeStrategyConfigJSON string
+	routeDispatchGeneration int64
 }
 
 func (k APIKey) ID() string              { return k.id }
@@ -92,6 +93,7 @@ func (k APIKey) RouteStrategyID() string         { return k.routeStrategyID }
 func (k APIKey) RouteStrategyStatus() string     { return k.routeStrategyStatus }
 func (k APIKey) RouteStrategyMode() string       { return k.routeStrategyMode }
 func (k APIKey) RouteStrategyConfigJSON() string { return k.routeStrategyConfigJSON }
+func (k APIKey) RouteDispatchGeneration() int64  { return k.routeDispatchGeneration }
 
 type Binding struct {
 	id              string
@@ -209,7 +211,7 @@ func apiKeyFromRecord(row port.GatewayPreflightAPIKeyRecord) APIKey {
 	if row.RouteStrategyConfigJSON != nil {
 		config = *row.RouteStrategyConfigJSON
 	}
-	return APIKey{id: row.ID, systemAccountID: row.SystemAccountID, status: row.APIKeyStatus, expiresAt: cloneTimePtr(row.ExpiresAt), quotaLimits: cloneQuotaLimits(row.QuotaLimits), imageGenerationEnabled: row.SystemAccountImageGenerationEnabled, routeStrategyID: row.RouteStrategyID, routeStrategyStatus: row.RouteStrategyStatus, routeStrategyMode: row.RouteStrategyMode, routeStrategyConfigJSON: config}
+	return APIKey{id: row.ID, systemAccountID: row.SystemAccountID, status: row.APIKeyStatus, expiresAt: cloneTimePtr(row.ExpiresAt), quotaLimits: cloneQuotaLimits(row.QuotaLimits), imageGenerationEnabled: row.SystemAccountImageGenerationEnabled, routeStrategyID: row.RouteStrategyID, routeStrategyStatus: row.RouteStrategyStatus, routeStrategyMode: row.RouteStrategyMode, routeStrategyConfigJSON: config, routeDispatchGeneration: row.RouteDispatchGeneration}
 }
 
 func settingsFromRecord(row port.GatewayPreflightSettingsRecord) Settings {

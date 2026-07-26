@@ -17,6 +17,7 @@ type GatewayPreflightAPIKeyRecord struct {
 	RouteStrategyStatus                 string
 	RouteStrategyMode                   string
 	RouteStrategyConfigJSON             *string
+	RouteDispatchGeneration             int64
 }
 
 type GatewayPreflightBindingRecord struct {

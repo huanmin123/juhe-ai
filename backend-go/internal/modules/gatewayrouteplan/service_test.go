@@ -35,7 +35,7 @@ func TestBuildOrdersGroupsWithSharedRoundRobinState(t *testing.T) {
 	if got, want := groupIDs(second.Groups), []string{"group-two", "group-one"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("second groups = %v, want %v", got, want)
 	}
-	if first.Plan == nil || !first.Plan.StateAdvanced || loader.calls != 4 {
+	if first.Plan == nil || !first.Plan.StateAdvanced || first.Plan.DispatchGeneration != 7 || loader.calls != 4 {
 		t.Fatalf("plan=%#v calls=%d", first.Plan, loader.calls)
 	}
 	for _, call := range loader.inputs {
@@ -95,7 +95,7 @@ type preflightStore struct {
 }
 
 func newPreflightStore(mode, status string) *preflightStore {
-	return &preflightStore{key: port.GatewayPreflightAPIKeyRecord{ID: "key", SystemAccountID: "system", APIKeyStatus: status, SystemAccountStatus: "active", RouteStrategyID: "route", RouteStrategyStatus: "active", RouteStrategyMode: mode}, bindings: []port.GatewayPreflightBindingRecord{{ID: "one", APIKeyID: "key", SystemAccountID: "system", GroupID: "group-one", Priority: 1, Weight: 1, Status: "active", GroupEnabled: true}}}
+	return &preflightStore{key: port.GatewayPreflightAPIKeyRecord{ID: "key", SystemAccountID: "system", APIKeyStatus: status, SystemAccountStatus: "active", RouteStrategyID: "route", RouteStrategyStatus: "active", RouteStrategyMode: mode, RouteDispatchGeneration: 7}, bindings: []port.GatewayPreflightBindingRecord{{ID: "one", APIKeyID: "key", SystemAccountID: "system", GroupID: "group-one", Priority: 1, Weight: 1, Status: "active", GroupEnabled: true}}}
 }
 func (s *preflightStore) LoadGatewayPreflightAPIKey(context.Context, string) (port.GatewayPreflightAPIKeyRecord, bool, error) {
 	return s.key, true, nil

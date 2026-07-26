@@ -24,13 +24,15 @@ SELECT
   route_strategies.id AS route_strategy_id,
   route_strategies.status AS route_strategy_status,
   route_strategies.mode AS route_strategy_mode,
-  route_strategies.config_json AS route_strategy_config_json
+  route_strategies.config_json AS route_strategy_config_json,
+  route_dispatch_generation.generation AS route_dispatch_generation
 FROM juhe_business.api_keys AS api_keys
 INNER JOIN juhe_business.system_accounts AS system_accounts
   ON system_accounts.id = api_keys.system_account_id
 INNER JOIN juhe_business.route_strategies AS route_strategies
   ON route_strategies.id = api_keys.route_strategy_id
   AND route_strategies.system_account_id = api_keys.system_account_id
+CROSS JOIN juhe_business.gateway_route_dispatch_generations AS route_dispatch_generation
 WHERE api_keys.key_hash = $1
 LIMIT 1
 `
@@ -123,6 +125,7 @@ func (s *Store) LoadGatewayPreflightAPIKey(ctx context.Context, keyHash string) 
 		&row.RouteStrategyStatus,
 		&row.RouteStrategyMode,
 		&routeConfigJSON,
+		&row.RouteDispatchGeneration,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.GatewayPreflightAPIKeyRecord{}, false, nil

@@ -7,7 +7,7 @@ import (
 
 func TestGatewayPreflightSQLContractIsParameterizedBoundedAndCandidateFree(t *testing.T) {
 	apiKeySQL := strings.ToLower(gatewayPreflightAPIKeySQL)
-	for _, required := range []string{"api_keys.key_hash = $1", "limit 1", "system_accounts.status", "route_strategies.status"} {
+	for _, required := range []string{"api_keys.key_hash = $1", "limit 1", "system_accounts.status", "route_strategies.status", "route_dispatch_generation.generation", "cross join juhe_business.gateway_route_dispatch_generations"} {
 		if !strings.Contains(apiKeySQL, required) {
 			t.Fatalf("API key SQL missing %q:\n%s", required, gatewayPreflightAPIKeySQL)
 		}

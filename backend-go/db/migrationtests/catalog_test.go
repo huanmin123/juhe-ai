@@ -117,9 +117,32 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000080_w7_account_health_check_hourly_defaults.sql",
+		Name:    "000081_w10_gateway_route_dispatch_generation.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
+	}
+}
+
+func TestGatewayRouteDispatchGenerationMigrationFencesAllPreflightInputs(t *testing.T) {
+	const migrationName = "000081_w10_gateway_route_dispatch_generation.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ToLower(string(source))
+	for _, want := range []string{
+		"create table if not exists juhe_business.gateway_route_dispatch_generations",
+		"generation bigint not null check (generation > 0)",
+		"create or replace function juhe_business.bump_gateway_route_dispatch_generation()",
+		"juhe_business.route_strategies",
+		"juhe_business.route_strategy_groups",
+		"juhe_business.groups",
+		"juhe_business.resource_authorizations",
+		"juhe_business.group_authorization_settings",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
 	}
 }

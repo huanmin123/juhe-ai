@@ -126,7 +126,7 @@ func snapshotFromPreflight(apiKey gatewaypreflight.APIKey, bindings []gatewaypre
 			Active: strings.EqualFold(binding.Status(), "active"), GroupEnabled: binding.GroupEnabled(),
 		})
 	}
-	return gatewayroutecoordination.Snapshot{Scope: gatewayroutecoordination.Scope{SystemAccountID: apiKey.SystemAccountID(), RouteStrategyID: apiKey.RouteStrategyID()}, Mode: mode, Bindings: routeBindings}, index, nil
+	return gatewayroutecoordination.Snapshot{Scope: gatewayroutecoordination.Scope{SystemAccountID: apiKey.SystemAccountID(), RouteStrategyID: apiKey.RouteStrategyID()}, DispatchGeneration: apiKey.RouteDispatchGeneration(), Mode: mode, Bindings: routeBindings}, index, nil
 }
 
 func routeMode(value string) (gatewayrouting.Mode, error) {
