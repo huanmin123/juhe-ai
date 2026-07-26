@@ -156,7 +156,9 @@ import {
   saveCodexContextCompactStateIndex,
   saveCodexContextCompactStateIndexAsync,
   saveCodexContextResponseStateIndex,
-  saveCodexContextResponseStateIndexAsync
+  saveCodexContextResponseStateIndexAsync,
+  settleCodexContextStorageCleanup,
+  settleCodexContextStorageCleanupAsync
 } from '../../storage/codex-context-state.repository.js'
 import {
   cleanupExpiredCodexContextStatesWithWriterPool,
@@ -164,7 +166,8 @@ import {
   readCodexContextCompactStateWithWriterPool,
   readCodexContextResponseStateChainWithWriterPool,
   saveCodexContextCompactStateIndexWithWriterPool,
-  saveCodexContextResponseStateIndexWithWriterPool
+  saveCodexContextResponseStateIndexWithWriterPool,
+  settleCodexContextStorageCleanupWithWriterPool
 } from '../../storage/codex-context-state-writer-pool.js'
 import { getSqliteReadWorkerPoolRuntime, requestSqliteReadWorker } from '../../storage/sqlite-read-worker-pool.js'
 import {
@@ -1139,6 +1142,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
       })
+    case 'settle_codex_context_storage_cleanup':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await settleCodexContextStorageCleanupAsync(operation)
+      }
+      return await settleCodexContextStorageCleanupWithWriterPool(operation)
     case 'cleanup_expired_deleted_accounts':
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await cleanupExpiredLogicallyDeletedAccountsAsync()
@@ -1760,6 +1768,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
       })
+    case 'settle_codex_context_storage_cleanup':
+      return settleCodexContextStorageCleanup(operation)
     case 'account_test_task_maintenance': {
       cleanupExpiredAccountTestTasks()
       if (operation.action === 'start' || operation.action === 'sweep') {

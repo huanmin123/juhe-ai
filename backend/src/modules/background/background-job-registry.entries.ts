@@ -110,7 +110,7 @@ export const backgroundScheduledJobs = [
     shardable: false,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['business:groups', 'stats:group_account_stats_cache']
+    writes: ['business:group_account_stats_dirty', 'stats:group_account_stats']
   }),
   scheduled({
     jobName: 'usage-rank-snapshots-refresh',

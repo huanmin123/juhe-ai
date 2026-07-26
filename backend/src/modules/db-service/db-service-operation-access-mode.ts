@@ -86,6 +86,7 @@ export const dbServiceOperationAccessModeByType = {
   read_codex_context_response_chain: 'read',
   read_codex_context_compact_state: 'read',
   cleanup_expired_codex_context_states: 'maintenance',
+  settle_codex_context_storage_cleanup: 'maintenance',
   account_test_task_maintenance: 'maintenance',
   mark_account_test_task_running: 'write',
   mark_account_test_task_canceled: 'write',

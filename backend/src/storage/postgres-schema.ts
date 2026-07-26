@@ -65,6 +65,46 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     sql: 'ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text'
   },
   {
+    schemaName: 'juhe_dataset',
+    source: 'model-trust-observation-aggregation-pg-columns',
+    sql: 'ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'model-trust-observation-aggregation-pg-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at, id) WHERE aggregation_completed_at IS NULL'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'ALTER TABLE client_ip_account_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text'
+  },
+  {
+    schemaName: 'juhe_stats',
+    source: 'client-ip-range-window-dirty-pg-columns',
+    sql: 'UPDATE client_ip_account_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_account_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL'
+  },
+  {
     schemaName: 'juhe_stats',
     source: 'scheduled-job-lease-pg-columns',
     sql: 'ALTER TABLE background_job_leases ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0'
@@ -257,6 +297,7 @@ const postgresBigintColumnNames = new Set([
   'open_until_ms',
   'next_transition_at_ms',
   'lease_until_ms',
+  'generation',
   'fencing_token',
   'attempt_started_at_ms',
   'attempt_hard_deadline_ms',

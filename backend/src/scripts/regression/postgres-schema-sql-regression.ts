@@ -168,6 +168,7 @@ assert.match(usageRecordsCreateSql, /requested_reasoning_effort text[\s\S]+effec
 assert.match(sql, /usage_records[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 使用记录主表必须包含模型映射可观测字段')
 assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_audio_tokens integer[\s\S]+output_image_count integer/, '使用记录主表建表语句应包含音频 token 和输出图片数量字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_scope_seed ON usage_stats_totals\(scope_type, system_account_id, scope_id\)/, 'PG usage rollover seed 必须有 scope_type 前导覆盖索引')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_integrity_windows/, 'PG 统计库应包含模型 Token 可信窗口')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions/, 'PG 统计库应包含固定截距基线版本')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_account_trust_results/, 'PG 统计库应包含账号模型可信最新结果')

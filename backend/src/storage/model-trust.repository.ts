@@ -26,7 +26,8 @@ const aggregationJobName = 'model-trust-observation-aggregation'
 const aggregationLeaseKey = 'scheduled:model-trust-observation-aggregation:global'
 const aggregationLeaseDurationMs = 5 * 60_000
 const aggregationLeaseRenewIntervalMs = 60_000
-const maximumDirtyAccountsPerBatch = 500
+const maximumObservationsPerTransaction = 100
+const maximumDirtyAccountsPerBatch = 100
 
 export interface ModelCheckObservationInput {
   id?: string
@@ -216,29 +217,30 @@ async function aggregateModelTrustObservationsWithLeaseAsync(
   const dataset = await datasetClient()
   const stats = await statsClient()
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
-  const state = await readAggregationState(stats)
   const rows = await dataset.query<ObservationRow>(`
     SELECT * FROM ${observationsTable}
-    WHERE (created_at > ? OR (created_at = ? AND id > ?))
+    WHERE aggregation_completed_at IS NULL
     ORDER BY created_at, id
     LIMIT ?
-  `, [state.createdAt, state.createdAt, state.id, boundedLimit(limit)])
+  `, [boundedLimit(limit)])
+  let processedRows: ObservationRow[] = []
   await stats.transaction(async (tx) => {
     if (lease.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, lease.scheduledLease)
-    for (const row of rows) {
+    processedRows = await recordObservationReceipts(tx, rows)
+    for (const row of processedRows) {
       await upsertSource(tx, row)
       await upsertWindow(tx, row)
       await upsertTokenRound(tx, row)
       await upsertIdentitySourceFeature(tx, row)
     }
-    const touchedIdentityScopes = await refreshIdentityBaselines(tx, rows)
+    const touchedIdentityScopes = await refreshIdentityBaselines(tx, processedRows)
     await enqueueIdentityLatestDirtyAccounts(tx, touchedIdentityScopes)
     const dirtyAccounts = await listModelTrustLatestDirtyAccounts(tx, maximumDirtyAccountsPerBatch)
-    const affected = mergeAccountModelKeys(uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)), dirtyAccounts)
+    const affected = mergeAccountModelKeys(uniqueAccountModels(processedRows.filter(isDiagnosticTrustObservation)), dirtyAccounts)
     for (const key of affected) {
-      await refreshLatestResult(tx, key, rows)
+      await refreshLatestResult(tx, key, processedRows)
     }
-    const tokenRows = rows.filter(isValidTokenObservation)
+    const tokenRows = processedRows.filter(isValidTokenObservation)
     const tokenContexts = await refreshTokenInterceptBaselines(tx, tokenRows.map((row) => ({
       cohortKeyHmac: row.cohort_key_hmac,
       requestedModel: row.requested_model,
@@ -256,7 +258,34 @@ async function aggregateModelTrustObservationsWithLeaseAsync(
     const last = rows.at(-1)
     if (last) await writeAggregationState(tx, last.created_at, last.id)
   })
-  return rows.length
+  await markObservationsAggregationCompleted(dataset, rows)
+  return processedRows.length
+}
+
+async function recordObservationReceipts(client: DatabaseClient, rows: ObservationRow[]): Promise<ObservationRow[]> {
+  if (!rows.length) return []
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_observation_receipts')
+  const processedAt = nowIso()
+  const values = rows.map(() => '(?, ?, ?)').join(', ')
+  const inserted = await client.query<{ observation_id: string }>(`
+    INSERT INTO ${table} (observation_id, observation_created_at, processed_at)
+    VALUES ${values}
+    ON CONFLICT (observation_id) DO NOTHING
+    RETURNING observation_id
+  `, rows.flatMap((row) => [row.id, row.created_at, processedAt]))
+  const insertedIds = new Set(inserted.map((row) => row.observation_id))
+  return rows.filter((row) => insertedIds.has(row.id))
+}
+
+async function markObservationsAggregationCompleted(client: DatabaseClient, rows: ObservationRow[]): Promise<void> {
+  if (!rows.length) return
+  const table = client.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
+  await client.execute(`
+    UPDATE ${table}
+    SET aggregation_completed_at = ?
+    WHERE aggregation_completed_at IS NULL
+      AND id IN (${rows.map(() => '?').join(', ')})
+  `, [nowIso(), ...rows.map((row) => row.id)])
 }
 
 export async function activateModelTokenInterceptBaselineAsync(input: TokenInterceptScope & {
@@ -752,7 +781,7 @@ function mergeAccountModelKeys(...groups: AccountModelKey[][]): AccountModelKey[
   return [...map.values()]
 }
 
-function boundedLimit(value: number): number { return Math.max(1, Math.min(5000, Math.trunc(value) || 500)) }
+function boundedLimit(value: number): number { return Math.max(1, Math.min(maximumObservationsPerTransaction, Math.trunc(value) || maximumObservationsPerTransaction)) }
 function boundedText(value: string): string { return value.trim().slice(0, 200) }
 function optionalBoundedText(value?: string): string | null { return value?.trim() ? boundedText(value) : null }
 function boundedHmac(value: string): string {

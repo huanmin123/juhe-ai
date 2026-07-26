@@ -66,6 +66,15 @@ export function applyCodexContextStateSchema(database: DatabaseSync): void {
       expires_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS codex_context_storage_cleanup_queue (
+      storage_key TEXT PRIMARY KEY,
+      enqueued_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      next_attempt_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_expires ON codex_context_sessions(expires_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_last_used ON codex_context_sessions(last_used_at ASC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_codex_context_sessions_boundary ON codex_context_sessions(system_account_id, api_key_id, group_id, provider_code);
@@ -77,5 +86,6 @@ export function applyCodexContextStateSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_source_response ON codex_context_compacts(source_response_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_expires ON codex_context_compacts(expires_at ASC, compact_id);
     CREATE INDEX IF NOT EXISTS idx_codex_context_compacts_boundary ON codex_context_compacts(system_account_id, api_key_id, group_id, provider_code, compact_id);
+    CREATE INDEX IF NOT EXISTS idx_codex_context_storage_cleanup_due ON codex_context_storage_cleanup_queue(next_attempt_at ASC, enqueued_at ASC, storage_key ASC);
   `)
 }

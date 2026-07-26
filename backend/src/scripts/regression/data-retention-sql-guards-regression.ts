@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -40,6 +40,22 @@ const statsTableNames = new Set([
   'system_metrics_trend_windows',
   'process_event_loop_trend_windows'
 ])
+const dataRetentionRepositorySource = readFileSync(new URL('../../storage/data-retention.repository.ts', import.meta.url), 'utf8')
+const postgresModelCheckCleanupSource = dataRetentionRepositorySource.slice(
+  dataRetentionRepositorySource.indexOf('export async function cleanupModelCheckRunsBeforeAsync'),
+  dataRetentionRepositorySource.indexOf('export function cleanupExpiredSystemSessions')
+)
+
+assert.match(
+  postgresModelCheckCleanupSource,
+  /return client\.transaction\(async \(tx\) => \{[\s\S]*?await tx\.query<CleanupRow>\([\s\S]*?SELECT id[\s\S]*?quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied'[\s\S]*?LIMIT \?[\s\S]*?FOR UPDATE SKIP LOCKED/,
+  'PostgreSQL 模型检测历史必须在删除事务内选择并锁定 health-sync 已完成候选，且并发清理应跳过已锁行'
+)
+assert.match(
+  postgresModelCheckCleanupSource,
+  /DELETE FROM juhe_dataset\.model_check_runs[\s\S]*?WHERE id = ANY\(\?::text\[\]\)[\s\S]*?AND \(quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied'\)/,
+  'PostgreSQL 模型检测历史最终删除必须重新校验 health-sync 状态'
+)
 
 try {
   const statsDatabase = databaseModule.getStatsDatabase()

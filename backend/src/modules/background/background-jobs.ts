@@ -282,7 +282,7 @@ function scheduleBackgroundJobs(): void {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 4 * secondMs, overlapPolicy: 'coalesceOne', timeoutMs: 20 * secondMs, task: runSystemMetricsSample })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, initialDelayMs: 3 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('usage-stats-aggregation', minuteMs, signal, runUsageStatsAggregation) })
         scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runClientIpStatsAggregation })
-        scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runGroupAccountStatsRefresh })
+        scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('group-account-stats-refresh', 2 * minuteMs, signal, runGroupAccountStatsRefresh) })
         scheduleUsageHotWindowRefreshJob()
         scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', postgresUsageRankSnapshotCoreStageNames, signal) })
         scheduler.schedule({ name: backgroundScheduledJobName('ai-performance-summary-windows-refresh'), intervalMs: 5 * minuteMs, initialDelayMs: 3 * minuteMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: minuteMs, failureBackoff: { baseMs: 15 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('ai-performance-summary-windows-refresh', aiPerformanceSummaryWindowStageNames, signal, 5 * minuteMs) })
@@ -302,7 +302,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 4 * secondMs, overlapPolicy: 'coalesceOne', timeoutMs: 20 * secondMs, task: runSystemMetricsSample })
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, initialDelayMs: 3 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('usage-stats-aggregation', minuteMs, signal, runUsageStatsAggregation) })
       scheduler.schedule({ name: backgroundScheduledJobName('client-ip-stats-aggregation'), intervalMs: settingsNumber('statsAggregationIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 8 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 20 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runClientIpStatsAggregation })
-      scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: runGroupAccountStatsRefresh })
+      scheduler.schedule({ name: backgroundScheduledJobName('group-account-stats-refresh'), intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 16 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-online', timeoutMs: 30 * secondMs, failureBackoff: { baseMs: secondMs, maxMs: minuteMs }, task: ({ signal }) => runWithPostgresScheduledLease('group-account-stats-refresh', 2 * minuteMs, signal, runGroupAccountStatsRefresh) })
       scheduleUsageHotWindowRefreshJob()
       scheduler.schedule({ name: backgroundScheduledJobName('usage-rank-snapshots-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 2 * minuteMs + 30 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('usage-rank-snapshots-refresh', usageRankSnapshotCoreStageNames, signal) })
       scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-trend-windows-refresh'), intervalMs: usageRankSnapshotRefreshIntervalMs, initialDelayMs: 3 * minuteMs + 20 * secondMs, stablePhaseWindowMs: 30 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'stats-heavy', timeoutMs: 10 * minuteMs, failureBackoff: { baseMs: 30 * secondMs, maxMs: 10 * minuteMs }, task: ({ signal }) => runLeasedUsageRankSnapshotsRefresh('system-metrics-trend-windows-refresh', systemMetricsTrendStageNames, signal) })
@@ -496,6 +496,7 @@ async function runModelTrustAggregation(signal: AbortSignal, scheduledLease?: Sc
   modelTrustAggregationRunning = true
   const startedAtMs = Date.now()
   const maxRunMs = 2 * minuteMs
+  const batchSize = 100
   try {
     for (let index = 0; index < 10; index += 1) {
       throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
@@ -504,10 +505,10 @@ async function runModelTrustAggregation(signal: AbortSignal, scheduledLease?: Sc
       }
       const result = await requestStatsWriter({
         type: 'aggregate_model_trust_observations',
-        batchSize: 500,
+        batchSize,
         scheduledLease
       }, 45 * secondMs) as { processed?: number }
-      if ((result.processed ?? 0) < 500) break
+      if ((result.processed ?? 0) < batchSize) break
       throwIfBackgroundJobAborted(signal, 'model-trust-observation-aggregation')
       await yieldToEventLoop()
     }
@@ -704,13 +705,13 @@ function defaultUsageStatsSafeCreatedBeforeIso(): string {
   return new Date(Date.now() - safetyMs).toISOString()
 }
 
-async function runGroupAccountStatsRefresh(): Promise<void> {
+async function runGroupAccountStatsRefresh(_signal: AbortSignal, scheduledLease?: ScheduledJobLeaseFence): Promise<void> {
   try {
     if (!groupAccountStatsStartupDirtyMarked && runtimeConfig.databaseDriver === 'postgres') {
       await requestBackgroundWorkerDbService({ type: 'mark_all_group_account_stats_dirty', reason: 'stats_worker_startup_refresh' })
       groupAccountStatsStartupDirtyMarked = true
     }
-    await requestStatsWriter({ type: 'refresh_group_account_stats' })
+    await requestStatsWriter({ type: 'refresh_group_account_stats', scheduledLease })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), '分组账户统计刷新失败')
     throw error

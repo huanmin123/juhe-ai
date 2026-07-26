@@ -65,7 +65,11 @@ func applyModelQualityEnforcement(
 	// the original enforcement generation.
 	if priorFound && prior.TriggerRunID == input.RunID {
 		status := port.ModelQualityEnforcementAlreadyEffective
-		if prior.Action != input.Action || prior.SystemAccountID != input.SystemAccountID {
+		if prior.Action != input.Action || prior.SystemAccountID != input.SystemAccountID ||
+			prior.ConfigSource != modelQualityEnforcementConfigSource(input) || prior.ConfigSourceID != input.ScheduleID ||
+			prior.PolicyRevision != input.ExpectedPolicyRevision || prior.Profile != input.Profile ||
+			prior.PenaltyThreshold != input.PenaltyThreshold || prior.RecoveryInterval != input.RecoveryInterval ||
+			prior.RecoveryModel != input.RecoveryModel {
 			status = port.ModelQualityEnforcementStale
 		}
 		before, after := account.Status, account.Status
@@ -74,19 +78,24 @@ func applyModelQualityEnforcement(
 		})
 	}
 
-	policy, err := readModelQualityPolicy(ctx, tx, input.SystemAccountID)
+	policy, modelMatches, err := readModelQualityEnforcementConfiguration(ctx, tx, input)
 	if err != nil {
-		return port.ModelQualityEnforcementApplyResult{}, fmt.Errorf("read model quality enforcement policy: %w", err)
+		return port.ModelQualityEnforcementApplyResult{}, err
 	}
 	request := modelquality.EnforcementRequest{
 		Trigger: input.Trigger, RunID: input.RunID, Action: input.Action,
-		PolicyRevision: input.ExpectedPolicyRevision, AccountRevision: input.ExpectedAccountConfigRevision,
+		Profile: input.Profile, PenaltyThreshold: input.PenaltyThreshold,
+		RecoveryIntervalMinutes: int(input.RecoveryInterval / time.Minute),
+		PolicyRevision:          input.ExpectedPolicyRevision, AccountRevision: input.ExpectedAccountConfigRevision,
 	}
 	plan, err := modelquality.PlanEnforcement(request, policy.Policy, account)
 	if err != nil {
 		return port.ModelQualityEnforcementApplyResult{}, fmt.Errorf("plan model quality enforcement: %w", err)
 	}
 	before := account.Status
+	if !modelMatches {
+		plan.Result = modelquality.EnforcementStale
+	}
 	if plan.Result == modelquality.EnforcementSkipped || plan.Result == modelquality.EnforcementStale {
 		status := port.ModelQualityEnforcementSkipped
 		if plan.Result == modelquality.EnforcementStale {
@@ -127,7 +136,8 @@ func applyModelQualityEnforcement(
 		command, err := tx.Exec(ctx, updateModelQualityEnforcementAccountSQL,
 			string(after), string(input.Action), truncateModelQualityTextRunes(input.Message, 1000), input.DecidedAt.UTC(),
 			input.AccountID, input.SystemAccountID, string(before), int64(account.ConfigRevision),
-			int64(policy.Policy.Revision), string(input.Trigger),
+			int64(policy.Policy.Revision), string(modelQualityEnforcementConfigSource(input)), modelQualityEnforcementConfigSourceID(input),
+			string(input.Profile), input.PenaltyThreshold, int(input.RecoveryInterval/time.Minute), input.RecoveryModel, string(input.Trigger),
 		)
 		if err != nil {
 			return port.ModelQualityEnforcementApplyResult{}, fmt.Errorf("update model quality enforcement account: %w", err)
@@ -240,29 +250,87 @@ func modelQualityEnforcementWriteArgs(
 	}
 	return []any{
 		input.AccountID, input.SystemAccountID, enforcementID, int64(generation), string(input.Action),
-		input.RunID, int64(input.ExpectedPolicyRevision), int64(input.ExpectedAccountConfigRevision),
-		string(account.Status), string(after), modelQualityPolicyBoolInt(account.FallbackEnabled),
-		modelQualityPolicyBoolInt(account.SuperPrioritySet), modelQualityPolicyTimeText(input.DecidedAt), recoveryDue,
-		int64(accountRevisionAfter), string(input.Trigger),
+		input.RunID, string(modelQualityEnforcementConfigSource(input)), modelQualityEnforcementConfigSourceID(input),
+		int64(input.ExpectedPolicyRevision), string(input.Profile), input.PenaltyThreshold,
+		int(input.RecoveryInterval / time.Minute), modelQualityEnforcementRecoveryModel(input),
+		int64(input.ExpectedAccountConfigRevision), string(account.Status), string(after),
+		modelQualityPolicyBoolInt(account.FallbackEnabled), modelQualityPolicyBoolInt(account.SuperPrioritySet),
+		modelQualityPolicyTimeText(input.DecidedAt), recoveryDue, int64(accountRevisionAfter), string(input.Trigger),
 	}
 }
 
 func validateModelQualityEnforcementApplyInput(input port.ModelQualityEnforcementApplyInput) error {
 	request := modelquality.EnforcementRequest{
 		Trigger: input.Trigger, RunID: input.RunID, Action: input.Action,
-		PolicyRevision: input.ExpectedPolicyRevision, AccountRevision: input.ExpectedAccountConfigRevision,
+		Profile: input.Profile, PenaltyThreshold: input.PenaltyThreshold,
+		RecoveryIntervalMinutes: int(input.RecoveryInterval / time.Minute),
+		PolicyRevision:          input.ExpectedPolicyRevision, AccountRevision: input.ExpectedAccountConfigRevision,
 	}
 	if err := request.Validate(); err != nil {
 		return err
 	}
 	if !validModelQualityScheduleText(input.SystemAccountID, 256) || !validModelQualityScheduleText(input.AccountID, 256) ||
-		!validModelQualityScheduleText(input.RunID, 256) || input.ExpectedPolicyRevision > modelquality.PolicyRevision(math.MaxInt32) ||
+		!validModelQualityScheduleText(input.RunID, 256) || !validModelQualityScheduleText(input.RecoveryModel, 4096) ||
+		input.ExpectedPolicyRevision > modelquality.PolicyRevision(math.MaxInt32) ||
 		input.ExpectedAccountConfigRevision > modelquality.AccountRevision(math.MaxInt32) || input.DecidedAt.IsZero() ||
 		!validModelQualityScheduleInterval(input.RecoveryInterval) || !utf8.ValidString(input.Message) ||
 		len(input.Message) > modelQualityEnforcementMaximumMessageBytes || strings.IndexByte(input.Message, 0) >= 0 {
 		return fmt.Errorf("model quality enforcement input is invalid")
 	}
+	if input.Trigger == modelquality.TriggerScheduled {
+		if !validModelQualityScheduleText(input.ScheduleID, 256) || input.ExpectedPolicyRevision == 0 {
+			return fmt.Errorf("scheduled model quality enforcement source is invalid")
+		}
+	} else if input.ScheduleID != "" {
+		return fmt.Errorf("manual model quality enforcement cannot name a schedule")
+	}
 	return nil
+}
+
+func readModelQualityEnforcementConfiguration(ctx context.Context, tx pgx.Tx, input port.ModelQualityEnforcementApplyInput) (port.ModelQualityPolicyRecord, bool, error) {
+	if input.Trigger != modelquality.TriggerScheduled {
+		policy, err := readModelQualityPolicy(ctx, tx, input.SystemAccountID)
+		if err != nil {
+			return port.ModelQualityPolicyRecord{}, false, fmt.Errorf("read manual model quality enforcement policy: %w", err)
+		}
+		return policy, true, nil
+	}
+	schedule, err := scanModelQualitySchedule(tx.QueryRow(ctx, lockModelQualityEnforcementScheduleSQL, input.ScheduleID, input.SystemAccountID, input.AccountID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Construct a valid but non-matching snapshot so the caller returns the
+		// normal stale result without treating an operator edit/delete as storage
+		// corruption.
+		return port.ModelQualityPolicyRecord{Policy: modelquality.Policy{
+			SystemAccountID: input.SystemAccountID, Revision: input.ExpectedPolicyRevision,
+			Profile: input.Profile, ManualEnforcementEnabled: true, PenaltyThreshold: input.PenaltyThreshold,
+			PenaltyAction: input.Action, RecoveryIntervalMinutes: int(input.RecoveryInterval / time.Minute),
+		}}, false, nil
+	}
+	if err != nil {
+		return port.ModelQualityPolicyRecord{}, false, fmt.Errorf("read scheduled model quality enforcement configuration: %w", err)
+	}
+	return modelQualitySchedulePolicy(schedule), schedule.Model == input.RecoveryModel, nil
+}
+
+func modelQualityEnforcementConfigSource(input port.ModelQualityEnforcementApplyInput) port.ModelQualityConfigSource {
+	if input.Trigger == modelquality.TriggerScheduled {
+		return port.ModelQualityConfigSourceSchedule
+	}
+	return port.ModelQualityConfigSourceManual
+}
+
+func modelQualityEnforcementConfigSourceID(input port.ModelQualityEnforcementApplyInput) any {
+	if input.ScheduleID == "" {
+		return nil
+	}
+	return input.ScheduleID
+}
+
+func modelQualityEnforcementRecoveryModel(input port.ModelQualityEnforcementApplyInput) any {
+	if input.RecoveryModel == "" {
+		return nil
+	}
+	return input.RecoveryModel
 }
 
 func commitModelQualityEnforcementResult(

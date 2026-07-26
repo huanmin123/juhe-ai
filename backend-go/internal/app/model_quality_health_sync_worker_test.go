@@ -59,11 +59,33 @@ func TestModelQualityHealthSyncWorkerChecksCutoverGatesBeforeResources(t *testin
 		{name: "retention safe", opts: ModelQualityHealthSyncWorkerOptions{Enabled: true, GoExclusiveOwner: true, LegacyWorkerDrained: true}, want: "retention"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := runModelQualityHealthSyncWorker(t.Context(), config.Config{PostgresURL: "postgres://unused"}, nil, test.opts, deps)
+			err := runModelQualityHealthSyncWorker(t.Context(), enabledModelQualityHealthSyncWorkerConfig(), nil, test.opts, deps)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("worker error = %v, want %q", err, test.want)
 			}
 		})
+	}
+	if opened != 0 {
+		t.Fatalf("PostgreSQL opens = %d, want 0", opened)
+	}
+}
+
+func TestModelQualityHealthSyncWorkerRequiresWorkerOwnerLockBeforeResources(t *testing.T) {
+	opened := 0
+	deps := modelQualityHealthSyncWorkerDependencies{
+		openStore: func(context.Context, string) (modelQualityHealthSyncWorkerStore, error) {
+			opened++
+			return nil, errors.New("must not open")
+		},
+	}
+	for _, cfg := range []config.Config{
+		{PostgresURL: "postgres://unused"},
+		{PostgresURL: "postgres://unused", OwnerLockEnabled: true, OwnerLockRole: "server"},
+	} {
+		err := runModelQualityHealthSyncWorker(t.Context(), cfg, nil, enabledModelQualityHealthSyncWorkerOptions(), deps)
+		if err == nil || !strings.Contains(err.Error(), "owner lock") {
+			t.Fatalf("worker error = %v, want owner lock error", err)
+		}
 	}
 	if opened != 0 {
 		t.Fatalf("PostgreSQL opens = %d, want 0", opened)
@@ -96,22 +118,38 @@ func TestModelQualityHealthSyncWorkerValidatesAllOptionsBeforeOpeningPostgres(t 
 		{name: "lease", edit: func(opts *ModelQualityHealthSyncWorkerOptions) { opts.Lease = time.Second }},
 		{name: "attempt timeout", edit: func(opts *ModelQualityHealthSyncWorkerOptions) { opts.AttemptTimeout = 31 * time.Minute }},
 		{name: "batch budget", edit: func(opts *ModelQualityHealthSyncWorkerOptions) {
-			opts.BatchSize = 100
+			opts.BatchSize = 1
 			opts.Workers = 1
-			opts.Lease = 30 * time.Minute
-			opts.AttemptTimeout = 29 * time.Minute
+			opts.Lease = time.Minute
+			opts.AttemptTimeout = 27*time.Second + time.Millisecond
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			opts := base
 			test.edit(&opts)
-			if err := runModelQualityHealthSyncWorker(t.Context(), config.Config{PostgresURL: "postgres://unused"}, nil, opts, deps); err == nil {
+			if err := runModelQualityHealthSyncWorker(t.Context(), enabledModelQualityHealthSyncWorkerConfig(), nil, opts, deps); err == nil {
 				t.Fatal("worker accepted invalid options")
 			}
 		})
 	}
 	if opened != 0 {
 		t.Fatalf("PostgreSQL opens = %d, want 0", opened)
+	}
+}
+
+func TestNormalizeModelQualityHealthSyncWorkerOptionsUsesServiceLeaseBudget(t *testing.T) {
+	opts := enabledModelQualityHealthSyncWorkerOptions()
+	opts.OwnerID = "owner"
+	opts.BatchSize = 1
+	opts.Workers = 1
+	opts.Lease = time.Minute
+	opts.AttemptTimeout = 27 * time.Second
+	if _, _, _, err := normalizeModelQualityHealthSyncWorkerOptions(opts, nil); err != nil {
+		t.Fatalf("normalize exact lease budget error = %v", err)
+	}
+	opts.AttemptTimeout += time.Millisecond
+	if _, _, _, err := normalizeModelQualityHealthSyncWorkerOptions(opts, nil); err == nil {
+		t.Fatal("normalize over lease budget error = nil")
 	}
 }
 
@@ -135,7 +173,7 @@ func TestModelQualityHealthSyncWorkerGeneratedOwnerIsStableAcrossBatches(t *test
 	opts := enabledModelQualityHealthSyncWorkerOptions()
 	opts.InitialDelay = time.Nanosecond
 	opts.Interval = time.Nanosecond
-	if err := runModelQualityHealthSyncWorker(ctx, config.Config{PostgresURL: "postgres://unused"}, discardLogger(), opts, deps); err != nil {
+	if err := runModelQualityHealthSyncWorker(ctx, enabledModelQualityHealthSyncWorkerConfig(), discardLogger(), opts, deps); err != nil {
 		t.Fatalf("worker error = %v", err)
 	}
 	if ownerCalls != 1 {
@@ -157,7 +195,7 @@ func TestModelQualityHealthSyncWorkerOwnerGenerationFailureDoesNotOpenPostgres(t
 		newService:     func(modelQualityHealthSyncWorkerStore) (modelQualityHealthSyncRunner, error) { return nil, nil },
 		processOwnerID: func() (string, error) { return "", want },
 	}
-	err := runModelQualityHealthSyncWorker(t.Context(), config.Config{PostgresURL: "postgres://unused"}, nil, enabledModelQualityHealthSyncWorkerOptions(), deps)
+	err := runModelQualityHealthSyncWorker(t.Context(), enabledModelQualityHealthSyncWorkerConfig(), nil, enabledModelQualityHealthSyncWorkerOptions(), deps)
 	if !errors.Is(err, want) {
 		t.Fatalf("worker error = %v, want %v", err, want)
 	}
@@ -177,7 +215,7 @@ func TestModelQualityHealthSyncWorkerCancellationClosesPostgres(t *testing.T) {
 		processOwnerID: func() (string, error) { return "owner", nil },
 	}
 	opts := enabledModelQualityHealthSyncWorkerOptions()
-	err := runModelQualityHealthSyncWorker(ctx, config.Config{PostgresURL: "postgres://unused"}, discardLogger(), opts, deps)
+	err := runModelQualityHealthSyncWorker(ctx, enabledModelQualityHealthSyncWorkerConfig(), discardLogger(), opts, deps)
 	if err != nil {
 		t.Fatalf("worker error = %v", err)
 	}
@@ -199,7 +237,7 @@ func TestModelQualityHealthSyncWorkerRunOnceSkipsWaitAndClosesPostgres(t *testin
 	}
 	opts := enabledModelQualityHealthSyncWorkerOptions()
 	opts.RunOnce = true
-	if err := runModelQualityHealthSyncWorker(t.Context(), config.Config{PostgresURL: "postgres://unused"}, discardLogger(), opts, deps); err != nil {
+	if err := runModelQualityHealthSyncWorker(t.Context(), enabledModelQualityHealthSyncWorkerConfig(), discardLogger(), opts, deps); err != nil {
 		t.Fatalf("worker error = %v", err)
 	}
 	if store.pingCalls != 1 || store.closeCalls != 1 {
@@ -242,7 +280,7 @@ func TestModelQualityHealthSyncWorkerDefaultsAndStructuredBatchLog(t *testing.T)
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	opts := enabledModelQualityHealthSyncWorkerOptions()
 	opts.RunOnce = true
-	if err := runModelQualityHealthSyncWorker(t.Context(), config.Config{PostgresURL: "postgres://unused"}, logger, opts, deps); err != nil {
+	if err := runModelQualityHealthSyncWorker(t.Context(), enabledModelQualityHealthSyncWorkerConfig(), logger, opts, deps); err != nil {
 		t.Fatalf("worker error = %v", err)
 	}
 	for _, field := range []string{`"event":"model_quality_health_sync_batch"`, `"claimed":3`, `"quarantined":1`, `"completed":2`, `"stale":1`} {
@@ -255,6 +293,14 @@ func TestModelQualityHealthSyncWorkerDefaultsAndStructuredBatchLog(t *testing.T)
 func enabledModelQualityHealthSyncWorkerOptions() ModelQualityHealthSyncWorkerOptions {
 	return ModelQualityHealthSyncWorkerOptions{
 		Enabled: true, GoExclusiveOwner: true, LegacyWorkerDrained: true, NodeRetentionSafe: true,
+	}
+}
+
+func enabledModelQualityHealthSyncWorkerConfig() config.Config {
+	return config.Config{
+		PostgresURL:      "postgres://unused",
+		OwnerLockEnabled: true,
+		OwnerLockRole:    "worker",
 	}
 }
 

@@ -46,6 +46,7 @@ try {
       api_key: 'sk-account-quality-refresh',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active'
   }, access)
@@ -58,6 +59,7 @@ try {
       api_key: 'sk-account-quality-stale-refresh',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active'
   }, access)
@@ -70,6 +72,7 @@ try {
       api_key: 'sk-account-quality-frequent-failure',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active'
   }, access)
@@ -82,6 +85,7 @@ try {
       api_key: `sk-account-quality-batch-${index}`,
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active'
   }, access))
@@ -218,6 +222,60 @@ try {
     assert.equal(batchRow?.recent_success_count, 1)
   }
 
+  const backlogAccounts = Array.from({ length: 501 }, (_, index) => repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: `质量刷新积压账户 ${String(index).padStart(3, '0')}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-account-quality-backlog-${index}`,
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    groupId: group.id,
+    status: 'active'
+  }, access))
+  for (const backlogAccount of backlogAccounts) {
+    activateAccount.run(backlogAccount.id)
+  }
+  const insertQualityScore = statsDatabase.prepare(`
+    INSERT INTO account_quality_scores (
+      account_id, system_account_id, provider_code, quality_score, quality_state,
+      recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
+      recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
+      window_started_at, window_ended_at, last_sample_at, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', 800, 'fresh', 1, 1, 0, 1, 800, 800, 1, ?, ?, ?, ?)
+  `)
+  const backlogStartedAtMs = nowDate.getTime() - 60_000
+  for (const [index, backlogAccount] of backlogAccounts.entries()) {
+    const dirtyAt = new Date(backlogStartedAtMs + index).toISOString()
+    insertQualityScore.run(backlogAccount.id, dirtyAt, dirtyAt, dirtyAt, dirtyAt)
+    markAccountQualityDirty(backlogAccount.id, dirtyAt)
+  }
+  markAccountQualityDirty(backlogAccounts[0]!.id, new Date(backlogStartedAtMs + 10_000).toISOString())
+
+  const firstBacklogRefresh = accountQualityRepository.refreshAccountQualityFromUsage(10, 10_000)
+  assert.equal(firstBacklogRefresh.refreshed, 0, '无近窗口样本的 dirty 账户应通过 stale 推进而不是伪造刷新样本')
+  assert.deepEqual(
+    accountQualityDirtyIds(),
+    [backlogAccounts[500]!.id],
+    '单轮 claim 必须硬限制为 500，并按 first_dirty_at 公平推进，重复变脏不能把最老账户推到队尾'
+  )
+  assert.equal(
+    accountQualityState(backlogAccounts[0]!.id),
+    'stale',
+    '本轮已 claim 且无样本的最老 dirty 账户应正常推进为 stale'
+  )
+  assert.equal(
+    accountQualityState(backlogAccounts[500]!.id),
+    'fresh',
+    '尚未 claim 且仍 dirty 的积压账户不得被全局 stale sweep 提前降级'
+  )
+
+  accountQualityRepository.refreshAccountQualityFromUsage(10)
+  assert.equal(accountQualityDirtyCount(), 0, '下一轮应继续消费剩余 dirty 账户，不留下永久积压')
+  assert.equal(accountQualityState(backlogAccounts[500]!.id), 'stale', '剩余 dirty 账户被 claim 后应正常推进为 stale')
+
   console.log('账号质量刷新回归通过')
 } finally {
   try {
@@ -252,6 +310,19 @@ function accountQualityDirtyCount(): number {
   return Number(row?.total ?? 0)
 }
 
+function accountQualityDirtyIds(): string[] {
+  return (databaseModule.getStatsDatabase()
+    .prepare('SELECT account_id FROM account_quality_dirty_accounts ORDER BY first_dirty_at ASC, account_id ASC')
+    .all() as unknown as Array<{ account_id: string }>).map((row) => row.account_id)
+}
+
+function accountQualityState(accountId: string): string | undefined {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT quality_state FROM account_quality_scores WHERE account_id = ?')
+    .get(accountId) as { quality_state?: string } | undefined
+  return row?.quality_state
+}
+
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/account-quality.repository.ts'), 'utf8')
   const schemaSource = readFileSync(resolve('src/storage/schema/stats-schema.ts'), 'utf8')
@@ -261,12 +332,14 @@ function assertSourceGuards(): void {
   assert.doesNotMatch(source, /SELECT id, system_account_id, provider_code FROM accounts'\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部账号元数据')
   assert.doesNotMatch(source, /SELECT \$\{accountQualitySelectColumns\(\)\} FROM account_quality_scores`\)\s*\.all\(\)/, '账号质量刷新不应一次性加载全部质量缓存')
   assert.doesNotMatch(source, /FROM account_quality_minute_stats quality_stats\s+WHERE quality_stats\.stat_minute >= \?\s+GROUP BY quality_stats\.account_id/i, '账号质量刷新不应按近窗口全量 GROUP BY 所有样本账号')
-  assert.match(source, /account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_updated/, '账号质量刷新应先读取固定 dirty 账号窗口')
+  assert.match(source, /account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_first_dirty/, '账号质量刷新应使用首次变脏索引读取固定 dirty 账号窗口')
+  assert.match(source, /ORDER BY first_dirty_at ASC, account_id ASC/, '账号质量 dirty claim 应按首次变脏时间公平推进')
+  assert.match(source, /normalizeAccountQualityDirtyLimit/, '账号质量 dirty claim 必须对调用方批量参数设置硬上限')
   assert.match(source, /listAccountQualityFailurePrecheckCandidates/, '账号质量刷新应暴露频繁失败确认候选查询')
   assert.match(source, /account_quality_scores INDEXED BY idx_account_quality_scores_failure_precheck/, '频繁失败确认候选查询应命中专用索引')
   assert.match(schemaSource, /idx_account_quality_scores_failure_precheck/, '统计库应为账号质量频繁失败确认候选提供索引')
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
-  assert.match(schemaSource, /idx_account_quality_dirty_accounts_updated/, '账号质量 dirty 表应有更新时间窗口索引')
+  assert.match(schemaSource, /idx_account_quality_dirty_accounts_first_dirty[^;]+first_dirty_at, account_id/, '账号质量 dirty 表应有首次变脏公平索引')
   assert.match(accountQualityWriterSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
   assert.match(failurePrecheckSource, /loadAccountForTestViaDbService\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
   assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_test_temporary_unavailable'/, '频繁失败确认落库应通过 DB service 复用账户测试临时不可调用语义')
@@ -282,4 +355,8 @@ function assertSourceGuards(): void {
   assert.match(source, /loadQualityAccountMetadataByIds/, '账号质量刷新应按样本或固定候选账号批量补业务元数据')
   assert.match(source, /ORDER BY updated_at ASC, account_id ASC\s+LIMIT \?/, '账号质量缓存清理和 stale 推进必须按固定批次')
   assert.match(source, /temp_refreshed_quality_accounts/, '账号质量 stale 推进应避开本轮已刷新账号')
+  assert.match(source, /temp_claimed_quality_accounts/, 'SQLite 账号质量 stale 推进应只允许本轮 claim 的 dirty 账户降级')
+  assert.match(source, /claimed_accounts\.row_ctid = dirty_accounts\.ctid/, 'PostgreSQL 账号质量 stale 推进必须按 dirty 版本 fencing')
+  assert.match(source, /CASE WHEN EXISTS \([\s\S]+temp_claimed_quality_accounts[\s\S]+THEN 0 ELSE 1 END ASC/, 'SQLite stale 批次应优先完成本轮 claim，避免旧缓存占满批次后提前清 dirty')
+  assert.match(source, /INNER JOIN claimed_accounts[\s\S]+claimed_accounts\.row_ctid = dirty_accounts\.ctid[\s\S]+THEN 0 ELSE 1 END ASC/, 'PostgreSQL stale 批次应优先完成仍有效的本轮 claim')
 }

@@ -83,7 +83,7 @@ func TestPlanEnforcementAppliesManualAndRevisionGates(t *testing.T) {
 	t.Parallel()
 	policy := testPolicy()
 	account := testAccount()
-	request := EnforcementRequest{Trigger: TriggerManual, RunID: "run-1", Action: ActionFallback, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	request := testEnforcementRequest(TriggerManual, ActionFallback, policy, account)
 	plan, err := PlanEnforcement(request, policy, account)
 	if err != nil || plan.Result != EnforcementApply || !plan.SetFallbackEnabled || !plan.ClearSuperPrioritySet {
 		t.Fatalf("fallback plan = %#v, err = %v", plan, err)
@@ -123,7 +123,7 @@ func TestPlanEnforcementUsesCurrentPolicyActionAndIdempotence(t *testing.T) {
 	t.Parallel()
 	policy := testPolicy()
 	account := testAccount()
-	request := EnforcementRequest{Trigger: TriggerScheduled, RunID: "run-1", Action: ActionDisable, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	request := testEnforcementRequest(TriggerScheduled, ActionDisable, policy, account)
 	plan, err := PlanEnforcement(request, policy, account)
 	if err != nil || plan.Result != EnforcementStale {
 		t.Fatalf("action mismatch = %#v, err = %v", plan, err)
@@ -134,6 +134,11 @@ func TestPlanEnforcementUsesCurrentPolicyActionAndIdempotence(t *testing.T) {
 	if err != nil || plan.Result != EnforcementAlreadyEffective {
 		t.Fatalf("already fallback = %#v, err = %v", plan, err)
 	}
+	request.PenaltyThreshold++
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementStale {
+		t.Fatalf("threshold snapshot mismatch = %#v, err = %v", plan, err)
+	}
 }
 
 func TestPlanEnforcementDisablesSchedulingForDisableAndQualityIsolation(t *testing.T) {
@@ -143,7 +148,7 @@ func TestPlanEnforcementDisablesSchedulingForDisableAndQualityIsolation(t *testi
 			policy := testPolicy()
 			policy.PenaltyAction = action
 			account := testAccount()
-			request := EnforcementRequest{Trigger: TriggerScheduled, RunID: "run-1", Action: action, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+			request := testEnforcementRequest(TriggerScheduled, action, policy, account)
 
 			plan, err := PlanEnforcement(request, policy, account)
 			if err != nil || plan.Result != EnforcementApply || plan.TargetSchedulable == nil || *plan.TargetSchedulable {
@@ -157,7 +162,7 @@ func TestPlanEnforcementRejectsQualityRecoveryTrigger(t *testing.T) {
 	t.Parallel()
 	policy := testPolicy()
 	account := testAccount()
-	request := EnforcementRequest{Trigger: TriggerQualityRecovery, RunID: "run-1", Action: ActionFallback, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	request := testEnforcementRequest(TriggerQualityRecovery, ActionFallback, policy, account)
 	if _, err := PlanEnforcement(request, policy, account); err == nil {
 		t.Fatal("PlanEnforcement() accepted quality recovery trigger")
 	}
@@ -186,32 +191,34 @@ func TestPlanRecoveryFencesAndRestoresAvailability(t *testing.T) {
 	account.Status = AccountStatusQualityIsolated
 	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
 	request := RecoveryRequest{PolicyRevision: 5, AccountRevision: account.ConfigRevision, Enforcement: token, Passed: true}
-	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, AccountRevision: account.ConfigRevision, Active: true, Action: ActionQualityIsolate}
-	plan, err := PlanRecovery(request, 5, current, account, true)
+	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, AccountRevision: account.ConfigRevision, Active: true, Action: ActionQualityIsolate, PolicyRevision: 5}
+	plan, err := PlanRecovery(request, current, account, true)
 	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusActive || plan.TargetSchedulable == nil || !*plan.TargetSchedulable {
 		t.Fatalf("available recovery = %#v, err = %v", plan, err)
 	}
-	plan, err = PlanRecovery(request, 5, current, account, false)
+	plan, err = PlanRecovery(request, current, account, false)
 	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusDisabled || plan.TargetSchedulable == nil || *plan.TargetSchedulable {
 		t.Fatalf("unavailable recovery = %#v, err = %v", plan, err)
 	}
-	plan, err = PlanRecovery(request, 6, current, account, true)
+	current.PolicyRevision = 6
+	plan, err = PlanRecovery(request, current, account, true)
 	if err != nil || plan.Result != RecoveryStale || !plan.NeedsReschedule {
 		t.Fatalf("stale policy recovery = %#v, err = %v", plan, err)
 	}
 	request.Passed = false
-	plan, err = PlanRecovery(request, 5, current, account, true)
+	current.PolicyRevision = 5
+	plan, err = PlanRecovery(request, current, account, true)
 	if err != nil || plan.Result != RecoveryKeptIsolated || !plan.NeedsReschedule {
 		t.Fatalf("failed recovery = %#v, err = %v", plan, err)
 	}
 	current.Token.Generation++
-	plan, err = PlanRecovery(request, 5, current, account, true)
+	plan, err = PlanRecovery(request, current, account, true)
 	if err != nil || plan.Result != RecoveryStale {
 		t.Fatalf("stale generation recovery = %#v, err = %v", plan, err)
 	}
 	current.Token = token
 	current.SystemAccountID = "other-system"
-	plan, err = PlanRecovery(request, 5, current, account, true)
+	plan, err = PlanRecovery(request, current, account, true)
 	if err != nil || plan.Result != RecoveryStale {
 		t.Fatalf("cross-scope recovery = %#v, err = %v", plan, err)
 	}
@@ -229,6 +236,7 @@ func TestPlanRecoveryReschedulesWhenAnyAccountRevisionFenceDrifts(t *testing.T) 
 		AccountRevision: account.ConfigRevision,
 		Active:          true,
 		Action:          ActionQualityIsolate,
+		PolicyRevision:  5,
 	}
 
 	tests := []struct {
@@ -260,6 +268,7 @@ func TestPlanRecoveryReschedulesWhenAnyAccountRevisionFenceDrifts(t *testing.T) 
 				AccountRevision: baseCurrent.AccountRevision + 1,
 				Active:          baseCurrent.Active,
 				Action:          baseCurrent.Action,
+				PolicyRevision:  baseCurrent.PolicyRevision,
 			},
 			account: account,
 		},
@@ -281,7 +290,7 @@ func TestPlanRecoveryReschedulesWhenAnyAccountRevisionFenceDrifts(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			plan, err := PlanRecovery(test.request, 5, test.current, test.account, true)
+			plan, err := PlanRecovery(test.request, test.current, test.account, true)
 			if err != nil || plan.Result != RecoveryStale || plan.TargetStatus != AccountStatusQualityIsolated || !plan.NeedsReschedule {
 				t.Fatalf("revision drift plan = %#v, err = %v", plan, err)
 			}
@@ -304,14 +313,15 @@ func TestClaimRecoveryRefreshesRevisionBeforeCheckAndFencesLaterDrift(t *testing
 		AccountRevision: account.ConfigRevision - 1,
 		Active:          true,
 		Action:          ActionQualityIsolate,
+		PolicyRevision:  5,
 	}
-	claim, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, current, account)
+	claim, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, current, account)
 	if err != nil || claim.Result != RecoveryClaimed || claim.State.AccountRevision != account.ConfigRevision {
 		t.Fatalf("claim = %#v, err = %v", claim, err)
 	}
 
 	request := RecoveryRequest{PolicyRevision: 5, AccountRevision: claim.State.AccountRevision, Enforcement: token, Passed: true}
-	plan, err := PlanRecovery(request, 5, claim.State, account, true)
+	plan, err := PlanRecovery(request, claim.State, account, true)
 	if err != nil || plan.Result != RecoveryRecovered {
 		t.Fatalf("recovery after refreshed claim = %#v, err = %v", plan, err)
 	}
@@ -319,7 +329,7 @@ func TestClaimRecoveryRefreshesRevisionBeforeCheckAndFencesLaterDrift(t *testing
 	// A post-claim edit invalidates this check. The scheduler must obtain a new
 	// claim instead of clearing the current isolation generation.
 	account.ConfigRevision++
-	plan, err = PlanRecovery(request, 5, claim.State, account, true)
+	plan, err = PlanRecovery(request, claim.State, account, true)
 	if err != nil || plan.Result != RecoveryStale || !plan.NeedsReschedule {
 		t.Fatalf("post-claim drift plan = %#v, err = %v", plan, err)
 	}
@@ -336,6 +346,7 @@ func TestClaimRecoveryRejectsStaleAndInvalidFences(t *testing.T) {
 		AccountRevision: account.ConfigRevision,
 		Active:          true,
 		Action:          ActionQualityIsolate,
+		PolicyRevision:  5,
 	}
 
 	for _, test := range []struct {
@@ -347,7 +358,9 @@ func TestClaimRecoveryRejectsStaleAndInvalidFences(t *testing.T) {
 		{name: "old generation fence", request: RecoveryClaimRequest{PolicyRevision: 5, Enforcement: EnforcementToken{ID: token.ID, Generation: token.Generation + 1}}, policy: 5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			claim, err := ClaimRecovery(test.request, test.policy, current, account)
+			state := current
+			state.PolicyRevision = test.policy
+			claim, err := ClaimRecovery(test.request, state, account)
 			if err != nil || claim.Result != RecoveryClaimStale {
 				t.Fatalf("claim = %#v, err = %v", claim, err)
 			}
@@ -356,15 +369,15 @@ func TestClaimRecoveryRejectsStaleAndInvalidFences(t *testing.T) {
 
 	invalidState := current
 	invalidState.AccountRevision = 0
-	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, invalidState, account); err == nil {
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, invalidState, account); err == nil {
 		t.Fatal("ClaimRecovery() accepted zero existing claim revision")
 	}
 	zeroAccount := account
 	zeroAccount.ConfigRevision = 0
-	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, current, zeroAccount); err == nil {
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, current, zeroAccount); err == nil {
 		t.Fatal("ClaimRecovery() accepted zero current account revision")
 	}
-	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: EnforcementToken{ID: token.ID}}, 5, current, account); err == nil {
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: EnforcementToken{ID: token.ID}}, current, account); err == nil {
 		t.Fatal("ClaimRecovery() accepted zero enforcement generation")
 	}
 }
@@ -375,6 +388,15 @@ func testPolicy() Policy {
 
 func testAccount() Account {
 	return Account{ID: "account-1", SystemAccountID: "system-1", Status: AccountStatusActive, ConfigRevision: 7, OwnPhysical: true, SuperPrioritySet: true}
+}
+
+func testEnforcementRequest(trigger Trigger, action Action, policy Policy, account Account) EnforcementRequest {
+	return EnforcementRequest{
+		Trigger: trigger, RunID: "run-1", Action: action,
+		Profile: policy.Profile, PenaltyThreshold: policy.PenaltyThreshold,
+		RecoveryIntervalMinutes: policy.RecoveryIntervalMinutes,
+		PolicyRevision:          policy.Revision, AccountRevision: account.ConfigRevision,
+	}
 }
 
 func contains(values []string, expected string) bool {

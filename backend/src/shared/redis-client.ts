@@ -38,14 +38,17 @@ const redisClientCloseTimeoutMs = 2000
 
 export async function getRedisClient(url: string): Promise<RedisCommandClient> {
   const normalizedUrl = normalizeRedisUrl(url)
-  const existing = redisClients.get(normalizedUrl)
-  if (existing) {
-    const client = await existing
+  while (true) {
+    const clientPromise = getOrCreateRedisClientPromise(normalizedUrl)
+    const client = await clientPromise
     if (client.isOpen !== false && client.isReady !== false) return client
-    await invalidateRedisClient(normalizedUrl, client)
-    const replacement = redisClients.get(normalizedUrl)
-    if (replacement) return await replacement
+    invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
   }
+}
+
+function getOrCreateRedisClientPromise(normalizedUrl: string): Promise<RedisCommandClient> {
+  const existing = redisClients.get(normalizedUrl)
+  if (existing) return existing
   const clientPromise = createRedisClient(normalizedUrl).catch((error) => {
     if (redisClients.get(normalizedUrl) === clientPromise) {
       redisClients.delete(normalizedUrl)
@@ -54,7 +57,7 @@ export async function getRedisClient(url: string): Promise<RedisCommandClient> {
   })
   clientPromise.catch(() => undefined)
   redisClients.set(normalizedUrl, clientPromise)
-  return await clientPromise
+  return clientPromise
 }
 
 export async function runRedisOperationWithDeadline<T>(
@@ -64,14 +67,18 @@ export async function runRedisOperationWithDeadline<T>(
 ): Promise<T> {
   const normalizedUrl = normalizeRedisUrl(url)
   const deadlineAtMs = normalizedRedisOperationDeadlineAt(options)
+  const clientPromise = getOrCreateRedisClientPromise(normalizedUrl)
   let client: RedisCommandClient | undefined
   try {
     client = await awaitRedisOperationStep(
-      getRedisClient(normalizedUrl),
+      clientPromise,
       deadlineAtMs,
       options,
       `${options.operationName}连接`
     )
+    if (client.isOpen === false || client.isReady === false) {
+      throw new Error(`${options.operationName}连接不可用`)
+    }
     return await awaitRedisOperationStep(
       operation(client),
       deadlineAtMs,
@@ -80,8 +87,7 @@ export async function runRedisOperationWithDeadline<T>(
     )
   } catch (error) {
     if (options.signal?.aborted || error instanceof RedisOperationDeadlineError || isRecoverableRedisClientError(error)) {
-      client?.destroy?.()
-      void invalidateRedisClient(normalizedUrl, client).catch(() => undefined)
+      invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
     }
     throw error
   }
@@ -99,19 +105,31 @@ export async function invalidateRedisClient(url: string, expectedClient?: RedisC
   const normalizedUrl = normalizeRedisUrl(url)
   const clientPromise = redisClients.get(normalizedUrl)
   if (!clientPromise) return false
+  if (!expectedClient) {
+    return invalidateRedisClientGeneration(normalizedUrl, clientPromise)
+  }
   let client: RedisCommandClient
   try {
     client = await withTimeout(clientPromise, redisClientCloseTimeoutMs, 'Redis client invalidation wait timeout')
   } catch {
-    if (redisClients.get(normalizedUrl) === clientPromise) {
-      redisClients.delete(normalizedUrl)
-    }
-    return true
+    return invalidateRedisClientGeneration(normalizedUrl, clientPromise)
   }
   if (expectedClient && client !== expectedClient) return false
-  if (redisClients.get(normalizedUrl) !== clientPromise) return false
+  return invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
+}
+
+function invalidateRedisClientGeneration(
+  normalizedUrl: string,
+  expectedPromise: Promise<RedisCommandClient>,
+  expectedClient?: RedisCommandClient
+): boolean {
+  if (expectedClient) {
+    expectedClient.destroy?.()
+  } else {
+    void expectedPromise.then((client) => client.destroy?.(), () => undefined)
+  }
+  if (redisClients.get(normalizedUrl) !== expectedPromise) return false
   redisClients.delete(normalizedUrl)
-  client.destroy?.()
   return true
 }
 

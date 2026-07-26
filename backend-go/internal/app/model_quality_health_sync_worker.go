@@ -96,6 +96,9 @@ func runModelQualityHealthSyncWorker(
 	if !opts.Enabled {
 		return nil
 	}
+	if !cfg.OwnerLockEnabled || strings.TrimSpace(cfg.OwnerLockRole) != "worker" {
+		return fmt.Errorf("Go model-quality health-sync worker must run with the worker owner lock")
+	}
 	if !opts.GoExclusiveOwner {
 		return fmt.Errorf("Go model-quality health-sync worker requires exclusive ownership")
 	}
@@ -223,20 +226,7 @@ func normalizeModelQualityHealthSyncWorkerOptions(
 	if err := modelqualityhealthsync.ValidateRunOnceInput(input); err != nil {
 		return modelqualityhealthsync.RunOnceInput{}, 0, 0, err
 	}
-	if err := validateModelQualityHealthSyncBatchBudget(input); err != nil {
-		return modelqualityhealthsync.RunOnceInput{}, 0, 0, err
-	}
 	return input, interval, initialDelay, nil
-}
-
-func validateModelQualityHealthSyncBatchBudget(input modelqualityhealthsync.RunOnceInput) error {
-	waves := (input.ClaimLimit + input.WorkerCount - 1) / input.WorkerCount
-	perWave := input.CompleteTimeout + modelqualityhealthsync.CleanupTimeout
-	budget := time.Duration(waves) * perWave
-	if budget >= input.LeaseDuration {
-		return fmt.Errorf("model-quality health-sync batch processing budget %s must be less than lease %s", budget, input.LeaseDuration)
-	}
-	return nil
 }
 
 func runModelQualityHealthSyncLoop(

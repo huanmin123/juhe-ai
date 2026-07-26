@@ -210,6 +210,41 @@ func TestValidateRunOnceInputRejectsUnsafeBounds(t *testing.T) {
 	}
 }
 
+func TestValidateRunOnceInputLeaseBudgetIncludesClaimWavesAndSafetyMargin(t *testing.T) {
+	exact := RunOnceInput{
+		OwnerID:         "worker-1",
+		ClaimLimit:      1,
+		LeaseDuration:   time.Minute,
+		WorkerCount:     1,
+		ClaimTimeout:    27 * time.Second,
+		CompleteTimeout: 27 * time.Second,
+	}
+	if err := ValidateRunOnceInput(exact); err != nil {
+		t.Fatalf("ValidateRunOnceInput(exact budget) error = %v", err)
+	}
+	claimOver := exact
+	claimOver.ClaimTimeout += time.Millisecond
+	if err := ValidateRunOnceInput(claimOver); err == nil {
+		t.Fatal("ValidateRunOnceInput(claim over budget) error = nil")
+	}
+	marginOver := exact
+	marginOver.CompleteTimeout += time.Millisecond
+	if err := ValidateRunOnceInput(marginOver); err == nil {
+		t.Fatal("ValidateRunOnceInput(safety margin over budget) error = nil")
+	}
+	twoWaves := exact
+	twoWaves.ClaimLimit = 2
+	twoWaves.ClaimTimeout = time.Second
+	twoWaves.CompleteTimeout = 24 * time.Second
+	if err := ValidateRunOnceInput(twoWaves); err != nil {
+		t.Fatalf("ValidateRunOnceInput(two exact waves) error = %v", err)
+	}
+	twoWaves.ClaimLimit = 3
+	if err := ValidateRunOnceInput(twoWaves); err == nil {
+		t.Fatal("ValidateRunOnceInput(three waves over budget) error = nil")
+	}
+}
+
 func TestNewServiceRejectsTypedNilDependencies(t *testing.T) {
 	var typedNil *healthSyncStoreStub
 	if _, err := NewService(typedNil, &healthSyncStoreStub{}, &healthSyncStoreStub{}); err == nil {

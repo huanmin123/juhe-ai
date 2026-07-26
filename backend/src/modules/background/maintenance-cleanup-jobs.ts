@@ -17,7 +17,7 @@ import { requestStatsWriter } from './background-stats-writer.js'
 import { cleanupExpiredAuditHotRetentionData } from './audit-hot-retention-cleanup.service.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
-import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
+import { processCodexContextStorageCleanupBatch } from './codex-context-storage-cleanup.service.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
   DATA_RETENTION_CLEANUP_BATCH_SIZE,
@@ -290,8 +290,10 @@ async function cleanupPostgresStatsAndSharedRetainedData(input: {
     result.codexContextSessions = (result.codexContextSessions ?? 0) + deleted.deletedSessions
     result.codexContextResponses = (result.codexContextResponses ?? 0) + deleted.deletedResponses
     result.codexContextCompacts = (result.codexContextCompacts ?? 0) + deleted.deletedCompacts
-    result.codexContextFiles = (result.codexContextFiles ?? 0) + await deleteCodexContextStorageKeys(deleted.storageKeys)
-    input.signal.throwIfAborted()
+    result.codexContextFiles = (result.codexContextFiles ?? 0) + await processCodexContextStorageCleanupBatch({
+      storageKeys: deleted.storageKeys,
+      signal: input.signal
+    })
     return deleted.hasMore ? input.batchSize : 0
   }, input.batchSize, input.signal)
   return result

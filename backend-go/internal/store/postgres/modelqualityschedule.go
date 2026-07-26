@@ -93,6 +93,10 @@ func upsertModelQualitySchedule(
 			input.AccountID,
 			input.Model,
 			int(input.Interval/time.Minute),
+			string(input.Profile),
+			input.PenaltyThreshold,
+			string(input.PenaltyAction),
+			int(input.RecoveryInterval/time.Minute),
 			modelQualityPolicyBoolInt(input.Enabled),
 			modelQualityPolicyTimeText(nextRunAt),
 			modelQualityPolicyTimeText(input.UpdatedAt),
@@ -116,6 +120,10 @@ func upsertModelQualitySchedule(
 	updated, err := scanModelQualitySchedule(tx.QueryRow(ctx, updateModelQualityScheduleSQL,
 		input.Model,
 		int(input.Interval/time.Minute),
+		string(input.Profile),
+		input.PenaltyThreshold,
+		string(input.PenaltyAction),
+		int(input.RecoveryInterval/time.Minute),
 		modelQualityPolicyBoolInt(input.Enabled),
 		modelQualityPolicyTimeText(nextRunAt),
 		modelQualityPolicyTimeText(input.UpdatedAt),
@@ -217,7 +225,6 @@ func claimDueModelQualitySchedules(
 	rows.Close()
 
 	claims := make([]port.ModelQualityScheduleClaim, 0, len(candidates))
-	policyCache := make(map[string]port.ModelQualityPolicyRecord, len(candidates))
 	for _, candidate := range candidates {
 		tokenValue, err := newToken("mqs_claim")
 		if err != nil {
@@ -252,14 +259,7 @@ func claimDueModelQualitySchedules(
 		if err != nil {
 			return nil, fmt.Errorf("parse claimed model quality schedule updated_at: %w", err)
 		}
-		policy, ok := policyCache[candidate.schedule.SystemAccountID]
-		if !ok {
-			policy, err = readModelQualityPolicy(ctx, tx, candidate.schedule.SystemAccountID)
-			if err != nil {
-				return nil, fmt.Errorf("read claimed model quality schedule policy: %w", err)
-			}
-			policyCache[candidate.schedule.SystemAccountID] = policy
-		}
+		policy := modelQualitySchedulePolicy(candidate.schedule)
 		lease := port.ModelQualityScheduleLease{OwnerID: input.OwnerID, ClaimToken: token, Until: leaseUntil}
 		candidate.schedule.Lease = &lease
 		candidate.schedule.UpdatedAt = claimedAt
@@ -331,14 +331,17 @@ func scanModelQualitySchedule(row modelQualityScheduleScanner) (port.ModelQualit
 func scanModelQualityScheduleWithTail(row modelQualityScheduleScanner, tail ...any) (port.ModelQualitySchedule, error) {
 	var (
 		id, systemAccountID, accountID, model string
-		intervalMinutes, enabled, revision    int64
+		profile, penaltyAction                string
+		intervalMinutes, penaltyThreshold     int64
+		recoveryMinutes, enabled, revision    int64
 		nextRunRaw, createdRaw, updatedRaw    string
 		lastRunID, lastRunAt, lastRunStatus   pgtype.Text
 		leaseOwner, leaseToken, leaseUntil    pgtype.Text
 	)
 	destinations := []any{
 		&id, &systemAccountID, &accountID, &model,
-		&intervalMinutes, &enabled, &revision, &nextRunRaw,
+		&intervalMinutes, &profile, &penaltyThreshold, &penaltyAction, &recoveryMinutes,
+		&enabled, &revision, &nextRunRaw,
 		&lastRunID, &lastRunAt, &lastRunStatus,
 		&leaseOwner, &leaseToken, &leaseUntil,
 		&createdRaw, &updatedRaw,
@@ -350,7 +353,8 @@ func scanModelQualityScheduleWithTail(row modelQualityScheduleScanner, tail ...a
 	if !validModelQualityScheduleText(id, 256) || !validModelQualityScheduleText(systemAccountID, 256) || !validModelQualityScheduleText(accountID, 256) || !validModelQualityScheduleText(model, 4096) {
 		return port.ModelQualitySchedule{}, fmt.Errorf("invalid persisted model quality schedule identity")
 	}
-	if intervalMinutes < 10 || intervalMinutes > 10080 || enabled < 0 || enabled > 1 || revision < 1 || revision > math.MaxInt32 {
+	if intervalMinutes < 10 || intervalMinutes > 10080 || penaltyThreshold < 40 || penaltyThreshold > 100 ||
+		recoveryMinutes < 10 || recoveryMinutes > 10080 || enabled < 0 || enabled > 1 || revision < 1 || revision > math.MaxInt32 {
 		return port.ModelQualitySchedule{}, fmt.Errorf("invalid persisted model quality schedule numeric range")
 	}
 	nextRunAt, err := modelQualityPolicyParseTime(nextRunRaw)
@@ -367,9 +371,14 @@ func scanModelQualityScheduleWithTail(row modelQualityScheduleScanner, tail ...a
 	}
 	schedule := port.ModelQualitySchedule{
 		ID: id, SystemAccountID: systemAccountID, AccountID: accountID, Model: model,
-		Interval: time.Duration(intervalMinutes) * time.Minute, Enabled: enabled == 1,
+		Interval: time.Duration(intervalMinutes) * time.Minute, Profile: modelquality.Profile(profile),
+		PenaltyThreshold: int(penaltyThreshold), PenaltyAction: modelquality.Action(penaltyAction),
+		RecoveryInterval: time.Duration(recoveryMinutes) * time.Minute, Enabled: enabled == 1,
 		Revision: modelquality.ScheduleRevision(revision), NextRunAt: nextRunAt,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
+	}
+	if err := modelQualitySchedulePolicy(schedule).Policy.Validate(); err != nil {
+		return port.ModelQualitySchedule{}, fmt.Errorf("invalid persisted model quality schedule policy: %w", err)
 	}
 	if lastRunID.Valid {
 		if !validModelQualityScheduleText(lastRunID.String, 256) {
@@ -419,13 +428,39 @@ func validateModelQualityScheduleUpsertInput(input port.ModelQualityScheduleUpse
 	if !validModelQualityScheduleText(input.SystemAccountID, 256) || !validModelQualityScheduleText(input.AccountID, 256) || !validModelQualityScheduleText(input.Model, 4096) {
 		return fmt.Errorf("model quality schedule upsert identity is invalid")
 	}
-	if input.UpdatedAt.IsZero() || !validModelQualityScheduleInterval(input.Interval) {
+	if input.UpdatedAt.IsZero() || !validModelQualityScheduleInterval(input.Interval) || !validModelQualityScheduleInterval(input.RecoveryInterval) {
 		return fmt.Errorf("model quality schedule upsert time or interval is invalid")
+	}
+	policy := modelquality.Policy{
+		SystemAccountID: input.SystemAccountID, Profile: input.Profile, ManualEnforcementEnabled: true,
+		PenaltyThreshold: input.PenaltyThreshold, PenaltyAction: input.PenaltyAction,
+		RecoveryIntervalMinutes: int(input.RecoveryInterval / time.Minute),
+	}
+	if err := policy.Validate(); err != nil {
+		return fmt.Errorf("model quality schedule upsert policy is invalid: %w", err)
 	}
 	if input.ExpectedRevision != nil && *input.ExpectedRevision > modelquality.ScheduleRevision(math.MaxInt32) {
 		return fmt.Errorf("model quality schedule expected revision is outside PostgreSQL INTEGER range")
 	}
 	return nil
+}
+
+func modelQualitySchedulePolicy(schedule port.ModelQualitySchedule) port.ModelQualityPolicyRecord {
+	createdAt, updatedAt := schedule.CreatedAt, schedule.UpdatedAt
+	return port.ModelQualityPolicyRecord{
+		Policy: modelquality.Policy{
+			SystemAccountID:          schedule.SystemAccountID,
+			Revision:                 modelquality.PolicyRevision(schedule.Revision),
+			Profile:                  schedule.Profile,
+			ManualEnforcementEnabled: true,
+			PenaltyThreshold:         schedule.PenaltyThreshold,
+			PenaltyAction:            schedule.PenaltyAction,
+			RecoveryIntervalMinutes:  int(schedule.RecoveryInterval / time.Minute),
+		},
+		Persisted: true,
+		CreatedAt: &createdAt,
+		UpdatedAt: &updatedAt,
+	}
 }
 
 func validateModelQualityScheduleDeleteInput(input port.ModelQualityScheduleDeleteInput) error {

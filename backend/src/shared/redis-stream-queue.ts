@@ -7,6 +7,7 @@ import {
   getRedisClient,
   invalidateRedisClient,
   isRecoverableRedisClientError,
+  runRedisOperationWithDeadline,
   type RedisCommandClient
 } from './redis-client.js'
 import { redisNamespacedGroup, redisNamespacedKey } from './redis-namespace.js'
@@ -23,6 +24,8 @@ export interface RedisStreamQueueOptions<T> {
   encode?: (payload: T) => string
   decode?: (payload: string) => T
   producerClient?: () => Promise<RedisCommandClient>
+  producerTimeoutMs?: number
+  backlogCreatedAt?: (payload: T) => string | undefined
 }
 
 export interface RedisStreamMessage<T> {
@@ -48,6 +51,13 @@ export interface RedisStreamBacklogInspection<T> {
   undeliveredTruncated: boolean
 }
 
+export interface RedisStreamBacklogWatermark {
+  ready: boolean
+  oldestCreatedAt?: string
+  backfilledCount: number
+  failureReason?: 'backfill_incomplete' | 'unreadable_message' | 'invalid_created_at'
+}
+
 export class RedisStreamQueue<T> {
   private readonly streamKey: string
   private readonly groupName: string
@@ -59,7 +69,12 @@ export class RedisStreamQueue<T> {
   private readonly fenceKey: string
   private readonly encode: (payload: T) => string
   private readonly decode: (payload: string) => T
-  private readonly producerClient: () => Promise<RedisCommandClient>
+  private readonly producerClient: (() => Promise<RedisCommandClient>) | undefined
+  private readonly producerTimeoutMs: number
+  private readonly backlogCreatedAt: ((payload: T) => string | undefined) | undefined
+  private readonly backlogCreatedAtIndexKey: string
+  private readonly backlogCreatedAtCursorKey: string
+  private readonly backlogCreatedAtReadyKey: string
   private consumerClientPromise: Promise<RedisCommandClient> | undefined
   private groupReadyPromise: Promise<void> | undefined
 
@@ -76,20 +91,48 @@ export class RedisStreamQueue<T> {
     this.fenceKey = redisQueueFenceKey()
     this.encode = options.encode ?? ((payload) => JSON.stringify(payload))
     this.decode = options.decode ?? ((payload) => JSON.parse(payload) as T)
-    this.producerClient = options.producerClient ?? (() => getRedisClient(this.redisUrl))
+    this.producerClient = options.producerClient
+    this.producerTimeoutMs = Math.max(1, Math.trunc(options.producerTimeoutMs ?? 3_000))
+    this.backlogCreatedAt = options.backlogCreatedAt
+    this.backlogCreatedAtIndexKey = `${this.streamKey}:backlog-created-at`
+    this.backlogCreatedAtCursorKey = `${this.backlogCreatedAtIndexKey}:backfill-cursor`
+    this.backlogCreatedAtReadyKey = `${this.backlogCreatedAtIndexKey}:ready`
   }
 
   async enqueue(payload: T): Promise<string> {
-    return await this.enqueueEncoded(this.encode(payload))
+    const createdAt = this.backlogCreatedAt?.(payload)
+    const score = createdAt === undefined ? undefined : backlogCreatedAtScore(createdAt)
+    if (this.backlogCreatedAt && score === undefined) {
+      throw new Error('Redis Stream backlog createdAt 无效')
+    }
+    return await this.enqueueEncodedInternal(this.encode(payload), score)
   }
 
   async enqueueEncoded(encodedPayload: string): Promise<string> {
+    return await this.enqueueEncodedInternal(encodedPayload)
+  }
+
+  private async enqueueEncodedInternal(encodedPayload: string, backlogCreatedAtScore?: number): Promise<string> {
+    const enqueue = (client: RedisCommandClient) => backlogCreatedAtScore === undefined
+      ? client.eval(redisEnqueueWithFenceScript, {
+          keys: [this.fenceKey, this.streamKey],
+          arguments: ['payload', encodedPayload]
+        })
+      : client.eval(redisEnqueueWithFenceAndBacklogIndexScript, {
+          keys: [this.fenceKey, this.streamKey, this.backlogCreatedAtIndexKey],
+          arguments: ['payload', encodedPayload, String(backlogCreatedAtScore)]
+        })
+    if (!this.producerClient) {
+      const id = await runRedisOperationWithDeadline(this.redisUrl, {
+        operationName: 'Redis Stream 入队',
+        timeoutMs: this.producerTimeoutMs
+      }, enqueue)
+      return String(id ?? '')
+    }
+
     const client = await this.producerClient()
     try {
-      const id = await client.eval(redisEnqueueWithFenceScript, {
-        keys: [this.fenceKey, this.streamKey],
-        arguments: ['payload', encodedPayload]
-      })
+      const id = await enqueue(client)
       return String(id ?? '')
     } catch (error) {
       if (isRecoverableRedisClientError(error)) {
@@ -141,11 +184,75 @@ export class RedisStreamQueue<T> {
     const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
     if (!normalizedIds.length) return 0
     const client = await getRedisClient(this.redisUrl)
-    const result = await client.eval(redisAckAndDeleteMessagesScript, {
-      keys: [this.streamKey],
-      arguments: [this.groupName, ...normalizedIds]
-    })
+    const result = this.backlogCreatedAt
+      ? await client.eval(redisAckDeleteAndRemoveBacklogIndexScript, {
+          keys: [this.streamKey, this.backlogCreatedAtIndexKey],
+          arguments: [this.groupName, ...normalizedIds]
+        })
+      : await client.eval(redisAckAndDeleteMessagesScript, {
+          keys: [this.streamKey],
+          arguments: [this.groupName, ...normalizedIds]
+        })
     return Number(result ?? 0)
+  }
+
+  async inspectOldestBacklogCreatedAt(backfillLimit = 512): Promise<RedisStreamBacklogWatermark> {
+    if (!this.backlogCreatedAt) {
+      throw new Error('Redis Stream 未配置 backlog createdAt 索引')
+    }
+    const normalizedLimit = Math.max(1, Math.trunc(backfillLimit))
+    return await runRedisOperationWithDeadline(this.redisUrl, {
+      operationName: 'Redis Stream backlog createdAt 水位检查',
+      timeoutMs: this.producerTimeoutMs
+    }, async (client) => {
+      const current = await this.readBacklogCreatedAtIndex(client)
+      if (current.ready) return current
+
+      const cursor = stringField(await client.sendCommand(['GET', this.backlogCreatedAtCursorKey]))
+      const rawEntries = await client.sendCommand([
+        'XRANGE',
+        this.streamKey,
+        cursor ? `(${cursor}` : '-',
+        '+',
+        'COUNT',
+        String(normalizedLimit)
+      ])
+      const parsed = this.backlogCreatedAtEntries(rawEntries)
+      if (parsed.failureReason) {
+        return {
+          ready: false,
+          backfilledCount: 0,
+          failureReason: parsed.failureReason
+        }
+      }
+
+      const finished = parsed.entries.length < normalizedLimit
+      const lastId = parsed.entries.at(-1)?.id ?? cursor ?? '0-0'
+      await client.eval(redisBackfillBacklogCreatedAtIndexScript, {
+        keys: [
+          this.streamKey,
+          this.backlogCreatedAtIndexKey,
+          this.backlogCreatedAtCursorKey,
+          this.backlogCreatedAtReadyKey
+        ],
+        arguments: [
+          lastId,
+          finished ? '1' : '0',
+          ...parsed.entries.flatMap((entry) => [entry.id, String(entry.score)])
+        ]
+      })
+      if (finished) {
+        return {
+          ...await this.readBacklogCreatedAtIndex(client),
+          backfilledCount: parsed.entries.length
+        }
+      }
+      return {
+        ready: false,
+        backfilledCount: parsed.entries.length,
+        failureReason: 'backfill_incomplete'
+      }
+    })
   }
 
   async inspectRuntime(): Promise<RedisStreamQueueRuntime> {
@@ -376,6 +483,59 @@ export class RedisStreamQueue<T> {
     return { ids, entries }
   }
 
+  private async readBacklogCreatedAtIndex(client: RedisCommandClient): Promise<RedisStreamBacklogWatermark> {
+    const result = await client.eval(redisReadBacklogCreatedAtIndexScript, {
+      keys: [
+        this.streamKey,
+        this.backlogCreatedAtIndexKey,
+        this.backlogCreatedAtCursorKey,
+        this.backlogCreatedAtReadyKey
+      ],
+      arguments: []
+    })
+    if (!Array.isArray(result) || Number(result[0] ?? 0) !== 1) {
+      return { ready: false, backfilledCount: 0, failureReason: 'backfill_incomplete' }
+    }
+    const rawScore = stringField(result[1])
+    if (!rawScore) return { ready: true, backfilledCount: 0 }
+    const score = Number(rawScore)
+    return Number.isFinite(score)
+      ? { ready: true, oldestCreatedAt: new Date(score).toISOString(), backfilledCount: 0 }
+      : { ready: false, backfilledCount: 0, failureReason: 'invalid_created_at' }
+  }
+
+  private backlogCreatedAtEntries(rawEntries: unknown): {
+    entries: Array<{ id: string; score: number }>
+    failureReason?: 'unreadable_message' | 'invalid_created_at'
+  } {
+    if (!Array.isArray(rawEntries)) return { entries: [], failureReason: 'unreadable_message' }
+    const entries: Array<{ id: string; score: number }> = []
+    for (const rawEntry of rawEntries) {
+      if (!Array.isArray(rawEntry) || rawEntry.length < 2) {
+        return { entries: [], failureReason: 'unreadable_message' }
+      }
+      const id = String(rawEntry[0] ?? '')
+      const encodedPayload = fieldValue(rawEntry[1], 'payload')
+      if (!id || encodedPayload === undefined) {
+        return { entries: [], failureReason: 'unreadable_message' }
+      }
+      let payload: T
+      try {
+        payload = this.decode(encodedPayload)
+      } catch (error) {
+        this.recordPoisonMessage(id, error)
+        return { entries: [], failureReason: 'unreadable_message' }
+      }
+      const createdAt = this.backlogCreatedAt?.(payload)
+      const score = createdAt === undefined ? undefined : backlogCreatedAtScore(createdAt)
+      if (score === undefined) {
+        return { entries: [], failureReason: 'invalid_created_at' }
+      }
+      entries.push({ id, score })
+    }
+    return { entries }
+  }
+
   private recordPoisonMessage(id: string, error: unknown): void {
     logger.error(errorLogFields(error, {
       event: 'redis_stream_message_decode_failed',
@@ -421,6 +581,11 @@ function parsePendingRuntime(result: unknown): Partial<RedisStreamQueueRuntime> 
   return { pendingCount: 0 }
 }
 
+function backlogCreatedAtScore(value: string): number | undefined {
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : undefined
+}
+
 const redisInspectPendingMessagesScript = `
 local pending = redis.call('XPENDING', KEYS[1], ARGV[1], '-', '+', ARGV[2])
 local output = {}
@@ -439,6 +604,15 @@ end
 return redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
 `
 
+const redisEnqueueWithFenceAndBacklogIndexScript = `
+if redis.call('GET', KEYS[1]) then
+  return redis.error_reply('QUEUE_QUIESCED')
+end
+local id = redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
+redis.call('ZADD', KEYS[3], ARGV[3], id)
+return id
+`
+
 const redisAckAndDeleteMessagesScript = `
 local group_name = ARGV[1]
 local acked = 0
@@ -451,6 +625,51 @@ for index = 2, #ARGV do
   end
 end
 return acked
+`
+
+const redisAckDeleteAndRemoveBacklogIndexScript = `
+local group_name = ARGV[1]
+local acked = 0
+for index = 2, #ARGV do
+  local id = ARGV[index]
+  local result = redis.call('XACK', KEYS[1], group_name, id)
+  if result > 0 then
+    acked = acked + result
+    redis.call('XDEL', KEYS[1], id)
+    redis.call('ZREM', KEYS[2], id)
+  end
+end
+return acked
+`
+
+const redisBackfillBacklogCreatedAtIndexScript = `
+for index = 3, #ARGV, 2 do
+  local id = ARGV[index]
+  local score = ARGV[index + 1]
+  if #redis.call('XRANGE', KEYS[1], id, id, 'COUNT', 1) > 0 then
+    redis.call('ZADD', KEYS[2], score, id)
+  end
+end
+redis.call('SET', KEYS[3], ARGV[1])
+if ARGV[2] == '1' then
+  redis.call('SET', KEYS[4], '1')
+end
+return 1
+`
+
+const redisReadBacklogCreatedAtIndexScript = `
+if redis.call('GET', KEYS[4]) ~= '1' then
+  return {0}
+end
+if redis.call('XLEN', KEYS[1]) ~= redis.call('ZCARD', KEYS[2]) then
+  redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+  return {0}
+end
+local oldest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+if #oldest == 0 then
+  return {1, ''}
+end
+return {1, oldest[2]}
 `
 
 function fieldAlias(fields: Map<string, unknown>, ...names: string[]): unknown {

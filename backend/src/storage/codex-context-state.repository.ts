@@ -109,6 +109,22 @@ export interface CodexContextExpiredStateCleanupResult {
   hasMore: boolean
 }
 
+export interface CodexContextStorageCleanupFailure {
+  storageKey: string
+  error: string
+}
+
+export interface CodexContextStorageCleanupSettlement {
+  succeededStorageKeys: string[]
+  failures: CodexContextStorageCleanupFailure[]
+  now?: string
+}
+
+export interface CodexContextStorageCleanupSettlementResult {
+  acknowledged: number
+  deferred: number
+}
+
 interface CodexContextSessionRow {
   id: string
   expires_at: string
@@ -315,7 +331,7 @@ export function cleanupExpiredCodexContextStates(input: {
   const expiredBefore = input.expiredBefore ?? nowIso()
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000))
   const expiredSessions = selectExpiredSessions(expiredBefore, limit)
-  return cleanupExpiredCodexContextStateSessionRows(expiredSessions, expiredBefore)
+  return cleanupExpiredCodexContextStateSessionRows(expiredSessions, expiredBefore, limit)
 }
 
 export async function saveCodexContextResponseStateIndexAsync(input: CodexContextResponseStateIndexInput): Promise<CodexContextResponseStateIndex> {
@@ -449,9 +465,38 @@ export async function cleanupExpiredCodexContextStatesAsync(input: {
   `, [expiredBefore, limit + 1])
   const rows = expiredRows.slice(0, limit)
   if (!rows.length) {
-    return { deletedSessions: 0, deletedResponses: 0, deletedCompacts: 0, storageKeys: [], hasMore: false }
+    const pending = await selectPendingCodexContextStorageCleanupKeysAsync(client, limit)
+    return { deletedSessions: 0, deletedResponses: 0, deletedCompacts: 0, storageKeys: pending.storageKeys, hasMore: pending.hasMore }
   }
   return cleanupExpiredCodexContextStateSessionRowsAsync(client, rows, expiredBefore, expiredRows.length > limit)
+}
+
+export function settleCodexContextStorageCleanup(input: CodexContextStorageCleanupSettlement): CodexContextStorageCleanupSettlementResult {
+  const succeededStorageKeys = uniqueStorageKeys(input.succeededStorageKeys)
+  const failures = normalizedStorageCleanupFailures(input.failures)
+  const now = input.now ?? nowIso()
+  let acknowledged = 0
+  let deferred = 0
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    const database = getCodexContextStateShardDatabase(shardIndex)
+    runInDatabaseTransaction(() => {
+      acknowledged += deleteStorageCleanupQueueRows(database, succeededStorageKeys)
+      deferred += deferStorageCleanupQueueRows(database, failures, now)
+    }, database)
+  }
+  return { acknowledged, deferred }
+}
+
+export async function settleCodexContextStorageCleanupAsync(input: CodexContextStorageCleanupSettlement): Promise<CodexContextStorageCleanupSettlementResult> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const succeededStorageKeys = uniqueStorageKeys(input.succeededStorageKeys)
+  const failures = normalizedStorageCleanupFailures(input.failures)
+  const now = input.now ?? nowIso()
+  return await client.transaction(async (tx) => {
+    const acknowledged = await deleteStorageCleanupQueueRowsAsync(tx, succeededStorageKeys)
+    const deferred = await deferStorageCleanupQueueRowsAsync(tx, failures, now)
+    return { acknowledged, deferred }
+  })
 }
 
 export function cleanupExpiredCodexContextStatesInShard(input: {
@@ -463,7 +508,7 @@ export function cleanupExpiredCodexContextStatesInShard(input: {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 10000))
   const shardIndex = normalizedShardIndex(input.shardIndex)
   const expiredSessions = selectExpiredSessions(expiredBefore, limit, [shardIndex])
-  return cleanupExpiredCodexContextStateSessionRows(expiredSessions, expiredBefore)
+  return cleanupExpiredCodexContextStateSessionRows(expiredSessions, expiredBefore, limit)
 }
 
 function cleanupExpiredCodexContextStateSessionRows(
@@ -471,31 +516,32 @@ function cleanupExpiredCodexContextStateSessionRows(
     rows: Array<CodexContextSessionRow & { shardIndex: number }>
     hasMore: boolean
   },
-  expiredBefore: string
+  expiredBefore: string,
+  limit: number
 ): CodexContextExpiredStateCleanupResult {
   if (expiredSessions.rows.length === 0) {
+    const pending = selectPendingCodexContextStorageCleanupKeys(limit)
     return {
       deletedSessions: 0,
       deletedResponses: 0,
       deletedCompacts: 0,
-      storageKeys: [],
-      hasMore: false
+      storageKeys: pending.storageKeys,
+      hasMore: pending.hasMore
     }
   }
 
-  const candidateStorageKeys = new Set<string>()
   const sessionIds = expiredSessions.rows.map((row) => row.id)
-  const deletedResponses = deleteExpiredRowsBySessionIds('codex_context_responses', sessionIds, expiredBefore, candidateStorageKeys)
-  const deletedCompacts = deleteExpiredRowsBySessionIds('codex_context_compacts', sessionIds, expiredBefore, candidateStorageKeys)
+  const deletedResponses = deleteExpiredRowsBySessionIds('codex_context_responses', sessionIds, expiredBefore)
+  const deletedCompacts = deleteExpiredRowsBySessionIds('codex_context_compacts', sessionIds, expiredBefore)
   const remainingExpiresAtBySessionId = selectRemainingSessionExpiresAtBySessionIds(sessionIds)
   const deletedSessions = deleteOrRefreshSessionRows(expiredSessions.rows, remainingExpiresAtBySessionId, nowIso())
-  const storageKeys = filterUnreferencedStorageKeys(candidateStorageKeys)
+  const pending = selectPendingCodexContextStorageCleanupKeys(limit)
   return {
     deletedSessions,
     deletedResponses,
     deletedCompacts,
-    storageKeys,
-    hasMore: expiredSessions.hasMore
+    storageKeys: pending.storageKeys,
+    hasMore: expiredSessions.hasMore || pending.hasMore
   }
 }
 
@@ -1087,8 +1133,7 @@ function selectExpiredSessions(expiredBefore: string, limit: number, shardIndexe
 function deleteExpiredRowsBySessionIds(
   table: 'codex_context_responses' | 'codex_context_compacts',
   sessionIds: string[],
-  expiredBefore: string,
-  storageKeys: Set<string>
+  expiredBefore: string
 ): number {
   let deleted = 0
   for (const shardIndex of codexContextStateShardIndexes()) {
@@ -1100,10 +1145,7 @@ function deleteExpiredRowsBySessionIds(
           .prepare(`SELECT storage_key FROM ${table} WHERE session_id IN (${placeholders}) AND expires_at < ?`)
           .all(...chunk, expiredBefore) as Array<{ storage_key?: string }>
         deleted += rows.length
-        for (const row of rows) {
-          const key = String(row.storage_key ?? '').trim()
-          if (key) storageKeys.add(key)
-        }
+        enqueueCodexContextStorageCleanupKeys(database, rows.map((row) => String(row.storage_key ?? '')))
         database.prepare(`DELETE FROM ${table} WHERE session_id IN (${placeholders}) AND expires_at < ?`).run(...chunk, expiredBefore)
       }, database)
     }
@@ -1223,14 +1265,13 @@ async function cleanupExpiredCodexContextStateSessionRowsAsync(
   expiredBefore: string,
   hasMore: boolean
 ): Promise<CodexContextExpiredStateCleanupResult> {
-  const candidateStorageKeys = new Set<string>()
   const sessionIds = rows.map((row) => row.id)
   let deletedResponses = 0
   let deletedCompacts = 0
   let deletedSessions = 0
   await client.transaction(async (tx) => {
-    deletedResponses = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_responses', sessionIds, expiredBefore, candidateStorageKeys)
-    deletedCompacts = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_compacts', sessionIds, expiredBefore, candidateStorageKeys)
+    deletedResponses = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_responses', sessionIds, expiredBefore)
+    deletedCompacts = await deleteExpiredCodexContextRowsBySessionIdsAsync(tx, 'codex_context_compacts', sessionIds, expiredBefore)
     const remainingExpiresAtBySessionId = await selectRemainingCodexContextSessionExpiresAtBySessionIdsAsync(tx, sessionIds)
     for (const row of rows) {
       const remainingExpiresAt = remainingExpiresAtBySessionId.get(row.id)
@@ -1249,13 +1290,13 @@ async function cleanupExpiredCodexContextStateSessionRowsAsync(
       }
     }
   })
-  const storageKeys = await filterUnreferencedStorageKeysAsync(client, candidateStorageKeys)
+  const pending = await selectPendingCodexContextStorageCleanupKeysAsync(client, Math.max(1, rows.length))
   return {
     deletedSessions,
     deletedResponses,
     deletedCompacts,
-    storageKeys,
-    hasMore
+    storageKeys: pending.storageKeys,
+    hasMore: hasMore || pending.hasMore
   }
 }
 
@@ -1263,8 +1304,7 @@ async function deleteExpiredCodexContextRowsBySessionIdsAsync(
   client: DatabaseClient,
   table: 'codex_context_responses' | 'codex_context_compacts',
   sessionIds: string[],
-  expiredBefore: string,
-  storageKeys: Set<string>
+  expiredBefore: string
 ): Promise<number> {
   let deleted = 0
   for (const chunk of chunkValues(sessionIds, 900)) {
@@ -1276,10 +1316,7 @@ async function deleteExpiredCodexContextRowsBySessionIdsAsync(
         AND expires_at < ?
     `, [...chunk, expiredBefore])
     deleted += rows.length
-    for (const row of rows) {
-      const key = String(row.storage_key ?? '').trim()
-      if (key) storageKeys.add(key)
-    }
+    await enqueueCodexContextStorageCleanupKeysAsync(client, rows.map((row) => String(row.storage_key ?? '')))
     await client.execute(`
       DELETE FROM ${codexContextTable(client, table)}
       WHERE session_id IN (${placeholders})
@@ -1333,6 +1370,196 @@ async function filterUnreferencedStorageKeysAsync(client: DatabaseClient, storag
     }
   }
   return [...deletable]
+}
+
+function enqueueCodexContextStorageCleanupKeys(database: DatabaseSync, storageKeys: string[]): void {
+  const keys = uniqueStorageKeys(storageKeys)
+  if (keys.length === 0) return
+  const now = nowIso()
+  const statement = database.prepare(`
+    INSERT INTO codex_context_storage_cleanup_queue (
+      storage_key, enqueued_at, updated_at, next_attempt_at, attempt_count, last_error
+    ) VALUES (?, ?, ?, ?, 0, NULL)
+    ON CONFLICT(storage_key) DO NOTHING
+  `)
+  for (const storageKey of keys) {
+    statement.run(storageKey, now, now, now)
+  }
+}
+
+async function enqueueCodexContextStorageCleanupKeysAsync(client: DatabaseClient, storageKeys: string[]): Promise<void> {
+  const keys = uniqueStorageKeys(storageKeys)
+  if (keys.length === 0) return
+  const now = nowIso()
+  for (const chunk of chunkValues(keys, 200)) {
+    const values: unknown[] = []
+    const placeholders = chunk.map((storageKey) => {
+      values.push(storageKey, now, now, now)
+      return '(?, ?, ?, ?, 0, NULL)'
+    })
+    await client.execute(`
+      INSERT INTO ${codexContextTable(client, 'codex_context_storage_cleanup_queue')} (
+        storage_key, enqueued_at, updated_at, next_attempt_at, attempt_count, last_error
+      ) VALUES ${placeholders.join(', ')}
+      ON CONFLICT(storage_key) DO NOTHING
+    `, values)
+  }
+}
+
+function selectPendingCodexContextStorageCleanupKeys(limit: number): { storageKeys: string[]; hasMore: boolean } {
+  const normalizedLimit = Math.max(1, Math.min(Math.trunc(limit), 10000))
+  const now = nowIso()
+  const pending = new Set<string>()
+  for (const shardIndex of codexContextStateShardIndexes()) {
+    const rows = getCodexContextStateShardDatabase(shardIndex).prepare(`
+      SELECT storage_key
+      FROM codex_context_storage_cleanup_queue
+      WHERE next_attempt_at <= ?
+      ORDER BY next_attempt_at ASC, enqueued_at ASC, storage_key ASC
+      LIMIT ?
+    `).all(now, normalizedLimit + 1) as Array<{ storage_key?: string }>
+    for (const row of rows) {
+      const storageKey = String(row.storage_key ?? '').trim()
+      if (storageKey) pending.add(storageKey)
+    }
+  }
+  return filterAndDiscardReferencedStorageCleanupKeys([...pending], normalizedLimit)
+}
+
+async function selectPendingCodexContextStorageCleanupKeysAsync(client: DatabaseClient, limit: number): Promise<{ storageKeys: string[]; hasMore: boolean }> {
+  const normalizedLimit = Math.max(1, Math.min(Math.trunc(limit), 10000))
+  const rows = await client.query<{ storage_key?: string | null }>(`
+    SELECT storage_key
+    FROM ${codexContextTable(client, 'codex_context_storage_cleanup_queue')}
+    WHERE next_attempt_at <= ?
+    ORDER BY next_attempt_at ASC, enqueued_at ASC, storage_key ASC
+    LIMIT ?
+  `, [nowIso(), normalizedLimit + 1])
+  const pending = uniqueStorageKeys(rows.map((row) => String(row.storage_key ?? '')))
+  const unreferenced = await filterUnreferencedStorageKeysAsync(client, new Set(pending))
+  const referenced = pending.filter((storageKey) => !unreferenced.includes(storageKey))
+  if (referenced.length > 0) {
+    await deleteStorageCleanupQueueRowsAsync(client, referenced)
+  }
+  return {
+    storageKeys: unreferenced.slice(0, normalizedLimit),
+    hasMore: unreferenced.length > normalizedLimit || rows.length > normalizedLimit
+  }
+}
+
+function filterAndDiscardReferencedStorageCleanupKeys(pending: string[], limit: number): { storageKeys: string[]; hasMore: boolean } {
+  const unreferenced = filterUnreferencedStorageKeys(new Set(pending))
+  const unreferencedSet = new Set(unreferenced)
+  const referenced = pending.filter((storageKey) => !unreferencedSet.has(storageKey))
+  if (referenced.length > 0) {
+    for (const shardIndex of codexContextStateShardIndexes()) {
+      const database = getCodexContextStateShardDatabase(shardIndex)
+      runInDatabaseTransaction(() => deleteStorageCleanupQueueRows(database, referenced), database)
+    }
+  }
+  return {
+    storageKeys: unreferenced.slice(0, limit),
+    hasMore: unreferenced.length > limit || pending.length > limit
+  }
+}
+
+function deleteStorageCleanupQueueRows(database: DatabaseSync, storageKeys: string[]): number {
+  let deleted = 0
+  for (const chunk of chunkValues(storageKeys, 900)) {
+    if (chunk.length === 0) continue
+    const result = database.prepare(`
+      DELETE FROM codex_context_storage_cleanup_queue
+      WHERE storage_key IN (${sqlPlaceholders(chunk.length)})
+    `).run(...chunk)
+    deleted += Number(result.changes ?? 0)
+  }
+  return deleted
+}
+
+async function deleteStorageCleanupQueueRowsAsync(client: DatabaseClient, storageKeys: string[]): Promise<number> {
+  let deleted = 0
+  for (const chunk of chunkValues(storageKeys, 900)) {
+    if (chunk.length === 0) continue
+    const result = await client.execute(`
+      DELETE FROM ${codexContextTable(client, 'codex_context_storage_cleanup_queue')}
+      WHERE storage_key IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
+    deleted += result.changes
+  }
+  return deleted
+}
+
+function deferStorageCleanupQueueRows(database: DatabaseSync, failures: CodexContextStorageCleanupFailure[], now: string): number {
+  const statement = database.prepare(`
+    UPDATE codex_context_storage_cleanup_queue
+    SET attempt_count = attempt_count + 1,
+        last_error = ?,
+        updated_at = ?,
+        next_attempt_at = ?
+    WHERE storage_key = ?
+  `)
+  let deferred = 0
+  for (const failure of failures) {
+    const attemptCount = currentStorageCleanupAttemptCount(database, failure.storageKey)
+    const result = statement.run(failure.error, now, storageCleanupRetryAt(now, attemptCount + 1), failure.storageKey)
+    deferred += Number(result.changes ?? 0)
+  }
+  return deferred
+}
+
+async function deferStorageCleanupQueueRowsAsync(client: DatabaseClient, failures: CodexContextStorageCleanupFailure[], now: string): Promise<number> {
+  let deferred = 0
+  for (const failure of failures) {
+    const row = await client.one<{ attempt_count?: number | bigint }>(`
+      SELECT attempt_count
+      FROM ${codexContextTable(client, 'codex_context_storage_cleanup_queue')}
+      WHERE storage_key = ?
+    `, [failure.storageKey])
+    const attemptCount = Number(row?.attempt_count ?? 0) + 1
+    const result = await client.execute(`
+      UPDATE ${codexContextTable(client, 'codex_context_storage_cleanup_queue')}
+      SET attempt_count = attempt_count + 1,
+          last_error = ?,
+          updated_at = ?,
+          next_attempt_at = ?
+      WHERE storage_key = ?
+    `, [failure.error, now, storageCleanupRetryAt(now, attemptCount), failure.storageKey])
+    deferred += result.changes
+  }
+  return deferred
+}
+
+function currentStorageCleanupAttemptCount(database: DatabaseSync, storageKey: string): number {
+  const row = database.prepare(`
+    SELECT attempt_count
+    FROM codex_context_storage_cleanup_queue
+    WHERE storage_key = ?
+  `).get(storageKey) as { attempt_count?: number | bigint } | undefined
+  return Number(row?.attempt_count ?? 0)
+}
+
+function storageCleanupRetryAt(now: string, attemptCount: number): string {
+  const baseDelayMs = 30_000
+  const maxDelayMs = 6 * 60 * 60 * 1000
+  const delayMs = Math.min(maxDelayMs, baseDelayMs * (2 ** Math.min(Math.max(0, attemptCount - 1), 10)))
+  return new Date(Date.parse(now) + delayMs).toISOString()
+}
+
+function uniqueStorageKeys(storageKeys: string[]): string[] {
+  return [...new Set(storageKeys.map((storageKey) => storageKey.trim()).filter(Boolean))]
+}
+
+function normalizedStorageCleanupFailures(failures: CodexContextStorageCleanupFailure[]): CodexContextStorageCleanupFailure[] {
+  const byStorageKey = new Map<string, CodexContextStorageCleanupFailure>()
+  for (const failure of failures) {
+    const storageKey = failure.storageKey.trim()
+    if (!storageKey) continue
+    byStorageKey.set(storageKey, {
+      storageKey,
+      error: String(failure.error || 'unknown file cleanup failure').slice(0, 1000)
+    })
+  }
+  return [...byStorageKey.values()]
 }
 
 function codexContextTable(client: DatabaseClient, tableName: string): string {

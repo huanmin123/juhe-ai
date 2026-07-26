@@ -113,11 +113,14 @@ func ManualEnforcementAllowed(policy Policy, account Account) bool {
 }
 
 type EnforcementRequest struct {
-	Trigger         Trigger
-	RunID           string
-	Action          Action
-	PolicyRevision  PolicyRevision
-	AccountRevision AccountRevision
+	Trigger                 Trigger
+	RunID                   string
+	Action                  Action
+	Profile                 Profile
+	PenaltyThreshold        int
+	RecoveryIntervalMinutes int
+	PolicyRevision          PolicyRevision
+	AccountRevision         AccountRevision
 }
 
 func (r EnforcementRequest) Validate() error {
@@ -132,6 +135,15 @@ func (r EnforcementRequest) Validate() error {
 	}
 	if !validAction(r.Action) {
 		return fmt.Errorf("unsupported model quality penalty action %q", r.Action)
+	}
+	if r.Profile != ProfileQuick && r.Profile != ProfileFull {
+		return fmt.Errorf("unsupported model quality enforcement profile %q", r.Profile)
+	}
+	if r.PenaltyThreshold < 40 || r.PenaltyThreshold > 100 {
+		return fmt.Errorf("model quality enforcement threshold must be an integer from 40 to 100")
+	}
+	if r.RecoveryIntervalMinutes < 10 || r.RecoveryIntervalMinutes > 10080 {
+		return fmt.Errorf("model quality enforcement recovery interval must be an integer from 10 to 10080 minutes")
 	}
 	if r.AccountRevision == 0 {
 		return fmt.Errorf("model quality enforcement requires a non-zero account revision")
@@ -175,7 +187,9 @@ func PlanEnforcement(request EnforcementRequest, policy Policy, account Account)
 	if account.SystemAccountID != policy.SystemAccountID {
 		return PenaltyPlan{Result: EnforcementSkipped, TargetStatus: account.Status}, nil
 	}
-	if !(PolicyFence{Expected: request.PolicyRevision, Current: policy.Revision}.Matches()) || request.Action != policy.PenaltyAction {
+	if !(PolicyFence{Expected: request.PolicyRevision, Current: policy.Revision}.Matches()) ||
+		request.Profile != policy.Profile || request.PenaltyThreshold != policy.PenaltyThreshold ||
+		request.Action != policy.PenaltyAction || request.RecoveryIntervalMinutes != policy.RecoveryIntervalMinutes {
 		return PenaltyPlan{Result: EnforcementStale, TargetStatus: account.Status}, nil
 	}
 	if !account.OwnPhysical {
@@ -218,6 +232,7 @@ type EnforcementState struct {
 	AccountRevision AccountRevision
 	Active          bool
 	Action          Action
+	PolicyRevision  PolicyRevision
 }
 
 func (s EnforcementState) Validate() error {
@@ -268,7 +283,7 @@ type RecoveryClaimPlan struct {
 // when the account first entered isolation. This is a pure transition; lease
 // ownership, due-time selection, and atomic storage writes remain adapter
 // responsibilities.
-func ClaimRecovery(request RecoveryClaimRequest, currentPolicyRevision PolicyRevision, current EnforcementState, account Account) (RecoveryClaimPlan, error) {
+func ClaimRecovery(request RecoveryClaimRequest, current EnforcementState, account Account) (RecoveryClaimPlan, error) {
 	if err := request.Validate(); err != nil {
 		return RecoveryClaimPlan{}, err
 	}
@@ -284,7 +299,7 @@ func ClaimRecovery(request RecoveryClaimRequest, currentPolicyRevision PolicyRev
 	if !current.Active || current.Action != ActionQualityIsolate || account.Status != AccountStatusQualityIsolated ||
 		current.SystemAccountID != account.SystemAccountID ||
 		!(EnforcementFence{Expected: request.Enforcement, Current: current.Token}.Matches()) ||
-		!(PolicyFence{Expected: request.PolicyRevision, Current: currentPolicyRevision}.Matches()) {
+		!(PolicyFence{Expected: request.PolicyRevision, Current: current.PolicyRevision}.Matches()) {
 		return RecoveryClaimPlan{Result: RecoveryClaimStale, State: current}, nil
 	}
 	claimed := current
@@ -330,7 +345,7 @@ type RecoveryPlan struct {
 // PlanRecovery retains Node's safety rule: only the same active
 // quality-isolation generation may recover an account. Time arithmetic and
 // lease ownership belong to the scheduling adapter.
-func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision, current EnforcementState, account Account, availableNow bool) (RecoveryPlan, error) {
+func PlanRecovery(request RecoveryRequest, current EnforcementState, account Account, availableNow bool) (RecoveryPlan, error) {
 	if err := request.Validate(); err != nil {
 		return RecoveryPlan{}, err
 	}
@@ -346,7 +361,7 @@ func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision,
 	if current.SystemAccountID != account.SystemAccountID {
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status}, nil
 	}
-	if !(PolicyFence{Expected: request.PolicyRevision, Current: currentPolicyRevision}.Matches()) {
+	if !(PolicyFence{Expected: request.PolicyRevision, Current: current.PolicyRevision}.Matches()) {
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status, NeedsReschedule: true}, nil
 	}
 	// The request is based on the revision claimed for this recovery, the

@@ -916,15 +916,32 @@ async function readSegmentPayload(row: CodexContextPayloadReference): Promise<un
   return parsed
 }
 
-export async function deleteCodexContextStorageKeys(storageKeys: readonly string[]): Promise<number> {
+export interface CodexContextStorageKeyDeletionResult {
+  deleted: number
+  succeededStorageKeys: string[]
+  failures: Array<{ storageKey: string; error: string }>
+}
+
+export async function deleteCodexContextStorageKeys(storageKeys: readonly string[]): Promise<CodexContextStorageKeyDeletionResult> {
   let deleted = 0
-  for (const key of storageKeys) {
-    const path = resolveStoragePath(key)
-    if (!existsSync(path)) continue
-    await rm(path, { force: true })
-    deleted += 1
+  const succeededStorageKeys: string[] = []
+  const failures: Array<{ storageKey: string; error: string }> = []
+  for (const storageKey of [...new Set(storageKeys)]) {
+    try {
+      const path = resolveStoragePath(storageKey)
+      if (existsSync(path)) {
+        await rm(path, { force: true })
+        deleted += 1
+      }
+      succeededStorageKeys.push(storageKey)
+    } catch (error) {
+      failures.push({
+        storageKey,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
   }
-  return deleted
+  return { deleted, succeededStorageKeys, failures }
 }
 
 function restoreResponsesInputFromPayloads(payloads: CodexResponsesChatBridgeStatePayloadV2[], currentInput: unknown): unknown[] {

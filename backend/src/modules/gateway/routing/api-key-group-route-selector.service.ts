@@ -1,6 +1,6 @@
 import { normalizeApiKeyGroupBindingWeight } from '../../../domain/api-key-routing.js'
 import { runtimeConfig } from '../../../config/runtime.js'
-import { getRedisClient } from '../../../shared/redis-client.js'
+import { runRedisOperationWithDeadline } from '../../../shared/redis-client.js'
 import type { GatewayApiKeyGroupBindingRow, GatewayApiKeyRow } from '../../../storage/gateway-api-key.repository.js'
 
 interface RoundRobinState {
@@ -15,6 +15,7 @@ const roundRobinStates = new Map<string, RoundRobinState>()
 const weightedRouteStates = new Map<string, WeightedRouteState>()
 const apiKeyGroupRouteStateMaxEntries = 10000
 const redisRouteStateTtlMs = 30 * 24 * 60 * 60 * 1000
+const redisRouteStateOperationTimeoutMs = 3_000
 
 export function orderGatewayApiKeyGroupBindingsForDispatch(apiKey: GatewayApiKeyRow): GatewayApiKeyGroupBindingRow[] {
   const bindings = normalizeGatewayApiKeyGroupBindings(apiKey.group_bindings)
@@ -163,14 +164,17 @@ async function nextRedisRouteCounterIndex(key: string, modulo: number): Promise<
   if (!runtimeStateUrl) {
     throw new Error('高性能模式动态路由需要 JUHE_AI_REDIS_STATE_URL')
   }
-  const result = await (await getRedisClient(runtimeStateUrl)).eval(`
-    local value = redis.call('INCR', KEYS[1])
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-    return (value - 1) % tonumber(ARGV[1])
-  `, {
-    keys: [key],
-    arguments: [String(Math.trunc(modulo)), String(redisRouteStateTtlMs)]
-  })
+  const result = await runRedisOperationWithDeadline(runtimeStateUrl, {
+    operationName: 'Redis 动态路由计数器更新',
+    timeoutMs: redisRouteStateOperationTimeoutMs
+  }, (client) => client.eval(`
+      local value = redis.call('INCR', KEYS[1])
+      redis.call('PEXPIRE', KEYS[1], ARGV[2])
+      return (value - 1) % tonumber(ARGV[1])
+    `, {
+      keys: [key],
+      arguments: [String(Math.trunc(modulo)), String(redisRouteStateTtlMs)]
+    }))
   const index = typeof result === 'number' ? result : Number(result)
   if (!Number.isFinite(index)) {
     throw new Error('Redis 动态路由计数器返回值无效')

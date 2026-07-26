@@ -110,6 +110,14 @@ try {
   assert.equal(aiRefreshed.skipped, false, 'PG AI 性能 dirty 队列非空时不应被 source watermark 跳过')
   await assertAiPerformanceSummaryWindow(today)
 
+  const aiSkipped = await refreshUsageRankSnapshotsInStages({
+    stageNames: aiPerformanceStageNames,
+    skipIfUnchanged: true,
+    jobName: `${jobName}:ai-performance`,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(aiSkipped.skipped, true, 'PG AI 性能 dirty 已排空且源水位不变时第二次刷新应跳过')
+
   const skipped = await refreshUsageRankSnapshotsInStages({
     stageNames,
     skipIfUnchanged: true,
@@ -123,6 +131,7 @@ try {
     stages: refreshed.stages.length + aiRefreshed.stages.length,
     accountTop: `account_a_${marker}`,
     callerTop: `caller_a_${marker}`,
+    aiSkipped: aiSkipped.skipped === true,
     skipped: skipped.skipped === true
   }))
 } finally {

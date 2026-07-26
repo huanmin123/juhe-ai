@@ -2,7 +2,9 @@ package postgres
 
 const modelQualityEnforcementColumns = `
 aqe.account_id, aqe.system_account_id, aqe.enforcement_id, aqe.generation,
-aqe.state, aqe.action, aqe.trigger_run_id, aqe.policy_revision,
+aqe.state, aqe.action, aqe.trigger_run_id, aqe.config_source,
+aqe.config_source_id, aqe.policy_revision, aqe.profile, aqe.penalty_threshold,
+aqe.recovery_interval_minutes, aqe.recovery_model,
 aqe.account_config_revision, aqe.before_status, aqe.after_status,
 aqe.fallback_was_enabled, aqe.super_priority_was_enabled,
 aqe.recovery_due_at, aqe.recovery_lease_owner, aqe.recovery_lease_token,
@@ -11,15 +13,12 @@ aqe.cleared_at, aqe.updated_at`
 
 const claimDueModelQualityRecoveryCandidatesSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 SELECT ` + modelQualityEnforcementColumns + `,
-       COALESCE(NULLIF(mqs.model, ''), NULLIF(accounts.health_check_model, '')) AS recovery_model,
+       COALESCE(NULLIF(aqe.recovery_model, ''), NULLIF(accounts.health_check_model, '')) AS effective_recovery_model,
        accounts.config_revision
 FROM juhe_business.account_quality_enforcements AS aqe
 JOIN juhe_business.accounts AS accounts
   ON accounts.id = aqe.account_id
  AND accounts.system_account_id = aqe.system_account_id
-LEFT JOIN juhe_business.model_quality_schedules AS mqs
-  ON mqs.account_id = aqe.account_id
- AND mqs.system_account_id = aqe.system_account_id
 CROSS JOIN db_clock
 WHERE aqe.state = 'active'
   AND aqe.action = 'quality_isolate'
@@ -61,17 +60,6 @@ WHERE aqe.account_id = $5
       AND accounts.deleted_at IS NULL
       AND accounts.authorization_instance_authorization_id IS NULL
       AND accounts.status = 'quality_isolated'
-  )
-  AND (
-    ($8 = 0 AND NOT EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-    ))
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-        AND policies.revision = $8
-    )
   )
 RETURNING aqe.recovery_lease_until, aqe.updated_at`
 
@@ -133,17 +121,6 @@ WHERE aqe.account_id = $3
   AND aqe.recovery_lease_token = $8
   AND aqe.recovery_lease_until = $9
   AND aqe.recovery_lease_until > db_clock.now_text
-  AND (
-    ($10 = 0 AND NOT EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-    ))
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-        AND policies.revision = $10
-      )
-  )
 RETURNING aqe.recovery_due_at`
 
 const recoverModelQualityAccountSQL = `WITH ` + modelQualityDatabaseClockCTE + `
@@ -183,14 +160,4 @@ WHERE aqe.account_id = $2
   AND aqe.recovery_lease_token = $7
   AND aqe.recovery_lease_until = $8
   AND aqe.recovery_lease_until > db_clock.now_text
-  AND (
-    ($9 = 0 AND NOT EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-    ))
-    OR EXISTS (
-      SELECT 1 FROM juhe_business.model_quality_policies AS policies
-      WHERE policies.system_account_id = aqe.system_account_id
-        AND policies.revision = $9
-    )
-  )`
+`

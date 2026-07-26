@@ -26,6 +26,7 @@ const postgresConfig = {
 }
 
 await assertMatchesGoMigrationCatalog()
+await assertMatchesDeploymentOwnerManifest()
 assertOwnerLockEnabledParsing()
 
 await assertDoesNotQueryWhenDisabled()
@@ -56,6 +57,17 @@ async function assertMatchesGoMigrationCatalog(): Promise<void> {
     EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
     catalogVersion,
     'Node PostgreSQL Goose schema 启动门禁必须与 Go migration catalog 当前版本保持一致'
+  )
+}
+
+async function assertMatchesDeploymentOwnerManifest(): Promise<void> {
+  const ownerManifest = JSON.parse(
+    await readFile(resolve(process.cwd(), '../deploy/owner-manifest.json'), 'utf8')
+  ) as { release?: { schemaVersion?: unknown } }
+  assert.equal(
+    ownerManifest.release?.schemaVersion,
+    EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+    '部署 owner manifest 的 release schemaVersion 必须与 Node PostgreSQL Goose schema 启动门禁保持一致'
   )
 }
 

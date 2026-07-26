@@ -719,7 +719,9 @@ function modelCheckRunCount(database: ReturnType<typeof getDatasetDatabase>, acc
 function trimOldestModelCheckRunBatch(database: ReturnType<typeof getDatasetDatabase>, accountId: string): void {
   const candidates = database.prepare(`
     SELECT id FROM model_check_runs
-    WHERE account_id = ? AND status <> 'running'
+    WHERE account_id = ?
+      AND status <> 'running'
+      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
     ORDER BY created_at ASC, id ASC
     LIMIT ?
   `).all(accountId, modelCheckRunTrimBatchSize) as unknown as Array<{ id: string }>
@@ -741,7 +743,13 @@ function trimOldestModelCheckRunBatch(database: ReturnType<typeof getDatasetData
   if (observation && !cursorHasConsumed(cursor, observation)) {
     throwModelCheckRetentionBlocked(accountId, '最老 100 条运行仍有 observation 尚未被统计聚合消费')
   }
-  database.prepare(`DELETE FROM model_check_runs WHERE id IN (${sqlPlaceholders(ids.length)}) AND account_id = ? AND status <> 'running'`).run(...ids, accountId)
+  database.prepare(`
+    DELETE FROM model_check_runs
+    WHERE id IN (${sqlPlaceholders(ids.length)})
+      AND account_id = ?
+      AND status <> 'running'
+      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
+  `).run(...ids, accountId)
 }
 
 async function modelCheckRunCountAsync(client: DatabaseClient, runs: string, accountId: string): Promise<number> {
@@ -752,7 +760,9 @@ async function modelCheckRunCountAsync(client: DatabaseClient, runs: string, acc
 async function trimOldestModelCheckRunBatchAsync(client: DatabaseClient, runs: string, observations: string, accountId: string): Promise<void> {
   const candidates = await client.query<{ id: string }>(`
     SELECT id FROM ${runs}
-    WHERE account_id = ? AND status <> 'running'
+    WHERE account_id = ?
+      AND status <> 'running'
+      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
     ORDER BY created_at ASC, id ASC
     LIMIT ?
     FOR UPDATE
@@ -777,7 +787,10 @@ async function trimOldestModelCheckRunBatchAsync(client: DatabaseClient, runs: s
   }
   await client.execute(`
     DELETE FROM ${runs}
-    WHERE id IN (${client.dialect.bindPlaceholders(ids.length)}) AND account_id = ? AND status <> 'running'
+    WHERE id IN (${client.dialect.bindPlaceholders(ids.length)})
+      AND account_id = ?
+      AND status <> 'running'
+      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
   `, [...ids, accountId])
 }
 

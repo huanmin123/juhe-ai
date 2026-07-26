@@ -31,6 +31,7 @@ const run = modelChecks.createModelCheckRun({
   targetId: 'acct_model_trust',
   accountId: 'acct_model_trust',
   model: 'gpt-5.6-sol',
+  profile: 'full',
   trustedComparison: false,
   probeSetVersion: 'openai-model-check-v1'
 })
@@ -154,6 +155,61 @@ assert.equal(unavailableReport?.identityStatus, 'insufficient_evidence', '历史
 assert.equal(unavailableReport?.mappingStatus, 'unknown')
 assert.equal(unavailableReport?.observationCount, undefined, '当前无有效响应时不能混入历史 observation 数')
 
+const lateCommittedRun = modelChecks.createModelCheckRun({
+  systemAccountId: 'sys_model_trust', actorSystemAccountId: 'sys_model_trust', providerCode: 'gpt',
+  targetType: 'account', targetId: 'acct_late_commit', accountId: 'acct_late_commit', model: 'gpt-5.6-sol',
+  trustedComparison: false, probeSetVersion: 'openai-model-check-v1'
+})
+const lateCommittedObservation = tokenObservation({
+  accountId: 'acct_late_commit',
+  upstream: 'late-commit-source',
+  cohortKeyHmac: security.modelCheckObservationHmac('late-commit-cohort', 'cohort'),
+  observationStatus: 'observed',
+  reportedInputTokens: 110,
+  createdAt: new Date(Date.UTC(2026, 6, 13, 23, 59, 59)).toISOString()
+})
+lateCommittedObservation.runId = lateCommittedRun.id
+await trustRepository.createModelCheckObservationsAsync([lateCommittedObservation])
+assert.equal(
+  await trustRepository.aggregateModelTrustObservationsAsync(500),
+  1,
+  '晚于游标推进才提交的旧 created_at observation 仍必须最终聚合，不能被永久遗漏'
+)
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT observation_count AS count FROM model_token_integrity_windows WHERE account_id = ?').get('acct_late_commit') as { count: number }).count,
+  1,
+  '晚提交 observation 只能聚合一次'
+)
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '晚提交 observation 完成后不得重复计数')
+database.getDatasetDatabase().prepare('UPDATE model_check_observations SET aggregation_completed_at = NULL WHERE account_id = ?').run('acct_late_commit')
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '源标记确认失败后的重试必须由 durable receipt 去重')
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT observation_count AS count FROM model_token_integrity_windows WHERE account_id = ?').get('acct_late_commit') as { count: number }).count,
+  1,
+  'receipt 重试不得重复累加派生窗口'
+)
+assert.equal(
+  (database.getDatasetDatabase().prepare('SELECT COUNT(*) AS count FROM model_check_observations WHERE account_id = ? AND aggregation_completed_at IS NOT NULL').get('acct_late_commit') as { count: number }).count,
+  1,
+  'receipt 重试后必须补齐源表完成标记'
+)
+
+const boundedBatchObservations = Array.from({ length: 101 }, (_item, index) => {
+  const observation = tokenObservation({
+    accountId: `acct_bounded_${String(index).padStart(3, '0')}`,
+    upstream: `bounded-source-${index}`,
+    cohortKeyHmac: security.modelCheckObservationHmac(`bounded-cohort-${index}`, 'cohort'),
+    observationStatus: 'request_failed',
+    createdAt: new Date(Date.UTC(2026, 6, 12, 0, 0, index)).toISOString()
+  })
+  observation.runId = lateCommittedRun.id
+  return observation
+})
+await trustRepository.createModelCheckObservationsAsync(boundedBatchObservations)
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 100, '调用方即使传入 500，单个聚合事务也只能领取 100 条 observation')
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 1, '超过单事务上限的 observation 必须留给下一短事务')
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
+
 const invalidCohortKeyHmac = security.modelCheckObservationHmac('invalid-token-cohort', 'cohort')
 const invalidObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
 const validObservedAt = new Date(Date.UTC(2026, 6, 15, 0, 0, 0)).toISOString()
@@ -264,6 +320,17 @@ const serialized = JSON.stringify(stored)
 assert(!serialized.includes(origin), 'observation 不得保存明文上游 origin')
 assert(!serialized.includes('Controlled token integrity probe'), 'observation 不得保存受控题面')
 assert(!('prompt' in stored) && !('request_body' in stored) && !('response_body' in stored), 'observation schema 不得包含正文列')
+const pendingAggregationPlan = database.getDatasetDatabase().prepare(`
+  EXPLAIN QUERY PLAN
+  SELECT * FROM model_check_observations
+  WHERE aggregation_completed_at IS NULL
+  ORDER BY created_at, id
+  LIMIT 100
+`).all() as Array<{ detail: string }>
+assert(
+  pendingAggregationPlan.some((row) => row.detail.includes('idx_model_check_observations_pending_aggregation')),
+  `未聚合 observation 候选查询必须命中部分索引，实际计划：${pendingAggregationPlan.map((row) => row.detail).join(' | ')}`
+)
 
 const dirtyInsert = database.getStatsDatabase().prepare(`
   INSERT INTO model_trust_latest_dirty_accounts (
@@ -283,10 +350,12 @@ try {
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
 assert.equal(
   (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_latest_dirty_accounts').get() as { count: number }).count,
-  1,
-  '无新 observation 时也必须有界续跑 dirty queue，不能永久只处理前 500 个账号'
+  401,
+  '无新 observation 时也必须按单事务 100 个账户的边界续跑 dirty queue'
 )
-assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
+for (let index = 0; index < 5; index += 1) {
+  assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
+}
 assert.equal(
   (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_latest_dirty_accounts').get() as { count: number }).count,
   0,
@@ -300,9 +369,12 @@ assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_integrity_rounds')
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_account_trust_results'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts'))
+assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_trust_observation_receipts'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac)'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated'))
+assert(pgSql.includes('ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text'))
+assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at, id) WHERE aggregation_completed_at IS NULL'))
 
 console.log('模型可信 observation 聚合回归通过：脱敏事实、游标增量、窗口结果和 PostgreSQL schema 同步符合预期')
 

@@ -21,8 +21,8 @@ import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
-import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
 import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
+import { processCodexContextStorageCleanupBatch } from './codex-context-storage-cleanup.service.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
   DATA_RETENTION_CLEANUP_BATCH_SIZE,
@@ -251,60 +251,85 @@ async function cleanupDatasetAndUsageRetainedData(input: {
 }): Promise<Partial<Record<keyof DataRetentionCleanupResult, number>>> {
   const result = emptyCleanupResult()
   const { now, retention, batchSize, maxBatches } = input
-  result.operationLogs = await cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches, input.signal)
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  result.publicApiLogs = await cleanupInBatches(
-    () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
-    batchSize,
-    maxBatches,
-    input.signal
-  )
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
-      successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
-      successCutoffCreatedAt: auditSuccessRetentionCutoffIso(now, retention.auditLogSuccessHotHours, retention.auditLogSuccessDays),
-      failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
-      errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
-      successSampleBucketThreshold: input.successSampleBucketThreshold,
-      limit: batchSize
-    }), batchSize, maxBatches, input.signal)
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
-    cutoffIso: cutoffIso(now, retention.runtimeLogDays),
-    batchSize,
-    maxBatches,
-    signal: input.signal
-  })
-  result.runtimeLogs = runtimeLogCleanup.runtimeLogs
-  result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  await cleanupRetentionInBatches(
-    result,
-    () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
-    maxBatches,
-    input.signal
-  )
-  await yieldToEventLoop()
-  input.signal.throwIfAborted()
-  const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches, input.signal)
-  result.usageRecords = usageRecordCleanup.deletedRows
-  if (usageRecordCleanup.blockedReason) {
-    logger.warn({
-      event: 'data_retention_usage_records_cleanup_blocked',
-      blockedReason: usageRecordCleanup.blockedReason,
-      cutoffCreatedAt: usageRecordCleanup.cutoffCreatedAt,
-      deletedRows: usageRecordCleanup.deletedRows,
-      batches: usageRecordCleanup.batches
-    }, '使用记录保留清理被统计安全游标拦截')
-  }
+  await runDataRetentionCleanupStages([
+    async () => {
+      result.operationLogs = await cleanupInBatches(
+        () => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize),
+        batchSize,
+        maxBatches,
+        input.signal
+      )
+    },
+    async () => {
+      result.publicApiLogs = await cleanupInBatches(
+        () => cleanupPublicApiLogsBefore(cutoffIso(now, retention.publicApiLogDays), batchSize),
+        batchSize,
+        maxBatches,
+        input.signal
+      )
+    },
+    async () => {
+      result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
+        successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
+        successCutoffCreatedAt: auditSuccessRetentionCutoffIso(now, retention.auditLogSuccessHotHours, retention.auditLogSuccessDays),
+        failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
+        errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
+        successSampleBucketThreshold: input.successSampleBucketThreshold,
+        limit: batchSize
+      }), batchSize, maxBatches, input.signal)
+    },
+    async () => {
+      result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
+    },
+    async () => {
+      const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
+        cutoffIso: cutoffIso(now, retention.runtimeLogDays),
+        batchSize,
+        maxBatches,
+        signal: input.signal
+      })
+      result.runtimeLogs = runtimeLogCleanup.runtimeLogs
+      result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
+    },
+    async () => {
+      await cleanupRetentionInBatches(
+        result,
+        () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
+        maxBatches,
+        input.signal
+      )
+    },
+    async () => {
+      const usageRecordCleanup = await cleanupProcessedUsageRecordsInBatches(
+        cutoffIso(now, retention.usageRecordDays),
+        batchSize,
+        maxBatches,
+        input.signal
+      )
+      result.usageRecords = usageRecordCleanup.deletedRows
+      if (usageRecordCleanup.blockedReason) {
+        logger.warn({
+          event: 'data_retention_usage_records_cleanup_blocked',
+          blockedReason: usageRecordCleanup.blockedReason,
+          cutoffCreatedAt: usageRecordCleanup.cutoffCreatedAt,
+          deletedRows: usageRecordCleanup.deletedRows,
+          batches: usageRecordCleanup.batches
+        }, '使用记录保留清理被统计安全游标拦截')
+      }
+    }
+  ], input.signal)
   return result
+}
+
+type DataRetentionCleanupStage = () => void | Promise<void>
+
+async function runDataRetentionCleanupStages(stages: DataRetentionCleanupStage[], signal: AbortSignal): Promise<void> {
+  for (const stage of stages) {
+    signal.throwIfAborted()
+    await stage()
+    await yieldToEventLoop()
+    signal.throwIfAborted()
+  }
 }
 
 async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, batchSize: number, maxBatches: number, signal: AbortSignal): Promise<number> {
@@ -321,6 +346,19 @@ async function cleanupInBatches(cleanupBatch: () => number | Promise<number>, ba
     await pauseBetweenCleanupBatches(signal)
   }
   return total
+}
+
+export function runDataRetentionCleanupStagesForTest(stages: DataRetentionCleanupStage[], signal: AbortSignal): Promise<void> {
+  return runDataRetentionCleanupStages(stages, signal)
+}
+
+export function cleanupDataRetentionBatchesForTest(
+  cleanupBatch: () => number | Promise<number>,
+  batchSize: number,
+  maxBatches: number,
+  signal: AbortSignal
+): Promise<number> {
+  return cleanupInBatches(cleanupBatch, batchSize, maxBatches, signal)
 }
 
 async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number, signal: AbortSignal): Promise<{
@@ -394,8 +432,10 @@ async function cleanupCodexContextStatesInBatches(
     result.codexContextSessions += cleanupResult.deletedSessions
     result.codexContextResponses += cleanupResult.deletedResponses
     result.codexContextCompacts += cleanupResult.deletedCompacts
-    result.codexContextFiles += await deleteCodexContextStorageKeys(cleanupResult.storageKeys)
-    signal.throwIfAborted()
+    result.codexContextFiles += await processCodexContextStorageCleanupBatch({
+      storageKeys: cleanupResult.storageKeys,
+      signal
+    })
     await yieldToEventLoop()
     if (!cleanupResult.hasMore || cleanupResult.deletedSessions < batchSize) {
       break

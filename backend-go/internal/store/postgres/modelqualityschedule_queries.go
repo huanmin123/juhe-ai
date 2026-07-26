@@ -11,7 +11,9 @@ const modelQualityDatabaseClockCTE = `db_clock AS (
 )`
 
 const modelQualityScheduleColumns = `
-id, system_account_id, account_id, model, interval_minutes, enabled, revision,
+id, system_account_id, account_id, model, interval_minutes,
+profile, penalty_threshold, penalty_action, recovery_interval_minutes,
+enabled, revision,
 next_run_at, last_run_id, last_run_at, last_run_status,
 lease_owner, lease_token, lease_until, created_at, updated_at`
 
@@ -34,23 +36,28 @@ FOR UPDATE`
 
 const insertModelQualityScheduleSQL = `
 INSERT INTO juhe_business.model_quality_schedules (
-  id, system_account_id, account_id, model, interval_minutes, enabled, revision,
-  next_run_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $8)
+  id, system_account_id, account_id, model, interval_minutes,
+  profile, penalty_threshold, penalty_action, recovery_interval_minutes,
+  enabled, revision, next_run_at, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $12, $12)
 RETURNING ` + modelQualityScheduleColumns
 
 const updateModelQualityScheduleSQL = `
 UPDATE juhe_business.model_quality_schedules
 SET model = $1,
     interval_minutes = $2,
-    enabled = $3,
+    profile = $3,
+    penalty_threshold = $4,
+    penalty_action = $5,
+    recovery_interval_minutes = $6,
+    enabled = $7,
     revision = revision + 1,
-    next_run_at = $4,
+    next_run_at = $8,
     lease_owner = NULL,
     lease_token = NULL,
     lease_until = NULL,
-    updated_at = $5
-WHERE id = $6 AND revision = $7
+    updated_at = $9
+WHERE id = $10 AND revision = $11
 RETURNING ` + modelQualityScheduleColumns
 
 const lockModelQualityScheduleDeleteSQL = `
@@ -67,7 +74,8 @@ WHERE id = $1 AND system_account_id = $2 AND revision = $3`
 const claimDueModelQualityScheduleCandidatesSQL = `WITH ` + modelQualityDatabaseClockCTE + `
 SELECT
   mqs.id, mqs.system_account_id, mqs.account_id, mqs.model,
-  mqs.interval_minutes, mqs.enabled, mqs.revision, mqs.next_run_at,
+  mqs.interval_minutes, mqs.profile, mqs.penalty_threshold, mqs.penalty_action,
+  mqs.recovery_interval_minutes, mqs.enabled, mqs.revision, mqs.next_run_at,
   mqs.last_run_id, mqs.last_run_at, mqs.last_run_status,
   mqs.lease_owner, mqs.lease_token, mqs.lease_until,
   mqs.created_at, mqs.updated_at,

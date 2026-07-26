@@ -5,7 +5,9 @@ import type {
   CodexContextExpiredStateCleanupResult,
   CodexContextResponseChainReadResult,
   CodexContextResponseStateIndex,
-  CodexContextResponseStateIndexInput
+  CodexContextResponseStateIndexInput,
+  CodexContextStorageCleanupFailure,
+  CodexContextStorageCleanupSettlementResult
 } from './codex-context-state.repository.js'
 import type { RuntimeConfig } from '../config/runtime.js'
 
@@ -104,6 +106,12 @@ export type CodexContextStateWriterOperation =
     expiredBefore?: string
     limit?: number
   }
+  | {
+    type: 'settle_storage_cleanup'
+    succeededStorageKeys: string[]
+    failures: CodexContextStorageCleanupFailure[]
+    now?: string
+  }
 
 export type CodexContextStateWriterOperationResult<T extends CodexContextStateWriterOperation = CodexContextStateWriterOperation> =
   T extends { type: 'save_response_session' } ? CodexContextResponseStateIndex :
@@ -123,6 +131,7 @@ export type CodexContextStateWriterOperationResult<T extends CodexContextStateWr
   T extends { type: 'touch_compact_rows' } ? { touched: number } :
   T extends { type: 'cleanup_expired_states' } ? CodexContextExpiredStateCleanupResult :
   T extends { type: 'cleanup_expired_states_shard' } ? CodexContextExpiredStateCleanupResult :
+  T extends { type: 'settle_storage_cleanup' } ? CodexContextStorageCleanupSettlementResult :
   unknown
 
 export interface CodexContextStateWriterWorkerMessage {

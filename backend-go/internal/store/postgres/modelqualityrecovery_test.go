@@ -40,7 +40,7 @@ func TestModelQualityRecoverySQLFencesOwnershipAndLockOrder(t *testing.T) {
 		}
 	}
 	for _, sql := range []string{claimModelQualityRecoverySQL, rescheduleModelQualityRecoverySQL, clearModelQualityRecoveryEnforcementSQL} {
-		for _, fragment := range []string{"recovery_lease_token", "recovery_lease_until", "model_quality_policies"} {
+		for _, fragment := range []string{"recovery_lease_token", "recovery_lease_until"} {
 			if !strings.Contains(sql, fragment) {
 				t.Fatalf("recovery mutation SQL missing %q:\n%s", fragment, sql)
 			}
@@ -50,7 +50,7 @@ func TestModelQualityRecoverySQLFencesOwnershipAndLockOrder(t *testing.T) {
 		sql       string
 		fragments []string
 	}{
-		"claim":      {claimModelQualityRecoverySQL, []string{"aqe.account_id = $5", "aqe.generation = $7", "policies.revision = $8"}},
+		"claim":      {claimModelQualityRecoverySQL, []string{"aqe.account_id = $5", "aqe.generation = $7"}},
 		"reschedule": {rescheduleModelQualityRecoverySQL, []string{"aqe.account_id = $3", "aqe.generation = $5", "aqe.recovery_lease_until = $9"}},
 		"clear":      {clearModelQualityRecoveryEnforcementSQL, []string{"aqe.account_id = $2", "aqe.generation = $4", "aqe.recovery_lease_until = $8"}},
 	} {
@@ -60,8 +60,10 @@ func TestModelQualityRecoverySQLFencesOwnershipAndLockOrder(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(claimModelQualityRecoverySQL, "aqe.policy_revision = $9") {
-		t.Fatal("claim must not pin recovery to the enforcement's historical policy revision")
+	for _, sql := range []string{claimModelQualityRecoverySQL, rescheduleModelQualityRecoverySQL, clearModelQualityRecoveryEnforcementSQL} {
+		if strings.Contains(sql, "model_quality_policies") || strings.Contains(sql, "model_quality_schedules") {
+			t.Fatal("recovery must use the enforcement snapshot without rereading mutable configuration")
+		}
 	}
 	if !strings.Contains(lockModelQualityRecoveryAccountSQL, "FOR UPDATE") || !strings.Contains(lockModelQualityRecoveryEnforcementSQL, "FOR UPDATE") {
 		t.Fatal("completion must lock both account and enforcement rows")
@@ -99,14 +101,11 @@ func TestClaimDueModelQualityRecoveriesUsesBoundedTokenizedCAS(t *testing.T) {
 	enforcement := modelQualityRecoveryScanValues(now, pgtype.Text{String: modelQualityPolicyTimeText(now.Add(-time.Minute)), Valid: true}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{})
 	// The enforcement keeps the policy revision that originally created it.
 	// A newer effective policy must not make this isolation unrecoverable.
-	enforcement[7] = int64(4)
+	enforcement[9] = int64(4)
 	row := append(enforcement, "gpt-5", int64(8))
 	tx := &modelQualityScheduleTxStub{
-		queryRows: &modelQualityScheduleRowsStub{rows: [][]any{row}},
-		queryRowQueue: []pgx.Row{
-			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
-			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now)}},
-		},
+		queryRows:     &modelQualityScheduleRowsStub{rows: [][]any{row}},
+		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now)}}},
 	}
 	claims, err := claimDueModelQualityRecoveries(context.Background(), beginModelQualityRecoveryTestTx(tx), port.ModelQualityRecoveryClaimInput{
 		OwnerID: "worker-1", LeaseDuration: 6 * time.Minute,
@@ -115,20 +114,20 @@ func TestClaimDueModelQualityRecoveriesUsesBoundedTokenizedCAS(t *testing.T) {
 		t.Fatalf("claimDueModelQualityRecoveries() error = %v", err)
 	}
 	if len(claims) != 1 || claims[0].Model != "gpt-5" || claims[0].ExpectedAccountConfigRevision != 8 ||
-		claims[0].Policy.Policy.Revision != 5 || claims[0].Enforcement.PolicyRevision != 4 {
+		claims[0].Policy.Policy.Revision != 4 || claims[0].Enforcement.PolicyRevision != 4 || claims[0].ScheduleID != "mqs_1" {
 		t.Fatalf("claims = %#v", claims)
 	}
 	if claims[0].Lease.ClaimToken != "mqr_claim_token" || claims[0].Enforcement.RecoveryLease == nil || claims[0].Enforcement.AccountConfigRevision != 8 {
 		t.Fatalf("tokenized claim = %#v", claims[0])
 	}
-	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 3 {
+	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 2 {
 		t.Fatalf("transaction commit/rollback/exec = %d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls))
 	}
 	if got := tx.queryCalls[0].args[0]; got != port.ModelQualityRecoveryClaimDefaultLimit {
 		t.Fatalf("default limit = %v", got)
 	}
-	args := tx.queryCalls[2].args
-	if args[1] != "mqr_claim_token" || args[3] != int64(8) || args[7] != int64(5) {
+	args := tx.queryCalls[1].args
+	if args[1] != "mqr_claim_token" || args[3] != int64(8) || len(args) != 7 {
 		t.Fatalf("claim CAS args = %#v", args)
 	}
 }
@@ -137,10 +136,7 @@ func TestClaimDueModelQualityRecoveriesRollsBackOnEntropyFailure(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 26, 8, 0, 0, 0, time.UTC)
 	row := append(modelQualityRecoveryScanValues(now, pgtype.Text{String: modelQualityPolicyTimeText(now.Add(-time.Minute)), Valid: true}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}), "gpt-5", int64(8))
-	tx := &modelQualityScheduleTxStub{
-		queryRows:     &modelQualityScheduleRowsStub{rows: [][]any{row}},
-		queryRowQueue: []pgx.Row{modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)}},
-	}
+	tx := &modelQualityScheduleTxStub{queryRows: &modelQualityScheduleRowsStub{rows: [][]any{row}}}
 	_, err := claimDueModelQualityRecoveries(context.Background(), beginModelQualityRecoveryTestTx(tx), port.ModelQualityRecoveryClaimInput{
 		OwnerID: "worker-1", LeaseDuration: 6 * time.Minute,
 	}, func() (string, error) { return "", errors.New("entropy unavailable") })
@@ -160,8 +156,11 @@ func TestCompleteModelQualityRecoveryReschedulesStalePolicy(t *testing.T) {
 		queryRowQueue: []pgx.Row{
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{}}},
-			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 6)},
+			modelQualityScheduleRowStub{values: func() []any {
+				values := modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true})
+				values[9] = int64(6)
+				return append(values, modelQualityPolicyTimeText(now))
+			}()},
 			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(now.Add(10 * time.Minute))}},
 		},
 	}
@@ -172,7 +171,7 @@ func TestCompleteModelQualityRecoveryReschedulesStalePolicy(t *testing.T) {
 	if result.Status != port.ModelQualityRecoveryStale || result.NextRecoveryAt == nil || !result.NextRecoveryAt.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("result = %#v", result)
 	}
-	if tx.commitCalls != 1 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 5 || tx.queryCalls[4].args[7] != "claim-1" {
+	if tx.commitCalls != 1 || len(tx.execCalls) != 0 || len(tx.queryCalls) != 4 || tx.queryCalls[3].args[7] != "claim-1" {
 		t.Fatalf("transaction or token fence = %#v", tx)
 	}
 }
@@ -186,7 +185,6 @@ func TestCompleteModelQualityRecoveryFailedProbeIgnoresUnrelatedMalformedSchedul
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{String: "{", Valid: true}}},
 			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
 			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(now.Add(10 * time.Minute))}},
 		},
 	}
@@ -276,7 +274,6 @@ func modelQualityRecoveryCompletionTx(now time.Time, lease port.ModelQualityReco
 			modelQualityScheduleRowStub{values: []any{"sys_admin"}},
 			modelQualityScheduleRowStub{values: []any{"quality_isolated", int64(8), pgtype.Text{}}},
 			modelQualityScheduleRowStub{values: append(modelQualityRecoveryScanValues(now, pgtype.Text{}, pgtype.Text{String: "worker-1", Valid: true}, pgtype.Text{String: "claim-1", Valid: true}, pgtype.Text{String: modelQualityPolicyTimeText(lease.Until), Valid: true}), modelQualityPolicyTimeText(now))},
-			modelQualityScheduleRowStub{values: modelQualityRecoveryPolicyValues(now, 5)},
 		},
 		execTags: tags,
 	}
@@ -293,16 +290,10 @@ func modelQualityRecoveryCompleteInput(now time.Time, lease port.ModelQualityRec
 func modelQualityRecoveryScanValues(now time.Time, recoveryDue, leaseOwner, leaseToken, leaseUntil pgtype.Text) []any {
 	return []any{
 		"account_1", "sys_admin", "enforcement_1", int64(2), "active", "quality_isolate",
-		"trigger_run_1", int64(5), int64(8), "active", "quality_isolated",
-		int64(0), int64(0), recoveryDue, leaseOwner, leaseToken, leaseUntil,
-		pgtype.Text{}, modelQualityPolicyTimeText(now.Add(-time.Hour)), pgtype.Text{}, modelQualityPolicyTimeText(now),
-	}
-}
-
-func modelQualityRecoveryPolicyValues(now time.Time, revision int64) []any {
-	return []any{
-		"sys_admin", revision, "quick", int64(1), int64(70), "quality_isolate", int64(10),
-		modelQualityPolicyTimeText(now.Add(-time.Hour)), modelQualityPolicyTimeText(now),
+		"trigger_run_1", "schedule", pgtype.Text{String: "mqs_1", Valid: true}, int64(5), "full", int64(80),
+		int64(10), pgtype.Text{String: "gpt-5", Valid: true}, int64(8), "active", "quality_isolated",
+		int64(0), int64(0), recoveryDue, leaseOwner, leaseToken, leaseUntil, pgtype.Text{},
+		modelQualityPolicyTimeText(now.Add(-time.Hour)), pgtype.Text{}, modelQualityPolicyTimeText(now),
 	}
 }
 

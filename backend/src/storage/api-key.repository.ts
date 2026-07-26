@@ -1,4 +1,4 @@
-import type { ApiKeySummary, RequestQuotaLimits } from '../domain/types.js'
+import type { ApiKeySummary } from '../domain/types.js'
 import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
@@ -21,7 +21,10 @@ import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
-import { rememberRequestQuotaHourlyWindowsFromJson } from './request-quota-hourly-windows.repository.js'
+import {
+  syncApiKeyRequestQuotaHourlyWindowScopeBinding,
+  syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync
+} from './request-quota-hourly-windows.repository.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import {
   assertRouteStrategySelectableForApiKey,
@@ -410,7 +413,12 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
         now,
         now
       )
-    rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
+    syncApiKeyRequestQuotaHourlyWindowScopeBinding({
+      apiKeyId: record.id,
+      systemAccountId,
+      limitsJson: quotaLimitsJson,
+      active: record.status === 'active'
+    }, database, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -510,7 +518,12 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         now,
         now
       ])
-      await rememberRequestQuotaHourlyWindowsFromLimitsAsync(tx, record.quotaLimits, now)
+      await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
+        apiKeyId: record.id,
+        systemAccountId,
+        limitsJson: quotaLimitsJson,
+        active: record.status === 'active'
+      }, now)
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
@@ -594,7 +607,12 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
         id,
         systemAccountId
       )
-    rememberRequestQuotaHourlyWindowsFromJson(quotaLimitsJson, database, now)
+    syncApiKeyRequestQuotaHourlyWindowScopeBinding({
+      apiKeyId: id,
+      systemAccountId,
+      limitsJson: quotaLimitsJson,
+      active: next.status === 'active'
+    }, database, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -681,7 +699,12 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
         id,
         systemAccountId
       ])
-      await rememberRequestQuotaHourlyWindowsFromLimitsAsync(tx, next.quotaLimits, now)
+      await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
+        apiKeyId: id,
+        systemAccountId,
+        limitsJson: quotaLimitsJson,
+        active: next.status === 'active'
+      }, now)
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
@@ -776,18 +799,33 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
   if (!row) return { deleted: false }
   assertApiKeyNotDefault(row)
 
-  const result = database
-    .prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?')
-    .run(row.id, row.system_account_id)
-  if (result.changes > 0) {
+  const transactionStarted = beginDatabaseTransaction(database)
+  let deleted = false
+  try {
+    syncApiKeyRequestQuotaHourlyWindowScopeBinding({
+      apiKeyId: row.id,
+      systemAccountId: row.system_account_id,
+      limitsJson: null,
+      active: false
+    }, database)
+    const result = database
+      .prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?')
+      .run(row.id, row.system_account_id)
+    deleted = result.changes > 0
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  if (deleted) {
     invalidateGatewayApiKeyCacheById(row.id)
     invalidateApiKeyLookupCache(row.id)
     notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
     notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
   }
   return {
-    deleted: result.changes > 0,
-    cleanupTarget: result.changes > 0 ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
+    deleted,
+    cleanupTarget: deleted ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
   }
 }
 
@@ -812,6 +850,12 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
       `, [row.id, row.system_account_id])
       const rowDeleted = result.changes > 0
       if (rowDeleted) {
+        await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
+          apiKeyId: row.id,
+          systemAccountId: row.system_account_id,
+          limitsJson: null,
+          active: false
+        })
         await registerDeletedApiKeyRecordCleanupTargetInClientAsync(tx, cleanupTarget)
       }
       return rowDeleted
@@ -1270,16 +1314,6 @@ async function apiKeySystemAccountIdAsync(apiKeyId: string): Promise<string | un
     WHERE id = ?
   `, [apiKeyId])
   return row?.system_account_id
-}
-
-async function rememberRequestQuotaHourlyWindowsFromLimitsAsync(client: DatabaseClient, limits: RequestQuotaLimits, timestamp: string): Promise<void> {
-  const hours = limits.hourly?.enabled ? limits.hourly.hours : undefined
-  if (!Number.isInteger(hours) || typeof hours !== 'number') return
-  await client.execute(`
-    INSERT INTO ${apiKeyTable(client, 'request_quota_hourly_window_configs')} (window_hours, created_at, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(window_hours) DO UPDATE SET updated_at = excluded.updated_at
-  `, [hours, timestamp, timestamp])
 }
 
 async function getApiKeyDatabaseClient(): Promise<DatabaseClient> {

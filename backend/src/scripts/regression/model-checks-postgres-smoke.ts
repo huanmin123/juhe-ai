@@ -23,6 +23,7 @@ const marker = `model_check_pg_smoke_${Date.now()}_${Math.random().toString(16).
 const systemAccountId = `sys_${marker}`
 const accountId = `acc_${marker}`
 const runIds: string[] = []
+const observationIds: string[] = []
 
 const access: AccessScope = {
   systemAccountId: `admin_${marker}`,
@@ -83,8 +84,10 @@ try {
     }
   ])
   assert.equal(items.length, 2, 'PG model check items should be inserted')
+  const firstObservationId = `mco_${marker}`
+  observationIds.push(firstObservationId)
   assert.equal(await createModelCheckObservationsAsync([{
-    id: `mco_${marker}`,
+    id: firstObservationId,
     runId: run.id,
     systemAccountId,
     accountId,
@@ -119,7 +122,75 @@ try {
   }
   const trustResult = await findModelAccountTrustResultAsync(systemAccountId, accountId, 'gpt-5.5')
   assert.ok(trustResult, 'PG smoke 必须真实执行模型可信聚合并写入 latest')
-  const activationIndex = await (await getPostgresPool()).query(`
+  const pool = await getPostgresPool()
+  const lateObservationId = `mco_${marker}_late`
+  observationIds.push(lateObservationId)
+  assert.equal(await createModelCheckObservationsAsync([{
+    id: lateObservationId,
+    runId: run.id,
+    systemAccountId,
+    accountId,
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'gpt-openai-v1',
+    endpointFamily: 'responses',
+    requestedModel: 'gpt-5.5',
+    mappedUpstreamModel: 'gpt-5.5',
+    observedModel: 'gpt-5.5',
+    mappingApplied: false,
+    upstreamBucketHmac: `hmac-sha256-v1:${'a'.repeat(64)}`,
+    cohortKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    populationKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    probeKeyHmac: `hmac-sha256-v1:${'d'.repeat(64)}`,
+    probeFamily: 'token_input_differential',
+    probeSetVersion: 'postgres-smoke',
+    tokenizerVersion: 'js-tiktoken@1.0.21:o200k_base',
+    featureVersion: 'none',
+    roundIndex: 1,
+    paddingTokens: 512,
+    localInputTokens: 612,
+    reportedInputTokens: 622,
+    observationStatus: 'observed',
+    identityStatus: 'consistent',
+    mappingStatus: 'direct',
+    protocolStatus: 'consistent',
+    evidenceCoverage: 10,
+    createdAt: '2000-01-01T00:00:00.000Z'
+  }]), 1, 'PG smoke 必须允许在聚合游标推进后提交旧 created_at observation')
+  assert.equal(await aggregateModelTrustObservationsAsync(500), 1, 'PG 聚合必须从未完成集合领取晚提交 observation')
+  const afterLateCommit = await findModelAccountTrustResultAsync(systemAccountId, accountId, 'gpt-5.5')
+  assert.equal(afterLateCommit?.observationCount, 2, 'PG 晚提交 observation 必须且只能聚合一次')
+  assert.equal(await aggregateModelTrustObservationsAsync(500), 0, 'PG receipt 必须阻止重复聚合')
+  const aggregationMarkers = await pool.query(`
+    SELECT COUNT(*)::int AS count
+    FROM juhe_dataset.model_check_observations
+    WHERE id = ANY($1::text[]) AND aggregation_completed_at IS NOT NULL
+  `, [observationIds])
+  assert.equal(Number(aggregationMarkers.rows[0]?.count ?? 0), 2, 'PG source marker 必须确认两条 observation 已完成')
+  const receipts = await pool.query(`
+    SELECT COUNT(*)::int AS count
+    FROM juhe_stats.model_trust_observation_receipts
+    WHERE observation_id = ANY($1::text[])
+  `, [observationIds])
+  assert.equal(Number(receipts.rows[0]?.count ?? 0), 2, 'PG durable receipt 必须覆盖每条已处理 observation')
+  const explainClient = await pool.connect()
+  let pendingPlan = ''
+  try {
+    await explainClient.query('BEGIN')
+    await explainClient.query('SET LOCAL enable_seqscan = off')
+    const explained = await explainClient.query(`
+      EXPLAIN (COSTS OFF)
+      SELECT * FROM juhe_dataset.model_check_observations
+      WHERE aggregation_completed_at IS NULL
+      ORDER BY created_at, id
+      LIMIT 100
+    `)
+    pendingPlan = explained.rows.map((row) => String(row['QUERY PLAN'] ?? '')).join('\n')
+    await explainClient.query('ROLLBACK')
+  } finally {
+    explainClient.release()
+  }
+  assert.match(pendingPlan, /idx_model_check_observations_pending_aggregation/, 'PG 未聚合候选查询必须可使用部分索引')
+  const activationIndex = await pool.query(`
     SELECT indexname FROM pg_indexes
     WHERE schemaname = 'juhe_stats' AND indexname = 'idx_model_token_integrity_windows_activation'
   `)
@@ -182,6 +253,7 @@ async function cleanupSmokeRows(ids: string[]): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.model_trust_window_sources WHERE account_id = $1', [accountId])
   await pool.query('DELETE FROM juhe_stats.model_account_trust_results WHERE account_id = $1', [accountId])
   await pool.query('DELETE FROM juhe_stats.model_trust_latest_dirty_accounts WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_trust_observation_receipts WHERE observation_id = ANY($1::text[])', [observationIds])
   await pool.query('DELETE FROM juhe_stats.model_token_intercept_baseline_versions WHERE probe_set_version = $1', ['postgres-smoke'])
   await pool.query('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY($1::text[])', [ids])
   await pool.query('DELETE FROM juhe_dataset.model_check_observations WHERE run_id = ANY($1::text[])', [ids])

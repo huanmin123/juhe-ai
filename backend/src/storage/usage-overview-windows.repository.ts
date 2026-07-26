@@ -4,6 +4,7 @@ import type { AccountUsageStatsRange } from '../domain/types.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { chunkValues } from './query-utils.js'
+import { runDerivedWindowRolloverSeedPages } from './usage-derived-window-rollover.js'
 import {
   aggregateUsageErrorRows,
   aggregateUsageModelRows,
@@ -26,6 +27,12 @@ import {
 } from './usage-stats-types.js'
 
 const maxUsageOverviewSnapshotScopes = 5000
+const usageOverviewRolloverRowsPerScope = 1185
+const usageOverviewRolloverSnapshotRowBudget = 33_180
+// 28 scopes * (144 hot + 48 cold runs/day) = 5376 rollover scopes/day.
+// Batched source reads keep this budget to at most 33,180 published rows and
+// about 162 repository SQL statements even when all eight seed pages are used.
+const usageOverviewDirtyClaimLimit = Math.floor(usageOverviewRolloverSnapshotRowBudget / usageOverviewRolloverRowsPerScope)
 
 export interface UsageOverviewWindowRefreshContext {
   ranges: AccountUsageStatsRange[]
@@ -130,8 +137,8 @@ export async function refreshUsageOverviewWindowSnapshotsIncrementalAsync(
   }>(`
     SELECT system_account_id, scope_id, min_changed_date, generation
     FROM ${statsTable(client, 'usage_overview_dirty_scopes')}
-    ORDER BY updated_at, system_account_id
-    LIMIT 8
+    ORDER BY first_dirty_at, system_account_id
+    LIMIT ${usageOverviewDirtyClaimLimit}
     FOR UPDATE SKIP LOCKED
   `)
   if (dirtyRows.length === 0) return
@@ -165,33 +172,39 @@ async function seedUsageOverviewRolloverDirtyScopesAsync(
     SELECT cursor_created_at, cursor_id FROM ${stateTable}
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_overview_daily_seed'
   `)
-  const cursor = state?.cursor_created_at === context.todayKey ? state.cursor_id ?? '' : ''
+  const startsNewDay = state?.cursor_created_at !== context.todayKey
+  const cursor = startsNewDay ? '' : state.cursor_id ?? ''
   if (cursor === '__done__') return
-  const scopes = await client.query<{ system_account_id: string; scope_id: string }>(`
-    SELECT system_account_id, scope_id
-    FROM ${statsTable(client, 'usage_stats_totals')}
-    WHERE scope_type = 'system_account'
-      AND system_account_id > ?
-    ORDER BY system_account_id
-    LIMIT 128
-  `, [cursor])
-  if (!scopes.some((scope) => scope.system_account_id === GLOBAL_STATS_SYSTEM_ACCOUNT_ID)) {
-    scopes.unshift({ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scope_id: GLOBAL_STATS_SCOPE_ID })
-  }
-  for (const chunk of chunkValues(scopes, 128)) {
+
+  const seedScopes = async (scopes: Array<{ system_account_id: string; scope_id: string }>): Promise<void> => {
     await client.execute(`
       INSERT INTO ${statsTable(client, 'usage_overview_dirty_scopes')} (
         system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
-      ) VALUES ${chunk.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
+      ) VALUES ${scopes.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
       ON CONFLICT(system_account_id) DO UPDATE SET
         scope_id = EXCLUDED.scope_id,
         min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
         generation = usage_overview_dirty_scopes.generation + 1,
         updated_at = EXCLUDED.updated_at
-    `, chunk.flatMap((scope) => [scope.system_account_id, scope.scope_id, context.todayKey, context.updatedAt, context.updatedAt]))
+    `, scopes.flatMap((scope) => [scope.system_account_id, scope.scope_id, context.todayKey, context.updatedAt, context.updatedAt]))
   }
-  const pageRows = scopes.filter((scope) => scope.system_account_id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID)
-  const nextCursor = pageRows.length < 128 ? '__done__' : pageRows.at(-1)?.system_account_id ?? '__done__'
+
+  if (startsNewDay) {
+    await seedScopes([{ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scope_id: GLOBAL_STATS_SCOPE_ID }])
+  }
+  const progress = await runDerivedWindowRolloverSeedPages({
+    cursor,
+    loadPage: (pageCursor, pageSize) => client.query<{ system_account_id: string; scope_id: string }>(`
+      SELECT system_account_id, scope_id
+      FROM ${statsTable(client, 'usage_stats_totals')}
+      WHERE scope_type = 'system_account'
+        AND system_account_id <> ?
+        AND system_account_id > ?
+      ORDER BY system_account_id
+      LIMIT ?
+    `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, pageCursor, pageSize]),
+    seedPage: seedScopes
+  })
   await client.execute(`
     INSERT INTO ${stateTable} (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
@@ -201,7 +214,7 @@ async function seedUsageOverviewRolloverDirtyScopesAsync(
       cursor_id = EXCLUDED.cursor_id,
       last_success_at = EXCLUDED.last_success_at,
       updated_at = EXCLUDED.updated_at
-  `, [context.todayKey, nextCursor, context.updatedAt, context.updatedAt])
+  `, [context.todayKey, progress.nextCursor, context.updatedAt, context.updatedAt])
 }
 
 export function refreshUsageOverviewTodayWindowSnapshots(database: DatabaseSync, context: UsageOverviewWindowRefreshContext): void {
@@ -454,20 +467,28 @@ async function deleteUsageOverviewWindowRowsAsync(client: DatabaseClient, tableN
 async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
   await deleteUsageOverviewWindowRowsAsync(client, 'usage_overview_summary_windows', options)
   const insertRows: unknown[][] = []
+  const selectedScopes = context.overviewScopes
+  const selectedScopeValues = selectedScopes.map(() => '(?, ?)').join(', ')
+  const sourceRows = selectedScopes.length === 0 ? [] : await client.query<UsageStatsDailyWindowRow & { system_account_id: string; scope_id: string }>(`
+    WITH selected_scopes(system_account_id, scope_id) AS (VALUES ${selectedScopeValues})
+    SELECT daily.system_account_id, daily.scope_id, daily.stat_date,
+      daily.request_count, daily.success_count, daily.error_count, daily.input_tokens, daily.output_tokens,
+      daily.cache_read_tokens, daily.cache_read_cost_usd, daily.cache_write_tokens, daily.cache_write_1h_tokens,
+      daily.cache_write_cost_usd, daily.thinking_tokens, daily.input_image_tokens, daily.output_image_tokens,
+      daily.total_cost_usd, daily.duration_ms_sum, daily.duration_ms_count, daily.duration_ms_max,
+      daily.first_token_ms_sum, daily.first_token_ms_count, daily.first_token_ms_max, daily.last_used_at
+    FROM ${statsTable(client, 'usage_stats_daily')} daily
+    INNER JOIN selected_scopes selected
+      ON selected.system_account_id = daily.system_account_id
+      AND selected.scope_id = daily.scope_id
+    WHERE daily.scope_type = 'system_account'
+      AND daily.stat_date >= ?
+      AND daily.stat_date <= ?
+    ORDER BY daily.system_account_id, daily.scope_id, daily.stat_date
+  `, [...selectedScopes.flatMap((scope) => [scope.systemAccountId, scope.scopeId]), context.earliestDate, context.todayKey])
+  const sourceRowsByScope = groupRowsByKey(sourceRows, (row) => overviewScopeKey(row.system_account_id, row.scope_id))
   for (const scope of context.overviewScopes) {
-    const rows = await client.query<UsageStatsDailyWindowRow>(`
-      SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-        thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
-        first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
-      FROM ${statsTable(client, 'usage_stats_daily')}
-      WHERE system_account_id = ?
-        AND scope_type = 'system_account'
-        AND scope_id = ?
-        AND stat_date >= ?
-        AND stat_date <= ?
-      ORDER BY stat_date ASC
-    `, [scope.systemAccountId, scope.scopeId, context.earliestDate, context.todayKey])
+    const rows = sourceRowsByScope.get(overviewScopeKey(scope.systemAccountId, scope.scopeId)) ?? []
     const rowsByDate = rowsByStatDate(rows)
     for (const range of context.ranges) {
       const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
@@ -511,19 +532,28 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
 async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
   await deleteUsageOverviewWindowRowsAsync(client, 'usage_overview_trend_windows', options)
   const insertRows: unknown[][] = []
+  const selectedScopes = context.overviewScopes
+  const selectedScopeValues = selectedScopes.map(() => '(?, ?)').join(', ')
+  const sourceRows = selectedScopes.length === 0 ? [] : await client.query<UsageOverviewHourlyWindowRow & { system_account_id: string; scope_id: string }>(`
+    WITH selected_scopes(system_account_id, scope_id) AS (VALUES ${selectedScopeValues})
+    SELECT hourly.system_account_id, hourly.scope_id, hourly.stat_hour,
+      hourly.request_count, hourly.error_count, hourly.input_tokens, hourly.output_tokens,
+      hourly.cache_read_tokens, hourly.cache_read_cost_usd, hourly.cache_write_tokens,
+      hourly.cache_write_1h_tokens, hourly.cache_write_cost_usd, hourly.thinking_tokens,
+      hourly.input_image_tokens, hourly.output_image_tokens, hourly.total_cost_usd,
+      hourly.duration_ms_sum, hourly.duration_ms_count
+    FROM ${statsTable(client, 'usage_stats_hourly')} hourly
+    INNER JOIN selected_scopes selected
+      ON selected.system_account_id = hourly.system_account_id
+      AND selected.scope_id = hourly.scope_id
+    WHERE hourly.scope_type = 'system_account'
+      AND hourly.stat_hour >= ?
+      AND hourly.stat_hour <= ?
+    ORDER BY hourly.system_account_id, hourly.scope_id, hourly.stat_hour
+  `, [...selectedScopes.flatMap((scope) => [scope.systemAccountId, scope.scopeId]), `${context.earliestDate}T00`, `${context.todayKey}T23`])
+  const sourceRowsByScope = groupRowsByKey(sourceRows, (row) => overviewScopeKey(row.system_account_id, row.scope_id))
   for (const scope of context.overviewScopes) {
-    const rows = await client.query<UsageOverviewHourlyWindowRow>(`
-      SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-        cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
-        thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd, duration_ms_sum, duration_ms_count
-      FROM ${statsTable(client, 'usage_stats_hourly')}
-      WHERE system_account_id = ?
-        AND scope_type = 'system_account'
-        AND scope_id = ?
-        AND stat_hour >= ?
-        AND stat_hour <= ?
-      ORDER BY stat_hour ASC
-    `, [scope.systemAccountId, scope.scopeId, `${context.earliestDate}T00`, `${context.todayKey}T23`])
+    const rows = sourceRowsByScope.get(overviewScopeKey(scope.systemAccountId, scope.scopeId)) ?? []
     const rowsByDate = rowsByStatHourDate(rows)
     for (const range of context.ranges) {
       const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
@@ -565,16 +595,20 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
 async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
   await deleteUsageOverviewWindowRowsAsync(client, 'usage_model_rank_windows', options)
   const insertRows: unknown[][] = []
-  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
-    const rows = await client.query<UsageModelWindowRow>(`
-      SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
-        cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd
-      FROM ${statsTable(client, 'usage_model_daily')}
-      WHERE system_account_id = ?
-        AND stat_date >= ?
-        AND stat_date <= ?
-      ORDER BY stat_date ASC
-    `, [systemAccountId, context.earliestDate, context.todayKey])
+  const systemAccountIds = options.systemAccountIds ?? [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]
+  const sourceRows = systemAccountIds.length === 0 ? [] : await client.query<UsageModelWindowRow & { system_account_id: string }>(`
+    SELECT system_account_id, stat_date, provider_code, model, request_count, input_tokens, output_tokens,
+      cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+      cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd
+    FROM ${statsTable(client, 'usage_model_daily')}
+    WHERE system_account_id = ANY(?::text[])
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY system_account_id, stat_date
+  `, [systemAccountIds, context.earliestDate, context.todayKey])
+  const sourceRowsBySystemAccount = groupRowsByKey(sourceRows, (row) => row.system_account_id)
+  for (const systemAccountId of systemAccountIds) {
+    const rows = sourceRowsBySystemAccount.get(systemAccountId) ?? []
     const rowsByDate = rowsByStatDate(rows)
     for (const range of context.ranges) {
       const rankedRows = aggregateUsageModelRows(rowsByDate, range)
@@ -614,15 +648,18 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
 async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient, context: UsageOverviewWindowRefreshContext, options: UsageOverviewWindowRefreshOptions = {}): Promise<void> {
   await deleteUsageOverviewWindowRowsAsync(client, 'usage_error_rank_windows', options)
   const insertRows: unknown[][] = []
-  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
-    const rows = await client.query<UsageErrorWindowRow>(`
-      SELECT stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
-      FROM ${statsTable(client, 'usage_error_daily')}
-      WHERE system_account_id = ?
-        AND stat_date >= ?
-        AND stat_date <= ?
-      ORDER BY stat_date ASC
-    `, [systemAccountId, context.earliestDate, context.todayKey])
+  const systemAccountIds = options.systemAccountIds ?? [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]
+  const sourceRows = systemAccountIds.length === 0 ? [] : await client.query<UsageErrorWindowRow & { system_account_id: string }>(`
+    SELECT system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
+    FROM ${statsTable(client, 'usage_error_daily')}
+    WHERE system_account_id = ANY(?::text[])
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY system_account_id, stat_date
+  `, [systemAccountIds, context.earliestDate, context.todayKey])
+  const sourceRowsBySystemAccount = groupRowsByKey(sourceRows, (row) => row.system_account_id)
+  for (const systemAccountId of systemAccountIds) {
+    const rows = sourceRowsBySystemAccount.get(systemAccountId) ?? []
     const rowsByDate = rowsByStatDate(rows)
     for (const range of context.ranges) {
       const rankedRows = aggregateUsageErrorRows(rowsByDate, range)
@@ -647,6 +684,21 @@ async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient,
     'system_account_id', 'window_key', 'start_date', 'end_date', 'rank', 'provider_code', 'error_code',
     'status_code', 'error_message', 'error_count', 'updated_at'
   ], insertRows)
+}
+
+function overviewScopeKey(systemAccountId: string, scopeId: string): string {
+  return `${systemAccountId}\u0000${scopeId}`
+}
+
+function groupRowsByKey<T>(rows: T[], keyOf: (row: T) => string): Map<string, T[]> {
+  const grouped = new Map<string, T[]>()
+  for (const row of rows) {
+    const key = keyOf(row)
+    const values = grouped.get(key) ?? []
+    values.push(row)
+    grouped.set(key, values)
+  }
+  return grouped
 }
 
 function refreshUsageOverviewSummaryWindows(

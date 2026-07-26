@@ -117,10 +117,52 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000085_w7_model_quality_health_sync_retry.sql",
+		Name:    "000086_w7_model_quality_configuration_snapshots.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
+	}
+}
+
+func TestModelQualityConfigurationSnapshotMigrationBackfillsBeforeConstraints(t *testing.T) {
+	const migrationName = "000086_w7_model_quality_configuration_snapshots.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	for _, want := range []string{
+		"ADD COLUMN IF NOT EXISTS profile text",
+		"ADD COLUMN IF NOT EXISTS penalty_threshold integer",
+		"ADD COLUMN IF NOT EXISTS penalty_action text",
+		"ADD COLUMN IF NOT EXISTS recovery_interval_minutes integer",
+		"ADD COLUMN IF NOT EXISTS config_source text",
+		"ADD COLUMN IF NOT EXISTS config_source_id text",
+		"ADD COLUMN IF NOT EXISTS recovery_model text",
+		"LEFT JOIN juhe_business.model_quality_policies AS policy",
+		"juhe_business.migration_000086_try_jsonb(run.policy_snapshot_json)",
+		"FROM juhe_dataset.model_check_runs AS run",
+		"source.policy_snapshot ->> 'scheduleId'",
+		"source.policy_snapshot ->> 'threshold'",
+		"source.policy_snapshot ->> 'recoveryIntervalMinutes'",
+		"ALTER COLUMN config_source SET NOT NULL",
+		"CHECK (config_source IN ('manual', 'schedule'))",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+
+	scheduleBackfill := strings.Index(sql, "UPDATE juhe_business.model_quality_schedules AS schedule")
+	scheduleNotNull := strings.Index(sql, "ALTER COLUMN profile SET NOT NULL")
+	enforcementBackfill := strings.Index(sql, "UPDATE juhe_business.account_quality_enforcements AS enforcement")
+	enforcementNotNull := strings.Index(sql, "ALTER COLUMN config_source SET NOT NULL")
+	if scheduleBackfill < 0 || scheduleNotNull <= scheduleBackfill {
+		t.Fatalf("%s must backfill schedules before enforcing NOT NULL", migrationName)
+	}
+	if enforcementBackfill < 0 || enforcementNotNull <= enforcementBackfill {
+		t.Fatalf("%s must backfill enforcements before enforcing NOT NULL", migrationName)
 	}
 }
 

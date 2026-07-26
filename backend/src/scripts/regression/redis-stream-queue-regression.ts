@@ -99,6 +99,7 @@ assert.match(redisStreamQueueSource, /this\.streamKey = redisNamespacedKey\(opti
 assert.match(redisStreamQueueSource, /this\.groupName = redisNamespacedGroup\(options\.groupName\)/, 'Redis Stream queue should namespace consumer groups')
 assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
 assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*pendingTruncated[\s\S]*undeliveredTruncated/, 'Redis Stream backlog inspection should expose truncation flags for stats safety windows')
+assert.match(redisStreamQueueSource, /scannedMessageCount: pendingIds\.length \+ undeliveredScanned/, 'Redis Stream backlog inspection should expose raw scanned message count so decode gaps remain conservative')
 assert.match(redisStreamQueueSource, /async enqueue\(payload: T\)[\s\S]*this\.enqueueEncoded\(this\.encode\(payload\)\)/, 'Redis Stream enqueue should encode ordinary payloads before delegating')
 assert.match(redisStreamQueueSource, /async enqueueEncoded\(encodedPayload: string\)[\s\S]*client\.eval\(redisEnqueueWithFenceScript[\s\S]*arguments: \['payload', encodedPayload\]/, 'Redis Stream should support pre-encoded worker payloads through the atomic fence/XADD script')
 assert.match(redisStreamQueueSource, /const redisEnqueueWithFenceScript = `[\s\S]*GET[\s\S]*QUEUE_QUIESCED[\s\S]*XADD/, 'Redis Stream enqueue must check the queue fence and XADD atomically')

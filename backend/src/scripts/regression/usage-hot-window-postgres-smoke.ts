@@ -70,6 +70,22 @@ try {
   `, [systemAccountId, accountId, today, today])
   assert.equal(Number(todayWindow?.request_count), 11, 'PG 热刷新应发布今天结束的账号范围窗口')
 
+  await client.execute(`
+    INSERT INTO juhe_stats.usage_overview_dirty_scopes (
+      system_account_id, scope_id, min_changed_date, generation, first_dirty_at, updated_at
+    ) VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(system_account_id) DO UPDATE SET
+      min_changed_date = LEAST(usage_overview_dirty_scopes.min_changed_date, EXCLUDED.min_changed_date),
+      generation = usage_overview_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, systemAccountId, today, updatedAt, updatedAt])
+  const dirtyDrain = await refreshHotUsageWindowSnapshots({
+    skipIfUnchanged: true,
+    jobName,
+    yieldToEventLoop: async () => {}
+  })
+  assert.equal(dirtyDrain.skipped, false, 'source watermark 不变但 overview dirty 未排空时仍应局部刷新')
+
   const skipped = await refreshHotUsageWindowSnapshots({
     skipIfUnchanged: true,
     jobName,

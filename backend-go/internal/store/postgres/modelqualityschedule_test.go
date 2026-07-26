@@ -79,7 +79,6 @@ func TestClaimDueModelQualitySchedulesReturnsCommittedTokenizedFacts(t *testing.
 		queryRowsErr: nil,
 		queryRowQueue: []pgx.Row{
 			modelQualityScheduleRowStub{values: []any{modelQualityPolicyTimeText(leaseUntil), modelQualityPolicyTimeText(now)}},
-			modelQualityScheduleRowStub{values: []any{"sys_admin", int64(7), "full", int64(1), int64(80), "quality_isolate", int64(30), modelQualityPolicyTimeText(now.Add(-time.Hour)), modelQualityPolicyTimeText(now.Add(-time.Hour))}},
 		},
 	}
 	claims, err := claimDueModelQualitySchedules(
@@ -95,13 +94,16 @@ func TestClaimDueModelQualitySchedulesReturnsCommittedTokenizedFacts(t *testing.
 		t.Fatalf("tx commit/rollback/claims = %d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(claims))
 	}
 	claim := claims[0]
-	if claim.Schedule.ID != "mqs_1" || claim.Schedule.Revision != 4 || claim.AccountConfigRevision != 9 || claim.Policy.Policy.Revision != 7 {
+	if claim.Schedule.ID != "mqs_1" || claim.Schedule.Revision != 4 || claim.AccountConfigRevision != 9 ||
+		claim.Policy.Policy.Revision != 4 || claim.Policy.Policy.Profile != modelquality.ProfileFull ||
+		claim.Policy.Policy.PenaltyThreshold != 80 || claim.Policy.Policy.PenaltyAction != modelquality.ActionQualityIsolate ||
+		claim.Policy.Policy.RecoveryIntervalMinutes != 30 {
 		t.Fatalf("claim facts = %+v", claim)
 	}
 	if claim.Lease.OwnerID != "ops-1" || claim.Lease.ClaimToken != "claim_token_1" || !claim.Lease.Until.Equal(leaseUntil) || claim.Schedule.Lease == nil || *claim.Schedule.Lease != claim.Lease {
 		t.Fatalf("claim lease = %+v schedule lease = %+v", claim.Lease, claim.Schedule.Lease)
 	}
-	if len(tx.execCalls) != 0 || len(tx.queryCalls) != 3 || !reflect.DeepEqual(tx.queryCalls[1].args, []any{"ops-1", "claim_token_1", int64((5 * time.Minute) / time.Millisecond), "mqs_1", int64(4), int64(9)}) {
+	if len(tx.execCalls) != 0 || len(tx.queryCalls) != 2 || !reflect.DeepEqual(tx.queryCalls[1].args, []any{"ops-1", "claim_token_1", int64((5 * time.Minute) / time.Millisecond), "mqs_1", int64(4), int64(9)}) {
 		t.Fatalf("claim update calls = %+v", tx.queryCalls)
 	}
 	if rows := tx.queryRows.(*modelQualityScheduleRowsStub); !rows.closed {
@@ -182,7 +184,7 @@ func TestUpsertModelQualityScheduleReturnsLockedConflictWithoutWriting(t *testin
 	result, err := upsertModelQualitySchedule(
 		context.Background(),
 		func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil },
-		port.ModelQualityScheduleUpsertInput{SystemAccountID: "sys_admin", AccountID: "account_1", Model: "gpt-5", Interval: time.Hour, Enabled: true, ExpectedRevision: &expected, UpdatedAt: now},
+		modelQualityScheduleUpsertTestInput(now, &expected),
 		func(string) (string, error) { return "mqs_new", nil },
 	)
 	if err != nil || result.Status != port.ModelQualityScheduleConflict || result.Schedule == nil || result.Schedule.Revision != 4 || len(tx.execCalls) != 0 || tx.commitCalls != 1 {
@@ -205,14 +207,14 @@ func TestScanModelQualityScheduleAcceptsLegacyLeaseButRejectsPartialOrCorruptFac
 
 	partial := legacy
 	partial.values = append([]any(nil), legacy.values...)
-	partial.values[13] = pgtype.Text{}
+	partial.values[17] = pgtype.Text{}
 	if _, err := scanModelQualitySchedule(partial); err == nil || !strings.Contains(err.Error(), "legacy") {
 		t.Fatalf("partial legacy lease error=%v", err)
 	}
 
 	badLastRun := legacy
 	badLastRun.values = append([]any(nil), legacy.values...)
-	badLastRun.values[10] = pgtype.Text{String: "completed", Valid: true}
+	badLastRun.values[14] = pgtype.Text{String: "completed", Valid: true}
 	if _, err := scanModelQualitySchedule(badLastRun); err == nil || !strings.Contains(err.Error(), "last run facts") {
 		t.Fatalf("bad last run error=%v", err)
 	}
@@ -239,8 +241,24 @@ func TestModelQualityScheduleValidationBoundsDatabaseAndLeaseInputs(t *testing.T
 		}
 	}
 	overflow := modelquality.ScheduleRevision(math.MaxInt32 + 1)
-	if err := validateModelQualityScheduleUpsertInput(port.ModelQualityScheduleUpsertInput{SystemAccountID: "sys", AccountID: "account", Model: "gpt", Interval: time.Hour, UpdatedAt: now, ExpectedRevision: &overflow}); err == nil {
+	invalid := modelQualityScheduleUpsertTestInput(now, &overflow)
+	invalid.SystemAccountID, invalid.AccountID, invalid.Model = "sys", "account", "gpt"
+	if err := validateModelQualityScheduleUpsertInput(invalid); err == nil {
 		t.Fatal("PostgreSQL INTEGER revision overflow was accepted")
+	}
+	for _, mutate := range []func(*port.ModelQualityScheduleUpsertInput){
+		func(input *port.ModelQualityScheduleUpsertInput) { input.Profile = "" },
+		func(input *port.ModelQualityScheduleUpsertInput) { input.PenaltyThreshold = 39 },
+		func(input *port.ModelQualityScheduleUpsertInput) { input.PenaltyAction = "" },
+		func(input *port.ModelQualityScheduleUpsertInput) {
+			input.RecoveryInterval = 10*time.Minute - time.Minute
+		},
+	} {
+		input := modelQualityScheduleUpsertTestInput(now, nil)
+		mutate(&input)
+		if err := validateModelQualityScheduleUpsertInput(input); err == nil {
+			t.Fatalf("invalid schedule snapshot accepted: %+v", input)
+		}
 	}
 }
 
@@ -256,12 +274,22 @@ func modelQualityScheduleRowValues(
 	tail ...any,
 ) []any {
 	values := []any{
-		id, "sys_admin", "account_1", "gpt-5", intervalMinutes, enabled, revision,
+		id, "sys_admin", "account_1", "gpt-5", intervalMinutes,
+		"full", int64(80), "quality_isolate", int64(30), enabled, revision,
 		modelQualityPolicyTimeText(nextRun), lastRunID, lastRunAt, lastRunStatus,
 		leaseOwner, leaseToken, leaseUntil,
 		modelQualityPolicyTimeText(createdAt), modelQualityPolicyTimeText(updatedAt),
 	}
 	return append(values, tail...)
+}
+
+func modelQualityScheduleUpsertTestInput(now time.Time, expected *modelquality.ScheduleRevision) port.ModelQualityScheduleUpsertInput {
+	return port.ModelQualityScheduleUpsertInput{
+		SystemAccountID: "sys_admin", AccountID: "account_1", Model: "gpt-5",
+		Interval: time.Hour, Profile: modelquality.ProfileFull, PenaltyThreshold: 80,
+		PenaltyAction: modelquality.ActionQualityIsolate, RecoveryInterval: 30 * time.Minute,
+		Enabled: true, ExpectedRevision: expected, UpdatedAt: now,
+	}
 }
 
 type modelQualityScheduleQueryCall struct {

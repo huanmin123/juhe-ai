@@ -409,10 +409,14 @@ function assertStrictRedisCacheBoundaries(): void {
   const routeSelectorSource = source('modules/gateway/routing/api-key-group-route-selector.service.ts')
   assert.match(functionBody(routeSelectorSource, 'orderGatewayApiKeyGroupBindingsForDispatchAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*orderGatewayApiKeyGroupBindingsForDispatch[\s\S]*nextRedisRouteCounterIndex/, '高性能动态路由必须通过 Redis 计数器共享状态')
   assert.match(functionBody(routeSelectorSource, 'assertSyncRouteStateAllowed'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*throw new Error\('高性能模式动态路由禁止使用本机同步状态/, '高性能动态路由同步本机状态必须 fail-fast')
+  assert.match(functionBody(routeSelectorSource, 'nextRedisRouteCounterIndex'), /runRedisOperationWithDeadline\(runtimeStateUrl,[\s\S]*operationName: 'Redis 动态路由计数器更新'[\s\S]*timeoutMs: redisRouteStateOperationTimeoutMs[\s\S]*client\.eval/, '高性能动态路由 Redis 计数器必须覆盖连接与命令 hard deadline')
+  assert.doesNotMatch(functionBody(routeSelectorSource, 'nextRedisRouteCounterIndex'), /getRedisClient|catch\s*\(/, '高性能动态路由 Redis 失败必须维持现有 fail-fast 语义，不能绕过 deadline 或回退本机游标')
 
   const accountApiKeyRotationSource = source('storage/account-api-key-rotation.ts')
   assert.match(functionBody(accountApiKeyRotationSource, 'selectAccountRuntimeApiKeyEntryAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*selectAccountRuntimeApiKeyEntry[\s\S]*selectWeightedApiKeyWithRedisCounter[\s\S]*selectRoundRobinApiKeyWithRedisCounter/, '高性能账户 API Key 轮换必须通过 Redis 计数器共享状态')
   assert.match(functionBody(accountApiKeyRotationSource, 'assertSyncAccountApiKeyRotationAllowed'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*throw new Error\('高性能模式账户 API Key 轮换禁止使用本机同步状态/, '高性能账户 API Key 同步轮换必须 fail-fast')
+  assert.match(functionBody(accountApiKeyRotationSource, 'nextRedisAccountApiKeyRotationIndex'), /runRedisOperationWithDeadline\(runtimeStateUrl,[\s\S]*operationName: 'Redis 账户 API Key 轮换计数器更新'[\s\S]*timeoutMs: redisAccountApiKeyRotationOperationTimeoutMs[\s\S]*client\.eval/, '高性能账户 API Key 轮换 Redis 计数器必须覆盖连接与命令 hard deadline')
+  assert.doesNotMatch(functionBody(accountApiKeyRotationSource, 'nextRedisAccountApiKeyRotationIndex'), /getRedisClient|catch\s*\(/, '高性能账户 API Key 轮换 Redis 失败必须维持现有 fail-fast 语义，不能绕过 deadline 或回退本机游标')
   const accountTestQueueSource = source('modules/accounts/account-test-task-queue.service.ts')
   assert.doesNotMatch(functionBody(accountTestQueueSource, 'openAIDraftAccountSecret'), /\bselectAccountRuntimeApiKeyEntry(?:Async)?\b/, '手动账号测试草稿 API Key 选择不能推进本机或 Redis 轮换状态')
   assert.match(functionBody(accountTestQueueSource, 'openAIDraftAccountSecret'), /accountApiKeyEntries\(credentials\)\[0\][\s\S]*selectedApiKeyFingerprint[\s\S]*selectedApiKeyEntry\?\.fingerprint/, '手动账号测试草稿应无状态固定本次测试 Key')
@@ -598,8 +602,13 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
   assert.match(
     functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
-    /usageRecordRedisStreamQueue\(\)\.inspectBacklog\(512\)[\s\S]*pendingTruncated[\s\S]*normalizeUsageRecordCreatedAtForBacklog\(message\.payload\.createdAt\)/,
-    '使用记录 Redis Stream 必须扫描 backlog 业务 createdAt，并在扫描截断时使用保守安全边界'
+    /usageRecordRedisStreamQueue\(\)\.inspectBacklog\(512\)[\s\S]*resolveUsageRecordBacklogWatermark\(inspection\)[\s\S]*pendingTruncated[\s\S]*return watermark\.oldestCreatedAt/,
+    '使用记录 Redis Stream 必须用有界 backlog 前缀计算业务 createdAt，扫描截断不能回退 epoch 永久冻结统计水位'
+  )
+  assert.doesNotMatch(
+    functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
+    /pendingTruncated[\s\S]*return '1970-01-01T00:00:00\.000Z'/,
+    '使用记录 Redis Stream backlog 超过单次扫描上限时必须持续推进，不能永久返回 epoch'
   )
   const fixedResponsesSource = source('modules/gateway/response/fixed-responses.ts')
   assert.match(

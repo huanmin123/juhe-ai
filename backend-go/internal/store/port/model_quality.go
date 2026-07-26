@@ -88,20 +88,24 @@ type ModelQualityClaimOwnerID string
 type ModelQualityScheduleClaimToken string
 
 type ModelQualitySchedule struct {
-	ID              string
-	SystemAccountID string
-	AccountID       string
-	Model           string
-	Interval        time.Duration
-	Enabled         bool
-	Revision        modelquality.ScheduleRevision
-	NextRunAt       time.Time
-	LastRunID       string
-	LastRunAt       *time.Time
-	LastRunStatus   *modelquality.RunStatus
-	Lease           *ModelQualityScheduleLease
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               string
+	SystemAccountID  string
+	AccountID        string
+	Model            string
+	Interval         time.Duration
+	Profile          modelquality.Profile
+	PenaltyThreshold int
+	PenaltyAction    modelquality.Action
+	RecoveryInterval time.Duration
+	Enabled          bool
+	Revision         modelquality.ScheduleRevision
+	NextRunAt        time.Time
+	LastRunID        string
+	LastRunAt        *time.Time
+	LastRunStatus    *modelquality.RunStatus
+	Lease            *ModelQualityScheduleLease
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // ModelQualityScheduleUpsertInput changes the one schedule owned by the
@@ -113,6 +117,10 @@ type ModelQualityScheduleUpsertInput struct {
 	AccountID        string
 	Model            string
 	Interval         time.Duration
+	Profile          modelquality.Profile
+	PenaltyThreshold int
+	PenaltyAction    modelquality.Action
+	RecoveryInterval time.Duration
 	Enabled          bool
 	ExpectedRevision *modelquality.ScheduleRevision
 	UpdatedAt        time.Time
@@ -158,7 +166,9 @@ type ModelQualityScheduleClaimInput struct {
 // returning it. AccountConfigRevision is captured for the model-check payload
 // and must not be confused with the schedule revision.
 type ModelQualityScheduleClaim struct {
-	Schedule              ModelQualitySchedule
+	Schedule ModelQualitySchedule
+	// Policy is derived exclusively from Schedule's immutable persisted policy
+	// fields. Scheduled runs must not inherit the mutable manual policy.
 	Policy                ModelQualityPolicyRecord
 	AccountConfigRevision modelquality.AccountRevision
 	Lease                 ModelQualityScheduleLease
@@ -225,7 +235,13 @@ type ModelQualityEnforcementRecord struct {
 	State                 ModelQualityEnforcementState
 	Action                modelquality.Action
 	TriggerRunID          string
+	ConfigSource          ModelQualityConfigSource
+	ConfigSourceID        string
 	PolicyRevision        modelquality.PolicyRevision
+	Profile               modelquality.Profile
+	PenaltyThreshold      int
+	RecoveryInterval      time.Duration
+	RecoveryModel         string
 	AccountConfigRevision modelquality.AccountRevision
 	BeforeStatus          modelquality.AccountStatus
 	AfterStatus           modelquality.AccountStatus
@@ -242,12 +258,23 @@ type ModelQualityEnforcementRecord struct {
 	UpdatedAt               time.Time
 }
 
+type ModelQualityConfigSource string
+
+const (
+	ModelQualityConfigSourceManual   ModelQualityConfigSource = "manual"
+	ModelQualityConfigSourceSchedule ModelQualityConfigSource = "schedule"
+)
+
 type ModelQualityEnforcementApplyInput struct {
-	SystemAccountID string
-	AccountID       string
-	RunID           string
-	Trigger         modelquality.Trigger
-	Action          modelquality.Action
+	SystemAccountID  string
+	AccountID        string
+	RunID            string
+	Trigger          modelquality.Trigger
+	Action           modelquality.Action
+	ScheduleID       string
+	Profile          modelquality.Profile
+	PenaltyThreshold int
+	RecoveryModel    string
 	// ExpectedPolicyRevision and ExpectedAccountConfigRevision are both CAS
 	// fences. The adapter reads policy/account and applies the chosen account
 	// mutation plus enforcement record in one transaction.
@@ -294,6 +321,7 @@ type ModelQualityRecoveryClaim struct {
 	SystemAccountID               string
 	Model                         string
 	Policy                        ModelQualityPolicyRecord
+	ScheduleID                    string
 	ExpectedAccountConfigRevision modelquality.AccountRevision
 	Enforcement                   ModelQualityEnforcementRecord
 	Lease                         ModelQualityRecoveryLease

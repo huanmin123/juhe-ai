@@ -37,6 +37,7 @@ const slowUsageRecordFlushMs = 500
 const usageRecordRedisStreamKey = redisStreamQueueContracts.usageRecords.streamKey
 const usageRecordRedisStreamGroup = redisStreamQueueContracts.usageRecords.groupName
 const usageRecordRedisConsumerErrorRetryMs = 1000
+const usageRecordRedisStreamBacklogConservativeCreatedAt = '1970-01-01T00:00:00.000Z'
 
 interface QueuedUsageRecord {
   input: UsageRecordInput
@@ -398,25 +399,16 @@ export async function getUsageRecordRedisStreamOldestCreatedAt(): Promise<string
   if (!shouldUseRedisStreamUsageRecordQueue()) {
     return undefined
   }
-  const inspection = await usageRecordRedisStreamQueue().inspectBacklog(512)
-  if (inspection.pendingTruncated || inspection.undeliveredTruncated) {
+  const watermark = await usageRecordRedisStreamQueue().inspectOldestBacklogCreatedAt(512)
+  if (!watermark.ready) {
     logger.warn({
-      event: 'usage_record_redis_stream_backlog_inspection_truncated',
-      pendingCount: inspection.runtime.pendingCount,
-      lag: inspection.runtime.lag,
-      scannedMessages: inspection.messages.length
-    }, 'Redis Stream 使用记录 backlog 超过统计保护扫描上限，本轮统计使用保守安全边界')
-    return '1970-01-01T00:00:00.000Z'
+      event: 'usage_record_redis_stream_backlog_watermark_degraded',
+      reason: watermark.failureReason,
+      backfilledCount: watermark.backfilledCount
+    }, 'Redis Stream 使用记录 backlog createdAt 索引尚未可靠就绪，本轮统计使用保守安全边界')
+    return usageRecordRedisStreamBacklogConservativeCreatedAt
   }
-  let oldest: string | undefined
-  for (const message of inspection.messages) {
-    const createdAt = normalizeUsageRecordCreatedAtForBacklog(message.payload.createdAt)
-    if (!createdAt) continue
-    if (!oldest || Date.parse(createdAt) < Date.parse(oldest)) {
-      oldest = createdAt
-    }
-  }
-  return oldest
+  return watermark.oldestCreatedAt
 }
 
 export function installUsageRecordQueueShutdownHooks(): void {
@@ -564,7 +556,8 @@ function usageRecordRedisStreamQueue(): RedisStreamQueue<UsageRecordInput> {
   if (!usageRecordRedisStreamQueueInstance) {
     usageRecordRedisStreamQueueInstance = new RedisStreamQueue<UsageRecordInput>({
       streamKey: usageRecordRedisStreamKey,
-      groupName: usageRecordRedisStreamGroup
+      groupName: usageRecordRedisStreamGroup,
+      backlogCreatedAt: (input) => normalizeUsageRecordCreatedAtForBacklog(input.createdAt)
     })
   }
   return usageRecordRedisStreamQueueInstance

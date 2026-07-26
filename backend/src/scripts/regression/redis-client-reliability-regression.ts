@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createServer, type Socket } from 'node:net'
+import { performance } from 'node:perf_hooks'
 
-import { isRecoverableRedisClientError } from '../../shared/redis-client.js'
+import {
+  closeRedisClients,
+  hasRedisClient,
+  isRecoverableRedisClientError,
+  RedisOperationDeadlineError,
+  runRedisOperationWithDeadline
+} from '../../shared/redis-client.js'
+import { RedisStreamQueue } from '../../shared/redis-stream-queue.js'
 
 const source = readFileSync(new URL('../../shared/redis-client.ts', import.meta.url), 'utf8')
 const createClientBody = functionBody(source, 'createRedisClient')
@@ -21,8 +30,8 @@ assert.match(source, /export async function invalidateRedisClient/, '共享 Redi
 const streamQueueSource = readFileSync(new URL('../../shared/redis-stream-queue.ts', import.meta.url), 'utf8')
 assert.match(
   streamQueueSource,
-  /isRecoverableRedisClientError\(error\)[\s\S]*invalidateRedisClient\(this\.redisUrl, client\)/,
-  'Redis Stream producer 命令超时后必须淘汰当前共享 client'
+  /runRedisOperationWithDeadline\(this\.redisUrl,[\s\S]*Redis Stream 入队[\s\S]*timeoutMs: this\.producerTimeoutMs/,
+  'Redis Stream 共享 producer 必须通过统一 hard deadline 执行入队脚本'
 )
 assert.match(
   streamQueueSource,
@@ -33,7 +42,132 @@ assert.equal(isRecoverableRedisClientError(Object.assign(new Error('Command time
 assert.equal(isRecoverableRedisClientError(Object.assign(new Error('socket closed'), { code: 'ECONNRESET' })), true)
 assert.equal(isRecoverableRedisClientError(new Error('BUSYGROUP Consumer Group name already exists')), false)
 
-console.log('Redis client 可靠性回归通过：默认 fail-fast，命令超时会淘汰失效代际并重建 producer/consumer')
+await assertSharedClientDeadlineInvalidationAndReconnect()
+
+console.log('Redis client 可靠性回归通过：hard deadline 有界失败，失效共享代际会被淘汰并在后续操作重连')
+
+async function assertSharedClientDeadlineInvalidationAndReconnect(): Promise<void> {
+  // 先预热 ESM 依赖，计时只覆盖 Redis 连接与命令，不把冷启动模块解析算入网络 deadline。
+  await import('redis')
+  const sockets = new Set<Socket>()
+  let responsive = false
+  let connectionCount = 0
+  const server = createServer((socket) => {
+    connectionCount += 1
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+    let pending = Buffer.alloc(0)
+    socket.on('data', (chunk) => {
+      pending = Buffer.concat([pending, chunk])
+      while (true) {
+        const parsed = parseRespCommand(pending)
+        if (!parsed) return
+        pending = pending.subarray(parsed.consumedBytes)
+        if (!responsive) continue
+        socket.write(redisFixtureResponse(parsed.command))
+      }
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  assert(address && typeof address === 'object', 'TCP fixture 必须取得监听地址')
+  const redisUrl = `redis://127.0.0.1:${address.port}/0`
+
+  try {
+    const startedAt = performance.now()
+    await assert.rejects(
+      runRedisOperationWithDeadline(redisUrl, {
+        operationName: 'Redis 半开连接 GET',
+        timeoutMs: 120
+      }, (client) => client.get('deadline-fixture')),
+      (error: unknown) => error instanceof RedisOperationDeadlineError
+    )
+    const elapsedMs = performance.now() - startedAt
+    assert(elapsedMs < 1_000, `Redis hard deadline 应有界失败，实际耗时 ${Math.round(elapsedMs)}ms`)
+    await waitFor(() => !hasRedisClient(redisUrl), 750)
+    assert.equal(hasRedisClient(redisUrl), false, 'deadline 后必须淘汰共享 Redis client 代际')
+
+    responsive = true
+    const value = await runRedisOperationWithDeadline(redisUrl, {
+      operationName: 'Redis deadline 后重连 GET',
+      timeoutMs: 1_000
+    }, (client) => client.get('deadline-fixture'))
+    assert.equal(value, 'ok', 'deadline 后的下一次操作必须通过新连接成功')
+    assert(connectionCount >= 2, `deadline 后必须建立新连接，实际连接数 ${connectionCount}`)
+
+    const queue = new RedisStreamQueue<{ id: string }>({
+      streamKey: 'juhe-ai:test:deadline-stream',
+      groupName: 'juhe-ai:test:deadline-group',
+      redisUrl,
+      producerTimeoutMs: 120
+    })
+    const connectionCountBeforeQueueFailure = connectionCount
+    responsive = false
+    const queueStartedAt = performance.now()
+    await assert.rejects(
+      queue.enqueue({ id: 'deadline' }),
+      (error: unknown) => error instanceof RedisOperationDeadlineError
+    )
+    assert(performance.now() - queueStartedAt < 1_000, 'Redis Stream producer 必须受统一 hard deadline 约束')
+    await waitFor(() => !hasRedisClient(redisUrl), 750)
+    responsive = true
+    assert.equal(await queue.enqueue({ id: 'reconnected' }), 'OK', 'Redis Stream producer deadline 后必须通过新连接恢复')
+    assert(connectionCount > connectionCountBeforeQueueFailure, 'Redis Stream producer deadline 后必须重建共享连接')
+  } finally {
+    await closeRedisClients()
+    for (const socket of sockets) socket.destroy()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
+
+interface ParsedRespCommand {
+  command: string[]
+  consumedBytes: number
+}
+
+function parseRespCommand(input: Buffer): ParsedRespCommand | undefined {
+  if (input.length === 0) return undefined
+  assert.equal(input[0], 42, 'Redis fixture 仅接受 RESP array 命令')
+  const headerEnd = input.indexOf('\r\n')
+  if (headerEnd < 0) return undefined
+  const itemCount = Number(input.subarray(1, headerEnd).toString('utf8'))
+  assert(Number.isInteger(itemCount) && itemCount >= 0, 'RESP array 长度非法')
+  const command: string[] = []
+  let offset = headerEnd + 2
+  for (let index = 0; index < itemCount; index += 1) {
+    if (input.length <= offset) return undefined
+    assert.equal(input[offset], 36, 'Redis fixture 仅接受 bulk string 参数')
+    const lengthEnd = input.indexOf('\r\n', offset)
+    if (lengthEnd < 0) return undefined
+    const byteLength = Number(input.subarray(offset + 1, lengthEnd).toString('utf8'))
+    assert(Number.isInteger(byteLength) && byteLength >= 0, 'RESP bulk string 长度非法')
+    const valueStart = lengthEnd + 2
+    const valueEnd = valueStart + byteLength
+    if (input.length < valueEnd + 2) return undefined
+    assert.equal(input.subarray(valueEnd, valueEnd + 2).toString('utf8'), '\r\n', 'RESP bulk string 结尾非法')
+    command.push(input.subarray(valueStart, valueEnd).toString('utf8'))
+    offset = valueEnd + 2
+  }
+  return { command, consumedBytes: offset }
+}
+
+function redisFixtureResponse(command: string[]): string {
+  const commandName = command[0]?.toUpperCase()
+  if (commandName === 'GET') return '$2\r\nok\r\n'
+  if (commandName === 'PING') return '+PONG\r\n'
+  return '+OK\r\n'
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadlineAt = Date.now() + timeoutMs
+  while (!predicate() && Date.now() < deadlineAt) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
 
 function functionBody(sourceText: string, functionName: string): string {
   const start = sourceText.indexOf(`function ${functionName}`)

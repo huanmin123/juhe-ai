@@ -16,7 +16,8 @@ const updatedAt = new Date().toISOString()
 
 try {
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const statHour = hourKey(new Date(), await usageStatsTimezoneAsync())
+  const timezone = await usageStatsTimezoneAsync()
+  const statHour = hourKey(new Date(), timezone)
   await cleanupSmokeRows()
   await client.execute(`
     INSERT INTO juhe_stats.usage_stats_totals (
@@ -43,11 +44,31 @@ try {
   assert.equal(configRefresh.changed, true, '新增 quota 配置应通过 keyset seed 标脏已有 scope')
   await assertWindowCost(client, 37, 1.25)
 
+  const previousBoundary = new Date(Date.now() - 3 * 60 * 60 * 1000)
+  const expiredStatHour = hourKey(new Date(Date.now() - 2 * 60 * 60 * 1000), timezone)
+  await client.execute(`
+    INSERT INTO juhe_stats.usage_stats_hourly (
+      system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, updated_at
+    ) VALUES (?, 'api_key', ?, ?, 2.0, ?)
+  `, [systemAccountId, scopeId, expiredStatHour, updatedAt])
+  await client.execute(`
+    INSERT INTO juhe_stats.stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('global', '', 'usage_quota_hourly_windows_expiry', ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = EXCLUDED.cursor_created_at,
+      cursor_id = EXCLUDED.cursor_id,
+      last_success_at = EXCLUDED.last_success_at,
+      updated_at = EXCLUDED.updated_at
+  `, [previousBoundary.toISOString(), hourKey(previousBoundary, timezone), updatedAt, updatedAt])
+  const catchUpRefresh = await refreshUsageQuotaHourlyWindowsCacheAsync()
+  assert.equal(catchUpRefresh.changed, true, '任务停顿跨多个整点后应补标期间离开窗口的 scope')
+
   await client.execute(`
     UPDATE juhe_stats.usage_stats_hourly
     SET total_cost_usd = 0, updated_at = ?
-    WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ? AND stat_hour = ?
-  `, [new Date().toISOString(), systemAccountId, scopeId, statHour])
+    WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?
+  `, [new Date().toISOString(), systemAccountId, scopeId])
   await markDirty(client)
   const zeroRefresh = await refreshUsageQuotaHourlyWindowsCacheAsync()
   assert.equal(zeroRefresh.changed, true, '减账归零应刷新 quota scope')
@@ -61,6 +82,7 @@ try {
   console.log(JSON.stringify({
     message: 'quota 小时窗口 PG 增量 smoke 通过',
     configSeeded: true,
+    multiHourCatchUp: true,
     zeroValueDeleted: true
   }))
 } finally {

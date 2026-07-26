@@ -34,7 +34,9 @@ import type {
   CodexContextResponseChainReadResult,
   CodexContextResponseStateIndex,
   CodexContextResponseStateIndexInput,
-  CodexContextStateBoundary
+  CodexContextStateBoundary,
+  CodexContextStorageCleanupFailure,
+  CodexContextStorageCleanupSettlementResult
 } from '../../storage/codex-context-state.repository.js'
 import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
 import type { SqliteReadWorkerPoolRuntime } from '../../storage/sqlite-read-worker-pool.js'
@@ -1037,6 +1039,12 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'settle_codex_context_storage_cleanup'
+    succeededStorageKeys: string[]
+    failures: CodexContextStorageCleanupFailure[]
+    now?: string
+  }
+  | {
     type: 'account_test_task_maintenance'
     action: 'start' | 'sweep'
     maxQueuedMs?: number
@@ -1192,6 +1200,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'read_codex_context_response_chain' } ? CodexContextResponseChainReadResult :
   T extends { type: 'read_codex_context_compact_state' } ? CodexContextCompactReadResult :
   T extends { type: 'cleanup_expired_codex_context_states' } ? CodexContextExpiredStateCleanupResult :
+  T extends { type: 'settle_codex_context_storage_cleanup' } ? CodexContextStorageCleanupSettlementResult :
   T extends { type: 'account_test_task_maintenance' } ? { taskIds: string[]; canceledTaskIds: string[]; expiredQueuedTaskIds: string[] } :
   T extends { type: 'mark_account_test_task_running' } ? AccountTestTaskRecord | undefined :
   T extends { type: 'mark_account_test_task_canceled' } ? AccountTestTaskRecord | undefined :

@@ -1014,28 +1014,33 @@ export async function cleanupModelCheckRunsBeforeAsync(cutoffCreatedAt: string, 
     return cleanupModelCheckRunsBefore(cutoffCreatedAt, limit)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await client.query<CleanupRow>(`
-    SELECT id
-    FROM juhe_dataset.model_check_runs
-    WHERE created_at < ?
-      AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
-    ORDER BY created_at ASC, id ASC
-    LIMIT ?
-  `, [cutoffCreatedAt, positiveLimit(limit)])
-  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
-  if (ids.length === 0) {
-    return {
-      modelCheckRuns: 0,
-      modelCheckItems: 0
-    }
-  }
-
   return client.transaction(async (tx) => {
+    const rows = await tx.query<CleanupRow>(`
+      SELECT id
+      FROM juhe_dataset.model_check_runs
+      WHERE created_at < ?
+        AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+      FOR UPDATE SKIP LOCKED
+    `, [cutoffCreatedAt, positiveLimit(limit)])
+    const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+    if (ids.length === 0) {
+      return {
+        modelCheckRuns: 0,
+        modelCheckItems: 0
+      }
+    }
+
     let modelCheckItems = 0
     let modelCheckRuns = 0
     for (const chunk of chunkValues(ids, 10000)) {
       modelCheckItems += changed(await tx.execute('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY(?::text[])', [chunk]))
-      modelCheckRuns += changed(await tx.execute('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY(?::text[])', [chunk]))
+      modelCheckRuns += changed(await tx.execute(`
+        DELETE FROM juhe_dataset.model_check_runs
+        WHERE id = ANY(?::text[])
+          AND (quality_health_sync_status IS NULL OR quality_health_sync_status = 'applied')
+      `, [chunk]))
     }
     return {
       modelCheckRuns,

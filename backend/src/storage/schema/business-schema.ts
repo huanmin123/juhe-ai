@@ -878,6 +878,22 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (route_strategy_id) REFERENCES route_strategies(id)
     );
 
+    CREATE TABLE IF NOT EXISTS request_quota_hourly_window_scope_bindings (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      window_hours INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK (window_hours BETWEEN 1 AND 720),
+      CHECK (scope_type IN ('api_key', 'account_authorization', 'group_authorization', 'account_authorization_team', 'group_authorization_team')),
+      CHECK (source_type IN ('api_key', 'resource_authorization_grant')),
+      PRIMARY KEY (system_account_id, scope_type, scope_id),
+      UNIQUE (source_type, source_id, system_account_id, scope_type, scope_id)
+    );
+
     CREATE TABLE IF NOT EXISTS api_key_schedule_status_events (
       event_key TEXT PRIMARY KEY,
       api_key_id TEXT NOT NULL,
@@ -1185,6 +1201,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_route_default_unique ON api_keys(route_strategy_id) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name, id);
+    CREATE INDEX IF NOT EXISTS idx_request_quota_hourly_scope_bindings_window
+      ON request_quota_hourly_window_scope_bindings(window_hours, system_account_id, scope_type, scope_id);
+    CREATE INDEX IF NOT EXISTS idx_request_quota_hourly_scope_bindings_source
+      ON request_quota_hourly_window_scope_bindings(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_owner_mode ON route_strategies(system_account_id, mode, status, updated_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_route_strategies_owner_name_unique ON route_strategies(system_account_id, name);
     CREATE INDEX IF NOT EXISTS idx_route_strategies_name_lookup ON route_strategies(name, id);

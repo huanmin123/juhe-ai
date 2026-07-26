@@ -15,14 +15,15 @@ import (
 )
 
 const (
-	DefaultClaimLimit      = port.ModelQualityHealthSyncClaimDefaultLimit
-	MaximumClaimLimit      = port.ModelQualityHealthSyncClaimMaximumLimit
-	DefaultLeaseDuration   = 5 * time.Minute
-	DefaultWorkerCount     = 4
-	MaximumWorkerCount     = 16
-	DefaultClaimTimeout    = 15 * time.Second
-	DefaultCompleteTimeout = 15 * time.Second
-	CleanupTimeout         = 5 * time.Second
+	DefaultClaimLimit        = port.ModelQualityHealthSyncClaimDefaultLimit
+	MaximumClaimLimit        = port.ModelQualityHealthSyncClaimMaximumLimit
+	DefaultLeaseDuration     = 5 * time.Minute
+	DefaultWorkerCount       = 4
+	MaximumWorkerCount       = 16
+	DefaultClaimTimeout      = 15 * time.Second
+	DefaultCompleteTimeout   = 15 * time.Second
+	CleanupTimeout           = 5 * time.Second
+	minimumLeaseSafetyMargin = time.Second
 
 	ContextRetryDelay      = time.Second
 	SQLTransientRetryDelay = 30 * time.Second
@@ -225,13 +226,12 @@ func normalizeRunOnceInput(input *RunOnceInput) error {
 	if !validOperationTimeout(input.CompleteTimeout) || input.CompleteTimeout >= input.LeaseDuration {
 		return fmt.Errorf("model quality health-sync complete timeout is invalid")
 	}
-	// A lease is acquired for the complete batch. Reserve one cleanup window
-	// per worker batch so the final claims cannot be guaranteed stale before
-	// their first completion attempt. Callers using the maximum claim limit
-	// must opt into a larger fixed pool or a shorter completion timeout.
-	workerBatches := (input.ClaimLimit + input.WorkerCount - 1) / input.WorkerCount
-	perBatchBudget := input.CompleteTimeout + CleanupTimeout
-	if workerBatches > 0 && perBatchBudget > 0 && time.Duration(workerBatches) >= input.LeaseDuration/perBatchBudget {
+	// The lease starts during claim, before completion workers can begin. Keep
+	// enough time for the claim call, every completion/cleanup wave, and a fixed
+	// margin so the last cleanup is not scheduled exactly at lease expiry.
+	completionWaves := (input.ClaimLimit + input.WorkerCount - 1) / input.WorkerCount
+	requiredLease := input.ClaimTimeout + time.Duration(completionWaves)*(input.CompleteTimeout+CleanupTimeout) + minimumLeaseSafetyMargin
+	if requiredLease > input.LeaseDuration {
 		return fmt.Errorf("model quality health-sync batch cannot complete within its lease")
 	}
 	return nil

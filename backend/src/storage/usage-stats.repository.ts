@@ -15,6 +15,7 @@ import {
   type ScheduledJobLeaseFence
 } from './scheduled-job-lease.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { runDerivedWindowRolloverSeedPages } from './usage-derived-window-rollover.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
@@ -1776,30 +1777,46 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
     const configSeedHasMore = await seedPostgresQuotaWindowConfigDirtyScopes(tx, windows, updatedAt)
     const nowMs = Date.now()
     const currentHour = hourKey(new Date(nowMs), timezone)
-    const expiryState = await tx.one<{ cursor_id?: string | null }>(`
-      SELECT cursor_id FROM juhe_stats.stats_job_state
+    const expiryState = await tx.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
+      SELECT cursor_created_at, cursor_id FROM juhe_stats.stats_job_state
       WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_quota_hourly_windows_expiry'
     `)
     if (expiryState?.cursor_id !== currentHour) {
-      const expiredHours = [...new Set(windows.map((hours) => hourKey(new Date(nowMs - (hours + 1) * HOUR_MS), timezone)))]
-      await tx.execute(`
-        INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
-          system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
-        )
-        SELECT DISTINCT system_account_id, scope_type, scope_id, 1, ?, ?
-        FROM juhe_stats.usage_stats_hourly
-        WHERE stat_hour = ANY(?::text[])
-          AND scope_type = ANY(?::text[])
-        ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
-          generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
-          updated_at = EXCLUDED.updated_at
-      `, [updatedAt, updatedAt, expiredHours, [
-        'api_key',
-        'account_authorization',
-        'group_authorization',
-        'account_authorization_team',
-        'group_authorization_team'
-      ]])
+      const parsedPreviousBoundaryMs = Date.parse(expiryState?.cursor_created_at ?? '')
+      const previousBoundaryMs = Number.isFinite(parsedPreviousBoundaryMs)
+        ? Math.min(nowMs, parsedPreviousBoundaryMs)
+        : nowMs - HOUR_MS
+      const expiryRanges = windows.map((hours) => ({
+        previousCutoffHour: hourKey(new Date(previousBoundaryMs - hours * HOUR_MS), timezone),
+        currentCutoffHour: hourKey(new Date(nowMs - hours * HOUR_MS), timezone)
+      })).filter((range) => range.previousCutoffHour < range.currentCutoffHour)
+      if (expiryRanges.length > 0) {
+        const expiryValues = expiryRanges.map(() => '(?::text, ?::text)').join(', ')
+        const expiryParams = expiryRanges.flatMap((range) => [range.previousCutoffHour, range.currentCutoffHour])
+        await tx.execute(`
+          WITH expired_ranges(previous_cutoff_hour, current_cutoff_hour) AS (VALUES ${expiryValues})
+          INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+            system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+          )
+          SELECT DISTINCT system_account_id, scope_type, scope_id, 1, ?, ?
+          FROM juhe_stats.usage_stats_hourly hourly
+          WHERE EXISTS (
+            SELECT 1 FROM expired_ranges ranges
+            WHERE hourly.stat_hour >= ranges.previous_cutoff_hour
+              AND hourly.stat_hour < ranges.current_cutoff_hour
+          )
+            AND scope_type = ANY(?::text[])
+          ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+            generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+            updated_at = EXCLUDED.updated_at
+        `, [...expiryParams, updatedAt, updatedAt, [
+          'api_key',
+          'account_authorization',
+          'group_authorization',
+          'account_authorization_team',
+          'group_authorization_team'
+        ]])
+      }
       await tx.execute(`
         INSERT INTO juhe_stats.stats_job_state (
           scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
@@ -1821,7 +1838,7 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
     }>(`
       SELECT system_account_id, scope_type, scope_id, generation
       FROM juhe_stats.usage_quota_hourly_window_dirty_scopes
-      ORDER BY updated_at, system_account_id, scope_type, scope_id
+      ORDER BY first_dirty_at, system_account_id, scope_type, scope_id
       LIMIT ?
       FOR UPDATE SKIP LOCKED
     `, [scopeLimit])
@@ -2557,6 +2574,10 @@ function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, cont
   }
 }
 
+const aiPerformanceRolloverRowsPerAccount = 31
+const aiPerformanceRolloverSnapshotRowBudget = 1984
+const aiPerformanceDirtyClaimLimit = Math.floor(aiPerformanceRolloverSnapshotRowBudget / aiPerformanceRolloverRowsPerAccount)
+
 async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageRankSnapshotContext): Promise<void> {
   await seedAiPerformanceSummaryRolloverDirtyAccountsAsync(client, context)
   const dirtyRows = await client.query<{
@@ -2567,29 +2588,63 @@ async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseC
   }>(`
     SELECT system_account_id, min_stat_date, max_stat_date, generation
     FROM ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')}
-    ORDER BY updated_at, system_account_id
-    LIMIT 10
+    ORDER BY first_dirty_at, system_account_id
+    LIMIT ${aiPerformanceDirtyClaimLimit}
     FOR UPDATE SKIP LOCKED
   `)
   if (dirtyRows.length === 0) return
 
-  for (const dirty of dirtyRows) {
+  const dirtyWork = dirtyRows.map((dirty) => {
     const ranges = context.ranges.filter((range) => (
       range.startDate <= dirty.max_stat_date && range.endDate >= dirty.min_stat_date
     ))
-    if (ranges.length === 0) continue
+    if (ranges.length === 0) return undefined
     const earliestDate = ranges.reduce((value, range) => range.startDate < value ? range.startDate : value, ranges[0]!.startDate)
     const latestDate = ranges.reduce((value, range) => range.endDate > value ? range.endDate : value, ranges[0]!.endDate)
-    const rows = await aiPerformanceSummaryWindowRowsAsync(
-      client,
-      dirty.system_account_id,
-      ranges,
-      earliestDate,
-      latestDate,
+    return { dirty, ranges, earliestDate, latestDate }
+  }).filter((work): work is NonNullable<typeof work> => work !== undefined)
+  const earliestDate = dirtyWork.reduce<string | undefined>((value, work) => !value || work.earliestDate < value ? work.earliestDate : value, undefined)
+  const latestDate = dirtyWork.reduce<string | undefined>((value, work) => !value || work.latestDate > value ? work.latestDate : value, undefined)
+  const sourceRows = dirtyWork.length === 0 || !earliestDate || !latestDate ? [] : await client.query<UsageStatsDailyWindowRow & { system_account_id: string }>(`
+    SELECT system_account_id, stat_date,
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum,
+      COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+      COALESCE(MAX(duration_ms_max), 0) AS duration_ms_max,
+      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum,
+      COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
+      COALESCE(MAX(first_token_ms_max), 0) AS first_token_ms_max,
+      MAX(last_used_at) AS last_used_at
+    FROM ${statsTable(client, 'usage_stats_daily')}
+    WHERE system_account_id = ANY(?::text[])
+      AND scope_type = 'account'
+      AND stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY system_account_id, stat_date
+    ORDER BY system_account_id, stat_date
+  `, [dirtyWork.map((work) => work.dirty.system_account_id), earliestDate, latestDate])
+  const sourceRowsBySystemAccount = new Map<string, UsageStatsDailyWindowRow[]>()
+  for (const row of sourceRows) {
+    const rows = sourceRowsBySystemAccount.get(row.system_account_id) ?? []
+    rows.push(row)
+    sourceRowsBySystemAccount.set(row.system_account_id, rows)
+  }
+
+  const insertRows = dirtyWork.flatMap((work) => (
+    aiPerformanceSummaryWindowRows(
+      sourceRowsBySystemAccount.get(work.dirty.system_account_id) ?? [],
+      work.dirty.system_account_id,
+      work.ranges,
       context.updatedAt
     )
-    await insertAiPerformanceSummaryWindowRowsAsync(client, rows)
-  }
+  ))
+  await insertAiPerformanceSummaryWindowRowsAsync(client, insertRows)
   const claimedValues = dirtyRows.map(() => '(?, ?::bigint)').join(', ')
   await client.execute(`
     DELETE FROM ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')} dirty
@@ -2608,39 +2663,46 @@ async function seedAiPerformanceSummaryRolloverDirtyAccountsAsync(
     SELECT cursor_created_at, cursor_id FROM ${stateTable}
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'ai_performance_summary_daily_seed'
   `)
-  const cursor = state?.cursor_created_at === context.todayKey ? state.cursor_id ?? '' : ''
+  const startsNewDay = state?.cursor_created_at !== context.todayKey
+  const cursor = startsNewDay ? '' : state.cursor_id ?? ''
   if (cursor === '__done__') return
-  const accounts = await client.query<{ system_account_id: string }>(`
-    SELECT system_account_id
-    FROM (
-      SELECT system_account_id
-      FROM ${statsTable(client, 'usage_stats_totals')}
-      WHERE scope_type = 'system_account'
-      UNION
-      SELECT system_account_id
-      FROM ${statsTable(client, 'ai_performance_summary_windows')}
-    ) existing_accounts
-    WHERE system_account_id > ?
-    ORDER BY system_account_id
-    LIMIT 128
-  `, [cursor])
-  if (cursor === '' && !accounts.some((account) => account.system_account_id === GLOBAL_STATS_SYSTEM_ACCOUNT_ID)) {
-    accounts.unshift({ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID })
-  }
-  for (const chunk of chunkValues(accounts, 128)) {
+
+  const seedAccounts = async (accounts: Array<{ system_account_id: string }>): Promise<void> => {
     await client.execute(`
       INSERT INTO ${statsTable(client, 'ai_performance_summary_dirty_system_accounts')} (
         system_account_id, min_stat_date, max_stat_date, generation, first_dirty_at, updated_at
-      ) VALUES ${chunk.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
+      ) VALUES ${accounts.map(() => '(?, ?, ?, 1, ?, ?)').join(', ')}
       ON CONFLICT(system_account_id) DO UPDATE SET
         min_stat_date = LEAST(ai_performance_summary_dirty_system_accounts.min_stat_date, EXCLUDED.min_stat_date),
         max_stat_date = GREATEST(ai_performance_summary_dirty_system_accounts.max_stat_date, EXCLUDED.max_stat_date),
         generation = ai_performance_summary_dirty_system_accounts.generation + 1,
         updated_at = EXCLUDED.updated_at
-    `, chunk.flatMap((account) => [account.system_account_id, context.todayKey, context.todayKey, context.updatedAt, context.updatedAt]))
+    `, accounts.flatMap((account) => [account.system_account_id, context.todayKey, context.todayKey, context.updatedAt, context.updatedAt]))
   }
-  const pageAccounts = accounts.filter((account) => account.system_account_id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID || cursor !== '')
-  const nextCursor = pageAccounts.length < 128 ? '__done__' : pageAccounts.at(-1)?.system_account_id ?? '__done__'
+
+  if (startsNewDay) {
+    await seedAccounts([{ system_account_id: GLOBAL_STATS_SYSTEM_ACCOUNT_ID }])
+  }
+  const progress = await runDerivedWindowRolloverSeedPages({
+    cursor,
+    loadPage: (pageCursor, pageSize) => client.query<{ system_account_id: string }>(`
+      SELECT system_account_id
+      FROM (
+        SELECT system_account_id
+        FROM ${statsTable(client, 'usage_stats_totals')}
+        WHERE scope_type = 'system_account'
+          AND system_account_id <> ?
+        UNION
+        SELECT system_account_id
+        FROM ${statsTable(client, 'ai_performance_summary_windows')}
+        WHERE system_account_id <> ?
+      ) existing_accounts
+      WHERE system_account_id > ?
+      ORDER BY system_account_id
+      LIMIT ?
+    `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID, pageCursor, pageSize]),
+    seedPage: seedAccounts
+  })
   await client.execute(`
     INSERT INTO ${stateTable} (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
@@ -2650,7 +2712,7 @@ async function seedAiPerformanceSummaryRolloverDirtyAccountsAsync(
       cursor_id = EXCLUDED.cursor_id,
       last_success_at = EXCLUDED.last_success_at,
       updated_at = EXCLUDED.updated_at
-  `, [context.todayKey, nextCursor, context.updatedAt, context.updatedAt])
+  `, [context.todayKey, progress.nextCursor, context.updatedAt, context.updatedAt])
 }
 
 function defaultUsageSnapshotYield(): Promise<void> {
@@ -2715,39 +2777,13 @@ function refreshAiPerformanceSummaryWindows(
   }
 }
 
-async function aiPerformanceSummaryWindowRowsAsync(
-  client: DatabaseClient,
+function aiPerformanceSummaryWindowRows(
+  sourceRows: UsageStatsDailyWindowRow[],
   systemAccountId: string,
   ranges: AccountUsageStatsRange[],
-  earliestDate: string,
-  todayKey: string,
   updatedAt: string
-): Promise<unknown[][]> {
-  const rows = await client.query<UsageStatsDailyWindowRow>(`
-    SELECT stat_date,
-      COALESCE(SUM(request_count), 0) AS request_count,
-      COALESCE(SUM(success_count), 0) AS success_count,
-      COALESCE(SUM(error_count), 0) AS error_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
-      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum,
-      COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
-      COALESCE(MAX(duration_ms_max), 0) AS duration_ms_max,
-      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum,
-      COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
-      COALESCE(MAX(first_token_ms_max), 0) AS first_token_ms_max,
-      MAX(last_used_at) AS last_used_at
-    FROM ${statsTable(client, 'usage_stats_daily')}
-    WHERE system_account_id = ?
-      AND scope_type = 'account'
-      AND stat_date >= ?
-      AND stat_date <= ?
-    GROUP BY stat_date
-    ORDER BY stat_date ASC
-  `, [systemAccountId, earliestDate, todayKey])
-  const rowsByDate = rowsByStatDate(rows)
+): unknown[][] {
+  const rowsByDate = rowsByStatDate(sourceRows)
   return ranges.map((range) => {
     const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
     return [

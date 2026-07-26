@@ -16,7 +16,12 @@ const [usageStatsRepository, databaseModule, databaseClientModule, postgresModul
   import('../../storage/database-client.js'),
   import('../../storage/postgres-client.js')
 ])
-const { aggregateUsageStatsBatch, aggregateUsageStatsBatchAsync, refreshUsageRankSnapshotsInStages } = usageStatsRepository
+const {
+  aggregateUsageStatsBatch,
+  aggregateUsageStatsBatchAsync,
+  refreshUsageQuotaHourlyWindowsCacheAsync,
+  refreshUsageRankSnapshotsInStages
+} = usageStatsRepository
 const {
   closeStorageDatabases,
   datasetDatabasePath,
@@ -70,8 +75,15 @@ async function main(): Promise<void> {
     }
     await yieldToEventLoop()
   }
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    await drainPostgresQuotaWindows(options.maxBatches)
+  }
   if (options.refreshRankSnapshots) {
     await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
+    if (runtimeConfig.databaseDriver === 'postgres') {
+      await drainPostgresDerivedWindows('usage_overview_dirty_scopes', ['usage_overview_windows'], options.maxBatches)
+      await drainPostgresDerivedWindows('ai_performance_summary_dirty_system_accounts', ['ai_performance_summary_windows'], options.maxBatches)
+    }
   }
 
   const durationMs = Date.now() - startedAt
@@ -123,7 +135,10 @@ function resetUsageStatsCache(database: ReturnType<typeof getStatsDatabase>): vo
     'usage_model_rank_windows',
     'usage_error_rank_windows',
     'ai_performance_summary_windows',
+    'ai_performance_summary_dirty_system_accounts',
     'usage_quota_hourly_windows',
+    'usage_quota_hourly_window_dirty_scopes',
+    'usage_overview_dirty_scopes',
     'usage_scope_range_windows',
     'system_metrics_trend_windows',
     'account_quality_minute_stats',
@@ -135,7 +150,7 @@ function resetUsageStatsCache(database: ReturnType<typeof getStatsDatabase>): vo
     for (const tableName of usageStatsTables) {
       database.prepare(`DELETE FROM ${tableName}`).run()
     }
-    database.prepare("DELETE FROM stats_job_state WHERE job_name = 'usage_stats_aggregation'").run()
+    database.prepare("DELETE FROM stats_job_state WHERE job_name IN ('usage_stats_aggregation', 'usage_quota_hourly_windows_expiry', 'usage_quota_hourly_windows_config_seed', 'usage_overview_daily_seed', 'ai_performance_summary_daily_seed')").run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)
@@ -183,7 +198,10 @@ async function resetUsageStatsCacheAsync(): Promise<void> {
     'usage_model_rank_windows',
     'usage_error_rank_windows',
     'ai_performance_summary_windows',
+    'ai_performance_summary_dirty_system_accounts',
     'usage_quota_hourly_windows',
+    'usage_quota_hourly_window_dirty_scopes',
+    'usage_overview_dirty_scopes',
     'usage_scope_range_windows',
     'system_metrics_trend_windows',
     'account_quality_minute_stats',
@@ -194,12 +212,48 @@ async function resetUsageStatsCacheAsync(): Promise<void> {
     for (const tableName of usageStatsTables) {
       await tx.execute(`DELETE FROM ${statsTable(tx, tableName)}`)
     }
-    await tx.execute("DELETE FROM juhe_stats.stats_job_state WHERE job_name = 'usage_stats_aggregation'")
+    await tx.execute("DELETE FROM juhe_stats.stats_job_state WHERE job_name = ANY(?::text[])", [[
+      'usage_stats_aggregation',
+      'usage_quota_hourly_windows_expiry',
+      'usage_quota_hourly_windows_config_seed',
+      'usage_overview_daily_seed',
+      'ai_performance_summary_daily_seed'
+    ]])
     await tx.execute(`
       INSERT INTO juhe_stats.stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)
     `, [updatedAt])
   })
+}
+
+async function drainPostgresQuotaWindows(maxPasses: number): Promise<void> {
+  for (let index = 0; index < maxPasses; index += 1) {
+    const result = await refreshUsageQuotaHourlyWindowsCacheAsync()
+    const remaining = await postgresTableRowCount('usage_quota_hourly_window_dirty_scopes')
+    if (remaining === 0) return
+    if (!result.hasMore) throw new Error('quota dirty scope 状态与 hasMore 不一致')
+    await yieldToEventLoop()
+  }
+  throw new Error(`离线重建达到 ${maxPasses} 轮上限，quota dirty scope 尚未排空`)
+}
+
+async function drainPostgresDerivedWindows(
+  dirtyTable: 'usage_overview_dirty_scopes' | 'ai_performance_summary_dirty_system_accounts',
+  stageNames: Array<'usage_overview_windows' | 'ai_performance_summary_windows'>,
+  maxPasses: number
+): Promise<void> {
+  for (let index = 0; index < maxPasses; index += 1) {
+    if (await postgresTableRowCount(dirtyTable) === 0) return
+    await refreshUsageRankSnapshotsInStages({ stageNames, yieldToEventLoop })
+    await yieldToEventLoop()
+  }
+  throw new Error(`离线重建达到 ${maxPasses} 轮上限，${dirtyTable} 尚未排空`)
+}
+
+async function postgresTableRowCount(tableName: 'usage_quota_hourly_window_dirty_scopes' | 'usage_overview_dirty_scopes' | 'ai_performance_summary_dirty_system_accounts'): Promise<number> {
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<{ total: number | string }>(`SELECT COUNT(*) AS total FROM ${statsTable(client, tableName)}`)
+  return Number(row?.total ?? 0)
 }
 
 function statsTable(client: DatabaseClient, tableName: string): string {

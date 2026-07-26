@@ -38,6 +38,7 @@ import {
   saveCodexContextResponseStateIndex,
   saveCodexContextResponseStateIndexRows,
   saveCodexContextResponseStateIndexRow,
+  settleCodexContextStorageCleanup,
   touchCodexContextCompactStateRows,
   touchCodexContextCompactStateRow,
   touchCodexContextSessionStates,
@@ -94,7 +95,8 @@ const codexContextStateWriterOperationTypes = new Set<CodexContextStateWriterOpe
   'touch_compact_row',
   'touch_compact_rows',
   'cleanup_expired_states',
-  'cleanup_expired_states_shard'
+  'cleanup_expired_states_shard',
+  'settle_storage_cleanup'
 ])
 const writerBatchDelayMs = 2
 const writerBatchMaxItems = 256
@@ -381,13 +383,27 @@ export async function cleanupExpiredCodexContextStatesWithWriterPool(input: {
   })
 }
 
+export async function settleCodexContextStorageCleanupWithWriterPool(input: {
+  succeededStorageKeys: string[]
+  failures: Array<{ storageKey: string; error: string }>
+  now?: string
+}): Promise<{ acknowledged: number; deferred: number }> {
+  if (!codexContextStateWriterPoolEnabled()) {
+    return settleCodexContextStorageCleanup(input)
+  }
+  return await requestCodexContextStateWriter({
+    type: 'settle_storage_cleanup',
+    ...input
+  })
+}
+
 export async function requestCodexContextStateWriter<T extends CodexContextStateWriterOperation>(
   operation: T
 ): Promise<CodexContextStateWriterOperationResult<T>> {
   if (!codexContextStateWriterPoolEnabled()) {
     return runCodexContextStateWriterOperationLocally(operation) as CodexContextStateWriterOperationResult<T>
   }
-  if (operation.type === 'cleanup_expired_states' || operation.type === 'cleanup_expired_states_shard') {
+  if (operation.type === 'cleanup_expired_states' || operation.type === 'cleanup_expired_states_shard' || operation.type === 'settle_storage_cleanup') {
     return await writerPool.requestExclusive(operation) as CodexContextStateWriterOperationResult<T>
   }
   return await writerPool.request(operation) as CodexContextStateWriterOperationResult<T>
@@ -468,6 +484,8 @@ function shardIndexForOperation(operation: CodexContextStateWriterOperation): nu
       return 0
     case 'cleanup_expired_states_shard':
       return operation.shardIndex
+    case 'settle_storage_cleanup':
+      return 0
     default:
       return assertNever(operation)
   }
@@ -600,6 +618,8 @@ function runCodexContextStateWriterOperationLocally(operation: CodexContextState
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
       })
+    case 'settle_storage_cleanup':
+      return settleCodexContextStorageCleanup(operation)
     default:
       return assertNever(operation)
   }

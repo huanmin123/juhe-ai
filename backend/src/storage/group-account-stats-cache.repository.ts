@@ -6,6 +6,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 
 export const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 
@@ -132,12 +133,28 @@ export async function refreshDirtyGroupAccountStatsCacheWithWriter(
   return rows.length
 }
 
-export async function refreshDirtyGroupAccountStatsCacheAsync(limit = 1000): Promise<number> {
+export async function refreshDirtyGroupAccountStatsCacheAsync(
+  limit = 1000,
+  scheduledLease?: ScheduledJobLeaseFence
+): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return refreshDirtyGroupAccountStatsCache(limit)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const normalizedLimit = Math.max(1, Math.min(groupAccountStatsFullRefreshBatchLimit, Math.trunc(limit)))
+  if (!scheduledLease) {
+    return await refreshDirtyGroupAccountStatsCacheInClient(client, normalizedLimit)
+  }
+  return await client.transaction(async (tx) => {
+    await pinScheduledJobLeaseInTransaction(tx, scheduledLease)
+    return await refreshDirtyGroupAccountStatsCacheInClient(tx, normalizedLimit)
+  })
+}
+
+async function refreshDirtyGroupAccountStatsCacheInClient(
+  client: DatabaseClient,
+  normalizedLimit: number
+): Promise<number> {
   const allDirtyRows = await loadAllGroupAccountStatsDirtyRowsAsync(client)
   if (allDirtyRows.length > 0) {
     return await refreshAllDirtyGroupAccountStatsCacheBatchAsync(client, allDirtyRows[0], normalizedLimit)
@@ -151,7 +168,7 @@ export async function refreshDirtyGroupAccountStatsCacheAsync(limit = 1000): Pro
       LIMIT 1
     `)
     if (!hasStats) {
-      await markAllGroupAccountStatsDirtyAsync('initial_cache_build')
+      await markAllGroupAccountStatsDirtyAsync('initial_cache_build', client)
       const initialAllDirtyRows = await loadAllGroupAccountStatsDirtyRowsAsync(client)
       return initialAllDirtyRows[0]
         ? await refreshAllDirtyGroupAccountStatsCacheBatchAsync(client, initialAllDirtyRows[0], normalizedLimit)

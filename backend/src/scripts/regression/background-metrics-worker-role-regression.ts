@@ -79,6 +79,7 @@ assertRoleBlockContainsOnly('stats-worker', [
   'group-account-stats-refresh',
   'model-trust-observation-aggregation',
   'usage-rank-snapshots-refresh',
+  'ai-performance-summary-windows-refresh',
   'system-metrics-trend-windows-refresh',
   'usage-overview-windows-refresh',
   'usage-scope-range-windows-refresh',
@@ -214,7 +215,11 @@ function assertRolePostgresBlockContains(role: string, jobName: string, message:
   const end = block.indexOf('\n      }\n', start)
   assert(end > start, `${role} PostgreSQL 高性能分支必须有明确结束位置`)
   const postgresBlock = block.slice(start, end)
-  assert(postgresBlock.includes(`backgroundScheduledJobName('${jobName}')`), message)
+  const directRegistration = postgresBlock.includes(`backgroundScheduledJobName('${jobName}')`)
+  const helperRegistration = jobName === 'account-quality-refresh'
+    && postgresBlock.includes('scheduleAccountQualityRefreshJob()')
+    && functionBlock('scheduleAccountQualityRefreshJob').includes(`backgroundScheduledJobName('${jobName}')`)
+  assert(directRegistration || helperRegistration, message)
 }
 
 function roleCaseBlock(role: string): string {
@@ -226,6 +231,9 @@ function roleCaseBlock(role: string): string {
   const block = nextCase >= 0 ? rest.slice(0, nextCase) : rest
   if (role === 'ingest-worker') {
     return `${block}\n${functionBlock('scheduleUsageIngestJobs')}\n${functionBlock('scheduleLogIngestJobs')}`
+  }
+  if (role === 'stats-worker') {
+    return `${block}\n${functionBlock('scheduleAccountQualityRefreshJob')}`
   }
   return block
 }

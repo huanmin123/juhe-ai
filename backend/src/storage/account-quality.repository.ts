@@ -124,7 +124,8 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10, dirtyAccountL
     const deleteResult = cleanupInactiveQualityRows(database, qualityCleanupBatchLimit)
     cleanupInactiveQualityMinuteRows(database, qualityCleanupBatchLimit)
     cleanupOldQualityMinuteRows(database, retentionCutoffMinute, qualityCleanupBatchLimit)
-    createTempRefreshedQualityAccounts(database, sampledAccountIds)
+    createTempQualityAccountIds(database, 'temp_refreshed_quality_accounts', sampledAccountIds)
+    createTempQualityAccountIds(database, 'temp_claimed_quality_accounts', dirtyAccountIds)
     for (const previous of loadStaleAccountQualityRows(database, qualityCleanupBatchLimit)) {
       markAccountQualityStale(upsertQuality, previous, windowStartedAt, windowEndedAt, updatedAt)
     }
@@ -210,7 +211,7 @@ export async function refreshAccountQualityFromUsageAsync(
     const deleteResult = await cleanupInactiveQualityRowsAsync(tx, qualityCleanupBatchLimit)
     await cleanupInactiveQualityMinuteRowsAsync(tx, qualityCleanupBatchLimit)
     await cleanupOldQualityMinuteRowsAsync(tx, retentionCutoffMinute, qualityCleanupBatchLimit)
-    for (const previous of await loadStaleAccountQualityRowsAsync(tx, sampledAccountIds, qualityCleanupBatchLimit)) {
+    for (const previous of await loadStaleAccountQualityRowsAsync(tx, sampledAccountIds, dirtyMarkers, qualityCleanupBatchLimit)) {
       await markAccountQualityStaleAsync(tx, previous, windowStartedAt, windowEndedAt, updatedAt)
     }
     for (const row of rows) {
@@ -394,11 +395,11 @@ function loadDirtyAccountQualityIds(database: ReturnType<typeof getStatsDatabase
   const rows = database
     .prepare(`
       SELECT account_id
-      FROM account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_updated
-      ORDER BY updated_at ASC, account_id ASC
+      FROM account_quality_dirty_accounts INDEXED BY idx_account_quality_dirty_accounts_first_dirty
+      ORDER BY first_dirty_at ASC, account_id ASC
       LIMIT ?
     `)
-    .all(Math.max(1, Math.trunc(limit))) as unknown as Array<{ account_id?: string | null }>
+    .all(normalizeAccountQualityDirtyLimit(limit)) as unknown as Array<{ account_id?: string | null }>
   return uniqueAccountQualityIds(rows.map((row) => row.account_id))
 }
 
@@ -449,9 +450,9 @@ async function loadDirtyAccountQualityMarkersAsync(client: DatabaseClient, limit
   const rows = await client.query<{ account_id?: string | null; row_ctid?: string | null }>(`
     SELECT account_id, ctid::text AS row_ctid
     FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')}
-    ORDER BY updated_at ASC, account_id ASC
+    ORDER BY first_dirty_at ASC, account_id ASC
     LIMIT ?
-  `, [Math.max(1, Math.trunc(limit))])
+  `, [normalizeAccountQualityDirtyLimit(limit)])
   return rows.flatMap((row) => {
     const accountId = String(row.account_id ?? '').trim()
     const rowCtid = String(row.row_ctid ?? '').trim()
@@ -584,7 +585,8 @@ export async function loadAccountQualityRowsByAccountIdsAsync(client: DatabaseCl
   return new Map(rows.map((row) => [row.account_id, normalizeAccountQualityRow(row)]))
 }
 
-function accountQualitySelectColumns(): string {
+function accountQualitySelectColumns(tableAlias?: string): string {
+  const prefix = tableAlias ? `${tableAlias}.` : ''
   return [
     'account_id',
     'system_account_id',
@@ -605,7 +607,7 @@ function accountQualitySelectColumns(): string {
     'last_error_at',
     'last_error_message',
     'updated_at'
-  ].join(', ')
+  ].map((column) => `${prefix}${column}`).join(', ')
 }
 
 function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase>, limit: number): { changes?: number | bigint } {
@@ -746,12 +748,12 @@ async function cleanupOldQualityMinuteRowsAsync(client: DatabaseClient, cutoffMi
   return result.changes
 }
 
-function createTempRefreshedQualityAccounts(database: ReturnType<typeof getStatsDatabase>, accountIds: string[]): void {
-  database.prepare('DROP TABLE IF EXISTS temp_refreshed_quality_accounts').run()
-  database.prepare('CREATE TEMP TABLE temp_refreshed_quality_accounts (id TEXT PRIMARY KEY)').run()
+function createTempQualityAccountIds(database: ReturnType<typeof getStatsDatabase>, tableName: 'temp_refreshed_quality_accounts' | 'temp_claimed_quality_accounts', accountIds: string[]): void {
+  database.prepare(`DROP TABLE IF EXISTS ${tableName}`).run()
+  database.prepare(`CREATE TEMP TABLE ${tableName} (id TEXT PRIMARY KEY)`).run()
   for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {
     database
-      .prepare(`INSERT INTO temp_refreshed_quality_accounts (id) VALUES ${chunk.map(() => '(?)').join(',')}`)
+      .prepare(`INSERT INTO ${tableName} (id) VALUES ${chunk.map(() => '(?)').join(',')}`)
       .run(...chunk)
   }
 }
@@ -767,25 +769,74 @@ function loadStaleAccountQualityRows(database: ReturnType<typeof getStatsDatabas
           FROM temp_refreshed_quality_accounts refreshed_accounts
           WHERE refreshed_accounts.id = account_quality_scores.account_id
         )
-      ORDER BY updated_at ASC, account_id ASC
+        AND (
+          NOT EXISTS (
+            SELECT 1
+            FROM account_quality_dirty_accounts dirty_accounts
+            WHERE dirty_accounts.account_id = account_quality_scores.account_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM temp_claimed_quality_accounts claimed_accounts
+            WHERE claimed_accounts.id = account_quality_scores.account_id
+          )
+        )
+      ORDER BY
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM temp_claimed_quality_accounts claimed_accounts
+          WHERE claimed_accounts.id = account_quality_scores.account_id
+        ) THEN 0 ELSE 1 END ASC,
+        updated_at ASC,
+        account_id ASC
       LIMIT ?
     `)
     .all(Math.max(1, Math.trunc(limit))) as unknown as AccountQualityRow[]
 }
 
-async function loadStaleAccountQualityRowsAsync(client: DatabaseClient, refreshedAccountIds: string[], limit: number): Promise<AccountQualityRow[]> {
+async function loadStaleAccountQualityRowsAsync(
+  client: DatabaseClient,
+  refreshedAccountIds: string[],
+  claimedMarkers: PostgresAccountQualityDirtyMarker[],
+  limit: number
+): Promise<AccountQualityRow[]> {
   const excludeClause = refreshedAccountIds.length > 0
-    ? 'AND NOT (account_id = ANY(?::text[]))'
+    ? 'AND NOT (quality_scores.account_id = ANY(?::text[]))'
     : ''
-  const params: unknown[] = refreshedAccountIds.length > 0
-    ? [refreshedAccountIds, Math.max(1, Math.trunc(limit))]
-    : [Math.max(1, Math.trunc(limit))]
+  const claimedCte = claimedMarkers.length > 0
+    ? `VALUES ${claimedMarkers.map(() => '(?, ?::tid)').join(', ')}`
+    : 'SELECT NULL::text AS account_id, NULL::tid AS row_ctid WHERE FALSE'
+  const params: unknown[] = claimedMarkers.flatMap((marker) => [marker.accountId, marker.rowCtid])
+  if (refreshedAccountIds.length > 0) params.push(refreshedAccountIds)
+  params.push(Math.max(1, Math.trunc(limit)))
   const rows = await client.query<AccountQualityRow>(`
-    SELECT ${accountQualitySelectColumns()}
-    FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_scores')}
-    WHERE quality_state IN ('fresh', 'failed')
+    WITH claimed_accounts(account_id, row_ctid) AS (${claimedCte})
+    SELECT ${accountQualitySelectColumns('quality_scores')}
+    FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_scores')} quality_scores
+    WHERE quality_scores.quality_state IN ('fresh', 'failed')
       ${excludeClause}
-    ORDER BY updated_at ASC, account_id ASC
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')} dirty_accounts
+        WHERE dirty_accounts.account_id = quality_scores.account_id
+          AND NOT EXISTS (
+            SELECT 1
+            FROM claimed_accounts
+            WHERE claimed_accounts.account_id = dirty_accounts.account_id
+              AND claimed_accounts.row_ctid = dirty_accounts.ctid
+          )
+      )
+    ORDER BY
+      CASE WHEN EXISTS (
+        SELECT 1
+        FROM ${accountQualityTable(client, 'juhe_stats', 'account_quality_dirty_accounts')} dirty_accounts
+        INNER JOIN claimed_accounts
+          ON claimed_accounts.account_id = dirty_accounts.account_id
+          AND claimed_accounts.row_ctid = dirty_accounts.ctid
+        WHERE dirty_accounts.account_id = quality_scores.account_id
+      ) THEN 0 ELSE 1 END ASC,
+      quality_scores.updated_at ASC,
+      quality_scores.account_id ASC
     LIMIT ?
   `, params)
   return rows.map(normalizeAccountQualityRow)
@@ -793,6 +844,10 @@ async function loadStaleAccountQualityRowsAsync(client: DatabaseClient, refreshe
 
 function uniqueAccountQualityIds(values: Array<string | null | undefined>): string[] {
   return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
+}
+
+function normalizeAccountQualityDirtyLimit(limit: number): number {
+  return Math.max(1, Math.min(Math.trunc(limit), accountQualityDirtyAccountBatchLimit))
 }
 
 function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare']>, previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {

@@ -9,6 +9,7 @@ import {
   saveCodexContextCompactStateIndexRow,
   saveCodexContextResponseStateIndexRows,
   saveCodexContextResponseStateIndexRow,
+  settleCodexContextStorageCleanup,
   touchCodexContextCompactStateRows,
   touchCodexContextCompactStateRow,
   touchCodexContextSessionStates,
@@ -135,6 +136,8 @@ function handleCodexContextStateWriterOperation(operation: CodexContextStateWrit
         expiredBefore: operation.expiredBefore,
         limit: operation.limit
       })
+    case 'settle_storage_cleanup':
+      return settleCodexContextStorageCleanup(operation)
     default:
       return assertNever(operation)
   }

@@ -5,6 +5,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, 
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { pinScheduledJobLeaseInTransaction, type ScheduledJobLeaseFence } from './scheduled-job-lease.repository.js'
 import { dateKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { fixedUsageStatsDateKeys } from './usage-stats-window-helpers.js'
 
@@ -17,49 +18,63 @@ const clientIpRangeWindowDirtyIpHashes = new Set<string>()
 const clientIpAccountRangeWindowDirtyIpHashes = new Set<string>()
 const statsSchemaName = 'juhe_stats'
 
+interface ClientIpRangeWindowDirtyRow {
+  ipHash: string
+  generation: number | string
+}
+
+interface ClientIpRangeWindowDirtyClaim {
+  ipHashes: string[]
+  clientIpRows: ClientIpRangeWindowDirtyRow[]
+  accountRows: ClientIpRangeWindowDirtyRow[]
+}
+
 export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirtyLimit?: number } = {}): void {
   const database = getStatsDatabase()
   const windows = currentClientIpRangeWindows()
   if (!windows.length) return
   const updatedAt = nowIso()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const dirtyClaim = options.full
+      ? takeAllClientIpRangeWindowDirtyIpHashes(database)
+      : takeClientIpRangeWindowDirtyIpHashes(database, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
   if (options.full) {
     for (const window of windows) {
       refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
       refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
     }
-    clearAllClientIpRangeWindowDirtyIpHashes(database)
+      clearClientIpRangeWindowDirtyIpHashes(database, dirtyClaim)
+      commitDatabaseTransaction(database, transactionStarted)
     return
   }
-  const dirtyIpHashes = takeClientIpRangeWindowDirtyIpHashes(database, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
+    const dirtyIpHashes = dirtyClaim.ipHashes
   if (!dirtyIpHashes.length) {
     if (hasStaleClientIpUsageRangeWindows(database, windows)) {
       for (const window of windows) {
         refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
         refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
       }
-      clearAllClientIpRangeWindowDirtyIpHashes(database)
     }
+      commitDatabaseTransaction(database, transactionStarted)
     return
   }
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
     for (const window of windows) {
       refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)
       refreshClientIpAccountUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)
     }
-    clearClientIpRangeWindowDirtyIpHashes(database, dirtyIpHashes)
+    clearClientIpRangeWindowDirtyIpHashes(database, dirtyClaim)
     if (!hasPendingClientIpRangeWindowDirtyIpHashes(database)) {
       markClientIpUsageRangeWindowsReady(database, windows, updatedAt)
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
-    markClientIpRangeWindowsDirty(database, dirtyIpHashes)
     throw error
   }
 }
 
-export async function refreshClientIpUsageRangeWindowsAsync(options: { full?: boolean; dirtyLimit?: number } = {}): Promise<void> {
+export async function refreshClientIpUsageRangeWindowsAsync(options: { full?: boolean; dirtyLimit?: number; scheduledLease?: ScheduledJobLeaseFence } = {}): Promise<void> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     refreshClientIpUsageRangeWindows(options)
     return
@@ -68,46 +83,40 @@ export async function refreshClientIpUsageRangeWindowsAsync(options: { full?: bo
   const windows = await currentClientIpRangeWindowsAsync()
   if (!windows.length) return
   const updatedAt = nowIso()
-  if (options.full) {
-    await client.transaction(async (tx) => {
+  await client.transaction(async (tx) => {
+    if (options.scheduledLease) await pinScheduledJobLeaseInTransaction(tx, options.scheduledLease)
+    const dirtyClaim = options.full
+      ? await takeAllClientIpRangeWindowDirtyIpHashesAsync(tx)
+      : await takeClientIpRangeWindowDirtyIpHashesAsync(tx, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
+    if (options.full) {
       for (const window of windows) {
         await refreshClientIpAccountUsageRangeWindowAsync(tx, window.startDate, window.endDate, updatedAt)
         await refreshClientIpUsageRangeWindowAsync(tx, window.startDate, window.endDate, updatedAt)
       }
-      await clearAllClientIpRangeWindowDirtyIpHashesAsync(tx)
-    })
-    return
-  }
+      await clearClientIpRangeWindowDirtyIpHashesAsync(tx, dirtyClaim)
+      return
+    }
 
-  const dirtyIpHashes = await takeClientIpRangeWindowDirtyIpHashesAsync(client, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
-  if (!dirtyIpHashes.length) {
-    if (await hasStaleClientIpUsageRangeWindowsAsync(client, windows)) {
-      await client.transaction(async (tx) => {
+    const dirtyIpHashes = dirtyClaim.ipHashes
+    if (!dirtyIpHashes.length) {
+      if (await hasStaleClientIpUsageRangeWindowsAsync(tx, windows)) {
         for (const window of windows) {
           await refreshClientIpAccountUsageRangeWindowAsync(tx, window.startDate, window.endDate, updatedAt)
           await refreshClientIpUsageRangeWindowAsync(tx, window.startDate, window.endDate, updatedAt)
         }
-        await clearAllClientIpRangeWindowDirtyIpHashesAsync(tx)
-      })
+      }
+      return
     }
-    return
-  }
 
-  try {
-    await client.transaction(async (tx) => {
-      for (const window of windows) {
-        await refreshClientIpUsageRangeWindowForIpsAsync(tx, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
-        await refreshClientIpAccountUsageRangeWindowForIpsAsync(tx, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
-      }
-      await clearClientIpRangeWindowDirtyIpHashesAsync(tx, dirtyIpHashes)
-      if (!await hasPendingClientIpRangeWindowDirtyIpHashesAsync(tx)) {
-        await markClientIpUsageRangeWindowsReadyAsync(tx, windows, updatedAt)
-      }
-    })
-  } catch (error) {
-    await markClientIpRangeWindowsDirtyAsync(client, dirtyIpHashes, updatedAt).catch(() => undefined)
-    throw error
-  }
+    for (const window of windows) {
+      await refreshClientIpUsageRangeWindowForIpsAsync(tx, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
+      await refreshClientIpAccountUsageRangeWindowForIpsAsync(tx, window.startDate, window.endDate, dirtyIpHashes, updatedAt)
+    }
+    await clearClientIpRangeWindowDirtyIpHashesAsync(tx, dirtyClaim)
+    if (!await hasPendingClientIpRangeWindowDirtyIpHashesAsync(tx)) {
+      await markClientIpUsageRangeWindowsReadyAsync(tx, windows, updatedAt)
+    }
+  })
 }
 
 export function rebuildClientIpUsageRangeWindows(): void {
@@ -195,22 +204,24 @@ export async function markCurrentClientIpUsageRangeWindowsStaleAsync(client: Dat
 
 export function markClientIpRangeWindowsDirty(database: DatabaseSync, ipHashes: Iterable<string>, updatedAt = nowIso()): void {
   const dirtyStatement = database.prepare(`
-    INSERT INTO client_ip_range_window_dirty_ips (ip_hash, updated_at)
-    VALUES (?, ?)
+    INSERT INTO client_ip_range_window_dirty_ips (ip_hash, generation, first_dirty_at, updated_at)
+    VALUES (?, 1, ?, ?)
     ON CONFLICT(ip_hash) DO UPDATE SET
+      generation = client_ip_range_window_dirty_ips.generation + 1,
       updated_at = excluded.updated_at
   `)
   const accountDirtyStatement = database.prepare(`
-    INSERT INTO client_ip_account_range_window_dirty_ips (ip_hash, updated_at)
-    VALUES (?, ?)
+    INSERT INTO client_ip_account_range_window_dirty_ips (ip_hash, generation, first_dirty_at, updated_at)
+    VALUES (?, 1, ?, ?)
     ON CONFLICT(ip_hash) DO UPDATE SET
+      generation = client_ip_account_range_window_dirty_ips.generation + 1,
       updated_at = excluded.updated_at
   `)
   for (const ipHash of ipHashes) {
     clientIpRangeWindowDirtyIpHashes.add(ipHash)
     clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
-    dirtyStatement.run(ipHash, updatedAt)
-    accountDirtyStatement.run(ipHash, updatedAt)
+    dirtyStatement.run(ipHash, updatedAt, updatedAt)
+    accountDirtyStatement.run(ipHash, updatedAt, updatedAt)
   }
 }
 
@@ -222,17 +233,19 @@ export async function markClientIpRangeWindowsDirtyAsync(client: DatabaseClient,
       clientIpRangeWindowDirtyIpHashes.add(ipHash)
       clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
       await client.execute(`
-        INSERT INTO ${statsTable(client, 'client_ip_range_window_dirty_ips')} (ip_hash, updated_at)
-        VALUES (?, ?)
+        INSERT INTO ${statsTable(client, 'client_ip_range_window_dirty_ips')} AS dirty (ip_hash, generation, first_dirty_at, updated_at)
+        VALUES (?, 1, ?, ?)
         ON CONFLICT(ip_hash) DO UPDATE SET
+          generation = dirty.generation + 1,
           updated_at = excluded.updated_at
-      `, [ipHash, updatedAt])
+      `, [ipHash, updatedAt, updatedAt])
       await client.execute(`
-        INSERT INTO ${statsTable(client, 'client_ip_account_range_window_dirty_ips')} (ip_hash, updated_at)
-        VALUES (?, ?)
+        INSERT INTO ${statsTable(client, 'client_ip_account_range_window_dirty_ips')} AS dirty (ip_hash, generation, first_dirty_at, updated_at)
+        VALUES (?, 1, ?, ?)
         ON CONFLICT(ip_hash) DO UPDATE SET
+          generation = dirty.generation + 1,
           updated_at = excluded.updated_at
-      `, [ipHash, updatedAt])
+      `, [ipHash, updatedAt, updatedAt])
     }
   }
 }
@@ -892,146 +905,147 @@ async function hasStaleClientIpUsageRangeWindowsAsync(client: DatabaseClient, wi
   return false
 }
 
-function takeClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, limit: number): string[] {
-  const max = Math.max(1, Math.trunc(limit))
-  const result: string[] = []
-  const seen = new Set<string>()
-  for (const ipHash of clientIpRangeWindowDirtyIpHashes) {
-    if (seen.has(ipHash)) continue
-    seen.add(ipHash)
-    result.push(ipHash)
-    if (result.length >= max) break
-  }
-  for (const ipHash of clientIpAccountRangeWindowDirtyIpHashes) {
-    if (result.length >= max) break
-    if (seen.has(ipHash)) continue
-    seen.add(ipHash)
-    result.push(ipHash)
-  }
-  if (result.length < max) {
-    const rows = database.prepare(`
-      SELECT ip_hash
-      FROM client_ip_range_window_dirty_ips
-      ORDER BY updated_at ASC, ip_hash ASC
-      LIMIT ?
-    `).all(max) as Array<{ ip_hash?: string }>
-    for (const row of rows) {
-      const ipHash = row.ip_hash
-      if (!ipHash || seen.has(ipHash)) continue
-      seen.add(ipHash)
-      result.push(ipHash)
-      clientIpRangeWindowDirtyIpHashes.add(ipHash)
-      if (result.length >= max) break
-    }
-  }
-  if (result.length < max) {
-    const rows = database.prepare(`
-      SELECT ip_hash
-      FROM client_ip_account_range_window_dirty_ips
-      ORDER BY updated_at ASC, ip_hash ASC
-      LIMIT ?
-    `).all(max) as Array<{ ip_hash?: string }>
-    for (const row of rows) {
-      const ipHash = row.ip_hash
-      if (!ipHash || seen.has(ipHash)) continue
-      seen.add(ipHash)
-      result.push(ipHash)
-      clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
-      if (result.length >= max) break
-    }
-  }
-  return result
+function takeClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, limit: number): ClientIpRangeWindowDirtyClaim {
+  return takeClientIpRangeWindowDirtyIpHashesWithLimit(database, Math.max(1, Math.trunc(limit)))
 }
 
-async function takeClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient, limit: number): Promise<string[]> {
-  const max = Math.max(1, Math.trunc(limit))
-  const result: string[] = []
-  const seen = new Set<string>()
-  for (const ipHash of clientIpRangeWindowDirtyIpHashes) {
-    if (seen.has(ipHash)) continue
-    seen.add(ipHash)
-    result.push(ipHash)
-    if (result.length >= max) break
-  }
-  for (const ipHash of clientIpAccountRangeWindowDirtyIpHashes) {
-    if (result.length >= max) break
-    if (seen.has(ipHash)) continue
-    seen.add(ipHash)
-    result.push(ipHash)
-  }
-  if (result.length < max) {
-    const rows = await client.query<{ ip_hash?: string | null }>(`
-      SELECT ip_hash
-      FROM ${statsTable(client, 'client_ip_range_window_dirty_ips')}
-      ORDER BY updated_at ASC, ip_hash ASC
-      LIMIT ?
-    `, [max])
-    for (const row of rows) {
-      const ipHash = row.ip_hash
-      if (!ipHash || seen.has(ipHash)) continue
-      seen.add(ipHash)
-      result.push(ipHash)
-      clientIpRangeWindowDirtyIpHashes.add(ipHash)
-      if (result.length >= max) break
-    }
-  }
-  if (result.length < max) {
-    const rows = await client.query<{ ip_hash?: string | null }>(`
-      SELECT ip_hash
-      FROM ${statsTable(client, 'client_ip_account_range_window_dirty_ips')}
-      ORDER BY updated_at ASC, ip_hash ASC
-      LIMIT ?
-    `, [max])
-    for (const row of rows) {
-      const ipHash = row.ip_hash
-      if (!ipHash || seen.has(ipHash)) continue
-      seen.add(ipHash)
-      result.push(ipHash)
-      clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
-      if (result.length >= max) break
-    }
-  }
-  return result
+function takeAllClientIpRangeWindowDirtyIpHashes(database: DatabaseSync): ClientIpRangeWindowDirtyClaim {
+  return takeClientIpRangeWindowDirtyIpHashesWithLimit(database)
 }
 
-function clearClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, ipHashes: string[]): void {
-  if (!ipHashes.length) return
-  for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
-    const placeholders = sqlPlaceholders(chunk.length)
-    database.prepare(`DELETE FROM client_ip_range_window_dirty_ips WHERE ip_hash IN (${placeholders})`).run(...chunk)
-    database.prepare(`DELETE FROM client_ip_account_range_window_dirty_ips WHERE ip_hash IN (${placeholders})`).run(...chunk)
-    for (const ipHash of chunk) {
-      clientIpRangeWindowDirtyIpHashes.delete(ipHash)
-      clientIpAccountRangeWindowDirtyIpHashes.delete(ipHash)
-    }
-  }
+function takeClientIpRangeWindowDirtyIpHashesWithLimit(database: DatabaseSync, limit?: number): ClientIpRangeWindowDirtyClaim {
+  const limitClause = limit === undefined ? '' : 'LIMIT ?'
+  const params = limit === undefined ? [] : [limit]
+  const candidates = database.prepare(`
+    SELECT ip_hash
+    FROM (
+      SELECT ip_hash, first_dirty_at FROM client_ip_range_window_dirty_ips
+      UNION ALL
+      SELECT ip_hash, first_dirty_at FROM client_ip_account_range_window_dirty_ips
+    ) dirty
+    GROUP BY ip_hash
+    ORDER BY MIN(first_dirty_at) ASC, ip_hash ASC
+    ${limitClause}
+  `).all(...params) as Array<{ ip_hash?: string }>
+  return readClientIpRangeWindowDirtyClaim(database, candidates.map((row) => row.ip_hash ?? '').filter(Boolean))
 }
 
-async function clearClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient, ipHashes: string[]): Promise<void> {
-  if (!ipHashes.length) return
-  for (const chunk of chunkValues(ipHashes, clientIpRangeWindowChunkSize)) {
-    const placeholders = sqlPlaceholders(chunk.length)
-    await client.execute(`DELETE FROM ${statsTable(client, 'client_ip_range_window_dirty_ips')} WHERE ip_hash IN (${placeholders})`, chunk)
-    await client.execute(`DELETE FROM ${statsTable(client, 'client_ip_account_range_window_dirty_ips')} WHERE ip_hash IN (${placeholders})`, chunk)
-    for (const ipHash of chunk) {
-      clientIpRangeWindowDirtyIpHashes.delete(ipHash)
-      clientIpAccountRangeWindowDirtyIpHashes.delete(ipHash)
-    }
+function readClientIpRangeWindowDirtyClaim(database: DatabaseSync, ipHashes: string[]): ClientIpRangeWindowDirtyClaim {
+  if (!ipHashes.length) return emptyClientIpRangeWindowDirtyClaim()
+  const placeholders = sqlPlaceholders(ipHashes.length)
+  const clientIpRows = database.prepare(`
+    SELECT ip_hash, generation
+    FROM client_ip_range_window_dirty_ips
+    WHERE ip_hash IN (${placeholders})
+  `).all(...ipHashes) as Array<{ ip_hash?: string; generation?: number }>
+  const accountRows = database.prepare(`
+    SELECT ip_hash, generation
+    FROM client_ip_account_range_window_dirty_ips
+    WHERE ip_hash IN (${placeholders})
+  `).all(...ipHashes) as Array<{ ip_hash?: string; generation?: number }>
+  return clientIpRangeWindowDirtyClaim(clientIpRows, accountRows)
+}
+
+async function takeClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient, limit: number): Promise<ClientIpRangeWindowDirtyClaim> {
+  return await takeClientIpRangeWindowDirtyIpHashesWithLimitAsync(client, Math.max(1, Math.trunc(limit)))
+}
+
+async function takeAllClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient): Promise<ClientIpRangeWindowDirtyClaim> {
+  return await takeClientIpRangeWindowDirtyIpHashesWithLimitAsync(client)
+}
+
+async function takeClientIpRangeWindowDirtyIpHashesWithLimitAsync(client: DatabaseClient, limit?: number): Promise<ClientIpRangeWindowDirtyClaim> {
+  const limitClause = limit === undefined ? '' : 'LIMIT ?'
+  const params = limit === undefined ? [] : [limit]
+  const candidates = await client.query<{ ip_hash?: string | null }>(`
+    SELECT ip_hash
+    FROM (
+      SELECT ip_hash, first_dirty_at FROM ${statsTable(client, 'client_ip_range_window_dirty_ips')}
+      UNION ALL
+      SELECT ip_hash, first_dirty_at FROM ${statsTable(client, 'client_ip_account_range_window_dirty_ips')}
+    ) dirty
+    GROUP BY ip_hash
+    ORDER BY MIN(first_dirty_at) ASC, ip_hash ASC
+    ${limitClause}
+  `, params)
+  const ipHashes = candidates.map((row) => row.ip_hash?.trim() ?? '').filter(Boolean)
+  if (!ipHashes.length) return emptyClientIpRangeWindowDirtyClaim()
+  const placeholders = sqlPlaceholders(ipHashes.length)
+  const clientIpRows = await client.query<{ ip_hash?: string | null; generation?: number | string | null }>(`
+    SELECT ip_hash, generation
+    FROM ${statsTable(client, 'client_ip_range_window_dirty_ips')}
+    WHERE ip_hash IN (${placeholders})
+    FOR UPDATE SKIP LOCKED
+  `, ipHashes)
+  const accountRows = await client.query<{ ip_hash?: string | null; generation?: number | string | null }>(`
+    SELECT ip_hash, generation
+    FROM ${statsTable(client, 'client_ip_account_range_window_dirty_ips')}
+    WHERE ip_hash IN (${placeholders})
+    FOR UPDATE SKIP LOCKED
+  `, ipHashes)
+  return clientIpRangeWindowDirtyClaim(clientIpRows, accountRows)
+}
+
+function clientIpRangeWindowDirtyClaim(
+  clientIpRows: Array<{ ip_hash?: string | null; generation?: number | string | null }>,
+  accountRows: Array<{ ip_hash?: string | null; generation?: number | string | null }>
+): ClientIpRangeWindowDirtyClaim {
+  const normalizeRows = (rows: Array<{ ip_hash?: string | null; generation?: number | string | null }>): ClientIpRangeWindowDirtyRow[] => rows
+    .map((row) => ({ ipHash: row.ip_hash?.trim() ?? '', generation: row.generation ?? 0 }))
+    .filter((row) => row.ipHash && Number(row.generation) > 0)
+  const normalizedClientIpRows = normalizeRows(clientIpRows)
+  const normalizedAccountRows = normalizeRows(accountRows)
+  const ipHashes = [...new Set([
+    ...normalizedClientIpRows.map((row) => row.ipHash),
+    ...normalizedAccountRows.map((row) => row.ipHash)
+  ])]
+  for (const ipHash of ipHashes) {
+    clientIpRangeWindowDirtyIpHashes.add(ipHash)
+    clientIpAccountRangeWindowDirtyIpHashes.add(ipHash)
+  }
+  return { ipHashes, clientIpRows: normalizedClientIpRows, accountRows: normalizedAccountRows }
+}
+
+function emptyClientIpRangeWindowDirtyClaim(): ClientIpRangeWindowDirtyClaim {
+  return { ipHashes: [], clientIpRows: [], accountRows: [] }
+}
+
+function clearClientIpRangeWindowDirtyIpHashes(database: DatabaseSync, claim: ClientIpRangeWindowDirtyClaim): void {
+  clearClientIpRangeWindowDirtyRows(database, 'client_ip_range_window_dirty_ips', claim.clientIpRows)
+  clearClientIpRangeWindowDirtyRows(database, 'client_ip_account_range_window_dirty_ips', claim.accountRows)
+  clearClientIpRangeWindowDirtyMemory(claim.ipHashes)
+}
+
+function clearClientIpRangeWindowDirtyRows(database: DatabaseSync, tableName: string, rows: ClientIpRangeWindowDirtyRow[]): void {
+  for (const chunk of chunkValues(rows, clientIpRangeWindowChunkSize)) {
+    const predicate = chunk.map(() => '(ip_hash = ? AND generation = ?)').join(' OR ')
+    database.prepare(`DELETE FROM ${tableName} WHERE ${predicate}`).run(...chunk.flatMap((row) => [row.ipHash, row.generation]))
   }
 }
 
-function clearAllClientIpRangeWindowDirtyIpHashes(database: DatabaseSync): void {
-  clientIpRangeWindowDirtyIpHashes.clear()
-  clientIpAccountRangeWindowDirtyIpHashes.clear()
-  database.prepare('DELETE FROM client_ip_range_window_dirty_ips').run()
-  database.prepare('DELETE FROM client_ip_account_range_window_dirty_ips').run()
+async function clearClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient, claim: ClientIpRangeWindowDirtyClaim): Promise<void> {
+  await clearClientIpRangeWindowDirtyRowsAsync(client, 'client_ip_range_window_dirty_ips', claim.clientIpRows)
+  await clearClientIpRangeWindowDirtyRowsAsync(client, 'client_ip_account_range_window_dirty_ips', claim.accountRows)
+  clearClientIpRangeWindowDirtyMemory(claim.ipHashes)
 }
 
-async function clearAllClientIpRangeWindowDirtyIpHashesAsync(client: DatabaseClient): Promise<void> {
-  clientIpRangeWindowDirtyIpHashes.clear()
-  clientIpAccountRangeWindowDirtyIpHashes.clear()
-  await client.execute(`DELETE FROM ${statsTable(client, 'client_ip_range_window_dirty_ips')}`)
-  await client.execute(`DELETE FROM ${statsTable(client, 'client_ip_account_range_window_dirty_ips')}`)
+async function clearClientIpRangeWindowDirtyRowsAsync(client: DatabaseClient, tableName: string, rows: ClientIpRangeWindowDirtyRow[]): Promise<void> {
+  for (const chunk of chunkValues(rows, clientIpRangeWindowChunkSize)) {
+    const claimedValues = chunk.map(() => '(?, ?)').join(', ')
+    await client.execute(`
+      DELETE FROM ${statsTable(client, tableName)} AS dirty
+      USING (VALUES ${claimedValues}) AS claimed(ip_hash, generation)
+      WHERE dirty.ip_hash = claimed.ip_hash
+        AND dirty.generation = claimed.generation
+    `, chunk.flatMap((row) => [row.ipHash, row.generation]))
+  }
+}
+
+function clearClientIpRangeWindowDirtyMemory(ipHashes: string[]): void {
+  for (const ipHash of ipHashes) {
+    clientIpRangeWindowDirtyIpHashes.delete(ipHash)
+    clientIpAccountRangeWindowDirtyIpHashes.delete(ipHash)
+  }
 }
 
 function hasPendingClientIpRangeWindowDirtyIpHashes(database: DatabaseSync): boolean {

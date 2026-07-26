@@ -105,6 +105,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           evidence_coverage INTEGER NOT NULL DEFAULT 0,
           trace_id TEXT,
           created_at TEXT NOT NULL,
+          aggregation_completed_at TEXT,
           FOREIGN KEY (run_id) REFERENCES model_check_runs(id) ON DELETE CASCADE
         );
 
@@ -452,6 +453,10 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON model_check_items(run_id, status, created_at, id);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON model_check_observations(created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation
+      ON model_check_observations(created_at, id)
+      WHERE aggregation_completed_at IS NULL;
 
     CREATE INDEX IF NOT EXISTS idx_model_check_observations_account_model ON model_check_observations(system_account_id, account_id, requested_model, created_at, id);
 

@@ -35,7 +35,8 @@ func TestModelQualityEnforcementSQLLocksAndFencesGeneration(t *testing.T) {
 	for _, sql := range []string{insertModelQualityEnforcementSQL, replaceModelQualityEnforcementSQL} {
 		for _, fragment := range []string{
 			"recovery_lease_owner", "recovery_lease_token", "recovery_lease_until",
-			"model_quality_policies", "accounts.config_revision", "RETURNING",
+			"model_quality_policies", "model_quality_schedules", "config_source", "recovery_model",
+			"accounts.config_revision", "RETURNING",
 		} {
 			if !strings.Contains(sql, fragment) {
 				t.Fatalf("enforcement write SQL missing %q:\n%s", fragment, sql)
@@ -43,7 +44,7 @@ func TestModelQualityEnforcementSQLLocksAndFencesGeneration(t *testing.T) {
 		}
 	}
 	for _, fragment := range []string{
-		"aqe.enforcement_id = $17", "aqe.generation = $18",
+		"aqe.enforcement_id = $23", "aqe.generation = $24",
 		"recovery_lease_owner = NULL", "recovery_lease_token = NULL",
 		"recovery_lease_until = NULL", "last_recovery_run_id = NULL", "cleared_at = NULL",
 	} {
@@ -82,8 +83,47 @@ func TestApplyModelQualityEnforcementAtomicallyIsolatesAndCreatesGeneration(t *t
 	if tx.commitCalls != 1 || tx.rollbackCalls != 0 || len(tx.execCalls) != 1 || len(tx.queryCalls) != 4 {
 		t.Fatalf("transaction commit/rollback/exec/query = %d/%d/%d/%d", tx.commitCalls, tx.rollbackCalls, len(tx.execCalls), len(tx.queryCalls))
 	}
-	if tx.execCalls[0].args[1] != "quality_isolate" || tx.execCalls[0].args[8] != int64(5) || tx.queryCalls[3].args[14] != int64(8) {
+	if tx.execCalls[0].args[1] != "quality_isolate" || tx.execCalls[0].args[8] != int64(5) || tx.queryCalls[3].args[20] != int64(8) {
 		t.Fatalf("account/write CAS args = %#v / %#v", tx.execCalls[0].args, tx.queryCalls[3].args)
+	}
+}
+
+func TestApplyScheduledModelQualityEnforcementUsesScheduleSnapshot(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 26, 9, 0, 0, 0, time.UTC)
+	due := now.Add(30 * time.Minute)
+	record := modelQualityEnforcementRecordValues(now, "enforcement_1", 1, "quality_isolate", "run_1", 5, 7, "active", "quality_isolated", false, true, &due)
+	record[7] = "schedule"
+	record[8] = pgtype.Text{String: "mqs_1", Valid: true}
+	record[10] = "full"
+	record[11] = int64(80)
+	record[12] = int64(30)
+	tx := &modelQualityScheduleTxStub{
+		queryRowQueue: []pgx.Row{
+			modelQualityEnforcementRowStub{values: modelQualityEnforcementAccountValues("active", 7, false, true)},
+			modelQualityEnforcementRowStub{err: pgx.ErrNoRows},
+			modelQualityScheduleRowStub{values: modelQualityScheduleRowValues("mqs_1", 5, 60, 1, now.Add(time.Hour), pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, now.Add(-time.Hour), now)},
+			modelQualityEnforcementRowStub{values: record},
+		},
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+	}
+	input := modelQualityEnforcementInput(now, "quality_isolate")
+	input.Trigger = modelquality.TriggerScheduled
+	input.ScheduleID = "mqs_1"
+	input.Profile = modelquality.ProfileFull
+	input.PenaltyThreshold = 80
+	input.RecoveryInterval = 30 * time.Minute
+	result, err := applyModelQualityEnforcement(context.Background(), beginModelQualityRecoveryTestTx(tx), input, func() (string, error) {
+		return "enforcement_1", nil
+	})
+	if err != nil || result.Status != port.ModelQualityEnforcementApplied || result.Enforcement == nil ||
+		result.Enforcement.ConfigSource != port.ModelQualityConfigSourceSchedule || result.Enforcement.ConfigSourceID != "mqs_1" ||
+		result.Enforcement.Profile != modelquality.ProfileFull || result.Enforcement.PenaltyThreshold != 80 ||
+		result.Enforcement.RecoveryInterval != 30*time.Minute || result.Enforcement.RecoveryModel != "gpt-5" {
+		t.Fatalf("result/error = %#v/%v", result, err)
+	}
+	if !strings.Contains(tx.queryCalls[2].query, "model_quality_schedules") || tx.queryCalls[3].args[6] != "schedule" || tx.queryCalls[3].args[7] != "mqs_1" {
+		t.Fatalf("scheduled configuration/write calls = %#v", tx.queryCalls)
 	}
 }
 
@@ -93,7 +133,7 @@ func TestApplyModelQualityEnforcementTreatsClearedRunAsConsumed(t *testing.T) {
 	cleared := now.Add(-time.Minute)
 	priorValues := modelQualityEnforcementRecordValues(now.Add(-time.Hour), "enforcement_old", 3, "quality_isolate", "run_1", 5, 7, "active", "quality_isolated", false, true, nil)
 	priorValues[4] = "cleared"
-	priorValues[19] = pgtype.Text{String: modelQualityPolicyTimeText(cleared), Valid: true}
+	priorValues[25] = pgtype.Text{String: modelQualityPolicyTimeText(cleared), Valid: true}
 	tx := &modelQualityScheduleTxStub{queryRowQueue: []pgx.Row{
 		modelQualityEnforcementRowStub{values: modelQualityEnforcementAccountValues("active", 12, false, false)},
 		modelQualityEnforcementRowStub{values: priorValues},
@@ -127,7 +167,7 @@ func TestApplyModelQualityEnforcementRecordsAlreadyEnabledFallbackWithoutAccount
 	if err != nil || result.Status != port.ModelQualityEnforcementAlreadyEffective || result.Enforcement == nil {
 		t.Fatalf("result/error = %#v/%v", result, err)
 	}
-	if len(tx.execCalls) != 0 || tx.commitCalls != 1 || tx.queryCalls[3].args[14] != int64(7) {
+	if len(tx.execCalls) != 0 || tx.commitCalls != 1 || tx.queryCalls[3].args[20] != int64(7) {
 		t.Fatalf("exec/commit/write args = %d/%d/%#v", len(tx.execCalls), tx.commitCalls, tx.queryCalls[3].args)
 	}
 }
@@ -153,7 +193,7 @@ func TestApplyModelQualityEnforcementReplacesPriorGenerationWithExactCAS(t *test
 		t.Fatalf("result/error = %#v/%v", result, err)
 	}
 	writeArgs := tx.queryCalls[3].args
-	if len(writeArgs) != 18 || writeArgs[16] != "enforcement_old" || writeArgs[17] != int64(2) {
+	if len(writeArgs) != 24 || writeArgs[22] != "enforcement_old" || writeArgs[23] != int64(2) {
 		t.Fatalf("replacement generation CAS args = %#v", writeArgs)
 	}
 }
@@ -235,10 +275,32 @@ func TestValidateModelQualityEnforcementRejectsPostgresNUL(t *testing.T) {
 	}
 }
 
+func TestValidateModelQualityEnforcementSourceAndSnapshotBounds(t *testing.T) {
+	t.Parallel()
+	base := modelQualityEnforcementInput(time.Now(), "quality_isolate")
+	tests := []func(*port.ModelQualityEnforcementApplyInput){
+		func(input *port.ModelQualityEnforcementApplyInput) { input.Profile = "" },
+		func(input *port.ModelQualityEnforcementApplyInput) { input.PenaltyThreshold = 39 },
+		func(input *port.ModelQualityEnforcementApplyInput) { input.RecoveryModel = "" },
+		func(input *port.ModelQualityEnforcementApplyInput) {
+			input.Trigger, input.ScheduleID = modelquality.TriggerScheduled, ""
+		},
+		func(input *port.ModelQualityEnforcementApplyInput) { input.ScheduleID = "mqs_1" },
+	}
+	for _, mutate := range tests {
+		input := base
+		mutate(&input)
+		if err := validateModelQualityEnforcementApplyInput(input); err == nil {
+			t.Fatalf("invalid enforcement snapshot accepted: %+v", input)
+		}
+	}
+}
+
 func modelQualityEnforcementInput(now time.Time, action string) port.ModelQualityEnforcementApplyInput {
 	return port.ModelQualityEnforcementApplyInput{
 		SystemAccountID: "sys_admin", AccountID: "account_1", RunID: "run_1",
-		Trigger: modelquality.TriggerScheduled, Action: modelquality.Action(action),
+		Trigger: modelquality.TriggerManual, Action: modelquality.Action(action),
+		Profile: modelquality.ProfileQuick, PenaltyThreshold: 70, RecoveryModel: "gpt-5",
 		ExpectedPolicyRevision: 5, ExpectedAccountConfigRevision: 7,
 		RecoveryInterval: 10 * time.Minute, Message: strings.Repeat("质量不达标", 300), DecidedAt: now,
 	}
@@ -271,9 +333,10 @@ func modelQualityEnforcementRecordValues(
 	}
 	return []any{
 		"account_1", "sys_admin", id, int64(generation), "active", action, runID,
-		policyRevision, accountRevision, before, after, int64(modelQualityPolicyBoolInt(fallback)), int64(modelQualityPolicyBoolInt(super)),
-		due, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{},
-		modelQualityPolicyTimeText(now), pgtype.Text{}, modelQualityPolicyTimeText(now),
+		"manual", pgtype.Text{}, policyRevision, "quick", int64(70), int64(10), pgtype.Text{String: "gpt-5", Valid: true},
+		accountRevision, before, after, int64(modelQualityPolicyBoolInt(fallback)), int64(modelQualityPolicyBoolInt(super)),
+		due, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, modelQualityPolicyTimeText(now),
+		pgtype.Text{}, modelQualityPolicyTimeText(now),
 	}
 }
 

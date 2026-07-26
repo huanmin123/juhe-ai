@@ -226,7 +226,7 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'record_model_quality_health_failure' } ? ModelQualityHealthFailureResult :
   T extends { type: 'aggregate_usage_stats' } ? { processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number } :
   T extends { type: 'aggregate_client_ip_stats' } ? { processed: number } :
-  T extends { type: 'refresh_group_account_stats' } ? { refreshed: true } :
+  T extends { type: 'refresh_group_account_stats' } ? { refreshed: number } :
   T extends { type: 'refresh_account_quality' } ? AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } :
   T extends { type: 'record_system_metrics_sample' } ? { recorded: true } :
   T extends { type: 'refresh_usage_rank_snapshots' } ? UsageRankSnapshotRefreshResult :
@@ -280,7 +280,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'aggregate_client_ip_stats':
       return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
     case 'refresh_group_account_stats':
-      return { refreshed: await refreshGroupAccountStats() }
+      return { refreshed: await refreshGroupAccountStats(requiredPostgresScheduledLease(operation)) }
     case 'refresh_account_quality':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit, requiredPostgresScheduledLease(operation))
@@ -467,9 +467,9 @@ function cleanupStatsDatabaseAfterDelete<T extends object>(result: T): T {
   return result
 }
 
-async function refreshGroupAccountStats(): Promise<number> {
+async function refreshGroupAccountStats(scheduledLease?: ScheduledJobLeaseFence): Promise<number> {
   if (runtimeConfig.databaseDriver === 'postgres') {
-    return await refreshDirtyGroupAccountStatsCacheAsync()
+    return await refreshDirtyGroupAccountStatsCacheAsync(1000, scheduledLease)
   }
   return await refreshDirtyGroupAccountStatsCacheWithWriter({
     async markAllDirty(reason) {

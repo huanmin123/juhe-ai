@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { getRedisClient } from '../shared/redis-client.js'
+import { runRedisOperationWithDeadline } from '../shared/redis-client.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
   isGeminiProviderCode,
@@ -43,6 +43,7 @@ interface WeightedState {
 const roundRobinStates = new Map<string, RoundRobinState>()
 const weightedStates = new Map<string, WeightedState>()
 const redisAccountApiKeyRotationTtlMs = 30 * 24 * 60 * 60 * 1000
+const redisAccountApiKeyRotationOperationTimeoutMs = 3_000
 
 export function selectAccountRuntimeApiKey(input: {
   accountId: string
@@ -270,14 +271,17 @@ async function nextRedisAccountApiKeyRotationIndex(
   if (!runtimeStateUrl) {
     throw new Error('高性能模式账户 API Key 轮换需要 JUHE_AI_REDIS_STATE_URL')
   }
-  const result = await (await getRedisClient(runtimeStateUrl)).eval(`
-    local value = redis.call('INCR', KEYS[1])
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-    return (value - 1) % tonumber(ARGV[1])
-  `, {
-    keys: [redisAccountApiKeyRotationKey(accountId, strategy)],
-    arguments: [String(Math.trunc(modulo)), String(redisAccountApiKeyRotationTtlMs)]
-  })
+  const result = await runRedisOperationWithDeadline(runtimeStateUrl, {
+    operationName: 'Redis 账户 API Key 轮换计数器更新',
+    timeoutMs: redisAccountApiKeyRotationOperationTimeoutMs
+  }, (client) => client.eval(`
+      local value = redis.call('INCR', KEYS[1])
+      redis.call('PEXPIRE', KEYS[1], ARGV[2])
+      return (value - 1) % tonumber(ARGV[1])
+    `, {
+      keys: [redisAccountApiKeyRotationKey(accountId, strategy)],
+      arguments: [String(Math.trunc(modulo)), String(redisAccountApiKeyRotationTtlMs)]
+    }))
   const index = typeof result === 'number' ? result : Number(result)
   if (!Number.isFinite(index)) {
     throw new Error('Redis 账户 API Key 轮换计数器返回值无效')

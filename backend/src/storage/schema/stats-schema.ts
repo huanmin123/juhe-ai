@@ -2,6 +2,21 @@ import type { DatabaseSync } from 'node:sqlite'
 
 export function applyStatsSchema(database: DatabaseSync): void {
   database.exec(`
+    CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
+      ip_hash TEXT PRIMARY KEY,
+      generation INTEGER NOT NULL DEFAULT 1,
+      first_dirty_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
+      ip_hash TEXT PRIMARY KEY,
+      generation INTEGER NOT NULL DEFAULT 1,
+      first_dirty_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+  ensureClientIpRangeWindowDirtyColumns(database)
+  database.exec(`
     PRAGMA foreign_keys = ON;
 
     PRAGMA journal_mode = WAL;
@@ -950,6 +965,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips (
           ip_hash TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL DEFAULT 1,
+          first_dirty_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
 
@@ -1017,6 +1034,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips (
           ip_hash TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL DEFAULT 1,
+          first_dirty_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
 
@@ -1258,9 +1277,18 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, account_id, requested_model)
         );
 
+    CREATE TABLE IF NOT EXISTS model_trust_observation_receipts (
+          observation_id TEXT PRIMARY KEY,
+          observation_created_at TEXT NOT NULL,
+          processed_at TEXT NOT NULL
+        );
+
     CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
 
     CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts(updated_at, system_account_id, account_id, requested_model);
+
+    CREATE INDEX IF NOT EXISTS idx_model_trust_observation_receipts_processed
+      ON model_trust_observation_receipts(processed_at, observation_id);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
 
@@ -1532,7 +1560,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
       ON account_quality_scores(recent_error_count DESC, success_rate, updated_at DESC, account_id)
       WHERE recent_request_count >= 5 AND recent_error_count >= 2;
 
-    CREATE INDEX IF NOT EXISTS idx_account_quality_dirty_accounts_updated ON account_quality_dirty_accounts(updated_at, account_id);
+    CREATE INDEX IF NOT EXISTS idx_account_quality_dirty_accounts_first_dirty ON account_quality_dirty_accounts(first_dirty_at, account_id);
 
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
 
@@ -1549,6 +1577,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
         AND cursor_id IS NOT NULL;
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_updated ON usage_stats_totals(updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_scope_seed
+      ON usage_stats_totals(scope_type, system_account_id, scope_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_scope_minute ON usage_stats_minute(system_account_id, scope_type, scope_id, stat_minute);
 
@@ -1667,13 +1698,13 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_overview_summary_windows_end ON usage_overview_summary_windows(end_date);
 
     CREATE INDEX IF NOT EXISTS idx_usage_quota_hourly_window_dirty_updated
-      ON usage_quota_hourly_window_dirty_scopes(updated_at, system_account_id, scope_type, scope_id);
+      ON usage_quota_hourly_window_dirty_scopes(first_dirty_at, system_account_id, scope_type, scope_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_overview_dirty_updated
-      ON usage_overview_dirty_scopes(updated_at, system_account_id);
+      ON usage_overview_dirty_scopes(first_dirty_at, system_account_id);
 
     CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_dirty_updated
-      ON ai_performance_summary_dirty_system_accounts(updated_at, system_account_id);
+      ON ai_performance_summary_dirty_system_accounts(first_dirty_at, system_account_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_overview_summary_windows_prewarm_order
       ON usage_overview_summary_windows(window_key, request_count DESC, last_used_at DESC, system_account_id)
@@ -1746,7 +1777,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_range_end ON client_ip_usage_range_windows(end_date);
 
-    CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(updated_at ASC, ip_hash);
+    DROP INDEX IF EXISTS idx_client_ip_range_dirty_updated;
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_range_dirty_updated ON client_ip_range_window_dirty_ips(first_dirty_at ASC, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_date ON client_ip_account_stats_daily(stat_date, ip_hash, account_id);
 
@@ -1762,7 +1795,9 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_requests ON client_ip_account_usage_range_windows(ip_hash, start_date, end_date, request_count DESC, account_id);
 
-    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(updated_at ASC, ip_hash);
+    DROP INDEX IF EXISTS idx_client_ip_account_range_dirty_updated;
+
+    CREATE INDEX IF NOT EXISTS idx_client_ip_account_range_dirty_updated ON client_ip_account_range_window_dirty_ips(first_dirty_at ASC, ip_hash);
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_client_ip_policies_active_unique ON client_ip_policies(ip_hash) WHERE status = 'active';
 
@@ -1823,4 +1858,18 @@ function ensureBackgroundJobLeaseFencingTokenColumn(database: DatabaseSync): voi
   const columns = database.prepare('PRAGMA table_info(background_job_leases)').all() as Array<{ name?: string }>
   if (columns.length === 0 || columns.some((column) => column.name === 'fencing_token')) return
   database.exec('ALTER TABLE background_job_leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0')
+}
+
+function ensureClientIpRangeWindowDirtyColumns(database: DatabaseSync): void {
+  for (const tableName of ['client_ip_range_window_dirty_ips', 'client_ip_account_range_window_dirty_ips']) {
+    const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+    if (columns.length === 0) continue
+    if (!columns.some((column) => column.name === 'generation')) {
+      database.exec(`ALTER TABLE ${tableName} ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`)
+    }
+    if (!columns.some((column) => column.name === 'first_dirty_at')) {
+      database.exec(`ALTER TABLE ${tableName} ADD COLUMN first_dirty_at TEXT NOT NULL DEFAULT ''`)
+      database.exec(`UPDATE ${tableName} SET first_dirty_at = updated_at WHERE first_dirty_at = ''`)
+    }
+  }
 }

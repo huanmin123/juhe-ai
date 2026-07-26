@@ -74,25 +74,17 @@ func claimDueModelQualityRecoveries(
 	rows.Close()
 
 	claims := make([]port.ModelQualityRecoveryClaim, 0, len(candidates))
-	policyCache := make(map[string]port.ModelQualityPolicyRecord, len(candidates))
 	for _, candidate := range candidates {
-		policy, ok := policyCache[candidate.enforcement.SystemAccountID]
-		if !ok {
-			policy, err = readModelQualityPolicy(ctx, tx, candidate.enforcement.SystemAccountID)
-			if err != nil {
-				return nil, fmt.Errorf("read model quality recovery policy: %w", err)
-			}
-			policyCache[candidate.enforcement.SystemAccountID] = policy
-		}
+		policy := modelQualityEnforcementSnapshotPolicy(candidate.enforcement)
 		current := modelQualityEnforcementState(candidate.enforcement)
 		account := modelquality.Account{
 			ID: candidate.enforcement.AccountID, SystemAccountID: candidate.enforcement.SystemAccountID,
 			Status: modelquality.AccountStatusQualityIsolated, ConfigRevision: candidate.accountRevision, OwnPhysical: true,
 		}
 		plan, err := modelquality.ClaimRecovery(modelquality.RecoveryClaimRequest{
-			PolicyRevision: policy.Policy.Revision,
+			PolicyRevision: candidate.enforcement.PolicyRevision,
 			Enforcement:    candidate.enforcement.Token,
-		}, policy.Policy.Revision, current, account)
+		}, current, account)
 		if err != nil {
 			return nil, fmt.Errorf("plan model quality recovery claim: %w", err)
 		}
@@ -111,7 +103,7 @@ func claimDueModelQualityRecoveries(
 		err = tx.QueryRow(ctx, claimModelQualityRecoverySQL,
 			string(input.OwnerID), string(token), int64(input.LeaseDuration/time.Millisecond),
 			int64(plan.State.AccountRevision), candidate.enforcement.AccountID, candidate.enforcement.Token.ID,
-			int64(candidate.enforcement.Token.Generation), int64(policy.Policy.Revision),
+			int64(candidate.enforcement.Token.Generation),
 		).Scan(&leaseUntilRaw, &claimedAtRaw)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
@@ -133,8 +125,9 @@ func claimDueModelQualityRecoveries(
 		candidate.enforcement.UpdatedAt = claimedAt
 		claims = append(claims, port.ModelQualityRecoveryClaim{
 			AccountID: candidate.enforcement.AccountID, SystemAccountID: candidate.enforcement.SystemAccountID,
-			Model: candidate.model, Policy: policy, ExpectedAccountConfigRevision: plan.State.AccountRevision,
-			Enforcement: candidate.enforcement, Lease: lease,
+			Model: candidate.model, Policy: policy, ScheduleID: candidate.enforcement.ConfigSourceID,
+			ExpectedAccountConfigRevision: plan.State.AccountRevision,
+			Enforcement:                   candidate.enforcement, Lease: lease,
 		})
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -184,12 +177,8 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	if !found {
 		return commitModelQualityRecoveryResult(ctx, tx, &committed, recoveryStaleResult(account.Status))
 	}
-	policy, err := readModelQualityPolicy(ctx, tx, enforcement.SystemAccountID)
-	if err != nil {
-		return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("read model quality recovery completion policy: %w", err)
-	}
 	availableNow := false
-	if input.Passed && input.ExpectedPolicyRevision == policy.Policy.Revision &&
+	if input.Passed && input.ExpectedPolicyRevision == enforcement.PolicyRevision &&
 		input.ExpectedAccountConfigRevision == enforcement.AccountConfigRevision &&
 		enforcement.AccountConfigRevision == account.ConfigRevision &&
 		account.Status == modelquality.AccountStatusQualityIsolated {
@@ -201,7 +190,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	plan, err := modelquality.PlanRecovery(modelquality.RecoveryRequest{
 		PolicyRevision: input.ExpectedPolicyRevision, AccountRevision: input.ExpectedAccountConfigRevision,
 		Enforcement: input.ExpectedEnforcement, Passed: input.Passed,
-	}, policy.Policy.Revision, modelQualityEnforcementState(enforcement), account.Account, availableNow)
+	}, modelQualityEnforcementState(enforcement), account.Account, availableNow)
 	if err != nil {
 		return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("plan model quality recovery completion: %w", err)
 	}
@@ -210,10 +199,10 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	if plan.NeedsReschedule {
 		var nextRaw string
 		err = tx.QueryRow(ctx, rescheduleModelQualityRecoverySQL,
-			input.RunID, int(input.RecoveryInterval/time.Minute),
+			input.RunID, int(enforcement.RecoveryInterval/time.Minute),
 			input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 			int64(enforcement.AccountConfigRevision), string(input.Lease.OwnerID), string(input.Lease.ClaimToken),
-			modelQualityPolicyTimeText(input.Lease.Until), int64(policy.Policy.Revision),
+			modelQualityPolicyTimeText(input.Lease.Until),
 		).Scan(&nextRaw)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("locked model quality recovery was not rescheduled")
@@ -249,7 +238,7 @@ func completeModelQualityRecovery(ctx context.Context, beginTx modelQualitySched
 	command, err = tx.Exec(ctx, clearModelQualityRecoveryEnforcementSQL,
 		input.RunID, input.AccountID, input.ExpectedEnforcement.ID, int64(input.ExpectedEnforcement.Generation),
 		int64(enforcement.AccountConfigRevision), string(input.Lease.OwnerID), string(input.Lease.ClaimToken),
-		modelQualityPolicyTimeText(input.Lease.Until), int64(policy.Policy.Revision),
+		modelQualityPolicyTimeText(input.Lease.Until),
 	)
 	if err != nil {
 		return port.ModelQualityRecoveryCompleteResult{}, fmt.Errorf("clear model quality recovery enforcement: %w", err)
@@ -334,16 +323,20 @@ func scanModelQualityEnforcement(row modelQualityScheduleScanner) (port.ModelQua
 func scanModelQualityEnforcementWithTail(row modelQualityScheduleScanner, tail ...any) (port.ModelQualityEnforcementRecord, error) {
 	var (
 		accountID, systemAccountID, enforcementID, state, action, triggerRunID string
-		generation, policyRevision, accountRevision                            int64
+		configSource, profile                                                  string
+		generation, policyRevision, penaltyThreshold, recoveryMinutes          int64
+		accountRevision                                                        int64
 		beforeStatus, afterStatus                                              string
 		fallbackWasEnabled, superPriorityWasEnabled                            int64
+		configSourceID, recoveryModel                                          pgtype.Text
 		recoveryDueAt, leaseOwner, leaseToken, leaseUntil                      pgtype.Text
 		lastRecoveryRunID, clearedAt                                           pgtype.Text
 		startedAt, updatedAt                                                   string
 	)
 	destinations := []any{
 		&accountID, &systemAccountID, &enforcementID, &generation, &state, &action,
-		&triggerRunID, &policyRevision, &accountRevision, &beforeStatus, &afterStatus,
+		&triggerRunID, &configSource, &configSourceID, &policyRevision, &profile, &penaltyThreshold,
+		&recoveryMinutes, &recoveryModel, &accountRevision, &beforeStatus, &afterStatus,
 		&fallbackWasEnabled, &superPriorityWasEnabled, &recoveryDueAt, &leaseOwner,
 		&leaseToken, &leaseUntil, &lastRecoveryRunID, &startedAt, &clearedAt, &updatedAt,
 	}
@@ -354,6 +347,7 @@ func scanModelQualityEnforcementWithTail(row modelQualityScheduleScanner, tail .
 	if !validModelQualityScheduleText(accountID, 256) || !validModelQualityScheduleText(systemAccountID, 256) ||
 		!validModelQualityScheduleText(enforcementID, 256) || !validModelQualityScheduleText(triggerRunID, 256) ||
 		generation < 1 || generation > math.MaxInt32 || policyRevision < 0 || policyRevision > math.MaxInt32 ||
+		penaltyThreshold < 40 || penaltyThreshold > 100 || recoveryMinutes < 10 || recoveryMinutes > 10080 ||
 		accountRevision < 1 || accountRevision > math.MaxInt32 || fallbackWasEnabled < 0 || fallbackWasEnabled > 1 ||
 		superPriorityWasEnabled < 0 || superPriorityWasEnabled > 1 {
 		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("invalid persisted model quality enforcement identity or numeric range")
@@ -362,9 +356,33 @@ func scanModelQualityEnforcementWithTail(row modelQualityScheduleScanner, tail .
 		AccountID: accountID, SystemAccountID: systemAccountID,
 		Token: modelquality.EnforcementToken{ID: enforcementID, Generation: modelquality.EnforcementGeneration(generation)},
 		State: port.ModelQualityEnforcementState(state), Action: modelquality.Action(action), TriggerRunID: triggerRunID,
+		ConfigSource:   port.ModelQualityConfigSource(configSource),
 		PolicyRevision: modelquality.PolicyRevision(policyRevision), AccountConfigRevision: modelquality.AccountRevision(accountRevision),
-		BeforeStatus: modelquality.AccountStatus(beforeStatus), AfterStatus: modelquality.AccountStatus(afterStatus),
+		Profile: modelquality.Profile(profile), PenaltyThreshold: int(penaltyThreshold),
+		RecoveryInterval: time.Duration(recoveryMinutes) * time.Minute,
+		BeforeStatus:     modelquality.AccountStatus(beforeStatus), AfterStatus: modelquality.AccountStatus(afterStatus),
 		FallbackWasEnabled: fallbackWasEnabled == 1, SuperPriorityWasEnabled: superPriorityWasEnabled == 1,
+	}
+	if configSourceID.Valid {
+		record.ConfigSourceID = configSourceID.String
+	}
+	if recoveryModel.Valid {
+		record.RecoveryModel = recoveryModel.String
+	}
+	if record.ConfigSource != port.ModelQualityConfigSourceManual && record.ConfigSource != port.ModelQualityConfigSourceSchedule {
+		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("invalid persisted model quality enforcement config source %q", configSource)
+	}
+	if record.ConfigSource == port.ModelQualityConfigSourceManual && configSourceID.Valid {
+		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("manual model quality enforcement cannot reference a schedule")
+	}
+	if record.ConfigSource == port.ModelQualityConfigSourceSchedule && !validModelQualityScheduleText(record.ConfigSourceID, 256) {
+		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("scheduled model quality enforcement requires a config source ID")
+	}
+	if record.RecoveryModel != "" && !validModelQualityScheduleText(record.RecoveryModel, 4096) {
+		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("invalid persisted model quality enforcement recovery model")
+	}
+	if err := modelQualityEnforcementSnapshotPolicy(record).Policy.Validate(); err != nil {
+		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("invalid persisted model quality enforcement policy snapshot: %w", err)
 	}
 	if record.State != port.ModelQualityEnforcementActive && record.State != port.ModelQualityEnforcementCleared {
 		return port.ModelQualityEnforcementRecord{}, fmt.Errorf("invalid persisted model quality enforcement state %q", state)
@@ -424,7 +442,20 @@ func modelQualityEnforcementState(record port.ModelQualityEnforcementRecord) mod
 	return modelquality.EnforcementState{
 		SystemAccountID: record.SystemAccountID, Token: record.Token,
 		AccountRevision: record.AccountConfigRevision, Active: record.State == port.ModelQualityEnforcementActive,
-		Action: record.Action,
+		Action: record.Action, PolicyRevision: record.PolicyRevision,
+	}
+}
+
+func modelQualityEnforcementSnapshotPolicy(record port.ModelQualityEnforcementRecord) port.ModelQualityPolicyRecord {
+	startedAt, updatedAt := record.StartedAt, record.UpdatedAt
+	return port.ModelQualityPolicyRecord{
+		Policy: modelquality.Policy{
+			SystemAccountID: record.SystemAccountID, Revision: record.PolicyRevision,
+			Profile: record.Profile, ManualEnforcementEnabled: true,
+			PenaltyThreshold: record.PenaltyThreshold, PenaltyAction: record.Action,
+			RecoveryIntervalMinutes: int(record.RecoveryInterval / time.Minute),
+		},
+		Persisted: true, CreatedAt: &startedAt, UpdatedAt: &updatedAt,
 	}
 }
 
