@@ -53,8 +53,11 @@ type Attempt struct {
 	Budget             AttemptBudget
 	PolicySettings     PolicySettings
 	PolicyNow          time.Time
-	ReplayAllowed      bool
-	OnFirstByte        func(time.Time)
+	// AvailabilityFailoverAllowed permits an executor to return a pre-commit
+	// availability failure as retryable. The executor's typed result and
+	// Committed remain the actual retry boundary.
+	AvailabilityFailoverAllowed bool
+	OnFirstByte                 func(time.Time)
 }
 
 type AttemptResult struct {
@@ -228,7 +231,6 @@ func (s *Service) Run(input Input) (Result, error) {
 	if len(input.Candidates) > gatewaycandidatewindow.FinalLimit {
 		return Result{}, fmt.Errorf("gateway attempt candidates exceed limit: %d", gatewaycandidatewindow.FinalLimit)
 	}
-	replayPolicy := protocolgateway.ClassifyReplay(input.Request, input.Profile)
 	startedAt := s.now().UTC()
 	deadline := startedAt.Add(s.config.WallTimeout)
 	if current, ok := input.Context.Deadline(); ok && current.Before(deadline) {
@@ -283,7 +285,7 @@ func (s *Service) Run(input Input) (Result, error) {
 				APIKeyIndex: keyIndex, HasAlternativeKeys: hasClaimableKey(tracker, candidate, keyIndices[keyOffset+1:], input.Request),
 				StartedAt:      attemptStartedAt,
 				Budget:         AttemptBudget{WallDeadline: deadline, FirstByteTimeout: s.config.FirstByteTimeout, FirstByteDeadline: firstByteDeadline},
-				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), ReplayAllowed: replayPolicy.Allowed,
+				PolicySettings: s.config.PolicySettings, PolicyNow: s.now(), AvailabilityFailoverAllowed: true,
 			}
 			var observation AttemptObservation
 			if input.Observer != nil {
@@ -303,9 +305,6 @@ func (s *Service) Run(input Input) (Result, error) {
 			}
 			if input.Observer != nil {
 				observeTerminal(input.Observer, ctx, observation, terminalObservation(attemptResult))
-			}
-			if !replayPolicy.Allowed {
-				attemptResult.RetryAllowed = false
 			}
 			summary := AttemptSummary{
 				Index: attemptIndex, CandidateIndex: candidateIndex, AccountID: candidate.Projection.AccountID,
@@ -367,7 +366,7 @@ func (s *Service) Run(input Input) (Result, error) {
 				result.Attempts[len(result.Attempts)-1].PolicyApply = clonePolicyApplyResult(applyResult)
 			}
 			if decision.Action == PolicyActionRetryNext || decision.Action == PolicyActionCooldown || decision.Action == PolicyActionDisable {
-				if !replayPolicy.Allowed {
+				if !attemptResult.RetryAllowed {
 					return s.finish(result, OutcomeFailed, &attemptResult, attemptErr), nil
 				}
 				break

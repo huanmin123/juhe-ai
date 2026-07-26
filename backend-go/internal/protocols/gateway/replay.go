@@ -19,9 +19,9 @@ type ReplayPolicy struct {
 	Family   EndpointFamily
 }
 
-// ClassifyReplay is deliberately exact. It prevents a profile fallback from
-// turning an unknown POST into a replayable request and treats resource
-// mutations as non-replayable even when their transport looks identical.
+// ClassifyReplay is deliberately exact request taxonomy. It does not authorize
+// gateway availability failover: that decision belongs to a typed attempt
+// result and is blocked once a response has committed.
 func ClassifyReplay(request RequestShape, profile *Profile) ReplayPolicy {
 	method := strings.ToUpper(strings.TrimSpace(request.Method))
 	protocol, _ := NativeProtocolForRequest(request)

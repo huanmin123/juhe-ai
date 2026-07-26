@@ -13,6 +13,10 @@ func TestResolveRequestLane(t *testing.T) {
 		{name: "image endpoint", request: RequestShape{Path: "/v1/images/generations"}, want: RequestLaneImage},
 		{name: "gpt image model", request: RequestShape{Path: "/v1/responses", Model: " GPT-IMAGE-1 "}, want: RequestLaneImage},
 		{name: "dall e model", request: RequestShape{Path: "/chat/completions", Model: "dall-e-3"}, want: RequestLaneImage},
+		{name: "imagen model", request: RequestShape{Path: "/v1/responses", Model: "imagen-4.0-generate-001"}, want: RequestLaneImage},
+		{name: "nano banana model", request: RequestShape{Path: "/v1/responses", Model: "nano-banana-pro"}, want: RequestLaneImage},
+		{name: "Gemini image model", request: RequestShape{Path: "/v1/responses", Model: "gemini-2.5-flash-image"}, want: RequestLaneImage},
+		{name: "Gemini non-image model", request: RequestShape{Path: "/v1/responses", Model: "gemini-2.5-flash"}, want: RequestLaneText},
 		{name: "body hint", request: RequestShape{Path: "/responses", ImageGenerationHint: true}, want: RequestLaneImage},
 		{name: "text", request: RequestShape{Path: "/responses", Model: "gpt-5"}, want: RequestLaneText},
 	}

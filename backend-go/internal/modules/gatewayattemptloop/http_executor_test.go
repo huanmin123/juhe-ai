@@ -84,7 +84,7 @@ func TestHTTPExecutorReturnsRetryableTransportFailure(t *testing.T) {
 	executor := HTTPExecutor{Prepare: func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
 		return gatewayupstream.Input{}, gatewayresponse.Input{}, nil
 	}}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true})
 	if err == nil || !result.RetryAllowed || result.Committed || result.Failure.Message == "" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -98,7 +98,7 @@ func TestHTTPExecutorCancelsHeadersAtAbsoluteFirstByteDeadline(t *testing.T) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: gatewaycandidate("a").Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
 	if !errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || !result.RetryAllowed || result.Committed || result.Failure.ErrorCode != "first_byte_timeout" || result.Usage.ErrorCode != "first_byte_timeout" || result.Audit.ErrorCode != "first_byte_timeout" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -112,7 +112,7 @@ func TestHTTPExecutorCancelsJSONBodyAtSameFirstByteDeadline(t *testing.T) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: gatewaycandidate("a").Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil })}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
 	if !errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || !result.RetryAllowed || result.Committed || result.Failure.ErrorCode != "first_byte_timeout" || result.Usage.ErrorCode != "first_byte_timeout" || result.Audit.ErrorCode != "first_byte_timeout" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -126,7 +126,7 @@ func TestHTTPExecutorCancelsStreamBodyAtSameFirstByteDeadline(t *testing.T) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: gatewaycandidate("a").Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportStream, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil })}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
 	if !errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || !result.RetryAllowed || result.Committed || result.Failure.ErrorCode != "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionAccountUpstream {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -148,7 +148,7 @@ func TestHTTPExecutorDoesNotRetrySlowDownstreamAsUpstreamTimeout(t *testing.T) {
 			}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
 	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -170,7 +170,7 @@ func TestHTTPExecutorDoesNotRetrySlowStreamSinkAsUpstreamTimeout(t *testing.T) {
 			}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	result, err := executor.Execute(context.Background(), Attempt{AvailabilityFailoverAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
 	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -207,7 +207,7 @@ func TestHTTPExecutorUsesExplicitPolicyOnlyWhenRuleMatches(t *testing.T) {
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil }), ResponseDisposition: gatewayretry.ResponseDispositionCompleteTransparent}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, ReplayAllowed: true})
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, AvailabilityFailoverAllowed: true})
 	if err == nil || !result.RetryAllowed || result.Committed || result.Failure.ErrorCode != "rate_limit" {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}
@@ -225,7 +225,7 @@ func TestHTTPExecutorMarksCredentialFailureAsKeyScopedWhenAlternativeExists(t *t
 			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: attempt.Candidate.Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{Transport: gatewayresponse.TransportJSON, Sink: gatewaystreamrelay.SinkFunc(func(_ context.Context, body []byte) (int, error) { return len(body), nil })}, nil
 		},
 	}
-	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, HasAlternativeKeys: true, ReplayAllowed: true})
+	result, err := executor.Execute(context.Background(), Attempt{Candidate: candidate, HasAlternativeKeys: true, AvailabilityFailoverAllowed: true})
 	if err == nil || !result.RetryAllowed || !result.KeyScopedFailure || result.Committed {
 		t.Fatalf("result = %+v err=%v", result, err)
 	}

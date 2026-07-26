@@ -43,7 +43,7 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	attemptCtx := deadline.Context()
 	upstreamInput, responseInput, err := e.Prepare(attemptCtx, attempt)
 	if err != nil {
-		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: err.Error()}}, err
+		return AttemptResult{RetryAllowed: attempt.AvailabilityFailoverAllowed, Failure: FailureFacts{Message: err.Error()}}, err
 	}
 	upstreamInput.Context = attemptCtx
 	dispatchResult, dispatchErr := e.Dispatcher.Dispatch(upstreamInput)
@@ -51,7 +51,7 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		if causedByFirstByteDeadline(attemptCtx, dispatchErr) {
 			return firstByteDeadlineResult(attempt, AttemptResult{}), gatewaydeadline.ErrFirstByteDeadline
 		}
-		return AttemptResult{RetryAllowed: attempt.ReplayAllowed, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
+		return AttemptResult{RetryAllowed: attempt.AvailabilityFailoverAllowed, Failure: FailureFacts{Message: boundedText(dispatchErr.Error(), 1000)}}, dispatchErr
 	}
 	responseInput.Context = attemptCtx
 	responseInput.Dispatch = dispatchResult
@@ -135,7 +135,7 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	return AttemptResult{
 		Committed:        handled.TransportCommitted || handled.SemanticCommitted || handled.BytesWritten > 0,
-		RetryAllowed:     handled.RetryAllowed && attempt.ReplayAllowed,
+		RetryAllowed:     handled.RetryAllowed && attempt.AvailabilityFailoverAllowed,
 		KeyScopedFailure: handled.Handoff.Retry.Classification.WouldAvoidAPIKey,
 		Failure:          FailureFacts{StatusCode: failure.StatusCode, ErrorCode: boundedText(errorCode, 256), ErrorType: boundedText(errorType, 256), BodyText: boundedText(bodyText, 64<<10), Message: boundedText(message, 1000)},
 		Usage:            handled.Handoff.Usage,
@@ -153,7 +153,7 @@ func (e HTTPExecutor) now() time.Time {
 
 func firstByteDeadlineResult(attempt Attempt, base AttemptResult) AttemptResult {
 	message := gatewaydeadline.ErrFirstByteDeadline.Error()
-	base.RetryAllowed = attempt.ReplayAllowed
+	base.RetryAllowed = attempt.AvailabilityFailoverAllowed
 	base.Failure.ErrorCode = "first_byte_timeout"
 	base.Failure.Message = message
 	base.Usage = gatewayusage.TerminalFacts{

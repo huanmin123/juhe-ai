@@ -116,7 +116,7 @@ func TestRunCapsDistinctCandidateAttempts(t *testing.T) {
 	}
 }
 
-func TestRunUnsafePolicyMutationDoesNotReplayNextCandidate(t *testing.T) {
+func TestRunPolicyMutationAllowsTypedAvailabilityFailover(t *testing.T) {
 	for _, status := range []PolicyApplyStatus{PolicyApplyApplied, PolicyApplyIdempotent, PolicyApplyStaleTarget, PolicyApplyStaleSource, PolicyApplyIneligible} {
 		t.Run(string(status), func(t *testing.T) {
 			executor := &executorStub{fallback: AttemptResult{RetryAllowed: true, Failure: FailureFacts{StatusCode: 429, ErrorCode: "rate_limit"}}}
@@ -125,7 +125,7 @@ func TestRunUnsafePolicyMutationDoesNotReplayNextCandidate(t *testing.T) {
 			first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "rate_limited", "error_codes": []any{"rate_limit"}, "reset_strategy": "duration", "duration_hours": float64(1)})}})
 			service := newTestService(t, executor, applier, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
 			result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: protocolgateway.RequestShape{Method: "POST", Path: "/v1beta/interactions"}})
-			if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || len(applier.mutations) != 1 || result.Attempts[0].PolicyApply == nil || result.Attempts[0].PolicyApply.Status != status {
+			if err != nil || result.Outcome != OutcomeCandidatesExhausted || len(executor.attempts) != 2 || executor.attempts[1].CandidateIndex != 1 || len(applier.mutations) != 1 || result.Attempts[0].PolicyApply == nil || result.Attempts[0].PolicyApply.Status != status {
 				t.Fatalf("result = %+v err=%v attempts=%+v mutations=%+v", result, err, executor.attempts, applier.mutations)
 			}
 		})
@@ -174,11 +174,12 @@ func TestRunRequiresStableMutationIDBeforeExecuting(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotReplayUnlessRequestIsClassifiedSafe(t *testing.T) {
-	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true}}
+func TestRunAvailabilityFailoverDoesNotDependOnRequestTaxonomy(t *testing.T) {
+	executor := &executorStub{results: []AttemptResult{{RetryAllowed: true}, {Success: true, Committed: true}}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}})
-	if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || result.LastAttempt == nil || result.LastAttempt.RetryAllowed {
+	request := protocolgateway.RequestShape{Method: "POST", Path: "/v1beta/interactions"}
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: request})
+	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 || !executor.attempts[0].AvailabilityFailoverAllowed {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
 }
