@@ -635,6 +635,13 @@ async function seedBuiltInExternalIntegrationTestToken(
           notes = $4,
           updated_at = $5
       WHERE id = $6
+        AND (
+          name IS DISTINCT FROM $1
+          OR scopes_json IS DISTINCT FROM $2
+          OR rate_limits_json IS DISTINCT FROM $3
+          OR expires_at IS NOT NULL
+          OR notes IS DISTINCT FROM $4
+        )
     `,
     [
       builtInExternalIntegrationTestSourceName,
@@ -688,6 +695,12 @@ async function seedBuiltInExternalIntegrationTestToken(
           expires_at = NULL,
           updated_at = $4
       WHERE id = $5
+        AND (
+          source_ref_id IS DISTINCT FROM $1
+          OR name IS DISTINCT FROM $2
+          OR scopes_json IS DISTINCT FROM $3
+          OR expires_at IS NOT NULL
+        )
     `,
     [
       builtInExternalIntegrationTestSourceId,

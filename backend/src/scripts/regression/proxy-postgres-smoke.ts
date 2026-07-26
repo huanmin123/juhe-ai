@@ -57,7 +57,7 @@ try {
   const testConfig = await getProxyTestConfigAsync(created.id)
   assert.equal(testConfig?.proxyUrl, 'http://proxy-user:%20p%40ss%20@127.0.0.1:18080', 'PG 代理测试配置应能解密并保留密码空格')
   assert.ok(testConfig?.configUpdatedAt, 'PG 代理测试配置应携带内部配置 revision')
-  assert.match(testConfig?.configUpdatedAt ?? '', /\.123456(?:Z|[+-]00(?::?00)?)$/, 'PG 代理配置 revision 必须保留数据库微秒精度')
+  assert.match(testConfig?.configUpdatedAt ?? '', /\.123456(?:Z|[+-]\d{2}(?::?\d{2})?)$/, 'PG 代理配置 revision 必须保留数据库微秒精度')
 
   const resolvedUrl = await resolveProxyUrlForProfileAsync(created.id)
   assert.equal(resolvedUrl, testConfig?.proxyUrl, 'PG 代理 URL 解析应与测试配置一致')

@@ -32,12 +32,14 @@ assert.equal(runtimeConfig.queueDriver, 'redis_stream')
 assert.ok(runtimeConfig.postgres.url)
 assert.ok(runtimeConfig.redis.queueUrl)
 assert.ok(runtimeConfig.redis.cacheUrl)
+const expectedInfrastructureHost = process.env.JUHE_AI_PERFORMANCE_WORKER_REPLICAS_LIVE_SMOKE_HOST?.trim()
+assert.ok(expectedInfrastructureHost, 'live smoke 必须显式配置 JUHE_AI_PERFORMANCE_WORKER_REPLICAS_LIVE_SMOKE_HOST')
 assert.ok(
   runtimeConfig.queue.redisStreamClaimIdleMs <= 5_000,
   'live smoke 必须显式将 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS 设置为不超过 5000，避免测试等待默认 60 秒接管窗口'
 )
-assert.equal(new URL(runtimeConfig.postgres.url).hostname, '192.168.1.203')
-assert.equal(new URL(runtimeConfig.redis.queueUrl).hostname, '192.168.1.203')
+assert.equal(new URL(runtimeConfig.postgres.url).hostname, expectedInfrastructureHost)
+assert.equal(new URL(runtimeConfig.redis.queueUrl).hostname, expectedInfrastructureHost)
 assert.match(runtimeConfig.redis.namespace, /^codex-worker-replicas-/)
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
@@ -82,8 +84,9 @@ try {
   ])
 
   await waitUntil(async () => {
-    const roles = new Set((await readPerformanceProcessEventLoopSamples()).map((sample) => sample.processRole))
-    return (['usage-worker:1', 'usage-worker:2', 'log-worker:1', 'log-worker:2'] as const).every((role) => roles.has(role))
+    const keys = await scanKeys(cacheRedis, processMetricsKeyPattern)
+    return (['usage-worker:1', 'usage-worker:2', 'log-worker:1', 'log-worker:2'] as const)
+      .every((role) => keys.some((key) => key.endsWith(`:${role}`)))
   }, '等待四个 worker 注册独立进程指标')
 
   await waitUntil(async () => await consumerCount(usageStreamKey, usageGroupName) >= 2, '等待双 Usage consumer 注册')
@@ -256,6 +259,10 @@ async function failureDiagnostics(): Promise<Record<string, unknown>> {
     })),
     usageQueue: await queueDiagnostics(usageStreamKey, usageGroupName),
     publicLogQueue: await queueDiagnostics(publicStreamKey, publicGroupName),
+    processMetrics: {
+      keys: await scanKeys(cacheRedis, processMetricsKeyPattern).catch(() => []),
+      samples: await readPerformanceProcessEventLoopSamples().catch(() => [])
+    },
     usageRows: await rowCount('juhe_usage.usage_records', usageIds).catch(() => -1),
     publicLogRows: await rowCount('juhe_dataset.public_api_logs', publicLogIds).catch(() => -1)
   }

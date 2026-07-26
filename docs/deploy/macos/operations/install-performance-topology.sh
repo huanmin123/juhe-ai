@@ -164,6 +164,8 @@ render_run_script() {
     printf 'export JUHE_AI_LOG_WORKER_REPLICAS=%s\n' "$LOG_WORKERS"
     printf 'export JUHE_AI_STATS_WORKER_REPLICAS=1\n'
     printf 'export JUHE_AI_OPS_WORKER_REPLICAS=1\n'
+    printf 'export JUHE_AI_AUDIT_LOG_ENABLED=true\n'
+    printf 'export JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true\n'
     printf 'export JUHE_AI_LOG_DIR="%s"\n' "$RUNTIME_LOG_DIR"
     printf 'export JUHE_AI_USAGE_SPOOL_DIR="%s"\n' "$SPOOL_DIR"
     printf 'cd "%s"\n' "$CURRENT_DIR"
@@ -213,6 +215,7 @@ render_nginx() {
     printf '    server 127.0.0.1:%s;\n' "$CONTROL_PORT"
     printf '%s\n' '    keepalive 32;' '}' '' 'server {'
     printf '    listen 127.0.0.1:%s;\n' "$INGRESS_PORT"
+    printf '    add_header X-Juhe-Topology-Slot "%s" always;\n' "$LABEL_PREFIX"
     printf '%s\n' \
       '    client_max_body_size 256m;' \
       '    location = /__aisys__ {' \
@@ -351,11 +354,20 @@ for name in $(service_names); do
 done
 for name in $(service_names); do wait_for_health "$name"; done
 
+TOPOLOGY_VERIFIER="$CURRENT_DIR/docs/deploy/macos/operations/verify-performance-topology.sh"
+[ -f "$TOPOLOGY_VERIFIER" ] || { echo "missing topology verifier: $TOPOLOGY_VERIFIER" >&2; exit 1; }
+/bin/bash "$TOPOLOGY_VERIFIER" --apply --skip-ingress \
+  --release "$CURRENT_DIR" --scope "$SCOPE" --label-prefix "$LABEL_PREFIX" \
+  --control-port "$CONTROL_PORT" --gateway-base-port "$GATEWAY_BASE_PORT" --gateway-count "$GATEWAY_COUNT" \
+  --usage-workers "$USAGE_WORKERS" --log-workers "$LOG_WORKERS" --ingress-port "$INGRESS_PORT" --samples 3
+
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
 nginx -t
 nginx -s reload
-curl -fsS --max-time 3 "http://127.0.0.1:$INGRESS_PORT/__aisys__/health" >/dev/null
-curl -fsS --max-time 3 "http://127.0.0.1:$INGRESS_PORT/__aisys__/api/health" >/dev/null
+/bin/bash "$TOPOLOGY_VERIFIER" --apply \
+  --release "$CURRENT_DIR" --scope "$SCOPE" --label-prefix "$LABEL_PREFIX" \
+  --control-port "$CONTROL_PORT" --gateway-base-port "$GATEWAY_BASE_PORT" --gateway-count "$GATEWAY_COUNT" \
+  --usage-workers "$USAGE_WORKERS" --log-workers "$LOG_WORKERS" --ingress-port "$INGRESS_PORT" --samples 3
 
 for name in $(service_names); do
   rm -f -- "$(service_plist_path "$name").performance-backup.$$" "$(service_run_path "$name").performance-backup.$$"

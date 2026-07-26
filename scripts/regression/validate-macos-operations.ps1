@@ -12,6 +12,8 @@ $requiredFiles = @(
   'README.md',
   'install-launchd-service.sh',
   'install-performance-topology.sh',
+  'verify-performance-topology.sh',
+  'switch-performance-slot.sh',
   'manage-sing-box.sh',
   'diagnose-proxy-dns.sh',
   'temporary-cutover.sh',
@@ -48,8 +50,21 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'location ^~ /__aiinternal__/', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'X-Juhe-Topology-Slot', 'verify-performance-topology.sh', 'nginx -t', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+
+$performanceVerifier = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'verify-performance-topology.sh')
+foreach ($contract in @('--dry-run', '--apply', '--skip-ingress', 'launchd_pid', 'pid_cwd', 'process_tree', 'workerTopologyReady', 'PERFORMANCE_TOPOLOGY_OK', 'X-Juhe-Topology-Slot')) {
+  if (-not $performanceVerifier.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology verifier contract missing: $contract" }
+}
+$performanceSwitch = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'switch-performance-slot.sh')
+foreach ($contract in @('--dry-run', '--apply', 'verify-performance-topology.sh', 'EXPECTED_CURRENT_LABEL', 'SWITCH_COMMITTED', 'FORWARD_FIX_REQUIRED', 'PERFORMANCE_SLOT_SWITCHED', 'rollback=disabled')) {
+  if (-not $performanceSwitch.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance slot switch contract missing: $contract" }
+}
+$operationsReadme = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'README.md')
+foreach ($contract in @('JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'switch-performance-slot.sh', 'FORWARD_FIX_REQUIRED', '不保留旧数据库回滚点')) {
+  if (-not $operationsReadme.Contains($contract, [StringComparison]::Ordinal)) { throw "macOS operations README contract missing: $contract" }
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
@@ -98,6 +113,14 @@ if ($bash) {
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'verify-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --release '/tmp/juhe-ai-performance-test/current' --label-prefix 'com.example.juhe-ai.performance' --ingress-port 3000
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology verifier dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'verify-performance-topology.sh') -replace '\\', '/') --dry-run --release '/tmp/juhe-ai-performance-test/current' --samples 0 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology verifier accepted zero stable samples' }
+    & $bash.Source ((Join-Path $operationsRoot 'switch-performance-slot.sh') -replace '\\', '/') --dry-run --release '/tmp/juhe-ai-performance-test/current' --label-prefix 'com.example.juhe-ai.performance' --candidate-ingress-port 3000 --nginx-bin '/usr/local/bin/nginx' --nginx-config '/tmp/nginx.conf' --active-app-file '/tmp/switch/active-app.conf' --active-db-file '/tmp/switch/active-db.conf' --active-label-file '/tmp/switch/active-label.conf' --public-health-base-url 'http://127.0.0.1:3099' --candidate-label candidate --expected-current-label main
+    if ($LASTEXITCODE -ne 0) { throw 'performance slot switch dry-run failed' }
+    & $bash.Source ((Join-Path $repoRoot 'scripts\regression\performance-topology-operations-smoke.sh') -replace '\\', '/') ($operationsRoot -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology executable smoke failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --control-port 3102 --gateway-base-port 3101 --gateway-count 3 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted overlapping control and gateway ports' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai|unsafe' --label 'com.example.juhe-ai' 2>$null

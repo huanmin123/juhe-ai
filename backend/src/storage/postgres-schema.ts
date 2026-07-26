@@ -31,6 +31,189 @@ const schemaSourceDefinitions: SchemaSourceDefinition[] = [
 const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-proxy-profile-types',
+    sql: `DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'juhe_business'
+      AND table_name = 'proxy_profiles'
+      AND column_name = 'enabled'
+      AND data_type = 'integer'
+  ) THEN
+    IF EXISTS (SELECT 1 FROM proxy_profiles WHERE enabled NOT IN (0, 1)) THEN
+      RAISE EXCEPTION 'proxy_profiles.enabled contains values outside 0/1';
+    END IF;
+    ALTER TABLE proxy_profiles ALTER COLUMN enabled DROP DEFAULT;
+    ALTER TABLE proxy_profiles ALTER COLUMN enabled TYPE boolean USING (enabled = 1);
+    ALTER TABLE proxy_profiles ALTER COLUMN enabled SET DEFAULT true;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'juhe_business'
+      AND table_name = 'proxy_profiles'
+      AND column_name = 'last_tested_at'
+      AND data_type = 'text'
+  ) THEN
+    ALTER TABLE proxy_profiles ALTER COLUMN last_tested_at TYPE timestamptz USING (last_tested_at::timestamptz);
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'juhe_business'
+      AND table_name = 'proxy_profiles'
+      AND column_name = 'created_at'
+      AND data_type = 'text'
+  ) THEN
+    ALTER TABLE proxy_profiles ALTER COLUMN created_at TYPE timestamptz USING (created_at::timestamptz);
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'juhe_business'
+      AND table_name = 'proxy_profiles'
+      AND column_name = 'updated_at'
+      AND data_type = 'text'
+  ) THEN
+    ALTER TABLE proxy_profiles ALTER COLUMN updated_at TYPE timestamptz USING (updated_at::timestamptz);
+  END IF;
+END $$`
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE system_accounts ADD COLUMN IF NOT EXISTS request_limits_json text'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS dispatch_revision bigint NOT NULL DEFAULT 1'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS circuit_projection_revision bigint NOT NULL DEFAULT 0'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE accounts ADD COLUMN IF NOT EXISTS cooldown_retest_generation text'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE account_api_key_runtime_states ADD COLUMN IF NOT EXISTS probe_claim_token text'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: 'ALTER TABLE account_api_key_runtime_states ADD COLUMN IF NOT EXISTS probe_claimed_until text'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-columns',
+    sql: "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'general'"
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-constraints',
+    sql: `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.accounts'::regclass
+      AND conname = 'accounts_dispatch_revision_check'
+  ) THEN
+    ALTER TABLE accounts
+      ADD CONSTRAINT accounts_dispatch_revision_check
+      CHECK (dispatch_revision >= 1);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.accounts'::regclass
+      AND conname = 'accounts_circuit_projection_revision_check'
+  ) THEN
+    ALTER TABLE accounts
+      ADD CONSTRAINT accounts_circuit_projection_revision_check
+      CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'juhe_business.api_keys'::regclass
+      AND conname = 'api_keys_purpose_check'
+  ) THEN
+    ALTER TABLE api_keys
+      ADD CONSTRAINT api_keys_purpose_check
+      CHECK (purpose IN ('general', 'chat'));
+  END IF;
+END $$`
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-constraints',
+    sql: `ALTER TABLE custom_provider_models DROP CONSTRAINT IF EXISTS custom_provider_models_scope_check;
+ALTER TABLE custom_provider_models DROP CONSTRAINT IF EXISTS custom_provider_models_system_account_id_check;
+ALTER TABLE custom_provider_models DROP CONSTRAINT IF EXISTS custom_provider_models_check;
+ALTER TABLE custom_provider_models DROP CONSTRAINT IF EXISTS custom_provider_models_system_account_scope_check;
+ALTER TABLE custom_provider_models ADD CONSTRAINT custom_provider_models_scope_check CHECK (scope IN ('personal', 'global'));
+ALTER TABLE custom_provider_models ADD CONSTRAINT custom_provider_models_system_account_scope_check CHECK (
+  (scope = 'personal' AND system_account_id IS NOT NULL)
+  OR (scope = 'global' AND system_account_id IS NULL)
+)`
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-constraints',
+    sql: 'ALTER TABLE provider_protocol_profiles ALTER COLUMN default_health_check_model SET NOT NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-indexes',
+    sql: "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique ON api_keys(system_account_id) WHERE purpose = 'chat'"
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_probe_claim ON account_api_key_runtime_states(status, next_probe_at ASC, probe_claimed_until ASC) WHERE next_probe_at IS NOT NULL'
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-indexes',
+    sql: `DROP INDEX IF EXISTS idx_accounts_health_check_candidate_order;
+CREATE INDEX idx_accounts_health_check_candidate_order
+  ON accounts(
+    (CASE WHEN status = 'pending_test' THEN 0 ELSE 1 END) ASC,
+    (CASE WHEN status = 'pending_test' THEN updated_at END) DESC,
+    (next_health_check_at IS NOT NULL) ASC,
+    next_health_check_at ASC,
+    last_health_check_at ASC,
+    created_at ASC,
+    id ASC
+  )
+  WHERE deleted_at IS NULL
+    AND status IN ('active', 'pending_test')
+    AND (status = 'pending_test' OR schedulable = 1)
+    AND type IN ('api_key', 'oauth', 'google_oauth')`
+  },
+  {
+    schemaName: 'juhe_business',
+    source: 'node-business-upgrade-pg-indexes',
+    sql: `DROP INDEX IF EXISTS idx_accounts_cooldown_retest_candidate_order;
+CREATE INDEX idx_accounts_cooldown_retest_candidate_order
+  ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
+  WHERE deleted_at IS NULL
+    AND cooldown_until IS NOT NULL
+    AND schedulable = 1
+    AND type IN ('api_key', 'oauth', 'google_oauth')
+    AND status IN ('temporary_unavailable', 'rate_limited')`
+  },
+  {
+    schemaName: 'juhe_business',
     source: 'provider-model-cache-storage-pg-columns',
     sql: 'ALTER TABLE provider_model_catalog ADD COLUMN IF NOT EXISTS cache_storage_usd_per_1m_per_hour double precision'
   },

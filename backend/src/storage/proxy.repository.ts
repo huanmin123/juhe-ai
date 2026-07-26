@@ -430,7 +430,7 @@ function proxyTestConfigSelectColumns(driver: DatabaseClient['driver']): string 
     'last_test_message',
     'last_tested_at',
     driver === 'postgres'
-      ? `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS config_revision`
+      ? 'CAST(updated_at AS text) AS config_revision'
       : 'updated_at AS config_revision'
   ].join(', ')
 }

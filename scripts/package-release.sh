@@ -221,6 +221,8 @@ const packageJson = JSON.parse(fs.readFileSync(sourcePath, 'utf8'))
 packageJson.scripts = {
   'check:runtime': 'node dist/scripts/preflight/check-node-sqlite.js',
   'maintenance:backfill-account-balance': 'node dist/scripts/maintenance/run-account-balance-backfill.js',
+  'ops:postgres-upgrade-node-schema': 'node dist/scripts/maintenance/init-postgres-schema.js',
+  'ops:verify-business-preservation': 'node dist/scripts/operations/verify-business-data-preservation.js',
   'ops:drain-redis-streams': 'node dist/scripts/operations/drain-redis-streams.js',
   'ops:redis-queue-fence': 'node dist/scripts/operations/manage-redis-queue-fence.js',
   start: 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'

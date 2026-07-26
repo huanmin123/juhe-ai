@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -65,7 +66,7 @@ const modelInsertStatement = modelInsertStatements[0]
 assert.ok(modelInsertStatement, 'PostgreSQL 默认 seed 必须写入 provider_model_catalog')
 assert.match(modelInsertStatement.sql, /ON CONFLICT DO NOTHING/i, '内建模型 seed 冲突时不得覆盖管理员已有配置')
 assert.doesNotMatch(modelInsertStatement.sql, /DO UPDATE/i, '二次 seed 不得更新管理员已有模型配置')
-const modelSeedParameterCount = 38
+const modelSeedParameterCount = 39
 assert.equal(modelInsertStatement.values.length % modelSeedParameterCount, 0, 'PostgreSQL 模型批次参数必须按完整行对齐')
 assert.equal(modelInsertStatement.values.length, expectedModelKeys.length * modelSeedParameterCount, 'PostgreSQL 模型批次参数数量必须覆盖全部行和字段')
 assert.ok(modelInsertStatement.values.length < 65_535, 'PostgreSQL 模型批次参数数量必须低于协议上限')
@@ -81,13 +82,6 @@ assert.deepEqual(seededModelKeys, expectedModelKeys, 'PostgreSQL seed 模型键�
 const seededModelIds = modelSeedRows.map((values) => String(values[0]))
 assert.equal(seededModelIds.length, expectedModelKeys.length, 'PostgreSQL seed 生成 ID 数量必须等于权威模型键数量')
 assert.equal(new Set(seededModelIds).size, expectedModelKeys.length, 'PostgreSQL seed 模型 ID 必须全局唯一')
-const slashCollisionPair = [
-  'antigravity-claude-opus-4-6-thinking',
-  'antigravity/claude-opus-4-6-thinking'
-].map((model) => modelSeedRows.find((values) => values[1] === 'anthropic' && values[2] === model))
-assert.ok(slashCollisionPair.every(Boolean), 'slash/hyphen 碰撞样本必须存在于权威模型目录')
-assert.notEqual(slashCollisionPair[0]?.[0], slashCollisionPair[1]?.[0], 'slash/hyphen 模型名必须生成不同 ID')
-
 function expectedProviderModelId(providerCode: string, model: string): string {
   const slug = `${providerCode}_${model}`
     .toLowerCase()
@@ -100,6 +94,12 @@ function expectedProviderModelId(providerCode: string, model: string): string {
     .slice(0, 12)
   return `provider_model_${slug}_${hash}`
 }
+
+assert.notEqual(
+  expectedProviderModelId('anthropic', 'antigravity-claude-opus-4-6-thinking'),
+  expectedProviderModelId('anthropic', 'antigravity/claude-opus-4-6-thinking'),
+  'slash/hyphen 模型名即使 slug 碰撞也必须生成不同 ID'
+)
 
 const expectedModelValues = new Map<string, readonly unknown[]>(
   DEFAULT_PROVIDER_SEEDS
@@ -130,6 +130,7 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
         model.cachedInputUsdPer1M ?? null,
         model.cacheWriteUsdPer1M ?? null,
         model.cacheWrite1hUsdPer1M ?? null,
+        model.cacheStorageUsdPer1MPerHour ?? null,
         JSON.stringify(model.serviceTierPrices ?? {}),
         model.longContextInputTokenThreshold ?? null,
         model.longContextInputTokenThresholdInclusive === true,
@@ -148,10 +149,10 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
 )
 for (const values of modelSeedRows) {
   const key = `${String(values[1])}\u0000${String(values[2])}`
-  assert.deepEqual(values.slice(0, 36), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
-  assert.equal(values.length, 38, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
-  assert.equal(typeof values[36], 'string', `${key} 必须写入 created_at`)
-  assert.equal(values[37], values[36], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
+  assert.deepEqual(values.slice(0, 37), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
+  assert.equal(values.length, 39, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
+  assert.equal(typeof values[37], 'string', `${key} 必须写入 created_at`)
+  assert.equal(values[38], values[37], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
 }
 
 const gpt5MiniValues = modelSeedRows.find((values) => values[1] === 'gpt' && values[2] === 'gpt-5-mini')
@@ -164,18 +165,18 @@ assert.equal(gpt5MiniValues[8], JSON.stringify(['priority', 'flex']), 'gpt-5-min
 assert.equal(gpt5MiniValues[18], 0.25, 'gpt-5-mini direct input price 必须写入')
 assert.equal(gpt5MiniValues[19], 2, 'gpt-5-mini direct output price 必须写入')
 assert.equal(gpt5MiniValues[20], 0.025, 'gpt-5-mini direct cached input price 必须写入')
-assert.deepEqual(JSON.parse(String(gpt5MiniValues[23])), {
+assert.deepEqual(JSON.parse(String(gpt5MiniValues[24])), {
   priority: {
     inputUsdPer1M: 0.45,
     outputUsdPer1M: 3.6,
     cachedInputUsdPer1M: 0.045
   }
 }, 'gpt-5-mini service tier prices 必须完整写入')
-assert.equal(gpt5MiniValues[34], true, 'gpt-5-mini catalog_visible 必须为 boolean true')
+assert.equal(gpt5MiniValues[35], true, 'gpt-5-mini catalog_visible 必须为 boolean true')
 const grok45Values = modelSeedRows.find((values) => values[1] === 'xai' && values[2] === 'grok-4.5')
 assert.ok(grok45Values, 'fresh PostgreSQL 必须包含 xai/grok-4.5')
-assert.equal(grok45Values[24], 200_000, 'grok-4.5 长上下文价格阈值必须写入')
-assert.equal(grok45Values[25], true, 'grok-4.5 长上下文价格阈值必须按 inclusive boolean 写入')
+assert.equal(grok45Values[25], 200_000, 'grok-4.5 长上下文价格阈值必须写入')
+assert.equal(grok45Values[26], true, 'grok-4.5 长上下文价格阈值必须按 inclusive boolean 写入')
 
 const repeatedSeedStatements: ExecutedStatement[] = []
 await seedPostgresDefaults({
@@ -202,5 +203,20 @@ const repeatedModelKeys = Array.from(
   }
 ).sort()
 assert.deepEqual(repeatedModelKeys, expectedModelKeys, '二次 seed 必须尝试相同模型键并由冲突策略跳过已有配置')
+
+const builtInExternalSourceUpdate = executedStatements.find(({ sql }) => (
+  /UPDATE\s+"juhe_business"\."external_integration_sources"/i.test(sql)
+))?.sql ?? ''
+const postgresSeedDefaultsSource = readFileSync('src/storage/postgres-seed-defaults.ts', 'utf8')
+assert.match(
+  builtInExternalSourceUpdate,
+  /WHERE id = \$6[\s\S]+name IS DISTINCT FROM \$1[\s\S]+notes IS DISTINCT FROM \$4/,
+  '内建外部来源重复 seed 仅允许在实际字段变化时推进 updated_at'
+)
+assert.match(
+  postgresSeedDefaultsSource,
+  /UPDATE \$\{businessTable\('external_integration_source_tokens'\)\}[\s\S]+WHERE id = \$5[\s\S]+source_ref_id IS DISTINCT FROM \$1[\s\S]+expires_at IS NOT NULL/,
+  '内建外部 token 重复 seed 仅允许在实际字段变化时推进 updated_at'
+)
 
 console.log('postgres-seed-defaults-regression passed')

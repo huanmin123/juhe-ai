@@ -24,6 +24,11 @@ assert.match(rangeWindowSource, /generation = client_ip_account_range_window_dir
 assert.match(rangeWindowSource, /ORDER BY MIN\(first_dirty_at\) ASC, ip_hash ASC/, 'dirty 领取必须按首次标脏时间公平排序')
 assert.equal(countMatches(rangeWindowSource, /FOR UPDATE SKIP LOCKED/g) >= 2, true, '两张 PG dirty 表领取都必须锁住已读取代次')
 assert.equal(countMatches(rangeWindowSource, /dirty\.generation = claimed\.generation/g) >= 1, true, 'PG dirty 清理必须按 generation CAS')
+assert.match(
+  rangeWindowSource,
+  /const claimedValues = chunk\.map\(\(\) => '\(CAST\(\? AS text\), CAST\(\? AS bigint\)\)'\)[\s\S]*VALUES \$\{claimedValues\}[\s\S]*claimed\(ip_hash, generation\)/,
+  'PG dirty CAS 参数必须显式把 generation 绑定为 bigint'
+)
 assert.doesNotMatch(rangeWindowSource, /clearAllClientIpRangeWindowDirtyIpHashes/, 'full 和 stale 自愈不得无条件清空并发 dirty marker')
 
 assert.match(
