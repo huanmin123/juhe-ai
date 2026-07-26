@@ -25,7 +25,7 @@ const postgresConfig = {
   }
 }
 
-assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 77)
+await assertMatchesGoMigrationCatalog()
 assertOwnerLockEnabledParsing()
 
 await assertDoesNotQueryWhenDisabled()
@@ -41,6 +41,23 @@ await assertServerStartupOrder()
 await assertRuntimeConfigContract()
 
 console.log('PostgreSQL Goose schema 启动门禁回归通过')
+
+async function assertMatchesGoMigrationCatalog(): Promise<void> {
+  const catalogSource = await readFile(
+    resolve(process.cwd(), '../backend-go/internal/migrationcatalog/catalog.go'),
+    'utf8'
+  )
+  const catalogVersion = Number(
+    /^const CurrentSchemaVersion int64 = (\d+)$/mu.exec(catalogSource)?.[1]
+  )
+
+  assert(Number.isSafeInteger(catalogVersion), 'Go migration catalog 必须声明有效的当前 schema 版本')
+  assert.equal(
+    EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+    catalogVersion,
+    'Node PostgreSQL Goose schema 启动门禁必须与 Go migration catalog 当前版本保持一致'
+  )
+}
 
 function assertOwnerLockEnabledParsing(): void {
   for (const value of ['true', 'TRUE', 'TrUe']) {

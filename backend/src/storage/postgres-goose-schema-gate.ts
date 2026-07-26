@@ -1,6 +1,9 @@
 import { runtimeConfig, type DatabaseDriver } from '../config/runtime.js'
 
-export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 77
+// Keep this in lockstep with backend-go/internal/migrationcatalog/catalog.go.
+// Node starts before its background services only when the Go-owned schema
+// catalog has reached the expected durable control-plane version.
+export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 83
 export const POSTGRES_GOOSE_CURRENT_VERSION_QUERY = `
   WITH latest_versions AS (
     SELECT DISTINCT ON (version_id) id, version_id, is_applied
