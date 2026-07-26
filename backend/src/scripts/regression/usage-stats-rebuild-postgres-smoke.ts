@@ -1,5 +1,8 @@
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
@@ -73,6 +76,7 @@ const resetStatsJobNames = [
   'usage_overview_daily_seed',
   'ai_performance_summary_daily_seed'
 ] as const
+const rebuildLogDirectory = mkdtempSync(join(tmpdir(), 'juhe-ai-usage-rebuild-pg-smoke-'))
 let isolatedDatabaseVerified = false
 
 try {
@@ -103,6 +107,7 @@ try {
   const createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString()
   const today = dateKey(new Date(createdAt), timezone)
   await seedUsageRecords(createdAt)
+  await seedQuotaBinding(createdAt)
 
   await closePostgresPool()
   const rebuild = spawnSync(process.execPath, [
@@ -118,8 +123,9 @@ try {
       ...process.env,
       JUHE_AI_CONFIRM_USAGE_STATS_REBUILD: '1',
       JUHE_AI_INSTANCE_ID: process.env.JUHE_AI_INSTANCE_ID?.trim() || `rebuild-smoke-${marker}`,
+      JUHE_AI_LOG_DIR: rebuildLogDirectory,
       JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
-      JUHE_AI_LOG_FILE_ENABLED: 'false'
+      JUHE_AI_LOG_FILE_ENABLED: 'true'
     },
     encoding: 'utf8',
     timeout: 120_000
@@ -145,9 +151,19 @@ try {
     dirtyQueuesEmpty: true
   }))
 } finally {
-  await cleanupSmokeRows().catch(() => undefined)
-  await closeRedisClients()
-  await closePostgresPool()
+  try {
+    await cleanupSmokeRows().catch(() => undefined)
+  } finally {
+    try {
+      await closeRedisClients()
+    } finally {
+      try {
+        await closePostgresPool()
+      } finally {
+        cleanupRebuildLogDirectory()
+      }
+    }
+  }
 }
 
 async function seedUsageRecords(createdAt: string): Promise<void> {
@@ -198,6 +214,16 @@ async function seedUsageRecords(createdAt: string): Promise<void> {
       new Date(Date.parse(createdAt) + index).toISOString()
     ])
   }
+}
+
+async function seedQuotaBinding(createdAt: string): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(`
+    INSERT INTO juhe_business.request_quota_hourly_window_scope_bindings (
+      system_account_id, scope_type, scope_id, source_type, source_id,
+      window_hours, created_at, updated_at
+    ) VALUES ($1, 'api_key', $2, 'api_key', $2, 1, $3, $3)
+  `, [systemAccountId, apiKeyId, createdAt])
 }
 
 async function assertBaseAggregates(): Promise<void> {
@@ -281,6 +307,7 @@ async function cleanupSmokeRows(): Promise<void> {
   if (!isolatedDatabaseVerified) return
   const pool = await getPostgresPool()
   await pool.query('DELETE FROM juhe_usage.usage_records WHERE system_account_id = $1', [systemAccountId])
+  await pool.query('DELETE FROM juhe_business.request_quota_hourly_window_scope_bindings WHERE system_account_id = $1', [systemAccountId])
   for (const tableName of resetStatsTableNames) {
     await pool.query(`DELETE FROM juhe_stats.${tableName}`)
   }
@@ -292,4 +319,12 @@ function summarizeChildFailure(error: Error | undefined, stderr: string): string
   if (errorMessage) return errorMessage.slice(0, 1000)
   const stderrSummary = stderr.trim().slice(-2000)
   return stderrSummary || '子进程未返回错误摘要'
+}
+
+function cleanupRebuildLogDirectory(): void {
+  const resolvedDirectory = resolve(rebuildLogDirectory)
+  assert.equal(dirname(resolvedDirectory), resolve(tmpdir()), '只允许清理系统临时目录下的重建 smoke 日志目录')
+  assert.match(basename(resolvedDirectory), /^juhe-ai-usage-rebuild-pg-smoke-[a-z0-9_-]+$/i, '重建 smoke 日志目录名称不符合清理白名单')
+  rmSync(resolvedDirectory, { recursive: true, force: true })
+  assert.equal(existsSync(resolvedDirectory), false, '重建 smoke 临时日志目录必须完成清理')
 }
