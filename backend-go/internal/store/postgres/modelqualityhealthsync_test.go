@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -583,6 +585,18 @@ func TestModelQualityHealthSyncSQLCarriesConcurrencyAndCASFences(t *testing.T) {
 		if !strings.Contains(quarantineMalformedModelQualityHealthSyncTimesSQL, fragment) {
 			t.Fatalf("malformed timestamp quarantine SQL missing %q", fragment)
 		}
+	}
+}
+
+func TestModelQualityHealthSyncCandidateIndexMigrationUsesQueryTimestampRegex(t *testing.T) {
+	const migrationName = "000087_w7_model_quality_health_sync_candidate_indexes.sql"
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "db", "migrations", migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	quotedRegex := "'" + modelQualityHealthSyncCanonicalTimestampRegex + "'"
+	if got, want := strings.Count(string(source), quotedRegex), 6; got != want {
+		t.Fatalf("%s canonical timestamp regex count = %d, want %d", migrationName, got, want)
 	}
 }
 
