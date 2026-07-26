@@ -422,7 +422,7 @@ func TestHandleStreamHeaderCommitFencesZeroByteWrite(t *testing.T) {
 	}
 }
 
-func TestHandleEmptyStreamFlushFailurePreservesHeaderCommit(t *testing.T) {
+func TestHandleEmptyStreamRemainsPreCommit(t *testing.T) {
 	flushErr := errors.New("flush failed")
 	writer := &flushErrorResponseWriter{header: make(http.Header), err: flushErr}
 	sink, _ := gatewaydownstream.NewHTTPWriterSink(writer)
@@ -430,7 +430,7 @@ func TestHandleEmptyStreamFlushFailurePreservesHeaderCommit(t *testing.T) {
 		Context: context.Background(), Transport: TransportStream, Sink: sink,
 		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusOK, Body: &trackingBody{Reader: strings.NewReader("")}}},
 	})
-	if !errors.Is(err, flushErr) || result.State != StateFailedAfterCommit || !result.TransportCommitted || result.RetryAllowed || writer.status != http.StatusOK {
+	if !errors.Is(err, gatewaystreamrelay.ErrPreCommitEvidenceMissing) || errors.Is(err, flushErr) || result.State != StateFailedBeforeCommit || result.TransportCommitted || !result.RetryAllowed || writer.status != 0 {
 		t.Fatalf("result/error/writer = %+v/%v/%+v", result, err, writer)
 	}
 }

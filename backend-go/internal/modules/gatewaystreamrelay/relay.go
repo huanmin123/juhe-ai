@@ -25,16 +25,18 @@ const (
 )
 
 var (
-	ErrInvalidLimits          = errors.New("网关流式中转限制无效")
-	ErrStreamTooLarge         = errors.New("网关流式响应超过 64 MiB 上限")
-	ErrIdleDeadline           = errors.New("网关流式中转空闲超时")
-	ErrTotalDeadline          = errors.New("网关流式中转总时长超时")
-	ErrClientCanceled         = errors.New("客户端已取消流式请求")
-	ErrSourceRead             = errors.New("读取上游流式响应失败")
-	ErrDestinationWrite       = errors.New("写入客户端流式响应失败")
-	ErrInspector              = errors.New("流式协议检查失败")
-	ErrMissingTerminal        = errors.New("流式响应缺少协议终止事件")
-	ErrProtocolTerminalFailed = errors.New("上游流式协议报告失败终态")
+	ErrInvalidLimits            = errors.New("网关流式中转限制无效")
+	ErrStreamTooLarge           = errors.New("网关流式响应超过 64 MiB 上限")
+	ErrIdleDeadline             = errors.New("网关流式中转空闲超时")
+	ErrTotalDeadline            = errors.New("网关流式中转总时长超时")
+	ErrClientCanceled           = errors.New("客户端已取消流式请求")
+	ErrSourceRead               = errors.New("读取上游流式响应失败")
+	ErrDestinationWrite         = errors.New("写入客户端流式响应失败")
+	ErrInspector                = errors.New("流式协议检查失败")
+	ErrMissingTerminal          = errors.New("流式响应缺少协议终止事件")
+	ErrProtocolTerminalFailed   = errors.New("上游流式协议报告失败终态")
+	ErrPreCommitEvidenceMissing = errors.New("流式响应在语义输出前结束")
+	ErrPreCommitBufferExceeded  = errors.New("流式响应预提交缓冲超过上限")
 )
 
 // Source and Sink make cancellation an explicit part of the transport
@@ -127,14 +129,15 @@ func DefaultLimits() Limits {
 }
 
 type Options struct {
-	Limits            Limits
-	Inspector         TerminalInspector
-	StartedAt         time.Time
-	StatusCode        int
-	HadFailedAttempt  bool
-	Now               func() time.Time
-	OnFirstByte       func()
-	OnTransportCommit func()
+	Limits                Limits
+	Inspector             TerminalInspector
+	StartedAt             time.Time
+	StatusCode            int
+	HadFailedAttempt      bool
+	Now                   func() time.Time
+	OnFirstByte           func()
+	OnTransportCommit     func()
+	OnFirstSemanticOutput func()
 }
 
 type State string
@@ -247,6 +250,9 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 					inspectErr = options.Inspector.Observe(chunk)
 				}
 				if inspectErr != nil {
+					if preCommit, ok := preCommitFailure(inspectErr); ok {
+						return finalizeFailure(result, options, startedAt, now, preCommit)
+					}
 					return finalizeFailure(result, options, startedAt, now, failure{
 						err: fmt.Errorf("%w: %w", ErrInspector, inspectErr), code: "stream_inspection_failed",
 						message: "流式协议检查失败", phase: "stream",
@@ -260,6 +266,9 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 				if transformer != nil && result.Inspection.TerminalReceived {
 					tail, transformErr := transformer.FinishTransform()
 					if transformErr != nil {
+						if preCommit, ok := preCommitFailure(transformErr); ok {
+							return finalizeFailure(result, options, startedAt, now, preCommit)
+						}
 						return finalizeFailure(result, options, startedAt, now, inspectorFailure(transformErr, "stream_inspection_finish_failed", "流式协议终态检查失败"))
 					}
 					outputChunk = append(outputChunk, tail...)
@@ -274,7 +283,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 					return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 				}
 				semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
-				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit)
+				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit, options.OnFirstSemanticOutput)
 				notifyCommit(options.Inspector, result)
 				if writeFailure != nil {
 					return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -292,6 +301,9 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 				if transformer, ok := options.Inspector.(TransformingInspector); ok {
 					tail, transformErr := transformer.FinishTransform()
 					if transformErr != nil {
+						if preCommit, ok := preCommitFailure(transformErr); ok {
+							return finalizeFailure(result, options, startedAt, now, preCommit)
+						}
 						return finalizeFailure(result, options, startedAt, now, inspectorFailure(transformErr, "stream_inspection_finish_failed", "流式协议终态检查失败"))
 					}
 					result.Inspection = options.Inspector.Snapshot()
@@ -302,7 +314,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 						return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 					}
 					if len(tail) > 0 {
-						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit)
+						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit, options.OnFirstSemanticOutput)
 						notifyCommit(options.Inspector, result)
 						if writeFailure != nil {
 							return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -347,7 +359,17 @@ func inspectorFailure(err error, code, message string) failure {
 	}
 }
 
-func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time, onFirstByte, onTransportCommit func()) *failure {
+func preCommitFailure(err error) (failure, bool) {
+	if errors.Is(err, ErrPreCommitBufferExceeded) {
+		return failure{err: ErrPreCommitBufferExceeded, code: "stream_precommit_buffer_exceeded", message: "流式响应预提交缓冲超过上限", phase: "gateway", attribution: gatewayusage.FailureAttributionGatewayCapacity, audit: gatewayaudit.OutcomeGatewayFailed}, true
+	}
+	if errors.Is(err, ErrPreCommitEvidenceMissing) {
+		return failure{err: ErrPreCommitEvidenceMissing, code: "stream_precommit_evidence_missing", message: "上游流式响应在语义输出前结束", phase: "stream", attribution: gatewayusage.FailureAttributionAccountUpstream, audit: gatewayaudit.OutcomeStreamFailed}, true
+	}
+	return failure{}, false
+}
+
+func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time, onFirstByte, onTransportCommit, onFirstSemanticOutput func()) *failure {
 	if stateful, ok := sink.(StatefulSink); ok && !stateful.Snapshot().TransportCommitted {
 		wasCommitted := result.TransportCommitted
 		err := stateful.Commit(parent)
@@ -389,9 +411,13 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 			if firstByte && onFirstByte != nil {
 				onFirstByte()
 			}
-			if semanticOutput && !result.SemanticCommitted {
+			semanticFirst := semanticOutput && !result.SemanticCommitted
+			if semanticFirst {
 				result.SemanticCommitted = true
 				result.SemanticFirstByteAt = committedAt
+			}
+			if semanticFirst && onFirstSemanticOutput != nil {
+				onFirstSemanticOutput()
 			}
 			if stateful, ok := sink.(StatefulSink); ok {
 				if semanticOutput {

@@ -77,20 +77,21 @@ type Handler struct {
 type ResponseDispositionResolver func(statusCode int, body []byte) (gatewayretry.ResponseDisposition, error)
 
 type Input struct {
-	Context             context.Context
-	Dispatch            gatewaydispatch.Result
-	Transport           Transport
-	Sink                gatewaystreamrelay.Sink
-	StartedAt           time.Time
-	HadFailedAttempt    bool
-	Codex               *CodexGuard
-	InitialCommit       codexresponses.CommitState
-	RelayOptions        gatewaystreamrelay.Options
-	OnFirstByte         func()
-	OnTransportCommit   func()
-	ResponseDisposition gatewayretry.ResponseDisposition
-	DispositionResolver ResponseDispositionResolver
-	ResponsePolicy      ResponsePolicyFacts
+	Context               context.Context
+	Dispatch              gatewaydispatch.Result
+	Transport             Transport
+	Sink                  gatewaystreamrelay.Sink
+	StartedAt             time.Time
+	HadFailedAttempt      bool
+	Codex                 *CodexGuard
+	InitialCommit         codexresponses.CommitState
+	RelayOptions          gatewaystreamrelay.Options
+	OnFirstByte           func()
+	OnTransportCommit     func()
+	OnFirstSemanticOutput func()
+	ResponseDisposition   gatewayretry.ResponseDisposition
+	DispositionResolver   ResponseDispositionResolver
+	ResponsePolicy        ResponsePolicyFacts
 }
 
 // ResponsePolicyFacts carries caller-owned routing facts that cannot be
@@ -255,7 +256,7 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 	if _, err := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit); err != nil {
 		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_header_commit_failed", "提交下游响应头失败", false)
 	}
-	written, writeErr := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
+	written, writeErr := writeAll(input.Context, input.Sink, body, firstOutputCallback(input.OnFirstByte, input.OnFirstSemanticOutput))
 	if writeErr != nil {
 		result, returnedErr := h.failureWithGuard(input, stateForBytes(written), status, int64(len(body)), guardSummary, fmt.Errorf("%w: %v", ErrDestinationWrite, writeErr), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
 		result.BytesWritten = written
@@ -315,6 +316,7 @@ func (h Handler) handleStream(input Input) (Result, error) {
 	options := input.RelayOptions
 	options.OnFirstByte = input.OnFirstByte
 	options.OnTransportCommit = input.OnTransportCommit
+	options.OnFirstSemanticOutput = input.OnFirstSemanticOutput
 	options.StatusCode = status
 	options.StartedAt = input.StartedAt
 	options.HadFailedAttempt = input.HadFailedAttempt
@@ -335,24 +337,13 @@ func (h Handler) handleStream(input Input) (Result, error) {
 		inspector = created
 		inspector.ObserveCommit(input.InitialCommit.TransportCommitted, input.InitialCommit.SemanticCommitted, input.InitialCommit.DownstreamBytes)
 		options.Inspector = inspector
+	} else {
+		options.Inspector = gatewaystreamrelay.NewSSEPreCommitInspector()
 	}
 	if err := stageResponse(input.Sink, status, input.Dispatch.Response.Header, gatewaydownstream.ModeSSE, nil); err != nil {
 		return h.failAndClose(input, StateFailedBeforeCommit, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
 	}
 	relayResult, err := h.Dispatcher.Relay(input.Context, input.Dispatch, input.Sink, options)
-	if err == nil && !relayResult.TransportCommitted {
-		state, commitErr := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit)
-		relayResult.TransportCommitted = state.TransportCommitted
-		relayResult.SemanticCommitted = state.SemanticCommitted
-		relayResult.BytesWritten = max(relayResult.BytesWritten, state.DownstreamBytes)
-		if commitErr != nil {
-			err = fmt.Errorf("%w: %w", gatewaystreamrelay.ErrDestinationWrite, commitErr)
-		} else if state.TransportCommitted {
-			markSinkSemantic(input.Sink)
-			state = sinkState(input.Sink)
-			relayResult.SemanticCommitted = state.SemanticCommitted
-		}
-	}
 	var guard *GuardSummary
 	if inspector != nil {
 		guard = guardFromStreamSnapshot(relayResult.Inspection.ResponseSnapshot)
@@ -381,7 +372,13 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 		auditOutcome = gatewayaudit.OutcomeClientAborted
 		code = firstText(code, "client_stream_interrupted")
 		message = firstText(message, "客户端流式连接已中断")
-	} else if errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || errors.Is(err, gatewaystreamrelay.ErrMissingTerminal) || errors.Is(err, gatewaystreamrelay.ErrSourceRead) || errors.Is(err, gatewaystreamrelay.ErrIdleDeadline) || errors.Is(err, gatewaystreamrelay.ErrTotalDeadline) || errors.Is(err, gatewaydispatch.ErrResponseBodyClose) {
+	} else if errors.Is(err, gatewaystreamrelay.ErrPreCommitBufferExceeded) {
+		phase = gatewayretry.PhaseGatewayPolicy
+		attribution = gatewayusage.FailureAttributionGatewayCapacity
+		auditOutcome = gatewayaudit.OutcomeGatewayFailed
+		code = "stream_precommit_buffer_exceeded"
+		message = "流式响应预提交缓冲超过上限"
+	} else if errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || errors.Is(err, gatewaystreamrelay.ErrPreCommitEvidenceMissing) || errors.Is(err, gatewaystreamrelay.ErrMissingTerminal) || errors.Is(err, gatewaystreamrelay.ErrSourceRead) || errors.Is(err, gatewaystreamrelay.ErrIdleDeadline) || errors.Is(err, gatewaystreamrelay.ErrTotalDeadline) || errors.Is(err, gatewaydispatch.ErrResponseBodyClose) {
 		closeOnlyCompleted := errors.Is(err, gatewaydispatch.ErrResponseBodyClose) && result.Stream != nil && result.Stream.State == gatewaystreamrelay.StateCompleted
 		if closeOnlyCompleted {
 			phase = gatewayretry.PhaseGatewayPolicy
@@ -802,6 +799,17 @@ func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte, on
 		}
 	}
 	return written, nil
+}
+
+func firstOutputCallback(onFirstByte, onFirstSemanticOutput func()) func() {
+	return func() {
+		if onFirstByte != nil {
+			onFirstByte()
+		}
+		if onFirstSemanticOutput != nil {
+			onFirstSemanticOutput()
+		}
+	}
 }
 
 func stateForBytes(bytesWritten int64) State {

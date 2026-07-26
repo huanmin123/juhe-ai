@@ -57,10 +57,16 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	responseInput.Dispatch = dispatchResult
 	preparedOnFirstByte := responseInput.OnFirstByte
 	responseInput.OnFirstByte = func() {
-		observedAt := e.now()
-		deadline.MarkVisible()
 		if preparedOnFirstByte != nil {
 			preparedOnFirstByte()
+		}
+	}
+	preparedOnFirstSemanticOutput := responseInput.OnFirstSemanticOutput
+	responseInput.OnFirstSemanticOutput = func() {
+		observedAt := e.now()
+		deadline.MarkVisible()
+		if preparedOnFirstSemanticOutput != nil {
+			preparedOnFirstSemanticOutput()
 		}
 		if attempt.OnFirstByte != nil {
 			attempt.OnFirstByte(observedAt)
@@ -68,7 +74,6 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 	}
 	preparedOnTransportCommit := responseInput.OnTransportCommit
 	responseInput.OnTransportCommit = func() {
-		deadline.MarkVisible()
 		if preparedOnTransportCommit != nil {
 			preparedOnTransportCommit()
 		}
