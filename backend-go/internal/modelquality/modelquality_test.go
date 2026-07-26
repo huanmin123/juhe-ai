@@ -1,0 +1,218 @@
+package modelquality
+
+import (
+	"math"
+	"testing"
+)
+
+func TestDecideQualityMatchesCompletedEvidenceRules(t *testing.T) {
+	t.Parallel()
+	policy := testPolicy()
+	tests := []struct {
+		name        string
+		facts       RuntimeFacts
+		triggered   bool
+		hard        bool
+		unavailable bool
+		reason      string
+	}{
+		{"score below threshold", RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelLikely, Score: 79}, true, false, false, "score_below_threshold"},
+		{"suspicious hard failure", RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelSuspicious, Score: 100}, true, true, false, "hard_quality_conflict"},
+		{"mapping hard failure", RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelLikely, Score: 100, MappingStatus: MappingStatusUndeclaredMismatch}, true, true, false, "hard_quality_conflict"},
+		{"protocol hard failure", RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelLikely, Score: 100, ProtocolStatus: ProtocolStatusFailed}, true, true, false, "hard_quality_conflict"},
+		{"unavailable evidence", RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelUnavailable, Score: 0}, false, false, true, "quality_evidence_unavailable"},
+		{"incomplete never triggers", RuntimeFacts{RunStatus: RunStatusFailed, Level: LevelSuspicious, Score: 0}, false, true, false, "hard_quality_conflict"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decision, err := DecideQuality(policy, test.facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Triggered != test.triggered || decision.HardFailure != test.hard || decision.EvidenceUnavailable != test.unavailable {
+				t.Fatalf("decision = %#v", decision)
+			}
+			if !contains(decision.ReasonCodes, test.reason) {
+				t.Fatalf("reasons = %v, missing %q", decision.ReasonCodes, test.reason)
+			}
+		})
+	}
+}
+
+func TestValidationRejectsInvalidPolicyAndRuntimeFacts(t *testing.T) {
+	t.Parallel()
+	if got := DefaultPolicy("system-1").PenaltyThreshold; got != 70 {
+		t.Fatalf("DefaultPolicy() threshold = %d, want 70", got)
+	}
+	policy := testPolicy()
+	policy.PenaltyThreshold = 39
+	if err := policy.Validate(); err == nil {
+		t.Fatal("Validate() accepted threshold below Node range")
+	}
+	if _, err := DecideQuality(testPolicy(), RuntimeFacts{RunStatus: RunStatusCompleted, Level: LevelLikely, Score: math.NaN()}); err == nil {
+		t.Fatal("DecideQuality() accepted NaN score")
+	}
+	if _, err := Snapshot(testPolicy(), 1, "", 1); err == nil {
+		t.Fatal("Snapshot() accepted schedule revision without schedule ID")
+	}
+}
+
+func TestPenaltySourceStatusMatrix(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		status AccountStatus
+		action Action
+		want   bool
+	}{
+		{AccountStatusActive, ActionFallback, true},
+		{AccountStatusQualityIsolated, ActionFallback, false},
+		{AccountStatusActive, ActionDisable, true},
+		{AccountStatusQualityIsolated, ActionDisable, true},
+		{AccountStatusDisabled, ActionDisable, false},
+		{AccountStatusActive, ActionQualityIsolate, true},
+		{AccountStatusQualityIsolated, ActionQualityIsolate, false},
+	}
+	for _, test := range cases {
+		if got := AllowedPenaltySourceStatus(test.status, test.action); got != test.want {
+			t.Fatalf("AllowedPenaltySourceStatus(%q, %q) = %v, want %v", test.status, test.action, got, test.want)
+		}
+	}
+}
+
+func TestPlanEnforcementAppliesManualAndRevisionGates(t *testing.T) {
+	t.Parallel()
+	policy := testPolicy()
+	account := testAccount()
+	request := EnforcementRequest{Trigger: TriggerManual, RunID: "run-1", Action: ActionFallback, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	plan, err := PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementApply || !plan.SetFallbackEnabled || !plan.ClearSuperPrioritySet {
+		t.Fatalf("fallback plan = %#v, err = %v", plan, err)
+	}
+	policy.ManualEnforcementEnabled = false
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementSkipped {
+		t.Fatalf("disabled manual gate = %#v, err = %v", plan, err)
+	}
+	policy = testPolicy()
+	account.OwnPhysical = false
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementSkipped {
+		t.Fatalf("non-own manual gate = %#v, err = %v", plan, err)
+	}
+	account = testAccount()
+	request.AccountRevision++
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementStale {
+		t.Fatalf("stale account revision = %#v, err = %v", plan, err)
+	}
+	request.AccountRevision = account.ConfigRevision
+	account.SystemAccountID = "other-system"
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementSkipped {
+		t.Fatalf("cross-scope enforcement = %#v, err = %v", plan, err)
+	}
+	request.AccountRevision = account.ConfigRevision
+	account.SystemAccountID = "other-system"
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementSkipped {
+		t.Fatalf("cross-system account = %#v, err = %v", plan, err)
+	}
+}
+
+func TestPlanEnforcementUsesCurrentPolicyActionAndIdempotence(t *testing.T) {
+	t.Parallel()
+	policy := testPolicy()
+	account := testAccount()
+	request := EnforcementRequest{Trigger: TriggerScheduled, RunID: "run-1", Action: ActionDisable, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	plan, err := PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementStale {
+		t.Fatalf("action mismatch = %#v, err = %v", plan, err)
+	}
+	request.Action = ActionFallback
+	account.FallbackEnabled = true
+	plan, err = PlanEnforcement(request, policy, account)
+	if err != nil || plan.Result != EnforcementAlreadyEffective {
+		t.Fatalf("already fallback = %#v, err = %v", plan, err)
+	}
+}
+
+func TestPlanEnforcementRejectsQualityRecoveryTrigger(t *testing.T) {
+	t.Parallel()
+	policy := testPolicy()
+	account := testAccount()
+	request := EnforcementRequest{Trigger: TriggerQualityRecovery, RunID: "run-1", Action: ActionFallback, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+	if _, err := PlanEnforcement(request, policy, account); err == nil {
+		t.Fatal("PlanEnforcement() accepted quality recovery trigger")
+	}
+}
+
+func TestTypedFencesAndGeneration(t *testing.T) {
+	t.Parallel()
+	if !(PolicyFence{Expected: 3, Current: 3}).Matches() || (AccountFence{Expected: 3, Current: 4}).Matches() {
+		t.Fatal("revision fences do not compare their own typed revisions")
+	}
+	if !(ScheduleFence{ScheduleID: "schedule-1", Expected: 2, Current: 2}).Matches() {
+		t.Fatal("schedule fence did not match")
+	}
+	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
+	if !(EnforcementFence{Expected: token, Current: token}).Matches() {
+		t.Fatal("enforcement fence did not match")
+	}
+	if _, err := NextGeneration(EnforcementGeneration(math.MaxUint64)); err == nil {
+		t.Fatal("NextGeneration() allowed generation wraparound")
+	}
+}
+
+func TestPlanRecoveryFencesAndRestoresAvailability(t *testing.T) {
+	t.Parallel()
+	account := testAccount()
+	account.Status = AccountStatusQualityIsolated
+	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
+	request := RecoveryRequest{PolicyRevision: 5, Enforcement: token, Passed: true}
+	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, Active: true, Action: ActionQualityIsolate}
+	plan, err := PlanRecovery(request, 5, current, account, true)
+	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusActive {
+		t.Fatalf("available recovery = %#v, err = %v", plan, err)
+	}
+	plan, err = PlanRecovery(request, 5, current, account, false)
+	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusDisabled {
+		t.Fatalf("unavailable recovery = %#v, err = %v", plan, err)
+	}
+	plan, err = PlanRecovery(request, 6, current, account, true)
+	if err != nil || plan.Result != RecoveryStale || !plan.NeedsReschedule {
+		t.Fatalf("stale policy recovery = %#v, err = %v", plan, err)
+	}
+	request.Passed = false
+	plan, err = PlanRecovery(request, 5, current, account, true)
+	if err != nil || plan.Result != RecoveryKeptIsolated || !plan.NeedsReschedule {
+		t.Fatalf("failed recovery = %#v, err = %v", plan, err)
+	}
+	current.Token.Generation++
+	plan, err = PlanRecovery(request, 5, current, account, true)
+	if err != nil || plan.Result != RecoveryStale {
+		t.Fatalf("stale generation recovery = %#v, err = %v", plan, err)
+	}
+	current.Token = token
+	current.SystemAccountID = "other-system"
+	plan, err = PlanRecovery(request, 5, current, account, true)
+	if err != nil || plan.Result != RecoveryStale {
+		t.Fatalf("cross-scope recovery = %#v, err = %v", plan, err)
+	}
+}
+
+func testPolicy() Policy {
+	return Policy{SystemAccountID: "system-1", Revision: 5, Profile: ProfileQuick, ManualEnforcementEnabled: true, PenaltyThreshold: 80, PenaltyAction: ActionFallback, RecoveryIntervalMinutes: 10}
+}
+
+func testAccount() Account {
+	return Account{ID: "account-1", SystemAccountID: "system-1", Status: AccountStatusActive, ConfigRevision: 7, OwnPhysical: true, SuperPrioritySet: true}
+}
+
+func contains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
