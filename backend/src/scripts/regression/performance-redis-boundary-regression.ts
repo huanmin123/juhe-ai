@@ -602,13 +602,13 @@ function assertNoPerformanceLocalFactQueues(): void {
   )
   assert.match(
     functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
-    /usageRecordRedisStreamQueue\(\)\.inspectBacklog\(512\)[\s\S]*resolveUsageRecordBacklogWatermark\(inspection\)[\s\S]*pendingTruncated[\s\S]*return watermark\.oldestCreatedAt/,
-    '使用记录 Redis Stream 必须用有界 backlog 前缀计算业务 createdAt，扫描截断不能回退 epoch 永久冻结统计水位'
+    /usageRecordRedisStreamQueue\(\)\.inspectOldestBacklogCreatedAt\(512\)[\s\S]*!watermark\.ready[\s\S]*return watermark\.oldestCreatedAt/,
+    '使用记录 Redis Stream 必须通过完整 createdAt 索引读取水位，历史补建未完成时保持保守'
   )
   assert.doesNotMatch(
     functionBody(usageRecordQueueSource, 'getUsageRecordRedisStreamOldestCreatedAt'),
-    /pendingTruncated[\s\S]*return '1970-01-01T00:00:00\.000Z'/,
-    '使用记录 Redis Stream backlog 超过单次扫描上限时必须持续推进，不能永久返回 epoch'
+    /inspectBacklog\(/,
+    '使用记录 Redis Stream 水位不能再依赖截断 backlog 前缀'
   )
   const fixedResponsesSource = source('modules/gateway/response/fixed-responses.ts')
   assert.match(
