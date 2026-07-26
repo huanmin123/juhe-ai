@@ -11,14 +11,17 @@ const (
 	// ModelQualityScheduleClaimDefaultLimit and
 	// ModelQualityScheduleClaimMaximumLimit retain Node's bounded durable
 	// scheduler batch, while leaving scheduling execution outside this port.
-	ModelQualityScheduleClaimDefaultLimit = 3
-	ModelQualityScheduleClaimMaximumLimit = 20
-	ModelQualityRecoveryClaimDefaultLimit = 2
-	ModelQualityRecoveryClaimMaximumLimit = 10
-	ModelQualityScheduleClaimDefaultLease = 5 * time.Minute
-	ModelQualityRecoveryClaimDefaultLease = 6 * time.Minute
-	ModelQualityClaimMinimumLease         = time.Minute
-	ModelQualityClaimMaximumLease         = 30 * time.Minute
+	ModelQualityScheduleClaimDefaultLimit   = 3
+	ModelQualityScheduleClaimMaximumLimit   = 20
+	ModelQualityRecoveryClaimDefaultLimit   = 2
+	ModelQualityRecoveryClaimMaximumLimit   = 10
+	ModelQualityHealthSyncClaimDefaultLimit = 20
+	ModelQualityHealthSyncClaimMaximumLimit = 100
+	ModelQualityScheduleClaimDefaultLease   = 5 * time.Minute
+	ModelQualityRecoveryClaimDefaultLease   = 6 * time.Minute
+	ModelQualityHealthSyncClaimDefaultLease = 2 * time.Minute
+	ModelQualityClaimMinimumLease           = time.Minute
+	ModelQualityClaimMaximumLease           = 30 * time.Minute
 
 	ModelQualityMinimumInterval = 10 * time.Minute
 	ModelQualityMaximumInterval = 7 * 24 * time.Hour
@@ -360,4 +363,85 @@ type ModelQualityHealthFailureResult struct {
 // this retained statistics row are separate durable steps.
 type ModelQualityHealthFailureWriter interface {
 	RecordModelQualityHealthFailure(context.Context, ModelQualityHealthFailureInput) (ModelQualityHealthFailureResult, error)
+}
+
+// ModelQualityHealthSyncLease is the durable ownership fence for one failed
+// health-stat delivery. OwnerID is diagnostic; stale completion is prevented
+// by the opaque token, monotonically increasing epoch and exact lease expiry.
+// A process restart must use a new owner ID even when the operating-system PID
+// is reused.
+type ModelQualityHealthSyncLease struct {
+	OwnerID    ModelQualityClaimOwnerID
+	ClaimToken ModelQualityHealthSyncClaimToken
+	Epoch      uint64
+	Until      time.Time
+}
+
+type ModelQualityHealthSyncClaimToken string
+
+type ModelQualityHealthSyncClaimInput struct {
+	OwnerID ModelQualityClaimOwnerID
+	// LeaseDuration is applied to the PostgreSQL clock inside the claim
+	// transaction. Callers do not provide an absolute lease timestamp, so host
+	// clock skew cannot extend ownership.
+	LeaseDuration time.Duration
+	Limit         int
+}
+
+// ModelQualityHealthSyncDecisionFence carries the exact bounded decision fact
+// observed while the run row was locked. Completion compares both fields in
+// the same UPDATE so a concurrent Node decision write cannot be overwritten.
+// RawJSON is deliberately opaque to workers and must be returned unchanged.
+type ModelQualityHealthSyncDecisionFence struct {
+	RawJSON      string
+	RawUpdatedAt string
+}
+
+type ModelQualityHealthSyncClaim struct {
+	RunID         string
+	Failure       ModelQualityHealthFailureInput
+	DecisionFence ModelQualityHealthSyncDecisionFence
+	Lease         ModelQualityHealthSyncLease
+}
+
+// ModelQualityHealthSyncClaimBatch reports malformed durable facts separately
+// from transient storage errors. A bad row is durably delayed and cannot keep
+// the head of the retry queue from starving valid work behind it.
+type ModelQualityHealthSyncClaimBatch struct {
+	Claims      []ModelQualityHealthSyncClaim
+	Quarantined int
+}
+
+type ModelQualityHealthSyncClaimer interface {
+	ClaimFailedModelQualityHealthSyncs(context.Context, ModelQualityHealthSyncClaimInput) (ModelQualityHealthSyncClaimBatch, error)
+}
+
+type ModelQualityHealthSyncCompleteInput struct {
+	Claim       ModelQualityHealthSyncClaim
+	CompletedAt time.Time
+}
+
+type ModelQualityHealthSyncCompleteResult struct {
+	Applied  bool
+	StatHour string
+}
+
+// ModelQualityHealthSyncCompleter commits the retained hourly fact and the
+// dataset decision in one PostgreSQL transaction. Applied=false means the
+// lease or decision fence became stale; the hourly upsert is rolled back too.
+type ModelQualityHealthSyncCompleter interface {
+	CompleteModelQualityHealthSync(context.Context, ModelQualityHealthSyncCompleteInput) (ModelQualityHealthSyncCompleteResult, error)
+}
+
+type ModelQualityHealthSyncReleaseInput struct {
+	RunID string
+	Lease ModelQualityHealthSyncLease
+	// RetryDelay is applied to the PostgreSQL clock by the release CAS.
+	RetryDelay   time.Duration
+	ErrorClass   string
+	ErrorMessage string
+}
+
+type ModelQualityHealthSyncReleaser interface {
+	ReleaseModelQualityHealthSync(context.Context, ModelQualityHealthSyncReleaseInput) (bool, error)
 }
