@@ -147,6 +147,7 @@ import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeams, listSyste
 import { getSystemMetricsOverview } from './system-metrics.repository.js'
 import {
   getUsageStatsOverview,
+  getUsageStatsOverviewDailyTrend,
   getUsageStatsOverviewErrors,
   getUsageStatsOverviewHourlyTrend,
   getUsageStatsOverviewModelDistribution,
@@ -318,6 +319,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getUsageStatsOverview(operation.access, operation.range)
     case 'get_usage_stats_overview_summary_read_only':
       return getUsageStatsOverviewSummary(operation.access, operation.range)
+    case 'get_usage_stats_overview_daily_trend_read_only':
+      return getUsageStatsOverviewDailyTrend(operation.access, operation.range)
     case 'get_usage_stats_overview_hourly_trend_read_only':
       return getUsageStatsOverviewHourlyTrend(operation.access, operation.range)
     case 'get_usage_stats_overview_model_distribution_read_only':

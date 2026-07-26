@@ -53,12 +53,25 @@
 
     <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
 
+    <div ref="dailyTrendSectionRef" class="stats-chart-section">
+      <StatsChartCard
+        :title="dailyTrendTitle"
+        :loading="dailyTrendLoading"
+        :has-data="hasDailyTrend"
+        :empty-description="dailyTrendEmptyDescription"
+        :error="dailyTrendError"
+        :on-retry="() => loadDailyTrend(true)"
+        compact
+      >
+        <div ref="dailyTrendChartRef" class="daily-consumption-chart" />
+      </StatsChartCard>
+    </div>
+
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
         <div ref="usageTrendSectionRef" class="stats-chart-section">
         <StatsChartCard
-          :title="`请求、失败、Token 消耗、平均总耗时（${currentWindowLabel}）`"
-          :description="usageTrendDescription"
+          :title="`请求、失败、平均总耗时（${currentWindowLabel}）`"
           :loading="usageTrendLoading"
           :has-data="hasUsageTrend"
           :empty-description="usageTrendEmptyDescription"
@@ -73,7 +86,6 @@
         <div ref="modelDistributionSectionRef" class="stats-chart-section">
         <StatsChartCard
           :title="`模型分布（${currentWindowLabel}）`"
-          description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
           :loading="modelDistributionLoading"
           :has-data="hasModelDistribution"
           :empty-description="modelDistributionEmptyDescription"
@@ -91,7 +103,6 @@
         <div ref="errorSectionRef" class="stats-chart-section">
         <StatsChartCard
           :title="`错误 Top 10（${currentWindowLabel}）`"
-          description="统计窗口内失败请求按错误码聚合；悬浮可查看状态码和错误信息。"
           :loading="errorsLoading"
           :has-data="hasErrors"
           :empty-description="errorEmptyDescription"
@@ -120,13 +131,13 @@ import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
-import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
+import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { UsageStatsOverview } from '@/types/domain'
+import type { UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
-import { buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
+import { buildDailyConsumptionOption, buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent } from './statsFormatters'
 
 const MAX_RANGE_DAYS = 31
@@ -146,7 +157,7 @@ type StatsPageState = {
   selectedSystemAccount?: PrincipalSelection
 }
 
-const defaultDateRange = todayDateRange
+const defaultDateRange = () => recentDateRange(MAX_RANGE_DAYS)
 const defaultStatsPageState = (): StatsPageState => ({
   selectedSystemAccountId: allSystemAccountsValue,
   selectedSystemAccount: undefined
@@ -163,6 +174,7 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
+const dailyTrend = ref<UsageStatsOverviewDailyTrendResult>()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
@@ -176,27 +188,35 @@ const {
   selectedIds: () => [selectedSystemAccountId.value]
 })
 
+const dailyTrendChartRef = ref<HTMLDivElement>()
 const usageTrendChartRef = ref<HTMLDivElement>()
 const modelDistributionChartRef = ref<HTMLDivElement>()
 const errorChartRef = ref<HTMLDivElement>()
+const dailyTrendChart = shallowRef<ECharts>()
 const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 let statsRequestSeq = 0
+let dailyTrendRequestSeq = 0
+const dailyTrendSectionRef = ref<HTMLDivElement>()
 const usageTrendSectionRef = ref<HTMLDivElement>()
 const modelDistributionSectionRef = ref<HTMLDivElement>()
 const errorSectionRef = ref<HTMLDivElement>()
+const dailyTrendLoaded = ref(false)
 const usageTrendLoaded = ref(false)
 const modelDistributionLoaded = ref(false)
 const errorsLoaded = ref(false)
+const dailyTrendLoading = ref(false)
 const usageTrendLoading = ref(false)
 const modelDistributionLoading = ref(false)
 const errorsLoading = ref(false)
+const dailyTrendError = ref('')
 const usageTrendError = ref('')
 const modelDistributionError = ref('')
 const errorsError = ref('')
 const chartRequestSeq = { hourlyTrend: 0, modelDistribution: 0, errors: 0 }
 const chartSectionResolved = { hourlyTrend: false, modelDistribution: false, errors: false }
+let dailyTrendResolved = false
 let chartObserver: IntersectionObserver | undefined
 let reloadOnActivate = false
 let wasDeactivated = false
@@ -209,6 +229,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   onDeactivate: handlePageDeactivate
 })
 
+const hasDailyTrend = computed(() => dailyTrend.value?.dailyTrend.some((item) => item.totalTokens > 0) === true)
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
@@ -224,11 +245,15 @@ const quickRangeValue = computed<QuickRange | undefined>(() => {
   return undefined
 })
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
+const dailyTrendRangeLabel = computed(() => dailyTrend.value
+  ? `${formatDateLabel(dailyTrend.value.range.startDate)} 至 ${formatDateLabel(dailyTrend.value.range.endDate)}`
+  : currentWindowLabel.value)
+const dailyTrendTitle = computed(() => `Token 与成本（${dailyTrendRangeLabel.value}）`)
+const dailyTrendEmptyDescription = computed(() => `${dailyTrendRangeLabel.value}暂无 Token 消耗`)
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
-const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
   return [
@@ -254,6 +279,7 @@ function formatOptionalCost(value?: number) {
 
 async function loadData(options: { force?: boolean } = {}) {
   const requestSeq = ++statsRequestSeq
+  resetDailyTrend()
   chartRequestSeq.hourlyTrend += 1
   chartRequestSeq.modelDistribution += 1
   chartRequestSeq.errors += 1
@@ -291,6 +317,7 @@ async function loadData(options: { force?: boolean } = {}) {
     syncDateRangeFromResponse(nextSummary.range)
     summaryError.value = ''
     renderCharts()
+    if (dailyTrendLoaded.value) void loadDailyTrend(options.force === true)
     if (usageTrendLoaded.value) void loadChartSection('hourlyTrend', options.force === true)
     if (modelDistributionLoaded.value) void loadChartSection('modelDistribution', options.force === true)
     if (errorsLoaded.value) void loadChartSection('errors', options.force === true)
@@ -305,6 +332,35 @@ async function loadData(options: { force?: boolean } = {}) {
       summaryLoading.value = false
       renderCharts()
     }
+  }
+}
+
+async function loadDailyTrend(force = false): Promise<void> {
+  if ((!force && dailyTrendResolved) || dailyTrendLoading.value) return
+  const requestSeq = ++dailyTrendRequestSeq
+  const pageSeq = statsRequestSeq
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+  const rangeParams = selectedRangeParams()
+  const signature = JSON.stringify([pageSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', systemAccountId ?? '', rangeParams.startDate ?? '', rangeParams.endDate ?? ''])
+  dailyTrendLoading.value = true
+  dailyTrendError.value = ''
+  try {
+    const result = isManagementView.value
+      ? await api.stats.usageOverviewDailyTrend({ ...rangeParams, systemAccountId })
+      : await api.myStats.usageOverviewDailyTrend(rangeParams)
+    const currentSystemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+    const currentRangeParams = selectedRangeParams()
+    const currentSignature = JSON.stringify([statsRequestSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', currentSystemAccountId ?? '', currentRangeParams.startDate ?? '', currentRangeParams.endDate ?? ''])
+    if (requestSeq !== dailyTrendRequestSeq || signature !== currentSignature) return
+    dailyTrend.value = result
+    dailyTrendResolved = true
+    renderCharts()
+  } catch (error) {
+    if (requestSeq !== dailyTrendRequestSeq) return
+    console.error(error)
+    dailyTrendError.value = 'Token 与成本趋势加载失败，请重试'
+  } finally {
+    if (requestSeq === dailyTrendRequestSeq) dailyTrendLoading.value = false
   }
 }
 
@@ -382,7 +438,8 @@ onMounted(async () => {
 
 function setupChartObservers(): void {
   chartObserver?.disconnect()
-  const targets: Array<[HTMLDivElement | undefined, StatsChartSection]> = [
+  const targets: Array<[HTMLDivElement | undefined, StatsObservedSection]> = [
+    [dailyTrendSectionRef.value, 'dailyTrend'],
     [usageTrendSectionRef.value, 'hourlyTrend'],
     [modelDistributionSectionRef.value, 'modelDistribution'],
     [errorSectionRef.value, 'errors']
@@ -390,7 +447,8 @@ function setupChartObservers(): void {
   if (typeof IntersectionObserver === 'undefined') {
     for (const [, section] of targets) {
       markSectionLoaded(section)
-      void loadChartSection(section)
+      if (section === 'dailyTrend') void loadDailyTrend()
+      else void loadChartSection(section)
     }
     return
   }
@@ -401,7 +459,8 @@ function setupChartObservers(): void {
       if (!section) continue
       markSectionLoaded(section)
       chartObserver?.unobserve(entry.target)
-      void loadChartSection(section)
+      if (section === 'dailyTrend') void loadDailyTrend()
+      else void loadChartSection(section)
     }
   }, { rootMargin: '240px 0px' })
   for (const [element] of targets) {
@@ -416,26 +475,31 @@ function currentAuthSignature(): [number, string, string] {
 
 function invalidateStatsRequests(): void {
   statsRequestSeq += 1
+  dailyTrendRequestSeq += 1
   chartRequestSeq.hourlyTrend += 1
   chartRequestSeq.modelDistribution += 1
   chartRequestSeq.errors += 1
   loading.value = false
   summaryLoading.value = false
+  dailyTrendLoading.value = false
   usageTrendLoading.value = false
   modelDistributionLoading.value = false
   errorsLoading.value = false
 }
 
 function handlePageDeactivate(): void {
-  reloadOnActivate = loading.value || summaryLoading.value || usageTrendLoading.value || modelDistributionLoading.value || errorsLoading.value
+  reloadOnActivate = loading.value || summaryLoading.value || dailyTrendLoading.value || usageTrendLoading.value || modelDistributionLoading.value || errorsLoading.value
   wasDeactivated = true
   invalidateStatsRequests()
   chartObserver?.disconnect()
   chartObserver = undefined
 }
 
-function markSectionLoaded(section: StatsChartSection): void {
-  if (section === 'hourlyTrend') usageTrendLoaded.value = true
+type StatsObservedSection = 'dailyTrend' | StatsChartSection
+
+function markSectionLoaded(section: StatsObservedSection): void {
+  if (section === 'dailyTrend') dailyTrendLoaded.value = true
+  else if (section === 'hourlyTrend') usageTrendLoaded.value = true
   else if (section === 'modelDistribution') modelDistributionLoaded.value = true
   else errorsLoaded.value = true
 }
@@ -480,10 +544,21 @@ function resetFilters() {
 
 async function renderStatsCharts() {
   await Promise.all([
+    renderDailyTrendChart(),
     renderUsageTrendChart(),
     renderModelDistributionChart(),
     renderErrorChart()
   ])
+}
+
+async function renderDailyTrendChart() {
+  if (!hasDailyTrend.value) {
+    disposeChart(dailyTrendChart)
+    return
+  }
+  const chart = await ensureChart(dailyTrendChartRef, dailyTrendChart, () => pageActive.value)
+  if (!chart || !dailyTrend.value || !pageActive.value) return
+  chart.setOption(buildDailyConsumptionOption(dailyTrend.value.dailyTrend), { notMerge: true })
 }
 
 async function renderUsageTrendChart() {
@@ -517,13 +592,23 @@ async function renderErrorChart() {
 }
 
 function resizeCharts() {
-  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value])
+  resizeEcharts([dailyTrendChart.value, usageTrendChart.value, modelDistributionChart.value, errorChart.value])
 }
 
 function disposeCharts() {
+  disposeChart(dailyTrendChart)
   disposeChart(usageTrendChart)
   disposeChart(modelDistributionChart)
   disposeChart(errorChart)
+}
+
+function resetDailyTrend(): void {
+  dailyTrendRequestSeq += 1
+  dailyTrend.value = undefined
+  dailyTrendLoading.value = false
+  dailyTrendError.value = ''
+  dailyTrendResolved = false
+  disposeChart(dailyTrendChart)
 }
 
 function snapshotPageState(): StatsPageState {
@@ -657,6 +742,11 @@ onBeforeUnmount(() => {
 
 .chart-panel-large {
   height: 340px;
+}
+
+.daily-consumption-chart {
+  width: 100%;
+  height: 180px;
 }
 
 :global(.stats-error-tooltip) {

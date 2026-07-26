@@ -11,15 +11,26 @@ const gatewayUsageFinalizationMaxConcurrency = 32
 let queuedGatewayUsageFinalizationBytes = 0
 let activeGatewayUsageFinalizations = 0
 let admissionWaitCount = 0
+let overflowSpoolCount = 0
 const capacityWaiters = new Set<() => void>()
 
 export async function dispatchGatewayUsageFinalization(input: {
   taskFactory: () => Promise<void>
+  overflowFactory?: () => Promise<void>
   bytes?: number
 }): Promise<void> {
   const bytes = Math.max(0, Math.trunc(input.bytes ?? 0))
   if (bytes > gatewayUsageFinalizationMaxBytes) {
     throw new Error('网关使用记录异步收尾任务超过单条容量上限')
+  }
+  if (!hasGatewayUsageFinalizationCapacity(bytes) && input.overflowFactory) {
+    overflowSpoolCount += 1
+    trackGatewayUsageFinalization(Promise.resolve().then(input.overflowFactory), (error) => {
+      logger.error(errorLogFields(error, {
+        event: 'gateway_usage_finalization_overflow_spool_failed'
+      }), '网关使用记录收尾队列满，持久补偿失败')
+    })
+    return
   }
   while (!hasGatewayUsageFinalizationCapacity(bytes)) {
     admissionWaitCount += 1
@@ -63,6 +74,7 @@ export interface GatewayUsageFinalizationRuntime {
   activeCount: number
   droppedCount: number
   admissionWaitCount: number
+  overflowSpoolCount: number
   maxItems: number
   maxBytes: number
   maxConcurrency: number
@@ -76,6 +88,7 @@ export function getGatewayUsageFinalizationRuntime(): GatewayUsageFinalizationRu
     activeCount: activeGatewayUsageFinalizations,
     droppedCount: 0,
     admissionWaitCount,
+    overflowSpoolCount,
     maxItems: gatewayUsageFinalizationMaxItems,
     maxBytes: gatewayUsageFinalizationMaxBytes,
     maxConcurrency: gatewayUsageFinalizationMaxConcurrency

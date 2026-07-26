@@ -1,4 +1,9 @@
-import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../../shared/cache.js'
+import {
+  clearSharedJsonCacheInBackground,
+  createAppCache,
+  createProcessLocalResourceCache,
+  createSharedJsonCache
+} from '../../../shared/cache.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import {
   gatewayAccountConcurrencyAccountId,
@@ -93,11 +98,13 @@ export type ProviderModelRouteResolution =
       matchedProviderCodes: string[]
     }
 
-const gatewayRuntimeCache = createAppCache<string, GatewayRuntimeCacheEntry>({
+// Gateway runtime contains decrypted upstream credentials, so it must not be copied into Redis.
+// It is nevertheless safe as a process-local, invalidation-aware last-good snapshot.
+const gatewayRuntimeCache = createProcessLocalResourceCache<string, GatewayRuntimeCacheEntry>({
   name: 'gateway:runtime',
   max: 10000,
   ttlMs: gatewayRuntimeRetainTtlMs,
-  updateAgeOnGet: true
+  updateAgeOnGet: runtimeConfig.runtimeMode === 'standalone'
 })
 
 const gatewaySettingsCache = createAppCache<string, GatewaySettings>({
@@ -173,6 +180,8 @@ const pendingProviderModelCatalogLoads = new Map<string, Promise<ProviderModelCa
 const pendingResponseInspectionPolicyRefreshes = new Map<string, Promise<void>>()
 let gatewayRuntimeCacheGeneration = 0
 let providerModelCatalogCacheGeneration = 0
+const sharedCacheFailureLoggedAt = new Map<string, number>()
+const sharedCacheFailureLogIntervalMs = 30_000
 
 function isGatewayRuntimeCacheGenerationCurrent(generation: number): boolean {
   return generation === gatewayRuntimeCacheGeneration
@@ -190,7 +199,7 @@ export function readCachedGatewaySettings(): GatewaySettings {
 }
 
 export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return { ...readCachedGatewaySettings() }
@@ -228,7 +237,7 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
 }
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
@@ -289,7 +298,7 @@ export async function listCachedOpenAIAccountsForGroupAsync(
   systemAccountId: string,
   options: CachedOpenAIAccountsForGroupOptions = {}
 ): Promise<OpenAIAccountSecret[]> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return listCachedOpenAIAccountsForGroup(groupId, systemAccountId, options)
@@ -367,7 +376,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
   includeInactive?: boolean
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const generation = providerModelCatalogCacheGeneration
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
@@ -427,7 +436,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
   systemAccountId?: string
   includeUnpriced?: boolean
 }): Promise<ProviderModelRouteResolution> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const generation = providerModelCatalogCacheGeneration
   const modelKey = normalizeProviderModelRouteKey(input.model)
   const providerCodes = normalizedProviderRouteCodes(input.providerCodes)
@@ -482,7 +491,7 @@ export async function listCachedActiveResponseInspectionPoliciesAsync(input: {
   protocolCode: string
   providerCode?: string
 }): Promise<ResponseInspectionPolicySummary[]> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const cacheKey = responseInspectionPolicyCacheKey(input.protocolCode, input.providerCode)
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = responseInspectionPolicyCache.get(cacheKey)
@@ -545,7 +554,7 @@ export async function listCachedActiveResponseInspectionPoliciesForAccountsAsync
 }
 
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
-  if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
+  await syncGatewayCacheInvalidationsBestEffort()
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {
@@ -722,7 +731,17 @@ function shouldUseGatewayRuntimeDbService(): boolean {
 }
 
 function shouldAllowStaleGatewayRuntimeFallback(): boolean {
-  return runtimeConfig.databaseDriver !== 'postgres'
+  return true
+}
+
+async function syncGatewayCacheInvalidationsBestEffort(): Promise<void> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return
+  try {
+    await syncGatewayCacheInvalidationsFromRuntimeState()
+  } catch {
+    // The invalidation helper already records the Redis failure. Cached AI runtime remains
+    // usable until its bounded local retention expires; cache coordination is not a request gate.
+  }
 }
 
 async function loadGroupUsageAccessMetadataAndPopulateCache(
@@ -987,6 +1006,23 @@ async function routeCachedDynamicGatewayRuntimeForDispatch(runtime: DbServiceGat
   if (!runtime.apiKey) {
     return cloneStaticGatewayRuntime(runtime)
   }
+  try {
+    return await routeCachedDynamicGatewayRuntimeWithFreshSelection(runtime)
+  } catch (error) {
+    if (!runtime.apiKey.selected_group_id || !runtime.groupAccess || runtime.accounts.length === 0) {
+      throw error
+    }
+    logGatewaySharedCacheFailure(
+      error,
+      'gateway_dynamic_route_last_good_fallback',
+      '动态路由重新选组失败，保留硬过期窗口内上次已验证的分组和账户快照'
+    )
+    return await cloneGatewayRuntimeForDispatchAsync(runtime)
+  }
+}
+
+async function routeCachedDynamicGatewayRuntimeWithFreshSelection(runtime: DbServiceGatewayRuntime): Promise<DbServiceGatewayRuntime> {
+  if (!runtime.apiKey) return cloneStaticGatewayRuntime(runtime)
   const systemAccountId = runtime.apiKey.system_account_id
   const orderedBindings = await orderGatewayApiKeyGroupBindingsForDispatchAsync(runtime.apiKey)
   const uniqueCandidateGroupIds = [...new Set(orderedBindings.map((binding) => binding.group_id).filter(Boolean))]
@@ -1212,7 +1248,7 @@ function refreshGatewayRuntimeInBackground(apiKey: string, cacheKey: string): vo
   void loadGatewayRuntimeOnce(apiKey, cacheKey).catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'gateway_runtime_stale_refresh_failed'
-    }), '网关运行配置后台刷新失败，单机模式保留当前内存快照')
+    }), '网关运行配置后台刷新失败，保留当前有界内存快照')
   })
 }
 
@@ -1237,7 +1273,7 @@ function refreshGroupUsageAccessMetadataInBackground(groupId: string, systemAcco
         event: 'gateway_group_access_stale_refresh_failed',
         groupId,
         systemAccountId
-      }), '网关分组访问元数据后台刷新失败，单机模式保留当前内存快照')
+      }), '网关分组访问元数据后台刷新失败，保留当前有界缓存快照')
     })
     .finally(() => {
       pendingGroupUsageAccessRefreshes.delete(cacheKey)
@@ -1272,7 +1308,7 @@ function refreshOpenAIAccountsForGroupInBackground(
         event: 'gateway_accounts_stale_refresh_failed',
         groupId,
         systemAccountId
-      }), '网关候选账号后台刷新失败，单机模式保留当前内存快照')
+      }), '网关候选账号后台刷新失败，保留当前有界缓存快照')
     })
     .finally(() => {
       pendingOpenAIAccountsRefreshes.delete(cacheKey)
@@ -1282,14 +1318,22 @@ function refreshOpenAIAccountsForGroupInBackground(
 
 async function getGatewaySettingsSharedCacheEntry(): Promise<GatewaySettings | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  const cached = await gatewaySettingsSharedCache.get('current')
+  const cached = await readGatewaySharedCacheBestEffort(
+    () => gatewaySettingsSharedCache.get('current'),
+    'gateway_settings_shared_cache_read_failed',
+    '网关设置 Redis 缓存读取失败，按缓存未命中继续'
+  )
   return cached ? cloneGatewaySettings(cached) : undefined
 }
 
 async function setGatewaySettingsCacheEntryAsync(settings: GatewaySettings): Promise<void> {
   const cached = cloneGatewaySettings(settings)
-  await setGatewaySettingsSharedCacheEntry(cached)
   gatewaySettingsCache.set('current', cached)
+  await writeGatewaySharedCacheBestEffort(
+    () => setGatewaySettingsSharedCacheEntry(cached),
+    'gateway_settings_shared_cache_write_failed',
+    '网关设置 Redis 缓存写入失败，保留当前请求已取得的事实'
+  )
 }
 
 async function setGatewaySettingsSharedCacheEntry(settings: GatewaySettings): Promise<void> {
@@ -1308,14 +1352,22 @@ function clearGatewaySettingsSharedCache(): void {
 
 async function getGroupUsageAccessSharedCacheEntry(cacheKey: string): Promise<GroupUsageAccessCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  const cached = await groupUsageAccessSharedCache.get(cacheKey)
+  const cached = await readGatewaySharedCacheBestEffort(
+    () => groupUsageAccessSharedCache.get(cacheKey),
+    'gateway_group_usage_access_shared_cache_read_failed',
+    '网关分组访问 Redis 缓存读取失败，按缓存未命中继续'
+  )
   return cached ? cloneGroupUsageAccessCacheEntry(cached) : undefined
 }
 
 async function setGroupUsageAccessCacheEntryAsync(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
   const cachedEntry = cloneGroupUsageAccessCacheEntry(entry)
-  await setGroupUsageAccessSharedCacheEntry(cacheKey, cachedEntry)
   groupUsageAccessCache.set(cacheKey, cachedEntry, { ttlMs: groupUsageAccessRetainTtlMs })
+  await writeGatewaySharedCacheBestEffort(
+    () => setGroupUsageAccessSharedCacheEntry(cacheKey, cachedEntry),
+    'gateway_group_usage_access_shared_cache_write_failed',
+    '网关分组访问 Redis 缓存写入失败，保留当前请求已取得的事实'
+  )
 }
 
 async function setGroupUsageAccessSharedCacheEntry(cacheKey: string, entry: GroupUsageAccessCacheEntry): Promise<void> {
@@ -1365,7 +1417,7 @@ function refreshActiveResponseInspectionPoliciesInBackground(
         event: 'gateway_response_inspection_policy_stale_refresh_failed',
         protocolCode: input.protocolCode,
         providerCode: input.providerCode
-      }), '网关响应检查策略后台刷新失败，单机模式保留当前内存快照')
+      }), '网关响应检查策略后台刷新失败，保留当前有界缓存快照')
     })
     .finally(() => {
       pendingResponseInspectionPolicyRefreshes.delete(cacheKey)
@@ -1375,14 +1427,22 @@ function refreshActiveResponseInspectionPoliciesInBackground(
 
 async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  const cached = await providerModelCatalogSharedCache.get(cacheKey)
+  const cached = await readGatewaySharedCacheBestEffort(
+    () => providerModelCatalogSharedCache.get(cacheKey),
+    'gateway_provider_model_catalog_shared_cache_read_failed',
+    '网关模型目录 Redis 缓存读取失败，按缓存未命中继续'
+  )
   return cached ? cached.map((item) => ({ ...item })) : undefined
 }
 
 async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   const cached = value.map((item) => ({ ...item }))
-  await setProviderModelCatalogSharedCacheEntry(cacheKey, cached)
   providerModelCatalogCache.set(cacheKey, cached.map((item) => ({ ...item })))
+  await writeGatewaySharedCacheBestEffort(
+    () => setProviderModelCatalogSharedCacheEntry(cacheKey, cached),
+    'gateway_provider_model_catalog_shared_cache_write_failed',
+    '网关模型目录 Redis 缓存写入失败，保留当前请求已取得的事实'
+  )
 }
 
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
@@ -1401,13 +1461,21 @@ function clearProviderModelCatalogSharedCache(): void {
 
 async function getProviderModelRouteIndexSharedCacheEntry(cacheKey: string): Promise<ProviderModelRouteIndexCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  const cached = await providerModelRouteIndexSharedCache.get(cacheKey)
+  const cached = await readGatewaySharedCacheBestEffort(
+    () => providerModelRouteIndexSharedCache.get(cacheKey),
+    'gateway_provider_model_route_index_shared_cache_read_failed',
+    '网关模型路由 Redis 缓存读取失败，按缓存未命中继续'
+  )
   return cached ? providerModelRouteIndexCacheEntryFromShared(cached) : undefined
 }
 
 async function setProviderModelRouteIndexSharedCacheEntry(cacheKey: string, entry: ProviderModelRouteIndexCacheEntry): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  await providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs })
+  await writeGatewaySharedCacheBestEffort(
+    () => providerModelRouteIndexSharedCache.set(cacheKey, providerModelRouteIndexCacheEntryToShared(entry), { ttlMs: providerModelCatalogTtlMs }),
+    'gateway_provider_model_route_index_shared_cache_write_failed',
+    '网关模型路由 Redis 缓存写入失败，保留当前请求已取得的事实'
+  )
 }
 
 function clearProviderModelRouteIndexSharedCache(): void {
@@ -1431,7 +1499,11 @@ function providerModelRouteIndexCacheEntryToShared(entry: ProviderModelRouteInde
 
 async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Promise<ResponseInspectionPolicyCacheEntry | undefined> {
   if (runtimeConfig.cacheDriver !== 'redis') return undefined
-  const cached = await responseInspectionPolicySharedCache.get(cacheKey)
+  const cached = await readGatewaySharedCacheBestEffort(
+    () => responseInspectionPolicySharedCache.get(cacheKey),
+    'gateway_response_inspection_policy_shared_cache_read_failed',
+    '网关响应检查策略 Redis 缓存读取失败，按缓存未命中继续'
+  )
   return cached
     ? responseInspectionPolicyCacheEntry(cached.policies, Date.now(), cached.revalidateAtMs)
     : undefined
@@ -1439,8 +1511,12 @@ async function getResponseInspectionPolicySharedCacheEntry(cacheKey: string): Pr
 
 async function setResponseInspectionPolicyCacheEntryAsync(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
   const cachedEntry = responseInspectionPolicyCacheEntry(entry.policies, Date.now(), entry.revalidateAtMs)
-  await setResponseInspectionPolicySharedCacheEntry(cacheKey, cachedEntry)
   responseInspectionPolicyCache.set(cacheKey, cachedEntry, { ttlMs: responseInspectionPolicyRetainTtlMs })
+  await writeGatewaySharedCacheBestEffort(
+    () => setResponseInspectionPolicySharedCacheEntry(cacheKey, cachedEntry),
+    'gateway_response_inspection_policy_shared_cache_write_failed',
+    '网关响应检查策略 Redis 缓存写入失败，保留当前请求已取得的事实'
+  )
 }
 
 async function setResponseInspectionPolicySharedCacheEntry(cacheKey: string, entry: ResponseInspectionPolicyCacheEntry): Promise<void> {
@@ -1457,6 +1533,39 @@ function clearResponseInspectionPolicySharedCache(): void {
     'gateway_response_inspection_policy_shared_cache_clear_failed',
     '网关响应检查策略 Redis shared cache 清理失败'
   )
+}
+
+async function readGatewaySharedCacheBestEffort<T>(
+  operation: () => Promise<T>,
+  event: string,
+  message: string
+): Promise<T | undefined> {
+  try {
+    return await operation()
+  } catch (error) {
+    logGatewaySharedCacheFailure(error, event, message)
+    return undefined
+  }
+}
+
+async function writeGatewaySharedCacheBestEffort(
+  operation: () => Promise<unknown>,
+  event: string,
+  message: string
+): Promise<void> {
+  try {
+    await operation()
+  } catch (error) {
+    logGatewaySharedCacheFailure(error, event, message)
+  }
+}
+
+function logGatewaySharedCacheFailure(error: unknown, event: string, message: string): void {
+  const now = Date.now()
+  const lastLoggedAt = sharedCacheFailureLoggedAt.get(event) ?? 0
+  if (now - lastLoggedAt < sharedCacheFailureLogIntervalMs) return
+  sharedCacheFailureLoggedAt.set(event, now)
+  logger.warn(errorLogFields(error, { event }), message)
 }
 
 registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)

@@ -43,16 +43,12 @@ import {
   persistOpenAICodexHeadersIfNeeded
 } from './runtime/account-effects.js'
 import {
+  applyHandledUpstreamRoutingEffects,
   finalizeHandledUpstreamResponse,
   handleNonStreamUpstreamResponse,
   handleStreamUpstreamResponse,
   type StreamServerRetryReason
 } from './response/finalization.js'
-import {
-  gatewayUpstreamOutcomeUnknownErrorCode,
-  gatewayUpstreamOutcomeUnknownMessage,
-  upstreamAutomaticReplayBlockedAuditLabel
-} from './response/upstream-replay-blocked.js'
 import { observeGatewayRouting } from './observability/routing-observability.service.js'
 import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
@@ -73,7 +69,6 @@ import {
   GatewayRequestWallBudgetExhaustedError,
   NormalRouteFirstByteCutoverError,
   UpstreamAttemptError,
-  UpstreamReplayBlockedError,
   type GatewayUpstreamRequestCoordinationContext
 } from './dispatch/upstream-dispatch.js'
 import type { UpstreamAttempt } from './upstream/attempt.js'
@@ -90,7 +85,8 @@ import {
 } from './usage/records.js'
 import {
   isGatewayForcedDownstreamClose,
-  isProvenUpstreamBodyTransportError
+  isProvenUpstreamBodyTransportError,
+  markGatewayForcedDownstreamClose
 } from './upstream/body.js'
 import {
   isAccountDiagnosticTrafficSource,
@@ -98,10 +94,7 @@ import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
 } from './usage/traffic-source.js'
-import {
-  automaticUpstreamReplayAllowedAfterDispatch,
-  resolveOpenAIGatewayRequestLane
-} from './protocols/openai-v1/request-lane.js'
+import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
 import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
 import { gatewayClientAllowsUpstreamSemanticInterpretation } from './client-profiles/strategy.js'
@@ -121,13 +114,13 @@ import { gatewayAccountConcurrencyAccountId } from './dispatch/account-concurren
 import { gatewayAccountRuntimeKey } from './runtime/account-runtime-keys.js'
 import {
   getGatewayAccountCircuitService,
+  type GatewayAccountCircuitAttempt,
   type GatewayAccountCircuitConfirmation,
   type GatewayAccountCircuitTransportFailure
 } from './runtime/account-circuit.service.js'
 import { GeminiInteractionAffinityUnavailableError } from './protocols/gemini-v1beta/interaction-affinity.service.js'
 import {
   GatewayRequestAttemptTracker,
-  GatewayRequestWallBudget,
   RouteCoordinationBudget,
   defaultGatewayFinalResponseReserveMs,
   advanceGatewayRoutePlanCursor
@@ -220,7 +213,6 @@ export async function handleOpenAIGatewayRequest(
   options: OpenAIGatewayHandleOptions = {}
 ): Promise<void> {
   const startedAt = Date.now()
-  const gatewayRequestWallBudget = new GatewayRequestWallBudget({ requestAcceptedAtMs: startedAt })
   const requestAttemptTracker = new GatewayRequestAttemptTracker()
   const httpCompletion = observeGatewayHttpCompletion(res)
   const abortController = new AbortController()
@@ -240,7 +232,7 @@ export async function handleOpenAIGatewayRequest(
   }
   res.once('finish', () => logDownstreamLifecycle('success'))
   res.once('close', () => {
-    if (!res.writableEnded) logDownstreamLifecycle('aborted')
+    if (!res.writableFinished) logDownstreamLifecycle('aborted')
   })
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
@@ -266,6 +258,12 @@ export async function handleOpenAIGatewayRequest(
     captureMode: options.auditCaptureMode ?? (isAccountProbeTrafficSource(trafficSource) ? 'metadata_only' : 'default')
   })
   let activeDownstreamSessionAffinity: { key: string; accountId: string } | undefined
+  let pendingFailedAttemptAccountSlotRelease: (() => void) | undefined
+  const releasePendingFailedAttemptAccountSlot = (): void => {
+    const release = pendingFailedAttemptAccountSlotRelease
+    pendingFailedAttemptAccountSlotRelease = undefined
+    release?.()
+  }
   const clearActiveDownstreamSessionAffinity = async (): Promise<void> => {
     if (!activeDownstreamSessionAffinity) {
       return
@@ -275,13 +273,14 @@ export async function handleOpenAIGatewayRequest(
     await forgetOpenAIAccountForSessionAsync(binding.key, binding.accountId)
   }
   req.once('aborted', () => {
+    if (isGatewayForcedDownstreamClose(res)) return
     auditCapture.markClientAborted()
     abortController.abort()
     clearActiveDownstreamSessionAffinity()
   })
   res.once('close', () => {
     if (!isGatewayForcedDownstreamClose(res)) {
-      if (!res.writableEnded) {
+      if (!res.writableFinished) {
         auditCapture.markClientAborted()
         abortController.abort()
       }
@@ -417,7 +416,6 @@ export async function handleOpenAIGatewayRequest(
         ...options,
         trafficSource,
         requestLane,
-        gatewayRequestWallBudget,
         routeCoordinationBudget,
         requestAttemptTracker
       },
@@ -1008,9 +1006,6 @@ export async function handleOpenAIGatewayRequest(
           }, 'expected_failure', upstreamDispatchStartedAt)
           continue
         }
-        if (error instanceof UpstreamReplayBlockedError) {
-          throw error
-        }
         logRequestStage('upstream.dispatch.failed', {
           traceId,
           error,
@@ -1132,8 +1127,12 @@ export async function handleOpenAIGatewayRequest(
         upstreamUrl,
         status: upstreamResponse.status
       })
-      const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency)
+      const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency, {
+        deferUntilExplicitRelease: true,
+        clientAbortSignal: requestExecutionSignal
+      })
       const effectiveFirstByteDeadlineMs = normalRouteFirstByteDeadline?.effectiveDeadlineMs
+      let attemptErrorEscaped = false
 
       try {
         activeDownstreamSessionAffinity = sessionAffinityKey
@@ -1300,22 +1299,6 @@ export async function handleOpenAIGatewayRequest(
               await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
             }
             if (requestErrorResult.action === 'skip_account') {
-              if (!automaticUpstreamReplayAllowedAfterDispatch(req, currentPreflight.requestLane)) {
-                auditCapture.addGatewayMetadata({
-                  label: upstreamAutomaticReplayBlockedAuditLabel,
-                  metadata: {
-                    accountId: account.id,
-                    phase: 'upstream_response_body',
-                    requestLane: currentPreflight.requestLane,
-                    endpoint: gatewayUsageContext.endpoint
-                  }
-                })
-                throw new UpstreamReplayBlockedError(
-                  gatewayUpstreamOutcomeUnknownMessage,
-                  requestErrorResult.lastAttempt,
-                  [account.id]
-                )
-              }
               streamServerRetryExcludedAccountIds.add(account.id)
               if (speedFirstRetryCandidateAccountIds?.has(account.id)) {
                 speedFirstRetryCandidateAccountIds = undefined
@@ -1464,41 +1447,6 @@ export async function handleOpenAIGatewayRequest(
             await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
           }
           if (requestExecutionSignal.aborted || res.destroyed) {
-            return
-          }
-          if (!automaticUpstreamReplayAllowedAfterDispatch(req, currentPreflight.requestLane)) {
-            auditCapture.addGatewayMetadata({
-              label: upstreamAutomaticReplayBlockedAuditLabel,
-              metadata: {
-                accountId: account.id,
-                phase: 'upstream_response_retry',
-                retryReason: handledResponse.retryReason,
-                requestLane: currentPreflight.requestLane,
-                endpoint: gatewayUsageContext.endpoint
-              }
-            })
-            const responsePayload = gatewayErrorPayload(
-              gatewayUpstreamOutcomeUnknownMessage,
-              gatewayUpstreamOutcomeUnknownErrorCode,
-              gatewayUpstreamOutcomeUnknownErrorCode
-            )
-            await sendGatewayFailureResponse({
-              req,
-              res,
-              auditCapture,
-              usageContext: gatewayUsageContext,
-              startedAt,
-              statusCode: 503,
-              responsePayload,
-              audit: {
-                outcome: 'upstream_failed',
-                errorPhase: 'dispatch',
-                errorCode: gatewayUpstreamOutcomeUnknownErrorCode,
-                errorMessage: gatewayUpstreamOutcomeUnknownMessage
-              },
-              recordUsage: false,
-              usageErrorMessage: gatewayUpstreamOutcomeUnknownMessage
-            })
             return
           }
           if (
@@ -1882,8 +1830,7 @@ export async function handleOpenAIGatewayRequest(
             })
           }
         }
-        const httpCompletedAtMs = await httpCompletion.wait()
-        await finalizeHandledUpstreamResponse({
+        const handledResponseFinalizationInput = {
           req,
           res,
           account,
@@ -1895,27 +1842,52 @@ export async function handleOpenAIGatewayRequest(
           timeoutProfile,
           usageContext: gatewayUsageContext,
           startedAt,
-          completedAtMs: httpCompletedAtMs,
           signal: requestExecutionSignal,
           result: handledResponse,
           clientIpAccountAvoidanceTracker,
           accountStateMutationEnabled: options.disableAccountStateMutation !== true,
           automaticAccountStateMutationEnabled: false,
           downstreamCommitState: currentPreflight.downstreamCommitState
-        })
+        }
+        await applyHandledUpstreamRoutingEffects(handledResponseFinalizationInput)
         if (handledResponse.protocolValidatedSuccess === true) {
           await confirmHalfOpenSuccess()
           await confirmSameAccountApiKeyFailures()
         }
-        return
-      } finally {
-        firstByteDeadlineCoordinator?.supersede()
-        await hotQualityAttempt.recordTerminal({
-          outcomeClass: requestExecutionSignal.aborted ? 'client_cancellation' : 'unknown',
-          source: 'request_lifecycle'
-        })
         await releaseHalfOpenLease()
         releaseAccountSlot()
+        const httpCompletedAtMs = await httpCompletion.wait()
+        await finalizeHandledUpstreamResponse({
+          ...handledResponseFinalizationInput,
+          completedAtMs: httpCompletedAtMs,
+          routingEffectsApplied: true
+        })
+        return
+      } catch (error) {
+        attemptErrorEscaped = true
+        throw error
+      } finally {
+        try {
+          firstByteDeadlineCoordinator?.supersede()
+          await settleTransferredAccountCircuitAttemptSafely(accountCircuitAttempt, account.id)
+        } finally {
+          try {
+            await hotQualityAttempt.recordTerminal({
+              outcomeClass: requestExecutionSignal.aborted ? 'client_cancellation' : 'unknown',
+              source: 'request_lifecycle'
+            })
+          } finally {
+            try {
+              await releaseHalfOpenLease()
+            } finally {
+              if (attemptErrorEscaped && !requestExecutionSignal.aborted) {
+                pendingFailedAttemptAccountSlotRelease = releaseAccountSlot
+              } else {
+                releaseAccountSlot()
+              }
+            }
+          }
+        }
       }
     }
   } catch (error) {
@@ -1934,11 +1906,11 @@ export async function handleOpenAIGatewayRequest(
       error,
       signal: abortController.signal
     })) {
+      releasePendingFailedAttemptAccountSlot()
       return
     }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
-    const automaticReplayBlocked = error instanceof UpstreamReplayBlockedError
     if (error instanceof UpstreamAttemptError) {
       getRequestLogger().warn({
         event: 'gateway_dispatch_exhausted',
@@ -1960,8 +1932,9 @@ export async function handleOpenAIGatewayRequest(
       }), '网关请求处理出现未预期异常')
     }
     notifyUpstreamAttemptDiagnostic(options, lastAttempt)
-    if (!automaticReplayBlocked && shouldSendDispatchExhaustedProtocolRetry(currentPreflight, error, res)) {
+    if (shouldSendDispatchExhaustedProtocolRetry(currentPreflight, error, res)) {
       await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'dispatch_exhausted_protocol_retry')
+      releasePendingFailedAttemptAccountSlot()
       auditCapture.addGatewayMetadata({
         label: 'dispatch_exhausted_protocol_retry',
         metadata: {
@@ -1986,21 +1959,14 @@ export async function handleOpenAIGatewayRequest(
       })
       return
     }
-    const diagnosticError = !automaticReplayBlocked && options.exposeUpstreamDiagnostics
+    const diagnosticError = options.exposeUpstreamDiagnostics
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
-    const statusCode = automaticReplayBlocked ? 503 : diagnosticError?.statusCode ?? 503
-    const responsePayload = automaticReplayBlocked
-      ? gatewayErrorPayload(
-          gatewayUpstreamOutcomeUnknownMessage,
-          gatewayUpstreamOutcomeUnknownErrorCode,
-          gatewayUpstreamOutcomeUnknownErrorCode
-        )
-      : diagnosticError?.payload
-        ?? gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode)
-    if (!automaticReplayBlocked) {
-      await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
-    }
+    const statusCode = diagnosticError?.statusCode ?? 503
+    const responsePayload = diagnosticError?.payload
+      ?? gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode)
+    await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
+    releasePendingFailedAttemptAccountSlot()
     await sendGatewayFailureResponse({
       req,
       res,
@@ -2013,19 +1979,41 @@ export async function handleOpenAIGatewayRequest(
         outcome: 'upstream_failed',
         errorPhase: 'dispatch',
         errorCode: responsePayload.error.code ?? 'service_unavailable',
-        errorMessage: automaticReplayBlocked
-          ? gatewayUpstreamOutcomeUnknownMessage
-          : diagnosticError?.errorMessage ?? message
+        errorMessage: diagnosticError?.errorMessage ?? message
       },
       recordUsage: !lastAttempt,
       usageErrorMessage: message
     })
   } finally {
+    releasePendingFailedAttemptAccountSlot()
     await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
     speedFirstCutoverReservation?.release()
     releaseClientIpSlot()
     auditCapture.cancel()
   }
+}
+
+async function settleTransferredAccountCircuitAttemptSafely(
+  attempt: GatewayAccountCircuitAttempt | undefined,
+  accountId: string
+): Promise<void> {
+  if (!attempt?.isConfirmation) return
+  let lastError: unknown
+  for (let retry = 0; retry < 2; retry += 1) {
+    try {
+      // The attempt pins its first terminal intent. If an earlier failure or
+      // framing settlement lost its store reply, reportUnknown retries that
+      // exact intent instead of replacing it with a contradictory outcome.
+      await attempt.reportUnknown()
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  getRequestLogger().warn(errorLogFields(lastError, {
+    event: 'gateway_account_circuit_transferred_confirmation_settlement_failed',
+    accountId
+  }), '账户 confirmation 在上游处理结束后结算失败，保留原终态意图并等待租约到期')
 }
 
 function notifyUpstreamAttemptDiagnostic(
@@ -2114,14 +2102,28 @@ function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispat
   return releaseClientIpSlot
 }
 
-export function attachAccountSlotRelease(res: Response, releaseConcurrency: () => void): () => void {
+export function attachAccountSlotRelease(
+  res: Response,
+  releaseConcurrency: () => void,
+  options: {
+    deferUntilExplicitRelease?: boolean
+    clientAbortSignal?: AbortSignal
+  } = {}
+): () => void {
+  const onHttpComplete = () => {
+    if (options.deferUntilExplicitRelease !== true) release()
+  }
+  const onClientAbort = () => release()
   const release = once(() => {
-    res.off('finish', release)
-    res.off('close', release)
+    res.off('finish', onHttpComplete)
+    res.off('close', onHttpComplete)
+    options.clientAbortSignal?.removeEventListener('abort', onClientAbort)
     releaseConcurrency()
   })
-  res.once('finish', release)
-  res.once('close', release)
+  res.once('finish', onHttpComplete)
+  res.once('close', onHttpComplete)
+  options.clientAbortSignal?.addEventListener('abort', onClientAbort, { once: true })
+  if (options.clientAbortSignal?.aborted) release()
   return release
 }
 
@@ -2240,6 +2242,7 @@ async function sendStreamServerRetryExhaustedResponse(input: {
       }
     })
     if (!input.res.writableEnded && !input.res.destroyed) {
+      markGatewayForcedDownstreamClose(input.res, 'stream_retry_exhausted')
       input.res.destroy()
     }
     input.auditCapture.finalize({
@@ -2410,15 +2413,35 @@ async function recordKnownClientIpRequestError(
   if (!sample) {
     return
   }
-  const result = await recordClientIpErrorCircuitSampleAsync({
-    systemAccountId: usageContext.systemAccountId,
-    apiKeyId: usageContext.apiKeyId,
-    groupId: usageContext.groupId,
-    clientIp: usageContext.clientIp,
-    endpoint: usageContext.endpoint,
-    reason: sample.reason,
-    signature: sample.signature
-  })
+  let result: Awaited<ReturnType<typeof recordClientIpErrorCircuitSampleAsync>>
+  try {
+    result = await recordClientIpErrorCircuitSampleAsync({
+      systemAccountId: usageContext.systemAccountId,
+      apiKeyId: usageContext.apiKeyId,
+      groupId: usageContext.groupId,
+      clientIp: usageContext.clientIp,
+      endpoint: usageContext.endpoint,
+      reason: sample.reason,
+      signature: sample.signature
+    })
+  } catch (stateError) {
+    getRequestLogger().warn(errorLogFields(stateError, {
+      event: 'gateway_client_ip_error_circuit_record_failed',
+      systemAccountId: usageContext.systemAccountId,
+      apiKeyId: usageContext.apiKeyId,
+      groupId: usageContext.groupId,
+      clientIp: usageContext.clientIp,
+      reason: sample.reason
+    }), '客户端 IP 错误电路写入失败，保留原始请求错误响应')
+    auditCapture.addGatewayMetadata({
+      label: 'client_ip_error_circuit_state_failure',
+      metadata: {
+        operation: 'record_failure',
+        reason: sample.reason
+      }
+    })
+    return
+  }
   if (!result.blocked) {
     return
   }

@@ -366,8 +366,8 @@ AI 账户运行态探针在 performance 模式下必须按多节点设计运行�
 | 队列 / command | SQLite standalone | PostgreSQL performance |
 | --- | --- | --- |
 | DB service 业务写 | 业务库单 owner 串行 | 保持 typed operation，可并发执行，按事务和同 key 顺序约束 |
-| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，ingest worker 通过 consumer group `juhe-ai:usage-record-writers` 消费，落库成功后 ack；Redis 入队失败时返回或记录队列基础设施错误，禁止回退到现有 IPC / 本地内存队列 |
-| audit / operation / public logs | ingest owner 串行 | performance 模式先写入对应 Redis Stream，再由 ingest-worker consumer 按表和 trace 分桶消费，落库成功后 ack；Redis 入队失败不回退 IPC / 本地内存队列 |
+| usage records | ingest 内按 shard / 批次串行 | `redis_stream` 模式先写入 Redis Stream `juhe-ai:queue:usage-records`，多个 usage worker 通过同一 consumer group 消费，落库成功后 ack；Redis 入队失败时写入 release 外的本机 durable spool，保留稳定 ID 等待 primary Usage worker 重放，禁止回退 IPC / 内存队列 |
+| audit / operation / public logs | ingest owner 串行 | performance 模式先写入对应 Redis Stream，再由多个 log worker 在同一 consumer group 内分摊，落库成功后 ack；旁路异常不能回滚已经成功的客户端或管理业务结果 |
 | stats aggregation | stats writer 串行短事务 | 可按作用域 / 分区并行读取，写入仍按窗口事务控制，避免同一 summary key 并发 upsert 放大冲突 |
 | record maintenance | 低优先级串行小批 | 低优先级并发小批，受全局并发和连接池限制 |
 
@@ -388,9 +388,9 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 
 - server 进程仍不直接导入管理路由和 repository。
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
-- 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
+- standalone 常驻后台进程保持 ingest-worker、stats-worker、ops-worker 三类；performance 拆为可配置的 usage-worker、log-worker，以及单例 stats-worker、ops-worker，写入 PostgreSQL 时按 typed operation、consumer group 和连接池背压并发消费。
 - 高性能模式下 ops-worker 承接 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账户激活检查、始终存在的周期健康检测、账号冷却复测、账户内 API Key 检查 / 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；不存在 `health_check_enabled` 候选条件。这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
-- 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup` 到 record-maintenance；操作日志、公开接口日志、运行日志索引 / 游标、模型检测历史、统计窗口、系统指标、表容量快照、系统会话和 Codex 上下文状态走 PostgreSQL async 保留入口按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。通用 `non_business_data_cleanup` 不再由 PG 定时保留入口复用 usage cutoff 清审计表，审计主表、attempt、payload refs 和错误组只能走专用审计保留策略清理。
+- 高性能模式下 primary usage-worker 注册 `data-retention-cleanup` 并处理 record-maintenance，primary log-worker 注册审计热保留和运行日志索引维护。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup`；其他保留入口继续按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
 - 人工账户测试仍是独立单账户诊断任务：每次使用独立 `testSessionId`，A/B 会话互不阻塞，不建立用户级全局锁，也不提供多账户批量测试。测试结果只写任务、使用记录和审计，不修改账户、授权实例、Key、额度快照、健康或 Redis 调度运行态。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、任意远端失败只诊断 / 退避、来源匹配恢复和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。

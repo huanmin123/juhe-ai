@@ -16,6 +16,18 @@ import {
 } from '../../modules/gateway/dispatch/upstream-dispatch.js'
 import { resolveOpenAIGatewayRequestLane } from '../../modules/gateway/protocols/openai-v1/request-lane.js'
 import { clearHighConcurrencyGroupQueues } from '../../modules/gateway/runtime/high-concurrency-queue.service.js'
+import {
+  accountCircuitDispatchRevision,
+  ensureGatewayAccountCircuitRuntimeStateReady,
+  gatewayAccountProtocolModelScope,
+  getGatewayAccountCircuitService,
+  getGatewayAccountCircuitStore,
+  resetGatewayAccountCircuitStoreForTest
+} from '../../modules/gateway/runtime/account-circuit.service.js'
+import {
+  clearGatewayLocalAccountSuppressionsForTest,
+  suppressGatewayAccountLocallyForTest
+} from '../../modules/gateway/runtime/account-side-effects.service.js'
 import { ServerRetryBudget } from '../../modules/gateway/runtime/server-retry-budget.js'
 import {
   GatewayRequestAttemptTracker,
@@ -36,6 +48,8 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
+runtimeConfig.runtimeMode = 'standalone'
+runtimeConfig.runtimeStateDriver = 'memory'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -59,6 +73,7 @@ const settings: GatewaySettings = {
   imageFirstResponseTimeoutSeconds: 600,
   imageStreamIdleTimeoutSeconds: 120,
   imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  imageRequestWallTimeoutSeconds: 3600,
   noAvailableAccountWaitTimeoutSeconds: 3,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
@@ -99,6 +114,7 @@ let requestCoordinationSequence = 0
 try {
   clearAccountConcurrency()
   clearHighConcurrencyGroupQueues()
+  await verifyConfirmationLeaseReleasedWhenLocalSuppressionSkipsDispatch()
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/images/generations')), 'image', 'OpenAI 图片接口应识别为图像通道')
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/responses', { model: 'gpt-image-1', prompt: 'x' })), 'image', 'gpt-image 模型应识别为图像通道')
   assert.equal(resolveOpenAIGatewayRequestLane(buildLaneRequest('/v1/chat/completions', { model: 'dall-e-3', prompt: 'x' })), 'image', 'dall-e 模型应识别为图像通道')
@@ -355,6 +371,74 @@ async function createHoldAndReleaseServer(): Promise<{ server: http.Server; base
   return {
     server,
     baseUrl: `http://127.0.0.1:${address.port}/v1`
+  }
+}
+
+async function verifyConfirmationLeaseReleasedWhenLocalSuppressionSkipsDispatch(): Promise<void> {
+  const previousProcessRole = runtimeConfig.processRole
+  runtimeConfig.processRole = 'db-service'
+  try {
+    resetGatewayAccountCircuitStoreForTest()
+    clearGatewayLocalAccountSuppressionsForTest()
+    getGatewayAccountCircuitService()
+    assert.equal(await ensureGatewayAccountCircuitRuntimeStateReady(), true, 'confirmation 派发前退出回归要求 runtime state ready')
+
+    const account = buildAccount({
+      id: 'acct_confirmation_predispatch_skip',
+      name: 'confirmation 派发前屏蔽账号',
+      concurrencyLimit: 1,
+      type: 'api_key',
+      baseUrl: 'http://127.0.0.1:1/v1'
+    })
+    const scope = gatewayAccountProtocolModelScope(account, 'text', 'gpt-5.5')
+    const dispatchRevision = accountCircuitDispatchRevision(account)
+    const store = getGatewayAccountCircuitStore()
+    const seededAtMs = Date.now() - 10_000
+    const suspected = await store.suspect({
+      scope,
+      dispatchRevision,
+      transitionId: 'predispatch-suspect',
+      reason: 'seed independent transport fact',
+      confirmationFailuresRequired: 2,
+      failureEvidenceKey: 'a'.repeat(64),
+      nowMs: seededAtMs
+    })
+    assert.equal(suspected.status, 'applied')
+    assert((suspected.state.retryAtMs ?? Number.POSITIVE_INFINITY) <= Date.now(), '测试 SUSPECT 必须已经到期')
+    suppressGatewayAccountLocallyForTest(account.id, 60_000, 'confirmation acquired 后模拟派发前本地屏蔽')
+
+    await assert.rejects(
+      fetchFirstAvailableUpstream(
+        buildRequest(),
+        [account],
+        settings,
+        { ...usageContext, traceId: 'trace_confirmation_predispatch_skip' },
+        auditCapture,
+        undefined,
+        new AbortController().signal,
+        undefined,
+        'text',
+        undefined,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        false,
+        createRequestCoordination(),
+        false,
+        false
+      ),
+      (error: unknown) => error instanceof UpstreamAttemptError
+    )
+    const afterSkip = await store.get(scope)
+    assert.equal(afterSkip.phase, 'SUSPECT')
+    assert.equal(afterSkip.lease, undefined, '本地屏蔽发生在真实上游派发前时必须立即结算 confirmation 租约')
+    assert.equal(afterSkip.confirmationFailureCount, 0, '派发前退出不得伪造 confirmation 失败')
+    assert.equal(afterSkip.backoffAttempt, 1, '派发前 unknown 应按有界退避延后而不是忙循环')
+  } finally {
+    clearGatewayLocalAccountSuppressionsForTest()
+    resetGatewayAccountCircuitStoreForTest()
+    runtimeConfig.processRole = previousProcessRole
   }
 }
 

@@ -14,7 +14,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { logger } from '../../shared/logger.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 
-type RequestKind = 'responses_background' | 'responses_hosted_tool' | 'audio_speech'
+type RequestKind = 'responses_background' | 'responses_hosted_tool' | 'audio_speech' | 'image_generation'
 type FailureMode = 'transport_reset' | 'complete_http_failure'
 
 interface ReplayScenario {
@@ -25,7 +25,6 @@ interface ReplayScenario {
   failureErrorCode?: string
   policyAction?: AccountErrorHandlingRuleAction
   expectedAccountStatus: 'active' | 'temporary_unavailable' | 'error'
-  replayExpected: boolean
 }
 
 interface ScenarioFixture {
@@ -66,32 +65,35 @@ const scenarios: ReplayScenario[] = [
     requestKind: 'responses_background',
     failureMode: 'transport_reset',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'background_no_policy_http_failure',
     requestKind: 'responses_background',
     failureMode: 'complete_http_failure',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'background_untrusted_401_model_not_found',
+    id: 'background_untrusted_401',
     requestKind: 'responses_background',
     failureMode: 'complete_http_failure',
     failureStatusCode: 401,
-    failureErrorCode: 'model_not_found',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'background_untrusted_model_not_supported',
+    id: 'background_model_not_found',
+    requestKind: 'responses_background',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 503,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'background_model_not_supported',
     requestKind: 'responses_background',
     failureMode: 'complete_http_failure',
     failureStatusCode: 400,
     failureErrorCode: 'model_not_supported',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'background_explicit_cooldown',
@@ -99,7 +101,6 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'temp_unschedulable',
     expectedAccountStatus: 'temporary_unavailable',
-    replayExpected: false
   },
   {
     id: 'background_explicit_retry_next',
@@ -107,39 +108,41 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'retry_next',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'hosted_tool_transport_reset',
     requestKind: 'responses_hosted_tool',
     failureMode: 'transport_reset',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'hosted_tool_no_policy_http_failure',
     requestKind: 'responses_hosted_tool',
     failureMode: 'complete_http_failure',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'hosted_tool_untrusted_401_model_not_found',
+    id: 'hosted_tool_untrusted_401',
     requestKind: 'responses_hosted_tool',
     failureMode: 'complete_http_failure',
     failureStatusCode: 401,
-    failureErrorCode: 'model_not_found',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'hosted_tool_untrusted_model_not_supported',
+    id: 'hosted_tool_model_not_found',
+    requestKind: 'responses_hosted_tool',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 503,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'hosted_tool_model_not_supported',
     requestKind: 'responses_hosted_tool',
     failureMode: 'complete_http_failure',
     failureStatusCode: 400,
     failureErrorCode: 'model_not_supported',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'hosted_tool_explicit_disable',
@@ -147,7 +150,6 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'error_disabled',
     expectedAccountStatus: 'error',
-    replayExpected: false
   },
   {
     id: 'hosted_tool_explicit_retry_next',
@@ -155,39 +157,41 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'retry_next',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'audio_transport_reset',
     requestKind: 'audio_speech',
     failureMode: 'transport_reset',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'audio_no_policy_http_failure',
     requestKind: 'audio_speech',
     failureMode: 'complete_http_failure',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'audio_untrusted_401_model_not_found',
+    id: 'audio_untrusted_401',
     requestKind: 'audio_speech',
     failureMode: 'complete_http_failure',
     failureStatusCode: 401,
-    failureErrorCode: 'model_not_found',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
-    id: 'audio_untrusted_model_not_supported',
+    id: 'audio_model_not_found',
+    requestKind: 'audio_speech',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 503,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'audio_model_not_supported',
     requestKind: 'audio_speech',
     failureMode: 'complete_http_failure',
     failureStatusCode: 400,
     failureErrorCode: 'model_not_supported',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'audio_explicit_cooldown',
@@ -195,7 +199,6 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'temp_unschedulable',
     expectedAccountStatus: 'temporary_unavailable',
-    replayExpected: false
   },
   {
     id: 'audio_explicit_retry_next',
@@ -203,10 +206,44 @@ const scenarios: ReplayScenario[] = [
     failureMode: 'complete_http_failure',
     policyAction: 'retry_next',
     expectedAccountStatus: 'active',
-    replayExpected: false
+  },
+  {
+    id: 'image_generation_transport_reset',
+    requestKind: 'image_generation',
+    failureMode: 'transport_reset',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'image_generation_no_policy_http_failure',
+    requestKind: 'image_generation',
+    failureMode: 'complete_http_failure',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'image_generation_untrusted_401',
+    requestKind: 'image_generation',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 401,
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'image_generation_model_not_found',
+    requestKind: 'image_generation',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 503,
+    failureErrorCode: 'model_not_found',
+    expectedAccountStatus: 'active',
+  },
+  {
+    id: 'image_generation_model_not_supported',
+    requestKind: 'image_generation',
+    failureMode: 'complete_http_failure',
+    failureStatusCode: 400,
+    failureErrorCode: 'model_not_supported',
+    expectedAccountStatus: 'active',
   }
 ]
-assert.equal(scenarios.length, 18, '副作用真实 HTTP 回归必须保留三类请求各六个场景')
+assert.equal(scenarios.length, 26, '统一切号回归必须覆盖四类请求的 HTTP、transport 与显式策略失败')
 
 const keepAliveScenarios: ReplayScenario[] = [
   {
@@ -214,14 +251,12 @@ const keepAliveScenarios: ReplayScenario[] = [
     requestKind: 'responses_background',
     failureMode: 'transport_reset',
     expectedAccountStatus: 'active',
-    replayExpected: false
   },
   {
     id: 'keep_alive_hosted_tool_http_failure',
     requestKind: 'responses_hosted_tool',
     failureMode: 'complete_http_failure',
     expectedAccountStatus: 'active',
-    replayExpected: false
   }
 ]
 
@@ -293,6 +328,8 @@ async function main(): Promise<void> {
   try {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+    const imagePermissionOwner = repositories.updateSystemAccount(access.systemAccountId, { imageGenerationEnabled: true })
+    assert.equal(imagePermissionOwner?.imageGenerationEnabled, true, '副作用回归必须为图片场景显式开启系统账号图像权限')
     settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
 
     upstreamServer = createUpstreamServer(hits)
@@ -311,7 +348,7 @@ async function main(): Promise<void> {
     }
     await exerciseKeepAliveTransportResetSequence(gatewayBaseUrl, keepAliveFixtures, hits)
 
-    console.log('副作用请求真实 HTTP 重放回归通过：background、hosted tool、audio 在 transport、完整 HTTP、显式策略与同 socket keep-alive 下均保持 at-most-once')
+    console.log('统一候选切换真实 HTTP 回归通过：background、hosted tool、audio、image 的 HTTP 与 transport 失败均切换后备账户')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -385,6 +422,14 @@ function sendFallbackSuccess(res: http.ServerResponse, scenario: ReplayScenario)
   if (scenario.requestKind === 'audio_speech') {
     res.writeHead(200, { 'content-type': 'audio/mpeg' })
     res.end(`mock-audio-fallback-${scenario.id}`)
+    return
+  }
+  if (scenario.requestKind === 'image_generation') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      created: 1,
+      data: [{ b64_json: Buffer.from(`mock-image-fallback-${scenario.id}`, 'utf8').toString('base64') }]
+    }))
     return
   }
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -474,7 +519,7 @@ function createAccount(input: {
         : undefined
     },
     groupId: input.groupId,
-    supportedModels: ['gpt-4o-mini'],
+    supportedModels: ['gpt-4o-mini', 'gpt-image-1'],
     healthCheckModel: 'gpt-4o-mini',
     status: 'active',
     schedulable: true,
@@ -538,12 +583,10 @@ async function exerciseScenario(
   const hits = allHits.filter((hit) => hit.scenarioId === scenario.id)
   const firstHits = hits.filter((hit) => hit.authorization === fixture.firstAuthorization)
   const fallbackHits = hits.filter((hit) => hit.authorization === fixture.fallbackAuthorization)
-  assert.equal(hits.length, scenario.replayExpected ? 2 : 1, `${scenario.id} 不得出现额外 Key/账户请求`)
+  assert.equal(hits.length, 2, `${scenario.id} 必须只命中首账户和后备账户；gateway HTTP ${response.status}: ${responseText}`)
   assert.deepEqual(
     hits.map((hit) => hit.authorization),
-    scenario.replayExpected
-      ? [fixture.firstAuthorization, fixture.fallbackAuthorization]
-      : [fixture.firstAuthorization],
+    [fixture.firstAuthorization, fixture.fallbackAuthorization],
     `${scenario.id} 上游命中顺序或数量错误`
   )
   assert.equal(
@@ -553,29 +596,14 @@ async function exerciseScenario(
   )
   assert.equal(firstHits[0]?.bodyAccepted, true, `${scenario.id} 首账户必须完整接收请求体后才制造失败`)
   assert.equal(firstHits[0]?.path, scenarioPath(scenario), `${scenario.id} 必须真实命中目标端点`)
-  assert.equal(fallbackHits.length, scenario.replayExpected ? 1 : 0, `${scenario.id} 后备账户命中数错误`)
-
-  if (scenario.replayExpected) {
-    assert.equal(response.status, 200, `${scenario.id} 显式 retry_next 应成功切换：${responseText}`)
-    assert.match(responseText, new RegExp(`fallback-(?:success|${scenario.id})`), `${scenario.id} 必须返回后备账户成功正文`)
-    assert.equal(fallbackHits[0]?.bodyAccepted, true, `${scenario.id} 后备账户必须真实接收请求体`)
+  assert.equal(fallbackHits.length, 1, `${scenario.id} 后备账户命中数错误`)
+  assert.equal(response.status, 200, `${scenario.id} 当前候选未交付结果时应成功切换：${responseText}`)
+  if (scenario.requestKind === 'image_generation') {
+    assert.match(responseText, /"data":\[\{"b64_json":"/, `${scenario.id} 必须返回后备账户图片正文`)
   } else {
-    assert.equal(response.status, 503, `${scenario.id} 不可重放结果应返回稳定 503：${responseText}`)
-    const errorPayload = parseJsonObject(responseText).error
-    assert(isRecord(errorPayload), `${scenario.id} 必须返回结构化网关错误：${responseText}`)
-    assert.equal(errorPayload.type, 'upstream_outcome_unknown', `${scenario.id} 必须返回稳定 error.type`)
-    assert.equal(errorPayload.code, 'upstream_outcome_unknown', `${scenario.id} 必须返回稳定 error.code`)
-    assert.equal(errorPayload.message, '上游可能已接收请求，但结果未知；网关未自动重放', `${scenario.id} 不得把副作用请求误写成图片请求`)
-    assert.doesNotMatch(responseText, /图片/, `${scenario.id} 客户端文案不得误称图片请求`)
-    assert.doesNotMatch(responseText, /vendor-private-error|vendor_code_|vendor_type_|471/, `${scenario.id} 不得泄漏供应商原错`)
-    assert.equal(response.headers.get('x-vendor-secret'), null, `${scenario.id} 不得透传供应商私有错误头`)
-    const audit = repositories.listAuditLogs({ traceId, pageSize: 10 }).items.at(0)
-    assert(audit, `${scenario.id} 必须写入可审计的网关失败记录`)
-    const replayBlock = (await gatewayMetadataPayloads(audit.id)).find((entry) => entry.label === 'upstream_automatic_replay_blocked')
-    assert(replayBlock, `${scenario.id} 必须使用通用自动重放阻止审计标签`)
-    assert.equal(replayBlock.metadata?.requestLane, 'text', `${scenario.id} 审计必须保留当前请求 lane`)
-    assert.equal(replayBlock.metadata?.endpoint, `POST ${scenarioPath(scenario)}`, `${scenario.id} 审计必须保留 endpoint`)
+    assert.match(responseText, new RegExp(`fallback-(?:success|${scenario.id})`), `${scenario.id} 必须返回后备账户成功正文`)
   }
+  assert.equal(fallbackHits[0]?.bodyAccepted, true, `${scenario.id} 后备账户必须真实接收请求体`)
 
   const firstAccount = repositories.findAccountForTest(fixture.firstAccountId, access)
   const fallbackAccount = repositories.findAccountForTest(fixture.fallbackAccountId, access)
@@ -607,17 +635,16 @@ async function exerciseKeepAliveTransportResetSequence(
         },
         agent
       )
-      assert.equal(response.statusCode, 503, `${scenario.id} keep-alive 请求必须返回稳定 503：${response.text}`)
-      const errorPayload = parseJsonObject(response.text).error
-      assert(isRecord(errorPayload), `${scenario.id} keep-alive 请求必须返回结构化网关错误`)
-      assert.equal(errorPayload.code, 'upstream_outcome_unknown')
+      assert.equal(response.statusCode, 200, `${scenario.id} keep-alive 请求必须由后备账户完成：${response.text}`)
+      assert.match(response.text, new RegExp(`fallback-(?:success|${scenario.id})`), `${scenario.id} keep-alive 请求必须返回后备账户正文`)
       const newHits = allHits.slice(hitOffset).filter((hit) => hit.scenarioId === scenario.id)
       assert.deepEqual(
         newHits.map((hit) => hit.authorization),
-        [fixture.firstAuthorization],
-        `${scenario.id} keep-alive 请求仍必须且只能执行首账户一次`
+        [fixture.firstAuthorization, fixture.fallbackAuthorization],
+        `${scenario.id} keep-alive 请求必须按首账户、后备账户顺序执行`
       )
       assert.equal(newHits[0]?.bodyAccepted, true, `${scenario.id} keep-alive 请求体必须已被上游完整接收`)
+      assert.equal(newHits[1]?.bodyAccepted, true, `${scenario.id} keep-alive 后备账户必须完整接收请求体`)
       assert.deepEqual(
         gatewayMiddlewareErrors.slice(middlewareErrorOffset),
         [],
@@ -683,7 +710,9 @@ function gatewayMiddlewareDiagnostics(offset: number): string {
 }
 
 function scenarioPath(scenario: ReplayScenario): string {
-  return scenario.requestKind === 'audio_speech' ? '/v1/audio/speech' : '/v1/responses'
+  if (scenario.requestKind === 'audio_speech') return '/v1/audio/speech'
+  if (scenario.requestKind === 'image_generation') return '/v1/images/generations'
+  return '/v1/responses'
 }
 
 function scenarioBody(scenario: ReplayScenario): Record<string, unknown> {
@@ -700,6 +729,13 @@ function scenarioBody(scenario: ReplayScenario): Record<string, unknown> {
       input: `background side effect ${scenario.id}`,
       background: true,
       stream: false
+    }
+  }
+  if (scenario.requestKind === 'image_generation') {
+    return {
+      model: 'gpt-image-1',
+      prompt: `image side effect ${scenario.id}`,
+      size: '1024x1024'
     }
   }
   return {
@@ -721,37 +757,6 @@ function policyMarker(scenario: ReplayScenario): string {
 function requiredPolicyMarker(value: string | undefined): string {
   assert(value, '显式策略测试账户必须提供唯一正文匹配标记')
   return value
-}
-
-async function gatewayMetadataPayloads(auditLogId: string): Promise<Array<{
-  label?: string
-  metadata?: Record<string, unknown>
-}>> {
-  const detail = repositories.getAuditLogDetail(auditLogId)
-  if (!detail) return []
-  const payloads = await Promise.all(detail.payloads
-    .filter((payload) => payload.partType === 'gateway_metadata')
-    .map((payload) => repositories.getAuditLogPayload(auditLogId, payload.id)))
-  return payloads
-    .map((payload) => parseJsonObject(payload?.bodyText ?? ''))
-    .filter((payload) => payload.type === 'gateway_metadata')
-    .map((payload) => ({
-      label: typeof payload.label === 'string' ? payload.label : undefined,
-      metadata: isRecord(payload.metadata) ? payload.metadata : undefined
-    }))
-}
-
-function parseJsonObject(value: string): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(value)
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 async function listen(server: http.Server): Promise<void> {

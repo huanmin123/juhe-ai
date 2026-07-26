@@ -19,6 +19,33 @@ import { saveCustomProviderModel } from '../../modules/model-pricing/model-catal
 import { logger } from '../../shared/logger.js'
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 
+const untrustedImageFailureScenarios = [
+  {
+    id: 'generation_401_model_not_found',
+    path: '/v1/images/generations',
+    statusCode: 401,
+    errorCode: 'model_not_found'
+  },
+  {
+    id: 'generation_400_model_not_supported',
+    path: '/v1/images/generations',
+    statusCode: 400,
+    errorCode: 'model_not_supported'
+  },
+  {
+    id: 'edit_401_model_not_found',
+    path: '/v1/images/edits',
+    statusCode: 401,
+    errorCode: 'model_not_found'
+  },
+  {
+    id: 'edit_400_model_not_supported',
+    path: '/v1/images/edits',
+    statusCode: 400,
+    errorCode: 'model_not_supported'
+  }
+] as const
+
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-generic-upstream-opaque-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
@@ -53,6 +80,8 @@ const [
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
+const accountCircuit = await import('../../modules/gateway/runtime/account-circuit.service.js')
+const apiKeyFailureGuard = await import('../../modules/gateway/runtime/account-api-key-failure-guard.service.js')
 const proxyHealth = await import('../../modules/gateway/runtime/proxy-health.service.js')
 
 const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
@@ -77,9 +106,12 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const hits: string[] = []
 const upstreamAuthorizations: string[] = []
+const untrustedImageBodyAcceptanceCounts = new Map<string, number>()
 const realDateNow = Date.now.bind(Date)
 const realSetTimeout = globalThis.setTimeout.bind(globalThis)
 let imageLongRequestAccepted = false
+let imageLongFailureRequestAccepted = false
+let mappedImageLongFailureRequestAccepted = false
 let imageTimeoutRequestAccepted = false
 let upstreamServer: http.Server | undefined
 let appServer: http.Server | undefined
@@ -92,6 +124,36 @@ try {
     hits.push(req.url ?? '')
     upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
     const path = req.url?.split('?', 1)[0] ?? ''
+    const untrustedImageFailureId = new URL(req.url ?? '/', 'http://127.0.0.1')
+      .searchParams
+      .get('mock_untrusted_image_failure')
+    const untrustedImageFailure = untrustedImageFailureScenarios.find((scenario) => (
+      scenario.id === untrustedImageFailureId && scenario.path === path
+    ))
+    if (
+      untrustedImageFailure
+      && req.headers.authorization === 'Bearer sk-generic-image-bad'
+    ) {
+      req.resume()
+      req.once('end', () => {
+        untrustedImageBodyAcceptanceCounts.set(
+          untrustedImageFailure.id,
+          (untrustedImageBodyAcceptanceCounts.get(untrustedImageFailure.id) ?? 0) + 1
+        )
+        res.writeHead(untrustedImageFailure.statusCode, {
+          'content-type': 'application/json; charset=utf-8',
+          'x-vendor-secret': 'must-not-reach-client'
+        })
+        res.end(JSON.stringify({
+          error: {
+            type: 'vendor_private_image_error',
+            code: untrustedImageFailure.errorCode,
+            message: `vendor-image-matrix-message-${untrustedImageFailure.id}`
+          }
+        }))
+      })
+      return
+    }
     if (req.url?.includes('mock_sse_wait_non_stream=1')) {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end('{"id":"non_stream_after_wait","choices":[{"message":{"role":"assistant","content":"must not be written into sse transport"}}]}')
@@ -131,14 +193,27 @@ try {
       req.once('end', () => res.destroy())
       return
     }
+    if (
+      path === '/v1/responses'
+      && req.url?.includes('mock_mapped_image_transport_drop=1')
+      && req.headers.authorization === 'Bearer sk-generic-image-mapping-transport-good'
+    ) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end('{"id":"mapped_image_transport_fallback_success","object":"response","status":"completed","output":[]}')
+      return
+    }
     if (path === '/v1/responses' && req.url?.includes('mock_mapped_image_http_failure=1')) {
       if (req.headers.authorization === 'Bearer sk-generic-image-mapping-transport-good') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end('{"id":"mapped_image_replay_was_not_blocked"}')
         return
       }
-      res.writeHead(418, { 'content-type': 'application/json; charset=utf-8' })
-      res.end('{"error":{"code":"mapped_image_unknown_failure","message":"untrusted mapped image error"}}')
+      req.resume()
+      req.once('end', () => {
+        mappedImageLongFailureRequestAccepted = true
+        res.writeHead(418, { 'content-type': 'application/json; charset=utf-8' })
+        res.end('{"error":{"code":"mapped_image_unknown_failure","message":"untrusted mapped image error"}}')
+      })
       return
     }
     if (
@@ -148,6 +223,15 @@ try {
     ) {
       req.resume()
       req.once('end', () => res.destroy())
+      return
+    }
+    if (
+      path === '/v1/responses'
+      && req.url?.includes('mock_responses_image_tool_transport_drop=1')
+      && req.headers.authorization === 'Bearer sk-generic-responses-image-tool-transport-good'
+    ) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end('{"id":"image_tool_transport_fallback_success","object":"response","status":"completed","output":[]}')
       return
     }
     if (path === '/v1/responses' && req.url?.includes('mock_responses_image_tool_missing_terminal=1')) {
@@ -217,6 +301,22 @@ try {
     }
     if (
       path === '/v1/images/generations'
+      && req.url?.includes('mock_image_long_failure=1')
+      && req.headers.authorization === 'Bearer sk-generic-image-long-running'
+    ) {
+      req.resume()
+      req.once('end', () => {
+        imageLongFailureRequestAccepted = true
+        res.writeHead(502, {
+          'content-type': 'application/json; charset=utf-8',
+          'x-vendor-secret': 'long-image-private-error'
+        })
+        res.end('{"error":{"code":"vendor_long_image_failure","message":"long image failed after provider accepted it"}}')
+      })
+      return
+    }
+    if (
+      path === '/v1/images/generations'
       && req.url?.includes('mock_image_first_response_timeout=1')
       && req.headers.authorization === 'Bearer sk-generic-image-long-running'
     ) {
@@ -233,12 +333,13 @@ try {
       || req.headers.authorization === 'Bearer sk-generic-image-transport-cross-group-good'
       || req.headers.authorization === 'Bearer sk-generic-image-body-good'
       || req.headers.authorization === 'Bearer sk-generic-image-policy-good'
+      || req.headers.authorization === 'Bearer sk-generic-image-long-good'
       || req.headers.authorization === 'Bearer sk-generic-image-mapping-transport-good'
       || req.headers.authorization === 'Bearer sk-generic-responses-image-tool-transport-good'
       || req.headers.authorization === 'Bearer sk-generic-responses-image-tool-stream-good'
     ) {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(path === '/v1/images/generations'
+      res.end(path.startsWith('/v1/images/')
         ? '{"created":1,"data":[{"b64_json":"aW1hZ2U="}]}'
         : '{"id":"generic_fallback_success","choices":[{"message":{"role":"assistant","content":"server failover completed"}}]}')
       return
@@ -364,34 +465,56 @@ try {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  const imageLongAccount = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: '图片独立长时限账号',
-    type: 'api_key',
-    credentials: { api_key: 'sk-generic-image-long-running', base_url: upstreamBaseUrl },
-    groupId: imageLongGroup.id,
-    supportedModels: ['gpt-image-1'],
-    healthCheckModel: 'gpt-image-1',
-    status: 'active',
-    schedulable: true,
-    priority: 0
-  }, access)
-  repositories.recordAccountHealthCheckSuccess(imageLongAccount.id, {
-    intervalHours: 12,
-    jitterMinutes: 0,
-    failureThreshold: 3,
-    statusCode: 200
-  })
+  const imageLongAccounts = [
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '图片独立长时限首选账号',
+      type: 'api_key',
+      credentials: { api_key: 'sk-generic-image-long-running', base_url: upstreamBaseUrl },
+      groupId: imageLongGroup.id,
+      supportedModels: ['gpt-image-1'],
+      healthCheckModel: 'gpt-image-1',
+      status: 'active',
+      schedulable: true,
+      priority: 0
+    }, access),
+    repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '图片独立长时限后备账号',
+      type: 'api_key',
+      credentials: { api_key: 'sk-generic-image-long-good', base_url: upstreamBaseUrl },
+      groupId: imageLongGroup.id,
+      supportedModels: ['gpt-image-1'],
+      healthCheckModel: 'gpt-image-1',
+      status: 'active',
+      schedulable: true,
+      priority: 10,
+      fallbackEnabled: true
+    }, access)
+  ]
+  for (const imageLongAccount of imageLongAccounts) {
+    repositories.recordAccountHealthCheckSuccess(imageLongAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+  }
   const imageLongApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '图片独立长时限 Key',
     groupBindings: [{ groupId: imageLongGroup.id, priority: 1, status: 'active' }],
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      firstByteDeadlineMs: 10_000
+    },
     status: 'active'
   }, access)
   assert(imageLongApiKey.key)
   const createImageReplayScenario = (suffix: 'transport' | 'body') => {
     const scenarioGroup = repositories.createGroup({
-      name: `图片重放阻断-${suffix}`,
+      name: `图片统一切号-${suffix}`,
       providerCode: GPT_VENDOR_CODE,
       enabled: true
     }, access)
@@ -399,7 +522,7 @@ try {
       repositories.createAccount({
         providerCode: GPT_VENDOR_CODE,
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-        name: `图片重放阻断-${suffix}-首选`,
+        name: `图片统一切号-${suffix}-首选`,
         type: 'api_key',
         credentials: { api_key: `sk-generic-image-${suffix}-bad`, base_url: upstreamBaseUrl },
         groupId: scenarioGroup.id,
@@ -412,7 +535,7 @@ try {
       repositories.createAccount({
         providerCode: GPT_VENDOR_CODE,
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-        name: `图片重放阻断-${suffix}-后备`,
+        name: `图片统一切号-${suffix}-后备`,
         type: 'api_key',
         credentials: { api_key: `sk-generic-image-${suffix}-good`, base_url: upstreamBaseUrl },
         groupId: scenarioGroup.id,
@@ -427,14 +550,14 @@ try {
     const groupBindings = [{ groupId: scenarioGroup.id, priority: 1, status: 'active' as const }]
     if (suffix === 'transport') {
       const crossGroup = repositories.createGroup({
-        name: '图片重放阻断-transport-跨组后备',
+        name: '图片统一切号-transport-跨组后备',
         providerCode: GPT_VENDOR_CODE,
         enabled: true
       }, access)
       scenarioAccounts.push(repositories.createAccount({
         providerCode: GPT_VENDOR_CODE,
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-        name: '图片重放阻断-transport-跨组后备',
+        name: '图片统一切号-transport-跨组后备',
         type: 'api_key',
         credentials: { api_key: 'sk-generic-image-transport-cross-group-good', base_url: upstreamBaseUrl },
         groupId: crossGroup.id,
@@ -455,7 +578,7 @@ try {
       })
     }
     const scenarioApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-      name: `图片重放阻断-${suffix}-Key`,
+      name: `图片统一切号-${suffix}-Key`,
       groupBindings,
       status: 'active'
     }, access)
@@ -509,7 +632,7 @@ try {
     }, access)
   ]
   const imageMappingGroup = repositories.createGroup({
-    name: '映射图片模型重放阻断',
+    name: '映射图片模型统一切号',
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
@@ -535,7 +658,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '映射图片模型重放阻断-首选',
+      name: '映射图片模型统一切号-首选',
       type: 'api_key',
       credentials: {
         api_key: 'sk-generic-image-mapping-transport-bad',
@@ -560,7 +683,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '映射图片模型重放阻断-后备',
+      name: '映射图片模型统一切号-后备',
       type: 'api_key',
       credentials: { api_key: 'sk-generic-image-mapping-transport-good', base_url: upstreamBaseUrl },
       groupId: imageMappingGroup.id,
@@ -574,7 +697,7 @@ try {
     }, access)
   ]
   const responsesImageToolGroup = repositories.createGroup({
-    name: 'Responses 图片工具重放阻断',
+    name: 'Responses 图片工具统一切号',
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
@@ -582,7 +705,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Responses 图片工具重放阻断-首选',
+      name: 'Responses 图片工具统一切号-首选',
       type: 'api_key',
       credentials: { api_key: 'sk-generic-responses-image-tool-transport-bad', base_url: upstreamBaseUrl },
       groupId: responsesImageToolGroup.id,
@@ -595,7 +718,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Responses 图片工具重放阻断-后备',
+      name: 'Responses 图片工具统一切号-后备',
       type: 'api_key',
       credentials: { api_key: 'sk-generic-responses-image-tool-transport-good', base_url: upstreamBaseUrl },
       groupId: responsesImageToolGroup.id,
@@ -608,7 +731,7 @@ try {
     }, access)
   ]
   const responsesImageToolStreamGroup = repositories.createGroup({
-    name: 'Responses 图片工具预提交重放阻断',
+    name: 'Responses 图片工具预提交统一切号',
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
@@ -616,7 +739,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Responses 图片工具预提交重放阻断-首选',
+      name: 'Responses 图片工具预提交统一切号-首选',
       type: 'api_key',
       credentials: { api_key: 'sk-generic-responses-image-tool-stream-bad', base_url: upstreamBaseUrl },
       groupId: responsesImageToolStreamGroup.id,
@@ -629,7 +752,7 @@ try {
     repositories.createAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: 'Responses 图片工具预提交重放阻断-后备',
+      name: 'Responses 图片工具预提交统一切号-后备',
       type: 'api_key',
       credentials: { api_key: 'sk-generic-responses-image-tool-stream-good', base_url: upstreamBaseUrl },
       groupId: responsesImageToolStreamGroup.id,
@@ -660,17 +783,21 @@ try {
     status: 'active'
   }, access)
   const imageMappingApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: '映射图片模型重放阻断-Key',
+    name: '映射图片模型统一切号-Key',
     groupBindings: [{ groupId: imageMappingGroup.id, priority: 1, status: 'active' }],
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      firstByteDeadlineMs: 10_000
+    },
     status: 'active'
   }, access)
   const responsesImageToolApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: 'Responses 图片工具重放阻断-Key',
+    name: 'Responses 图片工具统一切号-Key',
     groupBindings: [{ groupId: responsesImageToolGroup.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
   const responsesImageToolStreamApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: 'Responses 图片工具预提交重放阻断-Key',
+    name: 'Responses 图片工具预提交统一切号-Key',
     groupBindings: [{ groupId: responsesImageToolStreamGroup.id, priority: 1, status: 'active' }],
     status: 'active'
   }, access)
@@ -742,11 +869,126 @@ try {
     '显式 retry_next 只能切换当前请求，不得附带自动上游桶失败状态'
   )
 
+  const imageDispatchAccounts = [
+    repositories.findOpenAIAccountForGroup(imageGroup.id, imageBadAccount.id, access.systemAccountId),
+    repositories.findOpenAIAccountForGroup(imageGroup.id, imageGoodAccount.id, access.systemAccountId)
+  ]
+  assert(imageDispatchAccounts.every((candidate) => candidate), '图片状态码矩阵必须能读取首选与后备调度账户')
+  const imageCircuitScopes = imageDispatchAccounts.flatMap((candidate) => {
+    assert(candidate)
+    const protocolModelScope = accountCircuit.gatewayAccountProtocolModelScope(candidate, 'image', 'gpt-image-1')
+    return [
+      { kind: 'account' as const, accountRuntimeKey: protocolModelScope.accountRuntimeKey },
+      protocolModelScope
+    ]
+  })
+  const imageCircuitStore = accountCircuit.getGatewayAccountCircuitStore()
+  const imageAccountIds = [imageBadAccount.id, imageGoodAccount.id]
+  const imageAccountAvailabilitySnapshot = () => imageAccountIds.map((accountId) => {
+    const persisted = repositories.findAccountForTest(accountId, access)
+    assert(persisted, `图片状态码矩阵缺少账户 ${accountId}`)
+    return {
+      accountId,
+      status: persisted.status,
+      schedulable: persisted.schedulable,
+      temporaryUnavailable: persisted.apiKeyRuntime?.temporaryUnavailable ?? 0,
+      allUnavailable: persisted.apiKeyRuntime?.allUnavailable ?? false
+    }
+  })
+  const imageRuntimeSnapshot = () => {
+    const runtime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
+    return imageAccountIds.map((accountId) => runtime[accountId])
+  }
+  const imageApiKeyGuardSnapshot = () => apiKeyFailureGuard
+    .getGatewayAccountApiKeyFailureGuardSnapshotForTest()
+    .filter((entry) => imageAccountIds.includes(entry.accountId))
+  const imageCircuitIncidentSnapshot = () => databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT circuit_scope_key, state, generation, transition_id, updated_at_ms
+      FROM account_circuit_incidents
+      WHERE account_id IN (?, ?)
+      ORDER BY circuit_scope_key
+    `)
+    .all(imageBadAccount.id, imageGoodAccount.id) as unknown[]
+  const imageCircuitSnapshot = async () => await Promise.all(
+    imageCircuitScopes.map(async (scope) => await imageCircuitStore.get(scope))
+  )
+
+  await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+  for (const scenario of untrustedImageFailureScenarios) {
+    const hitOffset = hits.length
+    const authorizationOffset: number = upstreamAuthorizations.length
+    const availabilityBefore = imageAccountAvailabilitySnapshot()
+    const runtimeBefore = imageRuntimeSnapshot()
+    const apiKeyGuardBefore = imageApiKeyGuardSnapshot()
+    const sideEffectStateBefore = accountSideEffects.getGatewayAccountSideEffectState()
+    const circuitBefore = await imageCircuitSnapshot()
+    const circuitIncidentsBefore = imageCircuitIncidentSnapshot()
+    assert.deepEqual(runtimeBefore, [undefined, undefined], `${scenario.id} 前置条件不得已有账户 runtime 屏障`)
+    assert.deepEqual(apiKeyGuardBefore, [], `${scenario.id} 前置条件不得已有物理 Key failure guard`)
+    assert(circuitBefore.every((state) => state.phase === 'CLOSED'), `${scenario.id} 前置条件 circuit 必须全部 CLOSED`)
+
+    const scenarioUrl = `${baseUrl}${scenario.path}?mock_untrusted_image_failure=${scenario.id}`
+    const response = await fetch(scenarioUrl, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${imageApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-image-1',
+        prompt: `${scenario.id} must use unified failover`,
+        ...(scenario.path === '/v1/images/edits' ? { image: 'mock-image' } : {})
+      })
+    })
+    const responseText = await response.text()
+    assert.equal(response.status, 200, `${scenario.id} 必须切到健康后备并返回成功：${responseText}`)
+    assert.match(responseText, /aW1hZ2U=/, `${scenario.id} 必须交付后备图片结果`)
+    assert.equal(response.headers.get('x-vendor-secret'), null, `${scenario.id} 不得透传供应商私有响应头`)
+    assert.doesNotMatch(
+      responseText,
+      /model_not_found|model_not_supported|vendor_private_image_error|vendor-image-matrix-message|upstream_retryable_error/,
+      `${scenario.id} 不得泄漏供应商语义或提示客户端自动重放`
+    )
+    assert.equal(
+      untrustedImageBodyAcceptanceCounts.get(scenario.id),
+      1,
+      `${scenario.id} 失败首选 Mock 必须完整接收请求体且只能执行一次`
+    )
+    assert.deepEqual(
+      hits.slice(hitOffset),
+      [
+        `${scenario.path}?mock_untrusted_image_failure=${scenario.id}`,
+        `${scenario.path}?mock_untrusted_image_failure=${scenario.id}`
+      ],
+      `${scenario.id} 必须各命中一次失败首选和健康后备`
+    )
+    assert.deepEqual(
+      upstreamAuthorizations.slice(authorizationOffset),
+      ['Bearer sk-generic-image-bad', 'Bearer sk-generic-image-good'],
+      `${scenario.id} 必须按统一规则切到健康后备账户`
+    )
+
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    assert.deepEqual(imageAccountAvailabilitySnapshot(), availabilityBefore, `${scenario.id} 不得修改首选或后备账户可用状态`)
+    assert.deepEqual(imageRuntimeSnapshot(), runtimeBefore, `${scenario.id} 不得写账户 runtime 屏障`)
+    assert.deepEqual(imageApiKeyGuardSnapshot(), apiKeyGuardBefore, `${scenario.id} 不得写物理 Key failure guard`)
+    assert.deepEqual(accountSideEffects.getGatewayAccountSideEffectState(), sideEffectStateBefore, `${scenario.id} 不得写账户副作用队列`)
+    assert.deepEqual(await imageCircuitSnapshot(), circuitBefore, `${scenario.id} 不得修改 account 或 protocol/model circuit`)
+    assert.deepEqual(imageCircuitIncidentSnapshot(), circuitIncidentsBefore, `${scenario.id} 不得持久化 circuit incident`)
+  }
+
   const imageLongHitOffset = upstreamAuthorizations.length
   const imageLongAcceptedAtMs = realDateNow()
+  let imageTextFirstTokenDeadlineScheduled = false
   Date.now = () => imageLongRequestAccepted
     ? imageLongAcceptedAtMs + 300_000
     : realDateNow()
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const callStack = new Error().stack ?? ''
+    if (delay === 10_000 && /gateway[\\/]upstream[\\/]request/.test(callStack)) {
+      imageTextFirstTokenDeadlineScheduled = true
+      return realSetTimeout(callback, 1, ...args)
+    }
+    return realSetTimeout(callback, delay, ...args)
+  }) as typeof globalThis.setTimeout
   let imageLongResponse: Response
   try {
     imageLongResponse = await fetch(`${baseUrl}/v1/images/generations?mock_image_long_running=1`, {
@@ -756,14 +998,42 @@ try {
     })
   } finally {
     Date.now = realDateNow
+    globalThis.setTimeout = realSetTimeout
   }
   const imageLongText = await imageLongResponse.text()
   assert.equal(imageLongRequestAccepted, true, '长耗时图片 Mock 必须确认业务请求已经由上游接收')
   assert.equal(imageLongResponse.status, 200, `图片已在途时不得被文本 270 秒 wall budget 中止：${imageLongText}`)
   assert.match(imageLongText, /bG9uZy1pbWFnZQ==/)
+  assert.equal(imageTextFirstTokenDeadlineScheduled, false, '速度优先策略不得给图片 attempt 安排文本首 token 截止计时器')
   assert.deepEqual(upstreamAuthorizations.slice(imageLongHitOffset), [
     'Bearer sk-generic-image-long-running'
-  ], '图片跨过文本 wall budget 后仍必须保持 at-most-once，不得切 Key 或账户')
+  ], '图片跨过文本 wall budget 后仍由已成功首选交付，不应无故切号')
+
+  const imageLongFailureHitOffset = upstreamAuthorizations.length
+  const imageLongFailureAcceptedAtMs = realDateNow()
+  Date.now = () => imageLongFailureRequestAccepted
+    ? imageLongFailureAcceptedAtMs + 300_000
+    : realDateNow()
+  let imageLongFailureResponse: Response
+  try {
+    imageLongFailureResponse = await fetch(`${baseUrl}/v1/images/generations?mock_image_long_failure=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${imageLongApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-image-1', prompt: 'long failed image must still reach a healthy fallback' })
+    })
+  } finally {
+    Date.now = realDateNow
+  }
+  const imageLongFailureText = await imageLongFailureResponse.text()
+  assert.equal(imageLongFailureRequestAccepted, true, '长耗时失败图片 Mock 必须确认业务请求已经由首选上游接收')
+  assert.equal(imageLongFailureResponse.status, 200, `图片跨过文本墙钟后失败仍必须切到后备账户：${imageLongFailureText}`)
+  assert.match(imageLongFailureText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageLongFailureText, /vendor_long_image_failure|long image failed|upstream_retryable_error|upstream_outcome_unknown/)
+  assert.equal(imageLongFailureResponse.headers.get('x-vendor-secret'), null, '长图片首选失败的私有响应头不得泄漏')
+  assert.deepEqual(upstreamAuthorizations.slice(imageLongFailureHitOffset), [
+    'Bearer sk-generic-image-long-running',
+    'Bearer sk-generic-image-long-good'
+  ], '图片跨过文本 270 秒后失败必须继续调用健康后备账户')
 
   settingsRepository.updateSettings({ imageFirstResponseTimeoutSeconds: 10 })
   gatewayCache.clearGatewayRuntimeCache()
@@ -786,7 +1056,7 @@ try {
     imageTimeoutResponse = await fetch(`${baseUrl}/v1/images/generations?mock_image_first_response_timeout=1`, {
       method: 'POST',
       headers: { authorization: `Bearer ${imageLongApiKey.key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-image-1', prompt: 'image-specific timeout remains at-most-once' })
+      body: JSON.stringify({ model: 'gpt-image-1', prompt: 'image-specific timeout must fail over' })
     })
   } finally {
     globalThis.setTimeout = realSetTimeout
@@ -796,12 +1066,13 @@ try {
   const imageTimeoutText = await imageTimeoutResponse.text()
   assert.equal(imageTimeoutTimerIntercepted, true, '图片专用首响应计时器必须由 Mock 实际触发')
   assert.equal(imageTimeoutRequestAccepted, true, '图片超时前上游必须已经接收业务请求')
-  assert.equal(imageTimeoutResponse.status, 503, imageTimeoutText)
-  assert.match(imageTimeoutText, /upstream_outcome_unknown/)
-  assert.doesNotMatch(imageTimeoutText, /上游请求 10s|upstream_retryable_error/, '图片超时不得泄漏原始错误或提示自动重放')
+  assert.equal(imageTimeoutResponse.status, 200, imageTimeoutText)
+  assert.match(imageTimeoutText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageTimeoutText, /上游请求 10s|upstream_retryable_error|upstream_outcome_unknown/, '图片超时不得泄漏首选错误')
   assert.deepEqual(upstreamAuthorizations.slice(imageTimeoutHitOffset), [
-    'Bearer sk-generic-image-long-running'
-  ], '图片专用时限到达后不得切 Key、账户或后备分组')
+    'Bearer sk-generic-image-long-running',
+    'Bearer sk-generic-image-long-good'
+  ], '图片专用首响应时限到达后必须切到健康后备账户')
 
   const imageHitOffset = upstreamAuthorizations.length
   const image = await fetch(`${baseUrl}/v1/images/generations`, {
@@ -810,53 +1081,59 @@ try {
     body: JSON.stringify({ model: 'gpt-image-1', prompt: 'server side failover' })
   })
   const imageText = await image.text()
-  assert.equal(image.status, 503, `图片完整 HTTP 失败必须返回稳定网关错误，实际 ${image.status}: ${imageText}`)
-  assert.match(imageText, /upstream_outcome_unknown/)
-  assert.doesNotMatch(imageText, /upstream_retryable_error/, '结果未知的图片请求不得提示客户端自动重试')
+  assert.equal(image.status, 200, `图片完整 HTTP 失败必须切到健康后备，实际 ${image.status}: ${imageText}`)
+  assert.match(imageText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageText, /upstream_retryable_error|upstream_outcome_unknown/, '后备成功后不得提示客户端重试')
   assert.doesNotMatch(imageText, /opaque non-stream failure|made_up_418/, '图片失败不得把供应商状态语义或正文当作客户端指令')
   assert.deepEqual(upstreamAuthorizations.slice(imageHitOffset), [
-    'Bearer sk-generic-image-bad'
-  ], '未配置显式规则的图片 HTTP 失败不得切换后备账号')
+    'Bearer sk-generic-image-bad',
+    'Bearer sk-generic-image-good'
+  ], '未配置显式规则的图片 HTTP 失败也必须切换后备账号')
 
   const imageEditHitOffset = upstreamAuthorizations.length
   const imageEdit = await fetch(`${baseUrl}/v1/images/edits`, {
     method: 'POST',
     headers: { authorization: `Bearer ${imageApiKey.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'edit replay must be blocked', image: 'mock-image' })
+    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'edit must use unified failover', image: 'mock-image' })
   })
   const imageEditText = await imageEdit.text()
-  assert.equal(imageEdit.status, 503, imageEditText)
-  assert.match(imageEditText, /upstream_outcome_unknown/)
-  assert.doesNotMatch(imageEditText, /opaque non-stream failure|made_up_418|upstream_retryable_error/)
+  assert.equal(imageEdit.status, 200, imageEditText)
+  assert.match(imageEditText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageEditText, /opaque non-stream failure|made_up_418|upstream_retryable_error|upstream_outcome_unknown/)
   assert.deepEqual(upstreamAuthorizations.slice(imageEditHitOffset), [
-    'Bearer sk-generic-image-bad'
-  ], '未配置显式规则的图片编辑 HTTP 失败不得切换 Key、账户或后备分组')
+    'Bearer sk-generic-image-bad',
+    'Bearer sk-generic-image-good'
+  ], '未配置显式规则的图片编辑 HTTP 失败也必须切换后备账户')
 
   const imageTransportHitOffset = upstreamAuthorizations.length
   const imageTransportFailure = await fetch(`${baseUrl}/v1/images/generations?mock_image_transport_drop=1`, {
     method: 'POST',
     headers: { authorization: `Bearer ${imageTransportScenario.apiKey.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'transport replay must be blocked' })
+    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'transport failure must use unified failover' })
   })
   const imageTransportFailureText = await imageTransportFailure.text()
-  assert.equal(imageTransportFailure.status, 503, imageTransportFailureText)
-  assert.match(imageTransportFailureText, /upstream_outcome_unknown/)
+  assert.equal(imageTransportFailure.status, 200, imageTransportFailureText)
+  assert.match(imageTransportFailureText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageTransportFailureText, /upstream_outcome_unknown|upstream_retryable_error/)
   assert.deepEqual(upstreamAuthorizations.slice(imageTransportHitOffset), [
-    'Bearer sk-generic-image-transport-bad'
-  ], '图片请求体发出后 transport 失败不得自动调用同组或跨组后备账户')
+    'Bearer sk-generic-image-transport-bad',
+    'Bearer sk-generic-image-transport-good'
+  ], '图片请求体发出后 transport 失败必须优先调用同组健康后备账户')
 
   const imageBodyHitOffset = upstreamAuthorizations.length
   const imageBodyFailure = await fetch(`${baseUrl}/v1/images/generations?mock_image_bad_gzip=1`, {
     method: 'POST',
     headers: { authorization: `Bearer ${imageBodyScenario.apiKey.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'body replay must be blocked' })
+    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'body failure must use unified failover' })
   })
   const imageBodyFailureText = await imageBodyFailure.text()
-  assert.equal(imageBodyFailure.status, 503, imageBodyFailureText)
-  assert.match(imageBodyFailureText, /upstream_outcome_unknown/)
+  assert.equal(imageBodyFailure.status, 200, imageBodyFailureText)
+  assert.match(imageBodyFailureText, /aW1hZ2U=/)
+  assert.doesNotMatch(imageBodyFailureText, /upstream_outcome_unknown|upstream_retryable_error/)
   assert.deepEqual(upstreamAuthorizations.slice(imageBodyHitOffset), [
-    'Bearer sk-generic-image-body-bad'
-  ], '图片 2xx 响应头后的正文解码失败不得自动调用后备账户')
+    'Bearer sk-generic-image-body-bad',
+    'Bearer sk-generic-image-body-good'
+  ], '图片 2xx 响应头后的正文解码失败必须在下游未提交时调用后备账户')
 
   const imagePolicyHitOffset = upstreamAuthorizations.length
   const imagePolicyRetry = await fetch(`${baseUrl}/v1/images/generations`, {
@@ -865,39 +1142,68 @@ try {
     body: JSON.stringify({ model: 'gpt-image-1', prompt: 'explicit user policy may switch accounts' })
   })
   const imagePolicyRetryText = await imagePolicyRetry.text()
-  assert.equal(imagePolicyRetry.status, 503, `用户显式图片 retry_next 也不得越过 at-most-once，实际 ${imagePolicyRetry.status}: ${imagePolicyRetryText}`)
-  assert.match(imagePolicyRetryText, /upstream_outcome_unknown/)
-  assert.doesNotMatch(imagePolicyRetryText, /made_up_418|opaque non-stream failure|upstream_retryable_error/)
+  assert.equal(imagePolicyRetry.status, 200, `显式状态策略不得改变统一切号准入，实际 ${imagePolicyRetry.status}: ${imagePolicyRetryText}`)
+  assert.match(imagePolicyRetryText, /aW1hZ2U=/)
+  assert.doesNotMatch(imagePolicyRetryText, /made_up_418|opaque non-stream failure|upstream_retryable_error|upstream_outcome_unknown/)
   assert.deepEqual(upstreamAuthorizations.slice(imagePolicyHitOffset), [
-    'Bearer sk-generic-image-policy-bad'
-  ], '图片请求一旦派发，用户显式 retry_next 也不得调用后备账户')
+    'Bearer sk-generic-image-policy-bad',
+    'Bearer sk-generic-image-policy-good'
+  ], '图片请求的显式 retry_next 与统一规则均应调用同一个健康后备账户')
 
   const imageMappingHttpHitOffset = upstreamAuthorizations.length
-  const imageMappingHttpFailure = await fetch(`${baseUrl}/v1/responses?mock_mapped_image_http_failure=1`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${imageMappingApiKey.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: mappedImageModel, input: 'mapped image HTTP replay must be blocked', stream: false })
-  })
+  const mappedImageFailureAcceptedAtMs = realDateNow()
+  let mappedImageTextFirstTokenDeadlineScheduled = false
+  Date.now = () => mappedImageLongFailureRequestAccepted
+    ? mappedImageFailureAcceptedAtMs + 300_000
+    : realDateNow()
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const callStack = new Error().stack ?? ''
+    if (delay === 10_000 && /gateway[\\/]upstream[\\/]request/.test(callStack)) {
+      mappedImageTextFirstTokenDeadlineScheduled = true
+      return realSetTimeout(callback, 1, ...args)
+    }
+    return realSetTimeout(callback, delay, ...args)
+  }) as typeof globalThis.setTimeout
+  let imageMappingHttpFailure: Response
+  try {
+    imageMappingHttpFailure = await fetch(`${baseUrl}/v1/responses?mock_mapped_image_http_failure=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${imageMappingApiKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: mappedImageModel, input: 'mapped image HTTP must use unified failover after text wall', stream: false })
+    })
+  } finally {
+    Date.now = realDateNow
+    globalThis.setTimeout = realSetTimeout
+  }
   const imageMappingHttpFailureText = await imageMappingHttpFailure.text()
-  assert.equal(imageMappingHttpFailure.status, 503, imageMappingHttpFailureText)
-  assert.match(imageMappingHttpFailureText, /upstream_outcome_unknown/)
+  assert.equal(mappedImageLongFailureRequestAccepted, true, '模型映射升级后的图片首选必须先完整接收请求')
+  assert.equal(imageMappingHttpFailure.status, 200, imageMappingHttpFailureText)
+  assert.match(imageMappingHttpFailureText, /mapped_image_replay_was_not_blocked/)
   assert.doesNotMatch(imageMappingHttpFailureText, /untrusted mapped image error|mapped_image_unknown_failure/)
   assert.deepEqual(upstreamAuthorizations.slice(imageMappingHttpHitOffset), [
-    'Bearer sk-generic-image-mapping-transport-bad'
-  ], '账户映射后的图片 lane 必须覆盖状态预筛选正文不命中分支，不得切到后备账户')
+    'Bearer sk-generic-image-mapping-transport-bad',
+    'Bearer sk-generic-image-mapping-transport-good'
+  ], '账户映射升级后的图片 lane 跨过文本 270 秒后仍必须切到后备账户')
+  assert.equal(
+    mappedImageTextFirstTokenDeadlineScheduled,
+    false,
+    '账户模型映射升级为图片 lane 后也不得安排 speed-first 文本首 token 截止计时器'
+  )
 
   const imageMappingHitOffset = upstreamAuthorizations.length
   const imageMappingTransportFailure = await fetch(`${baseUrl}/v1/responses?mock_mapped_image_transport_drop=1`, {
     method: 'POST',
     headers: { authorization: `Bearer ${imageMappingApiKey.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: mappedImageModel, input: 'mapped image replay must be blocked', stream: false })
+    body: JSON.stringify({ model: mappedImageModel, input: 'mapped image transport must use unified failover', stream: false })
   })
   const imageMappingTransportFailureText = await imageMappingTransportFailure.text()
-  assert.equal(imageMappingTransportFailure.status, 503, imageMappingTransportFailureText)
-  assert.match(imageMappingTransportFailureText, /upstream_outcome_unknown/)
+  assert.equal(imageMappingTransportFailure.status, 200, imageMappingTransportFailureText)
+  assert.match(imageMappingTransportFailureText, /mapped_image_transport_fallback_success/)
+  assert.doesNotMatch(imageMappingTransportFailureText, /upstream_outcome_unknown|upstream_retryable_error/)
   assert.deepEqual(upstreamAuthorizations.slice(imageMappingHitOffset), [
-    'Bearer sk-generic-image-mapping-transport-bad'
-  ], '账户模型映射到图片模型后，传输失败同样不得自动调用后备账户')
+    'Bearer sk-generic-image-mapping-transport-bad',
+    'Bearer sk-generic-image-mapping-transport-good'
+  ], '账户模型映射到图片模型后，传输失败同样必须调用后备账户')
 
   const responsesImageToolStreamHitOffset = upstreamAuthorizations.length
   const responsesImageToolStreamFailure = await fetch(`${baseUrl}/v1/responses?mock_responses_image_tool_missing_terminal=1`, {
@@ -916,11 +1222,13 @@ try {
     })
   })
   const responsesImageToolStreamFailureText = await responsesImageToolStreamFailure.text()
-  assert.match(responsesImageToolStreamFailureText, /upstream_outcome_unknown/)
-  assert.doesNotMatch(responsesImageToolStreamFailureText, /upstream_retryable_error|image_tool_replay_was_not_blocked/)
+  assert.equal(responsesImageToolStreamFailure.status, 200, responsesImageToolStreamFailureText)
+  assert.match(responsesImageToolStreamFailureText, /image_tool_replay_was_not_blocked/)
+  assert.doesNotMatch(responsesImageToolStreamFailureText, /upstream_retryable_error|upstream_outcome_unknown/)
   assert.deepEqual(upstreamAuthorizations.slice(responsesImageToolStreamHitOffset), [
-    'Bearer sk-generic-responses-image-tool-stream-bad'
-  ], 'Responses 图片工具缺少终止事件时不得按流式预提交失败自动调用后备账户')
+    'Bearer sk-generic-responses-image-tool-stream-bad',
+    'Bearer sk-generic-responses-image-tool-stream-good'
+  ], 'Responses 图片工具缺少终止事件时必须按流式预提交失败调用后备账户')
 
   const responsesImageToolHitOffset = upstreamAuthorizations.length
   const responsesImageToolFailure = await fetch(`${baseUrl}/v1/responses?mock_responses_image_tool_transport_drop=1`, {
@@ -934,11 +1242,13 @@ try {
     })
   })
   const responsesImageToolFailureText = await responsesImageToolFailure.text()
-  assert.equal(responsesImageToolFailure.status, 503, responsesImageToolFailureText)
-  assert.match(responsesImageToolFailureText, /upstream_outcome_unknown/)
+  assert.equal(responsesImageToolFailure.status, 200, responsesImageToolFailureText)
+  assert.match(responsesImageToolFailureText, /image_tool_transport_fallback_success/)
+  assert.doesNotMatch(responsesImageToolFailureText, /upstream_outcome_unknown|upstream_retryable_error/)
   assert.deepEqual(upstreamAuthorizations.slice(responsesImageToolHitOffset), [
-    'Bearer sk-generic-responses-image-tool-transport-bad'
-  ], 'Responses 图片工具请求即使使用文本模型，传输失败也不得自动调用后备账户')
+    'Bearer sk-generic-responses-image-tool-transport-bad',
+    'Bearer sk-generic-responses-image-tool-transport-good'
+  ], 'Responses 图片工具请求即使使用文本模型，传输失败也必须调用后备账户')
 
   const streamHitOffset = upstreamAuthorizations.length
   const stream = await fetch(`${baseUrl}/v1/responses`, {

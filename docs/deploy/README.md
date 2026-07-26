@@ -23,7 +23,7 @@
 - [跨平台部署基线](部署指南.md)：发布包兼容矩阵、解压配置、启动验证、常驻运行、项目/业务备份、迁移和常见排障。
 - [部署流程示例](部署流程示例.md)：一次从选择场景、构建、选择平台文档、配置 HTTPS / 代理到验证的完整示例。
 - [Docker 部署指南](Docker部署指南.md)：单容器镜像构建、默认配置、启动、验证和清理。
-- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 阶段的 PostgreSQL、PgBouncer、Redis cache、Redis state、初始化、设置、验证和备份；Go 迁移完成后 PostgreSQL + Redis 将成为唯一正式模式。
+- [高性能模式部署指南](高性能模式部署指南.md)：当前 Node 阶段的 PostgreSQL、PgBouncer、Redis cache/state/queue、同机多网关与独立 worker、初始化、设置、验证和备份；Go 迁移完成后 PostgreSQL + Redis 将成为唯一正式模式。
 - [反向代理与高并发隧道部署指南](反向代理与高并发隧道部署指南.md)：公网 Edge L4、WireGuard、PROXY v2、Caddy/Nginx、Linux/macOS 参数、受控切换、回滚和容量门禁。
 - [Go 渐进减法迁移开发构建部署调整](../migration/开发构建部署调整.md)：后端迁移到 Go 期间的构建、发布包、Docker、服务化和回滚目标。
 - [Linux 部署目录](linux/README.md)：Linux 发布包、Docker、systemd、防火墙和代理访问差异。

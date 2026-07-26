@@ -468,7 +468,8 @@ function assertLocalPublicApiLogWriteAllowed(operation: string): void {
 }
 
 function isPublicApiLogIngestWorker(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'log-worker')
 }
 
 function shouldUseRedisStreamPublicApiLogQueue(): boolean {

@@ -1,7 +1,7 @@
 # 后台 Worker 多角色拆分设计
 
 > 面向后端实现、部署和 AI 维护者。
-> 本文记录当前 worker 拓扑决策：从旧的多常驻角色收敛为 `ingest-worker`、`stats-worker`、`ops-worker` 三类常驻 worker。使用规则见 [后台任务使用说明](后台任务使用说明.md)，执行计划见 [PLAN-20260623T122020000Z 后台 Worker 三角色收敛](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md) 与 [PLAN-20260623T122020001Z ops-worker 外部 I/O 并发控制](../../plans/计划-20260623T122020001Z-opsWorker外部IO并发控制.md)，单写者边界见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)。
+> 本文的三角色拓扑现在只描述 `standalone`。`performance` 使用 `usage-worker`、`log-worker`、`stats-worker`、`ops-worker`，默认副本数为 `2/2/1/1`，并由 3 个独立 gateway 事件循环承接 AI 流量；权威设计见 [高性能模式同机多进程拓扑设计](../../functions/高性能模式同机多进程拓扑设计.md)。原三角色收敛历史见 [PLAN-20260623T122020000Z](../../plans/计划-20260623T122020000Z-后台Worker三角色收敛.md)。
 
 ## 背景
 
@@ -16,17 +16,18 @@
 
 ## 设计目标
 
-- 常驻后台 worker 固定为三类：`ingest-worker`、`stats-worker`、`ops-worker`。
+- `standalone` 常驻后台 worker 固定为三类：`ingest-worker`、`stats-worker`、`ops-worker`。
+- `performance` 把 ingest 拆为可扩容的 `usage-worker` 与 `log-worker`，Stats/Ops 各保持一个主副本。
 - 保持轻量部署：外部进程管理器只守护 `server`，由 server supervisor 拉起 DB service 和三类 worker。
 - 热写入优先：使用记录、审计、日志和 record maintenance 不被重统计或外部探测拖住。
 - 重统计隔离：所有统计聚合、窗口刷新、系统指标和表监控集中在 `stats-worker`，便于定位慢任务。
 - 轻运维合并：账号测试、复测、OAuth、代理检测、可用时段同步、授权到期和过期删除协调统一在 `ops-worker`。
 - 运行态和前端展示只暴露当前角色，避免旧角色造成误判。
-- 不引入分布式队列、外部调度器或多实例假设。
+- `standalone` 不引入外部队列或多实例假设；`performance` 使用 Redis Stream consumer group 在同机多进程间分工。
 
 ## 非目标
 
-- 不按 CPU 核数复制同构 worker。
+- `standalone` 不按 CPU 核数复制同构 worker；`performance` 只按显式配置复制 Usage/Log/Gateway。
 - 不保留旧常驻角色兼容分支。
 - 不让多个 worker 并发写同一个 SQLite 文件。
 - 不在请求链路补实时统计以替代 worker 预聚合。
@@ -37,24 +38,26 @@
 | 角色 | 生命周期 | 核心职责 | 扩容触发 |
 | --- | --- | --- | --- |
 | `ingest-worker` | persistent | 使用记录、原始审计、操作日志、公开接口日志、运行日志索引、运行日志文件导入、record maintenance、dataset / usage shard 清理 | server 到 ingest IPC 长期积压、usage 落库滞后影响计费或统计安全游标 |
+| `usage-worker` | performance persistent | 使用记录消费、record maintenance、Usage spool 重放；副本 0 负责单例维护调度 | Redis usage lag、spool backlog 或落库延迟持续超标 |
+| `log-worker` | performance persistent | 审计、操作、公开接口日志消费；副本 0 负责运行日志文件导入与保留期任务 | 各日志 Stream lag 或运行日志文件 backlog 持续超标 |
 | `stats-worker` | persistent | 系统指标采样、事件循环 / 内存采样、用量聚合、IP 聚合、分组账号统计、额度窗口、TopN、概览、范围窗口、授权窗口、账号质量、表监控、统计保留期清理 | 统计滞后长期超过业务可接受范围、重窗口刷新阻塞系统采样或账号质量 |
 | `ops-worker` | persistent | 手动账号测试、账号健康检测、账号级 / Key 级冷却复测、OAuth token 保活、代理延迟刷新、可用时段同步、授权到期扫描、过期删除账号清理协调 | 外部 I/O 队列长期积压、账号恢复明显滞后、运维任务影响 OAuth 保活 |
 | `temporary-maintenance-worker` | temporary | 历史按需任务入口，运行后退出 | 不作为常驻扩容对象 |
 
-默认不再使用这些常驻角色：`metrics-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker`、`log-worker`、`usage-ingest-worker`。如果未来确实需要拆分，只能基于指标重新建计划，并同步更新 registry、API 契约、前端展示和验证脚本。
+`log-worker` 与 `usage-worker` 只在 `performance` 启用；`standalone` 继续由 `ingest-worker` 承担对应职责。`metrics-worker`、`snapshot-worker`、`probe-worker`、`maintenance-worker` 仍不是常驻角色。
 
 ## 任务归属表
 
 | 任务 / 队列 | 当前角色 | 说明 |
 | --- | --- | --- |
-| `background_worker_usage_records` | `ingest-worker` | 高频计费事实，独立 usage 队列，优先级高 |
-| `background_worker_audit_logs` | `ingest-worker` | 原始审计 append-only，失败样本优先保留 |
-| `background_worker_operation_logs` | `ingest-worker` | 操作日志批量写入和摘要索引 |
-| `background_worker_public_api_logs` | `ingest-worker` | 公开接口调用明细 |
-| `runtime-log-file-import` | `ingest-worker` | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor |
-| `background_worker_record_maintenance` | `ingest-worker` / `stats-worker` | usage / dataset 进 ingest；stats-only command 进 stats writer |
-| `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | `ingest-worker` | 关联明细清理，等待统计安全游标 |
-| `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | `ingest-worker` | 小批多轮，不能压住热写入；PostgreSQL performance 下 `data-retention-cleanup` 只投递 record-maintenance 维护任务 |
+| `background_worker_usage_records` | standalone: `ingest-worker`; performance: `usage-worker` | 高频计费事实；performance 由同一 consumer group 多副本分摊 |
+| `background_worker_audit_logs` | standalone: `ingest-worker`; performance: `log-worker` | 原始审计 append-only，失败样本优先保留 |
+| `background_worker_operation_logs` | standalone: `ingest-worker`; performance: `log-worker` | 操作日志批量写入和摘要索引 |
+| `background_worker_public_api_logs` | standalone: `ingest-worker`; performance: `log-worker` | 公开接口调用明细 |
+| `runtime-log-file-import` | standalone: `ingest-worker`; performance: `log-worker#1` | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor |
+| `background_worker_record_maintenance` | standalone: `ingest-worker` / `stats-worker`; performance: `usage-worker#1` / `stats-worker` | usage / dataset 进 usage owner；stats-only command 进 stats writer |
+| `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | standalone: `ingest-worker`; performance: `usage-worker#1` | 关联明细清理，等待统计安全游标 |
+| `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | standalone: `ingest-worker`; performance: `log-worker#1` / `usage-worker#1` | 小批多轮，不能压住热写入 |
 | `system-metrics-sample` | `stats-worker` | 系统采样和进程事件循环 / 内存样本统一写 stats SQLite |
 | `usage-stats-aggregation` | `stats-worker` | 按 usage shard 游标增量聚合 |
 | `client-ip-stats-aggregation` | `stats-worker` | dirty IP 增量窗口刷新 |
@@ -76,8 +79,8 @@
 
 - server 到 ingest 维护三组 pending：`usageRecords`、高优先级 regular、低优先级 `recordMaintenance`。出队时高优先级 regular 可在 usage burst 后插队，避免清理任务压住日志 / 数据集写入。
 - server 到 ops 维护独立 pending 队列，只承载账号测试和取消消息。
-- stats write request 只发往 `stats-worker`；dataset write request 只发往 `ingest-worker`。
-- process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`。
+- stats write request 只发往 `stats-worker`；dataset write request 在 standalone 发往 `ingest-worker`，在 performance 由 primary `usage-worker` 兼容该 IPC owner。
+- standalone 的 process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 额外按实例记录 `gateway`、`usage-worker`、`log-worker`。
 - 系统监控接口使用 `ingestWorkerSnapshotAvailable`、`statsWorkerSnapshotAvailable`、`opsWorkerSnapshotAvailable` 表达三类 worker 可观测性；不可观测时对应 runtime 返回 `null`，不能用空数组或 0 伪装正常。
 
 以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。Go W6 / W7 接管系统指标和 worker 后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 替换为 Go runtime、Asynq queue、worker heartbeat、worker lag 和 stats freshness 指标，不再暴露 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 作为长期契约。
@@ -118,9 +121,9 @@
 必须覆盖：
 
 - 后端类型检查。
-- worker topology smoke，确认 supervisor 只拉起三类常驻 worker。
+- worker topology smoke：standalone 确认三类常驻 worker；performance 默认确认 Usage 2 / Log 2 / Stats 1 / Ops 1。
 - runtime snapshot unavailable contract，确认接口可用性字段是 ingest / stats / ops。
-- system metrics process latest，确认事件循环角色只有 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`。
+- system metrics process latest：standalone 确认只有 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`；performance 确认每个 Gateway、DB service、Usage / Log / Stats / Ops 副本都有独立动态角色；退出节点的注册表 key 在 TTL 后消失，latest 超过 2 分钟必须标记缺失，24 小时峰值和趋势继续保留。
 - background IPC snapshot current only，确认旧角色 snapshot 请求不再进入当前状态。
 - queue health 和 local queue limit，确认 record maintenance 仍归 ingest，账号测试归 ops。
 

@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { EventEmitter, getEventListeners } from 'node:events'
 import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
+import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setImmediate as waitForImmediate } from 'node:timers/promises'
@@ -27,9 +28,12 @@ import {
 } from '../../modules/gateway/upstream/first-byte-deadline.js'
 import {
   closeGatewayUpstreamAgents,
+  isStartedUpstreamTransportError,
   requestUpstream,
+  UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from '../../modules/gateway/upstream/request.js'
+import { GatewayFirstByteTimeoutError } from '../../modules/gateway/upstream/first-byte-timeout.js'
 import { clearAccountConcurrency, getAccountCurrentConcurrency } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
 
@@ -45,8 +49,10 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 try {
   await verifyResponseHeaderDeadlineRace('node')
   await verifyResponseHeaderDeadlineRace('fetch')
+  await verifyResponseHeaderFailureProvenance('node')
+  await verifyResponseHeaderFailureProvenance('fetch')
   await verifyNodeSseHeartbeatPrecommitCancellationClosesSocket()
-  await verifyCommittedStreamOverflowPrecommitCancellationReleasesTimers()
+  await verifyStreamPrecommitOverflowCancellationReleasesTimers()
   await verifyNonStreamBodyDeadlineRace()
   await verifyStreamBodyDeadlineRace()
   await verifyOpaqueDataSupersedesPendingStreamDeadline()
@@ -117,6 +123,100 @@ async function verifyResponseHeaderDeadlineRace(transport: 'node' | 'fetch'): Pr
   }
 }
 
+async function verifyResponseHeaderFailureProvenance(transport: 'node' | 'fetch'): Promise<void> {
+  for (const callbackMode of ['sync_throw', 'async_reject'] as const) {
+    const localError = new Error(`${transport}-${callbackMode}-local-decision-secret`)
+    const error = await captureResponseHeaderFailure({
+      transport,
+      onFirstByteDeadline: callbackMode === 'sync_throw'
+        ? () => { throw localError }
+        : async () => { throw localError }
+    })
+    assert.equal(error, localError, `${transport}/${callbackMode} 必须保留原本地异常供内部诊断`)
+    assert.equal(
+      isStartedUpstreamTransportError(error),
+      false,
+      `${transport}/${callbackMode} 本地首字决策异常不得成为上游 transport evidence`
+    )
+  }
+
+  const configuredDeadlineError = await captureResponseHeaderFailure({
+    transport,
+    onFirstByteDeadline: () => 'abort'
+  })
+  assert(configuredDeadlineError instanceof GatewayFirstByteTimeoutError)
+  assert.equal(configuredDeadlineError.source, 'configured_deadline')
+  assert.equal(
+    isStartedUpstreamTransportError(configuredDeadlineError),
+    false,
+    `${transport} 配置首字截止是路由决策，不得成为上游 transport evidence`
+  )
+
+  const abortController = new AbortController()
+  const clientAbortError = await captureResponseHeaderFailure({
+    transport,
+    signal: abortController.signal,
+    afterRequestObserved: () => abortController.abort()
+  })
+  assert(clientAbortError instanceof UpstreamRequestAbortedError)
+  assert.equal(clientAbortError.upstreamRequestStarted, true, `${transport} 客户端取消应保留已派发审计事实`)
+  assert.equal(
+    isStartedUpstreamTransportError(clientAbortError),
+    false,
+    `${transport} 客户端取消不得成为上游 transport evidence`
+  )
+
+  const transportError = await captureResponseHeaderFailure({
+    transport,
+    destroyUpstreamSocket: true
+  })
+  assert.equal(
+    isStartedUpstreamTransportError(transportError),
+    true,
+    `${transport} 真实响应头前 socket reset 必须保留 transport evidence`
+  )
+}
+
+async function captureResponseHeaderFailure(input: {
+  transport: 'node' | 'fetch'
+  onFirstByteDeadline?: () => 'abort' | Promise<'abort'>
+  signal?: AbortSignal
+  afterRequestObserved?: () => void
+  destroyUpstreamSocket?: boolean
+}): Promise<unknown> {
+  const requestObserved = deferred<void>()
+  const sockets = new Set<Socket>()
+  const server = http.createServer((req) => {
+    req.resume()
+    requestObserved.resolve()
+    if (input.destroyUpstreamSocket) req.socket.destroy()
+  })
+  server.on('connection', (socket) => {
+    sockets.add(socket)
+    socket.once('close', () => sockets.delete(socket))
+  })
+  try {
+    await listen(server)
+    const failure = requestUpstream(`http://127.0.0.1:${serverPort(server)}/provenance`, {
+      method: 'GET',
+      headers: new Headers(),
+      transport: input.transport,
+      firstByteDeadlineMs: input.onFirstByteDeadline ? 5 : undefined,
+      onFirstByteDeadline: input.onFirstByteDeadline,
+      signal: input.signal
+    }).then(
+      () => Promise.reject(new Error(`${input.transport} 夹具必须失败`)),
+      (error: unknown) => error
+    )
+    await withTimeout(requestObserved.promise, `${input.transport} provenance 夹具未命中上游`)
+    input.afterRequestObserved?.()
+    return await withTimeout(failure, `${input.transport} provenance 夹具未按预期失败`)
+  } finally {
+    for (const socket of sockets) socket.destroy()
+    await closeServer(server)
+  }
+}
+
 async function verifyNodeSseHeartbeatPrecommitCancellationClosesSocket(): Promise<void> {
   const responseClosed = deferred<void>()
   let serverResponse: http.ServerResponse | undefined
@@ -177,7 +277,7 @@ async function verifyNodeSseHeartbeatPrecommitCancellationClosesSocket(): Promis
   }
 }
 
-async function verifyCommittedStreamOverflowPrecommitCancellationReleasesTimers(): Promise<void> {
+async function verifyStreamPrecommitOverflowCancellationReleasesTimers(): Promise<void> {
   const pendingRead = deferred<IteratorResult<Uint8Array>>()
   let readCount = 0
   let iteratorClosed = false
@@ -220,16 +320,18 @@ async function verifyCommittedStreamOverflowPrecommitCancellationReleasesTimers(
         retryBeforeDownstreamWriteUntilOutput: true,
         responsePrecommitDeadlineAtMs: startedAt + 80
       }
-    ), 'committed oversized stream did not stop at the response precommit deadline')
+    ), 'oversized precommit stream did not stop at the safety buffer limit')
 
-    assert.equal(result.errorCode, 'gateway_request_wall_budget_exhausted')
+    assert.equal(result.errorCode, 'stream_precommit_buffer_exceeded')
     assert.equal(result.transportFailure, undefined)
+    assert.equal(result.gatewayLocalFailure, true)
     assert.equal(result.semanticCommitted, false)
-    assert(result.upstreamResponseBytesWritten > 256 * 1024)
-    assert.equal(downstream.destroyed, true)
+    assert.equal(result.upstreamResponseBytesWritten, 0)
+    assert.equal(downstream.writtenText(), '')
+    assert.equal(downstream.destroyed, false, '预提交失败必须把未提交下游留给上层写入稳定网关错误')
     assert.equal(iteratorClosed, true)
     await waitForImmediate()
-    assert.equal(timerTracker.activeCount(), 0, '流式预提交缓冲溢出并触发墙钟后，所有 deadline timers 必须清零')
+    assert.equal(timerTracker.activeCount(), 0, '流式预提交缓冲溢出收口后，所有 deadline timers 必须清零')
   } finally {
     timerTracker.restore()
   }

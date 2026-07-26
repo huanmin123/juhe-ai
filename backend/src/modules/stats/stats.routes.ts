@@ -14,6 +14,7 @@ import { getAiHealthListAsync } from '../../storage/account-health-monitor.repos
 import {
   getAiPerformanceBaseAsync,
   getAiPerformanceSeriesAsync,
+  getUsageStatsOverviewDailyTrendAsync,
   getUsageStatsOverviewErrorsAsync,
   getUsageStatsOverviewHourlyTrendAsync,
   getUsageStatsOverviewModelDistributionAsync,
@@ -147,6 +148,10 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
 
 statsRouter.get('/usage-overview/summary', async (req, res, next) => {
   await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewSummaryAsync(access, range))
+})
+
+statsRouter.get('/usage-overview/daily-trend', async (req, res, next) => {
+  await handleUsageOverviewSectionRequest(req, res, next, (access, range) => getUsageStatsOverviewDailyTrendAsync(access, range))
 })
 
 statsRouter.get('/usage-overview/hourly-trend', async (req, res, next) => {
@@ -831,6 +836,7 @@ async function normalizeSystemMetricsDateRangeAsync(input: { startDate?: string;
 async function normalizeUsageOverviewDateRangeAsync(input: { startDate?: string; endDate?: string }) {
   const timezone = await usageStatsTimezoneAsync()
   const today = dateKey(new Date(), timezone)
+  if (!input.startDate && !input.endDate) return fixedUsageStatsDefaultRange(timezone, today)
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)

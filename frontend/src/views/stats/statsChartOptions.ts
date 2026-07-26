@@ -1,7 +1,8 @@
 import type { EChartsOption } from 'echarts'
 
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
+import { formatDateLabel, formatDateShortLabel } from '@/shared/dateRange'
+import type { SystemMetricsOverview, UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import {
   axisNumberLabel,
   formatBytesMiB,
@@ -21,18 +22,18 @@ const ERROR_TOOLTIP_EDGE_GAP = 12
 
 export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']): EChartsOption {
   return {
-    color: ['#1677ff', '#ff4d4f', '#52c41a', '#faad14'],
+    color: ['#1677ff', '#ff4d4f', '#faad14'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => usageTrendTooltip(params)
     },
     legend: {
       bottom: 0,
-      data: ['请求数', '失败请求', 'Token 消耗', '平均总耗时']
+      data: ['请求数', '失败请求', '平均总耗时']
     },
     grid: {
       left: 48,
-      right: 112,
+      right: 56,
       top: 28,
       bottom: 56
     },
@@ -53,16 +54,8 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
       },
       {
         type: 'value',
-        name: 'Token',
-        position: 'right',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-        splitLine: { show: false }
-      },
-      {
-        type: 'value',
         name: '响应',
         position: 'right',
-        offset: 56,
         axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
         splitLine: { show: false }
       }
@@ -85,25 +78,60 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
         data: trend.map((item) => item.errorCount)
       },
       {
-        name: 'Token 消耗',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.totalTokens),
-        areaStyle: { opacity: 0.08 }
-      },
-      {
         name: '平均总耗时',
         type: 'line',
-        yAxisIndex: 2,
+        yAxisIndex: 1,
         smooth: true,
         symbol: 'circle',
         symbolSize: 6,
         data: trend.map((item) => item.averageDurationMs ?? null)
       }
     ]
+  }
+}
+
+export function buildDailyConsumptionOption(trend: UsageStatsOverviewDailyTrendResult['dailyTrend']): EChartsOption {
+  const lastDate = trend[trend.length - 1]?.statDate
+  return {
+    color: ['#1677ff'],
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => dailyConsumptionTooltip(params, lastDate)
+    },
+    grid: {
+      left: 56,
+      right: 20,
+      top: 16,
+      bottom: 32
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: true,
+      data: trend.map((item) => formatDateShortLabel(item.statDate)),
+      axisLabel: { color: '#64748b', hideOverlap: true },
+      axisLine: { lineStyle: { color: '#d9e2ef' } },
+      axisTick: { alignWithLabel: true }
+    },
+    yAxis: {
+      type: 'value',
+      name: 'Token',
+      min: 0,
+      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+      splitLine: { lineStyle: { color: '#edf2f7' } }
+    },
+    series: [{
+      name: 'Token 消耗',
+      type: 'bar',
+      barMaxWidth: 24,
+      itemStyle: { borderRadius: [4, 4, 0, 0] },
+      emphasis: { itemStyle: { color: '#0958d9' } },
+      data: trend.map((item) => ({
+        value: item.totalTokens,
+        statDate: item.statDate,
+        totalTokens: item.totalTokens,
+        totalCost: item.totalCost
+      }))
+    }]
   }
 }
 
@@ -373,6 +401,19 @@ function usageTrendTooltip(params: unknown) {
   return lines.join('<br/>')
 }
 
+function dailyConsumptionTooltip(params: unknown, lastDate?: string) {
+  const point = tooltipParams(params)[0]
+  const data = tooltipData(point)
+  const statDate = tooltipRawText(data.statDate)
+  const totalTokens = numberFromTooltip(data.totalTokens)
+  const currentDaySuffix = statDate && statDate === lastDate ? '（截至当前）' : ''
+  return [
+    `<strong>${formatDateLabel(statDate)}${currentDaySuffix}</strong>`,
+    `${point?.marker ?? ''}Token：${formatCompactInteger(totalTokens)}`,
+    `成本：${formatCost(numberFromTooltip(data.totalCost))}`
+  ].join('<br/>')
+}
+
 function modelTooltip(params: unknown) {
   const point = tooltipParams(params)[0]
   const data = tooltipData(point)
@@ -438,8 +479,7 @@ function processMemoryTooltip(params: unknown) {
 }
 
 function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
-  const roles = new Set(trend.map((item) => item.processRole))
-  return (['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'] as const).filter((role) => roles.has(role))
+  return [...new Set(trend.map((item) => item.processRole))].sort()
 }
 
 function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
@@ -470,6 +510,18 @@ export function processRoleLabel(processRole: string) {
   if (processRole === 'stats-worker') return '统计 worker'
   if (processRole === 'ops-worker') return '运维 worker'
   if (processRole === 'db-service') return 'DB service'
+  const separatorIndex = processRole.indexOf(':')
+  if (separatorIndex > 0) {
+    const baseRole = processRole.slice(0, separatorIndex)
+    const instance = processRole.slice(separatorIndex + 1)
+    if (baseRole === 'gateway') return `Gateway ${instance}`
+    if (baseRole === 'control') return `Control ${instance}`
+    if (baseRole === 'db-service') return `DB service ${instance}`
+    if (baseRole === 'usage-worker') return `Usage Worker ${instance}`
+    if (baseRole === 'log-worker') return `Log Worker ${instance}`
+    if (baseRole === 'stats-worker') return `Stats Worker ${instance}`
+    if (baseRole === 'ops-worker') return `Ops Worker ${instance}`
+  }
   return processRole
 }
 

@@ -879,7 +879,7 @@ export function isGatewayForcedDownstreamClose(res: Response): boolean {
   return typeof (res.locals as Record<string, unknown>)[gatewayForcedDownstreamCloseReasonKey] === 'string'
 }
 
-function markGatewayForcedDownstreamClose(res: Response, reason: string): void {
+export function markGatewayForcedDownstreamClose(res: Response, reason: string): void {
   const locals = res.locals as Record<string, unknown>
   locals[gatewayForcedDownstreamCloseReasonKey] = reason
 }

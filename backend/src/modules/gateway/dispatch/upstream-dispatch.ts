@@ -47,10 +47,6 @@ import {
   handleUpstreamRequestError,
   type PendingAccountApiKeyFailure
 } from '../response/failure-dispatch.js'
-import {
-  gatewayUpstreamOutcomeUnknownMessage,
-  upstreamAutomaticReplayBlockedAuditLabel
-} from '../response/upstream-replay-blocked.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamUrlsForAccount } from '../../providers/drivers/registry.js'
 import { forgetOpenAIAccountForSessionAsync, rememberOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
@@ -65,10 +61,7 @@ import { type GatewayUpstreamResponse } from '../upstream/request.js'
 import { isProvenUpstreamBodyTransportError } from '../upstream/body.js'
 import { isGatewayFirstByteTimeoutError } from '../upstream/first-byte-timeout.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-adapter.js'
-import {
-  automaticUpstreamReplayAllowedAfterDispatch,
-  type OpenAIGatewayRequestLane
-} from '../protocols/openai-v1/request-lane.js'
+import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../request/validation-error.js'
 import {
   captureGatewayAccountApiKeyFailureObservation,
@@ -215,8 +208,6 @@ export class UpstreamAttemptError extends Error {
     super(message)
   }
 }
-
-export class UpstreamReplayBlockedError extends UpstreamAttemptError {}
 
 export class NormalRouteFirstByteCutoverError extends Error {
   readonly code = 'normal_route_first_byte_timeout'
@@ -384,6 +375,8 @@ export async function fetchFirstAvailableUpstream(
         }
         accountCircuitAttempt = circuitPreparation.attempt
       }
+      let accountCircuitAttemptTransferred = false
+      try {
       const localSuppression = bypassLocalSuppression
         ? {
             accounts: [originalAccount],
@@ -773,11 +766,10 @@ export async function fetchFirstAvailableUpstream(
                 observeGatewayRouting({ kind: 'tier_escape', outcome: 'applied' })
               }
               const attemptStartedAt = Date.now()
-              // Long-running side-effect lanes (for example image generation)
-              // use their own timeout profile and must never enter a deadline
-              // path that can automatically replay the dispatched request.
+              // Long-running lanes (for example image generation) keep their
+              // own timeout profile. Candidate failover eligibility remains
+              // universal and is intentionally independent from lane timing.
               const normalRouteFirstByteDeadline = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
-                && automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
                 && requestCoordination.normalRouteFirstByteConfig
                 ? normalRouteAttemptFirstByteDeadline({
                     config: requestCoordination.normalRouteFirstByteConfig,
@@ -880,8 +872,7 @@ export async function fetchFirstAvailableUpstream(
                     apiKeyId: usageContext.apiKeyId,
                     groupId: usageContext.groupId
                   })
-                  keepConcurrencySlot = true
-                  return {
+                  const dispatchResult: OpenAIUpstreamDispatchResult = {
                     account,
                     response,
                     upstreamUrl,
@@ -905,6 +896,9 @@ export async function fetchFirstAvailableUpstream(
                     onFirstByteDeadline,
                     firstByteDeadlineCoordinator
                   }
+                  keepConcurrencySlot = true
+                  accountCircuitAttemptTransferred = true
+                  return dispatchResult
                 }
 
                 firstByteDeadlineCoordinator?.supersede()
@@ -940,8 +934,7 @@ export async function fetchFirstAvailableUpstream(
                   })
                 }
                 if (failedResponseResult.action === 'return_response') {
-                  keepConcurrencySlot = true
-                  return {
+                  const dispatchResult: OpenAIUpstreamDispatchResult = {
                     account,
                     response: failedResponseResult.response,
                     upstreamUrl,
@@ -962,6 +955,9 @@ export async function fetchFirstAvailableUpstream(
                       : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
                     onFirstByteDeadline
                   }
+                  keepConcurrencySlot = true
+                  accountCircuitAttemptTransferred = true
+                  return dispatchResult
                 }
                 // A complete HTTP frame is transport evidence even when an
                 // explicit user policy independently applies a business action.
@@ -970,23 +966,6 @@ export async function fetchFirstAvailableUpstream(
                 failedAccountIds.add(account.id)
                 recoverableFailedAccountIds.delete(account.id)
                 cycleRecoverableAccountIds.delete(account.id)
-                if (failedResponseResult.action === 'replay_blocked') {
-                  auditCapture.addGatewayMetadata({
-                    label: upstreamAutomaticReplayBlockedAuditLabel,
-                    metadata: {
-                      accountId: account.id,
-                      keyFingerprint: account.selectedApiKeyFingerprint,
-                      phase: 'opaque_upstream_response',
-                      requestLane,
-                      endpoint: usageContext.endpoint
-                    }
-                  })
-                  throw new UpstreamReplayBlockedError(
-                    gatewayUpstreamOutcomeUnknownMessage,
-                    lastAttempt,
-                    [...failedAccountIds]
-                  )
-                }
                 if (
                   !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
@@ -1016,9 +995,6 @@ export async function fetchFirstAvailableUpstream(
                 skipAccount = true
                 break
               } catch (error) {
-                if (error instanceof UpstreamReplayBlockedError) {
-                  throw error
-                }
                 const configuredFirstByteDeadline = isGatewayFirstByteTimeoutError(error)
                   && error.source === 'configured_deadline'
                 const neutralFirstByteDeadline = configuredFirstByteDeadline
@@ -1058,12 +1034,10 @@ export async function fetchFirstAvailableUpstream(
                       errorMessage: error instanceof Error ? error.message : undefined
                     }
                   : undefined
-                const automaticReplayAllowed = automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)
                 const retryAnotherAccountApiKey = !localRequestFailure
                   && provenStartedTransportFailure
                   && !neutralFirstByteDeadline
                   && !signal?.aborted
-                  && automaticReplayAllowed
                   && !firstByteDeadlineTriggered
                   && halfOpenLease?.generation === undefined
                   && shouldTryAnotherAccountApiKeyForRequest(
@@ -1081,7 +1055,6 @@ export async function fetchFirstAvailableUpstream(
                 const sameAccountRetryCandidate = requestCoordination.scope === 'gateway_request'
                   && usageContext.trafficSource === 'gateway'
                   && requestLane === 'text'
-                  && automaticReplayAllowed
                   && !signal?.aborted
                   && !localRequestFailure
                   && provenStartedTransportFailure
@@ -1117,6 +1090,13 @@ export async function fetchFirstAvailableUpstream(
                   await getHotQualityAttempt().recordTerminal(confirmedTransportQuality
                     ? hotQualityTerminalForDispatchError(error, signal)
                     : { outcomeClass: 'unknown', failureScope: 'none', source: 'request_lifecycle' })
+                }
+                if (signal?.aborted) {
+                  // A client can disconnect after this account was selected but
+                  // before response headers are returned to routes.ts. In that
+                  // window the outer lifecycle does not yet know which account
+                  // owns the active affinity, so release it here.
+                  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
                 }
                 if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
                   auditCapture.completeAttempt(auditAttemptId, {
@@ -1160,35 +1140,6 @@ export async function fetchFirstAvailableUpstream(
                   })
                   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
                   await accountCircuitAttempt?.reportUnknown()
-                  if (!automaticUpstreamReplayAllowedAfterDispatch(req, requestLane)) {
-                    firstByteDeadlineCoordinator?.supersede()
-                    lastAttempt = {
-                      accountId: account.id,
-                      accountName: account.name,
-                      providerCode: account.providerCode,
-                      providerProtocolProfileId: account.providerProtocolProfileId,
-                      protocolCode: account.protocolCode,
-                      protocolVersion: account.protocolVersion,
-                      upstreamUrl,
-                      message
-                    }
-                    failedAccountIds.add(account.id)
-                    auditCapture.addGatewayMetadata({
-                      label: upstreamAutomaticReplayBlockedAuditLabel,
-                      metadata: {
-                        accountId: account.id,
-                        keyFingerprint: account.selectedApiKeyFingerprint,
-                        phase: 'upstream_first_byte_deadline',
-                        requestLane,
-                        endpoint: usageContext.endpoint
-                      }
-                    })
-                    throw new UpstreamReplayBlockedError(
-                      gatewayUpstreamOutcomeUnknownMessage,
-                      lastAttempt,
-                      [...failedAccountIds]
-                    )
-                  }
                   if (normalRouteFirstByteDeadline.limitingFactor === 'wall_precommit') {
                     firstByteDeadlineCoordinator?.supersede()
                     throw new GatewayRequestWallBudgetExhaustedError(gatewayRequestWallBudget.remainingMs())
@@ -1297,23 +1248,6 @@ export async function fetchFirstAvailableUpstream(
                 if (accountCircuitAttempt && !signal?.aborted && !deferredConfirmationFailure) {
                   await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error, lastAttempt?.message))
                 }
-                if (!automaticReplayAllowed) {
-                  auditCapture.addGatewayMetadata({
-                    label: upstreamAutomaticReplayBlockedAuditLabel,
-                    metadata: {
-                      accountId: account.id,
-                      keyFingerprint: account.selectedApiKeyFingerprint,
-                      phase: 'upstream_transport',
-                      requestLane,
-                      endpoint: usageContext.endpoint
-                    }
-                  })
-                  throw new UpstreamReplayBlockedError(
-                    gatewayUpstreamOutcomeUnknownMessage,
-                    requestErrorResult.lastAttempt,
-                    [...failedAccountIds]
-                  )
-                }
                 if (retryAnotherAccountApiKey) {
                   if (pendingKeyTransportFailure) {
                     pendingApiKeyFailures.push(pendingKeyTransportFailure)
@@ -1340,6 +1274,11 @@ export async function fetchFirstAvailableUpstream(
         if (!keepConcurrencySlot) {
           concurrencySlot.release()
           await releaseHalfOpenLease(halfOpenLease)
+        }
+      }
+      } finally {
+        if (!accountCircuitAttemptTransferred) {
+          await settleUndispatchedAccountCircuitAttempt(accountCircuitAttempt, originalAccount.id)
         }
       }
     }
@@ -2084,6 +2023,27 @@ async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSig
   throwIfRequestAborted(signal)
   await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
+}
+
+async function settleUndispatchedAccountCircuitAttempt(
+  attempt: GatewayAccountCircuitAttempt | undefined,
+  accountId: string
+): Promise<void> {
+  if (!attempt?.isConfirmation) return
+  let lastError: unknown
+  for (let retry = 0; retry < 2; retry += 1) {
+    try {
+      await attempt.reportUnknown()
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  getRequestLogger().warn({
+    event: 'gateway_account_circuit_confirmation_settlement_failed',
+    accountId,
+    errorName: lastError instanceof Error ? lastError.name : typeof lastError
+  }, '账户 confirmation 在上游派发前退出时结算失败，保留原结果意图并等待租约到期')
 }
 
 export function gatewayForegroundAccountCircuitFailureEvidenceKey(

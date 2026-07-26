@@ -39,6 +39,21 @@ try {
     .map((file) => basename(file.path))
   assert(activeFileNames.includes('juhe-ai.db-service.log'), '运行日志文件导入应覆盖 DB service 当前日志')
 
+  const gatewayInstanceLogPath = join(logDir, 'juhe-ai.gateway-1.log')
+  const usageWorkerInstanceLogPath = join(logDir, 'juhe-ai.usage-worker.control-1-usage-worker-1.log')
+  writeFileSync(gatewayInstanceLogPath, '')
+  writeFileSync(usageWorkerInstanceLogPath, '')
+  await runtimeLogFileImport.resetRuntimeLogFileDiscoveryForTest()
+  const discoveredInstanceLogs = await runtimeLogFileImport.discoverRuntimeLogFilesForTest()
+  assert(
+    discoveredInstanceLogs.some((file) => file.path === gatewayInstanceLogPath && file.role === 'server:gateway-1'),
+    'performance gateway 实例日志必须可被 importer 发现'
+  )
+  assert(
+    discoveredInstanceLogs.some((file) => file.path === usageWorkerInstanceLogPath && file.role === 'usage-worker:control-1-usage-worker-1'),
+    'performance Usage worker 实例日志必须可被 importer 发现'
+  )
+
   const logPath = join(logDir, 'juhe-ai.db-service.log')
   writeFileSync(logPath, '')
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })

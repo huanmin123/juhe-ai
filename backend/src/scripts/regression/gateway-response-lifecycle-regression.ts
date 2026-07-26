@@ -17,6 +17,10 @@ const {
   getGatewayRequestBodyInFlightState
 } = await import('../../modules/gateway/request/body.js')
 const { attachAccountSlotRelease } = await import('../../modules/gateway/routes.js')
+const {
+  isGatewayForcedDownstreamClose,
+  markGatewayForcedDownstreamClose
+} = await import('../../modules/gateway/upstream/body.js')
 const { createAuditCapture, observeGatewayHttpCompletion } = await import('../../modules/gateway/audit/capture.service.js')
 const { withRequestContext } = await import('../../shared/request-context.js')
 const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
@@ -26,6 +30,7 @@ const usageRecordQueue = await import('../../modules/gateway/usage/record-queue.
 const failureUsageFinalization = await import('../../modules/gateway/usage/failure-finalization.service.js')
 
 class MockResponse extends EventEmitter {
+  locals: Record<string, unknown> = {}
   destroyed = false
   writableEnded = false
   writableFinished = false
@@ -98,6 +103,91 @@ assert.equal(accountReleaseCount, 1, 'HTTP finish 应立即释放账户并发槽
 releaseAccountSlot()
 accountResponse.emit('close')
 assert.equal(accountReleaseCount, 1, '账户并发槽释放必须幂等')
+
+const deferredAccountResponse = new MockResponse() as unknown as Response
+const deferredAbortController = new AbortController()
+let deferredAccountReleaseCount = 0
+const completeDeferredAccountSettlement = attachAccountSlotRelease(
+  deferredAccountResponse,
+  () => { deferredAccountReleaseCount += 1 },
+  {
+    deferUntilExplicitRelease: true,
+    clientAbortSignal: deferredAbortController.signal
+  }
+)
+deferredAccountResponse.emit('finish')
+assert.equal(deferredAccountReleaseCount, 0, 'HTTP finish 不得早于路由关键状态结算释放账户槽')
+completeDeferredAccountSettlement()
+assert.equal(deferredAccountReleaseCount, 1, '路由关键状态显式结算后必须释放账户槽')
+deferredAbortController.abort()
+assert.equal(deferredAccountReleaseCount, 1, '显式结算与迟到客户端取消必须保持幂等')
+
+const clientAbortAccountResponse = new MockResponse() as unknown as Response
+const clientAbortController = new AbortController()
+let clientAbortReleaseCount = 0
+clientAbortAccountResponse.once('close', () => {
+  if (!isGatewayForcedDownstreamClose(clientAbortAccountResponse) && !clientAbortAccountResponse.writableFinished) {
+    clientAbortController.abort()
+  }
+})
+const completeClientAbortSettlement = attachAccountSlotRelease(
+  clientAbortAccountResponse,
+  () => { clientAbortReleaseCount += 1 },
+  {
+    deferUntilExplicitRelease: true,
+    clientAbortSignal: clientAbortController.signal
+  }
+)
+clientAbortAccountResponse.emit('close')
+assert.equal(clientAbortReleaseCount, 1, '真实客户端中断必须立即释放账户槽')
+completeClientAbortSettlement()
+assert.equal(clientAbortReleaseCount, 1, '客户端中断后的关键结算不得重复释放账户槽')
+
+const endBeforeFinishResponseState = new MockResponse()
+endBeforeFinishResponseState.writableEnded = true
+endBeforeFinishResponseState.writableFinished = false
+const endBeforeFinishAccountResponse = endBeforeFinishResponseState as unknown as Response
+const endBeforeFinishAbortController = new AbortController()
+let endBeforeFinishReleaseCount = 0
+endBeforeFinishAccountResponse.once('close', () => {
+  if (!isGatewayForcedDownstreamClose(endBeforeFinishAccountResponse) && !endBeforeFinishAccountResponse.writableFinished) {
+    endBeforeFinishAbortController.abort()
+  }
+})
+attachAccountSlotRelease(
+  endBeforeFinishAccountResponse,
+  () => { endBeforeFinishReleaseCount += 1 },
+  {
+    deferUntilExplicitRelease: true,
+    clientAbortSignal: endBeforeFinishAbortController.signal
+  }
+)
+endBeforeFinishAccountResponse.emit('close')
+assert.equal(endBeforeFinishAbortController.signal.aborted, true, 'res.end 后、finish 前断连仍必须识别为真实客户端中断')
+assert.equal(endBeforeFinishReleaseCount, 1, 'res.end 后、finish 前断连必须立即释放账户槽')
+
+const forcedCloseAccountResponse = new MockResponse() as unknown as Response
+const forcedCloseAbortController = new AbortController()
+let forcedCloseReleaseCount = 0
+forcedCloseAccountResponse.once('close', () => {
+  if (!isGatewayForcedDownstreamClose(forcedCloseAccountResponse) && !forcedCloseAccountResponse.writableFinished) {
+    forcedCloseAbortController.abort()
+  }
+})
+const completeForcedCloseSettlement = attachAccountSlotRelease(
+  forcedCloseAccountResponse,
+  () => { forcedCloseReleaseCount += 1 },
+  {
+    deferUntilExplicitRelease: true,
+    clientAbortSignal: forcedCloseAbortController.signal
+  }
+)
+markGatewayForcedDownstreamClose(forcedCloseAccountResponse, 'regression_forced_close')
+forcedCloseAccountResponse.emit('close')
+assert.equal(forcedCloseAbortController.signal.aborted, false, '网关主动断连不得伪装成客户端取消')
+assert.equal(forcedCloseReleaseCount, 0, '网关主动断连必须等待路由关键状态结算')
+completeForcedCloseSettlement()
+assert.equal(forcedCloseReleaseCount, 1, '网关主动断连完成关键结算后必须释放账户槽')
 
 const timingResponse = new MockResponse() as unknown as Response
 const httpCompletion = observeGatewayHttpCompletion(timingResponse)
@@ -247,11 +337,15 @@ const boundedUsageGate = new Promise<void>((resolvePromise) => {
   releaseBoundedUsageTasks = resolvePromise
 })
 const boundedUsageTasks: Promise<void>[] = []
+let overflowSpoolCalls = 0
 for (let index = 0; index < 2_081; index += 1) {
   boundedUsageTasks.push(failureUsageFinalization.dispatchGatewayUsageFinalization({
     taskFactory: async () => {
       startedBoundedUsageTasks += 1
       await boundedUsageGate
+    },
+    overflowFactory: async () => {
+      overflowSpoolCalls += 1
     },
     bytes: 1
   }))
@@ -262,7 +356,9 @@ releaseBoundedUsageTasks?.()
 await Promise.all(boundedUsageTasks)
 assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '有界 usage 收尾队列应可排空')
 const usageFinalizationRuntime = failureUsageFinalization.getGatewayUsageFinalizationRuntime()
-assert.equal(usageFinalizationRuntime.admissionWaitCount, 1, 'usage 收尾满水位时必须背压等待，不能丢弃完成事实')
+assert.equal(usageFinalizationRuntime.admissionWaitCount, 0, '高性能持久补偿可用时不得用等待者压住网关事件循环')
+assert.equal(usageFinalizationRuntime.overflowSpoolCount, 1, 'usage 收尾满水位时必须转入持久补偿')
+assert.equal(overflowSpoolCalls, 1, 'usage 收尾满水位持久补偿必须且只能执行一次')
 assert.equal(usageFinalizationRuntime.pendingCount, 0, '有界 usage 收尾排空后运行态 pending 必须归零')
 assert.equal(usageFinalizationRuntime.queuedBytes, 0, '有界 usage 收尾排空后运行态 queued bytes 必须归零')
 

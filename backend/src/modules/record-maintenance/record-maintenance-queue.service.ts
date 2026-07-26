@@ -211,6 +211,7 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
 
   if (runtimeConfig.processRole === 'worker'
     && runtimeConfig.workerRole !== 'ingest-worker'
+    && runtimeConfig.workerRole !== 'usage-worker'
     && !canProcessRecordMaintenanceJobLocally(job)) {
     if (process.send && process.connected !== false) {
       try {
@@ -1191,7 +1192,8 @@ function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaint
 }
 
 function isRecordMaintenanceIngestWorker(): boolean {
-  return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'ingest-worker'
+  return runtimeConfig.processRole === 'worker'
+    && (runtimeConfig.workerRole === 'ingest-worker' || runtimeConfig.workerRole === 'usage-worker')
 }
 
 function shouldUseRedisStreamRecordMaintenanceQueue(): boolean {
@@ -1332,6 +1334,7 @@ function canProcessRecordMaintenanceJobLocally(job: RecordMaintenanceJob): boole
   return runtimeConfig.processRole === 'worker'
     && (
       runtimeConfig.workerRole === 'ingest-worker'
+      || runtimeConfig.workerRole === 'usage-worker'
       || (runtimeConfig.workerRole === 'stats-worker' && job.type === 'account_usage_snapshot_upsert')
     )
 }

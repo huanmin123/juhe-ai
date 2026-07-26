@@ -216,6 +216,15 @@ export interface UsageStatsOverviewSummaryResult {
   summary: UsageStatsOverview['summary']
 }
 
+export interface UsageStatsOverviewDailyTrendResult {
+  range: AccountUsageStatsRange
+  dailyTrend: Array<{
+    statDate: string
+    totalTokens: number
+    totalCost: number
+  }>
+}
+
 export interface UsageStatsOverviewHourlyTrendResult {
   range: AccountUsageStatsRange
   hourlyTrend: UsageStatsOverview['hourlyTrend']

@@ -25,6 +25,7 @@ import {
   parseTraceParent,
   recordRequestTimingLogDrops,
   resolveRequestSummaryOutcome,
+  shouldWriteGatewayStageDetail,
   withRequestContext,
   type RequestContext
 } from '../../shared/request-context.js'
@@ -146,6 +147,8 @@ assert.equal(gatewayRequestStageLogLevel('skipped', GATEWAY_SLOW_STAGE_THRESHOLD
 assert.equal(gatewayRequestStageLogLevel('expected_failure', 0), 'warn')
 assert.equal(gatewayRequestStageLogLevel('aborted', 0), 'warn')
 assert.equal(gatewayRequestStageLogLevel('unexpected_failure', 0), 'error')
+assert.equal(shouldWriteGatewayStageDetail(undefined, 'expected_failure', Number.MAX_SAFE_INTEGER), true)
+assert.equal(shouldWriteGatewayStageDetail(undefined, 'unexpected_failure', Number.MAX_SAFE_INTEGER), true)
 
 const reserved = buildRequestStageLogFields(undefined, 'model.capability_filter', {
   traceId: 'trace-stage-1',
@@ -348,6 +351,50 @@ for (const key of [
 assert.equal(timingSummary.stageCount, 70, 'stageCount 必须保留超过摘要数组上限后的真实阶段总数')
 assert.equal((timingSummary.stages as unknown[]).length, 64, 'summary 内嵌阶段数组必须保持有界')
 assert.equal(timingSummary.droppedStageSummaries, 6, 'summary 必须明确内嵌阶段摘要丢弃数')
+
+const performanceRequestContextProbe = spawnSync(process.execPath, [
+  '--import',
+  'tsx',
+  'src/scripts/regression/log-event-contract-raw-probe.ts'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    NODE_ENV: 'test',
+    JUHE_AI_RUNTIME_MODE: 'performance',
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_DATABASE_DRIVER: 'postgres',
+    JUHE_AI_CACHE_DRIVER: 'redis',
+    JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+    JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+    JUHE_AI_POSTGRES_URL: 'postgres://test:test@127.0.0.1:5432/test',
+    JUHE_AI_REDIS_CACHE_URL: 'redis://127.0.0.1:6379/0',
+    JUHE_AI_REDIS_STATE_URL: 'redis://127.0.0.1:6380/0',
+    JUHE_AI_REDIS_QUEUE_URL: 'redis://127.0.0.1:6381/0',
+    JUHE_AI_GATEWAY_TIMING_DETAIL_SAMPLE_PERMILLE: '0',
+    JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
+    JUHE_AI_LOG_FILE_ENABLED: 'false',
+    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: 'false',
+    JUHE_AI_LOG_LEVEL: 'info',
+    JUHE_AI_PROCESS_ROLE: 'server'
+  }
+})
+assert.equal(performanceRequestContextProbe.status, 0, performanceRequestContextProbe.stderr)
+const performanceProbeLines = performanceRequestContextProbe.stdout
+  .split(/\r?\n/)
+  .filter((line) => line.startsWith('{'))
+assert.equal(
+  performanceProbeLines.some((line) => line.includes('"event":"gateway.request.stage"') && line.includes('"probeIndex":69')),
+  false,
+  '高性能模式未采样请求不得因事件循环延迟把正常阶段放大成 info 日志'
+)
+const performanceTimingLine = performanceProbeLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
+assert(performanceTimingLine, '高性能模式未采样请求仍必须保留 timing summary')
+const performanceTiming = JSON.parse(performanceTimingLine) as Record<string, unknown>
+assert.equal(performanceTiming.stageDetailsSampled, false)
+assert.equal(performanceTiming.stageCount, 70)
+assert.deepEqual(performanceTiming.stages, [])
 
 const terminalCloseLines = requestContextRawLines
   .filter((line) => line.includes('"traceId":"trace-terminal-close-probe"'))

@@ -841,13 +841,7 @@ const logStreamDiagnostics = new LogStreamDiagnostics((metadata, error) => {
 const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
-    fileName: runtimeConfig.processRole === 'worker'
-      ? runtimeConfig.workerRole === 'worker'
-        ? 'juhe-ai.worker.log'
-        : `juhe-ai.${runtimeConfig.workerRole}.log`
-      : runtimeConfig.processRole === 'db-service'
-        ? 'juhe-ai.db-service.log'
-        : 'juhe-ai.log',
+    fileName: runtimeLogFileName(),
     maxFileBytes: runtimeConfig.log.maxFileBytes,
     retentionDays: runtimeConfig.log.retentionDays,
     maxFiles: runtimeConfig.log.maxFiles
@@ -868,7 +862,11 @@ const loggerOptions: LoggerOptions = {
     service: 'juhe-ai',
     role: runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole
       ? runtimeConfig.workerRole
-      : runtimeConfig.processRole
+      : runtimeConfig.processRole,
+    instanceId: runtimeConfig.instanceId,
+    ...(runtimeConfig.processRole === 'worker'
+      ? { workerReplicaIndex: runtimeConfig.workerReplicaIndex }
+      : {})
   }),
   formatters: {
     level: (label) => ({ level: label })
@@ -897,6 +895,19 @@ export const logger: Logger = pino(
   loggerOptions,
   multiDestinationLogStream ?? new Writable({ write: (_chunk, _encoding, callback) => callback() })
 )
+
+function runtimeLogFileName(): string {
+  const legacyName = runtimeConfig.processRole === 'worker'
+    ? runtimeConfig.workerRole === 'worker'
+      ? 'juhe-ai.worker.log'
+      : `juhe-ai.${runtimeConfig.workerRole}.log`
+    : runtimeConfig.processRole === 'db-service'
+      ? 'juhe-ai.db-service.log'
+      : 'juhe-ai.log'
+  if (runtimeConfig.runtimeMode !== 'performance') return legacyName
+  const baseName = legacyName.slice(0, -'.log'.length)
+  return `${baseName}.${runtimeConfig.instanceId}.log`
+}
 
 export function logPublisherStats(): LogPublisherStats {
   return logStreamDiagnostics.snapshot()

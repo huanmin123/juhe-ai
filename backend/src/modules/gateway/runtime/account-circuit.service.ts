@@ -90,12 +90,29 @@ interface GatewayAccountCircuitObserver {
   state: AccountCircuitState
 }
 
+type GatewayAccountCircuitConfirmationOutcome = 'framing_complete' | 'transport_failure' | 'unknown'
+
+interface GatewayAccountCircuitConfirmationSettlementIntent {
+  outcome: GatewayAccountCircuitConfirmationOutcome
+  reason?: string
+  failureEvidenceKey?: string
+  framingCompleteDisposition?: 'recovering' | 'closed'
+}
+
+interface GatewayAccountCircuitConfirmationSettlement {
+  outcome: GatewayAccountCircuitConfirmationOutcome
+  result: AccountCircuitMutationResult
+}
+
 export class GatewayAccountCircuitAttempt {
   readonly isObserver: boolean
 
   private requestRecoveryGeneration: number | undefined
   private requestRecoveryEvidenceKey: string | undefined
   private confirmationKeyRotationFailureObserved = false
+  private confirmationSettlementIntent: GatewayAccountCircuitConfirmationSettlementIntent | undefined
+  private confirmationSettlementInFlight: Promise<GatewayAccountCircuitConfirmationSettlement> | undefined
+  private confirmationSettlementResult: GatewayAccountCircuitConfirmationSettlement | undefined
 
   constructor(
     private readonly service: GatewayAccountCircuitService,
@@ -115,18 +132,12 @@ export class GatewayAccountCircuitAttempt {
   }
 
   async reportFramingComplete(): Promise<AccountCircuitMutationResult | undefined> {
-    if (this.confirmation) {
-      const confirmation = this.confirmation
-      this.confirmation = undefined
-      const closeAfterKeyRotation = this.confirmationKeyRotationFailureObserved
-      this.confirmationKeyRotationFailureObserved = false
-      return this.service.completeConfirmation(
-        confirmation,
-        'framing_complete',
-        undefined,
-        undefined,
-        closeAfterKeyRotation ? 'closed' : undefined
-      )
+    const confirmationSettlement = this.settleConfirmation({
+      outcome: 'framing_complete',
+      framingCompleteDisposition: this.confirmationKeyRotationFailureObserved ? 'closed' : undefined
+    })
+    if (confirmationSettlement) {
+      return (await confirmationSettlement).result
     }
     if (this.observer) {
       return this.service.completeObserverFraming({
@@ -159,30 +170,31 @@ export class GatewayAccountCircuitAttempt {
   async reportTransportFailure(
     failure: GatewayAccountCircuitTransportFailure
   ): Promise<GatewayAccountCircuitFailureDecision> {
+    const failureReason = requiredText(failure.reason, 'failure.reason')
+    const confirmationSettlement = this.settleConfirmation({
+      outcome: 'transport_failure',
+      reason: failureReason,
+      failureEvidenceKey: this.failureEvidenceKey
+    })
+    if (confirmationSettlement) {
+      const settlement = await confirmationSettlement
+      if (settlement.outcome === 'transport_failure' && settlement.result.state.phase === 'SUSPECT') {
+        this.requestRecoveryGeneration = settlement.result.state.generation
+        this.requestRecoveryEvidenceKey = settlement.result.state.failureEvidenceKeys?.at(-1)
+      }
+      return {
+        outcome: settlement.outcome === 'transport_failure' ? 'blocked' : 'observer_neutral',
+        state: settlement.result.state
+      }
+    }
     if (this.observer) {
       return { outcome: 'observer_neutral', state: this.observer.state }
-    }
-    if (this.confirmation) {
-      const confirmation = this.confirmation
-      this.confirmation = undefined
-      this.confirmationKeyRotationFailureObserved = false
-      const result = await this.service.completeConfirmation(
-        confirmation,
-        'transport_failure',
-        requiredText(failure.reason, 'failure.reason'),
-        this.failureEvidenceKey
-      )
-      if (result.state.phase === 'SUSPECT') {
-        this.requestRecoveryGeneration = result.state.generation
-        this.requestRecoveryEvidenceKey = result.state.failureEvidenceKeys?.at(-1)
-      }
-      return { outcome: 'blocked', state: result.state }
     }
     const decision = await this.service.suspectForegroundFailure({
       scope: this.scope,
       dispatchRevision: this.dispatchRevision,
       confirmationFailuresRequired: this.confirmationFailuresRequired,
-      reason: `${failure.kind}:${requiredText(failure.reason, 'failure.reason')}`,
+      reason: `${failure.kind}:${failureReason}`,
       failureEvidenceKey: this.failureEvidenceKey
     })
     if (decision.outcome === 'suspected') {
@@ -193,17 +205,59 @@ export class GatewayAccountCircuitAttempt {
   }
 
   deferConfirmationTransportFailureForKeyRotation(): boolean {
-    if (!this.confirmation) return false
+    if (!this.confirmation || this.confirmationSettlementIntent) return false
     this.confirmationKeyRotationFailureObserved = true
     return true
   }
 
-  reportUnknown(): Promise<AccountCircuitMutationResult | undefined> {
-    if (!this.confirmation) return Promise.resolve(undefined)
+  async reportUnknown(): Promise<AccountCircuitMutationResult | undefined> {
+    const confirmationSettlement = this.settleConfirmation({ outcome: 'unknown' })
+    return confirmationSettlement ? (await confirmationSettlement).result : undefined
+  }
+
+  private settleConfirmation(
+    requestedIntent: GatewayAccountCircuitConfirmationSettlementIntent
+  ): Promise<GatewayAccountCircuitConfirmationSettlement> | undefined {
+    if (this.confirmationSettlementResult) {
+      return Promise.resolve(this.confirmationSettlementResult)
+    }
     const confirmation = this.confirmation
-    this.confirmation = undefined
-    this.confirmationKeyRotationFailureObserved = false
-    return this.service.completeConfirmation(confirmation, 'unknown')
+    if (!confirmation) return undefined
+
+    // The first observed terminal outcome owns the lease. A store or control-
+    // plane failure may retry that exact outcome, but a later code path must
+    // never replace it with a contradictory success/failure observation.
+    this.confirmationSettlementIntent ??= { ...requestedIntent }
+    if (this.confirmationSettlementInFlight) return this.confirmationSettlementInFlight
+
+    const intent = this.confirmationSettlementIntent
+    const settlement = this.service.completeConfirmation(
+      confirmation,
+      intent.outcome,
+      intent.reason,
+      intent.failureEvidenceKey,
+      intent.framingCompleteDisposition
+    ).then((result) => {
+      const completed = { outcome: intent.outcome, result }
+      this.confirmationSettlementResult = completed
+      this.confirmation = undefined
+      this.confirmationKeyRotationFailureObserved = false
+      return completed
+    })
+    this.confirmationSettlementInFlight = settlement
+    void settlement.then(
+      () => {
+        if (this.confirmationSettlementInFlight === settlement) {
+          this.confirmationSettlementInFlight = undefined
+        }
+      },
+      () => {
+        if (this.confirmationSettlementInFlight === settlement) {
+          this.confirmationSettlementInFlight = undefined
+        }
+      }
+    )
+    return settlement
   }
 }
 
@@ -384,11 +438,26 @@ export class GatewayAccountCircuitService {
         leaseDurationMs,
         confirmationEvidenceKey
       )
-      const currentParentState = await this.store.get(accountScope, this.now())
+      const releaseAcquiredConfirmation = async () => {
+        if (decision.outcome !== 'confirmation_acquired') return
+        try {
+          await this.completeConfirmation(decision.confirmation, 'unknown')
+        } catch {
+          await this.completeConfirmation(decision.confirmation, 'unknown')
+        }
+      }
+      let currentParentState: AccountCircuitState
+      try {
+        currentParentState = await this.store.get(accountScope, this.now())
+      } catch (error) {
+        await releaseAcquiredConfirmation()
+        throw error
+      }
       if (
         currentParentState.phase !== 'CLOSED'
         || (currentParentState.dispatchRevision && currentParentState.dispatchRevision !== dispatchRevision)
       ) {
+        await releaseAcquiredConfirmation()
         observeBlockedCircuitDispatch(currentParentState)
         return { outcome: 'blocked', state: currentParentState }
       }
@@ -486,11 +555,18 @@ export class GatewayAccountCircuitService {
     failureEvidenceKey?: string,
     framingCompleteDisposition?: 'recovering' | 'closed'
   ): Promise<AccountCircuitMutationResult> {
+    const completionIdentity = sha256(stableSerialize({
+      scopeKey: confirmation.scopeKey,
+      generation: confirmation.generation,
+      dispatchRevision: confirmation.dispatchRevision,
+      leaseId: confirmation.leaseId,
+      outcome
+    }))
     const result = await this.completeAndNotify('complete_confirmation', confirmation.scope, 'SUSPECT', () => this.store.completeConfirmation({
       scope: confirmation.scope,
       generation: confirmation.generation,
       dispatchRevision: confirmation.dispatchRevision,
-      transitionId: this.createId(),
+      transitionId: `confirmation:${completionIdentity}`,
       leaseId: confirmation.leaseId,
       outcome,
       reason,
@@ -505,19 +581,20 @@ export class GatewayAccountCircuitService {
         : {}),
       nowMs: this.now()
     }))
-    if (outcome === 'framing_complete' && result.status === 'applied' && result.state.phase === 'CLOSED') {
+    const appliedOrReplayed = result.status === 'applied' || result.status === 'idempotent'
+    if (outcome === 'framing_complete' && appliedOrReplayed && result.state.phase === 'CLOSED') {
       await this.clearAccountEscalationEvidenceAfterFramingComplete(
         confirmation.scope,
         confirmation.dispatchRevision
       )
     }
-    if (outcome === 'transport_failure' && result.status === 'applied' && result.state.phase === 'OPEN') {
+    if (outcome === 'transport_failure' && appliedOrReplayed && result.state.phase === 'OPEN') {
       const escalation = await this.store.recordProtocolModelOpenEvidence({
         scope: confirmation.scope,
         generation: result.state.generation,
         dispatchRevision: confirmation.dispatchRevision,
         evidenceId: `${confirmation.scopeKey}:${confirmation.generation}:${confirmation.leaseId}`,
-        accountTransitionId: this.createId(),
+        accountTransitionId: `confirmation-parent:${completionIdentity}`,
         reason: requiredText(reason ?? 'protocol_model_transport_failure', 'reason'),
         confirmedFailureCount: 1,
         distinctScopeThreshold: this.escalationDistinctScopeThreshold,
@@ -651,7 +728,7 @@ export class GatewayAccountCircuitService {
     const leaseId = this.createId()
     const nowMs = this.now()
     const expectedFailureEvidenceKey = accountCircuitFailureEvidenceKeys(state).at(-1)
-    const result = await this.store.acquireConfirmationLease({
+    const acquireInput = {
       scope,
       generation: state.generation,
       dispatchRevision: state.dispatchRevision,
@@ -661,9 +738,33 @@ export class GatewayAccountCircuitService {
       expectedFailureEvidenceKey,
       confirmationEvidenceKey,
       nowMs
-    })
+    }
+    let result: AccountCircuitMutationResult
+    try {
+      result = await this.store.acquireConfirmationLease(acquireInput)
+    } catch {
+      // A Redis reply can be lost after EVAL committed. Replaying the exact
+      // transition is safe and lets the caller recover ownership of its lease.
+      try {
+        result = await this.store.acquireConfirmationLease(acquireInput)
+      } catch (replayError) {
+        const observed = await this.store.get(scope, this.now())
+        const replayCommitted = observed.phase === 'SUSPECT'
+          && observed.generation === state.generation
+          && observed.dispatchRevision === state.dispatchRevision
+          && observed.lease?.kind === 'confirmation'
+          && observed.lease.leaseId === leaseId
+        if (!replayCommitted) throw replayError
+        result = { status: 'idempotent', state: observed }
+      }
+    }
     await this.notifyMutation('acquire_confirmation', scope, result, 'SUSPECT')
-    if (result.status !== 'applied') {
+    const ownsLease = result.state.phase === 'SUSPECT'
+      && result.state.generation === state.generation
+      && result.state.dispatchRevision === state.dispatchRevision
+      && result.state.lease?.kind === 'confirmation'
+      && result.state.lease.leaseId === leaseId
+    if ((result.status !== 'applied' && result.status !== 'idempotent') || !ownsLease) {
       return { outcome: 'blocked', state: result.state }
     }
     const confirmation: GatewayAccountCircuitConfirmation = {

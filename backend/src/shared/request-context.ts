@@ -70,6 +70,7 @@ export interface RequestContext {
   timingLogDroppedCount?: number
   timingLogQueuePeakCount?: number
   timingLogQueuePeakBytes?: number
+  timingDetailSampled?: boolean
   logger: Logger
 }
 
@@ -144,6 +145,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     timingLogDroppedCount: 0,
     timingLogQueuePeakCount: initialLogStats.pendingCount,
     timingLogQueuePeakBytes: initialLogStats.pendingBytes,
+    timingDetailSampled: isGatewayTimingDetailSampled(traceId),
     logger: logger.child({ traceId, requestId })
   }
 
@@ -218,7 +220,7 @@ export function logRequestStage(
     endedAt
   )
   const requestLogger = context?.logger ?? logger
-  const timingDropCountBefore = context ? logPublisherStats().dropCount : 0
+  const logStatsBefore = context ? logPublisherStats() : undefined
   if (context) {
     context.stageSummaries ??= []
     if (context.stageSummaries.length < 64) {
@@ -238,10 +240,14 @@ export function logRequestStage(
     }
     captureRequestTimingFields(context, fields)
   }
-  writeRequestStageLog(requestLogger, stageFields, stage, outcome)
+  const stageLogWritten = writeRequestStageLog(requestLogger, stageFields, stage, outcome, context, logStatsBefore?.pendingBytes ?? 0)
   if (context) {
-    recordRequestTimingLogDrops(context, timingDropCountBefore, logPublisherStats().dropCount)
-    captureTimingLogQueueSnapshot(context)
+    captureTimingLogQueueSnapshot(context, logStatsBefore)
+    if (stageLogWritten) {
+      const logStatsAfter = logPublisherStats()
+      recordRequestTimingLogDrops(context, logStatsBefore?.dropCount ?? 0, logStatsAfter.dropCount)
+      captureTimingLogQueueSnapshot(context, logStatsAfter)
+    }
   }
 }
 
@@ -249,8 +255,10 @@ function writeRequestStageLog(
   requestLogger: Logger,
   stageFields: Record<string, unknown>,
   stage: GatewayRequestStage,
-  outcome: GatewayRequestStageOutcome
-): void {
+  outcome: GatewayRequestStageOutcome,
+  context: RequestContext | undefined,
+  pendingLogBytes: number
+): boolean {
   const durationMs = Number(stageFields.durationMs ?? 0)
   const durationText = `${Math.round(durationMs * 10) / 10}ms`
   const level = gatewayRequestStageLogLevel(outcome, durationMs)
@@ -259,8 +267,9 @@ function writeRequestStageLog(
       { ...stageFields, event: 'gateway.request.failure' },
       `请求阶段未预期失败：${stage}，${durationText}`
     )
-    return
+    return true
   }
+  if (!shouldWriteGatewayStageDetail(context, outcome, pendingLogBytes)) return false
   const message = outcome === 'expected_failure'
     ? `请求阶段预期失败：${stage}，${durationText}`
     : outcome === 'aborted'
@@ -279,6 +288,31 @@ function writeRequestStageLog(
   } else {
     requestLogger.debug(stageFields, message)
   }
+  return true
+}
+
+export function isGatewayTimingDetailSampled(traceId: string): boolean {
+  if (runtimeConfig.runtimeMode !== 'performance') return true
+  const permille = runtimeConfig.log.gatewayTimingDetailSamplePermille
+  if (permille <= 0) return false
+  if (permille >= 1000) return true
+  let hash = 2166136261
+  for (let index = 0; index < traceId.length; index += 1) {
+    hash ^= traceId.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0) % 1000 < permille
+}
+
+export function shouldWriteGatewayStageDetail(
+  context: RequestContext | undefined,
+  outcome: GatewayRequestStageOutcome,
+  pendingLogBytes: number
+): boolean {
+  if (outcome === 'unexpected_failure' || outcome === 'expected_failure' || outcome === 'aborted') return true
+  if (runtimeConfig.runtimeMode !== 'performance') return true
+  if (pendingLogBytes >= runtimeConfig.log.gatewayStagePressureMaxPendingBytes) return false
+  return context?.timingDetailSampled ?? isGatewayTimingDetailSampled(context?.traceId ?? '')
 }
 
 function normalizeStageStartedAt(context: RequestContext | undefined, stageStartedAt: number): number {
@@ -511,7 +545,10 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
     dispatchSummary: context.gatewayRoutingDispatchSummary
       ? { ...context.gatewayRoutingDispatchSummary }
       : null,
-    stages: context.stageSummaries ?? []
+    stageDetailsSampled: context.timingDetailSampled ?? true,
+    stages: outcome === 'success' && context.timingDetailSampled === false
+      ? []
+      : context.stageSummaries ?? []
   }
   logger.info(
     summaryFields,
@@ -533,8 +570,8 @@ function captureRequestTimingFields(context: RequestContext, fields: Record<stri
   if (observedAttemptCount > (context.attemptCount ?? 0)) context.attemptCount = observedAttemptCount
 }
 
-function captureTimingLogQueueSnapshot(context: RequestContext): void {
-  const stats = logPublisherStats()
+function captureTimingLogQueueSnapshot(context: RequestContext, observedStats = logPublisherStats()): void {
+  const stats = observedStats
   context.timingLogQueuePeakCount = Math.max(context.timingLogQueuePeakCount ?? 0, stats.pendingCount)
   context.timingLogQueuePeakBytes = Math.max(context.timingLogQueuePeakBytes ?? 0, stats.pendingBytes)
 }

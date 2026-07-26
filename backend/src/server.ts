@@ -6,6 +6,7 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import {
+  getBackgroundWorkerSupervisorRuntime,
   startBackgroundWorkerSupervisor,
   stopBackgroundWorkerSupervisor
 } from './modules/background/background-worker-supervisor.js'
@@ -43,6 +44,7 @@ import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-firs
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
+import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
@@ -141,6 +143,7 @@ if (runtimeConfig.auth.captchaDisabled) {
   }, '登录验证码已关闭：仅用于测试或临时排障，账号密码、登录限频、会话和权限校验仍然生效')
 }
 startProcessEventLoopMonitor()
+startPerformanceProcessMetricsPublisher()
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   if (runtimeConfig.runtimeMode === 'performance') {
@@ -197,7 +200,19 @@ mountAccountHealthCheckDispatchBridge(app, {
 })
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
-  res.json({ status: 'ok', service: 'juhe-ai' })
+  const workerProcesses = getBackgroundWorkerSupervisorRuntime()
+  const workerTopologyReady = workerProcesses.length === 0 || workerProcesses.every((processRuntime) => processRuntime.ready)
+  const topologyGatesHealth = runtimeConfig.runtimeMode === 'performance'
+    && runtimeConfig.performanceNodeRole === 'control'
+  res.status(topologyGatesHealth && !workerTopologyReady ? 503 : 200).json({
+    status: topologyGatesHealth && !workerTopologyReady ? 'starting' : 'ok',
+    service: 'juhe-ai',
+    runtimeMode: runtimeConfig.runtimeMode,
+    nodeRole: runtimeConfig.performanceNodeRole,
+    instanceId: runtimeConfig.instanceId,
+    workerProcesses,
+    workerTopologyReady
+  })
 })
 
 app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
@@ -423,6 +438,7 @@ app.use(systemPrefix, (_req, res) => {
 })
 
 app.use(
+  rejectGatewayTrafficOnControlNode,
   preResolveGatewayRuntime,
   handleGatewayDbServiceUnavailable,
   openAICompatibleFilesRouter,
@@ -433,6 +449,14 @@ app.use(
   captureGatewayRawBody,
   openAIGatewayRouter
 )
+
+function rejectGatewayTrafficOnControlNode(_req: Request, res: Response, next: NextFunction): void {
+  if (runtimeConfig.runtimeMode !== 'performance' || runtimeConfig.performanceNodeRole !== 'control') {
+    next()
+    return
+  }
+  res.status(404).json({ message: '控制面节点不承接 AI 网关请求' })
+}
 
 app.use((_req, res) => {
   res.status(404).json({ message: '资源不存在' })
@@ -520,6 +544,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {
+    stopPerformanceProcessMetricsPublisher()
     stopBackgroundWorkerSupervisor()
     stopDbServiceSupervisor()
     clearTimeout(forcedExit)

@@ -130,6 +130,7 @@ import type {
 import type {
   SystemMetricsOverview,
   UsageStatsOverview,
+  UsageStatsOverviewDailyTrendResult,
   UsageStatsOverviewErrorsResult,
   UsageStatsOverviewHourlyTrendResult,
   UsageStatsOverviewModelDistributionResult,
@@ -458,6 +459,11 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'get_usage_stats_overview_summary_read_only'
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_usage_stats_overview_daily_trend_read_only'
     access?: AccessScope
     range: AccountUsageStatsRange
   }
@@ -873,6 +879,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_usage_stats_timezone_read_only' } ? string :
   T extends { type: 'get_usage_stats_overview_read_only' } ? UsageStatsOverview :
   T extends { type: 'get_usage_stats_overview_summary_read_only' } ? UsageStatsOverviewSummaryResult :
+  T extends { type: 'get_usage_stats_overview_daily_trend_read_only' } ? UsageStatsOverviewDailyTrendResult :
   T extends { type: 'get_usage_stats_overview_hourly_trend_read_only' } ? UsageStatsOverviewHourlyTrendResult :
   T extends { type: 'get_usage_stats_overview_model_distribution_read_only' } ? UsageStatsOverviewModelDistributionResult :
   T extends { type: 'get_usage_stats_overview_errors_read_only' } ? UsageStatsOverviewErrorsResult :

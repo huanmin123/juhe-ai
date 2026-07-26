@@ -45,6 +45,8 @@ import {
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks,
   startUsageRecordRedisStreamConsumer,
+  startUsageRecordRedisSpoolReplay,
+  stopUsageRecordRedisSpoolReplay,
   stopUsageRecordRedisStreamConsumer
 } from './modules/gateway/usage/record-queue.service.js'
 import { closeUsageRecordWriterPool } from './storage/usage-record-writer-pool.js'
@@ -64,6 +66,7 @@ import {
 import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
+import { startPerformanceProcessMetricsPublisher, stopPerformanceProcessMetricsPublisher } from './shared/performance-process-metrics-registry.js'
 import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
@@ -82,6 +85,7 @@ type WorkerIncomingMessage =
 
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
+startPerformanceProcessMetricsPublisher()
 installWorkerSignalShutdownHooks()
 if (isIngestWorker()) {
   if (runtimeConfig.databaseDriver === 'sqlite') {
@@ -100,10 +104,32 @@ if (isIngestWorker()) {
   startRecordMaintenanceRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
   startRuntimeLogFileImport()
+} else if (isUsageWorker()) {
+  startLogMaintenance()
+  installUsageRecordQueueShutdownHooks()
+  startUsageRecordRedisStreamConsumer()
+  if (isPrimaryWorkerReplica()) {
+    installRecordMaintenanceQueueShutdownHooks()
+    startRecordMaintenanceRedisStreamConsumer()
+    startUsageRecordRedisSpoolReplay()
+  }
+} else if (isLogWorker()) {
+  startLogMaintenance()
+  installOperationLogQueueShutdownHooks()
+  installAuditLogQueueShutdownHooks()
+  installPublicApiLogQueueShutdownHooks()
+  startOperationLogRedisStreamConsumer()
+  startPublicApiLogRedisStreamConsumer()
+  startAuditLogRedisStreamConsumer()
+  if (isPrimaryWorkerReplica()) {
+    startRuntimeLogFileImport()
+  }
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
-startBackgroundJobs()
+if (isPrimaryWorkerReplica()) {
+  startBackgroundJobs()
+}
 
 let workerSignalShutdownInProgress = false
 
@@ -112,6 +138,12 @@ process.on('message', (message: unknown) => {
     return
   }
   if (isIngestWorker() && !isIngestWorkerMessage(message)) {
+    return
+  }
+  if (isUsageWorker() && !isUsageWorkerMessage(message)) {
+    return
+  }
+  if (isLogWorker() && !isLogWorkerMessage(message)) {
     return
   }
   if (isOpsWorker() && !isOpsWorkerMessage(message)) {
@@ -170,7 +202,7 @@ process.on('message', (message: unknown) => {
       }
       break
     case 'background_worker_dataset_write_request':
-      if (typeof message.requestId === 'string' && isIngestWorker()) {
+      if (typeof message.requestId === 'string' && (isIngestWorker() || (isUsageWorker() && isPrimaryWorkerReplica()))) {
         void respondToDatasetWriteRequest(message.requestId, message.operation)
       }
       break
@@ -254,6 +286,8 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
 
 function currentBackgroundWorkerRole(): BackgroundWorkerRuntimeSnapshot['workerRole'] {
   if (runtimeConfig.workerRole === 'ingest-worker'
+    || runtimeConfig.workerRole === 'usage-worker'
+    || runtimeConfig.workerRole === 'log-worker'
     || runtimeConfig.workerRole === 'stats-worker'
     || runtimeConfig.workerRole === 'ops-worker') {
     return runtimeConfig.workerRole
@@ -410,14 +444,51 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     flushPublicApiLogQueueForShutdown()
     await flushRecordMaintenanceQueueForShutdown()
     await flushAuditLogQueueForShutdown()
+    stopPerformanceProcessMetricsPublisher()
     await closeLogger()
     return
   }
+  if (isUsageWorker()) {
+    await stopUsageRecordRedisStreamConsumer()
+    if (isPrimaryWorkerReplica()) {
+      await stopUsageRecordRedisSpoolReplay()
+      await stopRecordMaintenanceRedisStreamConsumer()
+    }
+    await flushUsageRecordQueueForShutdown()
+    await closeUsageRecordWriterPool()
+    stopPerformanceProcessMetricsPublisher()
+    await closeLogger()
+    return
+  }
+  if (isLogWorker()) {
+    await stopOperationLogRedisStreamConsumer()
+    await stopPublicApiLogRedisStreamConsumer()
+    await stopAuditLogRedisStreamConsumer()
+    flushOperationLogQueueForShutdown()
+    flushPublicApiLogQueueForShutdown()
+    await flushAuditLogQueueForShutdown()
+    stopPerformanceProcessMetricsPublisher()
+    await closeLogger()
+    return
+  }
+  stopPerformanceProcessMetricsPublisher()
   await closeLogger()
 }
 
 function isIngestWorker(): boolean {
   return runtimeConfig.workerRole === 'ingest-worker'
+}
+
+function isUsageWorker(): boolean {
+  return runtimeConfig.workerRole === 'usage-worker'
+}
+
+function isLogWorker(): boolean {
+  return runtimeConfig.workerRole === 'log-worker'
+}
+
+function isPrimaryWorkerReplica(): boolean {
+  return runtimeConfig.workerReplicaIndex === 0
 }
 
 function isStatsWorker(): boolean {
@@ -444,6 +515,20 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_dataset_write_request'
 }
 
+function isUsageWorkerMessage(message: WorkerIncomingMessage): boolean {
+  return isWorkerControlMessage(message)
+    || message.type === 'background_worker_usage_records'
+    || message.type === 'background_worker_record_maintenance'
+    || message.type === 'background_worker_dataset_write_request'
+}
+
+function isLogWorkerMessage(message: WorkerIncomingMessage): boolean {
+  return isWorkerControlMessage(message)
+    || message.type === 'background_worker_audit_logs'
+    || message.type === 'background_worker_operation_logs'
+    || message.type === 'background_worker_public_api_logs'
+}
+
 function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
   if (runtimeConfig.queueDriver !== 'redis_stream') return
   if (!isLocalQueueIpcMessage(message)) return
@@ -467,6 +552,8 @@ function isOpsWorkerMessage(message: WorkerIncomingMessage): boolean {
 
 function workerStartedMessage(): string {
   if (isIngestWorker()) return '后台 ingest-worker 已启动'
+  if (isUsageWorker()) return `后台 usage-worker#${runtimeConfig.workerReplicaIndex + 1} 已启动`
+  if (isLogWorker()) return `后台 log-worker#${runtimeConfig.workerReplicaIndex + 1} 已启动`
   if (isStatsWorker()) return '后台 stats-worker 已启动'
   if (isOpsWorker()) return '后台 ops-worker 已启动'
   return '后台 worker 已启动'

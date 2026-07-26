@@ -1,5 +1,5 @@
 <template>
-  <a-card :title="title" class="page-card chart-card" :loading="loading">
+  <a-card :title="title" class="page-card chart-card" :class="{ compact }" :loading="loading">
     <p v-if="description" class="chart-card-description">{{ description }}</p>
     <a-empty v-if="!hasData" :description="emptyDescription" />
     <slot v-else />
@@ -15,6 +15,7 @@ defineProps<{
   emptyDescription: string
   error?: string
   onRetry?: () => void
+  compact?: boolean
 }>()
 </script>
 
@@ -38,10 +39,22 @@ defineProps<{
   min-height: 328px;
 }
 
+.chart-card.compact :deep(.ant-card-body) {
+  min-height: 220px;
+}
+
 .chart-card :deep(.ant-empty) {
   display: flex;
   flex: 1;
   flex-direction: column;
   justify-content: center;
+}
+
+@media (max-width: 768px) {
+  .chart-card :deep(.ant-card-head-title) {
+    overflow: visible;
+    white-space: normal;
+    text-overflow: clip;
+  }
 }
 </style>

@@ -352,7 +352,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ### 错误处理、切号与恢复
 
-- 通用 DeepSeek 客户端的完整 `2xx` / 普通 payload 透明；安全文本推理的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级 Key / 账户接管，连接失败、超时和未完成 framing 进入 transport 流水线。图片、文件和其他副作用 POST 派发后保持 at-most-once，精确客户端语义另由对应画像策略处理
+- 通用 DeepSeek 客户端的完整 `2xx` / 普通 payload 透明；所有请求的完整非 `2xx` 只按 `response.ok=false` 做内容无关的请求级 Key / 账户接管，连接失败、超时和未完成 framing 进入 transport 流水线。图片、文件和其他请求在语义未提交时同样切换后备候选，精确客户端语义另由对应画像策略处理
 - DeepSeek 错误码、错误类型、错误文案和 `finish_reason` 只允许原样透传、审计，或作为用户显式响应检查 / 账户错误策略的匹配输入；系统不写死余额不足、限流、可重试或账号坏等分支
 - `insufficient_system_resource` 与其他未知 `finish_reason` 等价：未命中用户显式策略时不观察为故障、不自动重试或切号，也不产生账户、Key、代理、模型或质量状态副作用
 - Keep-alive comment / 空行不能触发流式缺终止事件错误，也不能被记录成可见输出

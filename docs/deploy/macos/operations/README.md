@@ -5,6 +5,7 @@
 ## 文件
 
 - `install-launchd-service.sh`：生成固定 `bin/run.sh`，安装 user LaunchAgent 或 system LaunchDaemon，只守护 juhe-ai 主进程并启用 `KeepAlive`；更新已有服务失败时恢复原 `run.sh`、plist 和原 loaded 状态。
+- `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；逐节点健康后才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
 - `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口。
@@ -16,6 +17,7 @@
 
 - 外部 HTTP watchdog 已退役，不提供安装、恢复或启动脚本。主进程退出由 launchd `KeepAlive` 拉起，DB service 和 worker 继续由主进程 supervisor 管理。
 - 真实路径、label、用户、入口域名、端口、代理订阅和凭据由部署人员通过参数或服务器私有配置提供，不写入仓库。
+- 高性能拓扑脚本不会安装 Nginx，也不会修改 Nginx 主配置；`--nginx-config` 必须是主配置已 include 的绝对路径。默认仅 dry-run，`--apply` 要求构建产物、共享 `backend/.env`、Node、launchd、Nginx 和所有目标端口均可用。
 - `install-launchd-service.sh --apply` 必须显式传 `--health-port` 或 loopback `--health-base-url`；加载后在有界窗口内连续确认 `/__aisys__/health` 与 `/__aisys__/api/health`，失败会恢复旧定义和 loaded 状态。
 - `manage-sing-box.sh` 的 `launchd` 更新在 bootstrap、kickstart、监听身份或代理探测失败时恢复旧 plist 与原 loaded 状态；`existing` 不会因为任意进程占用端口就接管。
 - `temporary-cutover.sh` 不复制数据库、不生成临时 env、不停止主服务或临时服务。环境私有流程先完成资源隔离与候选启动，再使用本脚本切流；切流成功后也保留源服务，确认稳定后才显式清理。
@@ -44,6 +46,18 @@ bash ./install-launchd-service.sh --dry-run \
   --base-dir "$HOME/juhe-ai-lite" \
   --label com.example.juhe-ai \
   --health-port 3000
+
+bash ./install-performance-topology.sh --dry-run \
+  --scope user \
+  --base-dir "$HOME/juhe-ai-lite" \
+  --label-prefix com.example.juhe-ai.performance \
+  --control-port 3200 \
+  --gateway-base-port 3101 \
+  --gateway-count 3 \
+  --usage-workers 2 \
+  --log-workers 2 \
+  --ingress-port 3000 \
+  --nginx-config /opt/homebrew/etc/nginx/servers/juhe-ai-performance.conf
 
 bash ./manage-sing-box.sh existing --dry-run \
   --config "$HOME/.config/sing-box/config.json" \

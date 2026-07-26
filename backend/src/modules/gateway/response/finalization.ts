@@ -25,6 +25,7 @@ import {
   NonStreamUpstreamBodyPipeError,
   endResponse,
   isProvenUpstreamBodyTransportError,
+  markGatewayForcedDownstreamClose,
   pipeNonStreamUpstreamResponse,
   pipeNonStreamUpstreamResponseForInspection,
   nonStreamResponseCaptureBytes
@@ -105,6 +106,7 @@ import {
 import {
   recordGatewayUpstreamBucketSuccessAsync
 } from '../runtime/proxy-health.service.js'
+import { recordGatewayAccountApiKeySuccess } from '../runtime/account-api-key-effects.service.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
 import type { HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
 import {
@@ -251,9 +253,10 @@ interface HandleUpstreamResponseInput {
   downstreamCommitState: GatewayDownstreamCommitState
 }
 
-interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
+export interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
   result: Exclude<UpstreamResponseHandlingResult, { alreadyFinalized: true } | { retryUpstream: true }>
   completedAtMs?: number
+  routingEffectsApplied?: boolean
 }
 
 const nonStreamResponseInspectionMaxBytes = 1024 * 1024
@@ -1301,6 +1304,7 @@ async function finalizeNonStreamResponseAfterSseHeartbeat(
     input.downstreamCommitState.markSemanticCommitted(failureEvent.length)
     endResponse(input.res)
   } else if (!input.res.writableEnded && !input.res.destroyed) {
+    markGatewayForcedDownstreamClose(input.res, 'stream_retry_signal_unavailable')
     input.res.destroy()
   }
   input.auditCapture.completeAttempt(input.auditAttemptId, {
@@ -1692,17 +1696,15 @@ function applyNonStreamUsageFallback(input: {
   return fallback.usage
 }
 
-export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): Promise<void> {
+export async function applyHandledUpstreamRoutingEffects(
+  input: FinalizeHandledUpstreamResponseInput
+): Promise<void> {
   const {
-    req,
-    res,
     account,
     upstreamResponse,
-    upstreamUrl,
     auditCapture,
     settings,
     usageContext,
-    startedAt,
     result
   } = input
   const interpretUpstreamResponseSemantics = input.clientStrategy
@@ -1711,13 +1713,18 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   const forwardedResponseSuccessful = upstreamResponse.ok
   const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
   if (protocolValidatedSuccess && !isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
-    const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
-      systemAccountId: usageContext.systemAccountId,
-      apiKeyId: usageContext.apiKeyId,
-      groupId: usageContext.groupId,
-      clientIp: usageContext.clientIp,
-      endpoint: usageContext.endpoint
-    })
+    const clearedClientIpErrorCircuit = await applyHandledUpstreamRoutingEffectSafely(
+      account,
+      auditCapture,
+      'client_ip_error_circuit_recovery',
+      async () => await recordClientIpErrorCircuitSuccessAsync({
+        systemAccountId: usageContext.systemAccountId,
+        apiKeyId: usageContext.apiKeyId,
+        groupId: usageContext.groupId,
+        clientIp: usageContext.clientIp,
+        endpoint: usageContext.endpoint
+      })
+    )
     if (clearedClientIpErrorCircuit) {
       getRequestLogger().info({
         event: 'gateway_client_ip_error_circuit_recovered',
@@ -1738,7 +1745,12 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   if (interpretUpstreamResponseSemantics && protocolValidatedSuccess) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       if (input.automaticAccountStateMutationEnabled !== false) {
-        const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
+        const clearedProxyFailure = await applyHandledUpstreamRoutingEffectSafely(
+          account,
+          auditCapture,
+          'upstream_bucket_recovery',
+          async () => await recordGatewayUpstreamBucketSuccessAsync(account)
+        )
         if (clearedProxyFailure) {
           getRequestLogger().info({
             event: 'gateway_upstream_failure_bucket_recovered',
@@ -1755,11 +1767,16 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
       }
     }
     if (input.automaticAccountStateMutationEnabled !== false) {
-      await applyAccountErrorHandlingWithCacheInvalidation(account, {
-        success: true,
-        settings,
-        trafficSource: usageContext.trafficSource
-      })
+      await applyHandledUpstreamRoutingEffectSafely(
+        account,
+        auditCapture,
+        'account_success_recovery',
+        async () => await applyAccountErrorHandlingWithCacheInvalidation(account, {
+          success: true,
+          settings,
+          trafficSource: usageContext.trafficSource
+        })
+      )
     }
     if (input.automaticAccountStateMutationEnabled !== false
       && usageContext.trafficSource !== 'gateway'
@@ -1768,6 +1785,62 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     }
   }
 
+  if (protocolValidatedSuccess) {
+    await applyHandledUpstreamRoutingEffectSafely(
+      account,
+      auditCapture,
+      'account_api_key_success_recovery',
+      async () => await recordGatewayAccountApiKeySuccess(account, {
+        source: 'upstream_attempt_completed',
+        trafficSource: usageContext.trafficSource
+      })
+    )
+  }
+}
+
+async function applyHandledUpstreamRoutingEffectSafely<T>(
+  account: UpstreamAccount,
+  auditCapture: AuditCaptureContext,
+  operation: string,
+  effect: () => Promise<T>
+): Promise<T | undefined> {
+  try {
+    return await effect()
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_upstream_routing_effect_failed',
+      accountId: account.id,
+      operation
+    }), '上游请求已完成，路由状态结算失败已隔离')
+    auditCapture.addGatewayMetadata({
+      label: 'routing_effect_failure',
+      metadata: {
+        accountId: account.id,
+        operation
+      }
+    })
+    return undefined
+  }
+}
+
+export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamResponseInput): Promise<void> {
+  const {
+    req,
+    res,
+    account,
+    upstreamResponse,
+    upstreamUrl,
+    auditCapture,
+    usageContext,
+    startedAt,
+    result
+  } = input
+  if (input.routingEffectsApplied !== true) {
+    await applyHandledUpstreamRoutingEffects(input)
+  }
+  const forwardedResponseSuccessful = upstreamResponse.ok
+  const protocolValidatedSuccess = forwardedResponseSuccessful && result.protocolValidatedSuccess === true
+
   await recordCompletedUpstreamAttempt(req, {
     ...usageContext,
     account,
@@ -1775,6 +1848,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     statusCode: upstreamResponse.status,
     success: forwardedResponseSuccessful,
     protocolValidatedSuccess,
+    accountApiKeySuccessAlreadyRecorded: true,
     firstTokenMs: result.firstTokenMs,
     startedAt,
     completedAtMs: input.completedAtMs,

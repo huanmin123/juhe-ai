@@ -22,17 +22,25 @@ const redisClients = new Map<string, Promise<RedisCommandClient>>()
 const redisClientConnectTimeoutMs = 10000
 const redisClientCloseTimeoutMs = 2000
 
-export function getRedisClient(url: string): Promise<RedisCommandClient> {
+export async function getRedisClient(url: string): Promise<RedisCommandClient> {
   const normalizedUrl = normalizeRedisUrl(url)
   const existing = redisClients.get(normalizedUrl)
-  if (existing) return existing
+  if (existing) {
+    const client = await existing
+    if (client.isOpen !== false && client.isReady !== false) return client
+    await invalidateRedisClient(normalizedUrl, client)
+    const replacement = redisClients.get(normalizedUrl)
+    if (replacement) return await replacement
+  }
   const clientPromise = createRedisClient(normalizedUrl).catch((error) => {
-    redisClients.delete(normalizedUrl)
+    if (redisClients.get(normalizedUrl) === clientPromise) {
+      redisClients.delete(normalizedUrl)
+    }
     throw error
   })
   clientPromise.catch(() => undefined)
   redisClients.set(normalizedUrl, clientPromise)
-  return clientPromise
+  return await clientPromise
 }
 
 export function hasRedisClient(url: string): boolean {
@@ -41,6 +49,38 @@ export function hasRedisClient(url: string): boolean {
 
 export function createDedicatedRedisClient(url: string, options: DedicatedRedisClientOptions = {}): Promise<RedisCommandClient> {
   return createRedisClient(normalizeRedisUrl(url), options)
+}
+
+export async function invalidateRedisClient(url: string, expectedClient?: RedisCommandClient): Promise<boolean> {
+  const normalizedUrl = normalizeRedisUrl(url)
+  const clientPromise = redisClients.get(normalizedUrl)
+  if (!clientPromise) return false
+  let client: RedisCommandClient
+  try {
+    client = await withTimeout(clientPromise, redisClientCloseTimeoutMs, 'Redis client invalidation wait timeout')
+  } catch {
+    if (redisClients.get(normalizedUrl) === clientPromise) {
+      redisClients.delete(normalizedUrl)
+    }
+    return true
+  }
+  if (expectedClient && client !== expectedClient) return false
+  if (redisClients.get(normalizedUrl) !== clientPromise) return false
+  redisClients.delete(normalizedUrl)
+  client.destroy?.()
+  return true
+}
+
+export function isRecoverableRedisClientError(error: unknown): boolean {
+  const record = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : undefined
+  const name = error instanceof Error ? error.name : String(record?.name ?? '')
+  const message = error instanceof Error ? error.message : String(error)
+  const code = String(record?.code ?? '')
+  if (/timeout/i.test(name) || /timeout|timed out/i.test(message)) return true
+  if (/^(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ENOTCONN|NR_CLOSED)$/i.test(code)) return true
+  return /socket closed|client is closed|client is offline|connection (?:closed|lost)|disconnect/i.test(message)
 }
 
 export async function closeRedisClients(): Promise<void> {

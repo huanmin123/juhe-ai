@@ -19,6 +19,8 @@ import type { AccountHealthCheckTriggerReason } from '../accounts/account-health
 export type BackgroundWorkerProcessRole =
   | 'worker'
   | 'ingest-worker'
+  | 'usage-worker'
+  | 'log-worker'
   | 'stats-worker'
   | 'ops-worker'
 

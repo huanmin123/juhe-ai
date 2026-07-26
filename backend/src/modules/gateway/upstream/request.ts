@@ -77,6 +77,7 @@ export class UpstreamRequestAbortedError extends Error {
 
 const startedUpstreamTransportErrors = new WeakSet<object>()
 const startedUpstreamBodyTransportErrors = new WeakSet<object>()
+const locallyTerminatedUpstreamRequestErrors = new WeakSet<object>()
 
 export function isStartedUpstreamTransportError(error: unknown): boolean {
   return isWeakSetValue(error) && startedUpstreamTransportErrors.has(error)
@@ -87,17 +88,42 @@ export function isStartedUpstreamBodyTransportError(error: unknown): boolean {
 }
 
 function markStartedUpstreamTransportError(error: unknown): void {
-  if (isWeakSetValue(error)) startedUpstreamTransportErrors.add(error)
+  if (isWeakSetValue(error) && !isLocallyTerminatedUpstreamRequestError(error)) {
+    startedUpstreamTransportErrors.add(error)
+  }
 }
 
 function markStartedUpstreamBodyTransportError(error: unknown): void {
-  if (isWeakSetValue(error) && !(error instanceof UnsupportedUpstreamResponseEncodingError)) {
+  if (
+    isWeakSetValue(error)
+    && !(error instanceof UnsupportedUpstreamResponseEncodingError)
+    && !isLocallyTerminatedUpstreamRequestError(error)
+  ) {
     startedUpstreamBodyTransportErrors.add(error)
   }
 }
 
 function isWeakSetValue(value: unknown): value is object {
   return (typeof value === 'object' && value !== null) || typeof value === 'function'
+}
+
+function markLocallyTerminatedUpstreamRequestError(error: Error): Error {
+  locallyTerminatedUpstreamRequestErrors.add(error)
+  return error
+}
+
+function isLocallyTerminatedUpstreamRequestError(error: unknown): boolean {
+  return isWeakSetValue(error) && (
+    locallyTerminatedUpstreamRequestErrors.has(error)
+    || error instanceof UpstreamRequestAbortedError
+    || (error instanceof GatewayFirstByteTimeoutError && error.source === 'configured_deadline')
+  )
+}
+
+function normalizeFirstByteDeadlineHandlerError(error: unknown): Error {
+  return markLocallyTerminatedUpstreamRequestError(
+    error instanceof Error ? error : new Error('网关首字截止决策失败')
+  )
 }
 
 const gatewayUpstreamAgentOptions: http.AgentOptions = {
@@ -232,7 +258,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
           }
         }).catch((error: unknown) => {
           if (!settled) {
-            request.destroy(error instanceof Error ? error : new Error(String(error)))
+            request.destroy(normalizeFirstByteDeadlineHandlerError(error))
           }
         })
       }, deadlineMs)
@@ -335,7 +361,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
           }
         }).catch((error: unknown) => {
           if (!responseReceived) {
-            controller.abort(error)
+            controller.abort(normalizeFirstByteDeadlineHandlerError(error))
           }
         })
       }, deadlineMs)

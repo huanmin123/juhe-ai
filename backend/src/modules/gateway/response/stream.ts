@@ -1561,7 +1561,6 @@ function isGatewayLocalStreamFailure(
   return !protocolFailure
     && !transportFailure
     && !isGatewayFirstByteTimeoutError(error)
-    && !(error instanceof StreamPreCommitBufferExceededError)
 }
 
 async function readNextStreamChunk(
