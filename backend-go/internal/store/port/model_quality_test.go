@@ -56,8 +56,8 @@ func TestModelQualityPortClaimBoundsMatchCurrentDurableSemantics(t *testing.T) {
 	if ModelQualityRecoveryClaimDefaultLimit != 2 || ModelQualityRecoveryClaimMaximumLimit != 10 {
 		t.Fatalf("recovery claim limits = %d/%d", ModelQualityRecoveryClaimDefaultLimit, ModelQualityRecoveryClaimMaximumLimit)
 	}
-	if ModelQualityScheduleClaimDefaultLease != 5*time.Minute || ModelQualityRecoveryClaimDefaultLease != 6*time.Minute || ModelQualityClaimMaximumLease != 30*time.Minute {
-		t.Fatalf("claim lease bounds = %s/%s/%s", ModelQualityScheduleClaimDefaultLease, ModelQualityRecoveryClaimDefaultLease, ModelQualityClaimMaximumLease)
+	if ModelQualityScheduleClaimDefaultLease != 5*time.Minute || ModelQualityRecoveryClaimDefaultLease != 6*time.Minute || ModelQualityClaimMinimumLease != time.Minute || ModelQualityClaimMaximumLease != 30*time.Minute {
+		t.Fatalf("claim lease bounds = %s/%s/%s/%s", ModelQualityScheduleClaimDefaultLease, ModelQualityRecoveryClaimDefaultLease, ModelQualityClaimMinimumLease, ModelQualityClaimMaximumLease)
 	}
 	if ModelQualityMinimumInterval != 10*time.Minute || ModelQualityMaximumInterval != 7*24*time.Hour {
 		t.Fatalf("model quality interval bounds = %s/%s", ModelQualityMinimumInterval, ModelQualityMaximumInterval)

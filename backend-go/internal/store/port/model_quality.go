@@ -17,6 +17,7 @@ const (
 	ModelQualityRecoveryClaimMaximumLimit = 10
 	ModelQualityScheduleClaimDefaultLease = 5 * time.Minute
 	ModelQualityRecoveryClaimDefaultLease = 6 * time.Minute
+	ModelQualityClaimMinimumLease         = time.Minute
 	ModelQualityClaimMaximumLease         = 30 * time.Minute
 
 	ModelQualityMinimumInterval = 10 * time.Minute
