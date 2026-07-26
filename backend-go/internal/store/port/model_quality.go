@@ -208,9 +208,10 @@ type ModelQualityRecoveryLease struct {
 type ModelQualityRecoveryClaimToken string
 
 // ModelQualityEnforcementRecord is the durable control-plane state for one
-// account. AccountConfigRevision is the revision captured at recovery claim,
-// not merely the revision at the original penalty; recovery completion must
-// compare it with its own expected revision and the current account row.
+// account. AccountConfigRevision starts as the pre-mutation account snapshot
+// used to apply this enforcement generation, then a recovery claim refreshes
+// it to that claim's current account revision. Recovery completion must compare
+// it with its own expected revision and the current account row.
 type ModelQualityEnforcementRecord struct {
 	AccountID             string
 	SystemAccountID       string
