@@ -4,6 +4,7 @@ set -euo pipefail
 MODE=dry-run
 SCOPE=user
 BASE_DIR="${HOME}/juhe-ai-lite"
+RELEASE_DIR=
 LABEL_PREFIX=com.example.juhe-ai.performance
 CONTROL_PORT=3200
 GATEWAY_BASE_PORT=3101
@@ -12,6 +13,9 @@ USAGE_WORKERS=2
 LOG_WORKERS=2
 INGRESS_PORT=3000
 NGINX_CONFIG=
+NGINX_MAIN_CONFIG=
+SERVICE_USER=
+SERVICE_GROUP=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 usage() {
@@ -19,6 +23,7 @@ usage() {
 Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --scope user|system
   --base-dir ABSOLUTE_PATH
+  --release-dir ABSOLUTE_RELEASE_PATH
   --label-prefix LAUNCHD_LABEL_PREFIX
   --control-port PORT
   --gateway-base-port PORT
@@ -27,6 +32,9 @@ Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --log-workers 1..32
   --ingress-port PORT
   --nginx-config ABSOLUTE_INCLUDED_CONF_PATH
+  --nginx-main-config ABSOLUTE_MAIN_CONF_PATH
+  --service-user USER       required for --scope system
+  --service-group GROUP     required for --scope system
   --node-path PATH_VALUE
 EOF
 }
@@ -37,6 +45,7 @@ while [ "$#" -gt 0 ]; do
     --apply) MODE=apply; shift ;;
     --scope) SCOPE="${2:-}"; shift 2 ;;
     --base-dir) BASE_DIR="${2:-}"; shift 2 ;;
+    --release-dir) RELEASE_DIR="${2:-}"; shift 2 ;;
     --label-prefix) LABEL_PREFIX="${2:-}"; shift 2 ;;
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
     --gateway-base-port) GATEWAY_BASE_PORT="${2:-}"; shift 2 ;;
@@ -45,6 +54,9 @@ while [ "$#" -gt 0 ]; do
     --log-workers) LOG_WORKERS="${2:-}"; shift 2 ;;
     --ingress-port) INGRESS_PORT="${2:-}"; shift 2 ;;
     --nginx-config) NGINX_CONFIG="${2:-}"; shift 2 ;;
+    --nginx-main-config) NGINX_MAIN_CONFIG="${2:-}"; shift 2 ;;
+    --service-user) SERVICE_USER="${2:-}"; shift 2 ;;
+    --service-group) SERVICE_GROUP="${2:-}"; shift 2 ;;
     --node-path) NODE_PATH="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -53,7 +65,18 @@ done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
 case "$BASE_DIR" in /*) ;; *) echo '--base-dir must be absolute' >&2; exit 2 ;; esac
-case "$BASE_DIR$NODE_PATH$NGINX_CONFIG" in
+if [ -z "$RELEASE_DIR" ]; then RELEASE_DIR="$BASE_DIR/current"; fi
+case "$RELEASE_DIR" in /*) ;; *) echo '--release-dir must be absolute' >&2; exit 2 ;; esac
+if [ -n "$NGINX_MAIN_CONFIG" ]; then
+  case "$NGINX_MAIN_CONFIG" in /*) ;; *) echo '--nginx-main-config must be absolute' >&2; exit 2 ;; esac
+fi
+if [ "$SCOPE" = system ]; then
+  [ -n "$SERVICE_USER" ] || { echo '--service-user is required for system scope' >&2; exit 2; }
+  [ -n "$SERVICE_GROUP" ] || { echo '--service-group is required for system scope' >&2; exit 2; }
+  printf '%s' "$SERVICE_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$' || { echo 'invalid service user' >&2; exit 2; }
+  printf '%s' "$SERVICE_GROUP" | grep -Eq '^[A-Za-z_][A-Za-z0-9._-]*$' || { echo 'invalid service group' >&2; exit 2; }
+fi
+case "$BASE_DIR$RELEASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_MAIN_CONFIG$SERVICE_USER$SERVICE_GROUP" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
     echo 'paths contain unsafe shell characters' >&2
     exit 2
@@ -82,7 +105,7 @@ LAST_GATEWAY_PORT=$((GATEWAY_BASE_PORT + GATEWAY_COUNT - 1))
 [ "$INGRESS_PORT" -ne "$CONTROL_PORT" ] || { echo 'ingress port overlaps control port' >&2; exit 2; }
 [ "$INGRESS_PORT" -lt "$GATEWAY_BASE_PORT" ] || [ "$INGRESS_PORT" -gt "$LAST_GATEWAY_PORT" ] || { echo 'ingress port overlaps gateway ports' >&2; exit 2; }
 
-CURRENT_DIR="$BASE_DIR/current"
+CURRENT_DIR="$RELEASE_DIR"
 BIN_DIR="$BASE_DIR/bin/performance"
 LOG_DIR="$BASE_DIR/logs"
 RUNTIME_LOG_DIR="$LOG_DIR/runtime"
@@ -99,9 +122,10 @@ if [ -z "$NGINX_CONFIG" ]; then
 fi
 case "$NGINX_CONFIG" in /*) ;; *) echo '--nginx-config must be absolute' >&2; exit 2 ;; esac
 
-printf 'mode=%s scope=%s base=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s\n' \
-  "$MODE" "$SCOPE" "$BASE_DIR" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
-  "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG"
+printf 'mode=%s scope=%s base=%s release=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s nginx_main=%s user=%s group=%s\n' \
+  "$MODE" "$SCOPE" "$BASE_DIR" "$CURRENT_DIR" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
+  "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG" "${NGINX_MAIN_CONFIG:-default}" \
+  "${SERVICE_USER:-current}" "${SERVICE_GROUP:-current}"
 printf 'plan: 1 control + %s gateway launchd jobs, then nginx least_conn cutover after every local health check\n' "$GATEWAY_COUNT"
 [ "$MODE" = apply ] || exit 0
 
@@ -114,8 +138,16 @@ command -v plutil >/dev/null
 command -v curl >/dev/null
 command -v nginx >/dev/null
 if [ "$SCOPE" = system ]; then [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }; fi
+if [ "$SCOPE" = system ]; then
+  id "$SERVICE_USER" >/dev/null 2>&1 || { echo 'service user does not exist' >&2; exit 1; }
+  dscl . -read "/Groups/$SERVICE_GROUP" >/dev/null 2>&1 || { echo 'service group does not exist' >&2; exit 1; }
+fi
+[ -z "$NGINX_MAIN_CONFIG" ] || [ -f "$NGINX_MAIN_CONFIG" ] || { echo 'nginx main config does not exist' >&2; exit 1; }
 
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
+if [ "$SCOPE" = system ]; then
+  chown "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"
+fi
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/juhe-ai-performance.XXXXXX")"
 MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
@@ -190,6 +222,7 @@ render_plist() {
 <key>Label</key><string>$label</string>
 <key>ProgramArguments</key><array><string>/bin/bash</string><string>$run_path</string></array>
 <key>WorkingDirectory</key><string>$work_dir</string>
+$(if [ "$SCOPE" = system ]; then printf '<key>UserName</key><string>%s</string>\n<key>GroupName</key><string>%s</string>\n' "$(xml_escape "$SERVICE_USER")" "$(xml_escape "$SERVICE_GROUP")"; fi)
 <key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>ThrottleInterval</key><integer>5</integer>
 <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
 <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>131072</integer></dict>
@@ -198,6 +231,14 @@ render_plist() {
 </dict></plist>
 EOF
   chmod 644 "$output"
+}
+
+nginx_test() {
+  if [ -n "$NGINX_MAIN_CONFIG" ]; then nginx -c "$NGINX_MAIN_CONFIG" -t; else nginx -t; fi
+}
+
+nginx_reload() {
+  if [ -n "$NGINX_MAIN_CONFIG" ]; then nginx -c "$NGINX_MAIN_CONFIG" -s reload; else nginx -s reload; fi
 }
 
 render_nginx() {
@@ -320,8 +361,15 @@ health_identity_matches() {
 
 rollback() {
   set +e
-  if [ -f "$NGINX_BACKUP" ]; then mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"; else rm -f -- "$NGINX_CONFIG"; fi
-  nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1 || true
+  remove_empty_nginx_config=0
+  if [ -f "$NGINX_BACKUP" ]; then
+    mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"
+  else
+    : > "$NGINX_CONFIG"
+    remove_empty_nginx_config=1
+  fi
+  nginx_test >/dev/null 2>&1 && nginx_reload >/dev/null 2>&1 || true
+  [ "$remove_empty_nginx_config" = 0 ] || rm -f -- "$NGINX_CONFIG"
   for name in $(service_names); do
     plist="$(service_plist_path "$name")"
     run_script="$(service_run_path "$name")"
@@ -372,8 +420,8 @@ done
 for name in $(service_names); do wait_for_health "$name"; done
 
 mv -f -- "$STAGE_DIR/nginx.conf" "$NGINX_CONFIG"
-nginx -t
-nginx -s reload
+nginx_test
+nginx_reload
 wait_for_ingress
 
 for name in $(service_names); do

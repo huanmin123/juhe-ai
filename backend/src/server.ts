@@ -188,7 +188,9 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }
     startBackgroundWorkerSupervisor()
   }
-  startModelCatalogSnapshotReconcileLoop()
+  if (runtimeConfig.runtimeMode !== 'performance' || runtimeConfig.performanceNodeRole !== 'gateway') {
+    startModelCatalogSnapshotReconcileLoop()
+  }
   void Promise.all([
     prewarmPublishedModelCatalogSnapshotsAsync(),
     prewarmGatewayApiKeyValidationCacheAsync()

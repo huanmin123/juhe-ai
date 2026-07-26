@@ -5,7 +5,7 @@
 ## 文件
 
 - `install-launchd-service.sh`：生成固定 `bin/run.sh`，安装 user LaunchAgent 或 system LaunchDaemon，只守护 juhe-ai 主进程并启用 `KeepAlive`；更新已有服务失败时恢复原 `run.sh`、plist 和原 loaded 状态。
-- `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；逐节点健康后才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
+- `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；`--release-dir` 可将进程固定到不可变候选 release，`--nginx-main-config` 可校验并重载生产自定义 Nginx 实例，system scope 必须显式提供非 root 的 service user/group。逐节点健康后才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
 - `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口。

@@ -48,11 +48,11 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'wait_for_ingress', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--release-dir', '--nginx-main-config', '--service-user', '--service-group', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'wait_for_ingress', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '<key>GroupName</key>', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
-$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
+$performanceNginxIndex = $performanceInstaller.LastIndexOf("nginx_reload`n", [StringComparison]::Ordinal)
 if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex) {
   throw 'Performance topology must verify every Node service before switching nginx'
 }

@@ -71,6 +71,11 @@ assert.match(
   /topologyGatesHealth[\s\S]*performanceNodeRole === 'control'[\s\S]*!workerTopologyReady \? 503 : 200/,
   'performance control 必须等待全部 worker ready 后才返回 200 health'
 )
+assert.match(
+  serverSource,
+  /performanceNodeRole !== 'gateway'[\s\S]*startModelCatalogSnapshotReconcileLoop\(\)/,
+  'performance gateway 不得重复运行模型目录 dirty 重建循环'
+)
 assert.match(metricsRegistrySource, /runtimeMode === 'performance'[\s\S]*cacheDriver === 'redis'/, '进程指标注册表只能在高性能 Redis 模式启用')
 assert.match(metricsRegistrySource, /registryTtlSeconds = 20/, '进程指标注册必须使用短 TTL 避免退出节点残留')
 assert.match(backgroundJobsSource, /readPerformanceProcessEventLoopSamples\(\)[\s\S]*回退 IPC 采样/, 'Stats Worker 必须优先汇总注册表并在失败时回退 IPC')
