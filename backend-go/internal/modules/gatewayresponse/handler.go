@@ -77,21 +77,22 @@ type Handler struct {
 type ResponseDispositionResolver func(statusCode int, body []byte) (gatewayretry.ResponseDisposition, error)
 
 type Input struct {
-	Context               context.Context
-	Dispatch              gatewaydispatch.Result
-	Transport             Transport
-	Sink                  gatewaystreamrelay.Sink
-	StartedAt             time.Time
-	HadFailedAttempt      bool
-	Codex                 *CodexGuard
-	InitialCommit         codexresponses.CommitState
-	RelayOptions          gatewaystreamrelay.Options
-	OnFirstByte           func()
-	OnTransportCommit     func()
-	OnFirstSemanticOutput func()
-	ResponseDisposition   gatewayretry.ResponseDisposition
-	DispositionResolver   ResponseDispositionResolver
-	ResponsePolicy        ResponsePolicyFacts
+	Context                context.Context
+	Dispatch               gatewaydispatch.Result
+	Transport              Transport
+	Sink                   gatewaystreamrelay.Sink
+	StartedAt              time.Time
+	HadFailedAttempt       bool
+	Codex                  *CodexGuard
+	InitialCommit          codexresponses.CommitState
+	RelayOptions           gatewaystreamrelay.Options
+	OnFirstByte            func()
+	OnTransportCommit      func()
+	OnFirstSemanticOutput  func()
+	CommittedFailureSignal gatewaystreamrelay.CommittedFailureSignal
+	ResponseDisposition    gatewayretry.ResponseDisposition
+	DispositionResolver    ResponseDispositionResolver
+	ResponsePolicy         ResponsePolicyFacts
 }
 
 // ResponsePolicyFacts carries caller-owned routing facts that cannot be
@@ -137,17 +138,18 @@ type Handoff struct {
 }
 
 type Result struct {
-	State              State
-	StatusCode         int
-	BytesRead          int64
-	BytesWritten       int64
-	TransportCommitted bool
-	SemanticCommitted  bool
-	RetryAllowed       bool
-	BufferedBody       []byte
-	Guard              *GuardSummary
-	Stream             *gatewaystreamrelay.Result
-	Handoff            Handoff
+	State               State
+	StatusCode          int
+	BytesRead           int64
+	BytesWritten        int64
+	TransportCommitted  bool
+	SemanticCommitted   bool
+	RetryAllowed        bool
+	BufferedBody        []byte
+	Guard               *GuardSummary
+	Stream              *gatewaystreamrelay.Result
+	TerminalDisposition *gatewaystreamrelay.TerminalDisposition
+	Handoff             Handoff
 }
 
 // Handle is retained as a compact compatibility entry point for callers that
@@ -427,9 +429,38 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 	result.Handoff.Retry = RetryHandoff{Allowed: result.RetryAllowed && classification.Retryable, Failure: failure, Classification: classification}
 	result.RetryAllowed = result.Handoff.Retry.Allowed
 	if signal != gatewayretry.ResponseSignalNone {
+		result.TerminalDisposition = streamTerminalDisposition(input, result, err)
 		return result, errors.Join(responseSignalError{signal: signal}, err)
 	}
+	result.TerminalDisposition = streamTerminalDisposition(input, result, err)
 	return result, err
+}
+
+func streamTerminalDisposition(input Input, result Result, err error) *gatewaystreamrelay.TerminalDisposition {
+	if result.Stream == nil {
+		return nil
+	}
+	commit := gatewaystreamrelay.SinkState{TransportCommitted: result.TransportCommitted, SemanticCommitted: result.SemanticCommitted, DownstreamBytes: result.Handoff.Commit.DownstreamBytes}
+	successTerminalSent := result.Stream.Inspection.TerminalReceived && !result.Stream.Inspection.Failed
+	disposition := gatewaystreamrelay.DecideTerminalDisposition(gatewaystreamrelay.TerminalDispositionInput{
+		Commit: commit, TerminalKind: streamTerminalKind(err), Capability: input.CommittedFailureSignal, SuccessTerminalSent: successTerminalSent,
+	})
+	return &disposition
+}
+
+func streamTerminalKind(err error) gatewaystreamrelay.TerminalKind {
+	switch {
+	case errors.Is(err, gatewaystreamrelay.ErrProtocolTerminalFailed), errors.Is(err, gatewaystreamrelay.ErrInspector):
+		return gatewaystreamrelay.TerminalKindUpstreamProtocolFailure
+	case errors.Is(err, gatewaystreamrelay.ErrMissingTerminal):
+		return gatewaystreamrelay.TerminalKindMissingTerminal
+	case errors.Is(err, gatewaystreamrelay.ErrClientCanceled), errors.Is(err, gatewaystreamrelay.ErrDestinationWrite):
+		return gatewaystreamrelay.TerminalKindClientCanceled
+	case errors.Is(err, gatewaystreamrelay.ErrSourceRead), errors.Is(err, gatewaystreamrelay.ErrIdleDeadline), errors.Is(err, gatewaystreamrelay.ErrTotalDeadline), errors.Is(err, gatewaydeadline.ErrFirstByteDeadline), errors.Is(err, gatewaystreamrelay.ErrPreCommitEvidenceMissing):
+		return gatewaystreamrelay.TerminalKindReadFailure
+	default:
+		return gatewaystreamrelay.TerminalKindGatewayLocal
+	}
 }
 
 type responseSignalError struct{ signal gatewayretry.ResponseSignal }

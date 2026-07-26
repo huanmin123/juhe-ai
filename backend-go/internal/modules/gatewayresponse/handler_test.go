@@ -435,6 +435,35 @@ func TestHandleEmptyStreamRemainsPreCommit(t *testing.T) {
 	}
 }
 
+func TestFinishStreamFailureExposesTypedCommittedDisposition(t *testing.T) {
+	t.Parallel()
+	handler := testHandler()
+	committed := Result{
+		State: StateFailedAfterCommit, TransportCommitted: true, SemanticCommitted: true,
+		Handoff: Handoff{Commit: codexresponses.CommitState{TransportCommitted: true, SemanticCommitted: true, DownstreamBytes: 12}},
+		Stream:  &gatewaystreamrelay.Result{},
+	}
+	precise, _ := handler.finishStreamFailure(Input{CommittedFailureSignal: gatewaystreamrelay.CommittedFailureSignalProtocolEvent}, committed, gatewaystreamrelay.ErrSourceRead)
+	if precise.TerminalDisposition == nil || !precise.TerminalDisposition.EmitControlledEvent || precise.TerminalDisposition.Disconnect || precise.TerminalDisposition.RetryUpstream {
+		t.Fatalf("precise disposition=%#v", precise.TerminalDisposition)
+	}
+	generic, _ := handler.finishStreamFailure(Input{}, committed, gatewaystreamrelay.ErrSourceRead)
+	if generic.TerminalDisposition == nil || generic.TerminalDisposition.EmitControlledEvent || !generic.TerminalDisposition.Disconnect || generic.TerminalDisposition.RetryUpstream {
+		t.Fatalf("generic disposition=%#v", generic.TerminalDisposition)
+	}
+	completedTerminal := committed
+	completedTerminal.Stream = &gatewaystreamrelay.Result{Inspection: gatewaystreamrelay.Inspection{TerminalReceived: true}}
+	completed, _ := handler.finishStreamFailure(Input{CommittedFailureSignal: gatewaystreamrelay.CommittedFailureSignalProtocolEvent}, completedTerminal, gatewaystreamrelay.ErrSourceRead)
+	if completed.TerminalDisposition == nil || completed.TerminalDisposition.EmitControlledEvent || !completed.TerminalDisposition.Disconnect {
+		t.Fatalf("completed terminal disposition=%#v", completed.TerminalDisposition)
+	}
+	precommit := Result{State: StateFailedBeforeCommit, RetryAllowed: true, Stream: &gatewaystreamrelay.Result{}}
+	retried, _ := handler.finishStreamFailure(Input{CommittedFailureSignal: gatewaystreamrelay.CommittedFailureSignalProtocolEvent}, precommit, gatewaystreamrelay.ErrMissingTerminal)
+	if retried.TerminalDisposition == nil || !retried.TerminalDisposition.RetryUpstream || retried.TerminalDisposition.EmitControlledEvent || retried.TerminalDisposition.Disconnect {
+		t.Fatalf("precommit disposition=%#v", retried.TerminalDisposition)
+	}
+}
+
 func TestResponsePolicyFactsUseValidBoundedUTF8(t *testing.T) {
 	message := strings.Repeat("界", 100) + "🙂"
 	facts := parseResponsePolicyFacts([]byte(`{"error":{"message":"` + message + `"}}`))
