@@ -3,6 +3,7 @@ set -euo pipefail
 
 MODE=dry-run
 SCOPE=user
+SERVICE_USER=
 BASE_DIR="${HOME}/juhe-ai-lite"
 LABEL_PREFIX=com.example.juhe-ai.performance
 CONTROL_PORT=3200
@@ -20,6 +21,7 @@ usage() {
   cat <<'EOF'
 Usage: install-performance-topology.sh [--dry-run|--apply] [options]
   --scope user|system
+  --service-user USER_FOR_SYSTEM_SCOPE
   --base-dir ABSOLUTE_PATH
   --label-prefix LAUNCHD_LABEL_PREFIX
   --control-port PORT
@@ -40,6 +42,7 @@ while [ "$#" -gt 0 ]; do
     --dry-run) MODE=dry-run; shift ;;
     --apply) MODE=apply; shift ;;
     --scope) SCOPE="${2:-}"; shift 2 ;;
+    --service-user) SERVICE_USER="${2:-}"; shift 2 ;;
     --base-dir) BASE_DIR="${2:-}"; shift 2 ;;
     --label-prefix) LABEL_PREFIX="${2:-}"; shift 2 ;;
     --control-port) CONTROL_PORT="${2:-}"; shift 2 ;;
@@ -58,6 +61,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$SCOPE" in user|system) ;; *) echo '--scope must be user or system' >&2; exit 2 ;; esac
+if [ "$SCOPE" = system ]; then
+  [ -n "$SERVICE_USER" ] || { echo '--service-user is required for system scope' >&2; exit 2; }
+  printf '%s' "$SERVICE_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$' \
+    || { echo 'invalid service user' >&2; exit 2; }
+elif [ -n "$SERVICE_USER" ]; then
+  echo '--service-user is only valid for system scope' >&2
+  exit 2
+fi
 case "$BASE_DIR" in /*) ;; *) echo '--base-dir must be absolute' >&2; exit 2 ;; esac
 case "$BASE_DIR$NODE_PATH$NGINX_CONFIG$NGINX_BIN$NGINX_MAIN_CONFIG" in
   *'$'*|*'`'*|*'"'*|*'\'*|*'|'*|*'&'*|*';'*|*$'\n'*|*$'\r'*)
@@ -130,9 +141,13 @@ if [ -n "$NGINX_MAIN_CONFIG" ]; then
   [ -f "$NGINX_MAIN_CONFIG" ] && [ ! -L "$NGINX_MAIN_CONFIG" ] \
     || { echo "nginx main config is not a regular file: $NGINX_MAIN_CONFIG" >&2; exit 1; }
 fi
-if [ "$SCOPE" = system ]; then [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }; fi
+if [ "$SCOPE" = system ]; then
+  [ "$(id -u)" -eq 0 ] || { echo 'system scope requires root' >&2; exit 1; }
+  id "$SERVICE_USER" >/dev/null 2>&1 || { echo "service user does not exist: $SERVICE_USER" >&2; exit 1; }
+fi
 
 mkdir -p "$BIN_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR" "$PLIST_DIR" "$(dirname "$NGINX_CONFIG")"
+if [ "$SCOPE" = system ]; then chown "$SERVICE_USER" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; fi
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/juhe-ai-performance.XXXXXX")"
 MUTATED=0
 NGINX_BACKUP="$NGINX_CONFIG.performance-backup.$$"
@@ -218,6 +233,8 @@ render_plist() {
   work_dir="$(xml_escape "$CURRENT_DIR")"
   stdout_path="$(xml_escape "$LOG_DIR/launchd.$name.out.log")"
   stderr_path="$(xml_escape "$LOG_DIR/launchd.$name.err.log")"
+  service_user_xml=
+  if [ "$SCOPE" = system ]; then service_user_xml="<key>UserName</key><string>$(xml_escape "$SERVICE_USER")</string>"; fi
   cat > "$output" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -225,6 +242,7 @@ render_plist() {
 <key>Label</key><string>$label</string>
 <key>ProgramArguments</key><array><string>/bin/bash</string><string>$run_path</string></array>
 <key>WorkingDirectory</key><string>$work_dir</string>
+$service_user_xml
 <key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>ThrottleInterval</key><integer>5</integer>
 <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>65536</integer></dict>
 <key>HardResourceLimits</key><dict><key>NumberOfFiles</key><integer>131072</integer></dict>

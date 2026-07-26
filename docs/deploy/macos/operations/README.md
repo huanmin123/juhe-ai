@@ -80,6 +80,8 @@ bash ./diagnose-proxy-dns.sh \
   --target-host api.openai.com
 ```
 
+生产使用 system LaunchDaemon 时必须额外传 `--service-user`，Node、DB service 和 worker 都以该非 root 用户运行；脚本只把候选日志与用量 spool 目录交给该用户，不改变 release 或共享配置所有权。
+
 临时接管前，主服务和临时服务都必须已经独立健康，且 switch adapter 接受 `main` / `temporary` 参数：
 
 ```bash

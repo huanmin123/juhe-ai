@@ -50,7 +50,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'X-Juhe-Topology-Slot', 'verify-performance-topology.sh', 'nginx_test', 'nginx_reload', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--nginx-bin', '--nginx-main-config', '<key>UserName</key>', 'chown "$SERVICE_USER"', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_AUDIT_LOG_ENABLED=true', 'JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'X-Juhe-Topology-Slot', 'verify-performance-topology.sh', 'nginx_test', 'nginx_reload', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
@@ -116,6 +116,10 @@ if ($bash) {
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
     & $bash.Source ((Join-Path $operationsRoot 'verify-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --release '/tmp/juhe-ai-performance-test/current' --label-prefix 'com.example.juhe-ai.performance' --ingress-port 3000
     if ($LASTEXITCODE -ne 0) { throw 'performance topology verifier dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'verify-performance-topology.sh') -replace '\\', '/') --dry-run --release '/tmp/juhe-ai-performance-test/current' --samples 0 2>$null
