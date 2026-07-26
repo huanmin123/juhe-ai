@@ -511,6 +511,8 @@ func effective(row port.ManagementAccountStatusProjection, now time.Time) Effect
 			return blocked("source_rate_limited", "来源限流中", "orange", "source_account", fallback(row.AuthorizationInstanceSourceLastErrorMessage, "授权方原账户限流中，当前账户不能调用"), "")
 		case "temporary_unavailable":
 			return blocked("source_temporary_unavailable", "来源临时不可调用", "gold", "source_account", fallback(row.AuthorizationInstanceSourceLastErrorMessage, "授权方原账户临时不可调用，当前账户不能调用"), "")
+		case "quality_isolated":
+			return blocked("source_quality_isolated", "来源质量隔离", "red", "source_account", fallback(row.AuthorizationInstanceSourceLastErrorMessage, "授权方原账户因模型质量不达标已隔离，恢复前不能调用"), "")
 		}
 		if futureAt(row.AuthorizationInstanceSourceCooldownUntil, now) {
 			return blocked("source_cooldown", "来源冷却", "gold", "source_account", "授权方原账户正在冷却，恢复前当前账户不能调用", row.AuthorizationInstanceSourceCooldownUntil)
@@ -543,6 +545,8 @@ func effective(row port.ManagementAccountStatusProjection, now time.Time) Effect
 		return blocked("instance_rate_limited", instanceLabel+"限流中", "orange", blockerScope, fallback(row.LastErrorMessage, reasonPrefix+"限流中，恢复前不会参与调度"), "")
 	case "temporary_unavailable":
 		return blocked("instance_temporary_unavailable", instanceLabel+"临时不可调用", "gold", blockerScope, fallback(row.LastErrorMessage, reasonPrefix+"临时不可调用，恢复前不会参与调度"), "")
+	case "quality_isolated":
+		return blocked("instance_quality_isolated", instanceLabel+"质量隔离", "red", blockerScope, fallback(row.LastErrorMessage, reasonPrefix+"因模型质量不达标已隔离，质量恢复检查通过前不会参与调度"), "")
 	}
 	if futureAt(row.CooldownUntil, now) {
 		return blocked("instance_cooldown", instanceLabel+"冷却", "gold", blockerScope, reasonPrefix+"正在冷却，恢复前不会参与调度", row.CooldownUntil)
@@ -587,7 +591,7 @@ func presentationStatusAction(status string) (string, string) {
 		return "expired", "contact_authorizer"
 	case "authorization_paused", "authorization_unavailable":
 		return "authorization_blocked", "contact_authorizer"
-	case "source_disabled", "source_unschedulable", "source_deleted":
+	case "source_disabled", "source_quality_isolated", "source_unschedulable", "source_deleted":
 		return "source_blocked", "contact_authorizer"
 	case "source_pending_test":
 		return "pending_check", "contact_authorizer"
@@ -605,6 +609,8 @@ func presentationStatusAction(status string) (string, string) {
 		return "disabled", "enable_account"
 	case "source_error":
 		return "error", "contact_authorizer"
+	case "instance_quality_isolated":
+		return "error", "retry_check"
 	case "api_key_pool_unavailable":
 		return "key_pool_unavailable", "retry_check"
 	default:

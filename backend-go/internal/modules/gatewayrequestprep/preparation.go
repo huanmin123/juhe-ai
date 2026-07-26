@@ -88,13 +88,19 @@ type Input struct {
 	Path             string
 	FallbackProtocol Protocol
 
-	StreamRequested         bool
-	AcceptsEventStream      bool
-	GeminiAltSSE            bool
+	StreamRequested    bool
+	AcceptsEventStream bool
+	GeminiAltSSE       bool
+	// GeminiInteractionStream records a caller-observed ?stream=true. The
+	// canonical protocol resolver still limits that query form to the supported
+	// Gemini interaction request shapes.
 	GeminiInteractionStream bool
 	ExplicitClientProfile   string
 	UserAgent               string
 
+	// HasClaudeCodeBeta is true only when the caller has already found an
+	// Anthropic-Beta item with the Node-compatible "claude-code-" prefix. A
+	// non-empty or unrelated Anthropic-Beta header must leave this false.
 	HasClaudeCodeBeta     bool
 	HasAnthropicBetaQuery bool
 	HasClaudeSessionID    bool
@@ -188,18 +194,24 @@ func requestShape(input Input) protocolgateway.RequestShape {
 }
 
 func sanitizedPath(input Input) string {
-	path, _, _ := strings.Cut(strings.TrimSpace(input.Path), "?")
+	path, rawQuery, _ := strings.Cut(strings.TrimSpace(input.Path), "?")
 	if path == "" {
 		path = "/"
 	}
+	// Input is normally constructed from parsed facts, but keeping the three
+	// classifier-only query facts from an already-normalized Path prevents the
+	// pure planner from silently changing its downstream classification. Do not
+	// retain arbitrary query parameters: paths may carry credentials or tracing
+	// data, neither of which belongs in this plan.
+	pathQuery, _ := url.ParseQuery(rawQuery)
 	query := url.Values{}
-	if input.GeminiAltSSE {
+	if input.GeminiAltSSE || strings.EqualFold(pathQuery.Get("alt"), "sse") {
 		query.Set("alt", "sse")
 	}
-	if input.GeminiInteractionStream {
+	if input.GeminiInteractionStream || strings.EqualFold(pathQuery.Get("stream"), "true") {
 		query.Set("stream", "true")
 	}
-	if input.HasAnthropicBetaQuery {
+	if input.HasAnthropicBetaQuery || pathQuery.Get("beta") == "true" {
 		query.Set("beta", "true")
 	}
 	if encoded := query.Encode(); encoded != "" {

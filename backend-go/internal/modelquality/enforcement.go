@@ -149,8 +149,12 @@ const (
 )
 
 type PenaltyPlan struct {
-	Result                EnforcementResult
-	TargetStatus          AccountStatus
+	Result       EnforcementResult
+	TargetStatus AccountStatus
+	// TargetSchedulable is nil when this penalty leaves scheduling unchanged.
+	// A non-nil value is the desired durable scheduling state and must be
+	// applied atomically with TargetStatus by the eventual control-plane adapter.
+	TargetSchedulable     *bool
 	SetFallbackEnabled    bool
 	ClearSuperPrioritySet bool
 }
@@ -196,9 +200,9 @@ func PlanEnforcement(request EnforcementRequest, policy Policy, account Account)
 		}
 		return PenaltyPlan{Result: EnforcementApply, TargetStatus: account.Status, SetFallbackEnabled: true, ClearSuperPrioritySet: true}, nil
 	case ActionDisable:
-		return PenaltyPlan{Result: EnforcementApply, TargetStatus: AccountStatusDisabled}, nil
+		return PenaltyPlan{Result: EnforcementApply, TargetStatus: AccountStatusDisabled, TargetSchedulable: schedulableTarget(false)}, nil
 	case ActionQualityIsolate:
-		return PenaltyPlan{Result: EnforcementApply, TargetStatus: AccountStatusQualityIsolated}, nil
+		return PenaltyPlan{Result: EnforcementApply, TargetStatus: AccountStatusQualityIsolated, TargetSchedulable: schedulableTarget(false)}, nil
 	default:
 		return PenaltyPlan{}, fmt.Errorf("unsupported model quality penalty action %q", request.Action)
 	}
@@ -230,9 +234,13 @@ const (
 )
 
 type RecoveryPlan struct {
-	Result          RecoveryResult
-	TargetStatus    AccountStatus
-	NeedsReschedule bool
+	Result       RecoveryResult
+	TargetStatus AccountStatus
+	// TargetSchedulable is nil when this recovery result must not change
+	// scheduling. A recovered active account becomes schedulable; a recovered
+	// disabled account remains unschedulable.
+	TargetSchedulable *bool
+	NeedsReschedule   bool
 }
 
 // PlanRecovery retains Node's safety rule: only the same active
@@ -267,9 +275,13 @@ func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision,
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status}, nil
 	}
 	if availableNow {
-		return RecoveryPlan{Result: RecoveryRecovered, TargetStatus: AccountStatusActive}, nil
+		return RecoveryPlan{Result: RecoveryRecovered, TargetStatus: AccountStatusActive, TargetSchedulable: schedulableTarget(true)}, nil
 	}
-	return RecoveryPlan{Result: RecoveryRecovered, TargetStatus: AccountStatusDisabled}, nil
+	return RecoveryPlan{Result: RecoveryRecovered, TargetStatus: AccountStatusDisabled, TargetSchedulable: schedulableTarget(false)}, nil
+}
+
+func schedulableTarget(value bool) *bool {
+	return &value
 }
 
 func validAccountStatus(status AccountStatus) bool {

@@ -46,6 +46,12 @@ func TestPrepareDerivesProtocolProfileAndFailureCapability(t *testing.T) {
 			codec: gatewaystreamrelay.ControlledFailureProtocolAnthropic, codecOK: true,
 		},
 		{
+			name:     "Claude Code beta feature alone cannot grant failure event",
+			input:    Input{Method: "POST", Path: "/v1/messages", StreamRequested: true, HasClaudeCodeBeta: true},
+			protocol: ProtocolAnthropic, downstream: DownstreamMessagesSSE, profile: ClientProfileGenericAnthropic,
+			compatibility: RequestClientCompatibilityAnthropic, committed: gatewaystreamrelay.CommittedFailureSignalDisconnect,
+		},
+		{
 			name:     "generic Anthropic stream does not receive Claude event",
 			input:    Input{Method: "POST", Path: "/v1/messages", StreamRequested: true, UserAgent: "claude-cli/1.2"},
 			protocol: ProtocolAnthropic, downstream: DownstreamMessagesSSE, profile: ClientProfileGenericAnthropic,
@@ -62,6 +68,18 @@ func TestPrepareDerivesProtocolProfileAndFailureCapability(t *testing.T) {
 			name:     "Gemini stream requires credential as part of CLI signature",
 			input:    Input{Method: "POST", Path: "/v1beta/models/gemini-2.5:generateContent", GeminiAltSSE: true, UserAgent: "GeminiCLI/1.0"},
 			protocol: ProtocolGemini, downstream: DownstreamGeminiStreamGenerateContentSSE, profile: ClientProfileGenericGemini,
+			compatibility: RequestClientCompatibilityOpenAI, committed: gatewaystreamrelay.CommittedFailureSignalDisconnect,
+		},
+		{
+			name:     "Gemini interaction path query stream remains streaming",
+			input:    Input{Method: "GET", Path: "/v1beta/interactions/interaction-1?stream=TRUE"},
+			protocol: ProtocolGemini, downstream: DownstreamGeminiInteractionsSSE, profile: ClientProfileGenericGemini,
+			compatibility: RequestClientCompatibilityOpenAI, committed: gatewaystreamrelay.CommittedFailureSignalDisconnect,
+		},
+		{
+			name:     "Gemini interaction query stream does not make create streaming",
+			input:    Input{Method: "POST", Path: "/v1beta/interactions?stream=true"},
+			protocol: ProtocolGemini, downstream: DownstreamJSON, profile: ClientProfileGenericGemini,
 			compatibility: RequestClientCompatibilityOpenAI, committed: gatewaystreamrelay.CommittedFailureSignalDisconnect,
 		},
 		{

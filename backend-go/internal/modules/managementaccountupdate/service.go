@@ -237,7 +237,7 @@ func normalizeFields(input map[string]any) (map[string]any, error) {
 
 func validStatus(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "active", "pending_test", "disabled", "error", "rate_limited", "temporary_unavailable":
+	case "active", "pending_test", "disabled", "error", "rate_limited", "temporary_unavailable", "quality_isolated":
 		return true
 	default:
 		return false

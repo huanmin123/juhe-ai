@@ -136,6 +136,23 @@ func TestPlanEnforcementUsesCurrentPolicyActionAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestPlanEnforcementDisablesSchedulingForDisableAndQualityIsolation(t *testing.T) {
+	t.Parallel()
+	for _, action := range []Action{ActionDisable, ActionQualityIsolate} {
+		t.Run(string(action), func(t *testing.T) {
+			policy := testPolicy()
+			policy.PenaltyAction = action
+			account := testAccount()
+			request := EnforcementRequest{Trigger: TriggerScheduled, RunID: "run-1", Action: action, PolicyRevision: policy.Revision, AccountRevision: account.ConfigRevision}
+
+			plan, err := PlanEnforcement(request, policy, account)
+			if err != nil || plan.Result != EnforcementApply || plan.TargetSchedulable == nil || *plan.TargetSchedulable {
+				t.Fatalf("%s plan = %#v, err = %v", action, plan, err)
+			}
+		})
+	}
+}
+
 func TestPlanEnforcementRejectsQualityRecoveryTrigger(t *testing.T) {
 	t.Parallel()
 	policy := testPolicy()
@@ -171,11 +188,11 @@ func TestPlanRecoveryFencesAndRestoresAvailability(t *testing.T) {
 	request := RecoveryRequest{PolicyRevision: 5, Enforcement: token, Passed: true}
 	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, Active: true, Action: ActionQualityIsolate}
 	plan, err := PlanRecovery(request, 5, current, account, true)
-	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusActive {
+	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusActive || plan.TargetSchedulable == nil || !*plan.TargetSchedulable {
 		t.Fatalf("available recovery = %#v, err = %v", plan, err)
 	}
 	plan, err = PlanRecovery(request, 5, current, account, false)
-	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusDisabled {
+	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusDisabled || plan.TargetSchedulable == nil || *plan.TargetSchedulable {
 		t.Fatalf("unavailable recovery = %#v, err = %v", plan, err)
 	}
 	plan, err = PlanRecovery(request, 6, current, account, true)

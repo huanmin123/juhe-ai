@@ -17,7 +17,7 @@ const (
 
 var allowedStatuses = map[string]struct{}{
 	"active": {}, "pending_test": {}, "disabled": {}, "error": {},
-	"rate_limited": {}, "temporary_unavailable": {},
+	"rate_limited": {}, "temporary_unavailable": {}, "quality_isolated": {},
 }
 
 var allowedSortFields = map[string]struct{}{

@@ -21,7 +21,7 @@ func TestServiceListBoundsAndForcesSelfScope(t *testing.T) {
 		Page:                 99,
 		PageSize:             999,
 		PageSizeProvided:     true,
-		Statuses:             []string{"active", "bad", "active"},
+		Statuses:             []string{"active", "quality_isolated", "bad", "active"},
 		Schedulable:          "bad",
 		Sorts:                []Sort{{Field: "priority", Order: "desc"}, {Field: "credentials", Order: "asc"}},
 	})
@@ -31,7 +31,7 @@ func TestServiceListBoundsAndForcesSelfScope(t *testing.T) {
 	if reader.input.SystemAccountID != "sys_user" || reader.input.Limit != 201 || reader.input.Offset != 800 {
 		t.Fatalf("reader input = %+v", reader.input)
 	}
-	if len(reader.input.Statuses) != 1 || reader.input.Statuses[0] != "active" || reader.input.Schedulable != "all" {
+	if len(reader.input.Statuses) != 2 || reader.input.Statuses[0] != "active" || reader.input.Statuses[1] != "quality_isolated" || reader.input.Schedulable != "all" {
 		t.Fatalf("filters = %+v / %q", reader.input.Statuses, reader.input.Schedulable)
 	}
 	if len(reader.input.Sorts) != 1 || reader.input.Sorts[0].Field != "priority" {

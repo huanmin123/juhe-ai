@@ -1,5 +1,7 @@
 package gatewaystreamrelay
 
+import "sync"
+
 // CommittedFailureSignal declares the only safe client action after a stream
 // has crossed its downstream commit fence. The response adapter owns actual
 // event encoding and connection lifecycle; Relay only exposes the typed plan.
@@ -37,10 +39,36 @@ type TerminalDisposition struct {
 	EmitControlledEvent bool
 	Disconnect          bool
 
-	// controlledEventAuthorized is deliberately unexported. A response adapter
+	// controlledFailurePermit is deliberately unexported. A response adapter
 	// may observe the public plan, but only DecideTerminalDisposition can mint
-	// the proof required to encode a second terminal event.
-	controlledEventAuthorized bool
+	// the proof required to encode a controlled terminal failure event.
+	//
+	// The permit is shared by copied dispositions and is consumed by the
+	// encoder. This keeps a future caller from turning a hand-built plan into
+	// a second terminal event, without giving Relay ownership of a listener or
+	// sink.
+	controlledFailurePermit *controlledFailurePermit
+}
+
+// controlledFailurePermit is an opaque, one-use capability. It is a pointer
+// so copies of TerminalDisposition cannot duplicate permission to emit a
+// terminal failure event.
+type controlledFailurePermit struct {
+	mu       sync.Mutex
+	consumed bool
+}
+
+func (permit *controlledFailurePermit) consume() bool {
+	if permit == nil {
+		return false
+	}
+	permit.mu.Lock()
+	defer permit.mu.Unlock()
+	if permit.consumed {
+		return false
+	}
+	permit.consumed = true
+	return true
 }
 
 // DecideTerminalDisposition yields one owner-independent outcome. Go keeps a
@@ -64,7 +92,7 @@ func DecideTerminalDisposition(input TerminalDispositionInput) TerminalDispositi
 	}
 	if retryableUpstream && input.Capability == CommittedFailureSignalProtocolEvent {
 		result.EmitControlledEvent = true
-		result.controlledEventAuthorized = true
+		result.controlledFailurePermit = &controlledFailurePermit{}
 		return result
 	}
 	result.Disconnect = true

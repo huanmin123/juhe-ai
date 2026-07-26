@@ -137,7 +137,7 @@ WHERE accounts.system_account_id = sqlc.arg(system_account_id)
     sqlc.arg(schedulable)::text = ''
     OR sqlc.arg(schedulable)::text = 'all'
     OR (sqlc.arg(schedulable)::text = 'enabled' AND accounts.schedulable = true AND accounts.status = 'active')
-    OR (sqlc.arg(schedulable)::text = 'disabled' AND (accounts.schedulable = false OR accounts.status IN ('pending_test', 'disabled', 'error')))
+    OR (sqlc.arg(schedulable)::text = 'disabled' AND (accounts.schedulable = false OR accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')))
     OR (sqlc.arg(schedulable)::text = 'cooling' AND accounts.status IN ('rate_limited', 'temporary_unavailable'))
   )
   AND (

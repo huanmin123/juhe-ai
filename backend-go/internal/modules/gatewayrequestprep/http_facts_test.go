@@ -27,7 +27,7 @@ func TestPrepareHTTPRequestMapsMetadataWithoutReadingBody(t *testing.T) {
 	if body.reads != 0 {
 		t.Fatalf("PrepareHTTPRequest() read body %d times", body.reads)
 	}
-	if request.URL.RequestURI() != originalURI || !equalStrings(request.Header.Values("Accept"), originalAccept) {
+	if request.Body != body || request.URL.RequestURI() != originalURI || !equalStrings(request.Header.Values("Accept"), originalAccept) {
 		t.Fatal("PrepareHTTPRequest() mutated request metadata")
 	}
 	if got.Protocol() != ProtocolOpenAI || got.DownstreamProtocol() != DownstreamResponsesSSE || got.ClientProfile() != ClientProfileCodex {
@@ -101,6 +101,29 @@ func TestPrepareHTTPRequestUsesSSEAndNativeFactsOnly(t *testing.T) {
 				t.Fatalf("PrepareHTTPRequest() = downstream=%q profile=%q err=%v", got.DownstreamProtocol(), got.ClientProfile(), err)
 			}
 		})
+	}
+}
+
+func TestPrepareHTTPRequestGenericStreamDoesNotMintProtocolEvent(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, "http://gateway.test/v1/chat/completions", nil)
+	request.Header.Set("Accept", "text/event-stream")
+
+	got, err := PrepareHTTPRequest(request, HTTPFacts{StreamRequested: true})
+	if err != nil {
+		t.Fatalf("PrepareHTTPRequest() error = %v", err)
+	}
+	if got.DownstreamProtocol() != DownstreamChatCompletionsSSE {
+		t.Fatalf("downstream protocol = %q, want %q", got.DownstreamProtocol(), DownstreamChatCompletionsSSE)
+	}
+	if got.PreCommitFailureSignal() != PreCommitFailureSignalHTTPError {
+		t.Fatalf("pre-commit signal = %q, want %q", got.PreCommitFailureSignal(), PreCommitFailureSignalHTTPError)
+	}
+	if got.CommittedFailureSignal() != "disconnect" {
+		t.Fatalf("committed signal = %q, want disconnect", got.CommittedFailureSignal())
+	}
+	if protocol, ok := got.ControlledFailureProtocol(); ok || protocol != "" {
+		t.Fatalf("generic stream minted controlled protocol = %q, %t", protocol, ok)
 	}
 }
 

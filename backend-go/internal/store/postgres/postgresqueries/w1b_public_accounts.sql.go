@@ -972,7 +972,7 @@ WHERE accounts.system_account_id = $1
     $7::text = ''
     OR $7::text = 'all'
     OR ($7::text = 'enabled' AND accounts.schedulable = true AND accounts.status = 'active')
-    OR ($7::text = 'disabled' AND (accounts.schedulable = false OR accounts.status IN ('pending_test', 'disabled', 'error')))
+    OR ($7::text = 'disabled' AND (accounts.schedulable = false OR accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')))
     OR ($7::text = 'cooling' AND accounts.status IN ('rate_limited', 'temporary_unavailable'))
   )
   AND (

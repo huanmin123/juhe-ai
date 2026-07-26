@@ -52,7 +52,7 @@ account_rows AS (
       WHEN accounts.last_error_code = 'account_expired'
         OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= now())
       THEN 'disabled'
-      WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+      WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
       WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > now() THEN 'temporary_unavailable'
       WHEN accounts.schedulable = false THEN 'disabled'
       ELSE accounts.status
@@ -118,13 +118,13 @@ account_rows AS (
       WHEN source_accounts.last_error_code = 'account_expired'
         OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= now())
       THEN 'disabled'
-      WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN source_accounts.status
+      WHEN source_accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN source_accounts.status
       WHEN source_accounts.cooldown_until IS NOT NULL AND source_accounts.cooldown_until > now() THEN 'temporary_unavailable'
       WHEN source_accounts.schedulable = false THEN 'disabled'
       WHEN accounts.last_error_code = 'account_expired'
         OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= now())
       THEN 'disabled'
-      WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable') THEN accounts.status
+      WHEN accounts.status IN ('pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable', 'quality_isolated') THEN accounts.status
       WHEN accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > now() THEN 'temporary_unavailable'
       WHEN accounts.schedulable = false THEN 'disabled'
       ELSE accounts.status
@@ -158,13 +158,13 @@ account_rows AS (
         AND source_accounts.id IS NOT NULL
         AND NOT (
           source_accounts.schedulable = false
-          OR source_accounts.status IN ('pending_test', 'disabled', 'error')
+          OR source_accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
           OR source_accounts.last_error_code = 'account_expired'
           OR (source_accounts.account_expires_at IS NOT NULL AND source_accounts.account_expires_at <= now())
         )
         AND NOT (
           accounts.schedulable = false
-          OR accounts.status IN ('pending_test', 'disabled', 'error')
+          OR accounts.status IN ('pending_test', 'disabled', 'error', 'quality_isolated')
           OR accounts.last_error_code = 'account_expired'
           OR (accounts.account_expires_at IS NOT NULL AND accounts.account_expires_at <= now())
         )

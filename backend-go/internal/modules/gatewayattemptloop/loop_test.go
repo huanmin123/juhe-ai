@@ -175,12 +175,21 @@ func TestRunRequiresStableMutationIDBeforeExecuting(t *testing.T) {
 }
 
 func TestRunAvailabilityFailoverDoesNotDependOnRequestTaxonomy(t *testing.T) {
-	executor := &executorStub{results: []AttemptResult{{RetryAllowed: true}, {Success: true, Committed: true}}}
-	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	request := protocolgateway.RequestShape{Method: "POST", Path: "/v1beta/interactions"}
-	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: request})
-	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 || !executor.attempts[0].AvailabilityFailoverAllowed {
-		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
+	for _, path := range []string{
+		"/v1/responses",
+		"/v1/files",
+		"/v1/vector_stores",
+		"/v1/unknown-operation",
+	} {
+		t.Run(path, func(t *testing.T) {
+			executor := &executorStub{results: []AttemptResult{{RetryAllowed: true}, {Success: true, Committed: true}}}
+			service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+			request := protocolgateway.RequestShape{Method: "POST", Path: path}
+			result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: request})
+			if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 || !executor.attempts[0].AvailabilityFailoverAllowed {
+				t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
+			}
+		})
 	}
 }
 

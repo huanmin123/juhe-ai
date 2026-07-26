@@ -12,7 +12,7 @@ import (
 func TestManagementAccountListHandlerScopesAndParsesQuery(t *testing.T) {
 	service := &accountListServiceStub{result: managementaccountlist.Result{Items: []managementaccountlist.Item{}}}
 	handler := newManagementAccountListHandler(service, managementAccountListScopeSelf)
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts?systemAccountId=sys_other&page=2&pageSize=25&status=active,bad&sorts=priority:desc,credentials:asc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-accounts?systemAccountId=sys_other&page=2&pageSize=25&status=active,quality_isolated,bad&sorts=priority:desc,credentials:asc", nil)
 	req = requestWithManagementAuthContext(req, managementauth.Context{SystemAccountID: "sys_user", Role: "user"})
 	rec := httptest.NewRecorder()
 
@@ -24,7 +24,7 @@ func TestManagementAccountListHandlerScopesAndParsesQuery(t *testing.T) {
 	if service.input.SystemAccountID != "sys_user" || !service.input.SelfOnly || service.input.Page != 2 || service.input.PageSize != 25 {
 		t.Fatalf("input = %+v", service.input)
 	}
-	if len(service.input.Statuses) != 1 || service.input.Statuses[0] != "active" || len(service.input.Sorts) != 1 {
+	if len(service.input.Statuses) != 2 || service.input.Statuses[0] != "active" || service.input.Statuses[1] != "quality_isolated" || len(service.input.Sorts) != 1 {
 		t.Fatalf("filters/sorts = %+v / %+v", service.input.Statuses, service.input.Sorts)
 	}
 }

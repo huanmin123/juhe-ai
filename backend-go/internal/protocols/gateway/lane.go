@@ -19,6 +19,6 @@ func isImageGenerationModel(model string) bool {
 	return normalized != "" && (strings.HasPrefix(normalized, "gpt-image") ||
 		strings.HasPrefix(normalized, "dall-e") ||
 		strings.HasPrefix(normalized, "imagen-") ||
-		strings.HasPrefix(normalized, "nano-banana-") ||
+		strings.HasPrefix(normalized, "nano-banana") ||
 		geminiImageGenerationModelPattern.MatchString(normalized))
 }

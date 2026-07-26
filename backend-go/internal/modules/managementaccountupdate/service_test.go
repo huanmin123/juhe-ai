@@ -71,6 +71,16 @@ func TestUpdateRejectsAuthorizedAndVersionConflict(t *testing.T) {
 	}
 }
 
+func TestNormalizeFieldsAllowsQualityIsolatedStatus(t *testing.T) {
+	fields, err := normalizeFields(map[string]any{"status": "quality_isolated"})
+	if err != nil {
+		t.Fatalf("normalizeFields() error = %v", err)
+	}
+	if fields["status"] != "quality_isolated" {
+		t.Fatalf("status = %#v", fields["status"])
+	}
+}
+
 type updateStoreStub struct {
 	target   port.ManagementAccountUpdateTarget
 	result   port.ManagementAccountUpdateResult

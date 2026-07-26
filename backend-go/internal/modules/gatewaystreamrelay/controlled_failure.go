@@ -78,9 +78,11 @@ func EncodeControlledFailureEvent(disposition TerminalDisposition, protocol Cont
 		return nil, ErrControlledFailureEventNotPermitted
 	}
 
+	var encoded []byte
+	var err error
 	switch protocol {
 	case ControlledFailureProtocolResponses:
-		return marshalSSEEvent("response.failed", responsesFailureEvent{
+		encoded, err = marshalSSEEvent("response.failed", responsesFailureEvent{
 			Type: "response.failed",
 			Response: responsesFailureResponse{
 				Status: "failed",
@@ -88,21 +90,28 @@ func EncodeControlledFailureEvent(disposition TerminalDisposition, protocol Cont
 			},
 		})
 	case ControlledFailureProtocolAnthropic:
-		return marshalSSEEvent("error", anthropicFailureEvent{
+		encoded, err = marshalSSEEvent("error", anthropicFailureEvent{
 			Type:  "error",
 			Error: anthropicFailureDetail{Type: "overloaded_error", Message: controlledFailureMessage, Code: controlledFailureCode},
 		})
 	case ControlledFailureProtocolGemini:
-		return marshalSSEEvent("error", geminiFailureEvent{
+		encoded, err = marshalSSEEvent("error", geminiFailureEvent{
 			Error: geminiFailureDetail{Message: controlledFailureMessage, Status: "UNAVAILABLE", Code: controlledFailureCode},
 		})
 	default:
 		return nil, ErrUnsupportedControlledFailureProtocol
 	}
+	if err != nil {
+		return nil, err
+	}
+	if !disposition.controlledFailurePermit.consume() {
+		return nil, ErrControlledFailureEventNotPermitted
+	}
+	return encoded, nil
 }
 
 func mayEncodeControlledFailure(disposition TerminalDisposition) bool {
-	if !disposition.controlledEventAuthorized || !disposition.EmitControlledEvent || disposition.RetryUpstream || disposition.Disconnect {
+	if disposition.controlledFailurePermit == nil || !disposition.EmitControlledEvent || disposition.RetryUpstream || disposition.Disconnect {
 		return false
 	}
 	return disposition.TerminalKind == TerminalKindUpstreamProtocolFailure || disposition.TerminalKind == TerminalKindMissingTerminal || disposition.TerminalKind == TerminalKindReadFailure

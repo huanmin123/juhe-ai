@@ -92,7 +92,7 @@ func managementAccountListInput(authContext managementauth.Context, values url.V
 }
 
 func accountListStatusValues(values url.Values) []string {
-	allowed := map[string]struct{}{"active": {}, "pending_test": {}, "disabled": {}, "error": {}, "rate_limited": {}, "temporary_unavailable": {}}
+	allowed := map[string]struct{}{"active": {}, "pending_test": {}, "disabled": {}, "error": {}, "rate_limited": {}, "temporary_unavailable": {}, "quality_isolated": {}}
 	result := []string{}
 	for _, raw := range values["status"] {
 		for _, value := range strings.Split(raw, ",") {

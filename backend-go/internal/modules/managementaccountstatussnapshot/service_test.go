@@ -210,6 +210,52 @@ func TestEffectiveAvailabilityUsesNodeStaticBlockerPriority(t *testing.T) {
 	}
 }
 
+func TestEffectiveAvailabilityPresentsQualityIsolationForSourceAndInstance(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name                   string
+		row                    port.ManagementAccountStatusProjection
+		wantStatus             string
+		wantLabel              string
+		wantScope              string
+		wantReason             string
+		wantPresentation       string
+		wantPresentationAction string
+	}{
+		{
+			name: "authorized instance is blocked when source is quality isolated",
+			row: port.ManagementAccountStatusProjection{
+				Status: "active", Schedulable: true, AuthorizationID: "auth_1", AuthorizationStatus: "active",
+				AuthorizationInstanceSourceAccountID: "source_1", AuthorizationInstanceSourceAccountStatus: "quality_isolated",
+				AuthorizationInstanceSourceSchedulable: true, AuthorizationInstanceSourceLastErrorMessage: "质量分数低于策略阈值",
+				BoundGroupID: "group_1", GroupBindStatus: "bound",
+			},
+			wantStatus: "source_quality_isolated", wantLabel: "来源质量隔离", wantScope: "source_account", wantReason: "质量分数低于策略阈值",
+			wantPresentation: "source_blocked", wantPresentationAction: "contact_authorizer",
+		},
+		{
+			name: "account is blocked when its own quality is isolated",
+			row: port.ManagementAccountStatusProjection{
+				Status: "quality_isolated", Schedulable: true, LastErrorMessage: "模型质量恢复检查尚未通过",
+			},
+			wantStatus: "instance_quality_isolated", wantLabel: "账户质量隔离", wantScope: "account", wantReason: "模型质量恢复检查尚未通过",
+			wantPresentation: "error", wantPresentationAction: "retry_check",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			effectiveAvailability := effective(test.row, now)
+			if effectiveAvailability.Available || effectiveAvailability.Status != test.wantStatus || effectiveAvailability.Label != test.wantLabel || effectiveAvailability.Color != "red" || effectiveAvailability.BlockerScope != test.wantScope || effectiveAvailability.Reason != test.wantReason {
+				t.Fatalf("effective availability = %+v", effectiveAvailability)
+			}
+			presentation := availabilityPresentation(effectiveAvailability, test.row)
+			if presentation.Status != test.wantPresentation || presentation.Action != test.wantPresentationAction || presentation.Label != test.wantLabel || presentation.Reason != test.wantReason {
+				t.Fatalf("presentation = %+v", presentation)
+			}
+		})
+	}
+}
+
 type statusReaderStub struct {
 	input port.ManagementAccountStatusSnapshotInput
 	rows  []port.ManagementAccountStatusProjection
