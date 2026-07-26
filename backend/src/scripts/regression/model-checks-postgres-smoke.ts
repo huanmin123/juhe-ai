@@ -171,7 +171,22 @@ try {
     FROM juhe_stats.model_trust_observation_receipts
     WHERE observation_id = ANY($1::text[])
   `, [observationIds])
-  assert.equal(Number(receipts.rows[0]?.count ?? 0), 2, 'PG durable receipt 必须覆盖每条已处理 observation')
+  assert.equal(Number(receipts.rows[0]?.count ?? 0), 0, '源标记确认后必须清理临时 receipt')
+  await pool.query('UPDATE juhe_dataset.model_check_observations SET aggregation_completed_at = NULL WHERE id = $1', [lateObservationId])
+  await pool.query(`
+    INSERT INTO juhe_stats.model_trust_observation_receipts (observation_id, observation_created_at, processed_at)
+    VALUES ($1, $2, $3)
+  `, [lateObservationId, '2000-01-01T00:00:00.000Z', new Date().toISOString()])
+  assert.equal(await aggregateModelTrustObservationsAsync(500), 0, 'PG receipt 必须安全恢复 stats 已提交但 source marker 未确认的 observation')
+  const afterReceiptRecovery = await findModelAccountTrustResultAsync(systemAccountId, accountId, 'gpt-5.5')
+  assert.equal(afterReceiptRecovery?.observationCount, 2, 'PG receipt 恢复不得重复累加派生结果')
+  const recoveredMarkerAndReceipt = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM juhe_dataset.model_check_observations WHERE id = $1 AND aggregation_completed_at IS NOT NULL)::int AS marker_count,
+      (SELECT COUNT(*) FROM juhe_stats.model_trust_observation_receipts WHERE observation_id = $1)::int AS receipt_count
+  `, [lateObservationId])
+  assert.equal(Number(recoveredMarkerAndReceipt.rows[0]?.marker_count ?? 0), 1, 'PG receipt 恢复必须补齐 source marker')
+  assert.equal(Number(recoveredMarkerAndReceipt.rows[0]?.receipt_count ?? 0), 0, 'PG receipt 恢复完成后必须清理临时 receipt')
   const explainClient = await pool.connect()
   let pendingPlan = ''
   try {

@@ -1,25 +1,43 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { DatabaseClient } from './database-client.js'
-import { listRequestQuotaHourlyWindowHours } from './request-quota-hourly-windows.repository.js'
+import { listRequestQuotaHourlyWindowScopeBindings } from './request-quota-hourly-windows.repository.js'
 import { dateKey, hourKey, monthKey } from './usage-stats-helpers.js'
 import { DAY_MS, HOUR_MS } from './usage-stats-window-helpers.js'
 
 export function refreshUsageQuotaHourlyWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
-  const windows = usageQuotaHourlyWindows()
+  const bindings = listRequestQuotaHourlyWindowScopeBindings()
   database.prepare('DELETE FROM usage_quota_hourly_windows').run()
-  const insert = database.prepare(`
-    INSERT INTO usage_quota_hourly_windows (
-      system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+  for (let offset = 0; offset < bindings.length; offset += 200) {
+    const chunk = bindings.slice(offset, offset + 200)
+    const values = chunk.map(() => '(?, ?, ?, ?, ?)').join(', ')
+    database.prepare(`
+      WITH claimed(system_account_id, scope_type, scope_id, window_hours, cutoff_hour) AS (
+        VALUES ${values}
+      )
+      INSERT INTO usage_quota_hourly_windows (
+        system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+      )
+      SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours,
+        COALESCE(SUM(hourly.total_cost_usd), 0), ?
+      FROM claimed
+      LEFT JOIN usage_stats_hourly hourly
+        ON hourly.system_account_id = claimed.system_account_id
+        AND hourly.scope_type = claimed.scope_type
+        AND hourly.scope_id = claimed.scope_id
+        AND hourly.stat_hour >= claimed.cutoff_hour
+      GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
+      HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
+    `).run(
+      ...chunk.flatMap((binding) => [
+        binding.systemAccountId,
+        binding.scopeType,
+        binding.scopeId,
+        binding.windowHours,
+        hourKey(new Date(Date.now() - binding.windowHours * HOUR_MS), timezone)
+      ]),
+      updatedAt
     )
-    SELECT system_account_id, scope_type, scope_id, ?, COALESCE(SUM(total_cost_usd), 0), ?
-    FROM usage_stats_hourly
-    WHERE stat_hour >= ?
-    GROUP BY system_account_id, scope_type, scope_id
-    HAVING COALESCE(SUM(total_cost_usd), 0) > 0
-  `)
-  for (const hours of windows) {
-    insert.run(hours, updatedAt, hourKey(new Date(Date.now() - hours * HOUR_MS), timezone))
   }
 }
 
@@ -153,10 +171,6 @@ export async function refreshAuthorizationCurrentMonthCostRankSnapshotAsync(
     updatedAt,
     limit: 50
   })
-}
-
-function usageQuotaHourlyWindows(): number[] {
-  return listRequestQuotaHourlyWindowHours()
 }
 
 function refreshUsageRankSnapshotFromStats(database: DatabaseSync, input: {

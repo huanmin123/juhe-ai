@@ -51,7 +51,7 @@ try {
     `)
     .run('sys_quota_window_grantee', 'quota-window-grantee', '额度窗口被授权用户', 'test-password-hash', now, now)
 
-  repositories.createResourceAuthorization({
+  const authorization = repositories.createResourceAuthorization({
     resourceType: 'group',
     resourceId: group.id,
     granteeType: 'system_account',
@@ -59,11 +59,9 @@ try {
     limits: { hourly: { enabled: true, hours: 41, limit: 1 } }
   }, access)
 
-  const configuredWindows = quotaHourlyWindowsRepository.listRequestQuotaHourlyWindowHours()
-  assert(configuredWindows.includes(37), 'API Key 额度写入时应登记自定义小时窗口')
-  assert(configuredWindows.includes(41), '统一授权额度写入时应登记自定义小时窗口')
-  assert(configuredWindows.includes(720), '默认小时窗口仍应保留')
-  assert(configuredWindows.length <= 720, '小时窗口配置读取必须被 1..720 的合法范围上限约束')
+  const initialBindings = quotaHourlyWindowsRepository.listRequestQuotaHourlyWindowScopeBindings()
+  assert(initialBindings.some((binding) => binding.scopeType === 'api_key' && binding.scopeId === apiKey.id && binding.windowHours === 37), 'API Key 额度写入时应登记精确 scope 小时窗口')
+  assert(initialBindings.some((binding) => binding.scopeType === 'group_authorization' && binding.windowHours === 41), '统一授权额度写入时应登记精确 scope 小时窗口')
 
   const statsDatabase = databaseModule.getStatsDatabase()
   statsDatabase
@@ -83,7 +81,7 @@ try {
       || /FROM resource_authorization_grants\b.*limits_json/i.test(normalized)) {
       throw new Error(`额度小时窗口刷新不应扫描额度 JSON 源表: ${normalized}`)
     }
-    if (/FROM request_quota_hourly_window_configs\b/i.test(normalized)) {
+    if (/FROM request_quota_hourly_window_scope_bindings\b/i.test(normalized)) {
       configQueryCount += 1
     }
     return originalPrepare(sql)
@@ -95,7 +93,7 @@ try {
     businessDatabase.prepare = originalPrepare
   }
 
-  assert.equal(configQueryCount, 1, '额度小时窗口刷新应只读取小型窗口配置表')
+  assert.equal(configQueryCount, 1, '额度小时窗口刷新应只读取精确 scope 绑定表')
   const windowRow = statsDatabase
     .prepare(`
       SELECT total_cost_usd
@@ -108,7 +106,20 @@ try {
     .get(apiKey.id) as { total_cost_usd?: number } | undefined
   assert.equal(windowRow?.total_cost_usd, 0.37, '自定义小时窗口应参与额度窗口刷新')
 
-  console.log('额度小时窗口配置回归通过：worker 刷新只读取固定上限窗口配置，不扫描全部额度 JSON')
+  repositories.updateApiKey(apiKey.id, {
+    quotaLimits: { hourly: { enabled: true, hours: 43, limit: 1 } }
+  }, access)
+  let currentBindings = quotaHourlyWindowsRepository.listRequestQuotaHourlyWindowScopeBindings()
+  assert(!currentBindings.some((binding) => binding.scopeType === 'api_key' && binding.scopeId === apiKey.id && binding.windowHours === 37), 'API Key 修改窗口后必须移除旧引用')
+  assert(currentBindings.some((binding) => binding.scopeType === 'api_key' && binding.scopeId === apiKey.id && binding.windowHours === 43), 'API Key 修改窗口后必须写入新引用')
+
+  repositories.updateResourceAuthorization(authorization.id, {
+    limits: {}
+  }, access)
+  currentBindings = quotaHourlyWindowsRepository.listRequestQuotaHourlyWindowScopeBindings()
+  assert(!currentBindings.some((binding) => binding.scopeType === 'group_authorization' && binding.windowHours === 41), '授权关闭小时额度后必须移除旧引用')
+
+  console.log('额度小时窗口配置回归通过：active scope 绑定精准维护，worker 不扫描额度 JSON 或预计算无关窗口')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()
@@ -120,22 +131,26 @@ try {
 
 function assertSourceGuards(): void {
   const snapshotSource = readSource('storage/usage-stats-snapshot-helpers.ts')
-  assert.match(snapshotSource, /listRequestQuotaHourlyWindowHours/, '额度小时窗口刷新必须读取配置表 helper')
+  assert.match(snapshotSource, /listRequestQuotaHourlyWindowScopeBindings/, '额度小时窗口刷新必须读取 scope 绑定 helper')
   assert.doesNotMatch(snapshotSource, /SELECT\s+quota_limits_json\s+AS\s+limits_json\s+FROM\s+api_keys/i, '额度小时窗口刷新不应再扫描 api_keys.quota_limits_json')
   assert.doesNotMatch(snapshotSource, /SELECT\s+limits_json\s+FROM\s+resource_authorizations/i, '额度小时窗口刷新不应再扫描 resource_authorizations.limits_json')
   assert.doesNotMatch(snapshotSource, /SELECT\s+limits_json\s+FROM\s+resource_authorization_grants/i, '额度小时窗口刷新不应再扫描 resource_authorization_grants.limits_json')
 
   const configSource = readSource('storage/request-quota-hourly-windows.repository.ts')
-  assert.match(configSource, /FROM request_quota_hourly_window_configs/, '额度小时窗口配置 helper 应读取专用小表')
-  assert.match(configSource, /LIMIT \?/, '额度小时窗口配置读取必须有运行时 LIMIT')
+  assert.match(configSource, /FROM request_quota_hourly_window_scope_bindings/, '额度小时窗口 helper 应读取精确 scope 绑定表')
   assert.match(configSource, /maxRequestQuotaHourlyWindowHours/, '额度小时窗口配置读取必须绑定合法小时上限')
 
   const apiKeySource = readSource('storage/api-key.repository.ts')
-  assert.match(apiKeySource, /rememberRequestQuotaHourlyWindowsFromJson\(quotaLimitsJson, database, now\)/, 'API Key 写额度时必须登记小时窗口')
+  assert.match(apiKeySource, /syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync\(tx,/, 'PG API Key 写额度必须在业务事务内同步 scope 绑定并标脏')
 
   const authorizationWriteSource = readSource('storage/resource-authorization-write-state.repository.ts')
-  assert.match(authorizationWriteSource, /rememberRequestQuotaHourlyWindowsFromJson\(nextLimitsJson, input\.database, input\.now\)/, '授权写额度时必须登记小时窗口')
-  assert.match(authorizationWriteSource, /rememberRequestQuotaHourlyWindowsFromJson\(grant\.limits_json, database, now\)/, '授权状态同步时必须补登记小时窗口')
+  assert.match(authorizationWriteSource, /syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings\(/, 'SQLite 授权写入必须同步 active scope 绑定')
+  const postgresAuthorizationWriteSource = readSource('storage/resource-authorization-write.repository.ts')
+  assert.match(postgresAuthorizationWriteSource, /syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync\(client,/, 'PG 授权写入必须在业务事务内同步 scope 绑定并标脏')
+
+  const postgresSeedSource = readSource('storage/postgres-seed-defaults.ts')
+  assert.match(postgresSeedSource, /WITH inserted AS[\s\S]*request_quota_hourly_window_scope_bindings/, 'PG 初始化必须幂等回填已有 active quota scope')
+  assert.match(postgresSeedSource, /usage_quota_hourly_window_dirty_scopes/, 'PG scope 回填必须同时标脏，避免升级后暂时按 0 放行')
 }
 
 function readSource(relativePath: string): string {

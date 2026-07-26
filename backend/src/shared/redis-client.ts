@@ -32,32 +32,60 @@ export class RedisOperationDeadlineError extends Error {
   }
 }
 
-const redisClients = new Map<string, Promise<RedisCommandClient>>()
+interface RedisClientGeneration {
+  promise: Promise<RedisCommandClient>
+  destroy(): void
+}
+
+const redisClients = new Map<string, RedisClientGeneration>()
 const redisClientConnectTimeoutMs = 10000
 const redisClientCloseTimeoutMs = 2000
 
 export async function getRedisClient(url: string): Promise<RedisCommandClient> {
   const normalizedUrl = normalizeRedisUrl(url)
   while (true) {
-    const clientPromise = getOrCreateRedisClientPromise(normalizedUrl)
-    const client = await clientPromise
+    const generation = getOrCreateRedisClientGeneration(normalizedUrl)
+    const client = await generation.promise
     if (client.isOpen !== false && client.isReady !== false) return client
-    invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
+    invalidateRedisClientGeneration(normalizedUrl, generation)
   }
 }
 
-function getOrCreateRedisClientPromise(normalizedUrl: string): Promise<RedisCommandClient> {
+function getOrCreateRedisClientGeneration(normalizedUrl: string): RedisClientGeneration {
   const existing = redisClients.get(normalizedUrl)
   if (existing) return existing
-  const clientPromise = createRedisClient(normalizedUrl).catch((error) => {
-    if (redisClients.get(normalizedUrl) === clientPromise) {
+  let client: RedisCommandClient | undefined
+  let destroyRequested = false
+  let clientDestroyed = false
+  const destroyClient = () => {
+    if (!client || clientDestroyed) return
+    clientDestroyed = true
+    try {
+      client.destroy?.()
+    } catch {
+      // 同一代际可能被多个 deadline 同时淘汰；重复 close 不应覆盖原始错误。
+    }
+  }
+  let generation: RedisClientGeneration
+  const clientPromise = createRedisClient(normalizedUrl, {}, (createdClient) => {
+    client = createdClient
+    if (destroyRequested) destroyClient()
+  }).catch((error) => {
+    if (redisClients.get(normalizedUrl) === generation) {
       redisClients.delete(normalizedUrl)
     }
     throw error
   })
   clientPromise.catch(() => undefined)
-  redisClients.set(normalizedUrl, clientPromise)
-  return clientPromise
+  generation = {
+    promise: clientPromise,
+    destroy: () => {
+      destroyRequested = true
+      destroyClient()
+    }
+  }
+  redisClients.set(normalizedUrl, generation)
+  return generation
 }
 
 export async function runRedisOperationWithDeadline<T>(
@@ -67,16 +95,17 @@ export async function runRedisOperationWithDeadline<T>(
 ): Promise<T> {
   const normalizedUrl = normalizeRedisUrl(url)
   const deadlineAtMs = normalizedRedisOperationDeadlineAt(options)
-  const clientPromise = getOrCreateRedisClientPromise(normalizedUrl)
+  const generation = getOrCreateRedisClientGeneration(normalizedUrl)
   let client: RedisCommandClient | undefined
   try {
     client = await awaitRedisOperationStep(
-      clientPromise,
+      generation.promise,
       deadlineAtMs,
       options,
       `${options.operationName}连接`
     )
     if (client.isOpen === false || client.isReady === false) {
+      invalidateRedisClientGeneration(normalizedUrl, generation)
       throw new Error(`${options.operationName}连接不可用`)
     }
     return await awaitRedisOperationStep(
@@ -87,7 +116,7 @@ export async function runRedisOperationWithDeadline<T>(
     )
   } catch (error) {
     if (options.signal?.aborted || error instanceof RedisOperationDeadlineError || isRecoverableRedisClientError(error)) {
-      invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
+      invalidateRedisClientGeneration(normalizedUrl, generation)
     }
     throw error
   }
@@ -103,32 +132,27 @@ export function createDedicatedRedisClient(url: string, options: DedicatedRedisC
 
 export async function invalidateRedisClient(url: string, expectedClient?: RedisCommandClient): Promise<boolean> {
   const normalizedUrl = normalizeRedisUrl(url)
-  const clientPromise = redisClients.get(normalizedUrl)
-  if (!clientPromise) return false
+  const generation = redisClients.get(normalizedUrl)
+  if (!generation) return false
   if (!expectedClient) {
-    return invalidateRedisClientGeneration(normalizedUrl, clientPromise)
+    return invalidateRedisClientGeneration(normalizedUrl, generation)
   }
   let client: RedisCommandClient
   try {
-    client = await withTimeout(clientPromise, redisClientCloseTimeoutMs, 'Redis client invalidation wait timeout')
+    client = await withTimeout(generation.promise, redisClientCloseTimeoutMs, 'Redis client invalidation wait timeout')
   } catch {
-    return invalidateRedisClientGeneration(normalizedUrl, clientPromise)
+    return invalidateRedisClientGeneration(normalizedUrl, generation)
   }
   if (expectedClient && client !== expectedClient) return false
-  return invalidateRedisClientGeneration(normalizedUrl, clientPromise, client)
+  return invalidateRedisClientGeneration(normalizedUrl, generation)
 }
 
 function invalidateRedisClientGeneration(
   normalizedUrl: string,
-  expectedPromise: Promise<RedisCommandClient>,
-  expectedClient?: RedisCommandClient
+  expectedGeneration: RedisClientGeneration
 ): boolean {
-  if (expectedClient) {
-    expectedClient.destroy?.()
-  } else {
-    void expectedPromise.then((client) => client.destroy?.(), () => undefined)
-  }
-  if (redisClients.get(normalizedUrl) !== expectedPromise) return false
+  expectedGeneration.destroy()
+  if (redisClients.get(normalizedUrl) !== expectedGeneration) return false
   redisClients.delete(normalizedUrl)
   return true
 }
@@ -146,11 +170,12 @@ export function isRecoverableRedisClientError(error: unknown): boolean {
 }
 
 export async function closeRedisClients(): Promise<void> {
-  const clientPromises = Array.from(redisClients.values())
+  const generations = Array.from(redisClients.values())
   redisClients.clear()
+  for (const generation of generations) generation.destroy()
   const settledClients = await Promise.allSettled(
-    clientPromises.map((clientPromise) =>
-      withTimeout(clientPromise, redisClientCloseTimeoutMs, 'Redis client close wait timeout')
+    generations.map((generation) =>
+      withTimeout(generation.promise, redisClientCloseTimeoutMs, 'Redis client close wait timeout')
     )
   )
   for (const settledClient of settledClients) {
@@ -174,7 +199,11 @@ async function closeRedisClient(client: RedisCommandClient): Promise<void> {
   }
 }
 
-async function createRedisClient(url: string, options: DedicatedRedisClientOptions = {}): Promise<RedisCommandClient> {
+async function createRedisClient(
+  url: string,
+  options: DedicatedRedisClientOptions = {},
+  onCreated?: (client: RedisCommandClient) => void
+): Promise<RedisCommandClient> {
   const { createClient } = await import('redis')
   const connectTimeoutMs = normalizedPositiveInteger(options.connectTimeoutMs, redisClientConnectTimeoutMs)
   const commandsQueueMaxLength = options.commandsQueueMaxLength === undefined
@@ -194,6 +223,7 @@ async function createRedisClient(url: string, options: DedicatedRedisClientOptio
   client.on('error', () => {
     // node-redis emits connection errors; command promises still reject for callers.
   })
+  onCreated?.(client)
   try {
     await withTimeout(client.connect(), connectTimeoutMs, 'Redis connect timeout')
   } catch (error) {

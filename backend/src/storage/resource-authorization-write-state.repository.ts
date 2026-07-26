@@ -738,6 +738,18 @@ export function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizati
   syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(grant), database, now)
 }
 
+function resourceAuthorizationQuotaBindingGrant(grant: ResourceAuthorizationGrantRow) {
+  return {
+    id: grant.id,
+    resourceType: grant.resource_type,
+    resourceId: grant.resource_id,
+    resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+    granteeType: grant.grantee_type,
+    granteeSystemAccountId: grant.grantee_system_account_id,
+    granteeTeamId: grant.grantee_team_id
+  }
+}
+
 function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
   if (!grant.grantee_system_account_id) return
   const runtime = loadRuntimeAuthorizationForUserGrant(grant, database)

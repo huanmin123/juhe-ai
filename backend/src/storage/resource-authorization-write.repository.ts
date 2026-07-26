@@ -27,7 +27,12 @@ import {
 } from './resource-authorization-write-state.repository.js'
 import { assertKnownInputKeys } from './repository-input-normalization.js'
 import type { AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
-import { maxRequestQuotaHourlyWindowHours, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
+import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
+import {
+  syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings,
+  syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync,
+  type ResourceAuthorizationQuotaBindingGrant
+} from './request-quota-hourly-windows.repository.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { maxSystemTeamActiveGrantCount, maxSystemTeamMembersPerTeam } from './system-team-limits.js'
 import { optionalNullableServerDateTimeIso } from './value-utils.js'
@@ -80,6 +85,12 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, database })
       createdGrantId = grant.id
       upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, actor, now, database })
+    }
+    const createdGrant = createdGrantId
+      ? database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(createdGrantId) as unknown as ResourceAuthorizationGrantRow | undefined
+      : undefined
+    if (createdGrant) {
+      syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings(resourceAuthorizationQuotaBindingGrant(createdGrant), database, now)
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -139,6 +150,7 @@ export async function createResourceAuthorizationAsync(input: Record<string, unk
       for (const member of members) {
         await upsertResourceAuthorizationForUserAsync({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark, expiresAt, limits: input.limits, actor, now, client: tx })
       }
+      await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(tx, resourceAuthorizationQuotaBindingGrant(grant), now)
       return
     }
     const grantee = await tx.one<{ id?: string; status?: string }>(`
@@ -152,6 +164,7 @@ export async function createResourceAuthorizationAsync(input: Record<string, unk
     const grant = await upsertResourceAuthorizationGrantAsync({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark, expiresAt, limits: input.limits, actor, now, client: tx })
     createdGrantId = grant.id
     await upsertResourceAuthorizationForUserAsync({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', targetGroupId, remark, expiresAt, limits: input.limits, actor, now, client: tx })
+    await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(tx, resourceAuthorizationQuotaBindingGrant(grant), now)
   })
 
   await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_created')
@@ -399,12 +412,12 @@ async function revokeResourceAuthorizationGrantAsync(grant: ResourceAuthorizatio
 }
 
 async function syncResourceAuthorizationGrantRuntimeAsync(grant: ResourceAuthorizationGrantRow, actor: string, client: DatabaseClient, now: string): Promise<void> {
-  await rememberRequestQuotaHourlyWindowsFromJsonAsync(client, grant.limits_json, now)
   if (grant.grantee_type === 'system_account') {
     await syncUserGrantRuntimeAsync(grant, actor, client, now)
-    return
+  } else {
+    await syncTeamGrantMemberAuthorizationsAsync(grant, actor, client, now)
   }
-  await syncTeamGrantMemberAuthorizationsAsync(grant, actor, client, now)
+  await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(client, resourceAuthorizationQuotaBindingGrant(grant), now)
 }
 
 async function upsertResourceAuthorizationGrantAsync(input: {
@@ -503,7 +516,6 @@ async function upsertResourceAuthorizationGrantAsync(input: {
       input.now
     ])
   }
-  await rememberRequestQuotaHourlyWindowsFromJsonAsync(input.client, nextLimitsJson, input.now)
   return {
     id,
     resource_type: input.resourceType,
@@ -627,7 +639,6 @@ async function upsertResourceAuthorizationForUserAsync(input: {
       input.now
     ])
   }
-  await rememberRequestQuotaHourlyWindowsFromJsonAsync(input.client, nextLimitsJson, input.now)
   await upsertResourceAuthorizationSourceAsync(input.client, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {
     await input.client.execute(`
@@ -1650,19 +1661,6 @@ async function validateResourceAuthorizationExpiresAtAsync(
   }
 }
 
-async function rememberRequestQuotaHourlyWindowsFromJsonAsync(client: DatabaseClient, limitsJson: string | null | undefined, timestamp: string): Promise<void> {
-  const limits = parseRequestQuotaLimitsJson(limitsJson)
-  const hours = limits.hourly?.enabled ? limits.hourly.hours : undefined
-  if (!Number.isInteger(hours) || typeof hours !== 'number' || hours < 1 || hours > maxRequestQuotaHourlyWindowHours) {
-    return
-  }
-  await client.execute(`
-    INSERT INTO ${resourceAuthorizationWriteTable(client, 'request_quota_hourly_window_configs')} (window_hours, created_at, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(window_hours) DO UPDATE SET updated_at = excluded.updated_at
-  `, [hours, timestamp, timestamp])
-}
-
 async function getResourceAuthorizationWriteClient(): Promise<DatabaseClient> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     throw new Error('高性能授权写入客户端仅支持 PostgreSQL 模式')
@@ -1674,6 +1672,18 @@ function resourceAuthorizationWriteTable(client: DatabaseClient, tableName: stri
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function resourceAuthorizationQuotaBindingGrant(grant: ResourceAuthorizationGrantRow): ResourceAuthorizationQuotaBindingGrant {
+  return {
+    id: grant.id,
+    resourceType: grant.resource_type,
+    resourceId: grant.resource_id,
+    resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+    granteeType: grant.grantee_type,
+    granteeSystemAccountId: grant.grantee_system_account_id,
+    granteeTeamId: grant.grantee_team_id
+  }
 }
 
 function refreshAfterResourceAuthorizationBusinessWrite(reason: string): void {

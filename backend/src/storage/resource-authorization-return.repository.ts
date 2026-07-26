@@ -12,6 +12,7 @@ import { refreshGroupAccountStatsAfterWrite } from './group-account-stats-write-
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { getPostgresPool } from './postgres-client.js'
 import { expireDueResourceAuthorizationsAsync } from './resource-authorization-write.repository.js'
+import { syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync } from './request-quota-hourly-windows.repository.js'
 import { resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import {
   expireDueResourceAuthorizations,
@@ -427,12 +428,22 @@ async function returnResourceAuthorizationGrantAsync(grant: ResourceAuthorizatio
       AND grantee_system_account_id = ?
     LIMIT 1
   `, [grant.resource_type, grant.resource_id, grant.resource_owner_system_account_id, grant.grantee_system_account_id])
-  if (!runtime) return
-  await refreshResourceAuthorizationEffectiveSourceAsync(runtime.id, actor, now, client, {
-    noActiveSourceReason: 'grantee_returned',
-    preserveExpiredWhenNoActiveSource: false,
-    terminalStatus: 'returned'
-  })
+  if (runtime) {
+    await refreshResourceAuthorizationEffectiveSourceAsync(runtime.id, actor, now, client, {
+      noActiveSourceReason: 'grantee_returned',
+      preserveExpiredWhenNoActiveSource: false,
+      terminalStatus: 'returned'
+    })
+  }
+  await syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindingsAsync(client, {
+    id: grant.id,
+    resourceType: grant.resource_type,
+    resourceId: grant.resource_id,
+    resourceOwnerSystemAccountId: grant.resource_owner_system_account_id,
+    granteeType: grant.grantee_type,
+    granteeSystemAccountId: grant.grantee_system_account_id,
+    granteeTeamId: grant.grantee_team_id
+  }, now)
 }
 
 async function refreshResourceAuthorizationEffectiveSourceAsync(

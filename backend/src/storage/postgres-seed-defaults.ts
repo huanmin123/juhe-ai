@@ -80,6 +80,117 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
+  await query(`
+    WITH inserted AS (
+      INSERT INTO ${businessTable('request_quota_hourly_window_scope_bindings')} (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT system_account_id, 'api_key', id, 'api_key', id,
+        (quota_limits_json::jsonb #>> '{hourly,hours}')::integer, created_at, updated_at
+      FROM ${businessTable('api_keys')}
+      WHERE status = 'active'
+        AND quota_limits_json IS NOT NULL
+        AND quota_limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND quota_limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (quota_limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `)
+
+  await query(`
+    WITH inserted AS (
+      INSERT INTO ${businessTable('request_quota_hourly_window_scope_bindings')} (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
+        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization' ELSE 'group_authorization' END,
+        ra.id, 'resource_authorization_grant', grants.id,
+        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer, ra.created_at, ra.updated_at
+      FROM ${businessTable('resource_authorizations')} ra
+      INNER JOIN ${businessTable('resource_authorization_grants')} grants
+        ON grants.resource_type = ra.resource_type
+        AND grants.resource_id = ra.resource_id
+        AND grants.status = 'active'
+        AND (
+          (ra.effective_source_type = 'manual' AND grants.grantee_type = 'system_account' AND grants.grantee_system_account_id = ra.grantee_system_account_id)
+          OR
+          (ra.effective_source_type = 'team' AND grants.grantee_type = 'team' AND grants.grantee_team_id = ra.effective_source_team_id)
+        )
+      WHERE ra.status = 'active'
+        AND ra.limits_json IS NOT NULL
+        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `)
+
+  await query(`
+    WITH candidates AS (
+      SELECT DISTINCT
+        CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END AS system_account_id,
+        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization_team' ELSE 'group_authorization_team' END AS scope_type,
+        CASE WHEN ra.resource_type = 'account' THEN instance_accounts.id || ':' || ra.effective_source_team_id ELSE ra.resource_id || ':' || ra.effective_source_team_id END AS scope_id,
+        grants.id AS source_id,
+        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer AS window_hours,
+        ra.created_at,
+        ra.updated_at
+      FROM ${businessTable('resource_authorizations')} ra
+      INNER JOIN ${businessTable('resource_authorization_grants')} grants
+        ON grants.resource_type = ra.resource_type
+        AND grants.resource_id = ra.resource_id
+        AND grants.grantee_type = 'team'
+        AND grants.grantee_team_id = ra.effective_source_team_id
+        AND grants.status = 'active'
+      LEFT JOIN ${businessTable('accounts')} instance_accounts
+        ON ra.resource_type = 'account'
+        AND instance_accounts.authorization_instance_authorization_id = ra.id
+        AND instance_accounts.system_account_id = ra.grantee_system_account_id
+        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+        AND instance_accounts.deleted_at IS NULL
+      WHERE ra.status = 'active'
+        AND ra.effective_source_type = 'team'
+        AND (ra.resource_type = 'group' OR instance_accounts.id IS NOT NULL)
+        AND ra.limits_json IS NOT NULL
+        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
+        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
+        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
+    ), inserted AS (
+      INSERT INTO ${businessTable('request_quota_hourly_window_scope_bindings')} (
+        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+      )
+      SELECT system_account_id, scope_type, scope_id, 'resource_authorization_grant', source_id,
+        window_hours, created_at, updated_at
+      FROM candidates
+      WHERE true
+      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
+      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
+    )
+    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
+      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
+    )
+    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
+      updated_at = EXCLUDED.updated_at
+  `)
+
   for (const provider of DEFAULT_PROVIDER_SEEDS) {
     await query(
       `

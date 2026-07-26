@@ -21,24 +21,81 @@ const accountId = `acct_${marker}`
 const groupId = `group_${marker}`
 const providerCode = 'gpt'
 const model = `model_${marker}`
+const resetStatsTableNames = [
+  'account_health_hourly',
+  'usage_stats_totals',
+  'usage_stats_minute',
+  'usage_stats_hourly',
+  'usage_stats_daily',
+  'usage_stats_weekly',
+  'usage_stats_monthly',
+  'usage_model_minute',
+  'usage_model_hourly',
+  'usage_model_daily',
+  'usage_model_weekly',
+  'usage_model_monthly',
+  'usage_error_minute',
+  'usage_error_hourly',
+  'usage_error_daily',
+  'usage_error_weekly',
+  'usage_error_monthly',
+  'usage_latency_minute',
+  'usage_latency_hourly',
+  'usage_latency_daily',
+  'usage_latency_weekly',
+  'usage_latency_monthly',
+  'authorization_team_usage_summary_daily',
+  'authorization_team_usage_range_windows',
+  'authorization_user_usage_summary_daily',
+  'authorization_user_usage_range_windows',
+  'usage_rank_snapshots',
+  'usage_overview_summary_windows',
+  'usage_overview_trend_windows',
+  'usage_model_rank_windows',
+  'usage_error_rank_windows',
+  'ai_performance_summary_windows',
+  'ai_performance_summary_dirty_system_accounts',
+  'usage_quota_hourly_windows',
+  'usage_quota_hourly_window_dirty_scopes',
+  'usage_overview_dirty_scopes',
+  'usage_scope_range_windows',
+  'system_metrics_trend_windows',
+  'account_quality_minute_stats',
+  'account_quality_scores',
+  'account_quality_dirty_accounts'
+] as const
+const resetStatsJobNames = [
+  'usage_stats_aggregation',
+  'usage_quota_hourly_windows_expiry',
+  'usage_quota_hourly_windows_config_seed',
+  'usage_overview_daily_seed',
+  'ai_performance_summary_daily_seed'
+] as const
+let isolatedDatabaseVerified = false
 
 try {
   const pool = await getPostgresPool()
   const database = await pool.query('SELECT current_database() AS database_name')
   const databaseName = String(database.rows[0]?.database_name ?? '')
-  assert.match(databaseName, /^(?:codex|juhe)[a-z0-9_-]*(?:smoke|test)[a-z0-9_-]*$/i, '完整重建 smoke 只允许使用名称明确包含 smoke/test 的隔离数据库')
+  assert.match(databaseName, /^codex_scheduler_smoke_[a-z0-9_-]+$/i, '完整重建 smoke 只允许使用本次 harness 创建的 codex_scheduler_smoke_* 隔离数据库')
 
   const existingUsage = await pool.query('SELECT COUNT(*) AS total FROM juhe_usage.usage_records')
   assert.equal(Number(existingUsage.rows[0]?.total ?? 0), 0, '完整重建 smoke 要求隔离数据库中不存在既有 usage_records')
-  const existingDerived = await pool.query(`
-    SELECT
-      (SELECT COUNT(*) FROM juhe_stats.usage_stats_totals)
-      + (SELECT COUNT(*) FROM juhe_stats.usage_rank_snapshots)
-      + (SELECT COUNT(*) FROM juhe_stats.usage_overview_summary_windows)
-      + (SELECT COUNT(*) FROM juhe_stats.ai_performance_summary_windows)
-      + (SELECT COUNT(*) FROM juhe_stats.usage_quota_hourly_windows) AS total
-  `)
-  assert.equal(Number(existingDerived.rows[0]?.total ?? 0), 0, '完整重建 smoke 要求隔离数据库中不存在既有用量统计派生数据')
+  const existingResetRows = await pool.query(resetStatsTableNames.map((tableName) => `
+    SELECT '${tableName}' AS table_name, COUNT(*) AS total FROM juhe_stats.${tableName}
+  `).join(' UNION ALL '))
+  const nonEmptyResetTables = existingResetRows.rows
+    .filter((row) => Number(row.total ?? 0) > 0)
+    .map((row) => String(row.table_name))
+  assert.deepEqual(nonEmptyResetTables, [], `完整重建 smoke 要求生产 reset 清单全部为空，非空表：${nonEmptyResetTables.join(', ')}`)
+  const existingResetStates = await pool.query(`
+    SELECT job_name
+    FROM juhe_stats.stats_job_state
+    WHERE job_name = ANY($1::text[])
+    LIMIT 1
+  `, [[...resetStatsJobNames]])
+  assert.equal(existingResetStates.rows.length, 0, '完整重建 smoke 要求将被重置的 stats_job_state 不存在')
+  isolatedDatabaseVerified = true
 
   const timezone = await usageStatsTimezoneAsync()
   const createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString()
@@ -218,44 +275,13 @@ async function assertDirtyQueuesEmpty(): Promise<void> {
 }
 
 async function cleanupSmokeRows(): Promise<void> {
+  if (!isolatedDatabaseVerified) return
   const pool = await getPostgresPool()
   await pool.query('DELETE FROM juhe_usage.usage_records WHERE system_account_id = $1', [systemAccountId])
-  for (const tableName of [
-    'usage_rank_snapshots',
-    'usage_overview_summary_windows',
-    'usage_overview_trend_windows',
-    'usage_model_rank_windows',
-    'usage_error_rank_windows',
-    'ai_performance_summary_windows',
-    'usage_quota_hourly_windows',
-    'usage_scope_range_windows',
-    'usage_stats_totals',
-    'usage_stats_minute',
-    'usage_stats_hourly',
-    'usage_stats_daily',
-    'usage_stats_weekly',
-    'usage_stats_monthly',
-    'usage_model_minute',
-    'usage_model_hourly',
-    'usage_model_daily',
-    'usage_model_weekly',
-    'usage_model_monthly',
-    'usage_error_minute',
-    'usage_error_hourly',
-    'usage_error_daily',
-    'usage_error_weekly',
-    'usage_error_monthly',
-    'usage_latency_minute',
-    'usage_latency_hourly',
-    'usage_latency_daily',
-    'usage_latency_weekly',
-    'usage_latency_monthly',
-    'usage_overview_dirty_scopes',
-    'ai_performance_summary_dirty_system_accounts',
-    'usage_quota_hourly_window_dirty_scopes'
-  ]) {
-    await pool.query(`DELETE FROM juhe_stats.${tableName} WHERE system_account_id = $1`, [systemAccountId])
+  for (const tableName of resetStatsTableNames) {
+    await pool.query(`DELETE FROM juhe_stats.${tableName}`)
   }
+  await pool.query('DELETE FROM juhe_stats.stats_job_state WHERE job_name = ANY($1::text[])', [[...resetStatsJobNames]])
 }
 
 function summarizeChildFailure(error: Error | undefined, stderr: string): string {

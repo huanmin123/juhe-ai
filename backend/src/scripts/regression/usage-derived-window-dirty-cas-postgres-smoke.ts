@@ -181,6 +181,11 @@ async function assertLockedClaimDoesNotLoseConcurrentMarker(input: LockedClaimIn
   let transactionOpen = false
   let markerWrite: Promise<PostgresQueryResult> | undefined
   try {
+    for (const client of [consumer, markerWriter]) {
+      await client.query("SET statement_timeout TO '5s'")
+      await client.query("SET lock_timeout TO '2s'")
+      await client.query("SET idle_in_transaction_session_timeout TO '5s'")
+    }
     await consumer.query('BEGIN')
     transactionOpen = true
     const claimed = await consumer.query(input.claimSql, input.claimParams)

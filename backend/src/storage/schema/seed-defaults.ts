@@ -65,6 +65,73 @@ export function seedDefaults(database: DatabaseSync): void {
     quotaWindowStatement.run(hours, now, now)
   }
 
+  database.exec(`
+    INSERT OR IGNORE INTO request_quota_hourly_window_scope_bindings (
+      system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+    )
+    SELECT system_account_id, 'api_key', id, 'api_key', id,
+      CAST(json_extract(quota_limits_json, '$.hourly.hours') AS INTEGER), created_at, updated_at
+    FROM api_keys
+    WHERE status = 'active'
+      AND quota_limits_json IS NOT NULL
+      AND json_valid(quota_limits_json)
+      AND json_extract(quota_limits_json, '$.hourly.enabled') = 1
+      AND CAST(json_extract(quota_limits_json, '$.hourly.hours') AS INTEGER) BETWEEN 1 AND 720;
+
+    INSERT OR IGNORE INTO request_quota_hourly_window_scope_bindings (
+      system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+    )
+    SELECT CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
+      CASE WHEN ra.resource_type = 'account' THEN 'account_authorization' ELSE 'group_authorization' END,
+      ra.id, 'resource_authorization_grant', grants.id,
+      CAST(json_extract(ra.limits_json, '$.hourly.hours') AS INTEGER), ra.created_at, ra.updated_at
+    FROM resource_authorizations ra
+    INNER JOIN resource_authorization_grants grants
+      ON grants.resource_type = ra.resource_type
+      AND grants.resource_id = ra.resource_id
+      AND grants.status = 'active'
+      AND (
+        (ra.effective_source_type = 'manual' AND grants.grantee_type = 'system_account' AND grants.grantee_system_account_id = ra.grantee_system_account_id)
+        OR
+        (ra.effective_source_type = 'team' AND grants.grantee_type = 'team' AND grants.grantee_team_id = ra.effective_source_team_id)
+      )
+    WHERE ra.status = 'active'
+      AND ra.limits_json IS NOT NULL
+      AND json_valid(ra.limits_json)
+      AND json_extract(ra.limits_json, '$.hourly.enabled') = 1
+      AND CAST(json_extract(ra.limits_json, '$.hourly.hours') AS INTEGER) BETWEEN 1 AND 720;
+
+    INSERT OR IGNORE INTO request_quota_hourly_window_scope_bindings (
+      system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+    )
+    SELECT DISTINCT
+      CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
+      CASE WHEN ra.resource_type = 'account' THEN 'account_authorization_team' ELSE 'group_authorization_team' END,
+      CASE WHEN ra.resource_type = 'account' THEN instance_accounts.id || ':' || ra.effective_source_team_id ELSE ra.resource_id || ':' || ra.effective_source_team_id END,
+      'resource_authorization_grant', grants.id,
+      CAST(json_extract(ra.limits_json, '$.hourly.hours') AS INTEGER), ra.created_at, ra.updated_at
+    FROM resource_authorizations ra
+    INNER JOIN resource_authorization_grants grants
+      ON grants.resource_type = ra.resource_type
+      AND grants.resource_id = ra.resource_id
+      AND grants.grantee_type = 'team'
+      AND grants.grantee_team_id = ra.effective_source_team_id
+      AND grants.status = 'active'
+    LEFT JOIN accounts instance_accounts
+      ON ra.resource_type = 'account'
+      AND instance_accounts.authorization_instance_authorization_id = ra.id
+      AND instance_accounts.system_account_id = ra.grantee_system_account_id
+      AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
+      AND instance_accounts.deleted_at IS NULL
+    WHERE ra.status = 'active'
+      AND ra.effective_source_type = 'team'
+      AND (ra.resource_type = 'group' OR instance_accounts.id IS NOT NULL)
+      AND ra.limits_json IS NOT NULL
+      AND json_valid(ra.limits_json)
+      AND json_extract(ra.limits_json, '$.hourly.enabled') = 1
+      AND CAST(json_extract(ra.limits_json, '$.hourly.hours') AS INTEGER) BETWEEN 1 AND 720;
+  `)
+
   const providerStatement = database.prepare(`
     INSERT OR IGNORE INTO providers (
       id, code, name, description, parent_code, enabled, default_supported_models_json, created_at, updated_at

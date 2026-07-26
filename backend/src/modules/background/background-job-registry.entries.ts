@@ -93,11 +93,12 @@ export const backgroundScheduledJobs = [
     lifecycle: 'persistent',
     defaultRole: 'stats-worker',
     hotspot: true,
-    singleOwner: false,
-    shardable: true,
+    singleOwner: true,
+    shardable: false,
     leaseRequired: true,
     blocksUserVisibleFreshness: true,
-    writes: ['stats:client_ip_stats_daily', 'stats:client_ip_usage_range_windows']
+    writes: ['stats:client_ip_stats_daily', 'stats:client_ip_account_stats_daily', 'stats:client_ip_usage_range_windows', 'stats:client_ip_account_usage_range_windows'],
+    notes: 'PostgreSQL 由单一 fencing lease 串行推进全局游标并刷新两类范围窗口；dirty generation CAS 保留并发新标记。'
   }),
   scheduled({
     jobName: 'group-account-stats-refresh',

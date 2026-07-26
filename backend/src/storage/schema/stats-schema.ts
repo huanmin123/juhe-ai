@@ -1700,10 +1700,10 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_quota_hourly_window_dirty_updated
       ON usage_quota_hourly_window_dirty_scopes(first_dirty_at, system_account_id, scope_type, scope_id);
 
-    CREATE INDEX IF NOT EXISTS idx_usage_overview_dirty_updated
+    CREATE INDEX IF NOT EXISTS idx_usage_overview_dirty_first_dirty
       ON usage_overview_dirty_scopes(first_dirty_at, system_account_id);
 
-    CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_dirty_updated
+    CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_dirty_first_dirty
       ON ai_performance_summary_dirty_system_accounts(first_dirty_at, system_account_id);
 
     CREATE INDEX IF NOT EXISTS idx_usage_overview_summary_windows_prewarm_order

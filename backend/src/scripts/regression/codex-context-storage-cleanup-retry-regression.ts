@@ -22,11 +22,11 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repository, bridgeState, cleanupService] = await Promise.all([
+const [databaseModule, repository, cleanupService, postgresSchema] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/codex-context-state.repository.js'),
-  import('../../modules/gateway/codex-responses/chat-bridge-state.js'),
-  import('../../modules/background/codex-context-storage-cleanup.service.js')
+  import('../../modules/background/codex-context-storage-cleanup.service.js'),
+  import('../../storage/postgres-schema.js')
 ])
 
 const boundary = {
@@ -40,6 +40,10 @@ const failedStorageKey = 'sessions/a-failed/segments/2000010100.json.gz'
 const successfulStorageKey = 'sessions/b-success/segments/2000010100.json.gz'
 
 try {
+  const postgresSchemaSql = postgresSchema.buildPostgresSchemaSql()
+  assert.match(postgresSchemaSql, /CREATE TABLE IF NOT EXISTS codex_context_storage_cleanup_queue/u)
+  assert.match(postgresSchemaSql, /CREATE INDEX IF NOT EXISTS idx_codex_context_storage_cleanup_due/u)
+
   seedExpiredResponse('resp_cleanup_failed', 'session_cleanup_failed', failedStorageKey)
   seedExpiredResponse('resp_cleanup_success', 'session_cleanup_success', successfulStorageKey)
   createNonEmptyDirectory(storagePath(failedStorageKey))
@@ -53,7 +57,7 @@ try {
   assert.equal(repository.readCodexContextResponseStateRow('resp_cleanup_failed'), undefined, '过期索引应完成数据库清理')
   assert.equal(cleanupQueueCount(), 2, '数据库索引删除前必须把文件 key 持久入队')
 
-  const firstDeletion = await bridgeState.deleteCodexContextStorageKeys(cleanup.storageKeys)
+  const firstDeletion = await cleanupService.deleteCodexContextStorageKeys(cleanup.storageKeys)
   assert.equal(firstDeletion.deleted, 1, '单个文件失败不能阻止同批其他文件删除')
   assert.deepEqual(firstDeletion.succeededStorageKeys, [successfulStorageKey])
   assert.equal(firstDeletion.failures.length, 1)
@@ -85,7 +89,7 @@ try {
     limit: 10
   })
   assert.deepEqual(retryCleanup.storageKeys, [failedStorageKey], '即使原索引已删除，持久队列仍应恢复失败文件重试')
-  const retryDeletion = await bridgeState.deleteCodexContextStorageKeys(retryCleanup.storageKeys)
+  const retryDeletion = await cleanupService.deleteCodexContextStorageKeys(retryCleanup.storageKeys)
   assert.equal(retryDeletion.deleted, 1)
   repository.settleCodexContextStorageCleanup({
     succeededStorageKeys: retryDeletion.succeededStorageKeys,
@@ -94,7 +98,7 @@ try {
   assert.equal(cleanupQueueCount(), 0)
   assert.equal(existsSync(storagePath(failedStorageKey)), false)
 
-  const missingDeletion = await bridgeState.deleteCodexContextStorageKeys(['sessions/already-missing/segment.json.gz'])
+  const missingDeletion = await cleanupService.deleteCodexContextStorageKeys(['sessions/already-missing/segment.json.gz'])
   assert.equal(missingDeletion.deleted, 0)
   assert.deepEqual(missingDeletion.succeededStorageKeys, ['sessions/already-missing/segment.json.gz'], '文件已不存在应按幂等成功确认')
 

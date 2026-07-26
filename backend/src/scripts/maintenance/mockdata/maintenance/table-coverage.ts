@@ -701,15 +701,15 @@ function createStatsDirtyQueueCoverage(database: StatsDatabase, created: Created
 
   const ipHash = clientIpRows[0]?.ip_hash ?? `${idPrefix}client_ip_hash`
   database.prepare(`
-    INSERT INTO client_ip_range_window_dirty_ips (ip_hash, updated_at)
-    VALUES (?, ?)
+    INSERT INTO client_ip_range_window_dirty_ips (ip_hash, first_dirty_at, updated_at)
+    VALUES (?, ?, ?)
     ON CONFLICT(ip_hash) DO UPDATE SET updated_at = excluded.updated_at
-  `).run(ipHash, now)
+  `).run(ipHash, firstDirtyAt, now)
   database.prepare(`
-    INSERT INTO client_ip_account_range_window_dirty_ips (ip_hash, updated_at)
-    VALUES (?, ?)
+    INSERT INTO client_ip_account_range_window_dirty_ips (ip_hash, first_dirty_at, updated_at)
+    VALUES (?, ?, ?)
     ON CONFLICT(ip_hash) DO UPDATE SET updated_at = excluded.updated_at
-  `).run(clientIpRows[1]?.ip_hash ?? ipHash, now)
+  `).run(clientIpRows[1]?.ip_hash ?? ipHash, firstDirtyAt, now)
 }
 
 function createUsageRecordCleanupDeductionCoverage(

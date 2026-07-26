@@ -39,26 +39,26 @@ export function refreshClientIpUsageRangeWindows(options: { full?: boolean; dirt
     const dirtyClaim = options.full
       ? takeAllClientIpRangeWindowDirtyIpHashes(database)
       : takeClientIpRangeWindowDirtyIpHashes(database, options.dirtyLimit ?? clientIpRangeWindowDirtyLimit)
-  if (options.full) {
-    for (const window of windows) {
-      refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
-      refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
-    }
-      clearClientIpRangeWindowDirtyIpHashes(database, dirtyClaim)
-      commitDatabaseTransaction(database, transactionStarted)
-    return
-  }
-    const dirtyIpHashes = dirtyClaim.ipHashes
-  if (!dirtyIpHashes.length) {
-    if (hasStaleClientIpUsageRangeWindows(database, windows)) {
+    if (options.full) {
       for (const window of windows) {
         refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
         refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
       }
-    }
+      clearClientIpRangeWindowDirtyIpHashes(database, dirtyClaim)
       commitDatabaseTransaction(database, transactionStarted)
-    return
-  }
+      return
+    }
+    const dirtyIpHashes = dirtyClaim.ipHashes
+    if (!dirtyIpHashes.length) {
+      if (hasStaleClientIpUsageRangeWindows(database, windows)) {
+        for (const window of windows) {
+          refreshClientIpAccountUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
+          refreshClientIpUsageRangeWindow(database, window.startDate, window.endDate, updatedAt)
+        }
+      }
+      commitDatabaseTransaction(database, transactionStarted)
+      return
+    }
     for (const window of windows) {
       refreshClientIpUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)
       refreshClientIpAccountUsageRangeWindowForIps(database, window.startDate, window.endDate, dirtyIpHashes, updatedAt, false)

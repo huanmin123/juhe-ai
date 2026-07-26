@@ -1,9 +1,16 @@
+import { existsSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
+import { relative, resolve, sep } from 'node:path'
+
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { CodexContextStorageCleanupSettlement } from '../../storage/codex-context-state.repository.js'
-import {
-  deleteCodexContextStorageKeys,
-  type CodexContextStorageKeyDeletionResult
-} from '../gateway/codex-responses/chat-bridge-state.js'
+
+export interface CodexContextStorageKeyDeletionResult {
+  deleted: number
+  succeededStorageKeys: string[]
+  failures: Array<{ storageKey: string; error: string }>
+}
 
 interface CodexContextStorageCleanupDependencies {
   deleteStorageKeys: (storageKeys: readonly string[]) => Promise<CodexContextStorageKeyDeletionResult>
@@ -19,6 +26,28 @@ const defaultDependencies: CodexContextStorageCleanupDependencies = {
       ...settlement
     })
   }
+}
+
+export async function deleteCodexContextStorageKeys(storageKeys: readonly string[]): Promise<CodexContextStorageKeyDeletionResult> {
+  let deleted = 0
+  const succeededStorageKeys: string[] = []
+  const failures: Array<{ storageKey: string; error: string }> = []
+  for (const storageKey of [...new Set(storageKeys)]) {
+    try {
+      const path = resolveCodexContextStorageCleanupPath(storageKey)
+      if (existsSync(path)) {
+        await rm(path, { force: true })
+        deleted += 1
+      }
+      succeededStorageKeys.push(storageKey)
+    } catch (error) {
+      failures.push({
+        storageKey,
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+  return { deleted, succeededStorageKeys, failures }
 }
 
 export async function processCodexContextStorageCleanupBatch(input: {
@@ -40,4 +69,18 @@ export async function processCodexContextStorageCleanupBatch(input: {
   }
   input.signal.throwIfAborted()
   return deletion.deleted
+}
+
+function resolveCodexContextStorageCleanupPath(storageKey: string): string {
+  const normalizedKey = storageKey.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (normalizedKey.includes('..')) {
+    throw new Error('Responses 桥接状态 storage key 非法')
+  }
+  const root = resolve(runtimeConfig.codexContextRoot)
+  const target = resolve(root, normalizedKey)
+  const rel = relative(root, target)
+  if (!rel || rel.startsWith('..') || rel.startsWith(`..${sep}`) || resolve(root, rel) !== target) {
+    throw new Error('Responses 桥接状态 storage key 超出数据目录')
+  }
+  return target
 }

@@ -90,8 +90,8 @@ assert(
   'server 到 ingest-worker 的 usage IPC 队列必须暴露最老业务 createdAt，便于识别超龄未落库 usage'
 )
 assert(
-  statsWriterSource.includes('return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)'),
-  'handleStatsWriteOperation 必须等待 client IP 统计异步批次'
+  statsWriterSource.includes('return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, requiredPostgresScheduledLease(operation))'),
+  'handleStatsWriteOperation 必须等待 client IP 统计异步批次并透传 PostgreSQL scheduled lease'
 )
 assert(
   statsWriterSource.includes('await yieldToEventLoop()') && statsWriterSource.includes('await pauseBetweenStatsAggregationBatches()'),

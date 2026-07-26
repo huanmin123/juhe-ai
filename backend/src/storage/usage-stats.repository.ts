@@ -17,7 +17,6 @@ import {
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { runDerivedWindowRolloverSeedPages } from './usage-derived-window-rollover.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
   refreshSystemMetricsTrendWindowSnapshotsStage,
   refreshSystemMetricsTrendWindowSnapshotsStageAsync,
@@ -1583,24 +1582,6 @@ function groupByPostgresBucketTable<T extends { bucket: UsageStatsTimeBucketDefi
   return result
 }
 
-async function listPostgresRequestQuotaHourlyWindowHours(client: DatabaseClient): Promise<number[]> {
-  const rows = await client.query<{ window_hours?: number | string | null }>(`
-    SELECT window_hours
-    FROM juhe_business.request_quota_hourly_window_configs
-    WHERE window_hours BETWEEN 1 AND ?
-    ORDER BY window_hours ASC
-    LIMIT ?
-  `, [maxRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours])
-  const windows = new Set<number>(defaultRequestQuotaHourlyWindowHours)
-  for (const row of rows) {
-    const hours = Number(row.window_hours)
-    if (Number.isInteger(hours) && hours >= 1 && hours <= maxRequestQuotaHourlyWindowHours) {
-      windows.add(hours)
-    }
-  }
-  return [...windows].sort((left, right) => left - right)
-}
-
 function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null
   const number = Number(value)
@@ -1773,8 +1754,6 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
   return await client.transaction(async (tx) => {
     await pinScheduledLeaseIfPresent(tx, scheduledLease)
     const updatedAt = nowIso()
-    const windows = await listPostgresRequestQuotaHourlyWindowHours(tx)
-    const configSeedHasMore = await seedPostgresQuotaWindowConfigDirtyScopes(tx, windows, updatedAt)
     const nowMs = Date.now()
     const currentHour = hourKey(new Date(nowMs), timezone)
     const expiryState = await tx.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
@@ -1786,36 +1765,42 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
       const previousBoundaryMs = Number.isFinite(parsedPreviousBoundaryMs)
         ? Math.min(nowMs, parsedPreviousBoundaryMs)
         : nowMs - HOUR_MS
-      const expiryRanges = windows.map((hours) => ({
+      const activeWindows = await tx.query<{ window_hours: number | string }>(`
+        SELECT DISTINCT window_hours
+        FROM juhe_business.request_quota_hourly_window_scope_bindings
+        WHERE window_hours BETWEEN 1 AND 720
+        ORDER BY window_hours ASC
+        LIMIT 720
+      `)
+      const expiryRanges = activeWindows.map((row) => Number(row.window_hours)).filter((hours) => Number.isInteger(hours) && hours >= 1 && hours <= 720).map((hours) => ({
+        windowHours: hours,
         previousCutoffHour: hourKey(new Date(previousBoundaryMs - hours * HOUR_MS), timezone),
         currentCutoffHour: hourKey(new Date(nowMs - hours * HOUR_MS), timezone)
       })).filter((range) => range.previousCutoffHour < range.currentCutoffHour)
       if (expiryRanges.length > 0) {
-        const expiryValues = expiryRanges.map(() => '(?::text, ?::text)').join(', ')
-        const expiryParams = expiryRanges.flatMap((range) => [range.previousCutoffHour, range.currentCutoffHour])
+        const expiryValues = expiryRanges.map(() => '(?::integer, ?::text, ?::text)').join(', ')
+        const expiryParams = expiryRanges.flatMap((range) => [range.windowHours, range.previousCutoffHour, range.currentCutoffHour])
         await tx.execute(`
-          WITH expired_ranges(previous_cutoff_hour, current_cutoff_hour) AS (VALUES ${expiryValues})
+          WITH expired_ranges(window_hours, previous_cutoff_hour, current_cutoff_hour) AS (VALUES ${expiryValues})
           INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
             system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
           )
-          SELECT DISTINCT system_account_id, scope_type, scope_id, 1, ?, ?
-          FROM juhe_stats.usage_stats_hourly hourly
+          SELECT DISTINCT bindings.system_account_id, bindings.scope_type, bindings.scope_id, 1, ?, ?
+          FROM juhe_business.request_quota_hourly_window_scope_bindings bindings
+          INNER JOIN expired_ranges ranges ON ranges.window_hours = bindings.window_hours
           WHERE EXISTS (
-            SELECT 1 FROM expired_ranges ranges
-            WHERE hourly.stat_hour >= ranges.previous_cutoff_hour
+            SELECT 1
+            FROM juhe_stats.usage_stats_hourly hourly
+            WHERE hourly.system_account_id = bindings.system_account_id
+              AND hourly.scope_type = bindings.scope_type
+              AND hourly.scope_id = bindings.scope_id
+              AND hourly.stat_hour >= ranges.previous_cutoff_hour
               AND hourly.stat_hour < ranges.current_cutoff_hour
           )
-            AND scope_type = ANY(?::text[])
           ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
             generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
             updated_at = EXCLUDED.updated_at
-        `, [...expiryParams, updatedAt, updatedAt, [
-          'api_key',
-          'account_authorization',
-          'group_authorization',
-          'account_authorization_team',
-          'group_authorization_team'
-        ]])
+        `, [...expiryParams, updatedAt, updatedAt])
       }
       await tx.execute(`
         INSERT INTO juhe_stats.stats_job_state (
@@ -1829,20 +1814,26 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
       `, [updatedAt, currentHour, updatedAt, updatedAt])
     }
 
-    const scopeLimit = Math.max(1, Math.min(128, Math.floor(4096 / Math.max(1, windows.length))))
+    const scopeLimit = 128
     const dirtyScopes = await tx.query<{
       system_account_id: string
       scope_type: string
       scope_id: string
       generation: number | string
+      window_hours?: number | string | null
     }>(`
-      SELECT system_account_id, scope_type, scope_id, generation
-      FROM juhe_stats.usage_quota_hourly_window_dirty_scopes
-      ORDER BY first_dirty_at, system_account_id, scope_type, scope_id
+      SELECT dirty.system_account_id, dirty.scope_type, dirty.scope_id, dirty.generation,
+        bindings.window_hours
+      FROM juhe_stats.usage_quota_hourly_window_dirty_scopes dirty
+      LEFT JOIN juhe_business.request_quota_hourly_window_scope_bindings bindings
+        ON bindings.system_account_id = dirty.system_account_id
+        AND bindings.scope_type = dirty.scope_type
+        AND bindings.scope_id = dirty.scope_id
+      ORDER BY dirty.first_dirty_at, dirty.system_account_id, dirty.scope_type, dirty.scope_id
       LIMIT ?
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF dirty SKIP LOCKED
     `, [scopeLimit])
-    if (dirtyScopes.length === 0) return { changed: false, hasMore: configSeedHasMore }
+    if (dirtyScopes.length === 0) return { changed: false, hasMore: false }
 
     const claimedValues = dirtyScopes.map(() => '(?, ?, ?)').join(', ')
     const claimedParams = dirtyScopes.flatMap((scope) => [scope.system_account_id, scope.scope_type, scope.scope_id])
@@ -1855,29 +1846,39 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
         AND target.scope_id = claimed.scope_id
     `, claimedParams)
 
-    const windowValues = windows.map(() => '(?::integer, ?::text)').join(', ')
-    const windowParams = windows.flatMap((hours) => [hours, hourKey(new Date(nowMs - hours * HOUR_MS), timezone)])
-    await tx.execute(`
-      WITH claimed(system_account_id, scope_type, scope_id) AS (VALUES ${claimedValues}),
-      windows(window_hours, cutoff_hour) AS (VALUES ${windowValues})
-      INSERT INTO juhe_stats.usage_quota_hourly_windows (
-        system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
-      )
-      SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, windows.window_hours,
-        COALESCE(SUM(hourly.total_cost_usd), 0), ?
-      FROM claimed
-      CROSS JOIN windows
-      LEFT JOIN juhe_stats.usage_stats_hourly hourly
-        ON hourly.system_account_id = claimed.system_account_id
-        AND hourly.scope_type = claimed.scope_type
-        AND hourly.scope_id = claimed.scope_id
-        AND hourly.stat_hour >= windows.cutoff_hour
-      GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, windows.window_hours
-      HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
-      ON CONFLICT(system_account_id, scope_type, scope_id, window_hours) DO UPDATE SET
-        total_cost_usd = EXCLUDED.total_cost_usd,
-        updated_at = EXCLUDED.updated_at
-    `, [...claimedParams, ...windowParams, updatedAt])
+    const activeBindings = dirtyScopes.map((scope) => ({
+      ...scope,
+      windowHours: Number(scope.window_hours)
+    })).filter((scope) => Number.isInteger(scope.windowHours) && scope.windowHours >= 1 && scope.windowHours <= 720)
+    if (activeBindings.length > 0) {
+      const bindingValues = activeBindings.map(() => '(?, ?, ?, ?::integer, ?::text)').join(', ')
+      const bindingParams = activeBindings.flatMap((scope) => [
+        scope.system_account_id,
+        scope.scope_type,
+        scope.scope_id,
+        scope.windowHours,
+        hourKey(new Date(nowMs - scope.windowHours * HOUR_MS), timezone)
+      ])
+      await tx.execute(`
+        WITH claimed(system_account_id, scope_type, scope_id, window_hours, cutoff_hour) AS (VALUES ${bindingValues})
+        INSERT INTO juhe_stats.usage_quota_hourly_windows (
+          system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at
+        )
+        SELECT claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours,
+          COALESCE(SUM(hourly.total_cost_usd), 0), ?
+        FROM claimed
+        LEFT JOIN juhe_stats.usage_stats_hourly hourly
+          ON hourly.system_account_id = claimed.system_account_id
+          AND hourly.scope_type = claimed.scope_type
+          AND hourly.scope_id = claimed.scope_id
+          AND hourly.stat_hour >= claimed.cutoff_hour
+        GROUP BY claimed.system_account_id, claimed.scope_type, claimed.scope_id, claimed.window_hours
+        HAVING COALESCE(SUM(hourly.total_cost_usd), 0) > 0
+        ON CONFLICT(system_account_id, scope_type, scope_id, window_hours) DO UPDATE SET
+          total_cost_usd = EXCLUDED.total_cost_usd,
+          updated_at = EXCLUDED.updated_at
+      `, [...bindingParams, updatedAt])
+    }
 
     const dirtyValues = dirtyScopes.map(() => '(?, ?, ?, ?::bigint)').join(', ')
     await tx.execute(`
@@ -1890,88 +1891,9 @@ export async function refreshUsageQuotaHourlyWindowsCacheAsync(scheduledLease?: 
     `, dirtyScopes.flatMap((scope) => [scope.system_account_id, scope.scope_type, scope.scope_id, scope.generation]))
     return {
       changed: true,
-      hasMore: configSeedHasMore || dirtyScopes.length >= scopeLimit
+      hasMore: dirtyScopes.length >= scopeLimit
     }
   })
-}
-
-async function seedPostgresQuotaWindowConfigDirtyScopes(
-  client: DatabaseClient,
-  windows: number[],
-  updatedAt: string
-): Promise<boolean> {
-  const stateName = 'usage_quota_hourly_windows_config_seed'
-  const configSignature = windows.join(',')
-  const state = await client.one<{ cursor_created_at?: string | null; cursor_id?: string | null }>(`
-    SELECT cursor_created_at, cursor_id FROM juhe_stats.stats_job_state
-    WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
-  `, [stateName])
-  const cursor = state?.cursor_created_at === configSignature ? decodeQuotaWindowSeedCursor(state.cursor_id) : undefined
-  if (state?.cursor_created_at === configSignature && state.cursor_id === '__done__') return false
-  const rows = await client.query<{
-    system_account_id: string
-    scope_type: string
-    scope_id: string
-  }>(`
-    SELECT system_account_id, scope_type, scope_id
-    FROM juhe_stats.usage_stats_totals
-    WHERE scope_type = ANY(?::text[])
-      AND (
-        ? = ''
-        OR (system_account_id, scope_type, scope_id) > (?, ?, ?)
-      )
-    ORDER BY system_account_id, scope_type, scope_id
-    LIMIT 128
-  `, [[
-    'api_key',
-    'account_authorization',
-    'group_authorization',
-    'account_authorization_team',
-    'group_authorization_team'
-  ], cursor?.systemAccountId ?? '', cursor?.systemAccountId ?? '', cursor?.scopeType ?? '', cursor?.scopeId ?? ''])
-  for (const chunk of chunkValues(rows, 128)) {
-    await client.execute(`
-      INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
-        system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
-      ) VALUES ${postgresMultiRowPlaceholders(chunk.length, 6)}
-      ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
-        generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
-        updated_at = EXCLUDED.updated_at
-    `, chunk.flatMap((row) => [row.system_account_id, row.scope_type, row.scope_id, 1, updatedAt, updatedAt]))
-  }
-  const nextCursor = rows.length < 128
-    ? '__done__'
-    : encodeQuotaWindowSeedCursor(rows.at(-1)!)
-  await client.execute(`
-    INSERT INTO juhe_stats.stats_job_state (
-      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
-    ) VALUES ('global', '', ?, ?, ?, ?, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = EXCLUDED.cursor_created_at,
-      cursor_id = EXCLUDED.cursor_id,
-      last_success_at = EXCLUDED.last_success_at,
-      updated_at = EXCLUDED.updated_at
-  `, [stateName, configSignature, nextCursor, updatedAt, updatedAt])
-  return nextCursor !== '__done__'
-}
-
-function encodeQuotaWindowSeedCursor(cursor: { system_account_id: string; scope_type: string; scope_id: string }): string {
-  return JSON.stringify([cursor.system_account_id, cursor.scope_type, cursor.scope_id])
-}
-
-function decodeQuotaWindowSeedCursor(value: string | null | undefined): {
-  systemAccountId: string
-  scopeType: string
-  scopeId: string
-} | undefined {
-  if (!value || value === '__done__') return undefined
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed) || parsed.length !== 3 || parsed.some((entry) => typeof entry !== 'string')) return undefined
-    return { systemAccountId: parsed[0], scopeType: parsed[1], scopeId: parsed[2] }
-  } catch {
-    return undefined
-  }
 }
 
 export async function refreshHotUsageWindowSnapshots(options: Omit<RefreshUsageRankSnapshotsInStagesOptions, 'stageNames'> = {}): Promise<UsageRankSnapshotRefreshResult> {
@@ -2580,7 +2502,7 @@ const aiPerformanceDirtyClaimLimit = Math.floor(aiPerformanceRolloverSnapshotRow
 
 async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseClient, context: UsageRankSnapshotContext): Promise<void> {
   await seedAiPerformanceSummaryRolloverDirtyAccountsAsync(client, context)
-  const dirtyRows = await client.query<{
+  const dirtyCandidates = await client.query<{
     system_account_id: string
     min_stat_date: string
     max_stat_date: string
@@ -2592,17 +2514,26 @@ async function refreshAiPerformanceSummaryWindowSnapshotsAsync(client: DatabaseC
     LIMIT ${aiPerformanceDirtyClaimLimit}
     FOR UPDATE SKIP LOCKED
   `)
-  if (dirtyRows.length === 0) return
+  if (dirtyCandidates.length === 0) return
 
-  const dirtyWork = dirtyRows.map((dirty) => {
+  const dirtyWork: Array<{
+    dirty: typeof dirtyCandidates[number]
+    ranges: AccountUsageStatsRange[]
+    earliestDate: string
+    latestDate: string
+  }> = []
+  let snapshotRowCount = 0
+  for (const dirty of dirtyCandidates) {
     const ranges = context.ranges.filter((range) => (
       range.startDate <= dirty.max_stat_date && range.endDate >= dirty.min_stat_date
     ))
-    if (ranges.length === 0) return undefined
-    const earliestDate = ranges.reduce((value, range) => range.startDate < value ? range.startDate : value, ranges[0]!.startDate)
-    const latestDate = ranges.reduce((value, range) => range.endDate > value ? range.endDate : value, ranges[0]!.endDate)
-    return { dirty, ranges, earliestDate, latestDate }
-  }).filter((work): work is NonNullable<typeof work> => work !== undefined)
+    if (dirtyWork.length > 0 && snapshotRowCount + ranges.length > aiPerformanceRolloverSnapshotRowBudget) break
+    const earliestDate = ranges.reduce((value, range) => range.startDate < value ? range.startDate : value, context.todayKey)
+    const latestDate = ranges.reduce((value, range) => range.endDate > value ? range.endDate : value, context.todayKey)
+    dirtyWork.push({ dirty, ranges, earliestDate, latestDate })
+    snapshotRowCount += ranges.length
+  }
+  const dirtyRows = dirtyWork.map((work) => work.dirty)
   const earliestDate = dirtyWork.reduce<string | undefined>((value, work) => !value || work.earliestDate < value ? work.earliestDate : value, undefined)
   const latestDate = dirtyWork.reduce<string | undefined>((value, work) => !value || work.latestDate > value ? work.latestDate : value, undefined)
   const sourceRows = dirtyWork.length === 0 || !earliestDate || !latestDate ? [] : await client.query<UsageStatsDailyWindowRow & { system_account_id: string }>(`

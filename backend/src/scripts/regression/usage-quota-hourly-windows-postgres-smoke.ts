@@ -29,21 +29,23 @@ try {
       system_account_id, scope_type, scope_id, stat_hour, total_cost_usd, updated_at
     ) VALUES (?, 'api_key', ?, ?, 1.25, ?)
   `, [systemAccountId, scopeId, statHour, updatedAt])
+  await upsertScopeBinding(client, 1)
   await markDirty(client)
 
   const firstRefresh = await refreshUsageQuotaHourlyWindowsCacheAsync()
   assert.equal(firstRefresh.changed, true, 'dirty quota scope 应触发局部刷新')
   await assertWindowCost(client, 1, 1.25)
 
-  await client.execute(`
-    INSERT INTO juhe_business.request_quota_hourly_window_configs (window_hours, created_at, updated_at)
-    VALUES (37, ?, ?)
-    ON CONFLICT(window_hours) DO UPDATE SET updated_at = EXCLUDED.updated_at
-  `, [updatedAt, updatedAt])
+  await upsertScopeBinding(client, 37)
+  await markDirty(client)
   const configRefresh = await refreshUsageQuotaHourlyWindowsCacheAsync()
-  assert.equal(configRefresh.changed, true, '新增 quota 配置应通过 keyset seed 标脏已有 scope')
+  assert.equal(configRefresh.changed, true, 'scope 绑定窗口变化应只标脏并刷新该 scope')
   await assertWindowCost(client, 37, 1.25)
+  await assertOnlyBoundWindowExists(client, 37)
 
+  await upsertScopeBinding(client, 1)
+  await markDirty(client)
+  await refreshUsageQuotaHourlyWindowsCacheAsync()
   const previousBoundary = new Date(Date.now() - 3 * 60 * 60 * 1000)
   const expiredStatHour = hourKey(new Date(Date.now() - 2 * 60 * 60 * 1000), timezone)
   await client.execute(`
@@ -103,6 +105,18 @@ async function markDirty(client: ReturnType<typeof createPostgresDatabaseClient>
   `, [systemAccountId, scopeId, timestamp, timestamp])
 }
 
+async function upsertScopeBinding(client: ReturnType<typeof createPostgresDatabaseClient>, windowHours: number): Promise<void> {
+  const timestamp = new Date().toISOString()
+  await client.execute(`
+    INSERT INTO juhe_business.request_quota_hourly_window_scope_bindings (
+      system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
+    ) VALUES (?, 'api_key', ?, 'api_key', ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      window_hours = EXCLUDED.window_hours,
+      updated_at = EXCLUDED.updated_at
+  `, [systemAccountId, scopeId, scopeId, windowHours, timestamp, timestamp])
+}
+
 async function assertWindowCost(
   client: ReturnType<typeof createPostgresDatabaseClient>,
   windowHours: number,
@@ -119,8 +133,22 @@ async function assertWindowCost(
   assert.equal(Number(row?.total_cost_usd), expectedCost, `${windowHours} 小时 quota 成本不正确`)
 }
 
+async function assertOnlyBoundWindowExists(
+  client: ReturnType<typeof createPostgresDatabaseClient>,
+  expectedWindowHours: number
+): Promise<void> {
+  const rows = await client.query<{ window_hours: number | string }>(`
+    SELECT window_hours
+    FROM juhe_stats.usage_quota_hourly_windows
+    WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?
+    ORDER BY window_hours ASC
+  `, [systemAccountId, scopeId])
+  assert.deepEqual(rows.map((row) => Number(row.window_hours)), [expectedWindowHours], '每个 scope 只能预计算自身绑定的小时窗口')
+}
+
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
+  await pool.query('DELETE FROM juhe_business.request_quota_hourly_window_scope_bindings WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_quota_hourly_windows WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_quota_hourly_window_dirty_scopes WHERE system_account_id = $1', [systemAccountId])
   await pool.query('DELETE FROM juhe_stats.usage_stats_hourly WHERE system_account_id = $1', [systemAccountId])

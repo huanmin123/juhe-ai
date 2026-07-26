@@ -7,6 +7,7 @@ import {
   getRedisClient,
   invalidateRedisClient,
   isRecoverableRedisClientError,
+  RedisOperationDeadlineError,
   runRedisOperationWithDeadline,
   type RedisCommandClient
 } from './redis-client.js'
@@ -109,6 +110,9 @@ export class RedisStreamQueue<T> {
   }
 
   async enqueueEncoded(encodedPayload: string): Promise<string> {
+    if (this.backlogCreatedAt) {
+      throw new Error('配置 backlog createdAt 索引的 Redis Stream 禁止绕过结构化入队')
+    }
     return await this.enqueueEncodedInternal(encodedPayload)
   }
 
@@ -130,12 +134,21 @@ export class RedisStreamQueue<T> {
       return String(id ?? '')
     }
 
-    const client = await this.producerClient()
+    const deadlineAtMs = Date.now() + this.producerTimeoutMs
+    const clientPromise = this.producerClient()
+    let client: RedisCommandClient | undefined
     try {
-      const id = await enqueue(client)
+      client = await awaitRedisStreamProducerStep(clientPromise, deadlineAtMs, 'Redis Stream producer 连接')
+      const id = await awaitRedisStreamProducerStep(enqueue(client), deadlineAtMs, 'Redis Stream 入队')
       return String(id ?? '')
     } catch (error) {
-      if (isRecoverableRedisClientError(error)) {
+      if (error instanceof RedisOperationDeadlineError) {
+        if (client) {
+          client.destroy?.()
+        } else {
+          void clientPromise.then((lateClient) => lateClient.destroy?.(), () => undefined)
+        }
+      } else if (client && isRecoverableRedisClientError(error)) {
         await invalidateRedisClient(this.redisUrl, client)
       }
       throw error
@@ -183,7 +196,7 @@ export class RedisStreamQueue<T> {
   async ack(ids: string[]): Promise<number> {
     const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
     if (!normalizedIds.length) return 0
-    const client = await getRedisClient(this.redisUrl)
+    const client = this.producerClient ? await this.producerClient() : await getRedisClient(this.redisUrl)
     const result = this.backlogCreatedAt
       ? await client.eval(redisAckDeleteAndRemoveBacklogIndexScript, {
           keys: [this.streamKey, this.backlogCreatedAtIndexKey],
@@ -201,10 +214,7 @@ export class RedisStreamQueue<T> {
       throw new Error('Redis Stream 未配置 backlog createdAt 索引')
     }
     const normalizedLimit = Math.max(1, Math.trunc(backfillLimit))
-    return await runRedisOperationWithDeadline(this.redisUrl, {
-      operationName: 'Redis Stream backlog createdAt 水位检查',
-      timeoutMs: this.producerTimeoutMs
-    }, async (client) => {
+    const inspect = async (client: RedisCommandClient): Promise<RedisStreamBacklogWatermark> => {
       const current = await this.readBacklogCreatedAtIndex(client)
       if (current.ready) return current
 
@@ -252,7 +262,14 @@ export class RedisStreamQueue<T> {
         backfilledCount: parsed.entries.length,
         failureReason: 'backfill_incomplete'
       }
-    })
+    }
+    if (this.producerClient) {
+      return await inspect(await this.producerClient())
+    }
+    return await runRedisOperationWithDeadline(this.redisUrl, {
+      operationName: 'Redis Stream backlog createdAt 水位检查',
+      timeoutMs: this.producerTimeoutMs
+    }, inspect)
   }
 
   async inspectRuntime(): Promise<RedisStreamQueueRuntime> {
@@ -543,6 +560,24 @@ export class RedisStreamQueue<T> {
       groupName: this.groupName,
       messageId: id
     }), 'Redis Stream 消息解码失败，消息保留 pending 并阻断排空')
+  }
+}
+
+async function awaitRedisStreamProducerStep<T>(promise: Promise<T>, deadlineAtMs: number, operationName: string): Promise<T> {
+  const remainingMs = Math.max(0, deadlineAtMs - Date.now())
+  if (remainingMs === 0) throw new RedisOperationDeadlineError(operationName)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RedisOperationDeadlineError(operationName)), remainingMs)
+        timer.unref?.()
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+    promise.catch(() => undefined)
   }
 }
 

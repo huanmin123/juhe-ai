@@ -468,7 +468,7 @@ export async function cleanupExpiredCodexContextStatesAsync(input: {
     const pending = await selectPendingCodexContextStorageCleanupKeysAsync(client, limit)
     return { deletedSessions: 0, deletedResponses: 0, deletedCompacts: 0, storageKeys: pending.storageKeys, hasMore: pending.hasMore }
   }
-  return cleanupExpiredCodexContextStateSessionRowsAsync(client, rows, expiredBefore, expiredRows.length > limit)
+  return cleanupExpiredCodexContextStateSessionRowsAsync(client, rows, expiredBefore, expiredRows.length > limit, limit)
 }
 
 export function settleCodexContextStorageCleanup(input: CodexContextStorageCleanupSettlement): CodexContextStorageCleanupSettlementResult {
@@ -1263,7 +1263,8 @@ async function cleanupExpiredCodexContextStateSessionRowsAsync(
   client: DatabaseClient,
   rows: CodexContextSessionRow[],
   expiredBefore: string,
-  hasMore: boolean
+  hasMore: boolean,
+  limit: number
 ): Promise<CodexContextExpiredStateCleanupResult> {
   const sessionIds = rows.map((row) => row.id)
   let deletedResponses = 0
@@ -1290,7 +1291,7 @@ async function cleanupExpiredCodexContextStateSessionRowsAsync(
       }
     }
   })
-  const pending = await selectPendingCodexContextStorageCleanupKeysAsync(client, Math.max(1, rows.length))
+  const pending = await selectPendingCodexContextStorageCleanupKeysAsync(client, limit)
   return {
     deletedSessions,
     deletedResponses,

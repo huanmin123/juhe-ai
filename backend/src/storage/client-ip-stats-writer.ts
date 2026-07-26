@@ -180,8 +180,8 @@ function writeClientIpAggregates(database: DatabaseSync, aggregates: ClientIpAgg
     dirtyIpHashes.add(aggregate.normalized.ipHash)
     upsertClientIpAccountDaily(statements, aggregate, updatedAt)
   }
-  markCurrentClientIpUsageRangeWindowsStale(database)
   markClientIpRangeWindowsDirty(database, dirtyIpHashes, updatedAt)
+  markCurrentClientIpUsageRangeWindowsStale(database)
 }
 
 async function writeClientIpAggregatesAsync(
@@ -201,8 +201,8 @@ async function writeClientIpAggregatesAsync(
   await upsertClientIpRegistryAsync(client, registryAggregatesFromIpAggregates(aggregates), updatedAt)
   await upsertClientIpDailyAsync(client, aggregates, updatedAt)
   await upsertClientIpAccountDailyAsync(client, accountAggregates, updatedAt)
-  await markCurrentClientIpUsageRangeWindowsStaleAsync(client, updatedAt)
   await markClientIpRangeWindowsDirtyAsync(client, dirtyIpHashes, updatedAt)
+  await markCurrentClientIpUsageRangeWindowsStaleAsync(client, updatedAt)
 }
 
 function prepareClientIpAggregateStatements(database: DatabaseSync): ClientIpAggregateStatements {

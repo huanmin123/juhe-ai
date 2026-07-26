@@ -387,6 +387,15 @@ async function revokeAccountAuthorizationsForDeletedResourceAsync(client: Databa
   const authorizationIds = uniqueNonEmpty(authorizationRows.map((row) => row.id))
 
   await client.execute(`
+    DELETE FROM ${accountDeleteCleanupTable(client, 'request_quota_hourly_window_scope_bindings')}
+    WHERE source_type = 'resource_authorization_grant'
+      AND source_id IN (
+        SELECT id
+        FROM ${accountDeleteCleanupTable(client, 'resource_authorization_grants')}
+        WHERE resource_type = 'account' AND resource_id = ?
+      )
+  `, [accountId])
+  await client.execute(`
     UPDATE ${accountDeleteCleanupTable(client, 'resource_authorization_grants')}
     SET status = 'revoked',
         revoked_by = COALESCE(revoked_by, ?),
@@ -1333,8 +1342,10 @@ function physicallyDeleteExpiredDeletedAccountBusinessRows(
     for (const chunk of chunkValues(authorizationIds, 900)) {
       result.groupBindings += statementChanges(database.prepare(`DELETE FROM group_accounts WHERE account_authorization_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))
       database.prepare(`DELETE FROM resource_authorization_sources WHERE authorization_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
+      database.prepare(`DELETE FROM request_quota_hourly_window_scope_bindings WHERE scope_type IN ('account_authorization', 'group_authorization') AND scope_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
     }
     for (const chunk of chunkValues(grantIds, 900)) {
+      database.prepare(`DELETE FROM request_quota_hourly_window_scope_bindings WHERE source_type = 'resource_authorization_grant' AND source_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
       result.grants += statementChanges(database.prepare(`DELETE FROM resource_authorization_grants WHERE id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk))
     }
     for (const chunk of chunkValues(relatedAccountIds, 900)) {
@@ -1384,8 +1395,10 @@ async function physicallyDeleteExpiredDeletedAccountBusinessRowsAsync(
     for (const chunk of chunkValues(authorizationIds, 900)) {
       result.groupBindings += await executeChangedRows(tx, 'DELETE FROM juhe_business.group_accounts WHERE account_authorization_id = ANY(?::text[])', [chunk])
       await tx.execute('DELETE FROM juhe_business.resource_authorization_sources WHERE authorization_id = ANY(?::text[])', [chunk])
+      await tx.execute("DELETE FROM juhe_business.request_quota_hourly_window_scope_bindings WHERE scope_type IN ('account_authorization', 'group_authorization') AND scope_id = ANY(?::text[])", [chunk])
     }
     for (const chunk of chunkValues(grantIds, 900)) {
+      await tx.execute("DELETE FROM juhe_business.request_quota_hourly_window_scope_bindings WHERE source_type = 'resource_authorization_grant' AND source_id = ANY(?::text[])", [chunk])
       result.grants += await executeChangedRows(tx, 'DELETE FROM juhe_business.resource_authorization_grants WHERE id = ANY(?::text[])', [chunk])
     }
     for (const chunk of chunkValues(relatedAccountIds, 900)) {

@@ -160,14 +160,17 @@ const lateCommittedRun = modelChecks.createModelCheckRun({
   targetType: 'account', targetId: 'acct_late_commit', accountId: 'acct_late_commit', model: 'gpt-5.6-sol',
   trustedComparison: false, probeSetVersion: 'openai-model-check-v1'
 })
+const lateCommittedObservationId = 'mco_late_commit'
+const lateCommittedCreatedAt = new Date(Date.UTC(2026, 6, 13, 23, 59, 59)).toISOString()
 const lateCommittedObservation = tokenObservation({
   accountId: 'acct_late_commit',
   upstream: 'late-commit-source',
   cohortKeyHmac: security.modelCheckObservationHmac('late-commit-cohort', 'cohort'),
   observationStatus: 'observed',
   reportedInputTokens: 110,
-  createdAt: new Date(Date.UTC(2026, 6, 13, 23, 59, 59)).toISOString()
+  createdAt: lateCommittedCreatedAt
 })
+lateCommittedObservation.id = lateCommittedObservationId
 lateCommittedObservation.runId = lateCommittedRun.id
 await trustRepository.createModelCheckObservationsAsync([lateCommittedObservation])
 assert.equal(
@@ -182,6 +185,10 @@ assert.equal(
 )
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '晚提交 observation 完成后不得重复计数')
 database.getDatasetDatabase().prepare('UPDATE model_check_observations SET aggregation_completed_at = NULL WHERE account_id = ?').run('acct_late_commit')
+database.getStatsDatabase().prepare(`
+  INSERT INTO model_trust_observation_receipts (observation_id, observation_created_at, processed_at)
+  VALUES (?, ?, ?)
+`).run(lateCommittedObservationId, lateCommittedCreatedAt, new Date().toISOString())
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '源标记确认失败后的重试必须由 durable receipt 去重')
 assert.equal(
   (database.getStatsDatabase().prepare('SELECT observation_count AS count FROM model_token_integrity_windows WHERE account_id = ?').get('acct_late_commit') as { count: number }).count,
@@ -192,6 +199,11 @@ assert.equal(
   (database.getDatasetDatabase().prepare('SELECT COUNT(*) AS count FROM model_check_observations WHERE account_id = ? AND aggregation_completed_at IS NOT NULL').get('acct_late_commit') as { count: number }).count,
   1,
   'receipt 重试后必须补齐源表完成标记'
+)
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_observation_receipts WHERE observation_id = ?').get(lateCommittedObservationId) as { count: number }).count,
+  0,
+  '源标记确认后必须删除临时 receipt，避免随历史 run 清理产生永久孤儿'
 )
 
 const boundedBatchObservations = Array.from({ length: 101 }, (_item, index) => {

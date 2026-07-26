@@ -19,7 +19,8 @@ import {
   rangeWindowKey,
   rowsByStatDate,
   rowsByStatHourDate,
-  sortedMapEntries
+  sortedMapEntries,
+  trendBucketHours
 } from './usage-stats-window-helpers.js'
 import {
   GLOBAL_STATS_SCOPE_ID,
@@ -29,10 +30,11 @@ import {
 const maxUsageOverviewSnapshotScopes = 5000
 const usageOverviewRolloverRowsPerScope = 1185
 const usageOverviewRolloverSnapshotRowBudget = 33_180
-// 28 scopes * (144 hot + 48 cold runs/day) = 5376 rollover scopes/day.
+// 28 scopes * 288 dedicated runs/day = 8064 rollover scopes/day.
 // Batched source reads keep this budget to at most 33,180 published rows and
 // about 162 repository SQL statements even when all eight seed pages are used.
 const usageOverviewDirtyClaimLimit = Math.floor(usageOverviewRolloverSnapshotRowBudget / usageOverviewRolloverRowsPerScope)
+const usageOverviewDirtyCandidateLimit = usageOverviewDirtyClaimLimit * 4
 
 export interface UsageOverviewWindowRefreshContext {
   ranges: AccountUsageStatsRange[]
@@ -47,6 +49,8 @@ interface UsageOverviewWindowRefreshOptions {
   endDate?: string
   minEndDate?: string
   systemAccountIds?: string[]
+  minEndDateBySystemAccountId?: Map<string, string>
+  rangesBySystemAccountId?: Map<string, AccountUsageStatsRange[]>
 }
 
 interface UsageOverviewIncrementalWindowRefresh {
@@ -129,7 +133,7 @@ export async function refreshUsageOverviewWindowSnapshotsIncrementalAsync(
   sourceWatermark?: string
 ): Promise<void> {
   await seedUsageOverviewRolloverDirtyScopesAsync(client, context)
-  const dirtyRows = await client.query<{
+  const dirtyCandidates = await client.query<{
     system_account_id: string
     scope_id: string
     min_changed_date: string
@@ -138,22 +142,36 @@ export async function refreshUsageOverviewWindowSnapshotsIncrementalAsync(
     SELECT system_account_id, scope_id, min_changed_date, generation
     FROM ${statsTable(client, 'usage_overview_dirty_scopes')}
     ORDER BY first_dirty_at, system_account_id
-    LIMIT ${usageOverviewDirtyClaimLimit}
+    LIMIT ${usageOverviewDirtyCandidateLimit}
     FOR UPDATE SKIP LOCKED
   `)
-  if (dirtyRows.length === 0) return
-  const minChangedDate = dirtyRows.reduce((minDate, row) => row.min_changed_date < minDate ? row.min_changed_date : minDate, dirtyRows[0]!.min_changed_date)
-  const ranges = context.ranges.filter((range) => range.endDate >= minChangedDate)
-  if (ranges.length === 0) return
+  if (dirtyCandidates.length === 0) return
+  const dirtyWork: Array<{ dirty: typeof dirtyCandidates[number]; ranges: AccountUsageStatsRange[] }> = []
+  let snapshotRowCount = 0
+  for (const dirty of dirtyCandidates) {
+    const ranges = context.ranges.filter((range) => range.endDate >= dirty.min_changed_date)
+    const estimatedRows = ranges.reduce((total, range) => total + estimatedUsageOverviewSnapshotRows(range), 0)
+    if (dirtyWork.length > 0 && snapshotRowCount + estimatedRows > usageOverviewRolloverSnapshotRowBudget) break
+    dirtyWork.push({ dirty, ranges })
+    snapshotRowCount += estimatedRows
+  }
+  const dirtyRows = dirtyWork.map((work) => work.dirty)
   const systemAccountIds = dirtyRows.map((row) => row.system_account_id)
+  const rangesBySystemAccountId = new Map(dirtyWork.map((work) => [work.dirty.system_account_id, work.ranges]))
   const refreshContext: UsageOverviewWindowRefreshContext = {
     ...context,
-    ranges,
-    earliestDate: ranges[0]?.startDate ?? minChangedDate,
+    earliestDate: dirtyWork.reduce((earliestDate, work) => {
+      const rangeStartDate = work.ranges[0]?.startDate
+      return rangeStartDate && rangeStartDate < earliestDate ? rangeStartDate : earliestDate
+    }, context.todayKey),
     overviewScopes: dirtyRows.map((row) => ({ systemAccountId: row.system_account_id, scopeId: row.scope_id })),
     uniqueSystemAccountIds: systemAccountIds.filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID)
   }
-  await refreshUsageOverviewWindowSnapshotsAsync(client, refreshContext, { minEndDate: minChangedDate, systemAccountIds })
+  await refreshUsageOverviewWindowSnapshotsAsync(client, refreshContext, {
+    systemAccountIds,
+    minEndDateBySystemAccountId: new Map(dirtyRows.map((row) => [row.system_account_id, row.min_changed_date])),
+    rangesBySystemAccountId
+  })
   const claimedValues = dirtyRows.map(() => '(?, ?::bigint)').join(', ')
   await client.execute(`
     DELETE FROM ${statsTable(client, 'usage_overview_dirty_scopes')} dirty
@@ -448,6 +466,17 @@ function deleteUsageOverviewWindowRows(database: DatabaseSync, tableName: string
 }
 
 async function deleteUsageOverviewWindowRowsAsync(client: DatabaseClient, tableName: string, options: UsageOverviewWindowRefreshOptions): Promise<void> {
+  if (options.minEndDateBySystemAccountId?.size) {
+    const values = [...options.minEndDateBySystemAccountId]
+    const placeholders = values.map(() => '(?, ?)').join(', ')
+    await client.execute(`
+      DELETE FROM ${statsTable(client, tableName)} target
+      USING (VALUES ${placeholders}) AS dirty(system_account_id, min_end_date)
+      WHERE target.system_account_id = dirty.system_account_id
+        AND target.end_date >= dirty.min_end_date
+    `, values.flat())
+    return
+  }
   const conditions: string[] = []
   const params: unknown[] = []
   if (options.systemAccountIds?.length) {
@@ -490,7 +519,8 @@ async function refreshUsageOverviewSummaryWindowSnapshotsAsync(client: DatabaseC
   for (const scope of context.overviewScopes) {
     const rows = sourceRowsByScope.get(overviewScopeKey(scope.systemAccountId, scope.scopeId)) ?? []
     const rowsByDate = rowsByStatDate(rows)
-    for (const range of context.ranges) {
+    const ranges = options.rangesBySystemAccountId?.get(scope.systemAccountId) ?? context.ranges
+    for (const range of ranges) {
       const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
       insertRows.push([
         scope.systemAccountId,
@@ -555,7 +585,8 @@ async function refreshUsageOverviewTrendWindowSnapshotsAsync(client: DatabaseCli
   for (const scope of context.overviewScopes) {
     const rows = sourceRowsByScope.get(overviewScopeKey(scope.systemAccountId, scope.scopeId)) ?? []
     const rowsByDate = rowsByStatHourDate(rows)
-    for (const range of context.ranges) {
+    const ranges = options.rangesBySystemAccountId?.get(scope.systemAccountId) ?? context.ranges
+    for (const range of ranges) {
       const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
       for (const [bucketKey, bucket] of sortedMapEntries(buckets)) {
         insertRows.push([
@@ -610,7 +641,8 @@ async function refreshUsageModelRankWindowSnapshotsAsync(client: DatabaseClient,
   for (const systemAccountId of systemAccountIds) {
     const rows = sourceRowsBySystemAccount.get(systemAccountId) ?? []
     const rowsByDate = rowsByStatDate(rows)
-    for (const range of context.ranges) {
+    const ranges = options.rangesBySystemAccountId?.get(systemAccountId) ?? context.ranges
+    for (const range of ranges) {
       const rankedRows = aggregateUsageModelRows(rowsByDate, range)
       rankedRows.slice(0, 10).forEach((row, index) => {
         insertRows.push([
@@ -661,7 +693,8 @@ async function refreshUsageErrorRankWindowSnapshotsAsync(client: DatabaseClient,
   for (const systemAccountId of systemAccountIds) {
     const rows = sourceRowsBySystemAccount.get(systemAccountId) ?? []
     const rowsByDate = rowsByStatDate(rows)
-    for (const range of context.ranges) {
+    const ranges = options.rangesBySystemAccountId?.get(systemAccountId) ?? context.ranges
+    for (const range of ranges) {
       const rankedRows = aggregateUsageErrorRows(rowsByDate, range)
       rankedRows.slice(0, 10).forEach((row, index) => {
         insertRows.push([
@@ -699,6 +732,11 @@ function groupRowsByKey<T>(rows: T[], keyOf: (row: T) => string): Map<string, T[
     grouped.set(key, values)
   }
   return grouped
+}
+
+function estimatedUsageOverviewSnapshotRows(range: AccountUsageStatsRange): number {
+  const trendRows = Math.ceil(range.days * 24 / trendBucketHours(range))
+  return 1 + trendRows + 10 + 10
 }
 
 function refreshUsageOverviewSummaryWindows(

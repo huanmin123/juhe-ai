@@ -278,7 +278,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return result
     }
     case 'aggregate_client_ip_stats':
-      return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
+      return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, requiredPostgresScheduledLease(operation))
     case 'refresh_group_account_stats':
       return { refreshed: await refreshGroupAccountStats(requiredPostgresScheduledLease(operation)) }
     case 'refresh_account_quality':
@@ -437,20 +437,20 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
   return { processed, quotaSnapshotSent: false, stoppedByTimeBudget, effectiveBatchSize: normalizedBatchSize }
 }
 
-async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number): Promise<{ processed: number }> {
+async function aggregateClientIpStats(batchSize: number, maxBatches: number, maxRunMs: number, scheduledLease?: ScheduledJobLeaseFence): Promise<{ processed: number }> {
   const startedAtMs = Date.now()
   let processed = 0
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
   const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
-    const batchProcessed = await aggregateClientIpStatsBatchAsync(normalizedBatchSize)
+    const batchProcessed = await aggregateClientIpStatsBatchAsync(normalizedBatchSize, scheduledLease)
     processed += batchProcessed
     if (batchProcessed < normalizedBatchSize) break
     if (Date.now() - startedAtMs >= boundedPositiveInteger(maxRunMs, 1, 60_000)) break
     await yieldToEventLoop()
     await pauseBetweenStatsAggregationBatches()
   }
-  await refreshClientIpUsageRangeWindowsAsync()
+  await refreshClientIpUsageRangeWindowsAsync({ scheduledLease })
   return { processed }
 }
 

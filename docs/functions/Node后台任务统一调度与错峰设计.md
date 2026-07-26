@@ -79,7 +79,7 @@
 - scheduler 取消信号到达后，代理、OAuth 和模型质量 scanner 停止领取新候选；已开始的 OAuth token rotation 按 refresh-token 轮换安全要求完成并写回。
 - Redis cache/state 操作使用端到端绝对 deadline；超时或取消会销毁并移除共享 client，避免半开连接让 prewarm/OAuth 永久占用 lane。
 - model-trust 与 account-quality 进入 `stats-online` lane，具备稳定相位、timeout/backoff、PG job lease 和写事务 fencing；account-quality dirty marker 使用行版本 CAS，避免并发 usage 标记被误删。
-- data-retention 在每个新批次、阶段和 pause 前响应 scheduler signal；Codex context 已返回的 storage keys 仍完成本批文件删除后再退出，避免数据库索引已删但文件永久孤立。
+- data-retention 在每个新批次、阶段和 pause 前响应 scheduler signal；Codex Context 删除过期索引时会在同一数据库事务内把 storage key 写入持久清理队列，文件不存在按幂等成功确认，删除失败记录次数、错误和指数退避时间。scheduler signal 只阻止领取下一批，已返回的 storage keys 必须完成本批文件删除与成功/失败确认后再退出，避免索引已删但文件线索永久丢失。
 
 `background-job-registry` 的 `leaseRequired / singleOwner` 是治理清单元数据，不等于自动执行约束。运行时正确性必须由以下机制之一提供：job 级 PostgreSQL lease、对象级 claim/lease、明确的单 worker 拓扑 owner；仅登记但没有运行时机制的任务不得在文档中宣称已经具备分布式单 owner。
 

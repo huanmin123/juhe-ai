@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { mkdir, open, rm } from 'node:fs/promises'
+import { mkdir, open } from 'node:fs/promises'
 import { dirname, relative, resolve, sep } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import type { Request, Response } from 'express'
@@ -914,34 +913,6 @@ async function readSegmentPayload(row: CodexContextPayloadReference): Promise<un
   }
   const parsed = JSON.parse(raw.toString('utf8')) as unknown
   return parsed
-}
-
-export interface CodexContextStorageKeyDeletionResult {
-  deleted: number
-  succeededStorageKeys: string[]
-  failures: Array<{ storageKey: string; error: string }>
-}
-
-export async function deleteCodexContextStorageKeys(storageKeys: readonly string[]): Promise<CodexContextStorageKeyDeletionResult> {
-  let deleted = 0
-  const succeededStorageKeys: string[] = []
-  const failures: Array<{ storageKey: string; error: string }> = []
-  for (const storageKey of [...new Set(storageKeys)]) {
-    try {
-      const path = resolveStoragePath(storageKey)
-      if (existsSync(path)) {
-        await rm(path, { force: true })
-        deleted += 1
-      }
-      succeededStorageKeys.push(storageKey)
-    } catch (error) {
-      failures.push({
-        storageKey,
-        error: error instanceof Error ? error.message : String(error)
-      })
-    }
-  }
-  return { deleted, succeededStorageKeys, failures }
 }
 
 function restoreResponsesInputFromPayloads(payloads: CodexResponsesChatBridgeStatePayloadV2[], currentInput: unknown): unknown[] {

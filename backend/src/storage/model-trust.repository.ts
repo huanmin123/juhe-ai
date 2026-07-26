@@ -216,6 +216,7 @@ async function aggregateModelTrustObservationsWithLeaseAsync(
 ): Promise<number> {
   const dataset = await datasetClient()
   const stats = await statsClient()
+  await cleanupCompletedObservationReceipts(dataset, stats, maximumObservationsPerTransaction)
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
   const rows = await dataset.query<ObservationRow>(`
     SELECT * FROM ${observationsTable}
@@ -259,6 +260,7 @@ async function aggregateModelTrustObservationsWithLeaseAsync(
     if (last) await writeAggregationState(tx, last.created_at, last.id)
   })
   await markObservationsAggregationCompleted(dataset, rows)
+  await deleteObservationReceipts(stats, rows)
   return processedRows.length
 }
 
@@ -286,6 +288,36 @@ async function markObservationsAggregationCompleted(client: DatabaseClient, rows
     WHERE aggregation_completed_at IS NULL
       AND id IN (${rows.map(() => '?').join(', ')})
   `, [nowIso(), ...rows.map((row) => row.id)])
+}
+
+async function deleteObservationReceipts(client: DatabaseClient, rows: ObservationRow[]): Promise<void> {
+  if (!rows.length) return
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_observation_receipts')
+  await client.execute(`
+    DELETE FROM ${table}
+    WHERE observation_id IN (${rows.map(() => '?').join(', ')})
+  `, rows.map((row) => row.id))
+}
+
+async function cleanupCompletedObservationReceipts(dataset: DatabaseClient, stats: DatabaseClient, limit: number): Promise<void> {
+  const receiptsTable = stats.dialect.qualifyTable('juhe_stats', 'model_trust_observation_receipts')
+  const receipts = await stats.query<{ observation_id: string }>(`
+    SELECT observation_id FROM ${receiptsTable}
+    ORDER BY processed_at, observation_id
+    LIMIT ?
+  `, [boundedLimit(limit)])
+  if (!receipts.length) return
+  const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
+  const completed = await dataset.query<{ id: string }>(`
+    SELECT id FROM ${observationsTable}
+    WHERE aggregation_completed_at IS NOT NULL
+      AND id IN (${receipts.map(() => '?').join(', ')})
+  `, receipts.map((row) => row.observation_id))
+  if (!completed.length) return
+  await stats.execute(`
+    DELETE FROM ${receiptsTable}
+    WHERE observation_id IN (${completed.map(() => '?').join(', ')})
+  `, completed.map((row) => row.id))
 }
 
 export async function activateModelTokenInterceptBaselineAsync(input: TokenInterceptScope & {

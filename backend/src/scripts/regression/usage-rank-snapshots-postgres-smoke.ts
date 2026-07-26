@@ -8,6 +8,11 @@ import { refreshUsageRankSnapshotsInStages, type UsageRankSnapshotStageName } fr
 import { dateKey, monthKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '用量 TopN 排行 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
+assert.equal(
+  process.env.JUHE_AI_ALLOW_USAGE_STATS_REBUILD_POSTGRES_SMOKE,
+  '1',
+  '排行 smoke 会重建全局 TopN 快照，只允许在隔离库设置 JUHE_AI_ALLOW_USAGE_STATS_REBUILD_POSTGRES_SMOKE=1 后运行'
+)
 
 const marker = `usage_rank_pg_smoke_${Date.now()}_${Math.random().toString(16).slice(2)}`
 const systemAccountId = `sys_${marker}`
@@ -28,6 +33,12 @@ try {
   const currentMonth = monthKey(new Date(), timezone)
   const pool = await getPostgresPool()
   const client = createPostgresDatabaseClient(pool)
+  const database = await pool.query('SELECT current_database() AS database_name')
+  assert.match(
+    String(database.rows[0]?.database_name ?? ''),
+    /^codex_scheduler_smoke_[a-z0-9_-]+$/i,
+    '排行 smoke 只允许使用本次 harness 创建的 codex_scheduler_smoke_* 隔离数据库'
+  )
 
   await cleanupSmokeRows()
   await client.transaction(async (tx) => {
