@@ -220,7 +220,7 @@ func TestApplyModelQualityEnforcementFailsBeforeMutationOnEntropyOrGenerationExh
 func TestTruncateModelQualityEnforcementMessagePreservesUTF8Boundary(t *testing.T) {
 	t.Parallel()
 	value := strings.Repeat("质", 1001)
-	got := truncateModelQualityEnforcementMessage(value)
+	got := truncateModelQualityTextRunes(value, 1000)
 	if len([]rune(got)) != 1000 || !strings.HasSuffix(got, "质") {
 		t.Fatalf("truncated rune length/suffix = %d/%q", len([]rune(got)), got[len(got)-3:])
 	}

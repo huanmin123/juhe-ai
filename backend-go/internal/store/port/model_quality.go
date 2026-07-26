@@ -328,3 +328,36 @@ type ModelQualityRecoveryCompleteResult struct {
 type ModelQualityRecoveryCompleter interface {
 	CompleteModelQualityRecovery(context.Context, ModelQualityRecoveryCompleteInput) (ModelQualityRecoveryCompleteResult, error)
 }
+
+// ModelQualityHealthFailureInput is the retained statistics fact emitted when
+// a completed model check cannot provide usable quality evidence. ObservedAt
+// determines both the local statistics hour and last-write-wins order;
+// UpdatedAt is audit metadata only and must never make an older observation
+// overwrite a newer one.
+type ModelQualityHealthFailureInput struct {
+	AccountID       string
+	SystemAccountID string
+	ProviderCode    string
+	ObservedAt      time.Time
+	RunID           string
+	Model           string
+	Profile         modelquality.Profile
+	Score           int
+	Threshold       int
+	Level           modelquality.Level
+	ErrorCode       string
+	ErrorMessage    string
+	UpdatedAt       time.Time
+}
+
+type ModelQualityHealthFailureResult struct {
+	Applied  bool
+	StatHour string
+}
+
+// ModelQualityHealthFailureWriter writes one bounded, idempotent hourly fact.
+// It intentionally does not own retry decisions: the dataset decision and
+// this retained statistics row are separate durable steps.
+type ModelQualityHealthFailureWriter interface {
+	RecordModelQualityHealthFailure(context.Context, ModelQualityHealthFailureInput) (ModelQualityHealthFailureResult, error)
+}

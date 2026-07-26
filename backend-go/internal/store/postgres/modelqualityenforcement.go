@@ -125,7 +125,7 @@ func applyModelQualityEnforcement(
 			return port.ModelQualityEnforcementApplyResult{}, fmt.Errorf("model quality enforcement account revision is exhausted")
 		}
 		command, err := tx.Exec(ctx, updateModelQualityEnforcementAccountSQL,
-			string(after), string(input.Action), truncateModelQualityEnforcementMessage(input.Message), input.DecidedAt.UTC(),
+			string(after), string(input.Action), truncateModelQualityTextRunes(input.Message, 1000), input.DecidedAt.UTC(),
 			input.AccountID, input.SystemAccountID, string(before), int64(account.ConfigRevision),
 			int64(policy.Policy.Revision), string(input.Trigger),
 		)
@@ -263,18 +263,6 @@ func validateModelQualityEnforcementApplyInput(input port.ModelQualityEnforcemen
 		return fmt.Errorf("model quality enforcement input is invalid")
 	}
 	return nil
-}
-
-func truncateModelQualityEnforcementMessage(value string) string {
-	const maximumRunes = 1000
-	count := 0
-	for byteIndex := range value {
-		if count == maximumRunes {
-			return value[:byteIndex]
-		}
-		count++
-	}
-	return value
 }
 
 func commitModelQualityEnforcementResult(
