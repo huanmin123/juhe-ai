@@ -17,6 +17,7 @@ const (
 	scheduleModeWindows           = "allow_windows"
 	scheduleNextCheckHorizonDays  = 14
 	scheduleNextCheckFallbackDays = 7
+	maxScheduleJSONBytes          = 256 << 10
 )
 
 type scheduleWindow struct {
@@ -35,23 +36,42 @@ type exceptionWindow struct {
 }
 
 func ParseJSON(raw *string, now time.Time, defaultTimezone string) (map[string]any, error) {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
-		return nil, nil
+	normalized, _, err := parseJSONDecision(raw, now, defaultTimezone)
+	return normalized, err
+}
+
+func parseJSONDecision(raw *string, now time.Time, defaultTimezone string) (map[string]any, bool, error) {
+	if raw == nil {
+		return nil, true, nil
+	}
+	if len(*raw) > maxScheduleJSONBytes {
+		return nil, false, fmt.Errorf("availabilitySchedule JSON 过大")
+	}
+	if strings.TrimSpace(*raw) == "" {
+		return nil, true, nil
 	}
 	decoder := json.NewDecoder(bytes.NewReader([]byte(*raw)))
 	decoder.UseNumber()
 	var value map[string]any
 	if err := decoder.Decode(&value); err != nil {
-		return nil, fmt.Errorf("availabilitySchedule JSON 无效: %w", err)
+		return nil, false, fmt.Errorf("availabilitySchedule JSON 无效: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("availabilitySchedule JSON 必须只包含一个对象")
+		return nil, false, fmt.Errorf("availabilitySchedule JSON 必须只包含一个对象")
 	}
 	if value == nil {
-		return nil, nil
+		return nil, true, nil
 	}
-	normalized, _, err := Normalize(value, now, defaultTimezone)
-	return normalized, err
+	return Normalize(value, now, defaultTimezone)
+}
+
+// AllowedAt parses a persisted availability schedule and returns its
+// allowed-at-time decision without exposing the normalized representation.
+// Persisted normalized schedules carry a timezone; UTC is only a legacy
+// fallback for malformed historical records that omitted it.
+func AllowedAt(raw *string, now time.Time) (bool, error) {
+	_, allowed, err := parseJSONDecision(raw, now, "UTC")
+	return allowed, err
 }
 
 func Normalize(

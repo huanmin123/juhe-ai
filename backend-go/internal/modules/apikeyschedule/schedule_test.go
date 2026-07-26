@@ -2,6 +2,7 @@ package apikeyschedule
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,31 @@ func TestNormalizeStrictlyValidatesAndCanonicalizesAvailabilitySchedule(t *testi
 		windows[0]["start"] != "09:00" ||
 		windows[0]["end"] != "18:00" {
 		t.Fatalf("normalized window = %#v", windows[0])
+	}
+}
+
+func TestAllowedAtReusesPersistedScheduleDecision(t *testing.T) {
+	t.Parallel()
+	raw := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[7],"start":"08:00","end":"09:00"}]}`
+	allowed, err := AllowedAt(&raw, time.Date(2026, 7, 26, 8, 30, 0, 0, time.UTC))
+	if err != nil || !allowed {
+		t.Fatalf("AllowedAt() = %v, %v", allowed, err)
+	}
+	allowed, err = AllowedAt(&raw, time.Date(2026, 7, 26, 9, 0, 0, 0, time.UTC))
+	if err != nil || allowed {
+		t.Fatalf("AllowedAt() boundary = %v, %v", allowed, err)
+	}
+	allowed, err = AllowedAt(nil, time.Now())
+	if err != nil || !allowed {
+		t.Fatalf("AllowedAt(nil) = %v, %v", allowed, err)
+	}
+}
+
+func TestAllowedAtRejectsOversizedPersistedJSONBeforeDecode(t *testing.T) {
+	t.Parallel()
+	raw := strings.Repeat(" ", maxScheduleJSONBytes+1)
+	if _, err := AllowedAt(&raw, time.Now()); err == nil || !strings.Contains(err.Error(), "过大") {
+		t.Fatalf("AllowedAt() error = %v", err)
 	}
 }
 
