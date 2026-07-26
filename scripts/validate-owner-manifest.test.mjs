@@ -17,6 +17,8 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const currentMigrationVersion = await readMigrationCatalogSchemaVersion(path.join(repoRoot, 'backend-go/db/migrations'))
+const migrationCatalogSource = await readFile(path.join(repoRoot, 'backend-go/internal/migrationcatalog/catalog.go'), 'utf8')
+const currentGoCatalogVersion = Number(/^const CurrentSchemaVersion int64 = (\d+)$/mu.exec(migrationCatalogSource)?.[1])
 const currentManifest = JSON.parse(await readFile(path.join(repoRoot, 'deploy/owner-manifest.json'), 'utf8'))
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
 const startupScripts = await Promise.all(
@@ -66,6 +68,8 @@ const valid = {
 validateOwnerManifest(legacy)
 validateOwnerManifest(valid)
 assert.equal(CURRENT_SCHEMA_VERSION, currentMigrationVersion)
+assert.equal(currentGoCatalogVersion, currentMigrationVersion)
+assert.equal(CURRENT_SCHEMA_VERSION, currentGoCatalogVersion)
 assert.throws(
   () => validateOwnerManifest({
     ...valid,

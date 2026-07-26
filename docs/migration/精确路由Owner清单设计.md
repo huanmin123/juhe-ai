@@ -19,7 +19,7 @@ worker 不是 HTTP route，继续只使用 `routeOwners.worker`；禁止伪造 m
   "release": {
     "nodeVersion": "0.1.0",
     "goVersion": "0.1.0-w0",
-    "schemaVersion": 73
+    "schemaVersion": 82
   },
   "routeOwners": {
     "management": "node",

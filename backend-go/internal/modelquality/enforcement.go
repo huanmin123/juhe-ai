@@ -211,18 +211,28 @@ func PlanEnforcement(request EnforcementRequest, policy Policy, account Account)
 type EnforcementState struct {
 	SystemAccountID string
 	Token           EnforcementToken
+	// AccountRevision is captured when this enforcement generation enters
+	// quality isolation. A recovery must never undo a later account edit.
+	AccountRevision AccountRevision
 	Active          bool
 	Action          Action
 }
 
 type RecoveryRequest struct {
-	PolicyRevision PolicyRevision
-	Enforcement    EnforcementToken
-	Passed         bool
+	PolicyRevision  PolicyRevision
+	AccountRevision AccountRevision
+	Enforcement     EnforcementToken
+	Passed          bool
 }
 
 func (r RecoveryRequest) Validate() error {
-	return r.Enforcement.Validate()
+	if err := r.Enforcement.Validate(); err != nil {
+		return err
+	}
+	if r.AccountRevision == 0 {
+		return fmt.Errorf("model quality recovery requires a non-zero account revision")
+	}
+	return nil
 }
 
 type RecoveryResult string
@@ -266,6 +276,15 @@ func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision,
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status}, nil
 	}
 	if !(PolicyFence{Expected: request.PolicyRevision, Current: currentPolicyRevision}.Matches()) {
+		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status, NeedsReschedule: true}, nil
+	}
+	// The request is based on the revision claimed for this recovery, the
+	// enforcement records the revision that created the isolation, and the
+	// account exposes the current revision. All three must agree before either
+	// a successful or failed recovery is acted on. If an account edit raced the
+	// check, retain its current isolation and ask the scheduler to claim a new
+	// recovery instead of applying an obsolete result.
+	if request.AccountRevision != current.AccountRevision || current.AccountRevision != account.ConfigRevision {
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status, NeedsReschedule: true}, nil
 	}
 	if !request.Passed {

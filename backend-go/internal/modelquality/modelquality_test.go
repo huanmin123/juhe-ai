@@ -185,8 +185,8 @@ func TestPlanRecoveryFencesAndRestoresAvailability(t *testing.T) {
 	account := testAccount()
 	account.Status = AccountStatusQualityIsolated
 	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
-	request := RecoveryRequest{PolicyRevision: 5, Enforcement: token, Passed: true}
-	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, Active: true, Action: ActionQualityIsolate}
+	request := RecoveryRequest{PolicyRevision: 5, AccountRevision: account.ConfigRevision, Enforcement: token, Passed: true}
+	current := EnforcementState{SystemAccountID: account.SystemAccountID, Token: token, AccountRevision: account.ConfigRevision, Active: true, Action: ActionQualityIsolate}
 	plan, err := PlanRecovery(request, 5, current, account, true)
 	if err != nil || plan.Result != RecoveryRecovered || plan.TargetStatus != AccountStatusActive || plan.TargetSchedulable == nil || !*plan.TargetSchedulable {
 		t.Fatalf("available recovery = %#v, err = %v", plan, err)
@@ -214,6 +214,78 @@ func TestPlanRecoveryFencesAndRestoresAvailability(t *testing.T) {
 	plan, err = PlanRecovery(request, 5, current, account, true)
 	if err != nil || plan.Result != RecoveryStale {
 		t.Fatalf("cross-scope recovery = %#v, err = %v", plan, err)
+	}
+}
+
+func TestPlanRecoveryReschedulesWhenAnyAccountRevisionFenceDrifts(t *testing.T) {
+	t.Parallel()
+	account := testAccount()
+	account.Status = AccountStatusQualityIsolated
+	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
+	baseRequest := RecoveryRequest{PolicyRevision: 5, AccountRevision: account.ConfigRevision, Enforcement: token, Passed: true}
+	baseCurrent := EnforcementState{
+		SystemAccountID: account.SystemAccountID,
+		Token:           token,
+		AccountRevision: account.ConfigRevision,
+		Active:          true,
+		Action:          ActionQualityIsolate,
+	}
+
+	tests := []struct {
+		name    string
+		request RecoveryRequest
+		current EnforcementState
+		account Account
+	}{
+		{
+			name: "claimed request revision changed",
+			request: RecoveryRequest{
+				PolicyRevision:  baseRequest.PolicyRevision,
+				AccountRevision: baseRequest.AccountRevision + 1,
+				Enforcement:     baseRequest.Enforcement,
+				// Revision fencing also wins over a failed check: an obsolete
+				// result must be rescheduled rather than being recorded as the
+				// current generation's failed recovery.
+				Passed: false,
+			},
+			current: baseCurrent,
+			account: account,
+		},
+		{
+			name:    "enforcement captured revision changed",
+			request: baseRequest,
+			current: EnforcementState{
+				SystemAccountID: baseCurrent.SystemAccountID,
+				Token:           baseCurrent.Token,
+				AccountRevision: baseCurrent.AccountRevision + 1,
+				Active:          baseCurrent.Active,
+				Action:          baseCurrent.Action,
+			},
+			account: account,
+		},
+		{
+			name:    "current account revision changed",
+			request: baseRequest,
+			current: baseCurrent,
+			account: Account{
+				ID:               account.ID,
+				SystemAccountID:  account.SystemAccountID,
+				Status:           account.Status,
+				ConfigRevision:   account.ConfigRevision + 1,
+				OwnPhysical:      account.OwnPhysical,
+				FallbackEnabled:  account.FallbackEnabled,
+				SuperPrioritySet: account.SuperPrioritySet,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := PlanRecovery(test.request, 5, test.current, test.account, true)
+			if err != nil || plan.Result != RecoveryStale || plan.TargetStatus != AccountStatusQualityIsolated || !plan.NeedsReschedule {
+				t.Fatalf("revision drift plan = %#v, err = %v", plan, err)
+			}
+		})
 	}
 }
 
