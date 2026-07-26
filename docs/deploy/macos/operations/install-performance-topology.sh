@@ -263,8 +263,7 @@ render_nginx() {
       '        proxy_buffering off;' \
       '        proxy_read_timeout 900s;' \
       '        proxy_send_timeout 900s;' \
-      '        proxy_next_upstream error timeout http_502 http_503 http_504;' \
-      '        proxy_next_upstream_tries 2;' \
+      '        proxy_next_upstream off;' \
       '    }' \
       '}'
   } > "$output"
