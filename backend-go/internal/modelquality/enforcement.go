@@ -211,11 +211,85 @@ func PlanEnforcement(request EnforcementRequest, policy Policy, account Account)
 type EnforcementState struct {
 	SystemAccountID string
 	Token           EnforcementToken
-	// AccountRevision is captured when this enforcement generation enters
-	// quality isolation. A recovery must never undo a later account edit.
+	// AccountRevision is the account revision captured when a recovery is
+	// claimed. It is deliberately refreshed for every claim: edits made after
+	// isolation but before the next recovery check become part of that check's
+	// baseline, while edits after the claim still invalidate its result.
 	AccountRevision AccountRevision
 	Active          bool
 	Action          Action
+}
+
+func (s EnforcementState) Validate() error {
+	if strings.TrimSpace(s.SystemAccountID) == "" {
+		return fmt.Errorf("model quality enforcement system account ID is required")
+	}
+	if err := s.Token.Validate(); err != nil {
+		return err
+	}
+	if s.AccountRevision == 0 {
+		return fmt.Errorf("model quality enforcement requires a non-zero recovery claim account revision")
+	}
+	if !validAction(s.Action) {
+		return fmt.Errorf("unsupported model quality penalty action %q", s.Action)
+	}
+	return nil
+}
+
+// RecoveryClaimRequest identifies the policy and enforcement generation a
+// scheduler intends to claim. The durable adapter must atomically compare and
+// persist the returned EnforcementState.AccountRevision with its lease write.
+type RecoveryClaimRequest struct {
+	PolicyRevision PolicyRevision
+	Enforcement    EnforcementToken
+}
+
+func (r RecoveryClaimRequest) Validate() error {
+	return r.Enforcement.Validate()
+}
+
+type RecoveryClaimResult string
+
+const (
+	RecoveryClaimed    RecoveryClaimResult = "claimed"
+	RecoveryClaimStale RecoveryClaimResult = "stale"
+)
+
+type RecoveryClaimPlan struct {
+	Result RecoveryClaimResult
+	// State is the generation state that must be persisted with the claim. It
+	// carries the refreshed account revision only when Result is
+	// RecoveryClaimed.
+	State EnforcementState
+}
+
+// ClaimRecovery mirrors Node's due-recovery claim update: it captures the
+// account's *current* config revision, rather than retaining the revision from
+// when the account first entered isolation. This is a pure transition; lease
+// ownership, due-time selection, and atomic storage writes remain adapter
+// responsibilities.
+func ClaimRecovery(request RecoveryClaimRequest, currentPolicyRevision PolicyRevision, current EnforcementState, account Account) (RecoveryClaimPlan, error) {
+	if err := request.Validate(); err != nil {
+		return RecoveryClaimPlan{}, err
+	}
+	if err := current.Validate(); err != nil {
+		return RecoveryClaimPlan{}, err
+	}
+	if err := account.Validate(); err != nil {
+		return RecoveryClaimPlan{}, err
+	}
+	if account.ConfigRevision == 0 {
+		return RecoveryClaimPlan{}, fmt.Errorf("model quality recovery claim requires a non-zero account revision")
+	}
+	if !current.Active || current.Action != ActionQualityIsolate || account.Status != AccountStatusQualityIsolated ||
+		current.SystemAccountID != account.SystemAccountID ||
+		!(EnforcementFence{Expected: request.Enforcement, Current: current.Token}.Matches()) ||
+		!(PolicyFence{Expected: request.PolicyRevision, Current: currentPolicyRevision}.Matches()) {
+		return RecoveryClaimPlan{Result: RecoveryClaimStale, State: current}, nil
+	}
+	claimed := current
+	claimed.AccountRevision = account.ConfigRevision
+	return RecoveryClaimPlan{Result: RecoveryClaimed, State: claimed}, nil
 }
 
 type RecoveryRequest struct {
@@ -260,11 +334,8 @@ func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision,
 	if err := request.Validate(); err != nil {
 		return RecoveryPlan{}, err
 	}
-	if err := current.Token.Validate(); err != nil {
+	if err := current.Validate(); err != nil {
 		return RecoveryPlan{}, err
-	}
-	if strings.TrimSpace(current.SystemAccountID) == "" {
-		return RecoveryPlan{}, fmt.Errorf("model quality enforcement system account ID is required")
 	}
 	if err := account.Validate(); err != nil {
 		return RecoveryPlan{}, err
@@ -279,8 +350,8 @@ func PlanRecovery(request RecoveryRequest, currentPolicyRevision PolicyRevision,
 		return RecoveryPlan{Result: RecoveryStale, TargetStatus: account.Status, NeedsReschedule: true}, nil
 	}
 	// The request is based on the revision claimed for this recovery, the
-	// enforcement records the revision that created the isolation, and the
-	// account exposes the current revision. All three must agree before either
+	// enforcement records that same recovery-claim snapshot, and the account
+	// exposes the current revision. All three must agree before either
 	// a successful or failed recovery is acted on. If an account edit raced the
 	// check, retain its current isolation and ask the scheduler to claim a new
 	// recovery instead of applying an obsolete result.

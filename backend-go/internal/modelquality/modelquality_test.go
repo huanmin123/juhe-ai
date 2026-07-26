@@ -289,6 +289,86 @@ func TestPlanRecoveryReschedulesWhenAnyAccountRevisionFenceDrifts(t *testing.T) 
 	}
 }
 
+func TestClaimRecoveryRefreshesRevisionBeforeCheckAndFencesLaterDrift(t *testing.T) {
+	t.Parallel()
+	account := testAccount()
+	account.Status = AccountStatusQualityIsolated
+	// The isolation write previously captured revision 7. An operator edit
+	// before the due recovery is legitimate: Node refreshes this snapshot when
+	// it claims the recovery, so the ensuing check may use revision 8.
+	account.ConfigRevision++
+	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
+	current := EnforcementState{
+		SystemAccountID: account.SystemAccountID,
+		Token:           token,
+		AccountRevision: account.ConfigRevision - 1,
+		Active:          true,
+		Action:          ActionQualityIsolate,
+	}
+	claim, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, current, account)
+	if err != nil || claim.Result != RecoveryClaimed || claim.State.AccountRevision != account.ConfigRevision {
+		t.Fatalf("claim = %#v, err = %v", claim, err)
+	}
+
+	request := RecoveryRequest{PolicyRevision: 5, AccountRevision: claim.State.AccountRevision, Enforcement: token, Passed: true}
+	plan, err := PlanRecovery(request, 5, claim.State, account, true)
+	if err != nil || plan.Result != RecoveryRecovered {
+		t.Fatalf("recovery after refreshed claim = %#v, err = %v", plan, err)
+	}
+
+	// A post-claim edit invalidates this check. The scheduler must obtain a new
+	// claim instead of clearing the current isolation generation.
+	account.ConfigRevision++
+	plan, err = PlanRecovery(request, 5, claim.State, account, true)
+	if err != nil || plan.Result != RecoveryStale || !plan.NeedsReschedule {
+		t.Fatalf("post-claim drift plan = %#v, err = %v", plan, err)
+	}
+}
+
+func TestClaimRecoveryRejectsStaleAndInvalidFences(t *testing.T) {
+	t.Parallel()
+	account := testAccount()
+	account.Status = AccountStatusQualityIsolated
+	token := EnforcementToken{ID: "enforcement-1", Generation: 2}
+	current := EnforcementState{
+		SystemAccountID: account.SystemAccountID,
+		Token:           token,
+		AccountRevision: account.ConfigRevision,
+		Active:          true,
+		Action:          ActionQualityIsolate,
+	}
+
+	for _, test := range []struct {
+		name    string
+		request RecoveryClaimRequest
+		policy  PolicyRevision
+	}{
+		{name: "old policy fence", request: RecoveryClaimRequest{PolicyRevision: 4, Enforcement: token}, policy: 5},
+		{name: "old generation fence", request: RecoveryClaimRequest{PolicyRevision: 5, Enforcement: EnforcementToken{ID: token.ID, Generation: token.Generation + 1}}, policy: 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			claim, err := ClaimRecovery(test.request, test.policy, current, account)
+			if err != nil || claim.Result != RecoveryClaimStale {
+				t.Fatalf("claim = %#v, err = %v", claim, err)
+			}
+		})
+	}
+
+	invalidState := current
+	invalidState.AccountRevision = 0
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, invalidState, account); err == nil {
+		t.Fatal("ClaimRecovery() accepted zero existing claim revision")
+	}
+	zeroAccount := account
+	zeroAccount.ConfigRevision = 0
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: token}, 5, current, zeroAccount); err == nil {
+		t.Fatal("ClaimRecovery() accepted zero current account revision")
+	}
+	if _, err := ClaimRecovery(RecoveryClaimRequest{PolicyRevision: 5, Enforcement: EnforcementToken{ID: token.ID}}, 5, current, account); err == nil {
+		t.Fatal("ClaimRecovery() accepted zero enforcement generation")
+	}
+}
+
 func testPolicy() Policy {
 	return Policy{SystemAccountID: "system-1", Revision: 5, Profile: ProfileQuick, ManualEnforcementEnabled: true, PenaltyThreshold: 80, PenaltyAction: ActionFallback, RecoveryIntervalMinutes: 10}
 }
