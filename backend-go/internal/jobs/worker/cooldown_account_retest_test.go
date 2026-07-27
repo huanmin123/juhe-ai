@@ -24,22 +24,34 @@ func TestCooldownAccountRetestMuxRegistersOnlyAccountLevelTask(t *testing.T) {
 }
 
 func TestHandleCooldownAccountRetestTaskSkipsInvalidPayload(t *testing.T) {
-	err := handleCooldownAccountRetestTask(context.Background(), module.Processor{}, []byte(`{"version":1}`))
+	err := handleCooldownAccountRetestTask(context.Background(), module.Processor{}, []byte(`{"version":1}`), nil)
+	if !errors.Is(err, job.ErrInvalidPayload) || !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error = %v, want invalid payload and SkipRetry", err)
+	}
+}
+
+func TestHandleCooldownAccountRetestTaskSkipsMissingStrategyHeaders(t *testing.T) {
+	payload, _, err := job.EncodeTask(cooldownRetestValidTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = handleCooldownAccountRetestTask(context.Background(), module.Processor{}, payload, nil)
 	if !errors.Is(err, job.ErrInvalidPayload) || !errors.Is(err, asynq.SkipRetry) {
 		t.Fatalf("error = %v, want invalid payload and SkipRetry", err)
 	}
 }
 
 func TestHandleCooldownAccountRetestTaskDoesNotHideMissingProbe(t *testing.T) {
-	payload, err := job.EncodeTask(port.CooldownAccountRetestTask{AccountID: "acct_1", ConfigRevision: 1})
+	payload, headers, err := job.EncodeTask(cooldownRetestValidTask())
 	if err != nil {
 		t.Fatalf("EncodeTask() error = %v", err)
 	}
 	processor := module.Processor{
 		Store:    cooldownRetestStoreStub{},
 		Outcomes: cooldownRetestOutcomeStoreStub{},
+		Quota:    cooldownRetestQuotaCheckerStub{},
 	}
-	err = handleCooldownAccountRetestTask(context.Background(), processor, payload)
+	err = handleCooldownAccountRetestTask(context.Background(), processor, payload, headers)
 	if !errors.Is(err, module.ErrProbeNotConfigured) || errors.Is(err, asynq.SkipRetry) {
 		t.Fatalf("error = %v, want visible missing probe error", err)
 	}
@@ -53,17 +65,17 @@ func TestRunCooldownAccountRetestConsumerFailsBeforeRedisWhenProcessorIncomplete
 }
 
 func TestCooldownAccountRetestTrackedMuxWaitsForOutcomeHandlerReturn(t *testing.T) {
-	taskPayload, err := job.EncodeTask(port.CooldownAccountRetestTask{AccountID: "acct_1", ConfigRevision: 1})
+	taskPayload, taskHeaders, err := job.EncodeTask(cooldownRetestValidTask())
 	if err != nil {
 		t.Fatalf("EncodeTask() error = %v", err)
 	}
 	outcomes := &cooldownRetestBlockingOutcomeStoreStub{started: make(chan struct{}), release: make(chan struct{})}
 	processor := module.Processor{
-		Store: cooldownRetestDueStoreStub{}, Outcomes: outcomes, Probe: cooldownRetestSuccessProbeStub{},
+		Store: cooldownRetestDueStoreStub{}, Outcomes: outcomes, Probe: cooldownRetestSuccessProbeStub{}, Quota: cooldownRetestQuotaCheckerStub{},
 	}
 	handlers := newCooldownAccountRetestHandlerTracker()
 	mux := newCooldownAccountRetestMuxWithTracker(processor, handlers)
-	task := asynq.NewTask(job.TaskType, taskPayload)
+	task := asynq.NewTaskWithHeaders(job.TaskType, taskPayload, taskHeaders)
 	handler, pattern := mux.Handler(task)
 	if handler == nil || pattern != job.TaskType {
 		t.Fatalf("handler=%v pattern=%q", handler, pattern)
@@ -93,18 +105,18 @@ func TestCooldownAccountRetestTrackedMuxWaitsForOutcomeHandlerReturn(t *testing.
 }
 
 func TestCooldownAccountRetestTrackedMuxRejectsHandlerAfterClose(t *testing.T) {
-	taskPayload, err := job.EncodeTask(port.CooldownAccountRetestTask{AccountID: "acct_1", ConfigRevision: 1})
+	taskPayload, taskHeaders, err := job.EncodeTask(cooldownRetestValidTask())
 	if err != nil {
 		t.Fatalf("EncodeTask() error = %v", err)
 	}
 	outcomes := &cooldownRetestBlockingOutcomeStoreStub{started: make(chan struct{}), release: make(chan struct{})}
 	processor := module.Processor{
-		Store: cooldownRetestDueStoreStub{}, Outcomes: outcomes, Probe: cooldownRetestSuccessProbeStub{},
+		Store: cooldownRetestDueStoreStub{}, Outcomes: outcomes, Probe: cooldownRetestSuccessProbeStub{}, Quota: cooldownRetestQuotaCheckerStub{},
 	}
 	handlers := newCooldownAccountRetestHandlerTracker()
 	mux := newCooldownAccountRetestMuxWithTracker(processor, handlers)
 	handlers.CloseAndWait()
-	task := asynq.NewTask(job.TaskType, taskPayload)
+	task := asynq.NewTaskWithHeaders(job.TaskType, taskPayload, taskHeaders)
 	handler, _ := mux.Handler(task)
 	if err := handler.ProcessTask(context.Background(), task); !errors.Is(err, context.Canceled) {
 		t.Fatalf("handler error = %v, want cancellation", err)
@@ -118,6 +130,16 @@ func TestCooldownAccountRetestTrackedMuxRejectsHandlerAfterClose(t *testing.T) {
 
 type cooldownRetestStoreStub struct{}
 
+type cooldownRetestQuotaCheckerStub struct{}
+
+func (cooldownRetestQuotaCheckerStub) EligibleByAccountID(_ context.Context, candidates []port.CooldownAccountRetestCandidate, _ time.Time) (map[string]bool, error) {
+	eligible := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		eligible[candidate.ID] = true
+	}
+	return eligible, nil
+}
+
 func (cooldownRetestStoreStub) ListDueCooldownAccountRetests(context.Context, port.CooldownAccountRetestListInput) (port.CooldownAccountRetestPage, error) {
 	return port.CooldownAccountRetestPage{}, nil
 }
@@ -129,7 +151,20 @@ func (cooldownRetestDueStoreStub) ListDueCooldownAccountRetests(context.Context,
 }
 
 func (cooldownRetestDueStoreStub) FindDueCooldownAccountRetest(context.Context, string, time.Time) (port.CooldownAccountRetestCandidate, bool, error) {
-	return port.CooldownAccountRetestCandidate{ID: "acct_1", ConfigRevision: 1}, true, nil
+	task := cooldownRetestValidTask()
+	return port.CooldownAccountRetestCandidate{
+		ID: task.AccountID, ConfigRevision: task.ConfigRevision, DispatchRevision: task.DispatchRevision,
+		ObservationStartedAt: task.ObservationStartedAt, Generation: task.Generation,
+		SourceConfigRevision: task.SourceConfigRevision,
+	}, true, nil
+}
+
+func cooldownRetestValidTask() port.CooldownAccountRetestTask {
+	started := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	return port.CooldownAccountRetestTask{
+		AccountID: "acct_1", ConfigRevision: 1, DispatchRevision: 1,
+		ObservationStartedAt: &started, Generation: "generation-1",
+	}
 }
 
 type cooldownRetestSuccessProbeStub struct{}

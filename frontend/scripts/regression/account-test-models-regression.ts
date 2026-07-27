@@ -64,6 +64,11 @@ const updateSelectableTestModelSource = sourceSection(
   'function updateSelectableTestModel',
   'function resetTestModels'
 )
+const loadTestEndpointModeOptionsSource = sourceSection(
+  accountTestModelsSource,
+  'async function loadTestEndpointModeOptions',
+  'function useFixedTestModel'
+)
 
 assertIncludes(accountApiSource, '`/accounts/${id}/test-options`', '管理端列表测试应调用账户 test-options')
 assertIncludes(accountApiSource, '`/my-accounts/${id}/test-options`', '个人端列表测试应调用个人账户 test-options')
@@ -80,18 +85,21 @@ assertNotIncludes(accountApiSource, 'setDefaultTestModel', '账户 API 不应保
 assertNotIncludes(accountApiSource, 'default-test-model', '账户 API 不应保留默认测试模型路径')
 
 assertIncludes(accountTestModelsSource, 'loadTestModelOptions', '候选模型列表必须提供独立的按需加载入口')
-assertIncludes(openTestModalSource, 'loadTestModelOptions(account)', '打开测试弹窗时必须一次加载模型及协议，以便立即绑定 Images API')
+assertNotIncludes(openTestModalSource, 'loadTestModelOptions(account)', '打开测试弹窗不得预加载候选模型列表')
 assertIncludes(openTestModalSource, 'account.healthCheckModel', '测试弹窗默认模型必须直接使用当前账户检查模型')
+assertIncludes(openTestModalSource, 'account.healthCheckEndpointMode', '测试弹窗默认请求形态必须直接使用当前账户列表字段')
 assertIncludes(accountTestComponentSource, '@dropdown-visible-change', '模型选择器首次展开时才应触发候选模型列表加载')
+assertIncludes(accountTestComponentSource, "@dropdown-visible-change=\"$emit('load-endpoint-mode-options', $event)\"", '请求形态选择器首次展开时才应触发当前模型能力加载')
 assertIncludes(accountTestModelsSource, 'await api.accounts.testOptions(', '管理端测试模型必须直接请求账户 test-options')
 assertIncludes(accountTestModelsSource, 'await api.myAccounts.testOptions(', '个人端测试模型必须直接请求个人账户 test-options')
-assertNotIncludes(accountTestModelsSource, 'testModelCapabilities(', '模型切换不得发起独立能力请求')
+assertIncludes(loadTestEndpointModeOptionsSource, 'await api.accounts.testModelCapabilities(', '管理端展开协议下拉必须定点请求当前模型能力')
+assertIncludes(loadTestEndpointModeOptionsSource, 'await api.myAccounts.testModelCapabilities(', '个人端展开协议下拉必须定点请求当前模型能力')
 assertIncludes(accountTestModelsSource, '{ signal: controller.signal }', '测试选项请求必须接收 AbortSignal')
 assertIncludes(accountTestModelsSource, 'limit: 50', '测试模型下拉每次最多请求 50 条')
 assertIncludes(accountTestModelsSource, 'selectedIds', '测试模型搜索必须保留检查模型和当前选中模型')
 assertIncludes(accountTestComponentSource, "@search=\"$emit('search-model-options', $event)\"", '模型选择器搜索必须触发服务端按需加载')
 assertIncludes(accountTestModelsSource, 'optionsAbortController?.abort()', '关闭或切换账户时必须取消候选模型请求')
-assertNotIncludes(accountTestModelsSource, 'modelAbortController', '模型切换不应再维护独立能力请求状态')
+assertIncludes(accountTestModelsSource, 'modelCapabilitiesAbortController?.abort()', '切换账户、模型或关闭时必须取消定点能力请求')
 assertIncludes(accountTestModelsSource, 'supportedApiProtocols', '前端必须保留模型选项自带的目录协议')
 assertIncludes(updateSelectableTestModelSource, 'option.testEndpointModes', '切换模型必须直接使用模型选项自带的请求形态')
 assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
@@ -194,6 +202,8 @@ function accountFixture(): AccountSummary {
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
     supportedModels: ['gpt-supported-only'],
+    healthCheckModel: 'gpt-supported-only',
+    healthCheckEndpointMode: 'responses_sse',
     schedulable: true,
     todayUsage: emptyUsage(),
     usage: emptyUsage()

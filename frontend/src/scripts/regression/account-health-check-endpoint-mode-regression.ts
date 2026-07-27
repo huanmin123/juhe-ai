@@ -62,15 +62,24 @@ const accountTestModelsSource = readFileSync(
   new URL('../../views/accounts/useAccountTestModels.ts', import.meta.url),
   'utf8'
 )
+const updateSelectableTestModelSource = accountTestModelsSource.slice(
+  accountTestModelsSource.indexOf('function updateSelectableTestModel'),
+  accountTestModelsSource.indexOf('function resetTestModels')
+)
 assert.match(
-  accountTestModelsSource,
-  /testEndpointModes\.value = normalizeEndpointModes\(option\.testEndpointModes\)/,
+  updateSelectableTestModelSource,
+  /const endpointModes = normalizeEndpointModes\(option\.testEndpointModes\)/,
   '模型请求形态必须直接使用选项响应携带的能力交集'
 )
 assert.doesNotMatch(
-  accountTestModelsSource,
+  updateSelectableTestModelSource,
   /testModelCapabilities\(/,
   '模型切换不得再发起额外能力请求'
+)
+assert.match(
+  accountTestModelsSource,
+  /async function loadTestEndpointModeOptions[\s\S]*testModelCapabilities\(/,
+  '只有用户展开请求形态下拉时才应定点读取当前模型能力'
 )
 assert.doesNotMatch(
   accountTestModelsSource,

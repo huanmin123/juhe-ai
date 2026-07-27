@@ -6,8 +6,6 @@ import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
-  GPT_OPENAI_V1_PROFILE_ID,
-  GPT_VENDOR_CODE,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
   XAI_OPENAI_V1_PROFILE_ID,
@@ -55,7 +53,7 @@ assert.equal(XAI_OPENAI_V1_PROFILE_ID, 'profile_xai_openai_v1')
 assert(DEFAULT_PROVIDER_SEEDS.some((seed) => seed.code === XAI_PROVIDER_CODE), '默认供应商种子应包含 xAI')
 assert(DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS.some((seed) => seed.id === XAI_OPENAI_V1_PROFILE_ID), '默认协议档案种子应包含 xAI OpenAI v1')
 assert.deepEqual(XAI_PROVIDER_SEED.defaultSupportedModels, ['grok-4.5'], 'xAI 默认模型应使用资料完整的当前官方文本模型')
-assert.deepEqual(XAI_OPENAI_V1_PROFILE_SEED.accountTypes, ['api_key'], 'xAI 官方 API 档案只允许 API Key')
+assert.deepEqual(XAI_OPENAI_V1_PROFILE_SEED.accountTypes, ['api_key', 'oauth'], 'xAI 官方 API 档案应允许 API Key 与 Grok OAuth')
 assert.deepEqual(
   XAI_OPENAI_V1_PROFILE_SEED.endpointFamilies,
   ['chat_completions', 'responses'],
@@ -87,6 +85,28 @@ assert.deepEqual(
   normalizedCredentials.supported_endpoint_modes,
   ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
   'xAI API Key 默认应启用 Chat 与 Responses 的 JSON/SSE 能力'
+)
+
+const normalizedOAuthCredentials = normalizeAccountCredentialsForWrite('oauth', {
+  access_token: 'xai-oauth-access-token',
+  refresh_token: 'xai-oauth-refresh-token',
+  client_id: 'xai-oauth-client',
+  token_type: 'Bearer',
+  scope: 'openid offline_access grok-cli:access api:access',
+  sub: 'xai-user',
+  team_id: 'xai-team',
+  base_url: 'https://cli-chat-proxy.grok.com/v1'
+}, {
+  accountType: 'oauth',
+  providerCode: XAI_PROVIDER_CODE,
+  providerProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION
+})
+assert.deepEqual(
+  normalizedOAuthCredentials.supported_endpoint_modes,
+  ['responses_json', 'responses_sse'],
+  'Grok OAuth 默认只应启用 Responses JSON/SSE'
 )
 
 const account = xaiAccount()
@@ -130,25 +150,31 @@ const anthropicRequest = openAIRequest('/v1/messages', {
 assert.deepEqual(buildGatewayUpstreamUrlsForAccount(account, anthropicRequest), [], 'xAI 档案不应承接 Anthropic Messages 原生请求')
 assert.equal(accountSupportsGatewayRequest(anthropicRequest, account), false)
 
-const oauthAccount = { ...account, type: 'oauth' }
-assert.equal(accountSupportsGatewayRequest(chatRequest, oauthAccount), false, 'xAI driver 不应放宽到订阅 OAuth 账户')
-
-const gptGroup = repositories.createGroup({
-  providerCode: GPT_VENDOR_CODE,
-  name: 'GPT 默认模型写入回归分组'
-}, access)
-const gptAccount = repositories.createAccount({
-  providerCode: GPT_VENDOR_CODE,
-  providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-  name: 'GPT 默认模型写入回归账户',
-  type: 'api_key',
-  credentials: {
-    api_key: 'sk-gpt-default-model-write',
-    base_url: 'https://api.openai.com/v1'
-  },
-  groupId: gptGroup.id
-}, access)
-assert.equal(gptAccount.supportedModels?.includes('gpt-image-2'), true, 'GPT OpenAI v1 账户默认写入必须保留可透传的 gpt-image-2')
+const oauthAccount: DispatchAccountSecret = {
+  ...account,
+  id: 'acc_xai_oauth',
+  name: 'Grok OAuth',
+  type: 'oauth',
+  clientCompatibility: 'openai_standard',
+  supportedEndpointModes: ['responses_json', 'responses_sse'],
+  baseUrl: 'https://cli-chat-proxy.grok.com/v1',
+  apiKey: 'xai-oauth-access-token',
+  refreshToken: 'xai-oauth-refresh-token',
+  credentials: normalizedOAuthCredentials
+}
+assert.equal(accountSupportsGatewayRequest(chatRequest, oauthAccount), false, 'Grok OAuth 不应承接 Chat Completions')
+assert.equal(accountSupportsGatewayRequest(responsesRequest, oauthAccount), true, 'Grok OAuth 应承接 Responses')
+assert.deepEqual(
+  buildGatewayUpstreamUrlsForAccount(oauthAccount, responsesRequest),
+  ['https://cli-chat-proxy.grok.com/v1/responses?trace=xai-responses']
+)
+const oauthRequestParts = await buildGatewayUpstreamRequestParts(responsesRequest, oauthAccount, {
+  systemAccountId: 'sys_admin',
+  groupId: 'grp_xai'
+})
+assert.equal(oauthRequestParts.headers.get('authorization'), 'Bearer xai-oauth-access-token')
+assert.equal(oauthRequestParts.headers.get('user-agent'), 'sub2api-grok/1.0')
+assert.equal(oauthRequestParts.headers.get('x-grok-client-version'), '0.2.93')
 
 const xaiGroup = repositories.createGroup({
   providerCode: XAI_PROVIDER_CODE,
@@ -181,7 +207,7 @@ assert.throws(() => repositories.updateAccount(savedXaiAccount.id, {
   healthCheckModel: 'grok-imagine-image'
 }, access), /账户支持模型不在供应商模型目录中：grok-imagine-image/, 'xAI 图片专用模型不得通过更新写入 Chat/Responses 文本账户')
 
-console.log('xAI provider 回归通过：seed、API Key 凭据、Chat/Responses 路由、Bearer 请求构造和跨协议隔离符合预期')
+console.log('xAI provider 回归通过：seed、API Key/Grok OAuth 凭据、路由、Bearer 请求构造和跨协议隔离符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

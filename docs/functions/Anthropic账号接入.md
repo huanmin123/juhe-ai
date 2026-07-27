@@ -32,7 +32,7 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 - Anthropic native 本地错误已按 Anthropic error shape 返回，认证、端点能力、模型路由、调度失败等本地错误不再暴露 OpenAI error payload。
 - Anthropic WIF 暂不注册账户类型、凭据写入或运行时 token exchange。仅保存一个管理员手工填写的 IdP JWT 无法形成可信自动轮换 source，JWT 到期后会永久失败，因此不能伪装为可用生产能力。
 - Claude Code 只作为下游客户端画像，支持显式 `x-juhe-client-profile: claude_code` 和官方 CLI 多信号识别；本地画像 header 不透传上游。命中该画像时，原生 Anthropic 请求准备层只补齐 Claude Code 请求头和 `beta=true` 查询参数，不伪造 Claude Code system prompt、工具 schema、thinking body 或 OAuth 字段。显式 OpenAI -> Anthropic Messages bridge 命中 `claude_code` 时，会额外补最小 Claude Code-compatible body envelope，用于兼容会校验 Claude Code body 形态的第三方上游。
-- 前端账户表单当前支持 Anthropic API Key 和 Anthropic OAuth Access Token 两种接入类型，均可配置 Base URL 和 Messages 端点能力；`Anthropic-Version` / `Anthropic-Beta` 不作为账号配置项。
+- 前端账户表单当前支持 Anthropic API Key 与 Anthropic OAuth 两种接入类型；Anthropic OAuth 同时支持站内官方 OAuth / PKCE 浏览器换码、Refresh Token 创建和直接录入 Access Token，均可配置 Base URL 和 Messages 端点能力；`Anthropic-Version` / `Anthropic-Beta` 不作为账号配置项。
 - Anthropic 模型价格目录已按 `providerCode = anthropic` 接入，当前成本估算覆盖 input、output、cache read、cache write 和 1h cache write，并补充 Claude Code 模型别名与常见 Antigravity 兼容别名。
 - Anthropic 使用记录明细已保存 `usage_semantic=anthropic`、cache write、1h cache 和 thinking tokens；使用记录页和成本明细可展示这些字段。
 

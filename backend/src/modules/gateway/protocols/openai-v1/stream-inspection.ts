@@ -18,7 +18,8 @@ import {
   estimateTokenCountFromText,
   isOpenAIImageStreamEventType,
   parseOpenAIStreamEventData,
-  type OpenAIStreamEventClassification
+  type OpenAIStreamEventClassification,
+  type ParsedOpenAIStreamEvent
 } from './stream-events.js'
 
 export interface OpenAIStreamInspection {
@@ -193,6 +194,18 @@ export class OpenAIStreamInspector {
     return this.snapshot()
   }
 
+  pushParsedEvent(
+    event: ParsedOpenAIStreamEvent,
+    options: { dataBytes?: number } = {}
+  ): OpenAIStreamInspection {
+    if (this.inspection.skipped) return this.snapshot()
+    this.inspectParsedEvent(
+      event,
+      options.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8')
+    )
+    return this.snapshot()
+  }
+
   finish(): OpenAIStreamInspection {
     if (this.inspection.skipped) {
       return this.snapshot()
@@ -296,11 +309,16 @@ export class OpenAIStreamInspector {
       return
     }
     const event = parseOpenAIStreamEventData(data, currentEventName)
+    this.inspectParsedEvent(event, currentDataBytes)
+    this.resetOversizedEventState()
+  }
+
+  private inspectParsedEvent(event: ParsedOpenAIStreamEvent, dataBytes: number): void {
     this.parsedEventObserver?.(event)
     if (event.dataParseError) {
       this.recordEventSummary({
-        type: currentEventName || 'message',
-        dataBytes: currentDataBytes,
+        type: event.eventName || 'message',
+        dataBytes,
         terminal: false,
         canEndStream: false,
         failed: false,
@@ -308,7 +326,6 @@ export class OpenAIStreamInspector {
         usage: false,
         parseError: true
       })
-      this.resetOversizedEventState()
       return
     }
 
@@ -335,15 +352,14 @@ export class OpenAIStreamInspector {
       this.inspection.usage = mergeUsage(this.inspection.usage, classification.usage)
     }
     this.recordEventSummary({
-      type: classification.eventType || currentEventName || 'message',
-      dataBytes: currentDataBytes,
+      type: classification.eventType || event.eventName || 'message',
+      dataBytes,
       terminal: classification.terminal,
       canEndStream: classification.terminal,
       failed: classification.failed,
       output: classification.visibleOutput,
       usage: classification.usageFound
     })
-    this.resetOversizedEventState()
   }
 
   private tryFlushCommonResponsesTextDelta(data: string, currentEventName: string, currentDataBytes: number): boolean {

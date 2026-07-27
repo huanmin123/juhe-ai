@@ -14,7 +14,8 @@ import {
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
-  estimateTokenCountFromText
+  estimateTokenCountFromText,
+  type ParsedOpenAIStreamEvent
 } from '../openai-v1/stream-events.js'
 import {
   extractAnthropicStreamEventError,
@@ -154,6 +155,15 @@ export class AnthropicStreamInspector {
     return this.snapshot()
   }
 
+  pushParsedEvent(
+    event: ParsedOpenAIStreamEvent,
+    options: { dataBytes?: number } = {}
+  ): AnthropicStreamInspection {
+    if (this.inspection.skipped) return this.snapshot()
+    this.inspectParsedEvent(event, options.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8'))
+    return this.snapshot()
+  }
+
   finish(): AnthropicStreamInspection {
     if (this.inspection.skipped) return this.snapshot()
     if (this.pendingLine.length > 0) {
@@ -223,11 +233,15 @@ export class AnthropicStreamInspector {
     const dataText = this.dataLines.join('\n').trim()
     const rawText = `${eventName ? `event: ${eventName}\n` : ''}${this.dataLines.map((line) => `data: ${line}`).join('\n')}\n\n`
     const event = parseAnthropicSseEventText(rawText)
-    const eventType = event.eventType || event.eventName || eventName || 'message'
-    const data = event.data
-    const summary = this.classifyEvent(eventType, event.eventName || eventName, data, event.dataParseError, this.dataBytes)
-    this.recordEventSummary(summary)
+    this.inspectParsedEvent(event, this.dataBytes, eventName)
     this.resetEvent()
+  }
+
+  private inspectParsedEvent(event: ParsedOpenAIStreamEvent, dataBytes: number, fallbackEventName = ''): void {
+    const eventType = event.eventType || event.eventName || fallbackEventName || 'message'
+    const data = event.data
+    const summary = this.classifyEvent(eventType, event.eventName || fallbackEventName, data, event.dataParseError, dataBytes)
+    this.recordEventSummary(summary)
   }
 
   private classifyEvent(

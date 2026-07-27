@@ -254,15 +254,38 @@ type RetestTaskVersion struct {
 	SourceConfigRevision *int
 }
 
+// NormalizeCooldownRetestGeneration mirrors ECMAScript String.prototype.trim,
+// which is the canonicalization contract used by the Node cooldown owner.
+func NormalizeCooldownRetestGeneration(value string) string {
+	return strings.TrimFunc(value, func(r rune) bool {
+		switch {
+		case r >= '\u0009' && r <= '\u000d':
+			return true
+		case r == '\u0020', r == '\u00a0', r == '\u1680',
+			r >= '\u2000' && r <= '\u200a',
+			r == '\u2028', r == '\u2029', r == '\u202f', r == '\u205f', r == '\u3000', r == '\ufeff':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func CooldownRetestTaskVersionValid(version RetestTaskVersion) bool {
+	generation := NormalizeCooldownRetestGeneration(version.Generation)
+	return version.ConfigRevision > 0 && version.DispatchRevision > 0 &&
+		version.ObservationStartedAt != nil && !version.ObservationStartedAt.IsZero() &&
+		generation != "" && generation == version.Generation &&
+		(version.SourceConfigRevision == nil || *version.SourceConfigRevision > 0)
+}
+
 func CooldownRetestTaskCurrent(queued, current RetestTaskVersion) bool {
-	if queued.ConfigRevision != current.ConfigRevision ||
+	if !CooldownRetestTaskVersionValid(queued) || !CooldownRetestTaskVersionValid(current) ||
+		queued.ConfigRevision != current.ConfigRevision ||
 		queued.DispatchRevision != current.DispatchRevision ||
-		strings.TrimSpace(queued.Generation) != strings.TrimSpace(current.Generation) ||
+		queued.Generation != current.Generation ||
 		!sameOptionalInt(queued.SourceConfigRevision, current.SourceConfigRevision) {
 		return false
-	}
-	if queued.ObservationStartedAt == nil || current.ObservationStartedAt == nil {
-		return queued.ObservationStartedAt == nil && current.ObservationStartedAt == nil
 	}
 	return queued.ObservationStartedAt.Equal(*current.ObservationStartedAt)
 }

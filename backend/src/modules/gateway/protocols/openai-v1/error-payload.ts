@@ -1,5 +1,6 @@
 import {
   firstErrorFieldText,
+  jsonObjectErrorPayload,
   nestedErrorObject,
   parseJsonObjectErrorPayload
 } from '../_shared/error-payload.js'
@@ -7,6 +8,14 @@ import type { GatewayProtocolErrorPayload } from '../_shared/types.js'
 
 export function parseOpenAIErrorPayload(text: string, headers: Headers): GatewayProtocolErrorPayload {
   const parsed = parseJsonObjectErrorPayload(text, headers)
+  return openAIErrorPayloadFromParsed(parsed)
+}
+
+export function parseOpenAIErrorPayloadFromJsonValue(value: unknown): GatewayProtocolErrorPayload {
+  return openAIErrorPayloadFromParsed(jsonObjectErrorPayload(value))
+}
+
+function openAIErrorPayloadFromParsed(parsed: ReturnType<typeof jsonObjectErrorPayload>): GatewayProtocolErrorPayload {
   if (!parsed) return {}
   const { payload, error } = parsed
   const nestedError = nestedErrorObject(error)

@@ -337,7 +337,7 @@ export class CodexResponsesResponseGuard {
 export function rewriteCodexResponsesSseEvent(
   event: ParsedOpenAIStreamEvent,
   repairs: readonly CodexStreamIdRepair[]
-): Buffer | undefined {
+): { buffer: Buffer; event: ParsedOpenAIStreamEvent } | undefined {
   if (!event.data || repairs.length === 0) return undefined
   let data: JsonRecord = event.data
   let item: JsonRecord | undefined
@@ -369,7 +369,18 @@ export function rewriteCodexResponsesSseEvent(
   }
   if (data === event.data) return undefined
   const eventLine = event.eventName ? `event: ${event.eventName}\n` : ''
-  return Buffer.from(`${eventLine}data: ${JSON.stringify(data)}\n\n`, 'utf8')
+  const dataText = JSON.stringify(data)
+  const rawText = `${eventLine}data: ${dataText}\n\n`
+  return {
+    buffer: Buffer.from(rawText, 'utf8'),
+    event: {
+      ...event,
+      rawText,
+      dataText,
+      data,
+      dataParseError: false
+    }
+  }
 }
 
 export function createCodexResponsesResponseGuard(

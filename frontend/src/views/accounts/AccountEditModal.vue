@@ -76,6 +76,7 @@
           :is-anthropic-o-auth="isAnthropicOAuthForm"
           :is-open-a-i="isOpenAIOAuthForm"
           :is-google-o-auth="form.type === 'google_oauth'"
+          :is-management-view="isManagementView"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
           :model-syncing="modelSyncing"

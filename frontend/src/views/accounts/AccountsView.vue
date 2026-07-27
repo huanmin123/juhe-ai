@@ -152,6 +152,8 @@
       :model="testForm.model"
       :account="testingAccount"
       :active-task="activeSingleTestTask"
+      :endpoint-modes-error="testEndpointModesError"
+      :endpoint-modes-loading="testEndpointModesLoading"
       :model-options="testModelOptions"
       :model-readonly="testModelReadonly"
       :models-error="testModelsError"
@@ -163,6 +165,7 @@
       v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
+      @load-endpoint-mode-options="loadAccountTestEndpointModeOptions"
       @load-model-options="loadAccountTestModelOptions"
       @search-model-options="loadAccountTestModelOptions(true, $event)"
       @run="runAccountTest"
@@ -259,6 +262,7 @@
       :account="reauthorizingAccount"
       :auth-loading="reauthorizeAuthLoading"
       :auth-result="reauthorizeAuthResult"
+      :is-management-view="isManagementView"
       :form="reauthorizeForm"
       :saving="reauthorizeSaving"
       @cancel="closeReauthorizeModal"
@@ -915,6 +919,7 @@ const {
 const {
   activeSingleTestTask,
   closeTestModal,
+  loadAccountTestEndpointModeOptions,
   loadAccountTestModelOptions,
   openDraftTestModal: openDraftTestModalWithHealthCheckModel,
   openSavedDraftTestModal: openSavedDraftTestModalWithHealthCheckModel,
@@ -922,6 +927,8 @@ const {
   runAccountTest,
   stopAccountTest,
   testEndpointModes,
+  testEndpointModesError,
+  testEndpointModesLoading,
   testForm,
   testModalOpen,
   testModelOptions,

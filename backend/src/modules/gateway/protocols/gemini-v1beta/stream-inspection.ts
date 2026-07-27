@@ -15,7 +15,8 @@ import {
 } from '../../request/body.js'
 import {
   estimateTokenCountFromText,
-  parseOpenAISseEventText
+  parseOpenAISseEventText,
+  type ParsedOpenAIStreamEvent
 } from '../openai-v1/stream-events.js'
 import {
   extractGeminiStreamEventError
@@ -151,6 +152,15 @@ export class GeminiStreamInspector {
     return this.snapshot()
   }
 
+  pushParsedEvent(
+    event: ParsedOpenAIStreamEvent,
+    options: { dataBytes?: number } = {}
+  ): GeminiStreamInspection {
+    if (this.inspection.skipped) return this.snapshot()
+    this.inspectParsedEvent(event, options.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8'))
+    return this.snapshot()
+  }
+
   finish(): GeminiStreamInspection {
     if (this.inspection.skipped) return this.snapshot()
     if (this.pendingLine.length > 0) {
@@ -222,10 +232,14 @@ export class GeminiStreamInspector {
     const eventName = this.eventName
     const rawText = `${eventName ? `event: ${eventName}\n` : ''}${this.dataLines.map((line) => `data: ${line}`).join('\n')}\n\n`
     const event = parseOpenAISseEventText(rawText)
-    const eventType = event.eventType || event.eventName || eventName || 'message'
-    const summary = this.classifyEvent(eventType, event.eventName || eventName, event.data, event.dataParseError, this.dataBytes)
-    this.recordEventSummary(summary)
+    this.inspectParsedEvent(event, this.dataBytes, eventName)
     this.resetEvent()
+  }
+
+  private inspectParsedEvent(event: ParsedOpenAIStreamEvent, dataBytes: number, fallbackEventName = ''): void {
+    const eventType = event.eventType || event.eventName || fallbackEventName || 'message'
+    const summary = this.classifyEvent(eventType, event.eventName || fallbackEventName, event.data, event.dataParseError, dataBytes)
+    this.recordEventSummary(summary)
   }
 
   private classifyEvent(

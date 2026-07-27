@@ -1,6 +1,6 @@
 import { newId, nowIso } from './database.js'
-import { operationLogSummaryFromRow } from './operation-log-mappers.js'
 import type {
+  OperationLogChange,
   OperationLogDetailLevel,
   OperationLogInput,
   OperationLogSummary,
@@ -19,10 +19,14 @@ export interface PreparedOperationLogInput {
   viewers: OperationLogViewerInput[]
   changesJson: string
   metadataJson: string
+  changes: OperationLogChange[]
+  metadata: Record<string, unknown>
 }
 
 export function prepareOperationLogInput(input: OperationLogInput): PreparedOperationLogInput {
   const detailLevel = input.detailLevel ?? 'full'
+  const changes = prepareJsonValue(input.changes ?? [], [])
+  const metadata = prepareJsonValue(input.metadata ?? {}, {})
   return {
     id: input.id ?? newId('oplog'),
     input,
@@ -31,40 +35,42 @@ export function prepareOperationLogInput(input: OperationLogInput): PreparedOper
     detailLevel,
     targets: normalizeTargets(input),
     viewers: normalizeViewers(input),
-    changesJson: safeJsonStringify(input.changes ?? [], '[]'),
-    metadataJson: safeJsonStringify(input.metadata ?? {}, '{}')
+    changesJson: changes.json,
+    metadataJson: metadata.json,
+    changes: changes.value,
+    metadata: metadata.value
   }
 }
 
 export function operationLogSummaryFromPrepared(prepared: PreparedOperationLogInput): OperationLogSummary {
   const input = prepared.input
-  return operationLogSummaryFromRow({
+  return {
     id: prepared.id,
-    trace_id: input.traceId,
-    actor_system_account_id: input.actorSystemAccountId,
-    actor_username: input.actorUsername,
-    actor_display_name: input.actorDisplayName,
-    actor_role: input.actorRole,
-    operation_scope_system_account_id: input.operationScopeSystemAccountId,
+    traceId: input.traceId,
+    actorSystemAccountId: input.actorSystemAccountId,
+    actorUsername: input.actorUsername,
+    actorDisplayName: input.actorDisplayName,
+    actorRole: input.actorRole,
+    operationScopeSystemAccountId: input.operationScopeSystemAccountId,
     mode: input.mode ?? 'self',
     module: input.module,
     action: input.action,
-    operation_key: input.operationKey,
-    resource_type: input.resourceType,
-    resource_id: input.resourceId,
-    resource_name: input.resourceName,
+    operationKey: input.operationKey,
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
+    resourceName: input.resourceName,
     summary: input.summary,
-    detail_level: prepared.detailLevel,
-    visibility_scope: prepared.visibilityScope,
-    changes_json: prepared.changesJson,
-    metadata_json: prepared.metadataJson,
+    detailLevel: prepared.detailLevel,
+    visibilityScope: prepared.visibilityScope,
+    changes: prepared.changes,
+    metadata: prepared.metadata,
     method: input.method,
     path: input.path,
-    status_code: input.statusCode,
-    client_ip: input.clientIp,
-    user_agent: input.userAgent,
-    created_at: prepared.createdAt
-  }, new Map())
+    statusCode: input.statusCode,
+    clientIp: input.clientIp,
+    userAgent: input.userAgent,
+    createdAt: prepared.createdAt
+  }
 }
 
 function normalizeTargets(input: OperationLogInput): OperationLogTargetInput[] {
@@ -113,10 +119,13 @@ function dedupeViewers(viewers: OperationLogViewerInput[]): OperationLogViewerIn
   return output
 }
 
-function safeJsonStringify(value: unknown, fallback: string): string {
+function prepareJsonValue<T>(value: T, fallback: T): { json: string; value: T } {
   try {
-    return JSON.stringify(value) ?? fallback
+    const json = JSON.stringify(value)
+    return json === undefined
+      ? { json: JSON.stringify(fallback), value: fallback }
+      : { json, value }
   } catch {
-    return fallback
+    return { json: JSON.stringify(fallback), value: fallback }
   }
 }

@@ -21,13 +21,16 @@ type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
   | 'parse_json_body'
   | 'normalize_openai_oauth_codex_body'
+  | 'normalize_openai_oauth_codex_parsed_body'
 
 interface GatewayJsonWorkerJob {
   id: number
   traceId?: string
   parentId?: string
   type: GatewayJsonWorkerJobType
-  rawBody: Buffer
+  rawBody?: Buffer
+  parsedBody?: unknown
+  payloadBytes: number
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
   enqueuedAtMs: number
   startedAtMs?: number
@@ -157,6 +160,7 @@ export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000,
   return enqueueGatewayJsonWorkerJob({
     type: 'parse_json_body',
     rawBody,
+    payloadBytes: rawBody.byteLength,
     timeoutMs,
     signal
   })
@@ -168,26 +172,34 @@ export async function parseGatewayRequestJsonBody(
   signal?: AbortSignal
 ): Promise<unknown> {
   const request = req as GatewayRawBodyRequest
-  if (request.body !== undefined && !Buffer.isBuffer(request.body)) {
-    request.gatewayParsedJsonBodyAvailable = true
-    request.gatewayParsedJsonBody = request.body
-    return request.body
-  }
-  if (request.gatewayParsedJsonBodyAvailable) {
-    return request.gatewayParsedJsonBody
-  }
-  const rawBody = request.rawBody
-  if (!rawBody || rawBody.length === 0) {
-    return undefined
-  }
-  if (request.gatewayParsedJsonBodyPromise) {
-    return await request.gatewayParsedJsonBodyPromise
-  }
-  const parsePromise = parseGatewayJsonBodyInWorker(rawBody, timeoutMs, signal)
-  request.gatewayParsedJsonBodyPromise = parsePromise
-  try {
-    const parsed = await parsePromise
-    if (request.rawBody === rawBody) {
+  while (true) {
+    if (request.body !== undefined && !Buffer.isBuffer(request.body)) {
+      request.gatewayParsedJsonBodyAvailable = true
+      request.gatewayParsedJsonBody = request.body
+      return request.body
+    }
+    if (request.gatewayParsedJsonBodyAvailable) {
+      return request.gatewayParsedJsonBody
+    }
+    const rawBody = request.rawBody
+    if (!rawBody || rawBody.length === 0) {
+      return undefined
+    }
+    const existingMaterialization = request.gatewayParsedJsonBodyPromise
+    const materialization = existingMaterialization?.rawBody === rawBody
+      ? existingMaterialization
+      : {
+          rawBody,
+          promise: parseGatewayJsonBodyInWorker(rawBody, timeoutMs, signal)
+        }
+    if (materialization !== existingMaterialization) {
+      request.gatewayParsedJsonBodyPromise = materialization
+    }
+    try {
+      const parsed = await materialization.promise
+      if (request.rawBody !== rawBody) {
+        continue
+      }
       request.body = parsed
       request.gatewayParsedJsonBodyAvailable = true
       request.gatewayParsedJsonBody = parsed
@@ -197,11 +209,16 @@ export async function parseGatewayRequestJsonBody(
           jsonParseStatus: 'parsed'
         }
       }
-    }
-    return parsed
-  } finally {
-    if (request.gatewayParsedJsonBodyPromise === parsePromise) {
-      request.gatewayParsedJsonBodyPromise = undefined
+      return parsed
+    } catch (error) {
+      if (request.rawBody !== rawBody) {
+        continue
+      }
+      throw error
+    } finally {
+      if (request.gatewayParsedJsonBodyPromise === materialization) {
+        request.gatewayParsedJsonBodyPromise = undefined
+      }
     }
   }
 }
@@ -213,6 +230,7 @@ export function extractGatewayJsonBodyMetadataInWorker(rawBody: Buffer, timeoutM
   return enqueueGatewayJsonWorkerJob<GatewayJsonBodyMetadata>({
     type: 'extract_json_body_metadata',
     rawBody,
+    payloadBytes: rawBody.byteLength,
     timeoutMs,
     signal
   })
@@ -230,6 +248,27 @@ export function normalizeOpenAIOAuthCodexBodyInWorker(
   return enqueueGatewayJsonWorkerJob<NormalizedCodexBody>({
     type: 'normalize_openai_oauth_codex_body',
     rawBody,
+    payloadBytes: rawBody.byteLength,
+    normalizeInput,
+    timeoutMs,
+    signal
+  })
+}
+
+export function normalizeOpenAIOAuthCodexParsedBodyInWorker(
+  parsedBody: unknown,
+  payloadBytes: number,
+  normalizeInput: OpenAIOAuthCodexNormalizeInput,
+  timeoutMs = 30000,
+  signal?: AbortSignal
+): Promise<NormalizedCodexBody> {
+  if (shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime()) {
+    return normalizeOpenAIOAuthCodexParsedBodyInline(parsedBody, normalizeInput, signal)
+  }
+  return enqueueGatewayJsonWorkerJob<NormalizedCodexBody>({
+    type: 'normalize_openai_oauth_codex_parsed_body',
+    parsedBody,
+    payloadBytes: Math.max(0, Math.trunc(payloadBytes)),
     normalizeInput,
     timeoutMs,
     signal
@@ -281,6 +320,20 @@ async function normalizeOpenAIOAuthCodexBodyInline(
   return normalizeOpenAIOAuthCodexRawBody(rawBody, normalizeInput)
 }
 
+async function normalizeOpenAIOAuthCodexParsedBodyInline(
+  parsedBody: unknown,
+  normalizeInput: OpenAIOAuthCodexNormalizeInput,
+  signal?: AbortSignal
+): Promise<NormalizedCodexBody> {
+  if (signal?.aborted) {
+    throw new Error('网关 JSON worker 任务已取消')
+  }
+  const {
+    normalizeOpenAIOAuthCodexParsedBody
+  } = await import('../adapters/gpt-codex/oauth-normalizer.js')
+  return normalizeOpenAIOAuthCodexParsedBody(parsedBody, normalizeInput)
+}
+
 export async function stopGatewayJsonParseWorker(): Promise<void> {
   const currentSlots = workerSlots.splice(0, workerSlots.length)
   for (const slot of currentSlots) {
@@ -309,7 +362,9 @@ export async function stopGatewayJsonParseWorker(): Promise<void> {
 
 function enqueueGatewayJsonWorkerJob<TValue>(input: {
   type: GatewayJsonWorkerJobType
-  rawBody: Buffer
+  rawBody?: Buffer
+  parsedBody?: unknown
+  payloadBytes: number
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
   timeoutMs: number
   signal?: AbortSignal
@@ -325,6 +380,8 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
       parentId: getRequestId(),
       type: input.type,
       rawBody: input.rawBody,
+      parsedBody: input.parsedBody,
+      payloadBytes: input.payloadBytes,
       normalizeInput: input.normalizeInput,
       enqueuedAtMs: Date.now(),
       resolve: (value) => resolve(value as TValue),
@@ -422,6 +479,7 @@ function startJobOnWorkerSlot(slot: GatewayJsonWorkerSlot, job: GatewayJsonWorke
       id: job.id,
       type: job.type,
       rawBody: job.rawBody,
+      parsedBody: job.parsedBody,
       normalizeInput: job.normalizeInput
     })
   } catch (error) {
@@ -503,7 +561,7 @@ function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWo
 function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWorkerResponse): Error {
   const errorMessage = message.error?.message ?? '网关 JSON 请求体必须是有效 JSON'
   if (
-    job.type === 'normalize_openai_oauth_codex_body'
+    isOpenAIOAuthCodexNormalizeJob(job.type)
     && message.errorCode === 'invalid_openai_oauth_codex_request'
   ) {
     return applyWorkerErrorEnvelope(new OpenAIOAuthCodexAdapterError(errorMessage, message.errorCode, {
@@ -512,6 +570,11 @@ function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWork
     }), message.error)
   }
   return applyWorkerErrorEnvelope(new Error(errorMessage), message.error)
+}
+
+function isOpenAIOAuthCodexNormalizeJob(type: GatewayJsonWorkerJobType): boolean {
+  return type === 'normalize_openai_oauth_codex_body'
+    || type === 'normalize_openai_oauth_codex_parsed_body'
 }
 
 function applyWorkerErrorEnvelope(error: Error, envelope?: GatewayJsonWorkerErrorEnvelope): GatewayJsonWorkerError {
@@ -543,7 +606,7 @@ function isExpectedWorkerResponseError(
   if (job.type === 'parse_json_body') {
     return message.error?.name === 'SyntaxError'
   }
-  return job.type === 'normalize_openai_oauth_codex_body'
+  return isOpenAIOAuthCodexNormalizeJob(job.type)
     && message.errorCode === 'invalid_openai_oauth_codex_request'
     && error instanceof OpenAIOAuthCodexAdapterError
 }
@@ -587,7 +650,7 @@ function activeGatewayJsonWorkerBytes(): number {
 }
 
 function gatewayJsonWorkerJobBytes(job: GatewayJsonWorkerJob): number {
-  return job.rawBody.byteLength + 512
+  return job.payloadBytes + 512
 }
 
 function failActiveJob(slot: GatewayJsonWorkerSlot, error: Error, restartWorker: boolean): void {
@@ -634,7 +697,7 @@ function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean
     jobId: gatewayJsonWorkerJobId(job),
     parentId: gatewayJsonWorkerParentId(job),
     jobType: job.type,
-    rawBodyBytes: job.rawBody.byteLength,
+    rawBodyBytes: job.payloadBytes,
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : undefined,
     workerDurationMs: job.startedAtMs ? Date.now() - job.startedAtMs : undefined,
     totalMs: Date.now() - job.enqueuedAtMs,
@@ -671,7 +734,7 @@ function cancelJob(job: GatewayJsonWorkerJob): void {
     jobId: gatewayJsonWorkerJobId(job),
     parentId: gatewayJsonWorkerParentId(job),
     jobType: job.type,
-    rawBodyBytes: job.rawBody.byteLength,
+    rawBodyBytes: job.payloadBytes,
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : now - job.enqueuedAtMs,
     workerDurationMs: job.startedAtMs ? now - job.startedAtMs : undefined,
     totalMs: now - job.enqueuedAtMs,
@@ -700,7 +763,7 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
     logger.warn(fields, '网关 JSON worker 任务耗时偏高')
     return
   }
-  if (job.rawBody.byteLength > gatewayJsonBodyLargeWarningBytes) {
+  if (job.payloadBytes > gatewayJsonBodyLargeWarningBytes) {
     logger.info(fields, '网关 JSON worker 任务完成')
     return
   }
@@ -742,7 +805,7 @@ function gatewayJsonWorkerTimingFields(job: GatewayJsonWorkerJob): {
     jobId: gatewayJsonWorkerJobId(job),
     parentId: gatewayJsonWorkerParentId(job),
     jobType: job.type,
-    rawBodyBytes: job.rawBody.byteLength,
+    rawBodyBytes: job.payloadBytes,
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : now - job.enqueuedAtMs,
     workerDurationMs: job.startedAtMs ? now - job.startedAtMs : undefined,
     totalMs: now - job.enqueuedAtMs,

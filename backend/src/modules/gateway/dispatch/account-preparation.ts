@@ -31,7 +31,6 @@ import {
 import { recordGatewayProxyFailureAsync } from '../runtime/proxy-health.service.js'
 import { requestEndpoint } from '../request/metadata.js'
 import { loadGatewayAccountApiKeyTransientStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
-import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
 import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../request/body.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
@@ -39,6 +38,7 @@ import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-
 import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-history-sanitizer.js'
 import { codexResponsesContractRevision } from '../codex-responses/contract-registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -267,8 +267,7 @@ export async function buildPreparedUpstreamRequestParts(
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId
     }, signal, context)
-    const bodyBuffer = typeof parts.body === 'string' ? Buffer.from(parts.body, 'utf8') : parts.body
-    const metadata = bodyBuffer ? extractGatewayJsonBodyMetadata(bodyBuffer) : undefined
+    const metadata = preparedUpstreamBodyMetadata(req, parts.body)
     return {
       ...parts,
       effectiveServiceTier: metadata?.serviceTier ?? 'default',

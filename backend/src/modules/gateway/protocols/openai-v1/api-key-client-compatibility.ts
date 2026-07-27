@@ -9,6 +9,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../request/serialized-json-body.js'
 import { splitPathAndQuery } from './route-helpers.js'
 import {
   isOpenAICodexClientHeaders,
@@ -37,7 +38,7 @@ export async function buildOpenAIClientCompatibilityBody(
   }
   applyCodexResponsesCompatibility(body)
   normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
-  return Buffer.from(JSON.stringify(body), 'utf8')
+  return serializeGatewayJsonObject(body)
 }
 
 export function applyOpenAIClientCompatibilityHeaders(

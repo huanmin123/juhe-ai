@@ -31,12 +31,17 @@ import { accountTestFailureEligibleForAccount } from './account-test-failure-eli
 import { accountCredentialFingerprint } from './account-credential-update.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
+  extractAccountTestResponseOutputText,
   parseAccountTestUpstreamErrorCode,
+  parseAccountTestStreamFailureMessage,
+  parseAccountTestUpstreamMessage,
   redactAccountTestImageResponse,
-  resolveAccountTestResponseDiagnostics
+  resolveAccountTestResponseDiagnostics,
+  type AccountTestDiagnosticProtocol
 } from './account-test-response-diagnostics.js'
 import {
   accountModelCatalogIds,
+  accountModelCatalogIdsFromPayload,
   hasAccountModelCatalogResponseEvidence,
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
@@ -55,21 +60,11 @@ import {
   MemoryGatewayResponse
 } from '../gateway/testing/memory-gateway-http.js'
 import { markGatewayUpstreamModelsProbe } from '../gateway/request/upstream-models-probe.js'
-import {
-  extractOpenAIResponseOutputText,
-  parseOpenAIJsonBody,
-  parseOpenAIStreamFailureMessage,
-  parseOpenAIUpstreamMessage
-} from '../gateway/protocols/openai-v1/response-parsing.js'
+import { parseDiagnosticResponseContext } from '../gateway/diagnostics/diagnostic-response-context.js'
 import {
   resolveOpenAIRequestModelMapping,
   type ResolvedOpenAIModelMapping
 } from '../gateway/protocols/openai-v1/model-mapping.js'
-import {
-  parseAnthropicUpstreamMessage,
-  parseAnthropicStreamFailureMessage,
-  extractAnthropicResponseOutputText
-} from '../gateway/protocols/anthropic-v1/response-parsing.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import {
   type AccountDiagnosticAttemptProgressHandler,
@@ -189,7 +184,9 @@ export async function discoverAccountUpstreamModels(
     requireCatalogModelEvidence: false,
     disableAccountStateMutation: true
   })
-  const modelIds = accountModelCatalogIds(result.responseText ?? '')
+  const modelIds = result.responseBody !== undefined
+    ? accountModelCatalogIdsFromPayload(result.responseBody)
+    : accountModelCatalogIds(result.responseText ?? '')
   if (!result.success) {
     throw new Error(result.message || '获取上游模型目录失败')
   }
@@ -428,39 +425,34 @@ export async function testOpenAIAccount(
       ? account
       : await loadAccountForTest(input, account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
-    const diagnosticAttemptResponseText = diagnosticLastAttempt?.responseBodyText ?? ''
-    const diagnosticAttemptText = diagnosticAttemptResponseText.trim()
     const { responseText, responseHeaders, responseTruncated } = resolveAccountTestResponseDiagnostics({
       downstreamResponseText: response.bodyText(),
       downstreamResponseHeaders: response.headersObject(),
       downstreamResponseTruncated: response.bodyTruncated(),
       upstreamAttempt: diagnosticLastAttempt
     })
-    const upstreamMessage = messagesTestMode
-      ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
+    const responseContext = parseDiagnosticResponseContext(responseText)
+    const diagnosticProtocol: AccountTestDiagnosticProtocol = messagesTestMode
+      ? 'anthropic'
       : geminiTestMode
-        ? parseGeminiUpstreamMessage(diagnosticAttemptText) ?? parseGeminiUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-      : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-    const upstreamErrorCode = parseAccountTestUpstreamErrorCode(diagnosticAttemptText) ?? parseAccountTestUpstreamErrorCode(responseText)
-    const streamFailureMessage = messagesTestMode
-      ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
-      : geminiTestMode
-        ? parseGeminiStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
-      : parseOpenAIStreamFailureMessage(responseText)
-    const outputText = messagesTestMode
-      ? extractAnthropicResponseOutputText(responseText)
-      : geminiTestMode
-        ? extractGeminiResponseOutputText(responseText)
-      : extractOpenAIResponseOutputText(responseText)
+        ? 'gemini'
+        : 'openai'
+    const upstreamMessage = parseAccountTestUpstreamMessage(responseContext, diagnosticProtocol)
+      ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestUpstreamMessage(responseContext, 'openai'))
+      ?? (responseText ? responseText.slice(0, 240) : undefined)
+    const upstreamErrorCode = parseAccountTestUpstreamErrorCode(responseContext)
+    const streamFailureMessage = parseAccountTestStreamFailureMessage(responseContext, diagnosticProtocol)
+      ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestStreamFailureMessage(responseContext, 'openai'))
+    const outputText = extractAccountTestResponseOutputText(responseContext, diagnosticProtocol)
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
     // Image tests intentionally verify the request outcome only. Image payloads are redacted before diagnostics leave the server.
     const protocolSuccessEvidence = probeKind === 'image_generation'
-      ? true
+          ? true
       : probeKind === 'models_catalog'
         ? input.requireCatalogModelEvidence === false
-          ? hasAccountModelCatalogResponseEvidence(responseText)
-          : hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseText)
-        : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
+          ? hasAccountModelCatalogResponseEvidence(responseContext)
+          : hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseContext)
+        : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseContext))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
@@ -475,7 +467,7 @@ export async function testOpenAIAccount(
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     const imageResponseBody = probeKind === 'image_generation'
-      ? redactAccountTestImageResponse(responseText)
+      ? redactAccountTestImageResponse(responseContext)
       : undefined
     const responseDiagnostics = probeKind === 'image_generation'
       ? {
@@ -483,13 +475,15 @@ export async function testOpenAIAccount(
           responseText: JSON.stringify(imageResponseBody),
           responseTruncated
         }
-      : {
-          responseHeaders,
-          responseBody: parseOpenAIJsonBody(responseText),
-          responseText,
-          responseTruncated,
-          outputText
-        }
+      : limitedDiagnostics
+        ? {}
+        : {
+            responseHeaders,
+            responseBody: responseContext.json,
+            responseText,
+            responseTruncated,
+            outputText
+          }
     return accountTestResultWithDiagnosticsMode(sanitizeAccountTestResult({
       accountId: account.id,
       accountName: account.name,
@@ -942,73 +936,6 @@ function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret
   const before = stringValue(original.credentials.access_token)
   const after = stringValue(resolved.apiKey)
   return Boolean(after && before !== after)
-}
-
-function parseGeminiUpstreamMessage(bodyText: string): string | undefined {
-  for (const payload of parseGeminiPayloads(bodyText)) {
-    const error = objectValue(payload.error)
-    const message = stringValue(error?.message) || stringValue(payload.message)
-    if (message) return message
-  }
-  return undefined
-}
-
-function parseGeminiStreamFailureMessage(bodyText: string): string | undefined {
-  return parseGeminiUpstreamMessage(bodyText)
-}
-
-function extractGeminiResponseOutputText(bodyText: string): string | undefined {
-  const parts = parseGeminiPayloads(bodyText)
-    .flatMap((payload) => geminiCandidateTexts(payload))
-    .map((text) => text.trim())
-    .filter(Boolean)
-  return parts.length ? parts.join('') : undefined
-}
-
-function parseGeminiPayloads(bodyText: string): Record<string, unknown>[] {
-  const text = bodyText.trim()
-  if (!text) return []
-  const direct = parseJsonObject(text)
-  if (direct) return [direct]
-  const output: Record<string, unknown>[] = []
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) continue
-    const data = trimmed.slice(5).trim()
-    if (!data || data === '[DONE]') continue
-    const parsed = parseJsonObject(data)
-    if (parsed) output.push(parsed)
-  }
-  return output
-}
-
-function parseJsonObject(text: string): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(text) as unknown
-    return objectValue(parsed)
-  } catch {
-    return undefined
-  }
-}
-
-function geminiCandidateTexts(payload: Record<string, unknown>): string[] {
-  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
-  const output: string[] = []
-  for (const candidate of candidates) {
-    const content = objectValue(objectValue(candidate)?.content)
-    const parts = Array.isArray(content?.parts) ? content.parts : []
-    for (const part of parts) {
-      const text = stringValue(objectValue(part)?.text)
-      if (text) output.push(text)
-    }
-  }
-  return output
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
 }
 
 function accountTestSuccessMessage(account: AccountSummary, responseTruncated: boolean, requestUrl: string): string {

@@ -46,7 +46,15 @@ export function mergeAccountCredentialsForUpdate(account: AccountSummary, reques
             'expires_at',
             'client_id',
             'client_secret',
-            'quota_project_id'
+            'quota_project_id',
+            'oauth_type',
+            'project_id',
+            'tier_id',
+            'scope',
+            'token_type',
+            'drive_storage_limit',
+            'drive_storage_usage',
+            'drive_tier_updated_at'
           ]
         : [
       'access_token',

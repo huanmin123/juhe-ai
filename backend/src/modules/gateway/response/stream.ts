@@ -251,6 +251,8 @@ export async function pipeUpstreamStream(
               const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
               if (rewritten) codexResponsesGuard.recordAppliedSseRepairs(result.repairs.length)
               return rewritten
+                ? { buffer: rewritten.buffer, parsedEvent: rewritten.event }
+                : undefined
             }
           }
         : {}),
@@ -756,7 +758,7 @@ export async function pipeUpstreamStream(
         if (!preCommitSseEvidence.dataEventObserved && !downstreamCommit.semanticCommitted) {
           preCommitSseEvidence.push(outbound)
         }
-        latestInspection = inspector.pushChunk(outbound, {
+        latestInspection = pushGatewayStreamInspectorChunk(inspector, outbound, interceptor, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
         updateStreamInspectionProgress(latestInspection)
@@ -1013,7 +1015,7 @@ export async function pipeUpstreamStream(
         if (!preCommitSseEvidence.dataEventObserved && !downstreamCommit.semanticCommitted) {
           preCommitSseEvidence.push(outbound)
         }
-        latestInspection = inspector.pushChunk(outbound, {
+        latestInspection = pushGatewayStreamInspectorChunk(inspector, outbound, interceptor, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
         updateStreamInspectionProgress(latestInspection)
@@ -1916,6 +1918,19 @@ function pushResponseInspectionChunks(
     }
   }
   return result
+}
+
+export function pushGatewayStreamInspectorChunk(
+  inspector: GatewayStreamInspector,
+  chunk: Buffer,
+  interceptor: OpenAIResponseInspectionBuffer | undefined,
+  options: { lightweightImageStream?: boolean } = {}
+): GatewayStreamInspection {
+  const parsed = interceptor?.parsedEventForChunk(chunk)
+  if (parsed && inspector.pushParsedEvent) {
+    return inspector.pushParsedEvent(parsed.event, { dataBytes: parsed.dataBytes })
+  }
+  return inspector.pushChunk(chunk, options)
 }
 
 function passThroughResponseInspectionChunks(chunks: Buffer[]): ResponseInspectionSseResult {

@@ -48,6 +48,7 @@ type EnqueueOptions struct {
 	Retention time.Duration
 	TaskID    string
 	UniqueTTL time.Duration
+	Headers   map[string]string
 }
 
 var ErrTaskConflict = errors.New("queue task conflict")
@@ -100,7 +101,7 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload []byte, o
 		return TaskInfo{}, fmt.Errorf("task type is required")
 	}
 
-	info, err := c.client.EnqueueContext(ctx, asynq.NewTask(taskType, payload), asynqOptions(opts)...)
+	info, err := c.client.EnqueueContext(ctx, newAsynqTask(taskType, payload, opts.Headers), asynqOptions(opts)...)
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
 			return TaskInfo{}, fmt.Errorf("%w: %v", ErrTaskConflict, err)
@@ -109,6 +110,10 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload []byte, o
 	}
 
 	return mapTaskInfo(info), nil
+}
+
+func newAsynqTask(taskType string, payload []byte, headers map[string]string) *asynq.Task {
+	return asynq.NewTaskWithHeaders(taskType, payload, headers)
 }
 
 func asynqOptions(opts EnqueueOptions) []asynq.Option {

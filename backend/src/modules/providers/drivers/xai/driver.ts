@@ -29,6 +29,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
+import { prepareXaiAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 
 function xaiEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, _context?: ProviderGatewayRequestContext) {
   if (!isSupportedXaiPath(req)) return undefined
@@ -51,6 +52,9 @@ export const xaiProviderDriver: ProviderDriver = {
       && isOpenAIProtocolProfile(profile)
       && profileId === XAI_OPENAI_V1_PROFILE_ID
   },
+  async prepareAccountBeforeDispatch(account, context) {
+    return await prepareXaiAccountBeforeDispatch(account, context.signal)
+  },
   resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
     return {
@@ -62,12 +66,16 @@ export const xaiProviderDriver: ProviderDriver = {
     }
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
-    if (account.type !== 'api_key' || !isSupportedXaiPath(req)) return []
+    if (!isSupportedXaiAccountType(account.type) || !isSupportedXaiPath(req)) return []
+    if (account.type === 'oauth' && !isXaiOAuthPath(req)) return []
     return buildUpstreamUrls(account.baseUrl, req.originalUrl)
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
-    if (account.type !== 'api_key') {
-      throw new Error('xAI 官方 API 档案只支持 API Key 账户')
+    if (!isSupportedXaiAccountType(account.type)) {
+      throw new Error('xAI 官方 API 档案只支持 API Key 或 OAuth 账户')
+    }
+    if (account.type === 'oauth' && !isXaiOAuthPath(req)) {
+      throw new Error('Grok OAuth 账户只支持 Responses 接口')
     }
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
@@ -75,6 +83,12 @@ export const xaiProviderDriver: ProviderDriver = {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
+    if (account.type === 'oauth') {
+      headers.set('user-agent', 'sub2api-grok/1.0')
+      headers.set('x-grok-client-version', '0.2.93')
+      headers.set('accept', 'application/json, text/event-stream')
+      headers.set('content-type', 'application/json')
+    }
     applyOpenAIClientCompatibilityHeaders(req, headers, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
@@ -87,7 +101,8 @@ export const xaiProviderDriver: ProviderDriver = {
   },
   endpointModeForRequest: xaiEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account, context) {
-    if (account.type !== 'api_key') return false
+    if (!isSupportedXaiAccountType(account.type)) return false
+    if (account.type === 'oauth' && !isXaiOAuthPath(req)) return false
     const mode = xaiEndpointModeForGatewayRequest(req, account, context)
     if (!mode) return false
     return accountSupportsOpenAIEndpointMode({
@@ -100,6 +115,17 @@ export const xaiProviderDriver: ProviderDriver = {
       clientCompatibility: account.clientCompatibility
     })
   }
+}
+
+function isSupportedXaiAccountType(type: string | undefined): boolean {
+  return type === 'api_key' || type === 'oauth'
+}
+
+function isXaiOAuthPath(req: Request): boolean {
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  const requestPath = path.startsWith('/') ? path : `/${path}`
+  const normalizedPath = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return req.method.toUpperCase() === 'POST' && normalizedPath === '/responses'
 }
 
 function isSupportedXaiPath(req: Request): boolean {

@@ -11,7 +11,7 @@ export const xaiAccountCredentialDriver: ProviderAccountCredentialDriver = {
   id: 'xai',
   providerCode: XAI_PROVIDER_CODE,
   supportsContext(context) {
-    return context.accountType === 'api_key'
+    return (context.accountType === 'api_key' || context.accountType === 'oauth')
       && isXaiProviderCode(context.providerCode)
       && isOpenAIProtocolProfile(context)
       && context.providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID
@@ -21,7 +21,7 @@ export const xaiAccountCredentialDriver: ProviderAccountCredentialDriver = {
       ...context,
       providerCode: XAI_PROVIDER_CODE,
       providerProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
-      accountType: 'api_key'
+      accountType: context.accountType
     })
   }
 }

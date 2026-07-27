@@ -11,7 +11,7 @@
 - 人工测试只作为用户主动发起的诊断工具，不再承担账户激活、状态恢复、健康事实维护或默认模型保存职责。
 - 后台系统检查统一使用账户保存的检查模型，并独占账户激活、健康确认和自动恢复职责。
 - 模型目录中的默认机制只负责初始化账户检查模型，不能在运行时动态改变已有账户。
-- 列表保持轻量；打开测试弹窗时一次加载候选模型、目录协议和账户可测试请求形态，切换选择不再追加单模型能力请求。
+- 列表随账户摘要返回检查模型和检查请求形态；打开测试弹窗不加载候选目录，用户展开模型或请求形态下拉时再按对应范围加载。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
 ## 健康检查请求形态
@@ -160,9 +160,9 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 
 ## 7. 列表按需加载
 
-账户列表只返回展示和筛选所需的摘要字段，不为了测试提前加载完整支持模型、检查模型详情、endpoint modes 或凭据。
+账户列表返回展示、筛选和测试弹窗初始化所需的摘要字段，包括账户自己的 `healthCheckModel` 和 `healthCheckEndpointMode`；不为了测试提前加载完整支持模型、候选模型目录、endpoint modes 数组或凭据。
 
-用户打开测试弹窗时调用专用模型选项接口；后续搜索继续复用同一接口：
+用户打开测试弹窗时直接使用列表项中的检查模型和检查请求形态，不发起 options 请求。只有用户展开模型下拉时才调用专用模型选项接口；后续搜索继续复用同一接口：
 
 ```text
 GET /__aisys__/api/accounts/:id/test-options
@@ -171,18 +171,18 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 响应直接为 `Array<{ id, name, supportedApiProtocols, testEndpointModes }>`，支持 `keyword`、`limit` 和 `selectedIds`。`supportedApiProtocols` 来自模型目录；`testEndpointModes` 是账户上游能力、模型协议和有效模型映射的交集。默认模型仍使用账户列表行的 `healthCheckModel`，其请求形态从返回的对应模型选项直接绑定。
 
-以下管理端或个人端镜像能力接口保留用于旧客户端兼容和定点诊断，当前前端正常切换模型不调用：
+以下管理端或个人端镜像能力接口用于请求形态下拉的定点加载：用户尚未展开模型下拉、当前仅有列表默认请求形态时，展开请求形态下拉只查询当前模型，不加载完整模型目录：
 
 ```text
 GET /__aisys__/api/accounts/:id/test-options/models/:modelId
 GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 ```
 
-能力响应包含 `{ id, name, supportedApiProtocols, testEndpointModes }`。列表和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
+能力响应包含 `{ id, name, supportedApiProtocols, testEndpointModes }`。批量模型选项已经包含当前模型的完整能力时，展开请求形态下拉直接复用，不重复请求；从模型下拉切换模型也直接绑定同一选项的 `testEndpointModes`。列表和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
 
 `testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个普通生成模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
-后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断；激活按账户哨兵策略处理；active 周期检查和请求失败确认只把 execution 失败提交给精确模型能力 scope。目录缺少目标只形成 visibility unknown，不得直接证明 execution unavailable。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
@@ -194,8 +194,9 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 | --- | --- | --- |
 | 新账户激活检查 | 账户检查模型 | `complete_success` 后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；完整 framing 协议失败和 `transport_incomplete` 都是可用性失败，从首次起满 24 小时后仍独立失败才原子转为 `error` |
 | 关键配置变更复检 | 账户检查模型 | 按配置变更类型进入待检查或正常健康阈值流程 |
-| 正常账户周期健康检查 | 账户检查模型 | 写健康事实；达到阈值且确认账户级故障后进入保护状态 |
-| 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
+| 正常账户周期健康检查 | 账户检查模型 | 写 v1 哨兵事实并只推进精确 model_capability；不写整号状态 |
+| 模型子 scope 恢复探针 | 失败 attempt 的持久 ProbeRecipe | 只推进精确 protocol_model / model_capability，不回退哨兵 |
+| 真正账户全局运行态恢复 | 账户检查模型 | 只推进对应 account-scope owner；模型子 incident 不得创建该状态 |
 | 账号级冷却复测 | 账户检查模型 | `complete_success` 只恢复匹配来源的自动状态；进入长期不可用后固定每 1 小时复测，只有连续独立 `transport_incomplete` 从观察起点满 7 天后仍失败才原子转为 `error` |
 | API Key 恢复探针 | 账户检查模型 | 只更新目标 Key 运行态 |
 
@@ -246,7 +247,7 @@ runApiKeyRecoveryProbe()
 
 ## 12. 失败分类
 
-系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。传输电路、账号冷却和 Key 恢复只把第三类视为负向证据；固定模型、固定协议的激活、周期健康、请求失败二次确认和质量确认还把第二类视为账户可用性失败。任务、本地配置或过期结果不计数、不改状态。
+系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。传输电路、账号冷却和 Key 恢复只把第三类视为负向证据；`pending_test` 激活把第二、三类视为账户连接可用性失败；active 周期哨兵、请求派生探针和质量确认只把它们作为匹配 Route / Attempt 的通用 execution 不可用证据。任务、本地配置、过期结果和 revision 不匹配不计数、不改状态。request_failure 只能携带持久 `ProbeRecipe` 进入精确能力 owner，不能回退到账户哨兵或账户阈值。
 
 自动 transport 失败候选：
 
@@ -262,7 +263,7 @@ runApiKeyRecoveryProbe()
 - 本地请求形态与已声明协议能力不匹配，或最小检查请求模板无法构造。
 - 本地凭据缺失、解密失败或必要配置非法。
 
-这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`，只形成通用可用性失败，不派生具体业务语义。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
+这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`，在激活检查中只表达账户连接未通过，在 active execution 探针中只表达当前精确 Route / Attempt 不可用，不派生具体业务语义。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
 
 ## 13. 状态边界
 
@@ -304,12 +305,12 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 新增、编辑和列表人工测试成功或失败后，账户、授权实例、Key、健康事实和运行态均不变化。
 - 新增 / 编辑测试只能使用表单检查模型；列表测试关闭重开后仍默认使用账户检查模型。
 - A 账户测试运行时可以打开和启动 B 账户测试，旧结果不能覆盖新弹窗。
-- 列表接口不返回完整交互信息；打开测试弹窗只读取一次带协议能力的 `test-options`，切换模型不追加单模型能力请求。
+- 列表接口只增加检查模型和检查请求形态两个轻量标量；打开测试弹窗零 options 请求，模型下拉读取批量 `test-options`，请求形态下拉在必要时只读取当前模型能力。
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户。
 - 定时健康检查不存在关闭开关，也不存在 `health_check_enabled` 候选条件；`temporaryUnavailableContinuousProbeEnabled` 只由冷却复测读取，不能作为定时健康检查候选条件。
-- 所有系统探针严格使用账户 `healthCheckModel`，缺失或非法时不回退其他模型。
+- 激活、周期哨兵和真正账户全局探针严格使用 `healthCheckModel`；模型子 scope 探针严格使用持久 ProbeRecipe。两者缺失或非法时都不猜测其他模型。
 - 修改模型目录默认检查模型只影响后续新账户初始化，不改变已有账户。
 - 多 Key 人工测试不写 Key 状态，后台激活和 Key 恢复探针可以按职责写入 Key 状态。
-- 模型级失败不把账户整体标记为不可用，账户级故障达到策略条件后才进入保护状态。
+- 模型能力层永不把账户整体标记为不可用；全部能力阻断只形成派生门禁。只有用户显式策略或真正账户全局事实 owner 可以进入账户级保护状态。

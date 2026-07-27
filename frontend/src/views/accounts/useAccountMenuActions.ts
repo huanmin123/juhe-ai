@@ -3,7 +3,6 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
-import { isAnthropicProtocolProfile } from '@/shared/providerProtocol'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
@@ -15,6 +14,7 @@ import {
   canUseAccountActions,
   canUseBoundAuthorizedAccount
 } from './accountRules'
+import { managedOAuthProviderKind } from './accountProviderCapabilities'
 
 interface UseAccountMenuActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -39,11 +39,24 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
     try {
       const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-      if (isAnthropicProtocolProfile(account)) {
+      const providerKind = managedOAuthProviderKind({ profile: account })
+      if (providerKind === 'anthropic') {
         if (options.isManagementView.value) {
           await api.anthropicOAuth.refreshToken(account.id, scopeParams)
         } else {
           await api.myAnthropicOAuth.refreshToken(account.id)
+        }
+      } else if (providerKind === 'gemini') {
+        if (options.isManagementView.value) {
+          await api.geminiOAuth.refreshToken(account.id, scopeParams)
+        } else {
+          await api.myGeminiOAuth.refreshToken(account.id)
+        }
+      } else if (providerKind === 'grok') {
+        if (options.isManagementView.value) {
+          await api.grokOAuth.refreshToken(account.id, scopeParams)
+        } else {
+          await api.myGrokOAuth.refreshToken(account.id)
         }
       } else if (options.isManagementView.value) {
         await api.openaiOAuth.refreshToken(account.id, scopeParams)

@@ -1,5 +1,6 @@
 import {
   firstErrorFieldText,
+  jsonObjectErrorPayload,
   parseJsonObjectErrorPayload,
   stringErrorField
 } from '../_shared/error-payload.js'
@@ -7,6 +8,14 @@ import type { GatewayProtocolErrorPayload } from '../_shared/types.js'
 
 export function parseAnthropicErrorPayload(text: string, headers: Headers): GatewayProtocolErrorPayload {
   const parsed = parseJsonObjectErrorPayload(text, headers)
+  return anthropicErrorPayloadFromParsed(parsed)
+}
+
+export function parseAnthropicErrorPayloadFromJsonValue(value: unknown): GatewayProtocolErrorPayload {
+  return anthropicErrorPayloadFromParsed(jsonObjectErrorPayload(value))
+}
+
+function anthropicErrorPayloadFromParsed(parsed: ReturnType<typeof jsonObjectErrorPayload>): GatewayProtocolErrorPayload {
   if (!parsed) return {}
   const { payload, error } = parsed
   const type = stringErrorField(error.type) ?? stringErrorField(payload.type)

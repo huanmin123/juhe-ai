@@ -25,7 +25,6 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
   const traceId = getTraceId()
   const clientIp = getRequestContext()?.clientIp
   let responsePayload: ResponsePayload
-  let responseSizeBytes = 0
   let responseCaptured = false
   let recorded = false
   const socket = req.socket
@@ -41,7 +40,6 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
         startedAt,
         durationMs: Date.now() - startedMs,
         responsePayload,
-        responseSizeBytes,
         closed: true,
         traceId,
         clientIp
@@ -66,7 +64,6 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
   res.json = ((body?: unknown) => {
     if (!responseCaptured) {
       responsePayload = body as ResponsePayload
-      responseSizeBytes = estimatePayloadSizeBytes(body)
       responseCaptured = true
     }
     return originalJson(body)
@@ -76,7 +73,6 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
   res.send = ((body?: unknown) => {
     if (!responseCaptured) {
       responsePayload = normalizeSendPayload(body)
-      responseSizeBytes = estimatePayloadSizeBytes(body)
       responseCaptured = true
     }
     return originalSend(body)
@@ -93,7 +89,6 @@ export function capturePublicApiLog(req: Request, res: Response, next: NextFunct
         startedAt,
         durationMs: Date.now() - startedMs,
         responsePayload,
-        responseSizeBytes,
         closed: false,
         traceId,
         clientIp
@@ -123,7 +118,6 @@ function buildPublicApiLogInput(
     startedAt: Date
     durationMs: number
     responsePayload: ResponsePayload
-    responseSizeBytes: number
     closed: boolean
     traceId?: string
     clientIp?: string
@@ -158,7 +152,7 @@ function buildPublicApiLogInput(
     success: !input.closed && statusCode >= 200 && statusCode < 400,
     durationMs: input.durationMs,
     requestSizeBytes: requestSnapshot.sizeBytes,
-    responseSizeBytes: input.responseSizeBytes || responseSnapshot.sizeBytes,
+    responseSizeBytes: responseSnapshot.sizeBytes,
     requestCaptureStatus: requestSnapshot.status,
     responseCaptureStatus: responseSnapshot.status,
     requestData: requestSnapshot.data,
@@ -193,7 +187,7 @@ function buildRequestSnapshot(req: Request, res: Response, statusCode: number): 
     body,
     headers
   }
-  const bodySizeBytes = contentLengthBytes(req) ?? estimatePayloadSizeBytes(req.body)
+  const bodySizeBytes = contentLengthBytes(req) ?? 0
   const querySizeBytes = req.originalUrl.includes('?') ? Buffer.byteLength(req.originalUrl.split('?').slice(1).join('?'), 'utf8') : 0
   const snapshot = boundedSnapshot(data, bodySizeBytes + querySizeBytes)
   return bodyRejectedReason ? { ...snapshot, status: 'dropped' } : snapshot
@@ -204,7 +198,7 @@ function buildResponseSnapshot(payload: ResponsePayload, statusCode: number): Ca
     statusCode,
     body: payload
   }
-  return boundedSnapshot(data, estimatePayloadSizeBytes(payload))
+  return boundedSnapshot(data, 0)
 }
 
 function boundedSnapshot(data: Record<string, unknown>, sizeBytes: number): CapturedSnapshot {
@@ -306,27 +300,7 @@ function requestBodyRejectedReason(req: Request, res: Response, statusCode: numb
 }
 
 function normalizeSendPayload(value: unknown): ResponsePayload {
-  if (Buffer.isBuffer(value)) {
-    return value
-  }
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as ResponsePayload
-    } catch {
-      return value
-    }
-  }
   return value as ResponsePayload
-}
-
-function estimatePayloadSizeBytes(value: unknown): number {
-  if (value === undefined || value === null) return 0
-  if (Buffer.isBuffer(value)) return value.byteLength
-  if (typeof value === 'string') return Buffer.byteLength(value, 'utf8')
-  const bounded = boundedSnapshotValue(value, publicApiSnapshotMaxBytes + 1)
-  const json = safeJsonStringify(bounded.value)
-  const jsonSizeBytes = Buffer.byteLength(json, 'utf8')
-  return bounded.truncated ? Math.max(jsonSizeBytes, publicApiSnapshotMaxBytes + 1) : jsonSizeBytes
 }
 
 interface SnapshotBudgetState {

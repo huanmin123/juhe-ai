@@ -26,6 +26,11 @@ interface AuditLogTransportWorkerRequest {
   input: AuditLogInput
 }
 
+interface PreparedAuditLogTransport {
+  input: AuditLogInput
+  encoded: string
+}
+
 if (!parentPort) {
   throw new Error('审计传输 worker 缺少 parentPort')
 }
@@ -35,22 +40,21 @@ workerPort.on('message', (message: AuditLogTransportWorkerRequest) => {
   try {
     const input = rehydrateAuditLogBuffers(message.input)
     const prepared = prepareAuditLogForTransport(input)
-    const encoded = encodeAuditLogStreamPayload(prepared)
-    if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
+    if (encodedTransportBytes(prepared.encoded) > auditTransportMaxBytes) {
       throw new Error('审计传输 worker 输出超过 4MiB 消息预算')
     }
     if (message.mode === 'redis_stream') {
       workerPort.postMessage({
         id: message.id,
         ok: true,
-        encoded
+        encoded: prepared.encoded
       })
       return
     }
     workerPort.postMessage({
       id: message.id,
       ok: true,
-      prepared
+      prepared: prepared.input
     })
   } catch (error) {
     workerPort.postMessage({
@@ -71,7 +75,7 @@ function rehydrateAuditLogBuffers(input: AuditLogInput): AuditLogInput {
   }
 }
 
-function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
+function prepareAuditLogForTransport(input: AuditLogInput): PreparedAuditLogTransport {
   const bodyMaxBytes = input.auditOutcome === 'success'
     ? transportSettings.successFullBodyLimitBytes
     : transportSettings.problemFullBodyLimitBytes
@@ -93,9 +97,8 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
     captureStatus: structureDropped && input.captureStatus !== 'overflow' ? 'dropped' : input.captureStatus
   }
 
-  if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
-    return prepared
-  }
+  let encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
 
   const bodyIndexes = prepared.payloads
     .map((payload, index) => ({ index, bytes: auditPayloadBodyBytes(payload.body) }))
@@ -109,15 +112,13 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
       includeGatewayMetadata: true,
       reason: 'transport_message_budget'
     })
-    if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
-      return prepared
-    }
   }
+  encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
 
-  prepared = shrinkAuditPayloadSummariesToTransportBudget(prepared, bodyMaxBytes)
-  if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
-    return prepared
-  }
+  shrinkAuditPayloadSummariesToMinimumWindow(prepared)
+  encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
 
   const headerIndexes = prepared.payloads
     .map((payload, index) => ({ index, bytes: estimateHeadersBytes(payload.headers) }))
@@ -128,24 +129,27 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
     if (!payload?.headers) continue
     prepared.payloads[item.index] = { ...payload, headers: undefined }
     structureDropped = true
-    if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
-      return markAuditLogStructureDropped(prepared)
-    }
   }
+  if (structureDropped) prepared = markAuditLogStructureDropped(prepared)
+  encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
 
-  while (prepared.payloads.length > 2 && auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+  if (prepared.payloads.length > 2) {
     prepared = {
       ...prepared,
       payloads: [
-        ...prepared.payloads.slice(0, Math.floor(prepared.payloads.length / 2)),
-        ...prepared.payloads.slice(Math.floor(prepared.payloads.length / 2) + 1)
+        prepared.payloads[0],
+        prepared.payloads[prepared.payloads.length - 1]
       ]
     }
     structureDropped = true
   }
-  if (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+  if (structureDropped) prepared = markAuditLogStructureDropped(prepared)
+  encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
+
+  if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
     for (const payload of prepared.payloads) {
-      if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) break
       summarizeAuditPayloadForLimit(payload, 0, {
         force: true,
         includeGatewayMetadata: true,
@@ -157,31 +161,27 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
   if (structureDropped) {
     prepared = markAuditLogStructureDropped(prepared)
   }
-  if (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+  encoded = encodeAuditLogStreamPayload(prepared)
+  if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
     prepared = markAuditLogStructureDropped({
       ...prepared,
       attempts: [],
       payloads: []
     })
+    encoded = encodeAuditLogStreamPayload(prepared)
   }
-  return prepared
+  return { input: prepared, encoded }
 }
 
-function shrinkAuditPayloadSummariesToTransportBudget(input: AuditLogInput, initialLimitBytes: number): AuditLogInput {
-  const prepared = input
-  let summaryLimitBytes = Math.max(auditTransportMinimumSummaryWindowBytes, Math.trunc(initialLimitBytes))
-  while (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes && summaryLimitBytes > auditTransportMinimumSummaryWindowBytes) {
-    summaryLimitBytes = Math.max(auditTransportMinimumSummaryWindowBytes, Math.floor(summaryLimitBytes / 2))
-    for (const payload of prepared.payloads) {
-      if (payload.captureStatus !== 'summary_only') continue
-      summarizeAuditPayloadForLimit(payload, summaryLimitBytes, {
-        force: true,
-        includeGatewayMetadata: true,
-        reason: 'transport_message_budget'
-      })
-    }
+function shrinkAuditPayloadSummariesToMinimumWindow(input: AuditLogInput): void {
+  for (const payload of input.payloads) {
+    if (payload.captureStatus !== 'summary_only') continue
+    summarizeAuditPayloadForLimit(payload, auditTransportMinimumSummaryWindowBytes, {
+      force: true,
+      includeGatewayMetadata: true,
+      reason: 'transport_message_budget'
+    })
   }
-  return prepared
 }
 
 function markAuditLogStructureDropped(input: AuditLogInput): AuditLogInput {
@@ -210,10 +210,6 @@ function truncatePayloadStrings(payload: AuditLogInput['payloads'][number]): Aud
     contentEncoding: truncateOptionalString(payload.contentEncoding, 128),
     createdAt: truncateOptionalString(payload.createdAt, 128)
   }
-}
-
-function auditLogTransportEncodedBytes(input: AuditLogInput): number {
-  return encodedTransportBytes(encodeAuditLogStreamPayload(input))
 }
 
 function encodedTransportBytes(encoded: string): number {

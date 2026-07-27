@@ -152,7 +152,7 @@ export const XAI_PROVIDER_SEED = {
   code: XAI_PROVIDER_CODE,
   name: 'xAI / Grok',
   parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
-  description: 'xAI 官方供应商，使用官方 API Key 接入 OpenAI v1 Chat Completions 与 Responses 文本协议',
+  description: 'xAI 官方供应商，支持 API Key 与 Grok OAuth 接入 OpenAI v1 文本协议',
   enabled: 1,
   defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS
 } as const
@@ -390,13 +390,13 @@ export const XAI_OPENAI_V1_PROFILE_SEED = {
   id: XAI_OPENAI_V1_PROFILE_ID,
   providerCode: XAI_PROVIDER_CODE,
   name: 'xAI / OpenAI v1',
-  description: 'xAI 官方 API Key 协议档案，原生承载 OpenAI v1 Chat Completions 与 Responses 文本接口',
+  description: 'xAI 官方协议档案，支持 API Key 与 Grok OAuth，承载 OpenAI v1 Chat Completions 与 Responses 文本接口',
   enabled: 1,
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.x.ai/v1',
   defaultHealthCheckModel: 'grok-4.5',
-  accountTypes: ['api_key'],
+  accountTypes: ['api_key', 'oauth'],
   capabilities: ['responses', 'chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
 } as const

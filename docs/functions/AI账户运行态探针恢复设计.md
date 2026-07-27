@@ -21,7 +21,7 @@
 - 后台兜底探针：扫描 due 的探针任务，补偿漏调度、进程重启和无新请求场景。本地运行态由 Web / Redis runtime state 探针恢复，已落库冷却态由 ops-worker 冷却复测恢复。
 - 真实请求形成完整 framing：只记录本次业务事实，并可清理本请求或当前来源范围内的 transport 局部回避；不能清理、降级或恢复账户级运行态和持久状态。账户级恢复只由匹配 generation 的后台探针、主动健康检查、显式人工恢复或对应后台任务完成。
 - 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、无后台成功证据和独立后台探针结果。
-- 运行态恢复探针只允许使用系统账户检查探针，也就是共享最小请求执行器；模型固定为账户保存的 `healthCheckModel`。禁止从历史测试、个人默认、管理员默认、协议档案默认、支持模型首项或失败请求回退模型，也禁止复用失败请求的 endpoint、stream 或用户 payload。
+- 共享最小请求执行器承载两类互斥配方：账户激活、周期哨兵和真正账户全局状态恢复固定使用账户保存的 `healthCheckModel`；`protocol_model / model_capability` 子 scope 恢复必须使用失败 attempt 已持久化的最终上游模型、endpoint、lane、转换路径和凭据作用域。两类探针都禁止复用用户 payload，也禁止在执行时从历史测试或默认模型猜测配方。
 - 人工测试是独立诊断流量，成功或失败都不清理、确认、升级或恢复本设计中的任何运行态和持久态。
 
 ## 状态分层
@@ -35,7 +35,7 @@
 | `local_suppressed` | memory / Redis TTL 运行态 | 暂不选中该账号 | 用户显式响应拦截 `avoid_account_ttl` 等主动策略 | 配置 TTL 到期或人工恢复清理；后台自动成功不能提前解除显式策略 |
 | `runtime_degraded` | memory / Redis 运行态快照 | 普通候选优先，降级账号兜底 | 后台 transport 探针确认近期不稳 | 只有匹配 generation / provenance 的 `complete_success`、观察窗口过期或手动恢复清理；`framing_complete_neutral` 只保留诊断 / 顺延，不恢复该运行态 |
 | `precheck_pending` | memory / Redis 运行态快照 | 软阻断普通候选；后台探针、主动健康检查和 generation 租约半开可访问 | 首次有效独立后台探针形成 `transport_failed` | 只有匹配 generation / provenance 的 `complete_success` 或专属人工出口恢复；`framing_complete_neutral` 只保留 transport 怀疑并顺延，transport failure 释放租约并继续后台确认，unknown 只退避 |
-| `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 后台多轮独立 transport failure 确认不可用，或用户显式策略 | 系统自动传输态只由匹配来源的 `complete_success` 冷却复测恢复；显式策略按自身 TTL/匹配恢复/人工动作清理 |
+| `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式策略，或真正账户全局事实 owner 的独立确认；模型子 scope 不得写入 | 系统自动账户全局态只由匹配来源的 `complete_success` 冷却复测恢复；显式策略按自身 TTL/匹配恢复/人工动作清理 |
 | `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式账户错误策略或明确后台任务 | 配置 TTL、匹配来源后台任务或人工恢复；无关 transport 成功不得清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 本地可验证硬异常或用户显式策略/人工操作 | 可自动恢复的同来源本地异常由对应任务恢复；远端 OAuth token endpoint 失败只诊断和退避，不写账户 `error`；显式硬异常需要用户修配置或手动恢复 |
 
@@ -125,7 +125,7 @@ generation
 - 调度时间必须带 jitter，避免大批账号在同一秒同时探测。
 - 有本机全局并发保护、单账号最小间隔，以及 provider / proxy / baseUrl 维度的本机最小间隔。预算不足时只推迟 due 时间，不把账号升级为更重状态；该预算不进入 Redis 分布式锁。
 - 后台 sweep 周期性读取 due 索引补偿漏调度；performance 模式的 due 索引必须在 Redis 中，不能只存在于某个 Web 进程的 timer。
-- 恢复探针任务本身不携带失败请求的 model、endpoint、stream、payload 或失败形态摘要；失败现场只作为状态判断、日志和后续人工排障信息。
+- 账户级恢复任务不携带失败请求的 model、endpoint、stream、payload 或失败形态摘要；模型子 scope 任务必须携带非敏感的精确 Attempt 描述和 ProbeRecipe，但同样不得携带用户 payload、正文或具体错误语义。
 
 建议探针分级：
 
@@ -138,15 +138,16 @@ generation
 | L4 cooldown retest | 系统自动 transport 来源的 `temporary_unavailable` | ops-worker 持久冷却复测，退避更保守；用户显式 `rate_limited/error` 不被无关 transport 成功清理 |
 | L5 hard error | `error` | 默认不高频自动探，只对可恢复错误触发 |
 
-## 父子作用域升级、恢复与冷重建
+## 父子作用域、恢复与冷重建
 
-传输电路的 `protocol_model` 子 scope 与 account 父 scope 是两个独立 incident，不能用父级状态覆盖子级明细：
+传输电路的 `protocol_model` 子 scope、模型能力 `model_capability` 子 scope 与真正账户全局的 account scope 是独立 incident：
 
-- 子 scope 升级到父 account scope 的门槛必须可配置；当前默认要求至少 `3` 个独立子 scope 的本地 transport evidence 达标，不能退回“2 个模型 + 累计 3 次”硬编码。父 incident 最多携带 `64` 个 child ID；第 65 个及后续 child 仍保留独立 incident，但不得继续扩张父 payload。
-- 父 account scope 在达到可配置的通用协议成功证据阈值后可以关闭，当前默认阈值为 `3`。父级恢复证据比单纯 framing 完整更强，但不依赖状态码/错误文案；这些证据不要求逐一命中所有肇事子 scope，也不要求没有新流量的子模型重新获得流量，避免父账户永久卡死。
-- 父级关闭只解除父 account scope 的阻断，不能删除、关闭或重置仍处于 `OPEN / RECOVERING` 的子 scope；后续请求仍必须遵守各子 scope 自己的 generation、due 和状态。子 scope 恢复也不能越权清理父 incident。
-- 父子 incident 的 scope、generation、dispatch revision、due、父子关联和 CLOSED ledger 必须进入持久控制面并支持启动冷重建。memory / Redis 只是运行时投影；Redis 缓存丢失、容量淘汰或进程重启不得把仍活动的父/子 incident 默认成 `CLOSED`，也不得因父 payload 达到 64 而漏掉独立子 incident。
-- `SUSPECT` 探针得到 `unknown` 时保持状态、generation 和确认计数不变，下一次 due 使用当前递进退避级别与 jitter 后移；连续 unknown 继续渐进退避，不得写 `retryAt = now`、零间隔自旋、推进 `OPEN` 或伪造成功恢复。
+- 任意数量的模型子 scope 都不得通过投票升级为父 account。别名、endpoint、lane 和转换路径会放大 scope 数量，数量不能证明整号死亡。
+- 全部配置能力均不可调度时，由当前 CapabilityScopeCatalog、Key 集合和子 incident 派生门禁，不创建父 incident，不写 `accounts.status`。
+- 父 account 只允许由真正与模型无关、具有专属独立证明的账户全局事实 owner 建立；当前请求派生的子 scope 没有该证明。
+- 既有父级关闭只解除父层，不能删除、关闭或重置任何 `OPEN / RECOVERING` 子 scope。子 scope 恢复也不能越权清理父 incident。
+- 所有 incident 的 scope、generation、revision、due 和 CLOSED ledger 必须进入持久控制面并支持冷重建；Redis miss 在按账户权威加载前不能解释为 CLOSED。
+- `SUSPECT` 探针得到 `unknown` 时保持状态、generation 和确认计数不变，下一次 due 使用当前递进退避级别与 jitter 后移；连续 unknown 不得零间隔自旋、推进 `OPEN` 或伪造成功恢复。
 
 ## Redis / 多实例边界
 
@@ -174,24 +175,23 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 运行态恢复和事前确认只使用一类底层执行器：系统账户检查探针。
 
-系统账户检查探针与人工测试复用最小请求构造和网关链路，但不复用人工测试会话或状态策略：
+系统账户检查探针、模型子 scope 探针与人工测试复用最小请求构造和网关链路，但不复用人工测试会话或状态策略：
 
 - 底层入口使用纯结果执行器 `executeAccountProbe()`。
-- 探针模型严格读取账户 `healthCheckModel`，必须属于账户 `supportedModels` 并能按协议档案发起最小文本请求。
-- 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint。
+- 账户级探针严格读取 `healthCheckModel`；模型子 scope 探针读取持久化 ProbeRecipe，并用当前 route planner 重新解析、核对最终 Attempt 描述。
+- 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint；模型子 scope 禁止回退到账户哨兵。
 - 探针链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
 - 探针使用 `traffic_source = runtime_recovery_probe`；执行器不自行修改状态，由运行态恢复策略根据 `purpose` 和 generation 决定是否清理或升级。
 - 检查模型缺失、不可见、不属于支持模型或请求形态不匹配时，记录“检查模型配置异常”并停止本轮，不猜测其他模型，也不把该配置错误升级为账户不可用。
 
 明确禁止：
 
-- 禁止复用失败请求的 model。
-- 禁止复用失败请求的 endpoint。
-- 禁止复用失败请求的 stream 形态。
-- 禁止复用失败请求的用户 payload。
-- 禁止因为某个失败请求形态再次失败就把账号写成 `temporary_unavailable`。
+- 账户级探针从失败请求猜 model、endpoint 或 stream。
+- 模型子 scope 探针直接复用用户 payload，或绕过映射 / bridge 只探 normalized model。
+- 任一子 scope 探针失败后写账号 `temporary_unavailable`。
+- 将目录可见性当作 execution 成功或失败。
 
-原因是失败现场可能只是模型不支持、endpoint 不匹配、payload 非法、上下文过长或局部能力问题；用它做恢复探针会把可用账号误判为不可用。
+精确模型探针复用的是由最终派发规划器生成的非敏感描述和最小配方，不是用户失败正文。它的失败最多阻断对应模型、endpoint、转换路径和凭据作用域。
 
 失败现场只保留为本地事实分类和排障信息：
 
@@ -205,7 +205,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 1. 扫描 due 的 `recovery_wait`、系统自动失败观察、运行态降级、`precheck_pending` 和持久冷却态；不接管用户显式策略 TTL。
 2. 多个 Web 节点可以短暂重复执行同一个运行态键的探针；探针结果回写必须校验 generation，旧探针结果直接丢弃，不能靠 Redis 分布式锁保证唯一执行。
-3. 使用系统账户检查探针发起最小请求；模型固定为账户 `healthCheckModel`，不从历史测试、目录默认或失败请求提取 model / endpoint。
+3. 账户级任务固定使用 `healthCheckModel`；模型子 scope 任务使用持久 ProbeRecipe 和当前 route planner 解析出的精确 model / endpoint，二者均不从历史测试或目录默认猜测。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计或账号质量统计。
 6. 运行态探针或主动健康检查形成 `framing_complete_neutral` 时，只能按 generation 清理同来源轻量 transport 怀疑；ops-worker 对系统自动 transport 冷却态复测、`runtime_degraded`、`precheck_pending` 和父 account 恢复都只有形成匹配来源的 `complete_success` 才能改变业务状态。用户显式策略状态不被无关探针成功清理。
@@ -246,7 +246,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 
 ### 从 `precheck_pending` 到持久状态
 
-后台探针完成至少 5 分钟观察、3 个独立 `transport_failed` 轮次且轮次至少间隔 2 分钟后，如果当前账号仍有在途并发，只保持 `precheck_pending` 并等待并发归零。并发归零后，系统自动路径默认写传输来源的 `temporary_unavailable`；原因只允许使用本地有界 failure class、作用域、时间和 trace，不得保存或派生上游 `HTTP/code/message`、正文摘要或网关最终 `service_unavailable` 文案。
+请求派生的 `protocol_model / model_capability` 子 scope 永远停留在各自 circuit / 能力层，不能进入账户级 `precheck_pending`，也不能写传输来源的 `temporary_unavailable`。真正账户全局的 precheck 只接受专属 account-scope owner 的独立证据；当前没有从模型子 incident 自动生成该证据的路径。任何账户全局原因仍只允许保存本地有界 failure class、作用域、时间和 trace，不得保存或派生上游 `HTTP/code/message`、正文摘要或网关最终 `service_unavailable` 文案。
 
 账户所有者显式配置的账户错误策略和响应拦截策略不走上述自动确认路径：规则实际命中后按用户配置直接执行 `retry_next`、TTL 运行态避让、`temporary_unavailable`、`rate_limited` 或 `error` 等动作；显式 TTL 只在到期或人工恢复时清理，后台自动成功不能提前解除。
 
@@ -351,14 +351,14 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 仅可重放文本在首字超阈值且下游尚未写出可见内容时，可按策略限制切换同分组后续账号；图像和其他副作用请求永久退出首字慢样本与速度切号，下游已写出可见内容后也不得透明切号。
 - 关闭速度优先或修改路由策略后，对应 `latency_degraded` 运行态必须清理。
 - 后台探针 `framing_complete_neutral` 只能按匹配 generation 清理 transport 怀疑；只有匹配来源的 `complete_success` 才能清理系统自动建立的业务运行态 `runtime_degraded` 和 `precheck_pending`，不能提前清理用户显式策略建立的 TTL 避让。
-- 后台探针连续独立 `transport_failed` 且并发归零后才写系统自动 transport 来源的 `temporary_unavailable`；任意完整 `4xx/5xx`、`2xx-invalid-body` 或协议失败均不推进。
-- 系统自动 transport 来源的 `temporary_unavailable` 在后台复测 `complete_success` 后自动恢复 `active`；用户显式状态只走匹配恢复出口。
+- 任意数量的模型子 scope 连续独立 `transport_failed` 都只推进精确子 incident，不写系统自动 transport 来源的 `temporary_unavailable`；任意完整 `4xx/5xx`、`2xx-invalid-body` 或协议失败也不推进 transport。
+- 真正 account-scope owner 已建立的系统自动 transport `temporary_unavailable` 才能由匹配来源的后台复测 `complete_success` 恢复 `active`；用户显式状态只走匹配恢复出口。
 - SQLite 与真实 PostgreSQL 都要覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
 - 各类请求的 opaque HTTP 与 transport 失败在语义提交前都能按唯一 Key/账户候选救回当前请求，整个请求最多 64 次真实 attempt。
 - 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
 - performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
 - `precheck_pending` 在 memory / Redis 下都软阻断普通调度；全池软阻断时健康 / 后备优先、同账户与同分组单飞半开、FIFO 等待均生效。`noAvailableAccountWaitTimeoutSeconds` 控制的 `ServerRetryBudget` 默认 270 秒，只累计零可派发、半开和 FIFO / 并发槽等待；正常上游 attempt 不消耗该累计等待预算。可重放文本的 `GatewayRequestWallBudget` 是另一套固定默认 270 秒绝对墙钟，不能混为一谈。
-- 模型 / endpoint 明确不支持时不进入账号级状态升级；恢复探针不能复用失败请求形态，也不能因此把账号打成不可用。
+- 模型 / endpoint 明确不支持时不进入账号级状态升级；账户级恢复不能猜测失败请求形态，模型子 scope 只能复用最终派发描述和最小 ProbeRecipe，不能复用用户 payload，也不能因此把整号打成不可用。
 - Mock AI 覆盖失败后恢复、失败后持续不可用、高并发失败风暴和授权实例隔离。
 - Mock AI 覆盖 `SUSPECT` 连续 unknown：状态/generation/确认计数不变，due 随递进退避和 jitter 后移，不出现零间隔自旋。
-- 父 account scope 达到可配置的通用协议成功证据阈值（当前默认 3）后关闭，不等待所有 child scope 再获流量；仍 `OPEN/RECOVERING` 的 child 不被父关闭抹掉。父子 incident、generation/revision/due/CLOSED ledger 跨重启一致，父 payload 最多 64 个 child ID，第 65 个 child 仍保留独立 incident。
+- 3 个、64 个或更多模型 child scope 都不能投票生成父 account；已有独立父 incident 的关闭不抹掉仍 `OPEN/RECOVERING` 的 child，父子 incident、generation、revision、due 和 CLOSED ledger 跨重启保持各自一致。

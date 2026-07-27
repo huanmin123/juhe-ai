@@ -1,8 +1,14 @@
 package queue
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"reflect"
 	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 func TestParseRedisURL(t *testing.T) {
@@ -82,5 +88,54 @@ func TestEnqueueRejectsEmptyTaskType(t *testing.T) {
 	client := &Client{}
 	if _, err := client.Enqueue(context.Background(), "", nil, EnqueueOptions{}); err == nil {
 		t.Fatal("Enqueue() error = nil, want error")
+	}
+}
+
+func TestNewAsynqTaskPreservesPayloadAndHeaders(t *testing.T) {
+	payload := []byte(`{"version":3}`)
+	headers := map[string]string{"strategy": "30"}
+	task := newAsynqTask("probe", payload, headers)
+	if task.Type() != "probe" || !bytes.Equal(task.Payload(), payload) || !reflect.DeepEqual(task.Headers(), headers) {
+		t.Fatalf("task type=%q payload=%q headers=%v", task.Type(), task.Payload(), task.Headers())
+	}
+	headers["strategy"] = "changed"
+	if task.Headers()["strategy"] != "30" {
+		t.Fatal("Asynq task headers must not alias enqueue options")
+	}
+}
+
+func TestUniqueDeduplicatesAcrossClientsWhenOnlyHeadersChange(t *testing.T) {
+	server := miniredis.RunT(t)
+	opts := RedisOptions{Addr: server.Addr()}
+	ctx := context.Background()
+	noRetry := 0
+	payload := []byte(`{"version":3,"fence":{"accountId":"acct_1"}}`)
+
+	firstClient := NewClient(opts)
+	first, err := firstClient.Enqueue(ctx, "probe", payload, EnqueueOptions{
+		Queue: "account-probes", MaxRetry: &noRetry, UniqueTTL: time.Minute,
+		Headers: map[string]string{"strategy": "30"},
+	})
+	if err != nil {
+		t.Fatalf("first enqueue error = %v", err)
+	}
+	if err := firstClient.Close(); err != nil {
+		t.Fatalf("close first client: %v", err)
+	}
+
+	secondClient := NewClient(opts)
+	defer func() { _ = secondClient.Close() }()
+	_, err = secondClient.Enqueue(ctx, "probe", payload, EnqueueOptions{
+		Queue: "account-probes", MaxRetry: &noRetry, UniqueTTL: time.Minute,
+		Headers: map[string]string{"strategy": "45"},
+	})
+	if !errors.Is(err, ErrTaskConflict) {
+		t.Fatalf("second enqueue error = %v, want task conflict", err)
+	}
+
+	inspector := NewInspector(opts)
+	defer func() { _ = inspector.Close() }()
+	if err := inspector.DeleteTask(first.Queue, first.ID); err != nil {
+		t.Fatalf("delete task: %v", err)
 	}
 }

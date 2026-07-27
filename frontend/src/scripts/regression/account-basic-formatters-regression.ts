@@ -28,6 +28,7 @@ import {
   canCreateOAuthAccount,
   canSelectClientCompatibility,
   defaultEndpointModesForAccount,
+  effectiveAccountTestClientCompatibility,
   supportsOAuthAccountType,
   profileSupportsCodexResponsesChatBridge
 } from '../../views/accounts/accountProviderCapabilities'
@@ -64,6 +65,12 @@ const anthropicOAuthDescription = accountTypeDescription('anthropic', 'oauth')
 assertTrue(anthropicOAuthDescription.includes('Anthropic'), 'Anthropic OAuth 描述应说明供应商语义')
 assertTrue(anthropicOAuthDescription.includes('托管授权'), 'Anthropic OAuth 描述应说明站内托管授权能力')
 assertTrue(anthropicOAuthDescription.includes('Refresh Token'), 'Anthropic OAuth 描述应说明 Refresh Token 能力')
+const geminiOAuthDescription = accountTypeDescription('gemini', 'google_oauth')
+assertTrue(geminiOAuthDescription.includes('托管授权'), 'Gemini OAuth 描述应说明站内托管授权能力')
+assertTrue(geminiOAuthDescription.includes('Client ID'), 'Gemini OAuth 描述应说明 Google 客户端凭据要求')
+const grokOAuthDescription = accountTypeDescription('xai', 'oauth')
+assertTrue(grokOAuthDescription.includes('Grok'), 'xAI OAuth 描述应使用 Grok 授权语义')
+assertTrue(grokOAuthDescription.includes('Refresh Token'), 'Grok OAuth 描述应说明 Refresh Token 能力')
 assertTrue(accountTypeDescription('gpt', 'api_key').includes('Base URL'), 'GPT API Key 描述应说明 Base URL')
 assertTrue(accountTypeDescription('glm', 'api_key', 'profile_glm_coding_anthropic_v1').includes('Anthropic Messages 接入'), 'GLM Coding Anthropic 描述不应把 Claude Code 当账户类型')
 assertTrue(accountTypeDescription('other', 'api_key').includes('供应商定义'), '非 GPT 描述应使用通用供应商流程文案')
@@ -112,6 +119,25 @@ assertTrue(accountMenuItems(oauthAccount).some((item) => item.key === 'refresh-o
 assertTrue(accountMenuItems(oauthAccount).some((item) => item.key === 'reauthorize-oauth'), 'OAuth 管理账户菜单应包含重新授权')
 assertEqual(canManageOAuthAccount(accountFixture({ type: 'oauth', protocolVersion: 'v2' })), false, '非 OpenAI v1 OAuth 账户不应允许 OAuth 管理动作')
 assertEqual(canManageOAuthAccount(accountFixture({ type: 'api_key' })), false, 'API Key 账户不应允许 OAuth 管理动作')
+const grokOAuthAccount = accountFixture({
+  providerCode: 'xai',
+  providerProtocolProfileId: 'profile_xai_openai_v1',
+  type: 'oauth',
+  supportedEndpointModes: ['responses_json', 'responses_sse'],
+  clientCompatibility: 'openai_standard'
+})
+assertEqual(canManageOAuthAccount(grokOAuthAccount), true, 'Grok OAuth 自有账户应允许刷新和重新授权')
+assertEqual(accountClientCompatibilityCapabilities(grokOAuthAccount).join(','), 'openai_standard', 'Grok OAuth 不得误归类为 Codex Responses 客户端')
+assertEqual(effectiveAccountTestClientCompatibility(grokOAuthAccount, 'account_default'), 'openai_standard', 'Grok OAuth 测试请求应保持 OpenAI-compatible')
+assertEqual(defaultEndpointModesForAccount({ profile: grokOAuthAccount, type: 'oauth' }).join(','), 'responses_json,responses_sse', 'Grok OAuth 的 Responses-only 应由端点能力表达')
+const geminiOAuthAccount = accountFixture({
+  providerCode: 'gemini',
+  providerProtocolProfileId: 'profile_gemini_native_v1beta',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta',
+  type: 'google_oauth'
+})
+assertEqual(canManageOAuthAccount(geminiOAuthAccount), true, 'Gemini Google OAuth 自有账户应允许刷新和重新授权')
 assertEqual(canCreateOAuthAccount({
   provider: providerFixture({
     code: 'openai',

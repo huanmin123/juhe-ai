@@ -29,7 +29,7 @@ import {
   normalizeOpenAICodexClientHeaders,
   openAICodexResponsesLiteHeader
 } from '../adapters/gpt-codex/client-headers.js'
-import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
+import { isGptVendorCode, isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { FirstByteDeadlineHandler } from './first-byte-deadline.js'
 import { GatewayFirstByteTimeoutError } from './first-byte-timeout.js'
@@ -611,7 +611,7 @@ function usesOpenAIOAuthCompactStreamRules(account?: {
   if (!account.protocolCode && !account.protocolVersion && !account.providerProtocolProfileId) {
     return true
   }
-  return isOpenAIProtocolProfile(account)
+  return isGptVendorCode(account.providerCode) && isOpenAIProtocolProfile(account)
 }
 
 export function copySafeUpstreamRequestHeaders(

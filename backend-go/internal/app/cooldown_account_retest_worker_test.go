@@ -69,7 +69,7 @@ func TestCooldownAccountRetestSchedulerCarriesCursorAndSettingsAcrossPages(t *te
 	nextCursor := &port.CooldownAccountRetestCursor{CooldownUntil: now, ID: "acct_1"}
 	store := &cooldownAccountRetestRuntimeStoreStub{
 		pages: []port.CooldownAccountRetestPage{
-			{Candidates: []port.CooldownAccountRetestCandidate{{ID: "acct_1", ConfigRevision: 3}}, NextCursor: nextCursor},
+			{Candidates: []port.CooldownAccountRetestCandidate{cooldownAccountRetestCandidate("acct_1", now, 3)}, NextCursor: nextCursor},
 			{},
 		},
 	}
@@ -91,7 +91,8 @@ func TestCooldownAccountRetestSchedulerCarriesCursorAndSettingsAcrossPages(t *te
 	if len(store.inputs) != 2 || store.inputs[1].Cursor == nil || store.inputs[1].Cursor.ID != "acct_1" {
 		t.Fatalf("inputs = %+v", store.inputs)
 	}
-	if len(enqueuer.tasks) != 1 || enqueuer.tasks[0].MaxPauseMinutes != 7 || enqueuer.tasks[0].MaxRecoveryHours != 12 {
+	if len(enqueuer.tasks) != 1 || enqueuer.tasks[0].MaxPauseMinutes != 7 || enqueuer.tasks[0].MaxRecoveryHours != 12 ||
+		enqueuer.tasks[0].DispatchRevision != 1 || enqueuer.tasks[0].ObservationStartedAt == nil || enqueuer.tasks[0].Generation != "generation-1" {
 		t.Fatalf("tasks = %+v", enqueuer.tasks)
 	}
 	if runner.Cursor() != nil {
@@ -102,7 +103,7 @@ func TestCooldownAccountRetestSchedulerCarriesCursorAndSettingsAcrossPages(t *te
 func TestCooldownAccountRetestSchedulerBoundsRedisEnqueueConcurrency(t *testing.T) {
 	candidates := make([]port.CooldownAccountRetestCandidate, 20)
 	for i := range candidates {
-		candidates[i] = port.CooldownAccountRetestCandidate{ID: "acct_" + strconv.Itoa(i), ConfigRevision: 1}
+		candidates[i] = cooldownAccountRetestCandidate("acct_"+strconv.Itoa(i), time.Now(), 1)
 	}
 	store := &cooldownAccountRetestRuntimeStoreStub{pages: []port.CooldownAccountRetestPage{{Candidates: candidates}}}
 	enqueuer := &cooldownAccountRetestConcurrencyEnqueuerStub{}
@@ -119,6 +120,13 @@ func TestCooldownAccountRetestSchedulerBoundsRedisEnqueueConcurrency(t *testing.
 	}
 	if maxActive := enqueuer.maxActive.Load(); maxActive > int32(module.DefaultEnqueueWorkers) {
 		t.Fatalf("concurrent enqueue calls = %d, want at most %d", maxActive, module.DefaultEnqueueWorkers)
+	}
+}
+
+func cooldownAccountRetestCandidate(accountID string, started time.Time, configRevision int) port.CooldownAccountRetestCandidate {
+	return port.CooldownAccountRetestCandidate{
+		ID: accountID, ConfigRevision: configRevision, DispatchRevision: 1,
+		ObservationStartedAt: &started, Generation: "generation-1",
 	}
 }
 
@@ -190,6 +198,28 @@ func (s *cooldownAccountRetestRuntimeStoreStub) ListDueCooldownAccountRetests(_ 
 
 func (s *cooldownAccountRetestRuntimeStoreStub) FindDueCooldownAccountRetest(context.Context, string, time.Time) (port.CooldownAccountRetestCandidate, bool, error) {
 	return port.CooldownAccountRetestCandidate{}, false, nil
+}
+
+func (s *cooldownAccountRetestRuntimeStoreStub) LoadCooldownAccountRetestQuotaSubjects(_ context.Context, accountIDs []string, _ time.Time) ([]port.CooldownAccountRetestQuotaSubject, error) {
+	subjects := make([]port.CooldownAccountRetestQuotaSubject, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		subjects = append(subjects, port.CooldownAccountRetestQuotaSubject{
+			AccountID: accountID, AccessType: port.CooldownAccountRetestQuotaAccessOwner, AuthorizationValid: true,
+		})
+	}
+	return subjects, nil
+}
+
+func (s *cooldownAccountRetestRuntimeStoreStub) LoadGatewayQuotaSnapshotCosts(_ context.Context, inputs []port.GatewayQuotaCostLookupInput) (map[string]port.GatewayQuotaCosts, error) {
+	costs := make(map[string]port.GatewayQuotaCosts, len(inputs))
+	for _, input := range inputs {
+		costs[input.Key] = port.GatewayQuotaCosts{}
+	}
+	return costs, nil
+}
+
+func (s *cooldownAccountRetestRuntimeStoreStub) GetManagementUsageStatsTimezone(context.Context) (string, bool, error) {
+	return "UTC", true, nil
 }
 
 type cooldownAccountRetestSettingsReaderStub struct {

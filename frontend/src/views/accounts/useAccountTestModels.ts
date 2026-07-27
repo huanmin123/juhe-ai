@@ -27,16 +27,23 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelsError = ref('')
   const testModelReadonly = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
+  const testEndpointModesError = ref('')
+  const testEndpointModesLoading = ref(false)
   let selectedAccount: AccountSummary | undefined
   let loadedOptionsAccountKey = ''
+  let loadedModelCapabilitiesKey = ''
   let activeOptionsRequestKey = ''
+  let activeModelCapabilitiesRequestKey = ''
   let defaultModel = ''
   let optionsAbortController: AbortController | undefined
+  let modelCapabilitiesAbortController: AbortController | undefined
   let optionsRequestToken = 0
+  let modelCapabilitiesRequestToken = 0
 
   function initializeSavedAccountTestOptions(
     account: AccountSummary,
-    healthCheckModel = account.healthCheckModel
+    healthCheckModel = account.healthCheckModel,
+    healthCheckEndpointMode = account.healthCheckEndpointMode
   ): void {
     resetTestModels()
     selectedAccount = account
@@ -46,12 +53,12 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
           label: defaultModel,
           value: defaultModel,
           supportedApiProtocols: [],
-          testEndpointModes: []
+          testEndpointModes: [healthCheckEndpointMode]
         }]
       : []
-    testEndpointModes.value = []
+    testEndpointModes.value = [healthCheckEndpointMode]
     input.testForm.model = defaultModel
-    input.testForm.testEndpointMode = 'account_default'
+    input.testForm.testEndpointMode = healthCheckEndpointMode
   }
 
   async function loadTestModelOptions(
@@ -100,7 +107,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!input.testForm.model) {
         input.testForm.model = defaultModel || testModelOptions.value[0]?.value || ''
       }
-      updateSelectableTestModel(input.testForm.model)
+      updateSelectableTestModel(input.testForm.model, true)
       return response
     } catch (error) {
       if (isAbortError(error)) return undefined
@@ -120,6 +127,73 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   }
 
   const loadSavedAccountTestOptions = loadTestModelOptions
+
+  async function loadTestEndpointModeOptions(
+    account = selectedAccount
+  ): Promise<void> {
+    if (!account || testModelReadonly.value) return
+    if (!selectedAccount) selectedAccount = account
+    if (selectedAccount.id !== account.id) return
+    const model = input.testForm.model.trim()
+    if (!model) return
+    const requestKey = modelCapabilitiesKey(account, model)
+    if (loadedModelCapabilitiesKey === requestKey) return
+    if (
+      testEndpointModesLoading.value
+      && activeModelCapabilitiesRequestKey === requestKey
+    ) {
+      return
+    }
+    modelCapabilitiesAbortController?.abort()
+    const requestToken = nextModelCapabilitiesRequestToken()
+    const controller = new AbortController()
+    modelCapabilitiesAbortController = controller
+    activeModelCapabilitiesRequestKey = requestKey
+    testEndpointModesLoading.value = true
+    testEndpointModesError.value = ''
+    try {
+      const response = input.isManagementView.value
+        ? await api.accounts.testModelCapabilities(
+          account.id,
+          model,
+          accountOperationScopeParams(account, input.accountScopeParams.value),
+          { signal: controller.signal }
+        )
+        : await api.myAccounts.testModelCapabilities(
+          account.id,
+          model,
+          { signal: controller.signal }
+        )
+      if (
+        !isCurrentModelCapabilitiesRequest(requestToken, account.id, model)
+        || response.id !== model
+      ) {
+        return
+      }
+      loadedModelCapabilitiesKey = requestKey
+      const endpointModes = normalizeEndpointModes(response.testEndpointModes)
+      const option = testModelOptions.value.find((item) => item.value === model)
+      if (option) {
+        option.supportedApiProtocols = [...new Set(response.supportedApiProtocols)]
+        option.testEndpointModes = endpointModes
+      }
+      applyTestEndpointModes(endpointModes, true)
+    } catch (error) {
+      if (isAbortError(error)) return
+      if (isCurrentModelCapabilitiesRequest(requestToken, account.id, model)) {
+        testEndpointModesError.value = extractApiErrorMessage(error, '测试请求形态加载失败，请重试')
+      }
+      throw error
+    } finally {
+      if (modelCapabilitiesAbortController === controller) {
+        modelCapabilitiesAbortController = undefined
+        activeModelCapabilitiesRequestKey = ''
+      }
+      if (requestToken === modelCapabilitiesRequestToken) {
+        testEndpointModesLoading.value = false
+      }
+    }
+  }
 
   function useFixedTestModel(model: string, endpointModes: AccountSupportedEndpointMode[]): void {
     resetTestModels()
@@ -164,27 +238,43 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     }
   }
 
-  function updateSelectableTestModel(model: string): void {
+  function updateSelectableTestModel(model: string, preserveEndpointMode = false): void {
     if (testModelReadonly.value) return
     const normalizedModel = model.trim()
     const option = testModelOptions.value.find((item) => item.value === normalizedModel)
     if (!selectedAccount || !option) return
+    modelCapabilitiesAbortController?.abort()
+    modelCapabilitiesAbortController = undefined
+    activeModelCapabilitiesRequestKey = ''
+    nextModelCapabilitiesRequestToken()
+    testEndpointModesLoading.value = false
     input.testForm.model = normalizedModel
     testModelsError.value = ''
-    testEndpointModes.value = normalizeEndpointModes(option.testEndpointModes)
-    input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
+    testEndpointModesError.value = ''
+    const endpointModes = normalizeEndpointModes(option.testEndpointModes)
+    loadedModelCapabilitiesKey = endpointModes.length
+      ? modelCapabilitiesKey(selectedAccount, normalizedModel)
+      : ''
+    applyTestEndpointModes(endpointModes, preserveEndpointMode)
   }
 
   function resetTestModels(): void {
     optionsAbortController?.abort()
+    modelCapabilitiesAbortController?.abort()
     optionsAbortController = undefined
+    modelCapabilitiesAbortController = undefined
     selectedAccount = undefined
     loadedOptionsAccountKey = ''
+    loadedModelCapabilitiesKey = ''
     activeOptionsRequestKey = ''
+    activeModelCapabilitiesRequestKey = ''
     defaultModel = ''
     nextOptionsRequestToken()
+    nextModelCapabilitiesRequestToken()
     testModelOptionsLoading.value = false
+    testEndpointModesLoading.value = false
     testModelsError.value = ''
+    testEndpointModesError.value = ''
     testModelReadonly.value = false
     testModelOptions.value = []
     testEndpointModes.value = []
@@ -197,17 +287,48 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     return optionsRequestToken
   }
 
+  function nextModelCapabilitiesRequestToken(): number {
+    modelCapabilitiesRequestToken += 1
+    return modelCapabilitiesRequestToken
+  }
+
   function isCurrentOptionsRequest(requestToken: number, accountId: string): boolean {
     return requestToken === optionsRequestToken && selectedAccount?.id === accountId
+  }
+
+  function isCurrentModelCapabilitiesRequest(
+    requestToken: number,
+    accountId: string,
+    model: string
+  ): boolean {
+    return requestToken === modelCapabilitiesRequestToken
+      && selectedAccount?.id === accountId
+      && input.testForm.model === model
+  }
+
+  function applyTestEndpointModes(
+    endpointModes: AccountSupportedEndpointMode[],
+    preserveCurrent: boolean
+  ): void {
+    const currentEndpointMode = input.testForm.testEndpointMode
+    testEndpointModes.value = endpointModes
+    input.testForm.testEndpointMode = preserveCurrent
+      && currentEndpointMode !== 'account_default'
+      && endpointModes.includes(currentEndpointMode)
+      ? currentEndpointMode
+      : endpointModes[0] ?? 'account_default'
   }
 
   return {
     initializeSavedAccountTestOptions,
     loadSavedAccountTestOptions,
+    loadTestEndpointModeOptions,
     loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
+    testEndpointModesError,
+    testEndpointModesLoading,
     testModelOptions,
     testModelReadonly,
     testModelsError,
@@ -240,6 +361,10 @@ function normalizeEndpointModes(modes: AccountSupportedEndpointMode[]): AccountS
 
 function accountOptionsKey(account: AccountSummary, keyword: string, selectedIds: string[]): string {
   return `${account.id}:${account.configRevision ?? 'uncached'}:${keyword}:${selectedIds.join(',')}`
+}
+
+function modelCapabilitiesKey(account: AccountSummary, model: string): string {
+  return `${account.id}:${account.configRevision ?? 'uncached'}:${model}`
 }
 
 function selectedModelIds(account: AccountSummary, selectedModel: string): string[] {

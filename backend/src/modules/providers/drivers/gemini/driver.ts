@@ -51,6 +51,13 @@ import {
   transformGeminiNativeTargetBridgeUpstreamResponse
 } from '../_shared/openai-anthropic-gemini-native-bridge.js'
 import { createGeminiGoogleOAuthTokenProvider, type GeminiGoogleOAuthTokenProvider } from './google-oauth-token.service.js'
+import {
+  GEMINI_CODE_ASSIST_STREAM_URL,
+  buildGeminiCodeAssistRequestParts,
+  geminiCodeAssistProjectId,
+  transformGeminiCodeAssistUpstreamResponse,
+  usesGeminiCodeAssistRuntime
+} from './code-assist-runtime.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 
@@ -137,6 +144,9 @@ export const geminiProviderDriver: ProviderDriver = {
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
+    if (usesGeminiCodeAssistRuntime(account)) {
+      return isGeminiCodeAssistGenerationRequest(req, mapping) ? [GEMINI_CODE_ASSIST_STREAM_URL] : []
+    }
     if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping) || isGeminiNativeGenerateContentModelMapping(mapping)) {
       return [buildGeminiUpstreamUrl(account.baseUrl, geminiGenerateContentModelMappedUpstreamPathAndQuery(req, mapping))]
     }
@@ -145,6 +155,34 @@ export const geminiProviderDriver: ProviderDriver = {
   async buildUpstreamRequestParts(req, account, _identity, signal) {
     if (account.type !== 'api_key' && account.type !== 'google_oauth') {
       throw new Error('Gemini 原生协议当前仅支持 API Key 或 Google OAuth 账户')
+    }
+    const mapping = resolveOpenAIRequestModelMapping(req, account)
+    if (usesGeminiCodeAssistRuntime(account)) {
+      if (!isGeminiCodeAssistGenerationRequest(req, mapping)) {
+        throw new Error('Gemini Code Assist / Google One OAuth 仅支持 generateContent 与 streamGenerateContent')
+      }
+      const preparedBody = isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)
+        ? await applyProviderAccountRequestOverridesToBody(await buildOpenAIOrAnthropicToGeminiNativeBody(req, {
+            mapping,
+            providerName: account.name
+          }, signal), {
+            account,
+            upstreamModel: mapping.upstreamModel,
+            wireFormat: 'gemini_generate_content',
+            signal
+          })
+        : await applyProviderAccountRequestOverridesToBody(buildUpstreamRequestBody(req), {
+            account,
+            upstreamModel: requestModel(req),
+            wireFormat: 'gemini_generate_content',
+            signal
+          })
+      return buildGeminiCodeAssistRequestParts({
+        accessToken: account.apiKey,
+        projectId: geminiCodeAssistProjectId(account),
+        model: mapping?.upstreamModel ?? requestModel(req) ?? '',
+        body: preparedBody
+      })
     }
     const headers = copySafeUpstreamRequestHeaders(req.headers)
     if (account.type === 'google_oauth') {
@@ -155,7 +193,6 @@ export const geminiProviderDriver: ProviderDriver = {
     } else {
       headers.set('x-goog-api-key', account.apiKey)
     }
-    const mapping = resolveOpenAIRequestModelMapping(req, account)
     if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) {
       prepareOpenAIOrAnthropicToGeminiNativeHeaders(headers, req)
       return {
@@ -201,14 +238,22 @@ export const geminiProviderDriver: ProviderDriver = {
   },
   transformUpstreamResponse(req, account, response) {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
+    const codeAssistResponse = usesGeminiCodeAssistRuntime(account)
+      ? transformGeminiCodeAssistUpstreamResponse(response, {
+          downstreamStream: geminiCodeAssistDownstreamStream(req, mapping)
+        })
+      : response
     if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) {
-      return transformGeminiNativeTargetBridgeUpstreamResponse(req, response, { mapping })
+      return transformGeminiNativeTargetBridgeUpstreamResponse(req, codeAssistResponse, { mapping })
     }
-    return response
+    return codeAssistResponse
   },
   endpointModeForRequest: geminiEndpointModeForGatewayRequest,
   accountSupportsRequest(req, account) {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
+    if (usesGeminiCodeAssistRuntime(account) && !isGeminiCodeAssistGenerationRequest(req, mapping)) {
+      return false
+    }
     if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) {
       return accountSupportsGeminiEndpointMode({
         mode: openAIOrAnthropicToGeminiNativeRequiredEndpointMode(req),
@@ -251,6 +296,7 @@ export function geminiGoogleOAuthProviderFingerprint(input: {
     client_id?: unknown
     client_secret?: unknown
     expires_at?: unknown
+    oauth_type?: unknown
   }
   proxyUrl?: string
 }): string {
@@ -261,8 +307,29 @@ export function geminiGoogleOAuthProviderFingerprint(input: {
     textCredential(credentials.client_id),
     textCredential(credentials.client_secret),
     textCredential(credentials.expires_at),
+    textCredential(credentials.oauth_type),
     textCredential(input.proxyUrl)
   ])
+}
+
+function isGeminiCodeAssistGenerationRequest(
+  req: Request,
+  mapping: ReturnType<typeof resolveOpenAIRequestModelMapping>
+): boolean {
+  if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping) || isGeminiNativeGenerateContentModelMapping(mapping)) {
+    return true
+  }
+  if (!isGeminiNativeRequest(req)) return false
+  const family = geminiEndpointFamilyFromPath(req.path || req.originalUrl.split('?', 1)[0])
+  return family === GEMINI_GENERATE_CONTENT_FAMILY || family === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+}
+
+function geminiCodeAssistDownstreamStream(
+  req: Request,
+  mapping: ReturnType<typeof resolveOpenAIRequestModelMapping>
+): boolean {
+  if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping)) return requestStream(req)
+  return geminiEndpointFamilyFromPath(req.path || req.originalUrl.split('?', 1)[0]) === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 }
 
 function setBoundedProviderCache<T>(

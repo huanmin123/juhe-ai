@@ -16,7 +16,6 @@ import {
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   bounded,
-  parseUpstreamMessage,
   throwIfAborted,
 } from './model-checks-parsing.js'
 import {
@@ -165,7 +164,13 @@ async function runGatewayProbeAttempt(
     if (signal?.aborted) throw error
     const responseBodyText = response.bodyText()
     const hasGatewayResponse = response.statusCode !== 200 || Boolean(responseBodyText)
-    const responseErrorMessage = hasGatewayResponse ? parseUpstreamMessage(responseBodyText) : undefined
+    const responseErrorMessage = hasGatewayResponse
+      ? parseModelCheckProbeResponse({
+          bodyText: responseBodyText,
+          protocol: probe.responseProtocol ?? 'openai_responses',
+          path: probe.path
+        }).errorMessage
+      : undefined
     const statusCode = attemptSignal.aborted
       ? 0
       : probeErrorStatusCode(error) || (hasGatewayResponse ? response.statusCode : 0)
@@ -256,7 +261,7 @@ async function runGatewayProbeAttempt(
     model: parsed.model,
     usage: parsed.usage,
     systemFingerprint: parsed.systemFingerprint,
-    errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText),
+    errorMessage: parsed.errorMessage,
     upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
     retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt)
   }

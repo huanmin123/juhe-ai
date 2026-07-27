@@ -21,6 +21,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
   estimateTokenCountFromText
@@ -513,7 +514,7 @@ export async function buildOpenAIToAnthropicBridgeBody(
     : await chatBodyToAnthropicMessages(body, model, options, requestPlan, contentContext, guidanceContext)
   applyOpenAIToAnthropicClaudeCodeBodyCompatibility(req, anthropicBody, options)
   requestPlan.anthropicRequestBody = anthropicBody
-  return Buffer.from(JSON.stringify(anthropicBody), 'utf8')
+  return serializeGatewayJsonObject(anthropicBody)
 }
 
 function applyOpenAIToAnthropicClaudeCodeBodyCompatibility(
@@ -6110,12 +6111,12 @@ async function readJsonBody(body: AsyncIterable<Uint8Array>): Promise<unknown> {
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
+  if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+    throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
+  }
   try {
     const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
     if (parsed === undefined) {
-      if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
-        throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
-      }
       return {}
     }
     if (!isPlainObject(parsed)) {

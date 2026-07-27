@@ -65,6 +65,10 @@ export interface GatewayStreamInspector {
     chunk: Buffer | Uint8Array | string,
     options?: { lightweightImageStream?: boolean }
   ): GatewayStreamInspection
+  pushParsedEvent?(
+    event: ParsedOpenAIStreamEvent,
+    options?: { dataBytes?: number }
+  ): GatewayStreamInspection
   pushText(text: string): GatewayStreamInspection
   finish(): GatewayStreamInspection
   snapshot(): GatewayStreamInspection
@@ -90,8 +94,10 @@ export interface GatewayProtocolDriver {
   sseResponseInspectionFailureEvent: 'default' | 'none'
   drainForKeepAliveAfterTerminal: boolean
   parseUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage
-  parseUsageFromJsonTextFragment(text?: string): ParsedUsage
+  parseUsageFromJsonValue(value: unknown): ParsedUsage
+  parseUsageFromJsonTextFragment(text?: string, skipFullDocumentParse?: boolean): ParsedUsage
   parseErrorPayload(text: string, headers: Headers): GatewayProtocolErrorPayload
+  parseErrorPayloadFromJsonValue(value: unknown): GatewayProtocolErrorPayload
   applyStreamUsageFallback(
     req: Request,
     usage: ParsedUsage,

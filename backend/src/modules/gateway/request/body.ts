@@ -59,7 +59,10 @@ export type GatewayRawBodyRequest = Request & {
   gatewayRequestBody?: GatewayRequestBodyState
   gatewayParsedJsonBodyAvailable?: boolean
   gatewayParsedJsonBody?: unknown
-  gatewayParsedJsonBodyPromise?: Promise<unknown>
+  gatewayParsedJsonBodyPromise?: {
+    rawBody: Buffer
+    promise: Promise<unknown>
+  }
   gatewayUpstreamBodyCache?: {
     passthrough?: { body: Buffer | undefined }
   }

@@ -1,11 +1,16 @@
 <template>
   <section class="form-section" autocomplete="off">
-    <template v-if="isGoogleOAuth">
+    <template v-if="isGoogleOAuth && editing">
       <a-alert class="form-alert" type="info" show-icon message="Gemini Google OAuth 使用用户授权 Refresh Token 自动换取 Access Token；可留空 Refresh Token 以使用尚未过期的 Access Token。" />
+      <a-form-item label="OAuth 类型"><a-segmented v-model:value="form.oauthType" :options="geminiOAuthTypeOptions" block /></a-form-item>
+      <a-form-item v-if="geminiSupportsTierId" label="额度层级"><a-select v-model:value="form.tierId" :options="geminiTierOptions" /></a-form-item>
+      <a-form-item v-if="geminiSupportsProjectId" label="GCP Project ID"><a-input v-model:value="form.projectId" placeholder="可选，留空由后端自动探测" /></a-form-item>
       <a-form-item label="Access Token"><a-textarea v-model:value="form.accessToken" :rows="3" autocomplete="off" placeholder="粘贴 Google Access Token" /></a-form-item>
       <a-form-item label="Refresh Token"><a-textarea v-model:value="form.refreshToken" :rows="3" autocomplete="off" placeholder="粘贴 Google OAuth Refresh Token" /></a-form-item>
-      <a-form-item label="Client ID"><a-input v-model:value="form.googleClientId" autocomplete="off" /></a-form-item>
-      <a-form-item label="Client Secret"><a-input-password v-model:value="form.googleClientSecret" autocomplete="off" /></a-form-item>
+      <template v-if="geminiRequiresClientCredentials">
+        <a-form-item label="Client ID"><a-input v-model:value="form.googleClientId" autocomplete="off" /></a-form-item>
+        <a-form-item label="Client Secret"><a-input-password v-model:value="form.googleClientSecret" autocomplete="off" /></a-form-item>
+      </template>
       <a-form-item label="Quota Project ID"><a-input v-model:value="form.googleQuotaProjectId" placeholder="可选，用于 x-goog-user-project" /></a-form-item>
     </template>
 
@@ -32,6 +37,51 @@
           placeholder="粘贴完整 Refresh Token"
         />
       </a-form-item>
+    </template>
+
+    <template v-else-if="isGoogleOAuth">
+      <AccountOAuthAuthorizePanel
+        :auth-loading="authLoading"
+        :auth-result="authResult"
+        :form="form"
+        :oauth-mode-options="oauthModeOptions"
+        :manual-alert-message="geminiRequiresClientCredentials
+          ? '使用自己的 Google OAuth 客户端授权；完成后复制浏览器地址栏里的完整回调 URL。'
+          : '使用内置 Gemini CLI OAuth 客户端授权；完成后复制浏览器地址栏里的完整回调 URL。'"
+        manual-authorize-step-text="登录 Google 并允许访问"
+        :refresh-token-alert-message="geminiRequiresClientCredentials
+          ? '已有 Google Refresh Token 时可直接换取 Access Token；Client ID 与 Client Secret 必须和签发该令牌的客户端一致。'
+          : '已有 Gemini CLI Refresh Token 时可直接换取 Access Token。'"
+        access-token-alert-message="也可以直接录入当前可用的 Google Access Token。"
+        refresh-token-placeholder="粘贴 Google OAuth Refresh Token"
+        access-token-placeholder="粘贴 Google Access Token"
+        @copy-auth-url="$emit('copy-auth-url', $event)"
+        @generate-auth-url="$emit('generate-auth-url')"
+        @open-auth-url="$emit('open-auth-url')"
+      >
+        <template #credentials>
+          <a-form-item label="OAuth 类型">
+            <a-segmented v-model:value="form.oauthType" :options="geminiOAuthTypeOptions" block />
+          </a-form-item>
+          <a-form-item v-if="geminiSupportsTierId" label="额度层级">
+            <a-select v-model:value="form.tierId" :options="geminiTierOptions" />
+          </a-form-item>
+          <a-form-item v-if="geminiSupportsProjectId" label="GCP Project ID">
+            <a-input v-model:value="form.projectId" placeholder="可选，留空由后端自动探测" />
+          </a-form-item>
+          <template v-if="geminiRequiresClientCredentials && form.oauthMode !== 'access_token'">
+            <a-form-item label="Client ID" required>
+              <a-input v-model:value="form.googleClientId" autocomplete="off" placeholder="Google OAuth Client ID" />
+            </a-form-item>
+            <a-form-item label="Client Secret" required>
+              <a-input-password v-model:value="form.googleClientSecret" autocomplete="off" placeholder="Google OAuth Client Secret" />
+            </a-form-item>
+          </template>
+          <a-form-item label="Quota Project ID">
+            <a-input v-model:value="form.googleQuotaProjectId" placeholder="可选，用于 x-goog-user-project" />
+          </a-form-item>
+        </template>
+      </AccountOAuthAuthorizePanel>
     </template>
 
     <template v-else-if="isOpenAI">
@@ -64,7 +114,25 @@
       />
     </template>
 
-    <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 GPT OAuth。" />
+    <template v-else-if="isGrokOAuth">
+      <AccountOAuthAuthorizePanel
+        :auth-loading="authLoading"
+        :auth-result="authResult"
+        :form="form"
+        :oauth-mode-options="oauthModeOptions"
+        manual-alert-message="浏览器授权完成后复制完整回调 URL；Grok OAuth 会使用本次 PKCE 会话交换令牌。"
+        manual-authorize-step-text="登录 xAI 并允许访问"
+        refresh-token-alert-message="已有 Grok Refresh Token 时可直接换取新的 Access Token。"
+        access-token-alert-message="也可以直接录入当前可用的 Grok OAuth Access Token。"
+        refresh-token-placeholder="粘贴 Grok OAuth Refresh Token"
+        access-token-placeholder="粘贴 Grok OAuth Access Token"
+        @copy-auth-url="$emit('copy-auth-url', $event)"
+        @generate-auth-url="$emit('generate-auth-url')"
+        @open-auth-url="$emit('open-auth-url')"
+      />
+    </template>
+
+    <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放。" />
 
     <a-form-item required>
       <template #label>
@@ -106,7 +174,10 @@
 
 <script setup lang="ts">
 import { QuestionCircleOutlined, SyncOutlined } from '@ant-design/icons-vue'
-import { computed } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { api } from '@/api/client'
+import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
+import { isXaiProviderCode } from '@/shared/providerProtocol'
 import type { OAuthAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
@@ -121,6 +192,7 @@ const props = defineProps<{
   isAnthropicOAuth: boolean
   isOpenAI: boolean
   isGoogleOAuth: boolean
+  isManagementView: boolean
   modelOptions: AccountModelSelectOption[]
   modelSyncing?: boolean
   modelsLoading: boolean
@@ -130,17 +202,84 @@ const props = defineProps<{
 }>()
 
 const oauthModeOptions = computed(() => {
-  if (props.isAnthropicOAuth) {
+  if (props.isAnthropicOAuth || props.isGoogleOAuth || isGrokOAuth.value) {
     return [
       { label: '官方 OAuth', value: 'manual' as const },
       { label: '粘贴 Refresh Token', value: 'refresh_token' as const },
-      { label: '直接 Token', value: 'access_token' as const }
+      { label: '直接 Token', value: 'access_token' as const },
+      ...(isGrokOAuth.value ? [{ label: 'SSO 导入', value: 'sso_cookie' as const }] : [])
     ]
   }
   return [
     { label: '手动授权', value: 'manual' as const },
     { label: '粘贴 Refresh Token', value: 'refresh_token' as const }
   ]
+})
+
+const isGrokOAuth = computed(() => isXaiProviderCode(props.form.providerCode) && props.form.type === 'oauth')
+const fallbackGeminiOAuthTypeOptions = [
+  { label: 'Code Assist', value: 'code_assist' as const },
+  { label: 'Google One', value: 'google_one' as const },
+  { label: 'AI Studio', value: 'ai_studio' as const }
+]
+const geminiCapabilities = ref<GeminiOAuthCapabilities>()
+const selectedGeminiCapability = computed(() => geminiCapabilities.value?.oauthTypes.find((item) => item.oauthType === props.form.oauthType))
+const geminiRequiresClientCredentials = computed(() => selectedGeminiCapability.value?.requiresClientCredentials ?? props.form.oauthType === 'ai_studio')
+const geminiSupportsProjectId = computed(() => selectedGeminiCapability.value?.supportsProjectId ?? props.form.oauthType === 'code_assist')
+const geminiSupportsTierId = computed(() => selectedGeminiCapability.value?.supportsTierId ?? true)
+const geminiOAuthTypeOptions = computed(() => geminiCapabilities.value?.oauthTypes.length
+  ? geminiCapabilities.value.oauthTypes.map((item) => ({ label: item.label, value: item.oauthType }))
+  : fallbackGeminiOAuthTypeOptions)
+const geminiTierOptionsByOAuthType = {
+  ai_studio: [
+    { label: 'AI Studio Free', value: 'aistudio_free' },
+    { label: 'AI Studio Paid', value: 'aistudio_paid' }
+  ],
+  code_assist: [
+    { label: 'GCP Standard', value: 'gcp_standard' },
+    { label: 'GCP Enterprise', value: 'gcp_enterprise' }
+  ],
+  google_one: [
+    { label: 'Google One Free', value: 'google_one_free' },
+    { label: 'Google AI Pro', value: 'google_ai_pro' },
+    { label: 'Google AI Ultra', value: 'google_ai_ultra' }
+  ]
+}
+const geminiTierOptions = computed(() => geminiTierOptionsByOAuthType[props.form.oauthType])
+
+watch(() => props.form.oauthType, () => {
+  if (!geminiTierOptions.value.some((option) => option.value === props.form.tierId)) {
+    props.form.tierId = geminiTierOptions.value[0]?.value ?? ''
+  }
+  if (!props.editing && selectedGeminiCapability.value?.supportedEndpointModes.length) {
+    props.form.supportedEndpointModes = [...selectedGeminiCapability.value.supportedEndpointModes]
+  }
+})
+
+async function loadGeminiCapabilities() {
+  if (!props.isGoogleOAuth || geminiCapabilities.value) return
+  const initialOAuthType = props.form.oauthType
+  try {
+    geminiCapabilities.value = props.isManagementView
+      ? await api.geminiOAuth.capabilities()
+      : await api.myGeminiOAuth.capabilities()
+    if (!geminiCapabilities.value.oauthTypes.some((item) => item.oauthType === props.form.oauthType)
+      || (!props.editing && props.form.oauthType === initialOAuthType)) {
+      props.form.oauthType = geminiCapabilities.value.defaultOAuthType
+    }
+    const selected = geminiCapabilities.value.oauthTypes.find((item) => item.oauthType === props.form.oauthType)
+    if (!props.editing && selected?.supportedEndpointModes.length) {
+      props.form.supportedEndpointModes = [...selected.supportedEndpointModes]
+    }
+  } catch (error) {
+    console.error(error)
+    geminiCapabilities.value = undefined
+  }
+}
+
+onMounted(() => { void loadGeminiCapabilities() })
+watch(() => props.isGoogleOAuth, (enabled) => {
+  if (enabled) void loadGeminiCapabilities()
 })
 
 defineEmits<{

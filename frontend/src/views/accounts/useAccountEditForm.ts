@@ -608,7 +608,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     preserveBasicFields = false
   ): boolean {
     const preserveTypedApiKeys = form.type === 'api_key' && normalizedAccountApiKeys(form).length > 0
-    const preserveTypedOAuthTokens = form.type === 'oauth' && Boolean(form.accessToken.trim() || form.refreshToken.trim())
+    const preserveTypedOAuthTokens = (form.type === 'oauth' || form.type === 'google_oauth')
+      && Boolean(form.accessToken.trim() || form.refreshToken.trim() || form.ssoTokens.trim())
     const preservedBasic = preserveBasicFields
       ? {
           name: form.name,
@@ -634,7 +635,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           ...(preserveTypedOAuthTokens
             ? {
                 accessToken: form.accessToken,
-                refreshToken: form.refreshToken
+                refreshToken: form.refreshToken,
+                ssoTokens: form.ssoTokens,
+                googleClientId: form.googleClientId,
+                googleClientSecret: form.googleClientSecret,
+                googleQuotaProjectId: form.googleQuotaProjectId,
+                oauthType: form.oauthType,
+                tierId: form.tierId,
+                projectId: form.projectId
               }
             : {})
         }

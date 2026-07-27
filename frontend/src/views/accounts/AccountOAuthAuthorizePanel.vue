@@ -2,6 +2,7 @@
   <a-form-item class="oauth-mode-item" label="授权方式">
     <a-segmented v-model:value="form.oauthMode" :options="oauthModeOptions" block />
   </a-form-item>
+  <slot name="credentials" />
 
   <template v-if="form.oauthMode === 'manual'">
     <div class="oauth-flow-panel">
@@ -46,6 +47,14 @@
     <div class="oauth-token-panel">
       <a-form-item class="oauth-token-field" label="Refresh Token" required :tooltip="refreshTokenAlertMessage">
         <a-textarea v-model:value="form.refreshToken" :rows="4" :placeholder="refreshTokenPlaceholder" />
+      </a-form-item>
+    </div>
+  </template>
+
+  <template v-else-if="form.oauthMode === 'sso_cookie'">
+    <div class="oauth-token-panel">
+      <a-form-item class="oauth-token-field" label="Grok Web SSO Key" required tooltip="每行一个 SSO key；系统会批量转换为 Grok OAuth 凭据，提交内容不会放入 URL。">
+        <a-textarea v-model:value="form.ssoTokens" :rows="6" placeholder="每行粘贴一个 Grok Web SSO key" />
       </a-form-item>
     </div>
   </template>

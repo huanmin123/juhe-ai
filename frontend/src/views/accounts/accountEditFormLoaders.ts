@@ -91,6 +91,9 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     googleClientId: asString(credentials.client_id) ?? '',
     googleClientSecret: asString(credentials.client_secret) ?? '',
     googleQuotaProjectId: asString(credentials.quota_project_id) ?? '',
+    oauthType: googleOAuthType(credentials.oauth_type),
+    tierId: asString(credentials.tier_id) ?? '',
+    projectId: asString(credentials.project_id) ?? '',
     supportedModels: [...(account.supportedModels ?? [])],
     healthCheckModel: account.healthCheckModel,
     temporaryUnavailableContinuousProbeEnabled: account.temporaryUnavailableContinuousProbeEnabled !== false,
@@ -117,6 +120,11 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     responseInspectionRules,
     scheduleFingerprint: accountAvailabilityScheduleFormFingerprint(patch.availabilitySchedule)
   }
+}
+
+function googleOAuthType(value: unknown): AccountFormModel['oauthType'] {
+  if (value === 'code_assist' || value === 'google_one' || value === 'ai_studio') return value
+  return 'code_assist'
 }
 
 export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {
@@ -156,6 +164,7 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     refreshToken: '',
     callbackUrl: '',
     oauthMode: 'manual',
+    ssoTokens: '',
     supportedModels: [...(account.supportedModels ?? [])],
     healthCheckModel: account.healthCheckModel,
     temporaryUnavailableContinuousProbeEnabled: account.temporaryUnavailableContinuousProbeEnabled !== false,

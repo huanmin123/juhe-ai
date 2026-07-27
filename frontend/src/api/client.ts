@@ -6,6 +6,8 @@ import { authorizationsApi, myAuthorizationsApi } from './domains/authorizations
 import { authorizationOptionsApi, myAuthorizationOptionsApi } from './domains/authorizationOptions'
 import { externalIntegrationSourcesApi } from './domains/externalIntegrationSources'
 import { groupsApi, myGroupsApi } from './domains/groups'
+import { geminiOAuthApi, myGeminiOAuthApi } from './domains/geminiOAuth'
+import { grokOAuthApi, myGrokOAuthApi } from './domains/grokOAuth'
 import { ipStatsApi } from './domains/ipStats'
 import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, runtimeLogsApi } from './domains/logs'
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
@@ -47,6 +49,10 @@ export const api = {
   myRouteStrategies: myRouteStrategiesApi,
   anthropicOAuth: anthropicOAuthApi,
   myAnthropicOAuth: myAnthropicOAuthApi,
+  geminiOAuth: geminiOAuthApi,
+  myGeminiOAuth: myGeminiOAuthApi,
+  grokOAuth: grokOAuthApi,
+  myGrokOAuth: myGrokOAuthApi,
   openaiOAuth: openaiOAuthApi,
   myOpenaiOAuth: myOpenaiOAuthApi,
   proxies: proxiesApi,

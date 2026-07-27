@@ -74,6 +74,11 @@ const updateSelectableTestModelSource = sourceSection(
   'function updateSelectableTestModel',
   'function resetTestModels'
 )
+const applyTestEndpointModesSource = sourceSection(
+  accountTestModelsSource,
+  'function applyTestEndpointModes',
+  'return {'
+)
 
 assertTrue(isOpenAIProtocolProfile(openAIAccount), 'OpenAI v1 账户应识别为 OpenAI 协议档案')
 assertTrue(isAnthropicProtocolProfile(anthropicAccount), 'Anthropic v1 账户应识别为 Anthropic 协议档案')
@@ -161,7 +166,9 @@ assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAcco
 
 assertIncludes(accountTestModelsSource, 'option.testEndpointModes', '保存账户测试应从同一次模型选项响应读取请求形态')
 assertIncludes(updateSelectableTestModelSource, 'normalizeEndpointModes(option.testEndpointModes)', '切换模型必须使用模型选项携带的模型与账户能力协议交集')
-assertIncludes(updateSelectableTestModelSource, "input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'", '切换模型后必须清除前一模型遗留的无效检查协议')
+assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes(endpointModes, preserveEndpointMode)', '切换模型必须通过统一入口更新请求形态')
+assertIncludes(applyTestEndpointModesSource, "endpointModes[0] ?? 'account_default'", '切换模型后必须清除前一模型遗留的无效检查协议')
+assertIncludes(applyTestEndpointModesSource, 'endpointModes.includes(currentEndpointMode)', '补齐当前模型能力时必须保留仍然有效的列表默认请求形态')
 assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '前端不能自行按模型协议标签二次推导检查协议')
 
 assertDeepEqual(

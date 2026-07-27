@@ -2,7 +2,7 @@ import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
 import type { AccountSummary, OAuthAuthURLResult, ProviderDefinition } from '@/types/domain'
-import { ref, type ComputedRef, type Ref } from 'vue'
+import { ref, watch, type ComputedRef, type Ref } from 'vue'
 
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
@@ -25,7 +25,7 @@ import {
   normalizedAccountApiKeys,
   normalizedAccountApiKeyWeights
 } from './accountCredentials'
-import { canCreateOAuthAccount } from './accountProviderCapabilities'
+import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
 import {
   normalizeFormTagNames,
   sameTagNames,
@@ -64,6 +64,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const saving = submittingRef('accounts.save')
   const authLoading = ref(false)
   const authResult = ref<OAuthAuthURLResult>()
+
+  watch(() => options.form.oauthType, () => {
+    authResult.value = undefined
+  })
 
   const saveAccount = submitAction('accounts.save', async () => {
     if (options.editingAuthorizedAccount.value) {
@@ -113,11 +117,19 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           await api.myAccounts.update(options.editingId.value, updatePayload)
         }
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
-      } else if (options.form.type === 'oauth') {
-        const created = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
-          ? await createOAuthAccountFromUnifiedForm()
-          : await createApiKeyAccount(payload)
-        message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
+      } else if (options.form.type === 'oauth' || options.form.type === 'google_oauth') {
+        if (options.form.oauthMode === 'sso_cookie') {
+          const importComplete = await importGrokSsoAccounts()
+          if (!importComplete) {
+            await options.loadData()
+            return
+          }
+        } else {
+          const created = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
+            ? await createOAuthAccountFromUnifiedForm()
+            : await createApiKeyAccount(payload)
+          message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
+        }
       } else {
         const created = await createApiKeyAccount(payload)
         message.success(balanceAutoDisabled
@@ -135,6 +147,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   async function generateOAuthUrl() {
     if (!usesManagedOAuthCreateFlow(options.form, options.providers.value)) {
       message.warning('当前供应商 OAuth 使用直接录入 Access Token，不提供站内授权链接')
+      return
+    }
+    const providerKind = resolveManagedOAuthProvider(options.form, options.providers.value)
+    if (providerKind === 'gemini'
+      && options.form.oauthType === 'ai_studio'
+      && (!options.form.googleClientId.trim() || !options.form.googleClientSecret.trim())) {
+      message.warning('请先填写 Google OAuth Client ID 和 Client Secret')
       return
     }
     authLoading.value = true
@@ -303,6 +322,34 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       : api.myAccounts.create(payload)
   }
 
+  async function importGrokSsoAccounts(): Promise<boolean> {
+    if (resolveManagedOAuthProvider(options.form, options.providers.value) !== 'grok') {
+      throw new Error('SSO Cookie 导入仅支持 Grok OAuth')
+    }
+    const ssoTokens = normalizeSsoTokens(options.form.ssoTokens)
+    const commonPayload = buildOAuthCreateCommonPayload({
+      accounts: options.accounts.value,
+      editingId: options.editingId.value,
+      form: options.form,
+      errorPolicyRules: options.accountErrorPolicyRules.value,
+      responseInspectionRules: options.accountResponseInspectionRules.value
+    })
+    const result = options.isManagementView.value
+      ? await api.grokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens }, options.createScopeParams.value)
+      : await api.myGrokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens })
+    if (!result.failed.length) {
+      message.success(`Grok SSO 导入完成：成功 ${result.created.length} 个`)
+      return true
+    }
+    const failedTokens = result.failed
+      .map((item) => ssoTokens[item.index - 1])
+      .filter((token): token is string => Boolean(token))
+    options.form.ssoTokens = failedTokens.join('\n')
+    const detail = result.failed.slice(0, 3).map((item) => `第 ${item.index} 项：${item.error}`).join('；')
+    message.warning(`Grok SSO 导入完成：成功 ${result.created.length} 个，失败 ${result.failed.length} 个。${detail}`)
+    return false
+  }
+
   return {
     authLoading,
     authResult,
@@ -409,27 +456,32 @@ function buildBasicEditCredentialsPatch(form: AccountFormModel, currentCredentia
     if (form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)) {
       credentials.quota_project_id = form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)
     }
+    credentials.oauth_type = form.oauthType
+    credentials.tier_id = form.tierId.trim()
+    if (form.projectId.trim() || credentialText(currentCredentials.project_id)) {
+      credentials.project_id = form.projectId.trim() || credentialText(currentCredentials.project_id)
+    }
     credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url) || ''
   }
   return credentials
 }
 
 function usesManagedOAuthCreateFlow(form: AccountFormModel, providers: readonly ProviderDefinition[]): boolean {
-  const providerProfile = providers.length
-    ? resolveFormProviderProfile(form, [...providers])
-    : resolveFormProviderProfile(form)
-  return canCreateOAuthAccount(providerProfile) || isAnthropicManagedOAuthProviderProfile(providerProfile)
+  return resolveManagedOAuthProvider(form, providers) !== undefined
 }
 
 function credentialText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function isAnthropicManagedOAuthProviderProfile(input: { provider?: ProviderDefinition; profile?: ProviderDefinition['protocolProfiles'][number] }): boolean {
-  return input.profile?.providerCode === 'anthropic'
-    && input.profile?.protocolCode === 'anthropic'
-    && input.profile?.protocolVersion === 'v1'
-    && input.profile?.accountTypes.includes('oauth') === true
+function resolveManagedOAuthProvider(
+  form: AccountFormModel,
+  providers: readonly ProviderDefinition[]
+): ManagedOAuthProviderKind | undefined {
+  const providerProfile = providers.length
+    ? resolveFormProviderProfile(form, [...providers])
+    : resolveFormProviderProfile(form)
+  return managedOAuthProviderKind(providerProfile)
 }
 
 async function requestManagedOAuthAuthUrl(
@@ -437,12 +489,13 @@ async function requestManagedOAuthAuthUrl(
   providers: readonly ProviderDefinition[],
   isManagementView: boolean
 ): Promise<OAuthAuthURLResult> {
-  const providerProfile = providers.length
-    ? resolveFormProviderProfile(form, [...providers])
-    : resolveFormProviderProfile(form)
-  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
-    return isManagementView ? api.anthropicOAuth.authUrl({}) : api.myAnthropicOAuth.authUrl({})
+  const providerKind = resolveManagedOAuthProvider(form, providers)
+  if (providerKind === 'anthropic') return isManagementView ? api.anthropicOAuth.authUrl({}) : api.myAnthropicOAuth.authUrl({})
+  if (providerKind === 'gemini') {
+    const payload = geminiOAuthClientPayload(form)
+    return isManagementView ? api.geminiOAuth.authUrl(payload) : api.myGeminiOAuth.authUrl(payload)
   }
+  if (providerKind === 'grok') return isManagementView ? api.grokOAuth.authUrl({}) : api.myGrokOAuth.authUrl({})
   return isManagementView ? api.openaiOAuth.authUrl({}) : api.myOpenaiOAuth.authUrl({})
 }
 
@@ -453,13 +506,22 @@ async function createManagedOAuthAccountFromCode(
   scopeParams: AccountScopeParams,
   isManagementView: boolean
 ): Promise<AccountSummary> {
-  const providerProfile = providers.length
-    ? resolveFormProviderProfile(form, [...providers])
-    : resolveFormProviderProfile(form)
-  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
+  const providerKind = resolveManagedOAuthProvider(form, providers)
+  if (providerKind === 'anthropic') {
     return isManagementView
       ? api.anthropicOAuth.createFromCode(payload, scopeParams)
       : api.myAnthropicOAuth.createFromCode(payload)
+  }
+  if (providerKind === 'gemini') {
+    const geminiPayload = { ...payload, ...geminiOAuthClientPayload(form) }
+    return isManagementView
+      ? api.geminiOAuth.createFromCode(geminiPayload, scopeParams)
+      : api.myGeminiOAuth.createFromCode(geminiPayload)
+  }
+  if (providerKind === 'grok') {
+    return isManagementView
+      ? api.grokOAuth.createFromCode(payload, scopeParams)
+      : api.myGrokOAuth.createFromCode(payload)
   }
   return isManagementView
     ? api.openaiOAuth.createFromCode(payload, scopeParams)
@@ -473,15 +535,42 @@ async function createManagedOAuthAccountFromRefreshToken(
   scopeParams: AccountScopeParams,
   isManagementView: boolean
 ): Promise<AccountSummary> {
-  const providerProfile = providers.length
-    ? resolveFormProviderProfile(form, [...providers])
-    : resolveFormProviderProfile(form)
-  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
+  const providerKind = resolveManagedOAuthProvider(form, providers)
+  if (providerKind === 'anthropic') {
     return isManagementView
       ? api.anthropicOAuth.createFromRefreshToken(payload, scopeParams)
       : api.myAnthropicOAuth.createFromRefreshToken(payload)
   }
+  if (providerKind === 'gemini') {
+    const geminiPayload = { ...payload, ...geminiOAuthClientPayload(form) }
+    return isManagementView
+      ? api.geminiOAuth.createFromRefreshToken(geminiPayload, scopeParams)
+      : api.myGeminiOAuth.createFromRefreshToken(geminiPayload)
+  }
+  if (providerKind === 'grok') {
+    return isManagementView
+      ? api.grokOAuth.createFromRefreshToken(payload, scopeParams)
+      : api.myGrokOAuth.createFromRefreshToken(payload)
+  }
   return isManagementView
     ? api.openaiOAuth.createFromRefreshToken(payload, scopeParams)
     : api.myOpenaiOAuth.createFromRefreshToken(payload)
+}
+
+function geminiOAuthClientPayload(form: AccountFormModel): Record<string, unknown> {
+  return {
+    oauthType: form.oauthType,
+    tierId: form.tierId.trim(),
+    ...(form.projectId.trim() ? { projectId: form.projectId.trim() } : {}),
+    ...(form.oauthType === 'ai_studio' ? {
+      clientId: form.googleClientId.trim(),
+      clientSecret: form.googleClientSecret.trim()
+    } : {}),
+    ...(form.googleQuotaProjectId.trim() ? { quotaProjectId: form.googleQuotaProjectId.trim() } : {}),
+    ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {})
+  }
+}
+
+function normalizeSsoTokens(value: string): string[] {
+  return [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))]
 }

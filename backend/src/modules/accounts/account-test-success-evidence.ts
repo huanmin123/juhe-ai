@@ -1,13 +1,20 @@
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
+import {
+  diagnosticResponseContext,
+  type DiagnosticResponseContext
+} from '../gateway/diagnostics/diagnostic-response-context.js'
+
+type AccountTestResponseInput = string | DiagnosticResponseContext
 
 export function hasAccountTestProtocolSuccessEvidence(
   mode: AccountSupportedEndpointMode,
-  bodyText: string
+  input: AccountTestResponseInput
 ): boolean {
+  const context = diagnosticResponseContext(input)
   if (mode.endsWith('_sse')) {
-    return hasStreamingSuccessEvidence(mode, bodyText)
+    return hasStreamingSuccessEvidence(mode, context)
   }
-  const payload = parseJsonObject(bodyText)
+  const payload = context.record
   if (!payload) return false
   if (mode === 'chat_json') return hasCompletedChatPayload(payload)
   if (mode === 'responses_json') return hasCompletedResponsesPayload(payload)
@@ -17,35 +24,40 @@ export function hasAccountTestProtocolSuccessEvidence(
   return false
 }
 
-export function hasAccountModelCatalogSuccessEvidence(model: string, bodyText: string): boolean {
+export function hasAccountModelCatalogSuccessEvidence(model: string, input: AccountTestResponseInput): boolean {
   const target = model.trim()
   if (!target) return false
-  return accountModelCatalogIds(bodyText).includes(target)
+  return accountModelCatalogIds(input).includes(target)
 }
 
-export function hasAccountModelCatalogResponseEvidence(bodyText: string): boolean {
-  const payload = parseJsonObject(bodyText)
+export function hasAccountModelCatalogResponseEvidence(input: AccountTestResponseInput): boolean {
+  const payload = diagnosticResponseContext(input).record
   return Boolean(Array.isArray(payload?.data) || Array.isArray(payload?.models))
 }
 
-export function accountModelCatalogIds(bodyText: string): string[] {
-  const payload = parseJsonObject(bodyText)
-  if (!payload) return []
-  const values = Array.isArray(payload.data)
-    ? payload.data.map((item) => stringValue(objectValue(item)?.id))
-    : Array.isArray(payload.models)
-      ? payload.models.map((item) => geminiModelId(objectValue(item)?.name))
+export function accountModelCatalogIds(input: AccountTestResponseInput): string[] {
+  const payload = diagnosticResponseContext(input).record
+  return accountModelCatalogIdsFromPayload(payload)
+}
+
+export function accountModelCatalogIdsFromPayload(payload: unknown): string[] {
+  const record = objectValue(payload)
+  if (!record) return []
+  const values = Array.isArray(record.data)
+    ? record.data.map((item) => stringValue(objectValue(item)?.id))
+    : Array.isArray(record.models)
+      ? record.models.map((item) => geminiModelId(objectValue(item)?.name))
       : []
   return [...new Set(values.filter(Boolean))]
 }
 
-function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, bodyText: string): boolean {
+function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, context: DiagnosticResponseContext): boolean {
   let hasChatContent = false
-  for (const event of parseServerSentEvents(bodyText)) {
-    if (event.data === '[DONE]') {
+  for (const event of context.events) {
+    if (event.done) {
       return mode === 'chat_sse' && hasChatContent
     }
-    const payload = parseJsonObject(event.data)
+    const payload = event.json
     if (!payload) continue
     const eventType = stringValue(payload.type) || event.event
     if (mode === 'chat_sse' && hasCompletedChatPayload(payload)) return true
@@ -96,43 +108,6 @@ function hasCompletedGeminiPayload(payload: Record<string, unknown>): boolean {
 function hasCompletedInteractionsPayload(payload: Record<string, unknown>): boolean {
   return payload.status === 'completed'
     && (payload.object === 'interaction' || Array.isArray(payload.steps))
-}
-
-function parseServerSentEvents(bodyText: string): Array<{ event?: string; data: string }> {
-  const output: Array<{ event?: string; data: string }> = []
-  let event: string | undefined
-  let dataLines: string[] = []
-  const flush = () => {
-    if (dataLines.length) output.push({ event, data: dataLines.join('\n') })
-    event = undefined
-    dataLines = []
-  }
-  for (const line of bodyText.split(/\r?\n/)) {
-    if (!line.trim()) {
-      flush()
-    } else if (line.startsWith('event:')) {
-      event = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      const data = line.slice(5).trim()
-      if (data === '[DONE]') {
-        flush()
-        output.push({ event, data })
-        event = undefined
-      } else if (data) {
-        dataLines.push(data)
-      }
-    }
-  }
-  flush()
-  return output
-}
-
-function parseJsonObject(value: string): Record<string, unknown> | undefined {
-  try {
-    return objectValue(JSON.parse(value) as unknown)
-  } catch {
-    return undefined
-  }
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

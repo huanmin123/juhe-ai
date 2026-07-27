@@ -196,6 +196,7 @@ function accountTypeChoiceLabel(
     if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Gemini OpenAI Chat API Key'
   }
   if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Gemini Google OAuth'
+  if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
   if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
     return 'xAI 官方 API Key'
   }
@@ -221,6 +222,7 @@ function accountTypeChoiceTag(
     return 'Gemini API'
   }
   if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Google OAuth'
+  if (isXaiProviderCode(providerCode) && type === 'oauth') return 'Grok OAuth'
   if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
     return 'OpenAI v1'
   }

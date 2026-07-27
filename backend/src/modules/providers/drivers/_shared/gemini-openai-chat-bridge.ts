@@ -16,6 +16,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import { parseOpenAISseEventText } from '../../../gateway/protocols/openai-v1/stream-events.js'
@@ -85,7 +86,7 @@ export async function buildGeminiGenerateContentChatBridgeBody(
   const model = options.modelOverride ?? options.defaultModel
   validateGeminiGenerateContentChatBridgeBody(req, body, model, options.guidanceProviderName)
   const chatBody = geminiGenerateContentBodyToChatCompletionsBody(req, body, model, options.guidanceProviderName)
-  return Buffer.from(JSON.stringify(chatBody), 'utf8')
+  return serializeGatewayJsonObject(chatBody)
 }
 
 export function transformGeminiGenerateContentChatBridgeUpstreamResponse(
@@ -125,6 +126,12 @@ function geminiGenerateContentEndpointFamily(req: Request): typeof GEMINI_GENERA
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
+  if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+    throw new GatewayRequestValidationError(
+      'Gemini GenerateContent 到 Chat Completions 桥接要求请求体是有效 JSON 对象',
+      'invalid_gemini_chat_bridge_json_body'
+    )
+  }
   let parsed: unknown
   try {
     parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
@@ -142,12 +149,6 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
     )
   }
   if (parsed === undefined) {
-    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
-      throw new GatewayRequestValidationError(
-        'Gemini GenerateContent 到 Chat Completions 桥接要求请求体是有效 JSON 对象',
-        'invalid_gemini_chat_bridge_json_body'
-      )
-    }
     return {}
   }
   if (!isPlainObject(parsed)) {

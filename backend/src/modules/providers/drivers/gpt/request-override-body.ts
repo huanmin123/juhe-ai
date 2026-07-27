@@ -4,6 +4,7 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../../gateway/request/json-parser.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { gatewaySerializedJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
 import {
@@ -105,6 +106,10 @@ export async function parseAccountRequestOverrideBody(
 ): Promise<Record<string, unknown>> {
   if (body === undefined) {
     throw invalidAccountRequestOverrideBodyError()
+  }
+  const structuredBody = gatewaySerializedJsonObject(body)
+  if (structuredBody) {
+    return structuredBody as Record<string, unknown>
   }
   let parsed: unknown
   try {

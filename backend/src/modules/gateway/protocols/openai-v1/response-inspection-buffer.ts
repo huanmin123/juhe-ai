@@ -42,8 +42,14 @@ export interface OpenAIResponseInspectionBufferOptions {
 
 export type ResponseInspectionEventTransform = Buffer | {
   buffer?: Buffer
+  parsedEvent?: ParsedOpenAIStreamEvent
   intercepted?: ResponseInspectionDecision
 } | undefined
+
+export interface ParsedResponseInspectionSseChunk {
+  event: ParsedOpenAIStreamEvent
+  dataBytes: number
+}
 
 const maxBufferedSseEventBytes = 256 * 1024
 
@@ -57,6 +63,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly extractSemanticFrames: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
   private readonly buildFailureEvent: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
   private readonly transformEvent: ((event: ParsedOpenAIStreamEvent) => ResponseInspectionEventTransform) | undefined
+  private readonly parsedEventByChunk = new WeakMap<Buffer, ParsedResponseInspectionSseChunk>()
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private readonly deferredCodexCompactionChunks: Buffer[] = []
   private codexCompactionOutputItemCount = 0
@@ -79,6 +86,10 @@ export class OpenAIResponseInspectionBuffer {
   markDownstreamWrite(): void {
     if (!this.clientRetryEnabled && this.policies.length === 0 && !this.transformEvent) return
     this.downstreamWritten = true
+  }
+
+  parsedEventForChunk(chunk: Buffer): ParsedResponseInspectionSseChunk | undefined {
+    return this.parsedEventByChunk.get(chunk)
   }
 
   pushChunk(chunk: Buffer): ResponseInspectionSseResult {
@@ -108,8 +119,9 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
-      const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer)
+      const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer, event)
       const outboundBuffer = transformed.buffer
+      this.rememberParsedEvent(outboundBuffer, transformed.parsedEvent)
       if (transformed.intercepted) {
         this.clearDeferredLeadingNoopChunks()
         this.clearDeferredCodexCompactionChunks()
@@ -214,8 +226,9 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
-    const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer)
+    const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer, event)
     const outboundBuffer = transformed.buffer
+    this.rememberParsedEvent(outboundBuffer, transformed.parsedEvent)
     if (transformed.intercepted) {
       this.clearDeferredLeadingNoopChunks()
       this.clearDeferredCodexCompactionChunks()
@@ -462,17 +475,36 @@ export class OpenAIResponseInspectionBuffer {
       && this.context.clientProfile === 'codex'
       && this.context.accountClientCompatibility === 'codex_responses'
   }
+
+  private rememberParsedEvent(buffer: Buffer, event: ParsedOpenAIStreamEvent | undefined): void {
+    if (!event) return
+    this.parsedEventByChunk.set(buffer, {
+      event,
+      dataBytes: sseEventDataBytes(event.rawText ?? buffer.toString('utf8'))
+    })
+  }
 }
 
 function normalizeEventTransform(
   value: ResponseInspectionEventTransform,
-  fallback: Buffer
-): { buffer: Buffer; intercepted?: ResponseInspectionDecision } {
+  fallback: Buffer,
+  fallbackEvent: ParsedOpenAIStreamEvent
+): { buffer: Buffer; parsedEvent?: ParsedOpenAIStreamEvent; intercepted?: ResponseInspectionDecision } {
   if (Buffer.isBuffer(value)) return { buffer: value }
   return {
     buffer: value?.buffer ?? fallback,
+    parsedEvent: value?.parsedEvent ?? (value?.buffer ? undefined : fallbackEvent),
     intercepted: value?.intercepted
   }
+}
+
+function sseEventDataBytes(rawText: string): number {
+  let dataBytes = 0
+  for (const line of rawText.split(/\r?\n|\r/)) {
+    if (!line.startsWith('data:')) continue
+    dataBytes += Buffer.byteLength(line.slice(5).trimStart(), 'utf8')
+  }
+  return dataBytes
 }
 
 function openAIEndpointFamilyOrUnknown(endpointFamily: ResponseEndpointFamily): OpenAIResponseEndpointFamily {

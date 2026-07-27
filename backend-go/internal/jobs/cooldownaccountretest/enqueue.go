@@ -10,10 +10,14 @@ import (
 )
 
 const (
-	// Keep Asynq's unique lease alive across the default executions and retry backoff.
-	DefaultUniqueTTL   = 10 * time.Minute
-	DefaultMaxRetry    = 3
-	DefaultTaskTimeout = 70 * time.Second
+	// While the bounded queue and consumer are running, four hours covers all 100
+	// tasks, four attempts, worst-case retry delays, and a restart margin. This is
+	// only a lease: a Redis/consumer outage longer than the TTL can admit the same
+	// fence again, so production takeover still requires durable lifecycle proof.
+	DefaultUniqueTTL           = 4 * time.Hour
+	DefaultMaxRetry            = 3
+	DefaultTaskTimeout         = 70 * time.Second
+	DefaultConsumerConcurrency = 3
 )
 
 type EnqueueClient interface {
@@ -31,7 +35,7 @@ func (e Enqueuer) EnqueueCooldownAccountRetest(ctx context.Context, task port.Co
 	if e.Client == nil {
 		return false, errors.New("asynq client is required")
 	}
-	payload, err := EncodeTask(task)
+	payload, headers, err := EncodeTask(task)
 	if err != nil {
 		return false, err
 	}
@@ -49,8 +53,10 @@ func (e Enqueuer) EnqueueCooldownAccountRetest(ctx context.Context, task port.Co
 	}
 	// Do not use a deterministic TaskID. Asynq retains archived task IDs, which
 	// would make a later due observation conflict after a bounded retry budget.
-	// The short unique window deduplicates concurrent scheduler pages instead.
-	_, err = e.Client.Enqueue(ctx, TaskType, payload, queue.EnqueueOptions{Queue: QueueName, MaxRetry: &maxRetry, Timeout: timeout, UniqueTTL: ttl})
+	// The bounded unique lease deduplicates concurrent scheduler pages and retries.
+	_, err = e.Client.Enqueue(ctx, TaskType, payload, queue.EnqueueOptions{
+		Queue: QueueName, MaxRetry: &maxRetry, Timeout: timeout, UniqueTTL: ttl, Headers: headers,
+	})
 	if errors.Is(err, queue.ErrTaskConflict) {
 		return false, nil
 	}

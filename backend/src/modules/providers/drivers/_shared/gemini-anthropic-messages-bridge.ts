@@ -9,6 +9,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import { parseOpenAISseEventText } from '../../../gateway/protocols/openai-v1/stream-events.js'
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
@@ -79,7 +80,7 @@ export async function buildGeminiGenerateContentAnthropicMessagesBridgeBody(
     model,
     providerName: options.guidanceProviderName
   })
-  return Buffer.from(JSON.stringify(anthropicBody), 'utf8')
+  return serializeGatewayJsonObject(anthropicBody)
 }
 
 export function transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse(
@@ -111,6 +112,12 @@ export function transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamRes
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
+  if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+    throw new GatewayRequestValidationError(
+      'Gemini GenerateContent 到 Anthropic Messages 桥接要求请求体是有效 JSON 对象',
+      'invalid_gemini_messages_bridge_json_body'
+    )
+  }
   let parsed: unknown
   try {
     parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
@@ -128,12 +135,6 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
     )
   }
   if (parsed === undefined) {
-    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
-      throw new GatewayRequestValidationError(
-        'Gemini GenerateContent 到 Anthropic Messages 桥接要求请求体是有效 JSON 对象',
-        'invalid_gemini_messages_bridge_json_body'
-      )
-    }
     return {}
   }
   if (!isPlainObject(parsed)) {

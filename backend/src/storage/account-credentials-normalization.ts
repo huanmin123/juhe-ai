@@ -29,10 +29,17 @@ const oauthAccountCredentialKeys = new Set([
   'expires_at',
   'client_id',
   'id_token',
+  'token_type',
+  'scope',
   'email',
   'account_id',
+  'organization_id',
   'chatgpt_user_id',
   'plan_type',
+  'sub',
+  'team_id',
+  'subscription_tier',
+  'entitlement_status',
   'base_url',
   'supported_endpoint_modes',
   'service_tier_override',
@@ -50,6 +57,14 @@ const googleOAuthAccountCredentialKeys = new Set([
   'client_id',
   'client_secret',
   'quota_project_id',
+  'oauth_type',
+  'project_id',
+  'tier_id',
+  'scope',
+  'token_type',
+  'drive_storage_limit',
+  'drive_storage_usage',
+  'drive_tier_updated_at',
   'base_url',
   'supported_endpoint_modes',
   'service_tier_override',
@@ -217,10 +232,17 @@ function normalizeOAuthAccountCredentials(
   if (expiresAt) credentials.expires_at = expiresAt
   copyOptionalCredentialText(input, credentials, 'client_id', 'OAuth client_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'id_token', 'OAuth id_token', accountCredentialSecretMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'token_type', 'OAuth token_type', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'scope', 'OAuth scope', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'email', 'OAuth email', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'account_id', 'OpenAI account_id', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'organization_id', 'Anthropic organization_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'chatgpt_user_id', 'OpenAI chatgpt_user_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'plan_type', 'OpenAI plan_type', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'sub', 'xAI subject', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'team_id', 'xAI team_id', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'subscription_tier', 'xAI subscription_tier', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'entitlement_status', 'xAI entitlement_status', accountCredentialMetadataMaxBytes)
   normalizeAccountCredentialPolicies(input, credentials)
   normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
   assertAccountCredentialsJsonSize(credentials)
@@ -256,6 +278,14 @@ function normalizeGoogleOAuthAccountCredentials(
   const expiresAt = optionalCredentialDateTime(input.expires_at, 'Google Access Token 到期时间')
   if (expiresAt) credentials.expires_at = expiresAt
   copyOptionalCredentialText(input, credentials, 'quota_project_id', 'Google Quota Project ID', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'oauth_type', 'Gemini OAuth 类型', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'project_id', 'Gemini Project ID', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'tier_id', 'Gemini Tier ID', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'scope', 'Google OAuth scope', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialText(input, credentials, 'token_type', 'Google OAuth token_type', accountCredentialMetadataMaxBytes)
+  copyOptionalCredentialNonNegativeInteger(input, credentials, 'drive_storage_limit', 'Google Drive 存储上限')
+  copyOptionalCredentialNonNegativeInteger(input, credentials, 'drive_storage_usage', 'Google Drive 已用存储')
+  copyOptionalCredentialText(input, credentials, 'drive_tier_updated_at', 'Google Drive tier 更新时间', accountCredentialMetadataMaxBytes)
   normalizeAccountCredentialPolicies(input, credentials)
   normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
   assertAccountCredentialsJsonSize(credentials)
@@ -369,6 +399,25 @@ function optionalCredentialDateTime(value: unknown, label: string): string | und
 function copyOptionalCredentialText(input: Record<string, unknown>, output: Record<string, unknown>, key: string, label: string, maxBytes: number): void {
   const value = optionalCredentialText(input[key], label, maxBytes)
   if (value) output[key] = value
+}
+
+function copyOptionalCredentialNonNegativeInteger(
+  input: Record<string, unknown>,
+  output: Record<string, unknown>,
+  key: string,
+  label: string
+): void {
+  const value = input[key]
+  if (value === undefined || value === null || value === '') return
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    output[key] = value
+    return
+  }
+  if (typeof value === 'string' && /^\d+$/u.test(value.trim())) {
+    output[key] = value.trim()
+    return
+  }
+  throw new Error(`${label}必须是非负整数`)
 }
 
 function assertCredentialTextByteLength(value: string, label: string, maxBytes: number): void {

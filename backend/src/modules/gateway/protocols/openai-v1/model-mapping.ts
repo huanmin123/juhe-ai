@@ -30,6 +30,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../request/serialized-json-body.js'
 import { requestModel } from '../../request/metadata.js'
 import { requestStream } from '../../request/metadata.js'
 import { OpenAIOAuthCodexAdapterError } from '../../adapters/gpt-codex/oauth-adapter.js'
@@ -235,10 +236,10 @@ export async function buildOpenAIModelMappedJsonBody(
   signal?: AbortSignal
 ): Promise<Buffer> {
   const body = await parseOpenAIModelMappingJsonObjectBody(req, signal)
-  return Buffer.from(JSON.stringify({
+  return serializeGatewayJsonObject({
     ...body,
     model: upstreamModel
-  }), 'utf8')
+  })
 }
 
 async function parseOpenAIModelMappingJsonObjectBody(req: Request, signal?: AbortSignal): Promise<Record<string, unknown>> {

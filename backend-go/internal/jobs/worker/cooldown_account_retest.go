@@ -14,7 +14,7 @@ import (
 	module "juhe-ai/backend-go/internal/modules/cooldownaccountretest"
 )
 
-const DefaultCooldownAccountRetestConcurrency = 3
+const DefaultCooldownAccountRetestConcurrency = job.DefaultConsumerConcurrency
 
 type CooldownAccountRetestConsumerOptions struct {
 	Redis           queue.RedisOptions
@@ -27,6 +27,9 @@ type CooldownAccountRetestConsumerOptions struct {
 func RunCooldownAccountRetestConsumer(ctx context.Context, opts CooldownAccountRetestConsumerOptions) error {
 	if opts.Processor.Store == nil || opts.Processor.Outcomes == nil {
 		return fmt.Errorf("cooldown account retest processor stores are required")
+	}
+	if opts.Processor.Quota == nil {
+		return fmt.Errorf("cooldown account retest quota checker is required")
 	}
 	if opts.Processor.Probe == nil {
 		return module.ErrProbeNotConfigured
@@ -65,7 +68,7 @@ func newCooldownAccountRetestMuxWithTracker(processor module.Processor, handlers
 		if handlers != nil {
 			defer handlers.End()
 		}
-		return handleCooldownAccountRetestTask(taskCtx, processor, task.Payload())
+		return handleCooldownAccountRetestTask(taskCtx, processor, task.Payload(), task.Headers())
 	})
 	return mux
 }
@@ -111,9 +114,9 @@ func (t *cooldownAccountRetestHandlerTracker) CloseAndWait() {
 	t.mu.Unlock()
 }
 
-func handleCooldownAccountRetestTask(ctx context.Context, processor module.Processor, payload []byte) error {
-	if err := job.HandleTask(ctx, processor, payload); err != nil {
-		if errors.Is(err, job.ErrInvalidPayload) {
+func handleCooldownAccountRetestTask(ctx context.Context, processor module.Processor, payload []byte, headers map[string]string) error {
+	if err := job.HandleTask(ctx, processor, payload, headers); err != nil {
+		if errors.Is(err, job.ErrInvalidPayload) || errors.Is(err, module.ErrUnsupportedProbeOutcome) {
 			return fmt.Errorf("%w: %w", err, asynq.SkipRetry)
 		}
 		return err

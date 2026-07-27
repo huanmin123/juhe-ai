@@ -321,18 +321,59 @@ func TestCooldownRetestTaskCurrent(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	other := now.Add(time.Second)
+	sourceRevision := 9
+	otherSourceRevision := 10
+	queued := RetestTaskVersion{ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1", SourceConfigRevision: &sourceRevision}
+	if !CooldownRetestTaskCurrent(queued, queued) {
+		t.Fatal("matching five-part fence must remain current")
+	}
+	tests := map[string]RetestTaskVersion{
+		"config revision":        {ConfigRevision: 8, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1", SourceConfigRevision: &sourceRevision},
+		"dispatch revision":      {ConfigRevision: 7, DispatchRevision: 9, ObservationStartedAt: &now, Generation: "generation-1", SourceConfigRevision: &sourceRevision},
+		"observation":            {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &other, Generation: "generation-1", SourceConfigRevision: &sourceRevision},
+		"generation":             {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-2", SourceConfigRevision: &sourceRevision},
+		"source config revision": {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1", SourceConfigRevision: &otherSourceRevision},
+		"source removed":         {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1"},
+	}
+	for name, current := range tests {
+		if CooldownRetestTaskCurrent(queued, current) {
+			t.Fatalf("%s change must discard stale task", name)
+		}
+	}
 
-	if !CooldownRetestTaskCurrent(RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &now}, RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &now}) {
-		t.Fatal("matching config revision and observation must remain current")
+	zeroTime := time.Time{}
+	zeroSourceRevision := 0
+	invalid := map[string]RetestTaskVersion{
+		"zero config revision":     {ConfigRevision: 0, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1"},
+		"zero dispatch revision":   {ConfigRevision: 7, DispatchRevision: 0, ObservationStartedAt: &now, Generation: "generation-1"},
+		"missing observation":      {ConfigRevision: 7, DispatchRevision: 8, Generation: "generation-1"},
+		"zero observation":         {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &zeroTime, Generation: "generation-1"},
+		"missing generation":       {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now},
+		"BOM generation":           {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "\ufeff"},
+		"NBSP generation":          {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "\u00a0"},
+		"non-canonical generation": {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "\ufeffgeneration-1\u00a0"},
+		"zero source revision":     {ConfigRevision: 7, DispatchRevision: 8, ObservationStartedAt: &now, Generation: "generation-1", SourceConfigRevision: &zeroSourceRevision},
 	}
-	if CooldownRetestTaskCurrent(RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &now}, RetestTaskVersion{ConfigRevision: 8, ObservationStartedAt: &now}) {
-		t.Fatal("config revision change must discard stale task")
+	for name, version := range invalid {
+		if CooldownRetestTaskVersionValid(version) {
+			t.Fatalf("%s unexpectedly accepted as a valid fence", name)
+		}
+		if CooldownRetestTaskCurrent(version, version) {
+			t.Fatalf("%s must fail closed even when both invalid versions match", name)
+		}
 	}
-	if CooldownRetestTaskCurrent(RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &now}, RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &other}) {
-		t.Fatal("observation generation change must discard stale task")
+}
+
+func TestNormalizeCooldownRetestGenerationMatchesECMAScriptTrim(t *testing.T) {
+	t.Parallel()
+
+	const ecmaWhitespace = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+	if got := NormalizeCooldownRetestGeneration(ecmaWhitespace + "generation-1" + ecmaWhitespace); got != "generation-1" {
+		t.Fatalf("NormalizeCooldownRetestGeneration() = %q", got)
 	}
-	if CooldownRetestTaskCurrent(RetestTaskVersion{ConfigRevision: 7, ObservationStartedAt: &now}, RetestTaskVersion{ConfigRevision: 7}) {
-		t.Fatal("cleared observation must discard stale task")
+	// U+0085 is trimmed by Go strings.TrimSpace but not by ECMAScript trim.
+	if got := NormalizeCooldownRetestGeneration("\u0085generation-1\u0085"); got != "\u0085generation-1\u0085" {
+		t.Fatalf("ECMAScript-significant NEL changed to %q", got)
 	}
 }
 
@@ -340,9 +381,10 @@ func TestCooldownRetestActionForOutcome(t *testing.T) {
 	t.Parallel()
 
 	tests := map[ProbeOutcome]RetestAction{
-		ProbeOutcomeCompleteSuccess: RetestActionRestore,
-		ProbeOutcomeTaskFailure:     RetestActionDefer,
-		ProbeOutcomeUpstreamFailure: RetestActionRecordFailure,
+		ProbeOutcomeCompleteSuccess:        RetestActionRestore,
+		ProbeOutcomeTaskFailure:            RetestActionDefer,
+		ProbeOutcomeFramingCompleteNeutral: RetestActionDefer,
+		ProbeOutcomeUpstreamFailure:        RetestActionRecordFailure,
 	}
 	for outcome, want := range tests {
 		got, ok := CooldownRetestActionFor(outcome)

@@ -275,7 +275,9 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
 }
 
 export function canManageOAuthAccount(account: AccountSummary): boolean {
-  return canUseAccountActions(account) && account.type === 'oauth' && canManageNativeOAuthAccount({ profile: account })
+  return canUseAccountActions(account)
+    && (account.type === 'oauth' || account.type === 'google_oauth')
+    && canManageNativeOAuthAccount({ profile: account })
 }
 
 export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {

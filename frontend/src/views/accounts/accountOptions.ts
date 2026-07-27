@@ -128,7 +128,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://api.x.ai/v1',
   defaultHealthCheckModel: 'grok-4.5',
   defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS,
-  accountTypes: ['api_key'],
+  accountTypes: ['api_key', 'oauth'],
   capabilities: ['responses', 'chat', 'passthrough'],
   protocolProfiles: [
     {
@@ -140,7 +140,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://api.x.ai/v1',
       defaultHealthCheckModel: 'grok-4.5',
-      accountTypes: ['api_key'],
+      accountTypes: ['api_key', 'oauth'],
       capabilities: ['responses', 'chat', 'passthrough'],
       endpointFamilies: [
         { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },

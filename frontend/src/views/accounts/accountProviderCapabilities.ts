@@ -20,6 +20,7 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_RESPONSES_FAMILY,
   isGptVendorCode,
+  isGeminiProviderCode,
   isXaiProviderCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -28,6 +29,7 @@ import {
 } from '@/shared/providerProtocol'
 
 export type AccountProviderProtocolKind = 'openai_v1' | 'anthropic_v1' | 'gemini_v1beta' | 'unknown'
+export type ManagedOAuthProviderKind = 'openai' | 'anthropic' | 'gemini' | 'grok'
 export type ClientCompatibilityCapability = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 
 export type AccountProviderProfileLike = {
@@ -92,11 +94,36 @@ export function canManageNativeOAuthAccount(input: {
   provider?: ProviderDefinition
   profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
 }): boolean {
-  return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
-    && (
-      canCreateOAuthAccount(input)
-      || accountProviderProtocolKind(input.profile ?? input.provider) === 'anthropic_v1'
-    )
+  return managedOAuthProviderKind(input) !== undefined
+}
+
+export function managedOAuthProviderKind(input: {
+  provider?: ProviderDefinition
+  profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
+}): ManagedOAuthProviderKind | undefined {
+  const providerCode = providerCodeForOAuthFlow(input)
+  const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
+  if (isGptVendorCode(providerCode)
+    && protocolKind === 'openai_v1'
+    && providerProfileSupportsAccountType('oauth', input.provider, input.profile)) {
+    return 'openai'
+  }
+  if (providerCode === 'anthropic'
+    && protocolKind === 'anthropic_v1'
+    && providerProfileSupportsAccountType('oauth', input.provider, input.profile)) {
+    return 'anthropic'
+  }
+  if (isGeminiProviderCode(providerCode)
+    && protocolKind === 'gemini_v1beta'
+    && providerProfileSupportsAccountType('google_oauth', input.provider, input.profile)) {
+    return 'gemini'
+  }
+  if (isXaiProviderCode(providerCode)
+    && protocolKind === 'openai_v1'
+    && providerProfileSupportsAccountType('oauth', input.provider, input.profile)) {
+    return 'grok'
+  }
+  return undefined
 }
 
 export function supportsOAuthAccountType(input: {
@@ -120,7 +147,9 @@ export function effectiveAccountTestClientCompatibility(
   account: AccountProviderProfileLike,
   clientCompatibility: 'account_default' | AccountClientCompatibility
 ): AccountClientCompatibility {
-  if (account.type === 'oauth' && accountProviderProtocolKind(account) === 'openai_v1') {
+  if (account.type === 'oauth'
+    && isGptVendorCode(account.providerCode)
+    && accountProviderProtocolKind(account) === 'openai_v1') {
     return 'codex_responses'
   }
   if (clientCompatibility !== 'account_default') return clientCompatibility
@@ -158,7 +187,7 @@ export function accountClientCompatibilityCapabilities(account: AccountProviderP
     return ['openai_standard']
   }
   if (account.type === 'oauth') {
-    return ['codex_responses']
+    return isGptVendorCode(account.providerCode) ? ['codex_responses'] : ['openai_standard']
   }
   return isGptVendorCode(account.providerCode)
     || isXaiProviderCode(account.providerCode)

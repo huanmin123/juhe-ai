@@ -16,6 +16,8 @@ import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
 import { anthropicOAuthRouter } from '../anthropic-oauth/anthropic-oauth.routes.js'
+import { geminiOAuthRouter } from '../gemini-oauth/gemini-oauth.routes.js'
+import { grokOAuthRouter } from '../grok-oauth/grok-oauth.routes.js'
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
 import { providersRouter } from '../providers/providers.routes.js'
 import { proxiesRouter } from '../proxies/proxies.routes.js'
@@ -108,6 +110,8 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-authorization-options`, forceSelfAccessScope, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/my-authorizations`, forceSelfAccessScope, authorizationsRouter)
   app.use(`${systemApiPrefix}/my-anthropic-oauth`, forceSelfAccessScope, anthropicOAuthRouter)
+  app.use(`${systemApiPrefix}/my-gemini-oauth`, forceSelfAccessScope, geminiOAuthRouter)
+  app.use(`${systemApiPrefix}/my-grok-oauth`, forceSelfAccessScope, grokOAuthRouter)
   app.use(`${systemApiPrefix}/my-openai-oauth`, forceSelfAccessScope, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/my-usage-records`, forceSelfAccessScope, usageRecordsRouter)
   app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
@@ -122,6 +126,8 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/authorization-options`, requireAdmin, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/authorizations`, requireAdmin, authorizationsRouter)
   app.use(`${systemApiPrefix}/anthropic-oauth`, requireAdmin, anthropicOAuthRouter)
+  app.use(`${systemApiPrefix}/gemini-oauth`, requireAdmin, geminiOAuthRouter)
+  app.use(`${systemApiPrefix}/grok-oauth`, requireAdmin, grokOAuthRouter)
   app.use(`${systemApiPrefix}/openai-oauth`, requireAdmin, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/proxies`, proxiesRouter)
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)

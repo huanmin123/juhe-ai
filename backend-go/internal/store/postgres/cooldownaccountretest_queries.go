@@ -24,7 +24,9 @@ WHERE a.deleted_at IS NULL
   AND a.status IN ('temporary_unavailable', 'rate_limited') AND a.schedulable = true
   AND a.cooldown_until IS NOT NULL AND a.cooldown_until <= $1
   AND a.cooldown_retest_observation_started_at IS NOT NULL
-  AND a.cooldown_retest_generation IS NOT NULL AND btrim(a.cooldown_retest_generation) <> ''
+  AND a.cooldown_retest_generation IS NOT NULL
+  AND btrim(a.cooldown_retest_generation, CHR(9) || CHR(10) || CHR(11) || CHR(12) || CHR(13) || CHR(32) || CHR(160) || CHR(5760) || CHR(8192) || CHR(8193) || CHR(8194) || CHR(8195) || CHR(8196) || CHR(8197) || CHR(8198) || CHR(8199) || CHR(8200) || CHR(8201) || CHR(8202) || CHR(8232) || CHR(8233) || CHR(8239) || CHR(8287) || CHR(12288) || CHR(65279)) <> ''
+  AND a.cooldown_retest_generation = btrim(a.cooldown_retest_generation, CHR(9) || CHR(10) || CHR(11) || CHR(12) || CHR(13) || CHR(32) || CHR(160) || CHR(5760) || CHR(8192) || CHR(8193) || CHR(8194) || CHR(8195) || CHR(8196) || CHR(8197) || CHR(8198) || CHR(8199) || CHR(8200) || CHR(8201) || CHR(8202) || CHR(8232) || CHR(8233) || CHR(8239) || CHR(8287) || CHR(12288) || CHR(65279))
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
   AND (
     (a.authorization_instance_authorization_id IS NULL
@@ -73,7 +75,9 @@ WHERE a.id = $1 AND a.deleted_at IS NULL
   AND a.status IN ('temporary_unavailable', 'rate_limited') AND a.schedulable = true
   AND a.cooldown_until IS NOT NULL AND a.cooldown_until <= $2
   AND a.cooldown_retest_observation_started_at IS NOT NULL
-  AND a.cooldown_retest_generation IS NOT NULL AND btrim(a.cooldown_retest_generation) <> ''
+  AND a.cooldown_retest_generation IS NOT NULL
+  AND btrim(a.cooldown_retest_generation, CHR(9) || CHR(10) || CHR(11) || CHR(12) || CHR(13) || CHR(32) || CHR(160) || CHR(5760) || CHR(8192) || CHR(8193) || CHR(8194) || CHR(8195) || CHR(8196) || CHR(8197) || CHR(8198) || CHR(8199) || CHR(8200) || CHR(8201) || CHR(8202) || CHR(8232) || CHR(8233) || CHR(8239) || CHR(8287) || CHR(12288) || CHR(65279)) <> ''
+  AND a.cooldown_retest_generation = btrim(a.cooldown_retest_generation, CHR(9) || CHR(10) || CHR(11) || CHR(12) || CHR(13) || CHR(32) || CHR(160) || CHR(5760) || CHR(8192) || CHR(8193) || CHR(8194) || CHR(8195) || CHR(8196) || CHR(8197) || CHR(8198) || CHR(8199) || CHR(8200) || CHR(8201) || CHR(8202) || CHR(8232) || CHR(8233) || CHR(8239) || CHR(8287) || CHR(12288) || CHR(65279))
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $2)
   AND (
     (a.authorization_instance_authorization_id IS NULL

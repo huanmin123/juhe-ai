@@ -19,7 +19,7 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { validateAccountEndpointModes } from './accountEndpointModes'
-import { canManageNativeOAuthAccount, endpointModesForProfile, supportsOAuthAccountType } from './accountProviderCapabilities'
+import { endpointModesForProfile, managedOAuthProviderKind, supportsOAuthAccountType } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import {
   accountModelMappingEndpointFamilyText,
@@ -130,21 +130,29 @@ export function validateAccountSaveForm(input: {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
   }
+  const formProviderProfile = resolveFormProviderProfile(form, input.providers)
+  const managedOAuthProvider = managedOAuthProviderKind(formProviderProfile)
   if (!editingId && form.type === 'google_oauth') {
     if (!form.baseUrl.trim()) return '请填写 Base URL'
-    if (!form.accessToken.trim() && !form.refreshToken.trim()) return '请填写 Google Access Token 或 Refresh Token'
-    if (form.refreshToken.trim() && (!form.googleClientId.trim() || !form.googleClientSecret.trim())) return 'Refresh Token 需要 Client ID 和 Client Secret'
+    if (form.oauthType === 'ai_studio'
+      && form.oauthMode !== 'access_token'
+      && (!form.googleClientId.trim() || !form.googleClientSecret.trim())) {
+      return 'Gemini AI Studio OAuth 需要 Client ID 和 Client Secret'
+    }
+    if (form.oauthMode === 'access_token' && !form.accessToken.trim()) return '请填写 Google Access Token'
   }
-  const formProviderProfile = resolveFormProviderProfile(form, input.providers)
   if (!editingId && form.type === 'oauth' && !supportsOAuthAccountType(formProviderProfile)) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && !form.baseUrl.trim()) return '请填写 Base URL'
   const managedOAuthCreation = !editingId
-    && form.type === 'oauth'
-    && canManageNativeOAuthAccount(formProviderProfile)
+    && (form.type === 'oauth' || form.type === 'google_oauth')
+    && Boolean(managedOAuthProvider)
     && form.oauthMode !== 'access_token'
   if (managedOAuthCreation && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (managedOAuthCreation && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (managedOAuthCreation && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
+  if (managedOAuthProvider === 'grok' && form.oauthMode === 'sso_cookie' && !normalizeSsoTokens(form.ssoTokens).length) {
+    return '请填写至少一个 Grok Web SSO key'
+  }
   if (!managedOAuthCreation && !editingId && form.type === 'oauth' && !form.accessToken.trim()) {
     return form.providerCode === 'anthropic' ? '请填写 Claude Code OAuth Token' : '请填写 Access Token'
   }
@@ -192,6 +200,10 @@ export function validateAccountSaveForm(input: {
       providerCode: form.providerCode
     }
   )
+}
+
+function normalizeSsoTokens(value: string): string[] {
+  return [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))]
 }
 
 export type ModelMappingProtocolOption = {

@@ -6,12 +6,19 @@ export function parseJsonObjectErrorPayload(text: string, headers: Headers): {
   if (!headers.get('content-type')?.includes('json') && !trimmed.startsWith('{')) return undefined
   try {
     const payload = JSON.parse(trimmed) as unknown
-    if (!isRecord(payload)) return undefined
-    const error = isRecord(payload.error) ? payload.error : payload
-    return { payload, error }
+    return jsonObjectErrorPayload(payload)
   } catch {
     return undefined
   }
+}
+
+export function jsonObjectErrorPayload(value: unknown): {
+  payload: Record<string, unknown>
+  error: Record<string, unknown>
+} | undefined {
+  if (!isRecord(value)) return undefined
+  const error = isRecord(value.error) ? value.error : value
+  return { payload: value, error }
 }
 
 export function stringErrorField(value: unknown): string | undefined {

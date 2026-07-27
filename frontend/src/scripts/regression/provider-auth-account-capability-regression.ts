@@ -5,6 +5,7 @@ import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
 import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import { validateAccountSaveForm } from '../../views/accounts/accountSavePayload'
 import { validateBasicEditCredentialFields } from '../../views/accounts/useAccountEditSaveFlow'
+import { managedOAuthProviderKind } from '../../views/accounts/accountProviderCapabilities'
 
 const gpt = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')
 const openAICompatible = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')
@@ -54,7 +55,97 @@ Object.assign(googleForm, {
 const googleCredentials = buildAccountCredentials({ errorPolicyRules: [], responseInspectionRules: [], form: googleForm })
 assert.equal(googleCredentials.client_secret, 'secret')
 assert.equal(googleCredentials.quota_project_id, 'quota')
+assert.equal(googleCredentials.oauth_type, 'code_assist')
+assert.equal(googleCredentials.tier_id, 'gcp_standard')
 assert((googleCredentials.supported_endpoint_modes as string[]).includes('interactions_sse'))
+
+const managedGoogleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
+Object.assign(managedGoogleForm, {
+  name: 'Gemini managed OAuth',
+  groupId: 'group-1',
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  supportedModels: ['gemini-2.5-pro'],
+  healthCheckModel: 'gemini-2.5-pro',
+  healthCheckEndpointMode: 'generate_content_json'
+})
+assert.equal(managedOAuthProviderKind({ provider: gemini, profile: geminiProfile }), 'gemini')
+assert.equal(managedGoogleForm.oauthType, 'code_assist', 'Gemini OAuth 静态 fallback 默认应跟随后端 Code Assist 默认模式')
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), '请先生成授权链接', 'Gemini Code Assist 使用内置客户端，不应强制填写 Client ID 与 Client Secret')
+Object.assign(managedGoogleForm, { oauthType: 'ai_studio', tierId: 'aistudio_free' })
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), 'Gemini AI Studio OAuth 需要 Client ID 和 Client Secret', 'Gemini AI Studio OAuth 必须要求用户自己的客户端凭据')
+Object.assign(managedGoogleForm, { googleClientId: 'client', googleClientSecret: 'secret' })
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), '请先生成授权链接', 'Gemini AI Studio OAuth 必须先创建 PKCE 授权会话')
+Object.assign(managedGoogleForm, { oauthMode: 'refresh_token', refreshToken: 'refresh' })
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Gemini Refresh Token 创建应携带客户端凭据直接保存')
+Object.assign(managedGoogleForm, { oauthMode: 'access_token', accessToken: 'access', refreshToken: '' })
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Gemini Access Token 应保留直接录入路径')
+
+const xai = FALLBACK_PROVIDERS.find((provider) => provider.code === 'xai')
+const xaiProfile = xai?.protocolProfiles.find((profile) => profile.id === 'profile_xai_openai_v1')
+assert.equal(managedOAuthProviderKind({ provider: xai, profile: xaiProfile }), 'grok', 'xAI OAuth 必须分派到 Grok OAuth API')
+const grokAccessTokenForm = defaultAccountForm('xai', 'oauth', FALLBACK_PROVIDERS, 'profile_xai_openai_v1')
+Object.assign(grokAccessTokenForm, {
+  name: 'Grok direct token',
+  groupId: 'group-1',
+  oauthMode: 'access_token',
+  accessToken: 'grok-access',
+  supportedModels: ['grok-4.5'],
+  healthCheckModel: 'grok-4.5',
+  healthCheckEndpointMode: 'responses_json'
+})
+assert.equal(validateAccountSaveForm({
+  form: grokAccessTokenForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Grok OAuth 应保留 Access Token 直接录入路径')
+Object.assign(grokAccessTokenForm, { oauthMode: 'sso_cookie', accessToken: '', ssoTokens: '' })
+assert.equal(validateAccountSaveForm({
+  form: grokAccessTokenForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), '请填写至少一个 Grok Web SSO key', 'Grok SSO 批量导入必须提供至少一个 SSO key')
+grokAccessTokenForm.ssoTokens = 'sso-1\nsso-2'
+assert.equal(validateAccountSaveForm({
+  form: grokAccessTokenForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Grok SSO 批量导入应复用 OAuth 账户公共配置')
 
 const editingGoogleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
 Object.assign(editingGoogleForm, {

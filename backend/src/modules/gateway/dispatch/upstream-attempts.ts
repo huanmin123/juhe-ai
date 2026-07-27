@@ -19,6 +19,7 @@ import {
 } from '../codex-responses/chat-bridge-state.js'
 import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
+import { prepareAnthropicMessagesBodyForAttempt } from '../upstream/body-preparation.js'
 
 const primaryStartedGatewayTransportErrors = new WeakSet<object>()
 
@@ -63,7 +64,7 @@ export async function performUpstreamRequestAttempt(
   const socketTimeoutMs = upstreamSocketTimeoutMs(req, timeoutProfile, account)
   const requestTimeoutMs = upstreamRequestTimeoutMs(timeoutProfile)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
-  const upstreamBody = normalizeAnthropicMessagesBodyForAttempt(headers, upstreamUrl, body)
+  const upstreamBody = prepareAnthropicMessagesBodyForAttempt(req, headers, upstreamUrl, body)
 
   getRequestLogger().debug({
     event: 'gateway_upstream_request_started',
@@ -140,8 +141,7 @@ export async function performUpstreamRequestAttempt(
   }, '网关收到上游响应头')
 
   const continueUpstreamJsonRequest = async (nextBody: Record<string, unknown>, eventName = 'gateway_continue_upstream_json_request_started') => {
-    const nextBodyBuffer = Buffer.from(JSON.stringify(nextBody), 'utf8')
-    const nextUpstreamBody = normalizeAnthropicMessagesBodyForAttempt(headers, upstreamUrl, nextBodyBuffer)
+    const nextUpstreamBody = prepareAnthropicMessagesBodyForAttempt(req, headers, upstreamUrl, nextBody)
     getRequestLogger().debug({
       event: eventName,
       accountId: account.id,
@@ -216,60 +216,4 @@ function isAnthropicMessagesRequestHeaders(headers: Headers): boolean {
       || Boolean(headers.get('anthropic-api-key'))
       || Boolean(headers.get('authorization'))
     )
-}
-
-function normalizeAnthropicMessagesBodyForAttempt(
-  headers: Headers,
-  upstreamUrl: string,
-  body: Buffer | string | undefined
-): Buffer | string | undefined {
-  if (!body || !isAnthropicMessagesRequestHeaders(headers) || !isAnthropicMessagesPath(upstreamUrl)) {
-    return body
-  }
-  const text = Buffer.isBuffer(body) ? body.toString('utf8') : body
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text) as unknown
-  } catch {
-    return body
-  }
-  if (!isJsonRecord(parsed)) return body
-  const normalized: Record<string, unknown> = { ...parsed }
-  if (normalized.stream === false) {
-    delete normalized.stream
-  }
-  if (Array.isArray(normalized.messages)) {
-    normalized.messages = normalized.messages.map(normalizeAnthropicMessageForAttempt)
-  }
-  const normalizedText = JSON.stringify(normalized)
-  return Buffer.isBuffer(body) ? Buffer.from(normalizedText, 'utf8') : normalizedText
-}
-
-function normalizeAnthropicMessageForAttempt(value: unknown): unknown {
-  if (!isJsonRecord(value) || !Array.isArray(value.content)) return value
-  const content = value.content
-  if (!content.every(isPlainAnthropicTextBlockForAttempt)) return value
-  return {
-    ...value,
-    content: content.map((block) => block.text).join('')
-  }
-}
-
-function isPlainAnthropicTextBlockForAttempt(value: unknown): value is { type: 'text'; text: string } {
-  return isJsonRecord(value)
-    && value.type === 'text'
-    && typeof value.text === 'string'
-    && Object.keys(value).every((key) => key === 'type' || key === 'text')
-}
-
-function isAnthropicMessagesPath(upstreamUrl: string): boolean {
-  try {
-    return (new URL(upstreamUrl).pathname.replace(/^\/v1(?=\/|$)/, '') || '/') === '/messages'
-  } catch {
-    return false
-  }
-}
-
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

@@ -11,15 +11,21 @@ import { useAccountTestModal } from '@/views/accounts/useAccountTestModal'
 
 const originalManagementOptions = api.accounts.testOptions
 const originalSelfOptions = api.myAccounts.testOptions
+const originalManagementCapabilities = api.accounts.testModelCapabilities
+const originalSelfCapabilities = api.myAccounts.testModelCapabilities
 
 try {
   await verifyManagementLazyLoading()
   await verifySelfLazyLoading()
   await verifyPendingOptionsAbortOnAccountSwitch()
-  console.log('账户测试模型单请求加载与切换绑定行为回归通过')
+  await verifyPendingCapabilitiesAbortOnAccountSwitch()
+  await verifyPendingCapabilitiesAbortOnModelSwitch()
+  console.log('账户测试弹窗两级按需加载与切换绑定行为回归通过')
 } finally {
   api.accounts.testOptions = originalManagementOptions
   api.myAccounts.testOptions = originalSelfOptions
+  api.accounts.testModelCapabilities = originalManagementCapabilities
+  api.myAccounts.testModelCapabilities = originalSelfCapabilities
   authState.currentUser.value = undefined
 }
 
@@ -28,6 +34,7 @@ async function verifyManagementLazyLoading(): Promise<void> {
   const account = accountFixture('management-account')
   const scopeParams = { systemAccountId: 'managed-owner' }
   let optionsCalls = 0
+  let capabilitiesCalls = 0
   const optionQueries: Array<{ keyword?: string; limit?: number; selectedIds?: string[] }> = []
   api.accounts.testOptions = async (accountId, params) => {
     optionsCalls += 1
@@ -36,16 +43,31 @@ async function verifyManagementLazyLoading(): Promise<void> {
     assert.equal(params?.systemAccountId, scopeParams.systemAccountId)
     return testOptions()
   }
+  api.accounts.testModelCapabilities = async (accountId, modelId, params) => {
+    capabilitiesCalls += 1
+    assert.equal(accountId, account.id)
+    assert.equal(modelId, account.healthCheckModel)
+    assert.equal(params?.systemAccountId, scopeParams.systemAccountId)
+    return modelCapabilities(modelId, ['responses_json', 'responses_sse'])
+  }
 
   const modal = await createModalHarness({
     accountScopeParams: computed(() => scopeParams),
     isManagementView: computed(() => true)
   })
   await modal.openTestModal(account)
-  await waitFor(() => optionsCalls === 1 && !modal.testModelsLoading.value, '管理端首开模型选项请求未完成')
-  assert.equal(optionsCalls, 1, '管理端首开测试弹窗应一次请求带协议能力的候选模型列表')
+  assert.equal(optionsCalls, 0, '管理端首开测试弹窗不得请求候选模型列表')
+  assert.equal(capabilitiesCalls, 0, '管理端首开测试弹窗不得请求当前模型能力')
   assert.equal(modal.testForm.model, account.healthCheckModel, '首开默认模型必须使用当前账户检查模型')
-  assert.equal(modal.testForm.testEndpointMode, account.healthCheckEndpointMode, '首开默认请求形态必须使用模型选项携带的能力交集')
+  assert.equal(modal.testForm.testEndpointMode, account.healthCheckEndpointMode, '首开默认请求形态必须直接使用账户列表字段')
+
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(optionsCalls, 0, '展开请求形态下拉不得加载完整模型列表')
+  assert.equal(capabilitiesCalls, 1, '展开请求形态下拉应只定点加载当前模型能力')
+  assert.deepEqual(modal.testEndpointModes.value, ['responses_json', 'responses_sse'])
+  assert.equal(modal.testForm.testEndpointMode, account.healthCheckEndpointMode, '能力补齐后应保留仍然有效的账户默认请求形态')
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 1, '重复展开已加载的请求形态下拉不得重复请求')
 
   await modal.loadAccountTestModelOptions(true)
   assert.equal(optionsCalls, 1, '管理端展开已加载的模型选择器不得重复请求')
@@ -59,6 +81,8 @@ async function verifyManagementLazyLoading(): Promise<void> {
 
   modal.updateAccountTestModel('vendor/model-two')
   assert.equal(modal.testForm.testEndpointMode, 'chat_json', '切换模型必须直接使用现有选项中的请求形态')
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 1, '模型选项已经携带请求形态时不得追加单模型能力请求')
   await modal.loadAccountTestModelOptions(true, '模型二')
   assert.equal(optionsCalls, 2, '搜索模型时应按关键词重新请求候选列表')
   assert.deepEqual(optionQueries[1], {
@@ -74,6 +98,7 @@ async function verifySelfLazyLoading(): Promise<void> {
   authState.currentUser.value = currentUser('lazy-user')
   const account = accountFixture('self-account')
   let optionsCalls = 0
+  let capabilitiesCalls = 0
   const optionQueries: Array<{ keyword?: string; limit?: number; selectedIds?: string[] }> = []
   api.myAccounts.testOptions = async (accountId, params) => {
     optionsCalls += 1
@@ -81,13 +106,23 @@ async function verifySelfLazyLoading(): Promise<void> {
     assert.equal(accountId, account.id)
     return testOptions()
   }
+  api.myAccounts.testModelCapabilities = async (accountId, modelId) => {
+    capabilitiesCalls += 1
+    assert.equal(accountId, account.id)
+    assert.equal(modelId, account.healthCheckModel)
+    return modelCapabilities(modelId, ['responses_json', 'responses_sse'])
+  }
 
   const modal = await createModalHarness({
     accountScopeParams: computed(() => undefined),
     isManagementView: computed(() => false)
   })
   await modal.openTestModal(account)
-  await waitFor(() => optionsCalls === 1 && !modal.testModelsLoading.value, '个人端首开模型选项请求未完成')
+  assert.equal(optionsCalls, 0, '个人端首开测试弹窗不得请求候选模型列表')
+  assert.equal(capabilitiesCalls, 0, '个人端首开测试弹窗不得请求当前模型能力')
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(optionsCalls, 0, '个人端展开请求形态下拉不得加载完整模型列表')
+  assert.equal(capabilitiesCalls, 1, '个人端展开请求形态下拉应定点加载当前模型能力')
   await modal.loadAccountTestModelOptions(true)
   await modal.loadAccountTestModelOptions(true)
   assert.equal(optionsCalls, 1, '个人端候选模型列表应在首次交互加载且重复展开不重复请求')
@@ -99,6 +134,8 @@ async function verifySelfLazyLoading(): Promise<void> {
 
   modal.updateAccountTestModel('vendor/model-two')
   assert.equal(modal.testForm.testEndpointMode, 'chat_json', '个人端切换模型不得发起第二次请求')
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 1, '个人端已加载模型选项时不得重复请求能力详情')
 }
 
 async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
@@ -122,15 +159,78 @@ async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
     isManagementView: computed(() => true)
   })
   await modal.openTestModal(firstAccount)
+  const firstRequest = modal.loadAccountTestModelOptions(true)
   await waitFor(() => Boolean(firstSignal), '候选模型请求未接收 AbortSignal')
   await modal.openTestModal(secondAccount)
+  await firstRequest
   assert.equal(firstSignal?.aborted, true, '切换账户必须取消旧账户候选模型请求')
-  await waitFor(() => !modal.testModelsLoading.value, '新账户候选模型请求未完成')
   assert.equal(modal.testForm.model, secondAccount.healthCheckModel, '旧账户请求不得覆盖新账户默认模型')
   modal.closeTestModal()
   await modal.openTestModal(firstAccount)
-  await waitFor(() => !modal.testModelsLoading.value, '重新打开候选模型请求未完成')
+  await modal.loadAccountTestModelOptions(true)
   assert.equal(firstAccountCalls, 2, '已取消的候选模型请求不得标记为已完成，重新打开必须重新请求')
+}
+
+async function verifyPendingCapabilitiesAbortOnAccountSwitch(): Promise<void> {
+  authState.currentUser.value = currentUser('abort-capabilities-user')
+  const firstAccount = accountFixture('abort-capabilities-first')
+  const secondAccount = accountFixture('abort-capabilities-second')
+  let firstSignal: AbortSignal | undefined
+  let firstAccountCalls = 0
+  api.accounts.testModelCapabilities = async (accountId, modelId, _params, options) => {
+    assert.equal(modelId, firstAccount.healthCheckModel)
+    if (accountId === firstAccount.id) {
+      firstAccountCalls += 1
+      if (firstAccountCalls > 1) return modelCapabilities(modelId, ['responses_sse'])
+      firstSignal = options?.signal
+      return await rejectWhenAborted(options?.signal)
+    }
+    return modelCapabilities(modelId, ['responses_sse'])
+  }
+
+  const modal = await createModalHarness({
+    accountScopeParams: computed(() => ({ systemAccountId: 'abort-capabilities-owner' })),
+    isManagementView: computed(() => true)
+  })
+  await modal.openTestModal(firstAccount)
+  const firstRequest = modal.loadAccountTestEndpointModeOptions(true)
+  await waitFor(() => Boolean(firstSignal), '当前模型能力请求未接收 AbortSignal')
+  await modal.openTestModal(secondAccount)
+  await firstRequest
+  assert.equal(firstSignal?.aborted, true, '切换账户必须取消旧账户当前模型能力请求')
+  assert.equal(modal.testForm.model, secondAccount.healthCheckModel, '旧模型能力响应不得覆盖新账户默认模型')
+  modal.closeTestModal()
+  await modal.openTestModal(firstAccount)
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(firstAccountCalls, 2, '已取消的能力请求不得标记为已完成，重新展开必须重新请求')
+}
+
+async function verifyPendingCapabilitiesAbortOnModelSwitch(): Promise<void> {
+  authState.currentUser.value = currentUser('abort-capabilities-model-user')
+  const account = accountFixture('abort-capabilities-model-account')
+  let pendingSignal: AbortSignal | undefined
+  api.accounts.testOptions = async () => testOptions()
+  api.accounts.testModelCapabilities = async (_accountId, modelId, _params, options) => {
+    assert.equal(modelId, account.healthCheckModel)
+    pendingSignal = options?.signal
+    return await rejectWhenAborted(options?.signal)
+  }
+
+  const modal = await createModalHarness({
+    accountScopeParams: computed(() => ({ systemAccountId: 'abort-capabilities-model-owner' })),
+    isManagementView: computed(() => true)
+  })
+  await modal.openTestModal(account)
+  const pendingRequest = modal.loadAccountTestEndpointModeOptions(true)
+  await waitFor(() => Boolean(pendingSignal), '切换模型场景的能力请求未接收 AbortSignal')
+  await modal.loadAccountTestModelOptions(true)
+  modal.updateAccountTestModel('vendor/model-two')
+  await pendingRequest
+
+  assert.equal(pendingSignal?.aborted, true, '切换模型必须取消旧模型能力请求')
+  assert.equal(modal.testEndpointModesLoading.value, false, '切换模型后不得遗留旧能力请求的加载态')
+  assert.equal(modal.testForm.model, 'vendor/model-two', '旧模型能力响应不得覆盖新模型')
+  assert.equal(modal.testForm.testEndpointMode, 'chat_json', '切换模型后必须立即使用候选项携带的请求形态')
 }
 
 function testOptions(): AccountTestOptions {
@@ -148,6 +248,15 @@ function testOptions(): AccountTestOptions {
       testEndpointModes: ['chat_json']
     }
   ]
+}
+
+function modelCapabilities(model: string, testEndpointModes: AccountTestOptions[number]['testEndpointModes']): AccountTestOptions[number] {
+  return {
+    id: model,
+    name: model,
+    supportedApiProtocols: ['responses'],
+    testEndpointModes
+  }
 }
 
 function accountFixture(id: string): AccountSummary {

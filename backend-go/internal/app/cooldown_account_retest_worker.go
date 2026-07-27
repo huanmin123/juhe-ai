@@ -44,6 +44,9 @@ type cooldownAccountRetestSettingsReader interface {
 
 type cooldownAccountRetestRuntimeStore interface {
 	port.CooldownAccountRetestStore
+	port.CooldownAccountRetestQuotaSubjectReader
+	port.GatewayQuotaCostReader
+	port.ManagementUsageStatsTimezoneReader
 	port.ManagementSystemSettingsReader
 	Ping(context.Context) error
 	Close()
@@ -170,6 +173,7 @@ func runCooldownAccountRetestWorker(
 		Redis: redisOptions,
 		Processor: module.Processor{
 			Store: store, Outcomes: opts.Outcomes, Probe: opts.Probe,
+			Quota: module.QuotaEligibility{Subjects: store, Costs: store, Timezones: store},
 		},
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		LogLevel:        cfg.LogLevel,
@@ -185,6 +189,7 @@ type cooldownAccountRetestSchedulerRunner struct {
 	settings cooldownAccountRetestSettingsReader
 	enqueuer module.Enqueuer
 	capacity module.QueueCapacity
+	quota    module.QuotaChecker
 	cursor   *port.CooldownAccountRetestCursor
 }
 
@@ -199,12 +204,15 @@ type cooldownAccountRetestConsumerRun struct {
 }
 
 func newCooldownAccountRetestSchedulerRunner(
-	store port.CooldownAccountRetestStore,
+	store cooldownAccountRetestRuntimeStore,
 	settings cooldownAccountRetestSettingsReader,
 	enqueuer module.Enqueuer,
 	capacity module.QueueCapacity,
 ) *cooldownAccountRetestSchedulerRunner {
-	return &cooldownAccountRetestSchedulerRunner{store: store, settings: settings, enqueuer: enqueuer, capacity: capacity}
+	return &cooldownAccountRetestSchedulerRunner{
+		store: store, settings: settings, enqueuer: enqueuer, capacity: capacity,
+		quota: module.QuotaEligibility{Subjects: store, Costs: store, Timezones: store},
+	}
 }
 
 func (r *cooldownAccountRetestSchedulerRunner) RunPage(ctx context.Context, now time.Time) (cooldownAccountRetestScheduleRun, error) {
@@ -216,7 +224,7 @@ func (r *cooldownAccountRetestSchedulerRunner) RunPage(ctx context.Context, now 
 		return cooldownAccountRetestScheduleRun{}, err
 	}
 	scheduler := module.Scheduler{
-		Store: r.store, Enqueuer: r.enqueuer, Capacity: r.capacity,
+		Store: r.store, Enqueuer: r.enqueuer, Capacity: r.capacity, Quota: r.quota,
 		BatchSize: settings.BatchSize, EnqueueWorkers: module.DefaultEnqueueWorkers,
 		MaxPauseMinutes: settings.MaxPauseMinutes, MaxRecoveryHours: settings.MaxRecoveryHours,
 	}
@@ -268,6 +276,8 @@ func runCooldownAccountRetestRuntime(
 				slog.Int("candidateCount", run.CandidateCount),
 				slog.Int("enqueuedCount", run.EnqueuedCount),
 				slog.Int("duplicateCount", run.DuplicateCount),
+				slog.Int("invalidCandidateCount", run.InvalidCandidateCount),
+				slog.Int("quotaRejectedCount", run.QuotaRejectedCount),
 				slog.Int("availableSlots", run.AvailableSlots),
 			)
 		}

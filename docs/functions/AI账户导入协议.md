@@ -19,7 +19,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 字段名严格使用本协议定义，不要把 `providerCode` 改成 `provider_code`，也不要把 `api_key` 改成 `apiKey`。
 - 顶层 `type` 固定为 `juhe-ai-account-import`，`version` 固定为数字 `1`。
 - `accounts` 至少 1 条；每个账户必须显式填写 `name`、`providerCode`、`providerProtocolProfileId`、`type`、`status`、`credentials`，以及 `groupId` 或 `groupName`。
-- 当前 `providerCode` 可填 `openai`、`gpt`、`xai`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统按 `providerCode + providerProtocolProfileId` 校验内部协议档案。`openai` 在供应商层表示通用 OpenAI-compatible 供应商，只支持 `api_key`；`gpt` 表示 GPT 专属供应商，支持 `api_key` 和 `oauth`；`xai` 表示官方 xAI / Grok 供应商，只支持 `api_key`；`anthropic` 表示官方 Anthropic Claude 供应商，支持 `api_key` 和官方 Bearer Token 型 `oauth`，但不接受 Workload Identity 或订阅网页登录代理；`glm` 表示智谱 GLM 供应商，支持通用 GLM API Key、GLM Coding Plan Key 和 GLM Coding Anthropic Key；`deepseek` 表示 DeepSeek hosted API 供应商，当前支持 OpenAI-compatible API Key 和 DeepSeek Claude Code API Key；`gemini` 表示 Google Gemini 供应商，支持 Gemini 原生 API Key、Google OAuth 和 Gemini OpenAI Chat API Key；`hybrid` 表示混合供应商真实上游账户，用于在 AI 账户层配置跨协议入口和模型映射。
+- 当前 `providerCode` 可填 `openai`、`gpt`、`xai`、`anthropic`、`glm`、`deepseek`、`gemini` 或 `hybrid`；系统按 `providerCode + providerProtocolProfileId` 校验内部协议档案。`openai` 只支持 `api_key`；`gpt` 支持 `api_key|oauth`；`xai` 支持官方 API Key 与 Responses-only Grok `oauth`；`anthropic` 支持 API Key 与官方 `oauth`；`gemini` native 支持 API Key 与 `google_oauth`，后者必须保存 `code_assist|google_one|ai_studio` 模式，OpenAI Chat 档案只支持 API Key；GLM、DeepSeek 和 hybrid 继续按各自档案与账户类型约束。
 - `providerProtocolProfileId` 是协议档案唯一入口；导入协议不接收旧接入类型别名，也不按 `base_url`、供应商默认值或历史字段猜测档案。
 - `providerCode = hybrid` 时必须使用 API Key 账户，按真实上游协议显式填写混合供应商档案；真实上游目标协议由账户 `modelMappings.upstreamEndpointFamily` 和 `credentials.supported_endpoint_modes` 表达，不再区分多个混合账户类型。
 - 账号导入不填写 `clientCompatibility`。下游客户端画像由网关运行时内部识别；OpenAI v1 普通账户可用 `modelMappings` 显式声明 Responses 到 Chat Completions，Anthropic Messages 或 Gemini native 等其他跨协议转换由混合供应商账户表达真实上游和协议转换能力，不在 API Key 中配置。
@@ -328,11 +328,15 @@ Gemini Google OAuth 账户：
   "refresh_token": "google-refresh-token-xxx",
   "client_id": "google-client-id-xxx",
   "client_secret": "google-client-secret-xxx",
+  "oauth_type": "ai_studio",
+  "tier_id": "aistudio_free",
   "quota_project_id": "project-id",
   "base_url": "https://generativelanguage.googleapis.com",
   "supported_endpoint_modes": ["generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse", "count_tokens", "embed_content"]
 }
 ```
+
+Gemini Code Assist / Google One OAuth 账户必须把 `oauth_type` 改为 `code_assist` 或 `google_one`，填写 `project_id`，`base_url` 使用 `https://cloudcode-pa.googleapis.com`，`supported_endpoint_modes` 只能是 `generate_content_json`、`generate_content_sse`。内置 client 的真实 `client_id` / `client_secret` 由托管授权流程写入；导入时必须和 Refresh Token 的签发 client 一致。
 
 OAuth 账户：
 
@@ -345,6 +349,21 @@ OAuth 账户：
   "supported_endpoint_modes": ["responses_json", "responses_sse"],
   "account_id": "acct_xxx",
   "email": "user@example.com"
+}
+```
+
+Grok OAuth 账户：
+
+```json
+{
+  "refresh_token": "grok-refresh-token-xxx",
+  "access_token": "grok-access-token-xxx",
+  "id_token": "grok-id-token-xxx",
+  "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
+  "token_type": "Bearer",
+  "scope": "openid profile email offline_access grok-cli:access api:access",
+  "base_url": "https://cli-chat-proxy.grok.com/v1",
+  "supported_endpoint_modes": ["responses_json", "responses_sse"]
 }
 ```
 
@@ -377,6 +396,7 @@ OAuth 账户：
 - `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
+- `providerCode = xai` 允许 `type = api_key|oauth`，并必须使用 `profile_xai_openai_v1`。API Key 必须有 `credentials.api_key`，默认地址 `https://api.x.ai/v1`；OAuth 必须有 `credentials.access_token`，可选 Refresh / ID Token 和公开 claims，默认地址 `https://cli-chat-proxy.grok.com/v1`，endpoint modes 只能是 `responses_json/responses_sse`。SSO Cookie 不属于通用导入凭据，必须通过 Grok 专属 `/sso-to-oauth` 接口转换，导入 JSON 不接受 `sso`、`sso-rw` 或 Cookie 字段。
 - 文本模型账户凭据可选包含字符串 `service_tier_override` 与 `reasoning_effort_override`；空值表示不覆盖客户端请求。保存值必须至少属于账户一个已选模型在当前供应商目录中声明的能力，选项取能力合集，未知模型不清空已知模型能力。GPT 只接受既有 OpenAI 值，API Key 与 OAuth 使用同一规则并都允许模型目录声明的 Flex；Anthropic 当前只按模型 effort 映射到 `output_config.effort`，其原生 `service_tier=auto|standard_only` 与 `speed` 不进入本站通用服务等级控件；Gemini 按原生 `service_tier` / thinking level 映射；DeepSeek / GLM 未声明能力时不得提交。thinking budget 等原生字段只做同协议保护，不属于这两个账户控件。
 - `service_tier_override` 与 `reasoning_effort_override` 在模型映射和协议桥接确定实际上游模型后逐字段判断；最终模型精确支持配置值时覆盖对应请求体字段，不支持或能力未知时保留客户端原值，不降级、不报账户覆盖错误。OpenAI Responses Multi-agent Beta 不属于本期导入字段。
 - `providerCode = anthropic` 允许 `type = api_key` 或 `type = oauth`。`type = api_key` 时必须有 `credentials.api_key`；`type = oauth` 时必须有 `credentials.access_token`，可选附带 `credentials.refresh_token` 作为补充保存字段。当前导入协议不接受 `workload_identity`、IdP JWT、Claude.ai / Claude Code 订阅网页登录 OAuth、Setup Token 或 Cookie / sessionKey 私有代理链路；官方 WIF 只有在后续接入能够自动获取和轮换可信 assertion 的服务端 provider 后才可重新设计导入契约。
@@ -392,13 +412,14 @@ OAuth 账户：
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_anthropic_v1` 时，`credentials.base_url` 默认建议填写 `https://api.deepseek.com/anthropic`；使用 NewAPI 类代理时可以填写代理根地址，例如 `https://vsllm.com`。
 - `providerCode = deepseek` 且 `providerProtocolProfileId = profile_deepseek_openai_v1` 时，账号只保存真实上游能力 `chat_json`、`chat_sse`；Responses / Codex Responses 桥接由普通账号显式 `responses -> chat_completions` 模型别名处理。DeepSeek Claude Code 档案不使用这条规则。
 - DeepSeek beta 能力不能只靠导入 `base_url` 猜测启用，必须由后续明确 endpoint mode / 能力开关控制。
-- `providerCode = gemini` 且 `type = api_key` 时必须有 `credentials.api_key`；`type = google_oauth` 时必须有 Access Token，或 Refresh Token + Client ID + Client Secret。没有 Refresh Token 的 access-only 账户按静态 token 使用，不会自动刷新。Gemini 原生必须显式填写 `providerProtocolProfileId = profile_gemini_native_v1beta`；如需 OpenAI Chat / Codex Responses 使用 Gemini，必须填写 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta`。Gemini native 下游如需使用 Gemini OpenAI Chat，请使用混合供应商账户，不要写入账户 `modelMappings`。
-- `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_native_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com`，`credentials.supported_endpoint_modes` 使用 `generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`，不配置 OpenAI / Anthropic 跨协议模型映射。
+- `providerCode = gemini` 且 `type = api_key` 时必须有 `credentials.api_key`；`type = google_oauth` 时必须有 Access Token，或 Refresh Token + 与签发令牌一致的 Client ID / Secret，并显式保存 `credentials.oauth_type = code_assist|google_one|ai_studio`。没有 Refresh Token 的 access-only 账户按静态 token 使用。Google OAuth 必须落到 `profile_gemini_native_v1beta`；Gemini OpenAI Chat 档案只接受 API Key。
+- `oauth_type = code_assist|google_one` 时 `credentials.base_url` 使用 `https://cloudcode-pa.googleapis.com`、必须有 `project_id`，endpoint modes 只能是 `generate_content_json/generate_content_sse`；`code_assist` 默认 `tier_id=gcp_standard`，`google_one` 默认 `tier_id=google_one_free`。`oauth_type = ai_studio` 时使用 `https://generativelanguage.googleapis.com`、自定义 Google OAuth client 和 native 档案 endpoint modes，默认 `tier_id=aistudio_free`。
+- `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_native_v1beta` 时不配置普通账户 OpenAI / Anthropic 跨协议模型映射；Code Assist / Google One 也不能通过导入的 endpoint modes 放开 Interactions、Count Tokens 或 Embedding。
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com/v1beta/openai`，`credentials.supported_endpoint_modes` 使用 `chat_json`、`chat_sse`；如需 Codex / Responses 使用 Gemini OpenAI Chat，可在普通账号中配置 `responses -> chat_completions` 模型别名；Gemini native 下游使用 Gemini OpenAI Chat 时请使用混合供应商账户。该档案不接受 Anthropic Messages 来源的账户模型别名。
 - `providerCode = hybrid` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。混合供应商账户是真实 AI 账户，不能填写目标账户 ID、目标分组 ID 或 API Key 级路由规则。
 - `providerCode = hybrid` 时，`credentials.base_url` 填真实上游根地址；可按真实上游能力在 OpenAI、Anthropic 和 Gemini endpoint modes 中选择 `credentials.supported_endpoint_modes`。`modelMappings.upstreamEndpointFamily` 决定本条映射实际请求 Chat Completions、Messages 还是 Gemini GenerateContent 上游。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
-- `credentials.supported_endpoint_modes` 可限制协议端点能力。OpenAI v1 / xAI 枚举值为 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；Anthropic 枚举值为 `messages_json`、`messages_sse`、`message_token_counting`；Gemini 原生枚举值为 `generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`。省略时通用 `openai` API Key 默认 Chat JSON/SSE，GPT API Key 默认四项全开，GPT OAuth 默认 Responses JSON/SSE，官方 Anthropic 默认 Messages JSON/SSE/Count Tokens，GLM OpenAI 档案默认 Chat JSON/SSE，GLM Coding Anthropic 默认 Messages JSON/SSE，DeepSeek OpenAI-compatible 默认 Chat JSON/SSE，DeepSeek Claude Code 默认 Messages JSON/SSE，Gemini 原生默认 GenerateContent / Interactions JSON/SSE / Count Tokens，Gemini OpenAI Chat 默认 Chat JSON/SSE，混合供应商默认全量 endpoint modes。
+- `credentials.supported_endpoint_modes` 可限制协议端点能力。xAI API Key 可用 Chat / Responses，Grok OAuth 固定 Responses；Anthropic 使用 Messages / Count Tokens；Gemini native 枚举 GenerateContent、Interactions、Count Tokens、Embedding，但 Code Assist / Google One 固定只有 GenerateContent JSON / SSE。省略时按供应商、协议档案和认证模式默认值回填，不能只按协议大类放宽。
 - Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；GLM Coding、DeepSeek 和 Gemini OpenAI Chat 账号必须配置 `responses -> chat_completions` 模型别名并具备 `chat_sse`。Gemini native `streamGenerateContent` 通过混合供应商账户桥接到 Chat 上游时要求真实上游具备 `chat_sse`，桥接到 Anthropic Messages 上游时要求真实上游具备 `messages_sse`。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。

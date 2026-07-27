@@ -5,11 +5,12 @@
 
 ## 范围
 
-本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、网关透传边界、`gemini-cli` 兼容方式、Interactions API、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
+本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、三种托管 OAuth 模式、AI Studio / Code Assist runtime 边界、`gemini-cli` 兼容方式、Interactions API、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
 
 本次目标包含两个 Gemini 协议档案和三个请求面：Gemini 原生 GenerateContent / Interactions 直连共用 native 档案，另有 Gemini 官方 OpenAI Chat 兼容直连档案。Gemini 官方 OpenAI compatibility 已可承接 OpenAI Chat Completions 客户端，因此本项目不把 Gemini native 或 Interactions 伪装成 OpenAI Responses；只有混合供应商账户才负责显式跨协议桥接。客户端发送什么协议，网关就按对应协议档案直连对应上游：
 
 - Gemini native 客户端：走 `gemini/v1beta` 原生协议档案。
+- Gemini `google_oauth` 账户按 `credentials.oauth_type` 分流：`ai_studio` 调用 Gemini Developer API；`code_assist` / `google_one` 调用 `cloudcode-pa.googleapis.com` Code Assist runtime，并保持下游 GenerateContent JSON / SSE 形态。
 - OpenAI Chat 客户端：走 Gemini 供应商下的 `profile_gemini_openai_chat_v1beta`，上游为 Gemini 官方 OpenAI compatibility endpoint。
 - Interactions 客户端：走 `profile_gemini_native_v1beta` 的 `/v1beta/interactions` 资源族；创建流式 Interaction 时在 POST body 发送 `stream: true` 并使用 `Accept: text/event-stream`，读取既有 Interaction 的流时使用 `GET /v1beta/interactions/{id}?stream=true`，SSE 事件类型来自 JSON `event_type`。
 - Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat，可命中显式配置 `responses -> chat_completions` 的普通 Gemini OpenAI Chat 账户；如果要使用 Gemini native 转换，必须命中混合供应商账户。不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
@@ -26,22 +27,23 @@
 
 - 新增供应商：`gemini`。
 - 新增原生协议：`gemini/v1beta`，优先支持 Gemini API Developer API 的 REST / SSE 形态。
-- 默认账户类型：Gemini API Key，底层仍为 `accounts.type = api_key`；另外支持用户授权的 Google OAuth，底层为 `accounts.type = google_oauth`。
+- 默认账户类型：Gemini API Key，底层仍为 `accounts.type = api_key`；另外支持托管 Google OAuth，底层为 `accounts.type = google_oauth`，授权模式为 `code_assist`、`google_one` 或 `ai_studio`。
 - 默认协议档案：`profile_gemini_native_v1beta`。
-- 默认 Base URL：`https://generativelanguage.googleapis.com`。
+- API Key / AI Studio 默认 Base URL 为 `https://generativelanguage.googleapis.com`；Code Assist / Google One 默认 Base URL 为 `https://cloudcode-pa.googleapis.com`。
 - 默认本地调用路径支持 `/v1beta/models/{model}:generateContent`、`/v1beta/models/{model}:streamGenerateContent`、`/v1beta/models/{model}:countTokens`、`/v1beta/models/{model}:embedContent`、`/v1beta/interactions`、`/v1beta/interactions/{id}`、`/v1beta/interactions/{id}/cancel`、`/v1beta/models`。
 - Files、Cached Contents、Batch / long-running operations、Live API 等能力按 Gemini native endpoint family 预留；Interactions 已落地，但仍按独立 endpoint mode 管理，不能与 GenerateContent 的 JSON / SSE 语义混用。
-- `gemini-cli` 验收主路径使用 `GOOGLE_GEMINI_BASE_URL` 指向本项目本地网关，并用 `GEMINI_API_KEY` 填本地 API Key；不要使用 Gemini CLI 的 Google 登录 / Code Assist 内部接口作为本次目标。
+- `gemini-cli` 既可继续用 `GOOGLE_GEMINI_BASE_URL` + 本地 API Key 访问本项目，也可由项目内托管的 `code_assist` / `google_one` OAuth 账户在上游调用 Code Assist runtime；客户端登录态与上游账户授权仍是两层独立身份。
 
 ## 当前落地状态
 
-截至 `2026-07-18`：
+截至 `2026-07-28`：
 
 - 已完成设计文档、计划文档、后端 Gemini native 协议 / 供应商驱动、Gemini OpenAI Chat 兼容档案、默认种子、模型目录、usage / error / SSE 解析和 mockai 回归。
 - 已完成前端 Gemini fallback provider、协议识别、endpoint mode 默认值与校验。
 - 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、普通 Gemini OpenAI Chat 账号通过显式 `responses -> chat_completions` 承接 Codex / Responses、Anthropic Messages 映射禁用。
 - 已完成 Gemini native mockai 覆盖：`generateContent` / `streamGenerateContent` / `Interactions` 原生直连、普通 Gemini native / OpenAI-compatible / Anthropic 账号不再通过旧显式混合映射承接跨协议请求。
-- 已完成 Google OAuth 账户凭据准备：可使用已有 `access_token`，或用 `refresh_token + client_id + client_secret` 通过官方 Google OAuth token endpoint 刷新；token 交换使用单飞缓存并与下游请求取消解耦，复用账户绑定代理、独立 20 秒超时、请求时 DNS SSRF 校验和 `256 KiB` 有界 JSON 读取，可选透传 `x-goog-user-project`，不发送 API key。
+- 已完成 Gemini 托管 OAuth：三种模式都支持 PKCE 浏览器授权、Refresh Token 创建、直接 Access Token、手动刷新和重新授权；管理端与个人端通过 capabilities 返回模式、回调地址、scope 和可用 endpoint modes。
+- 已完成 Code Assist runtime：`code_assist` / `google_one` 将 GenerateContent 请求包装为 Cloud Code 内部请求，始终调用流式上游，再按下游要求透传 SSE 或聚合为 JSON；`ai_studio` 继续使用现有 Gemini Developer API native driver。
 - 已按 Google 官方 Gemini API Models / Pricing 页面核对内置 Gemini 模型目录；内置目录只收录 Google 官方模型 ID，不收录 `vsllm.com` 等中转商自定义的 `*-antigravity*` 型号。
 - 已安装本机 `gemini` CLI `0.47.0`。
 - 已使用真实 `vsllm.com` 账号执行 Gemini OpenAI Chat E2E，覆盖 `/v1/models`、Chat JSON 和 Chat SSE；Responses -> Chat bridge 通过普通账号显式模型别名验收。
@@ -67,7 +69,7 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` | Gemini API Key / Google OAuth | `generate_content_json`、`generate_content_sse`、`count_tokens`、`interactions_json`、`interactions_sse` |
+| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` 或 `https://cloudcode-pa.googleapis.com` | Gemini API Key / Google OAuth | API Key / AI Studio 为 native 档案能力；Code Assist / Google One 仅 `generate_content_json`、`generate_content_sse` |
 | `profile_gemini_openai_chat_v1beta` | `gemini` | `openai/v1` | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini API Key | `chat_json`、`chat_sse` |
 
 可选 endpoint modes：
@@ -99,37 +101,47 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Gemini API Key | `api_key` | `profile_gemini_native_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes` | `gemini-3.5-flash` |
-| Gemini Google OAuth | `google_oauth` | `profile_gemini_native_v1beta` | `access_token`（可选 `expires_at`）或 `refresh_token` + `client_id` + `client_secret`、可选 `quota_project_id` / `base_url` | `gemini-3.5-flash` |
+| Gemini Code Assist OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=code_assist`、token、必需 `project_id`、`tier_id`、`base_url` | `gemini-3.5-flash` |
+| Google One OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 内置 CLI client；`oauth_type=google_one`、token、探测到的 `project_id` / Drive 配额与 `tier_id` | `gemini-3.5-flash` |
+| Google AI Studio OAuth | `google_oauth` | `profile_gemini_native_v1beta` | 自定义 Client ID / Secret；`oauth_type=ai_studio`、token、可选 `quota_project_id` / `project_id` | `gemini-3.5-flash` |
 | Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
 
 保存规则：
 
 - API Key 加密保存；列表不展示，编辑弹窗可查看和修改。
-- Gemini native `base_url` 默认 `https://generativelanguage.googleapis.com`；Gemini OpenAI Chat `base_url` 默认 `https://generativelanguage.googleapis.com/v1beta/openai`。二者都允许修改为同协议代理地址，但必须通过 SSRF 防护。
-- Gemini native API Key / Google OAuth 的 `credentials.supported_endpoint_modes` 省略时默认 `['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse']`；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。模型列表由本地目录响应，不写入账户 endpoint mode。
+- Gemini native API Key / AI Studio `base_url` 默认 `https://generativelanguage.googleapis.com`；Code Assist / Google One 默认 `https://cloudcode-pa.googleapis.com`；Gemini OpenAI Chat 默认 `https://generativelanguage.googleapis.com/v1beta/openai`。允许修改时仍必须通过 SSRF 防护。
+- Gemini native API Key / AI Studio 省略 endpoint modes 时按 native 档案能力处理；Code Assist / Google One 强制为 `['generate_content_json', 'generate_content_sse']`，不开放 Count Tokens、Interactions、Embedding、Files 或 Live；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。
 - 账户凭据中的 `service_tier_override` / `reasoning_effort_override` 当前只在 GenerateContent（含 OpenAI / Anthropic 到 Gemini 的 GenerateContent bridge）请求体中按 Gemini 原生字段应用；Interactions 是独立原生资源协议，保持透明转发并保留上游返回的 `service_tier` / usage，不把 GenerateContent 专用覆盖字段猜测性写入 Interactions。需要 Interactions 专属生成参数时由调用方按 Google 官方请求体提交。
 - 新建账户默认写入 `pending_test`，测试通过后才允许调度。
-- Gemini native API Key / Google OAuth 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段。
+- Gemini native API Key / Google OAuth 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段；Google OAuth 只展示当前模式声明的 Client、Project 与 Tier 字段。
 - Gemini OpenAI Chat 档案当前只开放 API Key，账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses，可在普通账号 `modelMappings` 中显式声明 `responses -> chat_completions`；如果要承接 Gemini native 下游，必须通过混合供应商账户表达跨协议转换。
 - 同一上游 Gemini Key 如需同时给 Gemini native 直连和 OpenAI-compatible 客户端使用，建议创建两个本地账户：一个走 `profile_gemini_native_v1beta`，另一个走 `profile_gemini_openai_chat_v1beta`。跨协议桥接由混合供应商账户决定，不把同一个普通账户同时伪装成 Gemini native 上游和 OpenAI Chat 上游。
 
 ### Google OAuth 认证边界
 
-- `google_oauth` 不是 Gemini CLI 的 `LOGIN_WITH_GOOGLE` 或 Code Assist 内部登录；它只接受用户已经取得的 Google OAuth access / refresh token，并在本地进程内按 60 秒提前量刷新。
-- 只有已有有效 `access_token` 时可以省略刷新字段；没有 `refresh_token` 的 access-only 账户按静态 token 使用，不会自动刷新。配置 `refresh_token` 时必须同时提供 `client_id` 与 `client_secret`。刷新请求发送到官方 `https://oauth2.googleapis.com/token`，使用 `application/x-www-form-urlencoded`，不会把 token 写入 URL 或错误文本。
-- Google token refresh 复用账户绑定代理，使用独立 20 秒超时、请求时 DNS SSRF 校验和 `256 KiB` 响应上限；超限或非 JSON 响应直接失败，不把响应原文或 refresh token 拼入错误消息。
-- 可选 `quota_project_id` 会作为 `x-goog-user-project` 发送；Google OAuth 账户不发送 `x-goog-api-key`。请求链路只缓存短期 access token，进程重启后按保存凭据重新准备，不把 OAuth token 写入模型目录或日志。
-- 当前不实现 Google Cloud ADC 文件发现、Service Account JWT、Workspace 管理授权、Vertex AI 或 Code Assist 内部 `cloudcode-pa.googleapis.com` 接口；这些应另立供应商 / 协议档案。
+- `GET /gemini-oauth/capabilities` 与个人端同源接口返回三种模式；默认是 `code_assist`。授权 URL 与 code 换取 token 都使用 Google 官方 OAuth endpoint、PKCE S256、30 分钟一次性会话和账户作用域绑定。
+- `code_assist` / `google_one` 使用内置 Gemini CLI client，回调为 `https://codeassist.google.com/authcode`。前者 scope 为 Cloud Platform + userinfo email/profile；后者额外包含 Drive metadata readonly，用于配额档位探测。
+- `ai_studio` 必须提供自定义 Client ID 与 Client Secret（请求字段或后端环境变量），回调为 `http://localhost:1455/auth/callback`，scope 为 Cloud Platform + Generative Language Retriever。
+- 三种模式都支持回调 URL、Refresh Token 和直接 Access Token 创建。凭据保存 `access_token`、`refresh_token`、`client_id`、`client_secret`、`token_type`、`scope`、`expires_at`、`oauth_type`、`project_id`、`tier_id`、`quota_project_id`、`base_url`；Google One 另保存 Drive limit / usage / tier 更新时间。
+- Code Assist 授权后通过 `loadCodeAssist`、Resource Manager fallback 和 onboarding 取得 Project / Tier，最终缺少 `project_id` 时拒绝创建，默认 Tier 为 `gcp_standard`。Google One复用 Code Assist project 探测并按 Drive 配额识别档位，失败时默认 `google_one_free`；AI Studio 默认 `aistudio_free`。
+- Google token 刷新复用账户绑定代理和 `256 KiB` 响应上限，不把 token 写入 URL、模型目录、错误文本或日志。Access-only 账户按静态 token 使用；有 Refresh Token 时按账户保存的模式和 client 刷新。
+
+### Code Assist runtime
+
+- `code_assist` / `google_one` 只接受 GenerateContent 与 StreamGenerateContent；其他 native 资源在候选过滤阶段拒绝，不能因为同属 `profile_gemini_native_v1beta` 而继承 AI Studio 的 Count Tokens / Interactions / Embedding 能力。
+- 上游固定调用 `POST https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`，使用 Bearer Access Token 和 Gemini CLI User-Agent；请求体包装为 `{ model, project, request }`。
+- 上游始终返回 SSE。下游流式请求逐事件解包 `response`；下游 JSON 请求收集 SSE，合并文本 parts 并返回标准 Gemini `GenerateContentResponse`。OpenAI / Anthropic 到 Gemini 的白名单 bridge 仍可在包装前生成 Gemini native 请求体。
+- `ai_studio` 继续按现有 native URL、Bearer token 和可选 `x-goog-user-project` 调用 Gemini Developer API，不进入 Code Assist wrapper。
+- 旧 Google OAuth 凭据没有 `oauth_type` 时，仅在存在 `project_id` 时按 Code Assist 解释，否则按 AI Studio 解释；新建和重新授权必须显式保存 `oauth_type`。
 
 当前不纳入目标：
 
-- Gemini CLI `LOGIN_WITH_GOOGLE` 的完整登录编排和 Google 个人账号订阅 OAuth UI。
-- Code Assist 内部接口 `https://cloudcode-pa.googleapis.com/v1internal:*`。
 - Vertex AI Gemini。
 - Google Workspace / 企业授权。
+- Google Cloud ADC 文件发现和 Service Account JWT。
 - Gemini Live API WebSocket 代理。
 
-这些能力涉及 OAuth、Google Cloud project、内部 quota / tier、WebSocket 或 Vertex 路由语义，必须作为独立供应商协议档案或独立需求验证，不能塞进 Gemini API Key native 档案。
+这些能力涉及不同身份、WebSocket 或 Vertex 路由语义，必须作为独立供应商协议档案或独立需求验证，不能塞进当前三种 Google OAuth 模式。
 
 ## 本地网关入口
 
@@ -150,13 +162,15 @@ Gemini native 入口使用 Google Gemini API 路径，不复用 OpenAI Chat / Re
 | `/v1beta/interactions/{id}` | `GET` / `DELETE` | 查询 / 删除 Interaction 资源 | `<base_url>/v1beta/interactions/{id}` |
 | `/v1beta/interactions/{id}/cancel` | `POST` | 取消 Interaction | `<base_url>/v1beta/interactions/{id}/cancel` |
 
+上表是 API Key / AI Studio native 上游路径。Code Assist / Google One 只承接前两种 GenerateContent 生成入口，二者都改写到 `https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`；非流式下游由网关聚合该 SSE，不调用单独的 Cloud Code JSON 端点。
+
 本地认证：
 
 - 优先支持 `Authorization: Bearer <本地 API Key>`。
 - 同时支持 Gemini SDK 常见的 `x-goog-api-key: <本地 API Key>`。
 - 兼容官方 curl 示例中的 `?key=<本地 API Key>`，但进入上游前必须移除本地 query key。
 - 如果多种凭据同时存在，优先级为 `Authorization` -> `x-goog-api-key` -> query `key`，并在审计摘要记录本地认证来源。
-- API Key 账户的上游请求必须替换为账户 Gemini API Key，优先写 `x-goog-api-key`；Google OAuth 账户改用 `Authorization: Bearer <access_token>`，并在配置时可附带 `x-goog-user-project`。任何账户都不能把本地 API Key 或本地 query `key` 透传上游。
+- API Key 账户的上游请求必须替换为账户 Gemini API Key，优先写 `x-goog-api-key`；AI Studio OAuth 改用 `Authorization: Bearer <access_token>`，并在配置时可附带 `x-goog-user-project`；Code Assist / Google One 使用 Bearer token + Gemini CLI User-Agent 和 Cloud Code wrapper。任何账户都不能把本地 API Key 或本地 query `key` 透传上游。
 
 请求体：
 
@@ -353,7 +367,7 @@ Gemini 账户测试必须复用真实网关链路。
 | SSE 事件错误 | 把 Gemini SSE 改成 OpenAI chunk 或要求 `[DONE]` | Gemini SSE 透传 `data: JSON`，不合成 OpenAI 事件 |
 | usage 口径错误 | `totalTokenCount` 又叠加 prompt / candidates 导致重复 | 按 Gemini usage semantic 单独归一 |
 | Files 上传爆内存 | resumable upload 先完整读入内存 | 必须按 stream / 分块窗口处理 |
-| gemini-cli 验证走错链路 | 使用 Google 登录导致请求打 Code Assist 内部接口 | 本次真实验收使用 `GOOGLE_GEMINI_BASE_URL + GEMINI_API_KEY` |
+| OAuth runtime 走错链路 | Code Assist token 发到 Developer API，或 AI Studio token 发到 Cloud Code | 必须按 `credentials.oauth_type` 选择 runtime；旧凭据只按 `project_id` 做受控兼容判断 |
 | Vertex 混入 | Vertex AI Base URL / project / location 和 Gemini API Key 账户混用 | Vertex 后续单独档案 |
 | 模型目录不稳定 | 把 preview / shutdown 模型永久硬编码 | 目录按官方文档和 Models API 清洗，有 shutdown date 的到期隐藏 |
 
@@ -364,8 +378,9 @@ Gemini 账户测试必须复用真实网关链路。
 - 新增 `profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和默认 Gemini 分组。
 - 新增 Gemini native ProtocolDriver：路径识别、模型提取、本地错误 shape、JSON / SSE 语义帧、Gemini 模型列表响应。
 - 新增 Gemini ProviderDriver：凭据归一化、Base URL 拼接、`x-goog-api-key` 上游认证、query `key` 清理、账号测试请求。
-- 新增 Google OAuth 凭据准备：access token 直用、refresh token 官方交换、60 秒提前量缓存和单飞刷新；OAuth 账户按 `x-goog-user-project` 发送 quota project，不发送上游 API Key。
-- 前端账户创建支持 Gemini API Key、Google OAuth、Base URL、endpoint modes，并区分 Gemini 原生和 Gemini OpenAI Chat。
+- 新增三模式 Google OAuth 托管授权：capabilities、PKCE、授权码换取、Refresh Token、直接 Access Token、手动刷新和重新授权；凭据显式保存 `oauth_type`、project、tier 和模式 client。
+- 新增 Code Assist runtime：Code Assist / Google One 请求包装、Cloud Code SSE 解包和非流式聚合；AI Studio 继续使用 Gemini native Developer API。
+- 前端账户创建支持 Gemini API Key、三模式 Google OAuth、Base URL、endpoint modes，并区分 Gemini 原生和 Gemini OpenAI Chat。
 - 网关本地认证支持 `Authorization`、`x-goog-api-key`、query `key`。
 - 新增 Gemini native response semantic：文本、thought、functionCall、functionResponse、inlineData、fileData、finishReason、safetyRatings、promptFeedback、usageMetadata。
 - 新增 Gemini Interactions response semantic：JSON `interaction/steps`、SSE JSON `event_type`、`interaction.completed` / `interaction.failed` 和 `metadata.total_usage` 累计 usage。
@@ -373,7 +388,7 @@ Gemini 账户测试必须复用真实网关链路。
 - 新增 `usage_semantic = gemini`。
 - Gemini OpenAI Chat 档案使用 OpenAI usage semantic；普通 Gemini OpenAI Chat 账号可通过显式 `responses -> chat_completions` 模型别名启用 Responses-to-Chat bridge。Gemini native 到 Chat bridge 仅在后续混合供应商账户命中时生效，并在下游还原 Gemini JSON / SSE。
 - mockai 覆盖 JSON、SSE、countTokens、模型列表、Gemini error object、流内坏 chunk、usage。
-- 新增 Google OAuth / Interactions 定向回归，以及真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本；真实 E2E 仍需用户提供可用账号和网络条件，不能用 mock 结果替代。
+- 新增 Google OAuth 协议契约、Code Assist runtime、token refresh、Interactions 定向回归，以及真实 Gemini OpenAI Chat E2E 和真实 `gemini-cli` E2E；真实 E2E 仍需用户提供可用账号和网络条件，不能用 mock 结果替代。
 - 更新导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明。
 
 ## 验证要求
@@ -381,10 +396,13 @@ Gemini 账户测试必须复用真实网关链路。
 正式落地后至少覆盖：
 
 - 默认创建 Gemini API Key 账户后落到 `profile_gemini_native_v1beta`；显式选择 Gemini OpenAI Chat 时落到 `profile_gemini_openai_chat_v1beta`。
-- 新 Gemini native API Key / Google OAuth 账户默认 `supported_endpoint_modes = generate_content_json/generate_content_sse/count_tokens/interactions_json/interactions_sse`；新 Gemini OpenAI Chat 账户默认 `chat_json/chat_sse`。
+- 新 Gemini native API Key / AI Studio OAuth 账户使用 native 档案 endpoint modes；Code Assist / Google One 强制只有 `generate_content_json/generate_content_sse`；新 Gemini OpenAI Chat 账户默认 `chat_json/chat_sse`。
 - Gemini 账户只能加入相同供应商的分组，协议档案由账户接入类型决定。
 - 本地 `x-goog-api-key`、`Authorization` 和 query `key` 都可作为本地 API Key 认证来源。
-- API Key 账户上游请求使用账户 `x-goog-api-key`，Google OAuth 账户使用 Bearer token 和可选 `x-goog-user-project`，均不泄漏本地 Key 或 refresh token。
+- API Key 账户上游请求使用账户 `x-goog-api-key`；AI Studio OAuth 使用 Bearer token 和可选 `x-goog-user-project`；Code Assist / Google One 使用 Bearer token、Project wrapper 和 Cloud Code runtime，均不泄漏本地 Key 或 Refresh Token。
+- `pnpm --filter juhe-ai-backend test:gemini-oauth-protocol-contract` 覆盖三模式 capabilities、client、redirect、scope、PKCE、凭据和管理 / 个人路由。
+- `pnpm --filter juhe-ai-backend test:gemini-code-assist-runtime` 覆盖 runtime 分流、请求包装、SSE 解包、JSON 聚合和 AI Studio 不误入 Cloud Code。
+- `pnpm --filter juhe-ai-backend test:gemini-google-oauth-token` 覆盖请求前 token 刷新、单飞和代理边界。
 - `POST /v1beta/models/gemini-3.5-flash:generateContent` JSON 返回 Gemini 原生 response。
 - `POST /v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse` 能增量转发 SSE。
 - `POST /v1beta/models/gemini-3.5-flash:countTokens` 返回 Gemini token count shape。

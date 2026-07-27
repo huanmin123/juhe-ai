@@ -733,7 +733,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 保存规则：
 
 - `audit_logs` 只写入命中 10% 稳定采样的完全成功请求，以及所有失败、异常、客户端中断、流式中断和重试后成功链路；每次请求事实仍由 `usage_records` 保底。
-- 成功样本 body 不超过 `512KB` 时保存完整正文，超过后保存 `summary_only` 摘要；问题链路 body 不超过 `2MB` 时保存完整正文，超过后保存原始 hash、大小、头尾 `256KB` 和 JSON 结构摘要。
+- 成功样本 body 不超过 `512KB` 时保存完整正文，超过后保存 `summary_only` 摘要；问题链路 body 不超过 `2MB` 时保存完整正文，超过后保存原始 hash、大小、content type、头尾 `256KB` 和文本预览；不为展示解析原始 JSON Body。
 - 普通 `200 success` 默认先进入最近 1 小时原始审计热保留窗口，用于内容搜索和即时排障；超过热窗口后只保留命中稳定桶的 10% 长期样本。成功样本和问题链路仍按 body 保全档位摘要化，headers、queryString 和 body 的保存继续受 `64MB` 活跃捕获硬上限、blob 压缩去重和窗口读取约束。
 - `headers_sha256` 和 `body_sha256` 均针对压缩前的原始字节计算。
 - payload blob 可以压缩存储，压缩算法、原始大小和压缩后大小必须记录。

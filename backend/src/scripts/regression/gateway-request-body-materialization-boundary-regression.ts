@@ -4,7 +4,11 @@ import type { Request } from 'express'
 
 import { buildOpenAIClientCompatibilityBody } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import { buildOpenAIModelMappedJsonBody } from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
-import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
+import { replaceGatewayJsonBody } from '../../modules/gateway/request/body.js'
+import {
+  parseGatewayRequestJsonBody,
+  stopGatewayJsonParseWorker
+} from '../../modules/gateway/request/json-parser.js'
 
 const requestJsonMaterializationModules = [
   'modules/gateway/codex-responses/chat-bridge-state.ts',
@@ -21,7 +25,12 @@ try {
   const padding = 'request-cache'.repeat(32 * 1024)
   const rawBody = Buffer.from(JSON.stringify({
     model: 'gpt-5.6-sol',
-    input: padding
+    input: padding,
+    tools: [{ type: 'web_search_preview' }],
+    tool_choice: {
+      type: 'allowed_tools',
+      tools: [{ type: 'web_search_preview_2025_03_11' }]
+    }
   }), 'utf8')
   const request = {
     method: 'POST',
@@ -41,7 +50,7 @@ try {
   } as unknown as Request & {
     gatewayParsedJsonBodyAvailable?: boolean
     gatewayParsedJsonBody?: unknown
-    gatewayParsedJsonBodyPromise?: Promise<unknown>
+    gatewayParsedJsonBodyPromise?: unknown
   }
 
   const [compatibilityBody, mappedBody] = await Promise.all([
@@ -55,12 +64,42 @@ try {
   assert(sharedParsedBody && typeof sharedParsedBody === 'object', '首次协议转换后应保留请求级解析结果')
   assert.equal(request.gatewayParsedJsonBodyAvailable, true, '成功物化后必须标记请求级 JSON 缓存可用')
   assert.equal(request.body, sharedParsedBody, '并发协议转换必须共享同一请求解析对象')
+  const sharedParsedRecord = sharedParsedBody as Record<string, unknown>
+  assert.equal(
+    (sharedParsedRecord.tools as Array<{ type?: unknown }>)[0]?.type,
+    'web_search_preview',
+    '兼容转换不得原地改写请求级缓存的嵌套 tools'
+  )
+  assert.equal(
+    ((sharedParsedRecord.tool_choice as { tools?: Array<{ type?: unknown }> }).tools ?? [])[0]?.type,
+    'web_search_preview_2025_03_11',
+    '兼容转换不得原地改写请求级缓存的嵌套 tool_choice'
+  )
   assert.equal(request.gatewayParsedJsonBodyPromise, undefined, '请求级 JSON 物化完成后必须释放 in-flight Promise')
   assert.equal(
     (JSON.parse(mappedBody.toString('utf8')) as { model?: unknown }).model,
     'gpt-5.5',
     '复用请求级解析结果后仍应完成模型改写'
   )
+
+  const staleRawBody = Buffer.from('{"model":', 'utf8')
+  const staleRequest = {
+    headers: { 'content-type': 'application/json' },
+    rawBody: staleRawBody,
+    body: undefined,
+    gatewayRequestBody: {
+      rawBodyBytes: staleRawBody.length,
+      contentType: 'application/json',
+      isJson: true,
+      jsonParseStatus: 'deferred_large_json',
+      jsonParseWarningBytes: 0
+    }
+  } as unknown as Request
+  const staleMaterialization = parseGatewayRequestJsonBody(staleRequest)
+  replaceGatewayJsonBody(staleRequest, { model: 'current-model' })
+  const materializedAfterReplacement = await staleMaterialization
+  assert.equal(materializedAfterReplacement, staleRequest.body, '解析期间 Body 改写后不得向调用者返回旧版本对象')
+  assert.deepEqual(materializedAfterReplacement, { model: 'current-model' })
 
   for (const relativePath of requestJsonMaterializationModules) {
     const source = readFileSync(new URL(`../../${relativePath}`, import.meta.url), 'utf8')

@@ -145,6 +145,9 @@ function buildGoogleOAuthCredentials(form: AccountFormModel): Record<string, unk
     client_id: form.googleClientId,
     client_secret: form.googleClientSecret,
     quota_project_id: form.googleQuotaProjectId,
+    oauth_type: form.oauthType,
+    tier_id: form.tierId,
+    project_id: form.projectId,
     base_url: form.baseUrl,
     supported_endpoint_modes: [...form.supportedEndpointModes]
   })

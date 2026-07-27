@@ -122,45 +122,46 @@
             <span class="schedule-empty-help">完成上方配置后，点击“创建计划”即可开始自动巡检。</span>
           </a-empty>
           <div v-else class="schedule-list">
+            <div class="schedule-list-columns" aria-hidden="true">
+              <span>账户</span>
+              <span>检查频率</span>
+              <span>下次运行</span>
+              <span>不达标处理</span>
+              <span>上次结果</span>
+              <span>操作</span>
+            </div>
             <article v-for="item in schedules" :key="item.id" class="schedule-item" :class="{ 'schedule-item-disabled': !item.enabled }">
-              <div class="schedule-item-main">
-                <div class="schedule-item-identity">
-                  <div class="schedule-item-title-row">
-                    <h4>{{ item.accountName || item.accountId }}</h4>
-                    <a-tag :color="item.enabled ? 'green' : 'default'">{{ item.enabled ? '运行中' : '已暂停' }}</a-tag>
-                    <a-tag v-if="item.currentEnforcementAction === 'quality_isolate'" color="red">质量隔离中</a-tag>
-                  </div>
-                  <div class="schedule-item-subtitle">
-                    <span v-if="item.providerCode">{{ item.providerCode }}</span>
-                    <span class="schedule-item-model">{{ item.model }}</span>
-                    <a-tag :color="item.profile === 'full' ? 'purple' : 'cyan'">
-                      {{ item.profile === 'full' ? '深度检测' : '快速检测' }}
-                    </a-tag>
-                  </div>
+              <div class="schedule-item-identity">
+                <div class="schedule-item-title-row">
+                  <h4>{{ item.accountName || item.accountId }}</h4>
+                  <a-tag :color="item.enabled ? 'green' : 'default'">{{ item.enabled ? '运行中' : '已暂停' }}</a-tag>
+                  <a-tag v-if="item.currentEnforcementAction === 'quality_isolate'" color="red">质量隔离中</a-tag>
                 </div>
-                <RowActions :actions="scheduleActions" @action-click="handleScheduleAction($event, item)" />
-              </div>
-
-              <div class="schedule-item-metrics">
-                <div class="schedule-metric">
-                  <span>检查频率</span>
-                  <strong>每 {{ item.intervalMinutes }} 分钟</strong>
-                </div>
-                <div class="schedule-metric">
-                  <span>下次运行</span>
-                  <strong>{{ item.enabled ? formatDateTime(item.nextRunAt) : '计划已暂停' }}</strong>
-                </div>
-                <div class="schedule-metric">
-                  <span>不达标处理</span>
-                  <strong>低于 {{ item.penaltyThreshold }} 分 · {{ penaltyActionText(item.penaltyAction) }}</strong>
-                  <small v-if="item.penaltyAction === 'quality_isolate'">每 {{ item.recoveryIntervalMinutes }} 分钟恢复检查</small>
-                </div>
-                <div class="schedule-metric">
-                  <span>上次结果</span>
-                  <strong>{{ lastRunText(item) }}</strong>
-                  <small v-if="item.lastRunAt">{{ formatDateTime(item.lastRunAt) }}</small>
+                <div class="schedule-item-subtitle">
+                  <span v-if="item.providerCode">{{ item.providerCode }}</span>
+                  <span class="schedule-item-model">{{ item.model }}</span>
+                  <span>{{ item.profile === 'full' ? '深度检测' : '快速检测' }}</span>
                 </div>
               </div>
+              <div class="schedule-metric">
+                <span>检查频率</span>
+                <strong>每 {{ item.intervalMinutes }} 分钟</strong>
+              </div>
+              <div class="schedule-metric">
+                <span>下次运行</span>
+                <strong>{{ item.enabled ? formatDateTime(item.nextRunAt) : '计划已暂停' }}</strong>
+              </div>
+              <div class="schedule-metric">
+                <span>不达标处理</span>
+                <strong>低于 {{ item.penaltyThreshold }} 分 · {{ penaltyActionText(item.penaltyAction) }}</strong>
+                <small v-if="item.penaltyAction === 'quality_isolate'">每 {{ item.recoveryIntervalMinutes }} 分钟恢复检查</small>
+              </div>
+              <div class="schedule-metric">
+                <span>上次结果</span>
+                <strong>{{ lastRunText(item) }}</strong>
+                <small v-if="item.lastRunAt">{{ formatDateTime(item.lastRunAt) }}</small>
+              </div>
+              <RowActions class="schedule-item-actions" :actions="scheduleActions" @action-click="handleScheduleAction($event, item)" />
             </article>
           </div>
 
@@ -339,19 +340,15 @@ function lastRunText(item: ModelQualitySchedule): string {
 
 .schedule-modal-content {
   display: grid;
-  gap: 24px;
+  gap: 0;
 }
 
 .schedule-editor {
-  overflow: hidden;
-  border: 1px solid #dbe7f5;
-  border-radius: 8px;
-  background: #fff;
+  min-width: 0;
 }
 
 .schedule-editor-head,
 .schedule-list-head,
-.schedule-item-main,
 .schedule-item-title-row,
 .schedule-item-subtitle,
 .schedule-switch-row {
@@ -363,9 +360,7 @@ function lastRunText(item: ModelQualitySchedule): string {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 18px;
-  border-bottom: 1px solid #e8eef6;
-  background: #f8fbff;
+  padding: 0 0 14px;
 }
 
 .schedule-editor h3,
@@ -394,7 +389,8 @@ function lastRunText(item: ModelQualitySchedule): string {
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
   gap: 16px;
-  padding: 16px 18px 0;
+  padding: 16px 0 0;
+  border-top: 1px solid #eef2f7;
 }
 
 .schedule-section-label {
@@ -485,9 +481,7 @@ function lastRunText(item: ModelQualitySchedule): string {
 .schedule-policy-hint {
   align-self: start;
   margin-top: 30px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  background: #f8fafc;
+  padding-top: 6px;
 }
 
 .schedule-form-actions {
@@ -497,13 +491,15 @@ function lastRunText(item: ModelQualitySchedule): string {
   gap: 8px;
   min-width: 0;
   margin-top: 4px;
-  padding: 14px 18px;
+  padding: 14px 0 0;
   border-top: 1px solid #eef2f7;
-  background: #fbfdff;
 }
 
 .schedule-list-section {
   min-width: 0;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .schedule-list-head {
@@ -513,31 +509,43 @@ function lastRunText(item: ModelQualitySchedule): string {
 }
 
 .schedule-list {
+  border-top: 1px solid #e2e8f0;
+}
+
+.schedule-list-columns,
+.schedule-item {
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(190px, 1.25fr) minmax(90px, .65fr) minmax(150px, 1fr) minmax(170px, 1.15fr) minmax(100px, .75fr) 64px;
+  gap: 14px;
+}
+
+.schedule-list-columns {
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #e2e8f0;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.schedule-list-columns span:last-child {
+  text-align: right;
 }
 
 .schedule-item {
-  padding: 14px 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  transition: border-color .2s ease, box-shadow .2s ease;
+  position: relative;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid #eef2f7;
+  transition: background-color .2s ease;
 }
 
 .schedule-item:hover {
-  border-color: #bfdbfe;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, .05);
+  background: #fafcff;
 }
 
 .schedule-item-disabled {
-  background: #fafafa;
-}
-
-.schedule-item-main {
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  opacity: .7;
 }
 
 .schedule-item-identity {
@@ -582,31 +590,11 @@ function lastRunText(item: ModelQualitySchedule): string {
   white-space: nowrap;
 }
 
-.schedule-item-metrics {
-  display: grid;
-  grid-template-columns: minmax(110px, .75fr) minmax(190px, 1.2fr) minmax(210px, 1.35fr) minmax(150px, 1fr);
-  gap: 0;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #eef2f7;
-}
-
 .schedule-metric {
   display: grid;
   min-width: 0;
   align-content: start;
   gap: 3px;
-  padding: 0 14px;
-  border-left: 1px solid #eef2f7;
-}
-
-.schedule-metric:first-child {
-  padding-left: 0;
-  border-left: 0;
-}
-
-.schedule-metric:last-child {
-  padding-right: 0;
 }
 
 .schedule-metric span,
@@ -614,6 +602,10 @@ function lastRunText(item: ModelQualitySchedule): string {
   color: #94a3b8;
   font-size: 11px;
   line-height: 16px;
+}
+
+.schedule-metric > span {
+  display: none;
 }
 
 .schedule-metric strong {
@@ -629,10 +621,8 @@ function lastRunText(item: ModelQualitySchedule): string {
 
 .schedule-empty {
   margin: 0;
-  padding: 24px 16px;
-  border: 1px dashed #dbe4ef;
-  border-radius: 8px;
-  background: #fafcff;
+  padding: 28px 16px 20px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .schedule-empty :deep(.ant-empty-description) {
@@ -684,7 +674,7 @@ function lastRunText(item: ModelQualitySchedule): string {
   color: #64748b;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 940px) {
   .schedule-form-section {
     grid-template-columns: 1fr;
     gap: 8px;
@@ -708,14 +698,29 @@ function lastRunText(item: ModelQualitySchedule): string {
     margin-top: 0;
   }
 
-  .schedule-item-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px 0;
+  .schedule-list-columns {
+    display: none;
   }
 
-  .schedule-metric:nth-child(3) {
-    padding-left: 0;
-    border-left: 0;
+  .schedule-item {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 20px;
+    align-items: start;
+  }
+
+  .schedule-item-identity {
+    grid-column: 1 / -1;
+    padding-right: 76px;
+  }
+
+  .schedule-item-actions {
+    position: absolute;
+    top: 14px;
+    right: 0;
+  }
+
+  .schedule-metric > span {
+    display: block;
   }
 }
 
@@ -728,16 +733,9 @@ function lastRunText(item: ModelQualitySchedule): string {
     gap: 20px;
   }
 
-  .schedule-editor-head,
-  .schedule-form-section,
-  .schedule-form-actions {
-    padding-inline: 14px;
-  }
-
   .schedule-target-grid,
   .schedule-rule-grid,
-  .schedule-policy-grid,
-  .schedule-item-metrics {
+  .schedule-policy-grid {
     grid-template-columns: 1fr;
   }
 
@@ -760,17 +758,25 @@ function lastRunText(item: ModelQualitySchedule): string {
   }
 
   .schedule-item {
-    padding: 13px 14px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 14px 0;
   }
 
-  .schedule-item-metrics {
-    gap: 10px;
+  .schedule-item-identity {
+    grid-column: 1;
+    padding-right: 0;
   }
 
-  .schedule-metric,
-  .schedule-metric:nth-child(3) {
-    padding: 0;
-    border-left: 0;
+  .schedule-item-actions {
+    position: static;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
+
+  .schedule-metric {
+    grid-column: 1 / -1;
   }
 
   .schedule-metric strong {

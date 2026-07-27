@@ -10,6 +10,7 @@ import {
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { requestStream } from '../../../gateway/request/metadata.js'
 import {
   estimateTokenCountFromText,
@@ -265,7 +266,7 @@ export async function buildCodexResponsesChatBridgeBody(
   if (typeof body.top_p === 'number') {
     chatBody.top_p = body.top_p
   }
-  return Buffer.from(JSON.stringify(chatBody), 'utf8')
+  return serializeGatewayJsonObject(chatBody)
 }
 
 export function prepareCodexResponsesChatBridgeHeaders(headers: Headers): void {
@@ -337,6 +338,12 @@ export function isOpenAIResponsesCompactPostRequest(req: Request): boolean {
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
+  if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+    throw new GatewayRequestValidationError(
+      'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
+      'invalid_codex_bridge_json_body'
+    )
+  }
   let parsed: unknown
   try {
     parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
@@ -354,12 +361,6 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
     )
   }
   if (parsed === undefined) {
-    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
-      throw new GatewayRequestValidationError(
-        'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
-        'invalid_codex_bridge_json_body'
-      )
-    }
     return {}
   }
   if (!isPlainObject(parsed)) {

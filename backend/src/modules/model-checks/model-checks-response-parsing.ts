@@ -1,19 +1,11 @@
 import {
-  extractAnthropicResponseOutputText,
-  parseAnthropicStreamFailureMessage,
-  parseAnthropicUpstreamMessage
-} from '../gateway/protocols/anthropic-v1/response-parsing.js'
+  parseDiagnosticResponseContext,
+  type DiagnosticResponseContext,
+  type DiagnosticResponseParseOptions,
+  type DiagnosticSseEvent
+} from '../gateway/diagnostics/diagnostic-response-context.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
-import {
-  extractOpenAIResponseOutputText,
-  modelFromSse,
-  parseJsonRecord,
-  parseOpenAIStreamFailureMessage,
-  parseUpstreamMessage,
-  recordValue,
-  textValue,
-  usageFromSse
-} from './model-checks-parsing.js'
+import { recordValue, textValue } from './model-checks-parsing.js'
 
 export interface ParsedModelCheckProbeResponse {
   json?: Record<string, unknown>
@@ -29,170 +21,205 @@ export function parseModelCheckProbeResponse(input: {
   bodyText: string
   protocol: ModelCheckProbeProtocol
   path: string
+  parseOptions?: DiagnosticResponseParseOptions
 }): ParsedModelCheckProbeResponse {
-  if (input.protocol === 'openai_responses') {
-    return parseOpenAIResponsesProbeResponse(input.bodyText)
-  }
-  if (input.protocol === 'openai_chat') {
-    return parseOpenAIChatProbeResponse(input.bodyText)
-  }
-  if (input.protocol === 'anthropic_messages') {
-    return parseAnthropicMessagesProbeResponse(input.bodyText)
-  }
-  return parseGeminiNativeProbeResponse(input.bodyText)
+  const context = parseDiagnosticResponseContext(input.bodyText, input.parseOptions)
+  if (input.protocol === 'openai_responses') return parseOpenAIResponsesProbeResponse(context)
+  if (input.protocol === 'openai_chat') return parseOpenAIChatProbeResponse(context)
+  if (input.protocol === 'anthropic_messages') return parseAnthropicMessagesProbeResponse(context)
+  return parseGeminiNativeProbeResponse(context)
 }
 
-function parseOpenAIResponsesProbeResponse(bodyText: string): ParsedModelCheckProbeResponse {
-  const json = parseJsonRecord(bodyText)
+function parseOpenAIResponsesProbeResponse(context: DiagnosticResponseContext): ParsedModelCheckProbeResponse {
+  const streamFailureMessage = parseOpenAIStreamFailureMessage(context)
   return {
-    json,
-    outputText: extractOpenAIResponseOutputText(bodyText),
-    model: textValue(json?.model) ?? modelFromSse(bodyText),
-    usage: recordValue(json?.usage) ?? usageFromSse(bodyText),
-    systemFingerprint: textValue(json?.system_fingerprint),
-    errorMessage: parseUpstreamMessage(bodyText),
-    streamFailureMessage: parseOpenAIStreamFailureMessage(bodyText)
+    json: context.record,
+    outputText: extractOpenAIResponsesOutputText(context),
+    model: textValue(context.record?.model) ?? firstText(context.payloads.map((payload) => recordValue(payload.response)?.model)),
+    usage: recordValue(context.record?.usage) ?? firstRecord(context.payloads.map((payload) => recordValue(payload.response)?.usage)),
+    systemFingerprint: textValue(context.record?.system_fingerprint),
+    errorMessage: parseUpstreamMessage(context) ?? streamFailureMessage,
+    streamFailureMessage
   }
 }
 
-function parseOpenAIChatProbeResponse(bodyText: string): ParsedModelCheckProbeResponse {
-  const json = parseJsonRecord(bodyText)
-  const events = parseSseJsonEvents(bodyText)
+function parseOpenAIChatProbeResponse(context: DiagnosticResponseContext): ParsedModelCheckProbeResponse {
+  const streamFailureMessage = parseGenericStreamFailureMessage(context.events)
   return {
-    json,
-    outputText: extractOpenAIChatOutputText(json, events),
-    model: textValue(json?.model) ?? firstText(events.map((event) => event.json?.model)),
-    usage: recordValue(json?.usage) ?? firstRecord(events.map((event) => event.json?.usage)),
-    errorMessage: parseUpstreamMessage(bodyText),
-    streamFailureMessage: parseGenericStreamFailureMessage(events)
+    json: context.record,
+    outputText: extractOpenAIChatOutputText(context),
+    model: textValue(context.record?.model) ?? firstText(context.payloads.map((payload) => payload.model)),
+    usage: recordValue(context.record?.usage) ?? firstRecord(context.payloads.map((payload) => payload.usage)),
+    errorMessage: parseUpstreamMessage(context) ?? streamFailureMessage,
+    streamFailureMessage
   }
 }
 
-function parseAnthropicMessagesProbeResponse(bodyText: string): ParsedModelCheckProbeResponse {
-  const json = parseJsonRecord(bodyText)
-  const events = parseSseJsonEvents(bodyText)
+function parseAnthropicMessagesProbeResponse(context: DiagnosticResponseContext): ParsedModelCheckProbeResponse {
+  const streamFailureMessage = parseAnthropicStreamFailureMessage(context)
   return {
-    json,
-    outputText: extractAnthropicResponseOutputText(bodyText),
-    model: textValue(json?.model) ?? firstText(events.map((event) => recordValue(event.json?.message)?.model)),
-    usage: recordValue(json?.usage)
-      ?? firstRecord(events.map((event) => event.json?.usage))
-      ?? firstRecord(events.map((event) => recordValue(event.json?.message)?.usage)),
-    errorMessage: parseAnthropicUpstreamMessage(bodyText) ?? parseUpstreamMessage(bodyText),
-    streamFailureMessage: parseAnthropicStreamFailureMessage(bodyText)
+    json: context.record,
+    outputText: extractAnthropicOutputText(context),
+    model: textValue(context.record?.model)
+      ?? firstText(context.payloads.map((payload) => recordValue(payload.message)?.model)),
+    usage: recordValue(context.record?.usage)
+      ?? firstRecord(context.payloads.map((payload) => payload.usage))
+      ?? firstRecord(context.payloads.map((payload) => recordValue(payload.message)?.usage)),
+    errorMessage: parseAnthropicMessage(context) ?? parseUpstreamMessage(context) ?? streamFailureMessage,
+    streamFailureMessage
   }
 }
 
-function parseGeminiNativeProbeResponse(bodyText: string): ParsedModelCheckProbeResponse {
-  const json = parseJsonRecord(bodyText)
-  const events = parseSseJsonEvents(bodyText)
+function parseGeminiNativeProbeResponse(context: DiagnosticResponseContext): ParsedModelCheckProbeResponse {
+  const streamFailureMessage = parseGenericStreamFailureMessage(context.events)
   return {
-    json,
-    outputText: extractGeminiOutputText(json, events),
-    model: textValue(json?.model) ?? textValue(json?.modelVersion) ?? firstText(events.map((event) => event.json?.modelVersion)),
-    usage: recordValue(json?.usageMetadata) ?? firstRecord(events.map((event) => event.json?.usageMetadata)),
-    errorMessage: parseGeminiUpstreamMessage(bodyText) ?? parseUpstreamMessage(bodyText),
-    streamFailureMessage: parseGenericStreamFailureMessage(events)
+    json: context.record,
+    outputText: extractGeminiOutputText(context),
+    model: textValue(context.record?.model)
+      ?? textValue(context.record?.modelVersion)
+      ?? firstText(context.payloads.map((payload) => payload.modelVersion)),
+    usage: recordValue(context.record?.usageMetadata)
+      ?? firstRecord(context.payloads.map((payload) => payload.usageMetadata)),
+    errorMessage: parseGeminiMessage(context) ?? parseUpstreamMessage(context) ?? streamFailureMessage,
+    streamFailureMessage
   }
 }
 
-function extractOpenAIChatOutputText(json: Record<string, unknown> | undefined, events: SseJsonEvent[]): string | undefined {
-  const direct = extractOpenAIChatChoicesText(json, 'message')
+function extractOpenAIResponsesOutputText(context: DiagnosticResponseContext): string | undefined {
+  const direct = extractOpenAIResponsePayloadText(context.record)
   if (direct) return direct
-  const chunks = events
-    .map((event) => extractOpenAIChatChoicesText(event.json, 'delta'))
-    .filter((value): value is string => Boolean(value))
+  const chunks: string[] = []
+  for (const event of context.events) {
+    const payload = event.json
+    const type = textValue(payload?.type) ?? event.event
+    if (type === 'response.output_text.delta' || type === 'response.refusal.delta') {
+      const delta = textValue(payload?.delta)
+      if (delta) chunks.push(delta)
+    }
+    if (type === 'response.output_text.done') {
+      const text = textValue(payload?.text)
+      if (text) return text
+    }
+    if (type === 'response.completed' || type === 'response.done') {
+      const text = extractOpenAIResponsePayloadText(recordValue(payload?.response))
+      if (text) return text
+    }
+  }
   return joinedText(chunks)
+}
+
+function extractOpenAIResponsePayloadText(payload: Record<string, unknown> | undefined): string | undefined {
+  const direct = textValue(payload?.output_text)
+  if (direct) return direct
+  const output = Array.isArray(payload?.output) ? payload.output : []
+  return joinedText(output.flatMap((item) => {
+    const content = recordValue(item)?.content
+    return Array.isArray(content)
+      ? content.map((entry) => textValue(recordValue(entry)?.text))
+      : []
+  }))
+}
+
+function extractOpenAIChatOutputText(context: DiagnosticResponseContext): string | undefined {
+  const direct = extractOpenAIChatChoicesText(context.record, 'message')
+  if (direct) return direct
+  return joinedText(context.payloads.map((payload) => extractOpenAIChatChoicesText(payload, 'delta')))
 }
 
 function extractOpenAIChatChoicesText(payload: Record<string, unknown> | undefined, field: 'message' | 'delta'): string | undefined {
   const choices = Array.isArray(payload?.choices) ? payload.choices : []
-  const parts: string[] = []
-  for (const choice of choices) {
+  return joinedText(choices.map((choice) => {
     const container = recordValue(recordValue(choice)?.[field])
-    const content = openAITextValue(container?.content) ?? openAITextValue(container?.reasoning_content) ?? openAITextValue(container?.refusal)
-    if (content) parts.push(content)
-  }
-  return joinedText(parts)
+    return openAITextValue(container?.content)
+      ?? openAITextValue(container?.reasoning_content)
+      ?? openAITextValue(container?.refusal)
+  }))
 }
 
-function extractGeminiOutputText(json: Record<string, unknown> | undefined, events: SseJsonEvent[]): string | undefined {
-  const direct = extractGeminiCandidateText(json)
+function extractAnthropicOutputText(context: DiagnosticResponseContext): string | undefined {
+  const content = Array.isArray(context.record?.content) ? context.record.content : []
+  const direct = joinedText(content.map((item) => textValue(recordValue(item)?.text)))
   if (direct) return direct
-  return joinedText(events.map((event) => extractGeminiCandidateText(event.json)).filter((value): value is string => Boolean(value)))
+  return joinedText(context.payloads.map((payload) => textValue(recordValue(payload.delta)?.text)))
 }
 
-function extractGeminiCandidateText(payload: Record<string, unknown> | undefined): string | undefined {
-  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
-  const parts: string[] = []
+function extractGeminiOutputText(context: DiagnosticResponseContext): string | undefined {
+  return joinedText(context.payloads.map(extractGeminiCandidateText))
+}
+
+function extractGeminiCandidateText(payload: Record<string, unknown>): string | undefined {
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+  const parts: Array<string | undefined> = []
   for (const candidate of candidates) {
     const content = recordValue(recordValue(candidate)?.content)
     const contentParts = Array.isArray(content?.parts) ? content.parts : []
-    for (const part of contentParts) {
-      const text = textValue(recordValue(part)?.text)
-      if (text) parts.push(text)
-    }
+    for (const part of contentParts) parts.push(textValue(recordValue(part)?.text))
   }
   return joinedText(parts)
 }
 
-function parseGeminiUpstreamMessage(bodyText: string): string | undefined {
-  const json = parseJsonRecord(bodyText)
-  const error = recordValue(json?.error)
-  return textValue(error?.message) || textValue(error?.status) || textValue(json?.message)
-}
-
-function parseGenericStreamFailureMessage(events: SseJsonEvent[]): string | undefined {
-  for (const event of events) {
-    const error = recordValue(event.json?.error)
-    const message = textValue(error?.message) || textValue(error?.code) || textValue(event.json?.message)
+function parseUpstreamMessage(context: DiagnosticResponseContext): string | undefined {
+  for (const payload of context.payloads) {
+    const error = recordValue(payload.error) ?? recordValue(recordValue(payload.response)?.error)
+    const message = parseErrorMessage(error) ?? textValue(payload.message)
     if (message) return message
   }
   return undefined
 }
 
-interface SseJsonEvent {
-  event: string
-  json?: Record<string, unknown>
+function parseAnthropicMessage(context: DiagnosticResponseContext): string | undefined {
+  for (const payload of context.payloads) {
+    const message = textValue(recordValue(payload.error)?.message) ?? textValue(payload.message)
+    if (message) return message
+  }
+  return undefined
 }
 
-function parseSseJsonEvents(text: string): SseJsonEvent[] {
-  const events: SseJsonEvent[] = []
-  const blocks = text.split(/\r?\n\r?\n/)
-  for (const block of blocks) {
-    const lines = block.split(/\r?\n/)
-    let event = ''
-    const dataLines: string[] = []
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        event = line.slice(6).trim()
-      } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart())
-      }
-    }
-    const data = dataLines.join('\n').trim()
-    if (!data || data === '[DONE]') continue
-    const parsed = parseJsonTextRecord(data)
-    events.push({ event, json: parsed })
+function parseGeminiMessage(context: DiagnosticResponseContext): string | undefined {
+  for (const payload of context.payloads) {
+    const error = recordValue(payload.error)
+    const message = textValue(error?.message) ?? textValue(error?.status) ?? textValue(payload.message)
+    if (message) return message
   }
-  return events
+  return undefined
 }
 
-function parseJsonTextRecord(text: string): Record<string, unknown> | undefined {
-  try {
-    return recordValue(JSON.parse(text) as unknown)
-  } catch {
-    return undefined
+function parseOpenAIStreamFailureMessage(context: DiagnosticResponseContext): string | undefined {
+  for (const event of context.events) {
+    const type = textValue(event.json?.type) ?? event.event
+    if (type !== 'response.failed' && type !== 'response.incomplete' && type !== 'error') continue
+    return parseErrorMessage(event.json?.error)
+      ?? parseErrorMessage(recordValue(event.json?.response)?.error)
+      ?? parseErrorMessage(event.json)
+      ?? type
   }
+  return undefined
+}
+
+function parseAnthropicStreamFailureMessage(context: DiagnosticResponseContext): string | undefined {
+  const event = context.events.find((item) => item.event === 'error')
+  return event ? parseAnthropicMessage({ ...context, payloads: event.json ? [event.json] : [] }) ?? 'Anthropic 流式响应失败' : undefined
+}
+
+function parseGenericStreamFailureMessage(events: readonly DiagnosticSseEvent[]): string | undefined {
+  for (const event of events) {
+    const error = recordValue(event.json?.error)
+    const message = textValue(error?.message) ?? textValue(error?.code) ?? textValue(event.json?.message)
+    if (message) return message
+  }
+  return undefined
+}
+
+function parseErrorMessage(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined
+  const record = recordValue(value)
+  return textValue(record?.message) ?? textValue(record?.code) ?? textValue(record?.type)
 }
 
 function openAITextValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value.trim() || undefined
   if (!Array.isArray(value)) return undefined
-  const parts = value
-    .map((item) => textValue(recordValue(item)?.text))
-    .filter((item): item is string => Boolean(item))
-  return joinedText(parts)
+  return joinedText(value.map((item) => textValue(recordValue(item)?.text)))
 }
 
 function firstText(values: unknown[]): string | undefined {

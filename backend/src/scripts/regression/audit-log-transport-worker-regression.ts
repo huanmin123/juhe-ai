@@ -81,7 +81,7 @@ try {
   assert.equal(runtime.completedCount, 4, '四条审计编码任务应全部完成')
   assert.equal(runtime.failedCount, 0, '审计编码任务不应失败')
 
-  console.log('审计传输 worker 回归通过：最终 codec 输出严格受 4MiB 约束，大正文保留 256KB 头尾窗口和 JSON 结构摘要')
+  console.log('审计传输 worker 回归通过：最终 codec 输出严格受 4MiB 约束，大正文只保留 256KB 头尾窗口和传输元数据')
 } finally {
   await stopAuditLogTransportWorker()
 }
