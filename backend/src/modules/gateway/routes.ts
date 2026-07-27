@@ -801,7 +801,7 @@ export async function handleOpenAIGatewayRequest(
         ) {
           return 'continue'
         }
-        if (deadline.schedulingPreference === 'cost_first' || deadline.limitingFactor === 'wall_precommit') {
+        if (deadline.limitingFactor === 'wall_precommit') {
           return 'abort'
         }
         if (!normalRouteSpeedFirstConfig) {
@@ -915,6 +915,9 @@ export async function handleOpenAIGatewayRequest(
           precheckHalfOpenEligible === true,
           {
             scope: 'gateway_request',
+            timeoutPolicy: currentPreflight.gatewayRequestWallBudget.unbounded
+              ? 'codex_compaction_unbounded'
+              : undefined,
             serverRetryBudget: currentPreflight.serverRetryBudget,
             gatewayRequestWallBudget: currentPreflight.gatewayRequestWallBudget,
             routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
@@ -935,27 +938,6 @@ export async function handleOpenAIGatewayRequest(
         }
         if (error instanceof NormalRouteFirstByteCutoverError) {
           streamServerRetryExcludedAccountIds.add(error.accountId)
-          if (error.deadline.schedulingPreference === 'cost_first') {
-            exhaustedAccountIds.add(error.accountId)
-            const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
-            auditCapture.addGatewayMetadata({
-              label: 'normal_route_cost_first_first_byte_cutover',
-              metadata: {
-                accountId: error.accountId,
-                configuredDeadlineMs: error.deadline.configuredDeadlineMs,
-                effectiveDeadlineMs: error.deadline.effectiveDeadlineMs,
-                limitingFactor: error.deadline.limitingFactor,
-                responseHeadersReceived: false,
-                remainingCandidateCount: remainingAccounts.length
-              }
-            })
-            if (remainingAccounts.length > 0) continue
-            const fallbackSwitch = await switchToFallbackGroup('normal_route_cost_first_first_byte_exhausted')
-            if (fallbackSwitch === 'completed') return
-            if (fallbackSwitch === 'switched') continue
-            throw new UpstreamAttemptError(error.message, undefined, [error.accountId])
-          }
-
           speedFirstByteRetryCount += 1
           const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
           const maxRetries = normalRouteSpeedFirstConfig?.maxFirstByteRetriesPerRequest ?? 0
@@ -1447,44 +1429,6 @@ export async function handleOpenAIGatewayRequest(
             await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
           }
           if (requestExecutionSignal.aborted || res.destroyed) {
-            return
-          }
-          if (
-            handledResponse.retryReason === 'normal_route_first_byte_timeout'
-            && normalRouteFirstByteConfig?.schedulingPreference === 'cost_first'
-          ) {
-            streamServerRetryExcludedAccountIds.add(account.id)
-            exhaustedAccountIds.add(account.id)
-            const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
-            auditCapture.addGatewayMetadata({
-              label: 'normal_route_cost_first_first_byte_cutover',
-              metadata: {
-                accountId: account.id,
-                configuredDeadlineMs: normalRouteFirstByteDeadline?.configuredDeadlineMs,
-                effectiveDeadlineMs: normalRouteFirstByteDeadline?.effectiveDeadlineMs,
-                limitingFactor: normalRouteFirstByteDeadline?.limitingFactor,
-                remainingCandidateCount: remainingAccounts.length
-              }
-            })
-            if (remainingAccounts.length > 0) {
-              continue
-            }
-            const fallbackSwitch = await switchToFallbackGroup('normal_route_cost_first_first_byte_exhausted')
-            if (fallbackSwitch === 'completed') return
-            if (fallbackSwitch === 'switched') continue
-            await sendStreamServerRetryExhaustedResponse({
-              req,
-              res,
-              auditCapture,
-              usageContext: gatewayUsageContext,
-              startedAt,
-              retryReason: handledResponse.retryReason,
-              message: handledResponse.message,
-              errorCode: handledResponse.errorCode,
-              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
-              accountId: account.id,
-              clientStrategy
-            })
             return
           }
           if (handledResponse.retryReason === 'normal_route_first_byte_timeout') {

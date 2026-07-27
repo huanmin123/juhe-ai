@@ -105,7 +105,7 @@ function mockRouteStrategySummary(input: {
     status: input.status,
     isDefault: false,
     normalRoutingConfig: input.mode === 'normal'
-      ? input.normalRoutingConfig ?? { schedulingPreference: 'cost_first', firstByteDeadlineMs: 10_000 }
+      ? input.normalRoutingConfig ?? { schedulingPreference: 'cost_first' }
       : undefined,
     groupBindings: bindings.map((binding, index) => ({
       id: `mock_route_strategy_group_${index + 1}`,

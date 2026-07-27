@@ -64,6 +64,7 @@
 | 运行阶段 | 请求前 | 原生 Responses 可透传官方字段 |
 | 桥接层 | Responses -> Chat bridge | 目标设计中由网关托管 `previous_response_id` 和自有 compact envelope；上游仍只看到 Chat messages |
 | 内部摘要调度 | 当前分组 + 当前供应商 | 摘要请求按普通调度链路选可用账户、切号、统计和审计；禁止跨分组、跨供应商和递归 compact |
+| 混合协议层 | Responses -> Anthropic Messages / Gemini GenerateContent | 普通 Responses 转换已存在；compact 候选会受控排除，不能把普通 Messages/GenerateContent 输出宣称为原生 compaction item，相关能力需另行实现 |
 
 ## 当前范围
 
@@ -246,6 +247,19 @@ Chat-only bridge 的 compact 输出是网关自有 envelope，不是上游原生
 - 内部摘要请求的输入需要有 token / 字节上限；超限时先按策略保留最近轮次和工具状态，再摘要旧历史，不能把超大上下文一次性塞给上游。
 - 所有 compact 相关列表、审计详情或排障接口都按现有 offset / limit / 窗口读取边界处理。
 - 大请求体解析继续遵守当前 `/v1` raw body hard limit、文本 lane 上限和 worker 解析阈值。
+
+### 压缩请求生命周期与超时边界
+
+`POST /responses/compact` 以及有效 JSON 中带 `compaction_trigger` 的 Codex `POST /responses` 是模型压缩作业，不得沿用普通文本请求的响应速度门禁。识别发生在公共预检阶段，并通过显式请求协调策略跨越模型映射和协议改写；不能只依赖派发时看到的最终路径。
+
+- 不应用 `GatewayRequestWallBudget` 总墙钟，不在候选决策点因为 270 秒文本墙钟 handoff 客户端。
+- 不创建普通路由 `firstByteDeadlineMs`、speed-first 首字观察、响应头/首响应 hard timeout、首字/首 chunk/首语义输出 timer、precommit deadline 或未提交 attempt 最大生命周期 timer。
+- Chat-only `/responses/compact` 改写成内部非流式 `/v1/chat/completions` 后，必须继续携带 `codex_compaction_unbounded`，不能因路径变化恢复普通时限。
+- 上游开始返回原始字节后仍应用 raw stream idle timeout，用于识别已经开始传输但连接停止活动的断链；它不是首字或总墙钟限制。
+- 客户端主动断开仍立即取消；明确上游 HTTP 失败、真实网络断开、compact 协议契约失败、候选耗尽和零可派发等待预算仍按原规则结束请求。
+- 请求体 hard limit、compact 输出契约和审计正文容量规则保持不变；“无限时”不等于无限内存、无限正文或忽略协议错误。
+
+大 JSON 必须在构造普通墙钟和首字策略前可靠识别 `compaction_trigger`。body metadata scanner 对有效 JSON 的顶层 `input[]` 直接 item 做线性、字符串感知扫描，不能只扫描首尾固定窗口，也不能把 metadata、工具 schema、消息内部对象或字符串中的同名值误判为压缩入口。
 
 ## 错误处理
 

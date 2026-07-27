@@ -51,6 +51,7 @@ export interface GatewayRequestBodyState {
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
+  compactionTrigger?: boolean
 }
 
 export type GatewayRawBodyRequest = Request & {
@@ -99,6 +100,7 @@ export function createGatewayRequestBodyState(input: {
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
+  compactionTrigger?: boolean
 }): GatewayRequestBodyState {
   const contentType = String(input.contentType ?? '')
   const parsedBody = typeof input.parsedBody === 'object' && input.parsedBody !== null
@@ -119,7 +121,8 @@ export function createGatewayRequestBodyState(input: {
     imageGeneration: input.imageGeneration ?? (
       imageInspection ? imageInspection.imageToolCount > 0 || imageInspection.forcedImageGeneration : false
     ),
-    imageGenerationForced: input.imageGenerationForced ?? imageInspection?.forcedImageGeneration ?? false
+    imageGenerationForced: input.imageGenerationForced ?? imageInspection?.forcedImageGeneration ?? false,
+    compactionTrigger: input.compactionTrigger
   }
 }
 
@@ -234,7 +237,8 @@ export function buildGatewayRequestBodySummary(req: Request): Record<string, unk
       model: state.model ?? (typeof req.body?.model === 'string' ? req.body.model : undefined),
       stream: state.stream ?? (typeof req.body?.stream === 'boolean' ? req.body.stream : undefined),
       imageGeneration: state.imageGeneration,
-      imageGenerationForced: state.imageGenerationForced
+      imageGenerationForced: state.imageGenerationForced,
+      compactionTrigger: state.compactionTrigger
     }
   }
 }

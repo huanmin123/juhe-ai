@@ -21,13 +21,11 @@ export interface CodexCompactionContractMismatchInput extends CodexCompactionCon
   message?: string
 }
 
-const codexCompactionRawBodyScanEdgeBytes = 64 * 1024
-const codexCompactionRequestSearchPattern = /"type"\s*:\s*"compaction_trigger"/
-
 export function codexCompactionExpectedForRequest(req: Request): boolean {
   if (req.method.toUpperCase() !== 'POST') return false
   const normalizedPath = normalizedOpenAIRequestPath(req)
   if (normalizedPath === '/responses/compact') return true
+  if (normalizedPath === '/responses' && getGatewayRequestBodyState(req)?.compactionTrigger === true) return true
   return normalizedPath === '/responses' && requestBodyHasCompactionTrigger(req)
 }
 
@@ -90,24 +88,10 @@ function isCodexDeserializableCompactionItem(item: Record<string, unknown> | und
 
 function requestBodyHasCompactionTrigger(req: Request): boolean {
   const parsedBody = parsedJsonObjectBody(req)
-  if (parsedBody && jsonValueHasCompactionTrigger(parsedBody)) {
+  if (parsedBody && responsesInputHasCompactionTrigger(parsedBody)) {
     return true
   }
-  const bodyState = getGatewayRequestBodyState(req)
-  const rawBody = (req as GatewayRawBodyRequest).rawBody
-  if (!rawBody || rawBody.length === 0 || bodyState?.isJson === false) {
-    return false
-  }
-  if (rawBody.length <= codexCompactionRawBodyScanEdgeBytes * 2) {
-    return codexCompactionRequestSearchPattern.test(rawBody.toString('utf8'))
-  }
-  const prefix = rawBody.subarray(0, codexCompactionRawBodyScanEdgeBytes).toString('utf8')
-  if (codexCompactionRequestSearchPattern.test(prefix)) {
-    return true
-  }
-  const tailStart = Math.max(0, rawBody.length - codexCompactionRawBodyScanEdgeBytes)
-  const suffix = rawBody.subarray(tailStart).toString('utf8')
-  return codexCompactionRequestSearchPattern.test(suffix)
+  return false
 }
 
 function parsedJsonObjectBody(req: Request): Record<string, unknown> | undefined {
@@ -121,35 +105,17 @@ function parsedJsonObjectBody(req: Request): Record<string, unknown> | undefined
   return undefined
 }
 
-function jsonValueHasCompactionTrigger(value: unknown, depth = 0, seen = new WeakSet<object>()): boolean {
-  if (depth > 8) return false
-  if (typeof value !== 'object' || value === null) return false
-  if (seen.has(value)) return false
-  seen.add(value)
-  if (Array.isArray(value)) {
-    const length = Math.min(value.length, 500)
-    for (let index = 0; index < length; index += 1) {
-      const item = dataDescriptorValue(value, String(index))
-      if (item.exists && jsonValueHasCompactionTrigger(item.value, depth + 1, seen)) {
-        return true
-      }
-    }
-    return false
-  }
-  const record = value as Record<string, unknown>
-  const typeField = dataDescriptorValue(record, 'type')
-  if (typeField.exists && typeField.value === 'compaction_trigger') {
-    return true
-  }
-  let visited = 0
-  for (const key in record) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) continue
-    if (visited >= 200) break
-    visited += 1
-    const child = dataDescriptorValue(record, key)
-    if (child.exists && jsonValueHasCompactionTrigger(child.value, depth + 1, seen)) {
-      return true
-    }
+function responsesInputHasCompactionTrigger(body: Record<string, unknown>): boolean {
+  const input = dataDescriptorValue(body, 'input')
+  if (!input.exists || !Array.isArray(input.value)) return false
+  const length = input.value.length
+  for (let index = 0; index < length; index += 1) {
+    const item = dataDescriptorValue(input.value, String(index))
+    if (!item.exists) continue
+    const record = objectValue(item.value)
+    if (!record) continue
+    const type = dataDescriptorValue(record, 'type')
+    if (type.exists && type.value === 'compaction_trigger') return true
   }
   return false
 }

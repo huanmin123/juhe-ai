@@ -11,6 +11,8 @@ const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disable
 
 assertStatus('可调度账户', accountFixture(), '可调度', 'green')
 const activeAccountMenuItems = accountMenuItems(accountFixture())
+const manualIsolationIndex = activeAccountMenuItems.findIndex((item) => item.key === 'manual-isolate')
+const disableAccountIndex = activeAccountMenuItems.findIndex((item) => item.key === 'toggle-status')
 assertTrue(
   activeAccountMenuItems.some((item) => (
     item.key === 'manual-isolate'
@@ -21,6 +23,16 @@ assertTrue(
     && !item.confirmOkText
   )),
   '正常自有账户应显示无需二次确认的人工隔离操作'
+)
+assertTrue(
+  manualIsolationIndex >= 0 && disableAccountIndex === manualIsolationIndex + 1,
+  '人工隔离必须紧邻并位于停用账户之前'
+)
+assertTrue(
+  activeAccountMenuItems[disableAccountIndex]?.icon === 'stop'
+    && activeAccountMenuItems[disableAccountIndex]?.tone === 'danger'
+    && activeAccountMenuItems[disableAccountIndex]?.danger === true,
+  '停用账户必须使用独立停止图标和红色危险态'
 )
 assertTrue(
   !accountMenuItems(accountFixture({ accessType: 'authorized' })).some((item) => item.key === 'manual-isolate'),

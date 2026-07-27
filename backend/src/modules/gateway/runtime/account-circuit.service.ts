@@ -77,6 +77,7 @@ export interface PrepareGatewayAccountCircuitAttemptInput {
   requestLane: OpenAIGatewayRequestLane
   model: string | undefined
   confirmationLeaseDurationMs: number
+  confirmationEligible?: boolean
   confirmationFailuresRequired?: number
   confirmation?: GatewayAccountCircuitConfirmation
   failureEvidenceKey?: string
@@ -359,6 +360,12 @@ export class GatewayAccountCircuitService {
     }
 
     if (input.confirmation) {
+      if (input.confirmationEligible === false) {
+        await this.completeConfirmation(input.confirmation, 'unknown')
+        const state = await this.store.get(scope, this.now())
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
       if (
         input.confirmation.scopeKey !== expectedScopeKey
         || input.confirmation.accountRuntimeKey !== scope.accountRuntimeKey
@@ -427,6 +434,10 @@ export class GatewayAccountCircuitService {
       }
     }
     if (state.phase === 'SUSPECT' && state.dispatchRevision === dispatchRevision) {
+      if (input.confirmationEligible === false) {
+        observeBlockedCircuitDispatch(state)
+        return { outcome: 'blocked', state }
+      }
       const confirmationEvidenceKey = normalizedFailureEvidenceKey(input.failureEvidenceKey)
       if (!confirmationEvidenceKey || sameRequestFailureEvidence(state, confirmationEvidenceKey)) {
         observeBlockedCircuitDispatch(state)

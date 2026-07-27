@@ -4,7 +4,7 @@ import type { GatewayTimeoutProfile } from '../../modules/gateway/policy/timeout
 import { AnthropicStreamInspector } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { GeminiStreamInspector } from '../../modules/gateway/protocols/gemini-v1beta/stream-inspection.js'
 import { OpenAIStreamInspector } from '../../modules/gateway/protocols/openai-v1/stream-inspection.js'
-import { buildStreamReadPlan } from '../../modules/gateway/response/stream-read-plan.js'
+import { buildGatewayStreamReadPlan, buildStreamReadPlan } from '../../modules/gateway/response/stream-read-plan.js'
 
 const textProfile: GatewayTimeoutProfile = {
   firstResponseTimeoutMs: 120_000,
@@ -20,6 +20,7 @@ const imageProfile: GatewayTimeoutProfile = {
   uncommittedAttemptMaxLifetimeMs: 3_600_000,
   noAvailableAccountWaitMs: 270_000
 }
+const compactProfile: GatewayTimeoutProfile = { ...textProfile, timeoutsDisabled: true }
 
 const now = Date.now()
 const activeStreamStatus = {
@@ -106,6 +107,27 @@ const imageActivePlan = buildStreamReadPlan(imageProfile, now, {
   parserSkipped: false
 }, now)
 assert.equal(imageActivePlan.timeoutMs, 120_000, '图像 lane 活动流应使用 120 秒 idle profile')
+
+const compactFirstChunkPlan = buildGatewayStreamReadPlan(compactProfile, now - 600_000, {
+  waitingForFirstChunk: true,
+  lastUpstreamActivityAt: now - 600_000,
+  upstreamChunkReceived: false,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(compactFirstChunkPlan, undefined, '压缩请求首段和首个有效结果不得受文本首响应或 attempt 生命周期限制')
+
+const compactIdlePlan = buildGatewayStreamReadPlan(compactProfile, now - 600_000, {
+  waitingForFirstChunk: false,
+  lastUpstreamActivityAt: now - 31_000,
+  upstreamChunkReceived: true,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(compactIdlePlan?.timeoutKind, 'upstream_activity', '压缩流开始传输后仍应保留 raw idle 死连接保护')
+assert.equal(compactIdlePlan?.deadlineExceeded, true, '压缩流无新数据超过 idle 时限后必须释放连接和并发槽')
 
 assertProtocolPendingEvent(new OpenAIStreamInspector(), 'OpenAI')
 assertProtocolPendingEvent(new AnthropicStreamInspector(), 'Anthropic')

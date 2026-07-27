@@ -120,6 +120,7 @@ try {
         base_url: upstreamOrigin
       },
       groupId: group.id,
+      supportedModels: ['gemini-3.5-flash'],
       priority: 0,
       status: 'active',
       schedulable: true
@@ -135,6 +136,7 @@ try {
         base_url: upstreamOrigin
       },
       groupId: group.id,
+      supportedModels: ['gemini-3.5-flash'],
       priority: 10,
       status: 'active',
       schedulable: true
@@ -222,6 +224,7 @@ try {
         base_url: `${upstreamOrigin}/v1beta/openai`
       },
       groupId: openAIChatGroup.id,
+      supportedModels: ['gemini-3.5-flash'],
       status: 'active',
       schedulable: true
     }, access)
@@ -275,6 +278,7 @@ try {
         base_url: upstreamOrigin
       },
       groupId: openAIChatRootGroup.id,
+      supportedModels: ['gemini-3.5-flash'],
       status: 'active',
       schedulable: true
     }, access)
@@ -300,6 +304,7 @@ try {
         base_url: upstreamOrigin
       },
       groupId: glmBridgeGroup.id,
+      supportedModels: ['glm-5.2'],
       status: 'active',
       schedulable: true
     }, access)

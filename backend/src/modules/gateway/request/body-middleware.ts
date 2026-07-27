@@ -250,6 +250,7 @@ export async function captureGatewayRawBody(
           maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced,
+          compactionTrigger: metadata.compactionTrigger,
           invalidJson: metadata.invalidJson
         }
         if (rawBody.length > gatewayJsonBodyLargeWarningBytes) {
@@ -267,7 +268,8 @@ export async function captureGatewayRawBody(
           reasoningEffort: metadata.reasoningEffort,
           maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
-          imageGenerationForced: metadata.imageGenerationForced
+          imageGenerationForced: metadata.imageGenerationForced,
+          compactionTrigger: metadata.compactionTrigger
         })
         req.body = undefined
         if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {

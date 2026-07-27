@@ -9,6 +9,7 @@ export interface GatewayJsonBodyMetadata {
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
+  compactionTrigger?: boolean
   invalidJson?: boolean
 }
 
@@ -27,6 +28,10 @@ interface JsonToolInspectionReadResult {
   nextIndex: number
   inspection: ImageGenerationToolInspection
   required?: boolean
+}
+
+interface JsonCompactionInputReadResult extends JsonReadResult {
+  found: boolean
 }
 
 export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBodyMetadata {
@@ -135,6 +140,11 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
         metadata.invalidJson = metadata.invalidJson || !skipped.ok
         index = skipped.nextIndex
       }
+    } else if (key.value === 'input') {
+      const result = inspectJsonCompactionInput(rawBody, index)
+      metadata.compactionTrigger = result.found
+      metadata.invalidJson = metadata.invalidJson || !result.ok
+      index = result.nextIndex
     } else if (key.value === 'type') {
       const value = readJsonStringToken(rawBody, index)
       if (value) {
@@ -197,7 +207,70 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
   }
   metadata.imageGeneration = inspection.imageToolCount > 0 || inspection.forcedImageGeneration
   metadata.imageGenerationForced = inspection.forcedImageGeneration
+  metadata.compactionTrigger = !metadata.invalidJson && metadata.compactionTrigger === true
   return metadata
+}
+
+function inspectJsonCompactionInput(rawBody: Buffer, index: number): JsonCompactionInputReadResult {
+  index = skipJsonWhitespace(rawBody, index)
+  if (rawBody[index] !== jsonArrayOpenByte) {
+    const skipped = skipJsonValue(rawBody, index)
+    return { ...skipped, found: false }
+  }
+  index += 1
+  let found = false
+  while (index < rawBody.length) {
+    index = skipJsonWhitespace(rawBody, index)
+    if (rawBody[index] === jsonArrayCloseByte) {
+      return { nextIndex: index + 1, ok: true, found }
+    }
+    if (rawBody[index] === jsonCommaByte) {
+      index += 1
+      continue
+    }
+    const item = inspectJsonCompactionInputItem(rawBody, index)
+    if (!item.ok) return { ...item, found }
+    found = found || item.found
+    index = item.nextIndex
+  }
+  return { nextIndex: rawBody.length, ok: false, found }
+}
+
+function inspectJsonCompactionInputItem(rawBody: Buffer, index: number): JsonCompactionInputReadResult {
+  index = skipJsonWhitespace(rawBody, index)
+  if (rawBody[index] !== jsonObjectOpenByte) {
+    const skipped = skipJsonValue(rawBody, index)
+    return { ...skipped, found: false }
+  }
+  index += 1
+  let found = false
+  while (index < rawBody.length) {
+    index = skipJsonWhitespace(rawBody, index)
+    if (rawBody[index] === jsonObjectCloseByte) {
+      return { nextIndex: index + 1, ok: true, found }
+    }
+    if (rawBody[index] === jsonCommaByte) {
+      index += 1
+      continue
+    }
+    const key = readJsonStringToken(rawBody, index)
+    if (!key) return { nextIndex: rawBody.length, ok: false, found }
+    index = skipJsonWhitespace(rawBody, key.nextIndex)
+    if (rawBody[index] !== jsonColonByte) return { nextIndex: rawBody.length, ok: false, found }
+    index = skipJsonWhitespace(rawBody, index + 1)
+    if (key.value === 'type') {
+      const value = readJsonStringToken(rawBody, index)
+      if (value) {
+        found = value.value === 'compaction_trigger'
+        index = value.nextIndex
+        continue
+      }
+    }
+    const skipped = skipJsonValue(rawBody, index)
+    if (!skipped.ok) return { ...skipped, found }
+    index = skipped.nextIndex
+  }
+  return { nextIndex: rawBody.length, ok: false, found }
 }
 
 function readJsonObjectStringProperty(

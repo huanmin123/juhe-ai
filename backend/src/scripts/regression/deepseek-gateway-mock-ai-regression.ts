@@ -85,6 +85,7 @@ const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: DeepSeekUpstreamHit[] = []
 const privateDeepSeekModel = 'deepseek-private-models-key-only'
 const protocolShapeOnly = process.argv.includes('--protocol-shape-only')
+const compactFirstResponseDelayMs = 10_200
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -105,6 +106,8 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}`
 
     assertDeepSeekSeeds()
+    repositories.updateSettings({ textFirstResponseTimeoutSeconds: 10 })
+    gatewayCache.clearGatewayRuntimeCache()
     catalogService.saveCustomProviderModel({
       providerCode: DEEPSEEK_PROVIDER_CODE,
       model: privateDeepSeekModel,
@@ -1098,6 +1101,7 @@ async function assertDeepSeekCodexResponsesBridgeRejectsUnknownPreviousResponseI
 
 async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
+  const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses/compact`, {
     method: 'POST',
     headers: {
@@ -1123,6 +1127,7 @@ async function assertDeepSeekCodexResponsesBridgeGatewaySummaryCompact(baseUrl: 
     })
   })
   const text = await response.text()
+  assert(Date.now() - startedAt >= compactFirstResponseDelayMs, 'compact bridge 回归必须真实跨过配置的首响应超时阈值')
   assert.equal(response.status, 200, `DeepSeek Codex bridge /responses/compact 应返回网关摘要，实际 HTTP ${response.status}: ${text}`)
   const payload = JSON.parse(text) as { id?: unknown; object?: unknown; created_at?: unknown; output?: Array<Record<string, unknown>> }
   assert.equal(payload.object, 'response.compaction', '/responses/compact 应返回 OpenAI CompactResource 兼容 object')
@@ -1756,28 +1761,35 @@ function createDeepSeekMockUpstream(): http.Server {
         }))
         return
       }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({
-        id: 'chatcmpl-deepseek-json',
-        object: 'chat.completion',
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: 'assistant',
-              reasoning_content: 'deepseek json reasoning',
-              content: 'deepseek json ok'
-            },
-            finish_reason: 'stop'
+      const sendJsonResponse = () => {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'chatcmpl-deepseek-json',
+          object: 'chat.completion',
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: 'assistant',
+                reasoning_content: 'deepseek json reasoning',
+                content: 'deepseek json ok'
+              },
+              finish_reason: 'stop'
+            }
+          ],
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 80,
+            prompt_cache_hit_tokens: 640,
+            prompt_cache_miss_tokens: 360
           }
-        ],
-        usage: {
-          prompt_tokens: 1000,
-          completion_tokens: 80,
-          prompt_cache_hit_tokens: 640,
-          prompt_cache_miss_tokens: 360
-        }
-      }))
+        }))
+      }
+      if (bodyText.includes('compact this history')) {
+        setTimeout(sendJsonResponse, compactFirstResponseDelayMs).unref()
+        return
+      }
+      sendJsonResponse()
     })
   })
 }

@@ -85,6 +85,32 @@ const bridgeAccount = account('bridge', [{
   enabled: true
 }])
 const nativeAccount = account('native')
+const anthropicMappedAccount = {
+  ...account('anthropic-mapped', [{
+    sourceModel: model,
+    sourceEndpointFamily: 'responses',
+    upstreamModel: 'claude-sonnet',
+    upstreamEndpointFamily: 'messages',
+    enabled: true
+  }]),
+  providerCode: 'anthropic',
+  providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1'
+} as UpstreamAccount
+const geminiMappedAccount = {
+  ...account('gemini-mapped', [{
+    sourceModel: model,
+    sourceEndpointFamily: 'responses',
+    upstreamModel: 'gemini-pro',
+    upstreamEndpointFamily: 'generate_content',
+    enabled: true
+  }]),
+  providerCode: 'gemini',
+  providerProtocolProfileId: 'profile_gemini_native_v1beta',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta'
+} as UpstreamAccount
 const usageContext = {
   systemAccountId: 'sys_test',
   groupId: 'group_test',
@@ -223,6 +249,76 @@ await applyCodexResponsesContextStatePreflight({
 assert.equal(prepareCodexResponsesCompactDispatchForAccounts(mixedCompactReq, [bridgeAccount, nativeAccount]), false)
 assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, bridgeAccount), false)
 assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, nativeAccount), true)
+
+const convertedOnlyCompactReq = request({ model, input: 'Compact using the available bridge.' }, '/v1/responses/compact')
+await applyCodexResponsesContextStatePreflight({
+  req: convertedOnlyCompactReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(
+  prepareCodexResponsesCompactDispatchForAccounts(convertedOnlyCompactReq, [bridgeAccount, anthropicMappedAccount, geminiMappedAccount]),
+  true,
+  'Anthropic/Gemini 转换账号不得挤掉可生成合法 compaction item 的 Chat bridge'
+)
+assert.equal(codexResponsesContextAllowsAccount(convertedOnlyCompactReq, bridgeAccount), true)
+assert.equal(codexResponsesContextAllowsAccount(convertedOnlyCompactReq, anthropicMappedAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(convertedOnlyCompactReq, geminiMappedAccount), false)
+
+const nativeAndConvertedCompactReq = request({ model, input: 'Compact through native Responses.' }, '/v1/responses/compact')
+await applyCodexResponsesContextStatePreflight({
+  req: nativeAndConvertedCompactReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(
+  prepareCodexResponsesCompactDispatchForAccounts(nativeAndConvertedCompactReq, [nativeAccount, anthropicMappedAccount, geminiMappedAccount]),
+  false
+)
+assert.equal(codexResponsesContextAllowsAccount(nativeAndConvertedCompactReq, nativeAccount), true)
+assert.equal(codexResponsesContextAllowsAccount(nativeAndConvertedCompactReq, anthropicMappedAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(nativeAndConvertedCompactReq, geminiMappedAccount), false)
+
+const triggerReq = request({ model, input: [{ type: 'compaction_trigger' }] })
+await applyCodexResponsesContextStatePreflight({
+  req: triggerReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(codexResponsesContextAllowsAccount(triggerReq, nativeAccount), true)
+assert.equal(codexResponsesContextAllowsAccount(triggerReq, bridgeAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(triggerReq, anthropicMappedAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(triggerReq, geminiMappedAccount), false)
 
 const untouchedReq = request({ model, stream: true, input: 'Canonical request body.' })
 const untouchedBody = untouchedReq.body

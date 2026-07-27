@@ -14,7 +14,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   refreshing: boolean
   visible: boolean
 } {
-  if (!snapshot) return hiddenBalanceDisplay('pending')
+  if (!snapshot) return pendingBalanceDisplay('pending')
   if (snapshot.status === 'failed') {
     return { text: '余额查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false, visible: true }
   }
@@ -31,7 +31,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
     const amount = Number(snapshot.remainingUsd)
     return snapshot.remainingUsd !== undefined && Number.isFinite(amount)
       ? { text: formatUsdAmount(amount), tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
-      : hiddenBalanceDisplay('refreshing', true)
+      : pendingBalanceDisplay('refreshing', true)
   }
   const retryTooltip = transientFailureTooltip(snapshot, true)
   if (snapshot.status === 'unlimited') return { text: '不限额', tone: 'unlimited', tooltip: retryTooltip, refreshing: false, visible: true }
@@ -47,25 +47,31 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   }
   if (snapshot.status === 'pending' && snapshot.consecutiveTransientFailures) {
     return {
-      text: '',
+      text: '暂时无法查询',
       tone: 'pending',
       tooltip: snapshot.lastTransientErrorMessage,
       refreshing: false,
-      visible: false
+      visible: true
     }
   }
-  return hiddenBalanceDisplay('pending')
+  return pendingBalanceDisplay('pending')
 }
 
 function formatUsdAmount(amount: number): string {
   return `${amount < 0 ? '-' : ''}$${Math.abs(amount).toFixed(2)}`
 }
 
-function hiddenBalanceDisplay(
+function pendingBalanceDisplay(
   tone: 'pending' | 'refreshing',
   refreshing = false
 ): ReturnType<typeof formatAccountBalance> {
-  return { text: '', tone, tooltip: undefined, refreshing, visible: false }
+  return {
+    text: tone === 'refreshing' ? '查询中' : '待查询',
+    tone,
+    tooltip: undefined,
+    refreshing,
+    visible: true
+  }
 }
 
 function transientFailureTooltip(snapshot: AccountBalanceSnapshot, preservesResult: boolean): string | undefined {

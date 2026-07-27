@@ -8,7 +8,7 @@
 
 ### 实现状态快照（2026-07-23）
 
-当前代码已经包含真实网关 attempt 热质量生命周期、同层探索 credit / cursor、公共首字截止与墙钟裁剪、账户电路 memory / Redis adapter、控制面 ledger / bridge、受控恢复和有界路由观测摘要。dispatch revision 对 owner / authorized 实例原子 fan-out，投影保持单调并过滤旧 durable incident；控制面持久化失败使用有界批次、覆盖合并和 fail-closed 重建门禁。
+当前代码已经包含真实网关 attempt 热质量生命周期、同层探索 credit / cursor、速度优先首字截止与墙钟裁剪、账户电路 memory / Redis adapter、控制面 ledger / bridge、受控恢复和有界路由观测摘要。dispatch revision 对 owner / authorized 实例原子 fan-out，投影保持单调并过滤旧 durable incident；控制面持久化失败使用有界批次、覆盖合并和 fail-closed 重建门禁。
 
 此前基线已覆盖 Mock 并发与异常矩阵、隔离 Redis 多 adapter、临时 PostgreSQL 和前后端类型检查/构建；后续代码修复与远端同步完成后仍须按 PLAN-0172 在同一最终 SHA 重跑。最小真实账户探针尚未执行，临时 PostgreSQL 测试库清理仍待收口；生产部署、生产流量和 Redis 服务端高可用故障切换不在本次验证范围内。
 
@@ -81,7 +81,7 @@ API Key
 - `cost_first`：本文简称“普通模式”。优先尊重账户配置、会话亲和和稳定顺序，仅在账号已不可调度或当前请求证明确实失败时切换。
 - `speed_first`：本文简称“快速模式”。在硬约束和账户可用性通过后，路由层首字速度目标高于超级优先、账号优先级、备用、会话亲和与热质量；确认进入 `latency_degraded` 的账号可以被同分组未降级硬可承接账号越过。
 
-两者共用账户故障电路、短窗口可靠性、首字定义、计时起点和 `firstByteDeadlineMs`。配置截止只产生请求级调度结果，对 transport 电路、Key 状态和共享可靠性保持中性：普通模式可据此推进当前请求候选，快速模式还启用慢样本累计、`latency_degraded`、确认慢后切号和速度恢复探针。连接/读取失败与 lane hard timeout 才进入账户故障电路。
+两者共用账户故障电路和短窗口可靠性，但只有快速模式使用 `firstByteDeadlineMs`、首字定义和计时起点。该配置截止只产生请求级调度结果，对 transport 电路、Key 状态和共享可靠性保持中性，并启用慢样本累计、`latency_degraded`、确认慢后切号和速度恢复探针。普通模式不创建首字配置截止；连接/读取失败与 lane hard timeout 才进入账户故障电路。
 
 ### 3.3 路由结果内的三类事实
 
@@ -745,30 +745,30 @@ routeCoordinationBudget
 | 普通同账户安全原地重试 | 配置值（默认 3）作为整次请求共享 token；仅限可重放文本请求的主请求已开始、响应头前 transport failure；同账户兄弟 Key 先按请求内池唯一尝试且不消费 token，兄弟 Key 耗尽后才允许重试当前凭据；token 不按账户、Key、分组或 compact 阶段重置 |
 | matching-generation confirmation lease | 每个 incident 同时最多 1 个；与请求级安全原地重试 token 相互独立 |
 | 同优先级层本地可验证失败 | 同层所有唯一候选最多一轮；不设固定 2 账号上限 |
-| 路由首字观测 | `normalRoutingConfig.firstByteDeadlineMs`，普通模式和快速模式完全共用；默认 10 秒，范围 10–60 秒；到期只形成中性调度结果，不等于 lane hard timeout |
+| 路由首字观测 | `normalRoutingConfig.firstByteDeadlineMs`，仅快速模式使用；默认 30 秒，范围 10–60 秒；到期只形成中性调度结果，不等于 lane hard timeout |
 | 路由协调等待 | 一个 `routeCoordinationBudget`，初始最多 3 秒 |
-| 整请求墙钟总预算 | `GatewayRequestWallBudget` 不暂停；文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒。决策点到期 handoff 客户端重试重选；在途 attempt 不被另一 lane 的短时限机械取消 |
+| 整请求墙钟总预算 | `GatewayRequestWallBudget` 不暂停；普通文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒。Codex compact 明确豁免该墙钟。其他请求在决策点到期 handoff 客户端重试重选；在途 attempt 不被另一 lane 的短时限机械取消 |
 | 零可派发等待预算 | `ServerRetryBudget`，默认 270 秒累计，attempt/读取暂停 |
 
 同层规则：当前层内每个唯一 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的账号不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
 
 如果当前层所有账号已经处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有 account 电路已经建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
 
-普通路由在请求开始时只解析一次 `normalRoutingConfig.firstByteDeadlineMs`，普通模式、快速模式和同请求后续文本账号 attempt 都复用这个路由观察值。建议默认 10 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入公共 `normalRoutingConfig.firstByteDeadlineMs`，迁移完成后删除速度模式专属字段，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
+普通路由只在快速模式请求开始时解析一次 `normalRoutingConfig.firstByteDeadlineMs`，同请求后续文本账号 attempt 复用这个路由观察值；普通模式不创建该观察。默认 30 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入 `normalRoutingConfig.firstByteDeadlineMs`，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
 
 统一首字协议固定为：真实上游派发时启动一次计时；非流式以首个 body 字节、流式以首个可见语义 chunk 为首字；响应头、SSE heartbeat、空事件和内部缓冲不算；每个 attempt 只产生一次 `observed / deadline_reached / cancelled / unknown` 结果。任何账户层、响应处理层或快速模式都不能再创建第二个首字 timer。
 
-两种模式只对可重放文本生效，并在统一结果后的路由动作上不同：`cost_first` 在截止前严格保持超级优先、优先级和会话亲和；截止时仍无首字可由路由层形成一次 `normal_route_first_byte_timeout` 调度结果，并在安全窗口内推进候选。`speed_first` 在同一截止事件上先记录慢样本，是否切号仍由 `slowTriggerCount`、`latency_degraded`、下游提交状态和请求内切号上限裁决。无论哪种模式，该配置截止都不能上报 `timeout_before_complete` transport failure、推进 `SUSPECT/OPEN`、写 Key 失败、降低共享可靠性或投递恢复副作用；只有独立 lane hard timeout 保留这些传输语义。图片和其他副作用请求不创建该软截止事件。
+两种模式只对可重放普通文本生效，并在统一结果后的路由动作上不同：`cost_first` 在截止前严格保持超级优先、优先级和会话亲和；截止时仍无首字可由路由层形成一次 `normal_route_first_byte_timeout` 调度结果，并在安全窗口内推进候选。`speed_first` 在同一截止事件上先记录慢样本，是否切号仍由 `slowTriggerCount`、`latency_degraded`、下游提交状态和请求内切号上限裁决。无论哪种模式，该配置截止都不能上报 `timeout_before_complete` transport failure、推进 `SUSPECT/OPEN`、写 Key 失败、降低共享可靠性或投递恢复副作用；只有独立 lane hard timeout 保留这些传输语义。图片、其他副作用请求、`/responses/compact` 和带 `compaction_trigger` 的 Codex Responses 请求不创建该软截止事件。
 
 尝试身份按失败作用域更新：本地 Key 准备失败或用户显式 Key 级动作只加入 `attemptedKeyFingerprints`，允许同一账号尝试另一个未尝试 Key；真实上游 attempt 在派发前登记当前 `attemptedProtocolModelKey / attemptedPhysicalCredentialKey`，保持 model / lane / protocol 隔离并防止重复打入同一凭据；account 电路升级或用户显式 account 级动作加入实例级 `attemptedAccountRuntimeKeys`。完整非 `2xx` 或其他未交付结果会排除本请求当前候选并继续扫描，但不得据此写共享电路、热质量或账户状态。
 
-`routeCoordinationBudget` 是普通模式和快速模式共享的单一账户协调预算，统一累计：故障 attempt 结束后的租约等待、confirmation 结果后的重新选号、优先级层切换和零可派发等待。活跃上游 fetch、统一首字观察和响应读取期间暂停；不再存在“故障后切号等待”和“零可派发等待”两套预算。普通模式和快速模式都消费同一个首字观测事件；快速模式只额外使用 `slowTriggerCount`、`maxFirstByteRetriesPerRequest` 和未提交安全窗口决定动作。账户层或快速模式都不能创建第二个首字或协调等待计时器。
+`routeCoordinationBudget` 是普通模式和快速模式共享的单一账户协调预算，统一累计：故障 attempt 结束后的租约等待、confirmation 结果后的重新选号、优先级层切换和零可派发等待。活跃上游 fetch、快速模式首字观察和响应读取期间暂停；不再存在“故障后切号等待”和“零可派发等待”两套预算。只有快速模式消费首字观测事件，并使用 `slowTriggerCount`、`maxFirstByteRetriesPerRequest` 和未提交安全窗口决定动作；普通模式不创建该事件。账户层或快速模式都不能创建第二个首字或协调等待计时器。
 
 3 秒统一协调预算不替代、不缩短 `ServerRetryBudget`，更不替代 `GatewayRequestWallBudget`。协调预算到期时，如果存在可恢复账号，账户层返回 `temporarily_blocked` 及 `earliestRetryAtMs / confirmationInFlight`；如果只是本请求已经没有未尝试候选，则返回 `request_exhausted`；两者都不能伪装成 `hard_exhausted`。路由协调器再依据当前路由模式、后续分组、共享 `ServerRetryBudget` 与整请求墙钟预算决定等待、fallback 或最终 handoff 客户端。
 
 `ServerRetryBudget` 每个网关请求只创建一次，并且只有路由协调器能够启动、暂停和消费它。派发真实 attempt 前暂停；`routeCoordinationBudget` 运行时同步受它约束；跨账号、账户配置层、分组、主备和轮询环均不得重置。单次等待上限固定为 `min(routeCoordinationBudgetRemaining, ServerRetryBudgetRemaining, wallRemainingMs, max(0, earliestRetryAtMs - now))`。
 
-`GatewayRequestWallBudget` 是候选切换决策的更高层硬边界：即使还有未尝试好号，只要墙钟在决策点已到期，也必须 handoff 客户端，让客户端发起新请求重新选号。这与“有号可用却继续在服务端死磕到客户端超时”相对。墙钟耗尽不得写成账户硬耗尽，也不得阻止下一次客户端请求使用这些账号。图片等长耗时请求的 in-flight 等待由 lane 专用时限负责；未交付结果后是否启动下一 attempt 仍按统一预算裁决。
+`GatewayRequestWallBudget` 是普通请求候选切换决策的更高层硬边界：即使还有未尝试好号，只要墙钟在决策点已到期，也必须 handoff 客户端，让客户端发起新请求重新选号。这与“有号可用却继续在服务端死磕到客户端超时”相对。墙钟耗尽不得写成账户硬耗尽，也不得阻止下一次客户端请求使用这些账号。图片等长耗时请求的 in-flight 等待由 lane 专用时限负责；未交付结果后是否启动下一 attempt 仍按统一预算裁决。Codex compact 是显式例外：它使用 unbounded 请求墙钟，并同时关闭普通首字、首响应、precommit 和未提交 attempt 生命周期；仍保留客户端取消、明确上游失败、真实断链、协议契约和候选耗尽边界。
 
 预算状态至少包含 `requestId / budgetId / version / remainingMs / activeSinceMs / lastWaitToken`。同一请求的异步分支只能由 route coordinator 使用 `version` CAS 启停；每次等待携带幂等 `waitToken`，重复唤醒、取消回调或 fallback 回调不能重复扣减。账户层只能读取剩余值，不能创建、续期或消费预算。
 
@@ -946,7 +946,7 @@ gateway_request_wall_handoff_total
 26. 用户显式 `retry_next` 依次尝试完多个仍为 `CLOSED` 的账号：返回 `request_exhausted`，不重复扫描已尝试账号，也不把这些账号写成共享硬耗尽；副作用 lane 与文本共用统一候选去重和预算门禁。
 27. 旧 generation、错误 leaseId 或重复 transitionId 在新状态提交结果：全部被原子拒绝，不能改写 state、退避、恢复计数或 due 索引。
 28. `OPEN` 到期后两个 server 同时调度 `HALF_OPEN / RECOVERING`：只有一个 matching-generation lease 生效，状态值与 due 索引始终原子一致。
-29. 普通模式和快速模式针对同一可重放文本请求解析出相同 `firstByteDeadlineMs`，每个 attempt 只有一个路由首字观察 timer；普通模式可在截止时请求级切号，快速模式在同一事件上按慢样本状态机裁决，但两者都不形成 transport failure。confirmation 不另建 5 秒 timer，使用 lane hard timeout；配置截止后旧 attempt 迟到成功时不得再被取消或记失败。图片和其他副作用请求不创建该 timer。
+29. 普通模式不解析 `firstByteDeadlineMs`；快速模式针对可重放文本请求解析一次该值，每个 attempt 只有一个路由首字观察 timer，并按慢样本状态机裁决，不形成 transport failure。confirmation 不另建 5 秒 timer，使用 lane hard timeout；配置截止后旧 attempt 迟到成功时不得再被取消或记失败。图片和其他副作用请求不创建该 timer。
 30. 5 个或 10 个 P1 各使用完整 `firstByteDeadlineMs` 时，整请求仍受 `GatewayRequestWallBudget`（默认 270 秒墙钟）约束；决策点到期必须返回 `client_handoff(reason=gateway_request_wall_budget_exhausted, remainingUntriedCandidatesPossible=true)`，不得用 `request_exhausted`/`hard_exhausted` 伪装；即使后面还有未尝试好号，也不得继续服务端切号把客户端时间耗尽。
 31. 图像 lane 使用 600 秒首响应、120 秒 raw chunk idle、3600 秒单次未提交上限和默认 3600 秒整请求墙钟，可配置覆盖 10–15 分钟或更长生成。`cost_first / speed_first` 都不得为图片创建文本首 token timer、慢样本或速度切号；直接图片和模型映射升级图片跨过文本 270 秒后发生完整非 `2xx`、transport failure、超时或正文中断时，下游未语义提交则继续 Key / 账户 / 分组，已写出则结束或断流。
 32. 同层探索不得选中 P2 / 备用；快速模式 `latency_degraded` 切到备用记为 `route_rescue` 并消耗 rescue 预算，不消耗探索 credit。
@@ -982,7 +982,7 @@ gateway_request_wall_handoff_total
 
 ### 第二阶段：精准切号
 
-- 引入请求内 `attemptedAccountRuntimeKeys / attemptedPhysicalCredentialKeys / attemptedKeyFingerprints`、同层唯一候选一轮和仅用于可重放文本的公共 `normalRoutingConfig.firstByteDeadlineMs`。
+- 引入请求内 `attemptedAccountRuntimeKeys / attemptedPhysicalCredentialKeys / attemptedKeyFingerprints`、同层唯一候选一轮和仅用于速度优先可重放文本的 `normalRoutingConfig.firstByteDeadlineMs`。
 - 落地 `GatewayRequestWallBudget`、`requestPrecommitDeadlineAtMs / finalResponseReserveMs / uncommittedAttemptDeadlineAtMs` 与 attempt 首字裁剪；明确墙钟预算与 `ServerRetryBudget` 等待预算分离。
 - 明确普通模式与快速模式两套候选裁决顺序。
 - 更新当前禁止异常账号跨优先级的冲突测试，使其只保护健康账户的配置顺序。
@@ -1011,7 +1011,7 @@ gateway_request_wall_handoff_total
 本文采用以下推荐默认值，评审时重点确认：
 
 - 同层所有唯一候选最多一轮，不设固定 2 账号上限；
-- 可重放文本的普通模式和快速模式共用中性的 `normalRoutingConfig.firstByteDeadlineMs`，默认 10 秒、范围 10–60 秒，只在请求开始时解析一次；两种模式只差首字结果后的调度动作，lane hard timeout 才是传输失败；图片和其他副作用请求永久排除；
+- 可重放文本只有快速模式使用中性的 `normalRoutingConfig.firstByteDeadlineMs`，默认 30 秒、范围 10–60 秒，只在请求开始时解析一次；普通模式不创建该截止，lane hard timeout 才是传输失败；图片和其他副作用请求永久排除；
 - 所有请求使用 lane-aware `GatewayRequestWallBudget`（决策点 handoff 客户端），文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒；二者都不从 `noAvailableAccountWaitTimeoutSeconds` 派生。`ServerRetryBudget` 只累计零可派发、FIFO / 并发槽和半开等待；图片另用 600/120/3600 单次时限，失败后的候选切换仍服从图片墙钟与 attempt 上限；
 - 单次请求最多取得一次 confirmation，首次失败后需两个独立 confirmation 失败才 `OPEN`；confirmation 不另设 5 秒 timer，也不把路由配置截止当失败，使用 lane hard timeout；租约本身覆盖 attempt hard lifetime；
 - 故障切号、重新选号和零可派发等待共用一个 3 秒 `routeCoordinationBudget`；

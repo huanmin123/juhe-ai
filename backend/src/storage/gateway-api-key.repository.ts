@@ -724,14 +724,14 @@ function gatewayApiKeyTable(client: DatabaseClient, tableName: string): string {
 function cloneGatewayApiKeyRow(row: GatewayApiKeyRow): GatewayApiKeyRow {
   return {
     ...row,
-    normal_routing_config: row.normal_routing_config
+    normal_routing_config: row.normal_routing_config?.schedulingPreference === 'speed_first'
       ? {
-        ...row.normal_routing_config,
-        speedFirstConfig: row.normal_routing_config.speedFirstConfig
-          ? { ...row.normal_routing_config.speedFirstConfig }
-          : undefined
-      }
-      : undefined,
+          ...row.normal_routing_config,
+          speedFirstConfig: { ...row.normal_routing_config.speedFirstConfig }
+        }
+      : row.normal_routing_config
+        ? { schedulingPreference: 'cost_first' }
+        : undefined,
     hybrid_routing_config: row.hybrid_routing_config
       ? {
         ...row.hybrid_routing_config,

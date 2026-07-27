@@ -152,6 +152,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
+    supportedModels: ['gpt-5.5'],
     schedulable: true,
     priority: 0
   }, access)
@@ -166,6 +167,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
+    supportedModels: ['gpt-5.5'],
     schedulable: true,
     priority: 10
   }, access)
@@ -204,11 +206,11 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   })
   const responseText = await response.text()
   if (scenario === 'chat_malformed') {
-    assert.equal(response.status, 200, `通用客户端的内置协议校验不得改写未命中显式策略的响应：${responseText}`)
-    assert.equal(upstreamHits.length, 1, '通用客户端显式策略未命中时不得因内置协议结构校验切换账号')
-    assert.deepEqual(JSON.parse(responseText), { id: 'chatcmpl-chat_malformed', object: 'chat.completion', choices: [] })
+    assert.equal(response.status, 200, `通用客户端的内置协议校验应在写出前切换到结构完整的响应：${responseText}`)
+    assert.equal(upstreamHits.length, 2, 'Chat JSON choices 为空时应在写出前切换到备用账号')
+    assert.match(responseText, /clean chat_malformed/, 'Chat JSON 结构校验切换后应返回备用账号的完整响应')
     const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
-    assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '通用客户端显式策略未命中时不得写账户运行态')
+    assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '完整 HTTP 的协议结构失败不得写账户运行态')
     return
   }
   if (scenario === 'codex_incomplete_sse') {
@@ -272,6 +274,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     groupId: group.id,
+    supportedModels: ['gpt-5.5'],
     schedulable: true,
     priority: 0
   }, access)

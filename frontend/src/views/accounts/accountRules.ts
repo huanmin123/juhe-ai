@@ -303,8 +303,8 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
         key: 'toggle-status',
         label: instanceDisabled ? '启用账户' : '停用账户',
         danger: !instanceDisabled,
-        icon: instanceDisabled ? 'enable' : 'pause',
-        tone: instanceDisabled ? 'success' : 'warning',
+        icon: instanceDisabled ? 'enable' : 'stop',
+        tone: instanceDisabled ? 'success' : 'danger',
         confirmTitle: instanceDisabled
           ? `确认启用账户「${account.name}」？启用后只恢复你这里的授权账户实例。`
           : `确认停用账户「${account.name}」？停用后只影响你这里的授权账户实例。`,
@@ -315,14 +315,6 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   }
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
-  }
-  if (account.status === 'active' && canUseAccountActions(account)) {
-    items.push({
-      key: 'manual-isolate',
-      label: '人工隔离',
-      icon: 'pause',
-      tone: 'warning'
-    })
   }
   if (account.status === 'error') {
     if (canRestoreException(account)) {
@@ -349,6 +341,14 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     if (account.status !== 'pending_test') {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
+    if (account.status === 'active') {
+      items.push({
+        key: 'manual-isolate',
+        label: '人工隔离',
+        icon: 'pause',
+        tone: 'warning'
+      })
+    }
     if (canToggleAccountStatus(account)) {
       pushAccountStatusToggleItem(items, account)
     }
@@ -361,8 +361,8 @@ function pushAccountStatusToggleItem(items: AccountMenuItem[], account: AccountS
     key: 'toggle-status',
     label: account.status === 'disabled' ? '启用账户' : '停用账户',
     danger: account.status !== 'disabled',
-    icon: account.status === 'disabled' ? 'enable' : 'pause',
-    tone: account.status === 'disabled' ? 'success' : 'warning',
+    icon: account.status === 'disabled' ? 'enable' : 'stop',
+    tone: account.status === 'disabled' ? 'success' : 'danger',
     confirmTitle: account.status === 'disabled'
       ? `确认启用账户「${account.name}」？`
       : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,

@@ -30,10 +30,14 @@ assert.deepEqual(formatAccountBalance({ status: 'unsupported', errorMessage: '�
   text: '余额查询失败', tone: 'failed', tooltip: '当前配置未找到可用余额接口', refreshing: false, visible: true
 })
 assert.deepEqual(formatAccountBalance(undefined), {
-  text: '', tone: 'pending', tooltip: undefined, refreshing: false, visible: false
+  text: '待查询', tone: 'pending', tooltip: undefined, refreshing: false, visible: true
 })
-assert.equal(formatAccountBalance({ status: 'pending' }).visible, false)
-assert.equal(formatAccountBalance({ status: 'refreshing' }).visible, false)
+assert.deepEqual(formatAccountBalance({ status: 'pending' }), {
+  text: '待查询', tone: 'pending', tooltip: undefined, refreshing: false, visible: true
+})
+assert.deepEqual(formatAccountBalance({ status: 'refreshing' }), {
+  text: '查询中', tone: 'refreshing', tooltip: undefined, refreshing: true, visible: true
+})
 assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'disabled', accessType: 'owner' }), true, '停用的自有账户仍可人工刷新余额')
 assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'error', accessType: 'owner' }), true, '异常的自有账户仍可人工刷新余额')
 assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'active', accessType: 'authorized' }), false, '授权实例不能越权刷新来源账户余额')
@@ -57,11 +61,11 @@ assert.deepEqual(formatAccountBalance({
   consecutiveTransientFailures: 2,
   lastTransientErrorMessage: '上游暂时不可用'
 } as never), {
-  text: '',
+  text: '暂时无法查询',
   tone: 'pending',
   tooltip: '上游暂时不可用',
   refreshing: false,
-  visible: false
+  visible: true
 })
 
 const originalAccounts = [
@@ -127,6 +131,7 @@ assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显�
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
 assert.match(usageCellSource, /v-if="account\.balanceQueryEnabled" class="balance-row"/, '余额开启后必须始终保留人工刷新入口')
 assert.match(usageCellSource, /<a-tooltip v-if="balanceDisplay\.visible"[^>]*>[\s\S]*?<span class="balance-text"/, '只有余额文本按快照可见性控制')
+assert.match(balanceHelperSource, /text: tone === 'refreshing' \? '查询中' : '待查询'/, '无余额快照时必须展示明确状态，不能只留下刷新图标')
 assert.doesNotMatch(usageCellSource, /props\.account\.status === 'active'/, '人工刷新不得依赖账户状态')
 assert.match(usageCellSource, /v-if="balanceDisplay\.tone !== 'failed'" class="balance-label"/, '余额查询失败不能带“剩余：”前缀')
 assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')

@@ -130,6 +130,16 @@ assert.equal((await neutralObserver.attempt.reportTransportFailure({ kind: 'time
 assert.equal((await store.get(scope)).confirmationFailureCount, 0, 'observer 失败不得累计 confirmation 失败')
 
 now = (await store.get(scope)).retryAtMs ?? now
+const unboundedCompactAttempt = await service.prepareAttempt({
+  account,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  confirmationEligible: false,
+  failureEvidenceKey: '1'.repeat(64)
+})
+assert.equal(unboundedCompactAttempt.outcome, 'blocked', '无限时 compact 不得承担有限租约 confirmation')
+assert.equal((await store.get(scope)).lease, undefined, '无限时 compact 被阻止后不得遗留 confirmation 租约')
 const dueAttempts = await Promise.all(Array.from({ length: 12 }, () => service.prepareAttempt({
   account,
   requestLane: 'text',
@@ -146,6 +156,44 @@ const confirmationAttempt = dueConfirmations[0]
 if (!confirmationAttempt || confirmationAttempt.outcome !== 'dispatchable') throw new Error('缺少 confirmation attempt')
 await confirmationAttempt.attempt.reportTransportFailure({ kind: 'timeout', reason: 'confirmation 超时' })
 assert.equal((await store.get(scope)).phase, 'OPEN')
+
+const compactLeaseAccount = accountFixture({ id: 'account-compact-lease-release' })
+const compactLeaseScope = gatewayAccountProtocolModelScope(compactLeaseAccount, 'text', 'gpt-5.4')
+const compactLeaseInitial = await service.prepareAttempt({
+  account: compactLeaseAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: 'c'.repeat(64)
+})
+assert.equal(compactLeaseInitial.outcome, 'dispatchable')
+if (compactLeaseInitial.outcome !== 'dispatchable') throw new Error('compact 租约释放回归初始 attempt 不可派发')
+const compactLeaseFailure = await compactLeaseInitial.attempt.reportTransportFailure({ kind: 'timeout', reason: '建立 SUSPECT' })
+now = compactLeaseFailure.state.retryAtMs ?? now
+const compactLeaseWinner = await service.prepareAttempt({
+  account: compactLeaseAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  failureEvidenceKey: 'd'.repeat(64)
+})
+assert.equal(compactLeaseWinner.outcome, 'dispatchable')
+if (compactLeaseWinner.outcome !== 'dispatchable') throw new Error('compact 租约释放回归缺少 confirmation')
+const compactLeaseConfirmation = (compactLeaseWinner.attempt as unknown as {
+  confirmation?: Parameters<GatewayAccountCircuitService['completeConfirmation']>[0]
+}).confirmation
+assert(compactLeaseConfirmation, '测试必须取得待转交的 confirmation 租约')
+const compactLeaseBlocked = await service.prepareAttempt({
+  account: compactLeaseAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000,
+  confirmationEligible: false,
+  confirmation: compactLeaseConfirmation,
+  failureEvidenceKey: 'd'.repeat(64)
+})
+assert.equal(compactLeaseBlocked.outcome, 'blocked', '无限时 compact 不得接手已经取得的 confirmation 租约')
+assert.equal((await store.get(compactLeaseScope)).lease, undefined, '拒绝 compact 接手 confirmation 时必须主动释放租约')
 
 const otherLane = await service.prepareAttempt({
   account,

@@ -11,6 +11,29 @@ export interface StreamReadPlan {
   deadlineExceeded: boolean
 }
 
+export function buildGatewayStreamReadPlan(
+  profile: GatewayTimeoutProfile,
+  startedAt: number,
+  status: Parameters<typeof buildStreamReadPlan>[2],
+  now = Date.now()
+): StreamReadPlan | undefined {
+  if (profile.timeoutsDisabled !== true) {
+    return buildStreamReadPlan(profile, startedAt, status, now)
+  }
+  if (status.waitingForFirstChunk && !status.upstreamChunkReceived) {
+    return undefined
+  }
+  const rawTimeoutMs = profile.idleTimeoutMs - (now - status.lastUpstreamActivityAt)
+  return {
+    phase: 'active_stream',
+    timeoutMs: rawTimeoutMs,
+    rawTimeoutMs,
+    timeoutKind: 'upstream_activity',
+    timeoutMessage: streamIdleTimeoutMessage(timeoutSeconds(profile.idleTimeoutMs)),
+    deadlineExceeded: rawTimeoutMs <= 0
+  }
+}
+
 export function buildStreamReadPlan(
   profile: GatewayTimeoutProfile,
   startedAt: number,

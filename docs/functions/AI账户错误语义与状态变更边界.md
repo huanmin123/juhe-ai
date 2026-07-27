@@ -16,7 +16,7 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 默认电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
 
-用户配置的路由首字截止和传输 hard timeout 是两类事实。`normalRoutingConfig.firstByteDeadlineMs`、速度优先 cutover、墙钟 handoff 等配置截止只回答“当前请求是否继续等待/换候选”，到期结果对账户电路、Key 运行态、共享质量和恢复副作用保持中性。只有建连失败、真实读取中断，以及 `textFirstResponseTimeoutSeconds` / lane hard lifetime 等传输层 hard timeout 才能作为 transport evidence；即使请求层根据配置截止主动取消了旧 attempt，也不得把该取消反写成 transport failure。
+用户配置的路由首字截止和传输 hard timeout 是两类事实。仅速度优先可重放文本使用的 `normalRoutingConfig.firstByteDeadlineMs`、速度优先 cutover、墙钟 handoff 等配置截止只回答“当前请求是否继续等待/换候选”，到期结果对账户电路、Key 运行态、共享质量和恢复副作用保持中性。成本优先不创建路由首字截止。只有建连失败、真实读取中断，以及 `textFirstResponseTimeoutSeconds` / lane hard lifetime 等传输层 hard timeout 才能作为 transport evidence；即使请求层根据配置截止主动取消了旧 attempt，也不得把该取消反写成 transport failure。
 
 从子 `protocol_model` 电路升级为父 `account` 电路时，只按当前仍为 `OPEN` 的独立 scope 计数，不累计同一 scope 的重复失败或 confirmation 次数。独立 scope 阈值由 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 配置，默认 `3` 且硬下限为 `3`；滚动证据窗口由 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 配置，默认 `600000ms`。scope 必须同时包含 `accountRuntimeKey + protocolProfile + requestLane + modelBucket`，单模型、单 lane 或同坏会话风暴不得扩大为父账户死亡。父 `account` incident 与每个子 `protocol_model` incident 都必须按 `incidentId + generation + dispatchRevision` 持久化，并在冷启动时按父子关系重建；父 incident 的 `requiredRecoveryScopeKeys / childIncidentIds` 最多保留 64 个去重子 scope，超出部分仍可保留独立子 incident，但不得形成无界父 payload 或无界单次恢复 fan-out。
 

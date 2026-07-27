@@ -208,8 +208,11 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 通用摘要请求固定使用 Chat Completions endpoint family；上游不能收到 `/responses/compact`。
 - 内部摘要请求的模型别名按原始 Responses compact 请求的 `Responses` 源协议匹配；命中后只改写 Chat Completions 请求体里的 `model` 和统计 / 审计上游模型口径，不把上游路径改成 `/responses`。
 - 内部摘要请求必须设置 `disableCompact = true`，避免递归 compact。
+- 内部摘要请求必须继承原 compact 请求的 `codex_compaction_unbounded` 协调策略。即使合成请求路径已经变成 `/v1/chat/completions`，也不得重新启用普通文本总墙钟、路由首字、响应头/首响应、首字或未提交 attempt 生命周期。
 
 摘要模型可以是供应商非 Responses 的专用 compact endpoint、专用摘要模型或普通 Chat 模型。当前实现使用普通非流式 Chat Completions，并校验返回摘要必须是非空文本。客户端只看到 Codex 可识别的 `compaction_summary` item；后续请求带回该 item 时，网关按 compact id 读取 snapshot 并恢复为 Chat summary。
+
+“无时限”只取消网关对压缩计算速度和总运行时间的限制。客户端断开、明确上游错误、真实连接中断、协议契约错误和候选耗尽仍会终止请求；上游已经开始返回原始字节后仍保留 stream idle 断链保护。
 
 ## 已验证结论
 
@@ -234,6 +237,7 @@ Chat-only compact 的摘要模型只能在当前请求授权边界内选择：
 - 当前支持能映射到 Chat function tool 的 `function/custom/namespace function`。`web_search`、MCP tool、tool search、local shell call、image generation 和 computer use 必须由上游原生能力或调用方本地 agent / MCP 配置承接；Chat-only bridge 不会在网关内伪造这些结果，缺少真实能力时返回正常 agent guidance。
 - `previous_response_id` 当前只在 Chat-only bridge 的本网关 file-backed 状态层内有效；跨网关、跨 API Key、跨分组、跨供应商或 7 天未使用过期后都会受控失败。
 - Gateway summary compact 当前已使用本网关 compact snapshot；它只能恢复为 Chat summary，不能宣称为原生 Responses opaque compact，也不能跨网关、跨 API Key、跨分组或跨供应商使用。
+- Responses -> Anthropic Messages / Gemini GenerateContent 的普通桥接不等于 gateway summary compact；当前 compact 候选会排除这些转换账号，不能宣称 `/responses/compact` 或 `compaction_trigger` 已支持。
 - 当前只把 `reasoning_content` 映射成 reasoning summary；不支持 encrypted reasoning 的生成，也不承诺和原生 OpenAI reasoning state 等价。
 - 如果模型频繁只输出 reasoning 而没有 `content`，Codex bridge 会只有 reasoning item、没有普通 assistant 文本；需要用模型参数、提示词或供应商策略处理。
 - GLM 在 vsllm 通道上的真实 Codex CLI 可用性受上游路由、限流和流式错误影响较大；即使协议体可直打成功，网关实测仍可能收到上游 SSE error 或 `429 code=1305`。

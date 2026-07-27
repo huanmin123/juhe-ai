@@ -211,7 +211,7 @@
             <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
-            <a-form-item label="首字截止" required tooltip="只作用于可重放文本，成本优先与速度优先共用；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
+            <a-form-item v-if="form.normal.schedulingPreference === 'speed_first'" label="首字截止" required tooltip="只作用于速度优先的可重放文本；图像和其他副作用请求永久排除，不记录慢样本也不自动切号。">
               <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
             </a-form-item>
           </div>
@@ -704,7 +704,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
-const normalRoutingConfigTooltip = '可重放文本由成本优先与速度优先共用首字软截止；速度优先还会累计慢样本、临时降级并按配置探针恢复。图像和其他副作用请求永久排除。'
+const normalRoutingConfigTooltip = '首字软截止只作用于速度优先的可重放文本，并用于累计慢样本、临时降级和探针恢复。成本优先、图像及其他副作用请求不创建该截止。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
@@ -1502,7 +1502,7 @@ function routeStrategyStatusColor(status: RouteStrategyStatus): string {
 function defaultNormalRoutingForm(): NormalRoutingForm {
   return {
     schedulingPreference: 'cost_first',
-    firstByteDeadlineSeconds: 10,
+    firstByteDeadlineSeconds: 30,
     speedFirstConfig: defaultSpeedFirstConfigForm()
   }
 }
@@ -1521,10 +1521,14 @@ function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
 function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig): NormalRoutingForm {
   const fallback = defaultNormalRoutingForm()
   if (!config) return fallback
-  const speedFirstConfig = speedFirstConfigFormFromConfig(config.speedFirstConfig)
+  const speedFirstConfig = speedFirstConfigFormFromConfig(
+    config.schedulingPreference === 'speed_first' ? config.speedFirstConfig : undefined
+  )
   return {
     schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
-    firstByteDeadlineSeconds: millisecondsToSeconds(config.firstByteDeadlineMs, fallback.firstByteDeadlineSeconds),
+    firstByteDeadlineSeconds: config.schedulingPreference === 'speed_first'
+      ? millisecondsToSeconds(config.firstByteDeadlineMs, fallback.firstByteDeadlineSeconds)
+      : fallback.firstByteDeadlineSeconds,
     speedFirstConfig
   }
 }
@@ -1542,10 +1546,10 @@ function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig):
 }
 
 function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
-  const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)
   if (form.normal.schedulingPreference !== 'speed_first') {
-    return { schedulingPreference: 'cost_first', firstByteDeadlineMs }
+    return { schedulingPreference: 'cost_first' }
   }
+  const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)
   const speedFirstConfig = form.normal.speedFirstConfig
   return {
     schedulingPreference: 'speed_first',

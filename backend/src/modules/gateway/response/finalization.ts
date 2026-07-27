@@ -763,10 +763,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
+          firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
-          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
+          maxLifetimeMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {
@@ -897,10 +901,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
+          firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
-          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
+          maxLifetimeMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {

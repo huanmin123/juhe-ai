@@ -1,11 +1,10 @@
-import type { RouteStrategyNormalSchedulingPreference } from '../../../domain/types.js'
 import {
   defaultGatewayFinalResponseReserveMs,
   type GatewayRequestWallBudget
 } from './route-coordination.js'
 
 export interface NormalRouteFirstByteRuntimeConfig {
-  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  schedulingPreference: 'speed_first'
   firstByteDeadlineMs: number
 }
 
@@ -23,7 +22,7 @@ export interface NormalRouteAttemptFirstByteDeadline {
   configuredDeadlineMs: number
   effectiveDeadlineMs: number
   deadlineAtMs: number
-  schedulingPreference: RouteStrategyNormalSchedulingPreference
+  schedulingPreference: 'speed_first'
   clipped: boolean
   limitingFactor: 'configured' | 'wall_precommit' | 'uncommitted_attempt' | 'lane_timeout'
 }
