@@ -32,6 +32,8 @@ func (r statsSchemaContractRow) Scan(dest ...any) error {
 
 type statsSchemaContractQuerierStub struct {
 	columnsByTable map[string][]string
+	columnTypes    map[string]map[string]string
+	uniqueKeys     map[string][][]string
 	errByTable     map[string]error
 	queries        []string
 	tables         []string
@@ -51,9 +53,17 @@ func (q *statsSchemaContractQuerierStub) QueryRow(_ context.Context, query strin
 	if err := q.errByTable[table]; err != nil {
 		return statsSchemaContractRow{err: err}
 	}
+	if strings.Contains(query, "information_schema.table_constraints") {
+		raw, err := json.Marshal(q.uniqueKeys[table])
+		return statsSchemaContractRow{columnsJSON: string(raw), err: err}
+	}
 	columns := map[string]string{}
 	for _, column := range q.columnsByTable[table] {
-		columns[column] = "text"
+		columnType := "text"
+		if configured := q.columnTypes[table][column]; configured != "" {
+			columnType = configured
+		}
+		columns[column] = columnType
 	}
 	raw, err := json.Marshal(columns)
 	return statsSchemaContractRow{columnsJSON: string(raw), err: err}
@@ -61,13 +71,13 @@ func (q *statsSchemaContractQuerierStub) QueryRow(_ context.Context, query strin
 
 func TestInspectStatsSchemaContractAcceptsCompleteNodeWriterSchema(t *testing.T) {
 	contracts := statsSchemaReadContracts()
-	querier := &statsSchemaContractQuerierStub{columnsByTable: contractColumns(contracts)}
+	querier := completeStatsSchemaContractQuerier(contracts)
 
 	result, err := inspectStatsSchemaContract(context.Background(), querier, contracts)
 	if err != nil {
 		t.Fatalf("inspectStatsSchemaContract() error = %v", err)
 	}
-	if !result.Success || result.ContractVersion != 2 || result.Schema != "juhe_stats" || result.WriterOwner != "node" {
+	if !result.Success || result.ContractVersion != 3 || result.Schema != "juhe_stats" || result.WriterOwner != "node" {
 		t.Fatalf("result = %+v", result)
 	}
 	if len(result.Features) != len(contracts) || len(result.Issues) != 0 {
@@ -80,7 +90,7 @@ func TestInspectStatsSchemaContractAcceptsCompleteNodeWriterSchema(t *testing.T)
 	}
 	for _, query := range querier.queries {
 		upper := strings.ToUpper(query)
-		if !strings.Contains(query, "information_schema.columns") || !strings.HasPrefix(strings.TrimSpace(upper), "SELECT") {
+		if (!strings.Contains(query, "information_schema.columns") && !strings.Contains(query, "information_schema.table_constraints")) || !strings.HasPrefix(strings.TrimSpace(upper), "SELECT") {
 			t.Fatalf("preflight query must be read-only information_schema inspection:\n%s", query)
 		}
 		for _, forbidden := range []string{"INSERT ", "UPDATE ", "DELETE ", "CREATE ", "ALTER ", "DROP ", "TRUNCATE "} {
@@ -96,8 +106,10 @@ func TestInspectStatsSchemaContractRejectsMissingRelationAndColumn(t *testing.T)
 	columns := contractColumns(contracts)
 	delete(columns, "database_storage_snapshots")
 	delete(columns, "usage_stats_hourly")
+	delete(columns, "usage_overview_summary_windows")
 	columns["system_metrics_trend_windows"] = withoutColumn(columns["system_metrics_trend_windows"], "stats_lag_seconds_max")
-	querier := &statsSchemaContractQuerierStub{columnsByTable: columns}
+	querier := completeStatsSchemaContractQuerier(contracts)
+	querier.columnsByTable = columns
 
 	result, err := inspectStatsSchemaContract(context.Background(), querier, contracts)
 	if err != nil {
@@ -110,6 +122,7 @@ func TestInspectStatsSchemaContractRejectsMissingRelationAndColumn(t *testing.T)
 	for _, want := range []string{
 		"juhe_stats.database_storage_snapshots is missing",
 		"juhe_stats.usage_stats_hourly is missing",
+		"juhe_stats.usage_overview_summary_windows is missing",
 		"juhe_stats.system_metrics_trend_windows missing columns: stats_lag_seconds_max",
 	} {
 		if !strings.Contains(joined, want) {
@@ -119,19 +132,17 @@ func TestInspectStatsSchemaContractRejectsMissingRelationAndColumn(t *testing.T)
 	if featureReady(result, "account-usage-ai-performance") || featureReady(result, "table-monitor") || featureReady(result, "system-metrics") {
 		t.Fatalf("result = %+v, missing dependencies must fail their features", result)
 	}
-	if !featureReady(result, "stats-overview") {
-		t.Fatalf("result = %+v, unrelated feature should remain ready", result)
+	if featureReady(result, "stats-overview") {
+		t.Fatalf("result = %+v, missing overview summary must fail the feature", result)
 	}
 }
 
 func TestRunStatsSchemaContractPreflightRedactsDatabaseErrors(t *testing.T) {
 	const secret = "postgres://secret:password@db.example.invalid/production"
 	contracts := statsSchemaReadContracts()
-	querier := &statsSchemaContractQuerierStub{
-		columnsByTable: contractColumns(contracts),
-		errByTable: map[string]error{
-			"usage_stats_daily": errors.New("driver failed: " + secret),
-		},
+	querier := completeStatsSchemaContractQuerier(contracts)
+	querier.errByTable = map[string]error{
+		"usage_stats_daily": errors.New("driver failed: " + secret),
 	}
 	var out bytes.Buffer
 
@@ -190,6 +201,7 @@ func TestStatsSchemaReadContractsTrackGoReadersWithoutClaimingWriterOwnership(t 
 			"ai_performance_summary_windows",
 		},
 		"stats-overview": {
+			"usage_overview_summary_windows",
 			"usage_stats_daily",
 			"usage_overview_trend_windows",
 			"usage_model_rank_windows",
@@ -220,10 +232,34 @@ func TestStatsSchemaReadContractsTrackGoReadersWithoutClaimingWriterOwnership(t 
 	}
 }
 
+func TestInspectStatsSchemaContractRejectsOverviewTypeAndUniqueKeyDrift(t *testing.T) {
+	contracts := statsSchemaReadContracts()
+	querier := completeStatsSchemaContractQuerier(contracts)
+	querier.columnTypes["usage_overview_summary_windows"]["request_count"] = "text"
+	querier.uniqueKeys["usage_model_rank_windows"] = nil
+
+	result, err := inspectStatsSchemaContract(context.Background(), querier, contracts)
+	if err != nil {
+		t.Fatalf("inspectStatsSchemaContract() error = %v", err)
+	}
+	if result.Success || featureReady(result, "stats-overview") {
+		t.Fatalf("result = %+v, want failed overview contract", result)
+	}
+	joined := strings.Join(result.Issues, "\n")
+	for _, want := range []string{
+		"juhe_stats.usage_overview_summary_windows column type mismatch: request_count=text want bigint",
+		"juhe_stats.usage_model_rank_windows missing unique key: system_account_id, window_key, rank, provider_code, model",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("issues = %q, want %q", joined, want)
+		}
+	}
+}
+
 func TestInspectStatsSchemaContractHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	querier := &statsSchemaContractQuerierStub{columnsByTable: contractColumns(statsSchemaReadContracts())}
+	querier := completeStatsSchemaContractQuerier(statsSchemaReadContracts())
 
 	_, err := inspectStatsSchemaContract(ctx, querier, statsSchemaReadContracts())
 	if !errors.Is(err, context.Canceled) {
@@ -242,6 +278,42 @@ func contractColumns(contracts []StatsSchemaFeatureContract) map[string][]string
 		}
 	}
 	return columns
+}
+
+func completeStatsSchemaContractQuerier(contracts []StatsSchemaFeatureContract) *statsSchemaContractQuerierStub {
+	return &statsSchemaContractQuerierStub{
+		columnsByTable: contractColumns(contracts),
+		columnTypes:    contractColumnTypes(contracts),
+		uniqueKeys:     contractUniqueKeys(contracts),
+		errByTable:     map[string]error{},
+	}
+}
+
+func contractColumnTypes(contracts []StatsSchemaFeatureContract) map[string]map[string]string {
+	types := map[string]map[string]string{}
+	for _, contract := range contracts {
+		for _, relation := range contract.Relations {
+			if types[relation.Name] == nil {
+				types[relation.Name] = map[string]string{}
+			}
+			for column, columnType := range relation.ColumnTypes {
+				types[relation.Name][column] = columnType
+			}
+		}
+	}
+	return types
+}
+
+func contractUniqueKeys(contracts []StatsSchemaFeatureContract) map[string][][]string {
+	keys := map[string][][]string{}
+	for _, contract := range contracts {
+		for _, relation := range contract.Relations {
+			if len(relation.UniqueKey) > 0 {
+				keys[relation.Name] = append(keys[relation.Name], append([]string(nil), relation.UniqueKey...))
+			}
+		}
+	}
+	return keys
 }
 
 func withoutColumn(columns []string, unwanted string) []string {

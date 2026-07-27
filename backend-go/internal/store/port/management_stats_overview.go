@@ -49,6 +49,13 @@ type ManagementStatsOverviewTrendRow struct {
 	DurationMsCount    int64
 }
 
+type ManagementStatsOverviewDailyRow struct {
+	StatDate     string
+	InputTokens  int64
+	OutputTokens int64
+	TotalCost    float64
+}
+
 type ManagementStatsOverviewModelRow struct {
 	ProviderCode       string
 	Model              string
@@ -81,5 +88,9 @@ type ManagementStatsOverviewWindow struct {
 }
 
 type ManagementStatsOverviewReader interface {
-	ReadManagementStatsOverview(ctx context.Context, input ManagementStatsOverviewReadInput) (ManagementStatsOverviewWindow, error)
+	ReadManagementStatsOverviewSummary(ctx context.Context, input ManagementStatsOverviewReadInput) (ManagementStatsOverviewSummaryRow, bool, error)
+	ReadManagementStatsOverviewDailyTrend(ctx context.Context, input ManagementStatsOverviewReadInput) ([]ManagementStatsOverviewDailyRow, error)
+	ReadManagementStatsOverviewHourlyTrend(ctx context.Context, input ManagementStatsOverviewReadInput) ([]ManagementStatsOverviewTrendRow, error)
+	ReadManagementStatsOverviewModelDistribution(ctx context.Context, input ManagementStatsOverviewReadInput) ([]ManagementStatsOverviewModelRow, error)
+	ReadManagementStatsOverviewErrors(ctx context.Context, input ManagementStatsOverviewReadInput) ([]ManagementStatsOverviewErrorRow, error)
 }

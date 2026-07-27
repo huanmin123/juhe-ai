@@ -2,8 +2,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -11,31 +12,24 @@ import (
 )
 
 const managementStatsOverviewSummarySQL = `
-SELECT COALESCE(SUM(request_count), 0)::bigint,
-  COALESCE(SUM(success_count), 0)::bigint,
-  COALESCE(SUM(error_count), 0)::bigint,
-  COALESCE(SUM(input_tokens), 0)::bigint,
-  COALESCE(SUM(output_tokens), 0)::bigint,
-  COALESCE(SUM(cache_read_tokens), 0)::bigint,
-  COALESCE(SUM(cache_read_cost_usd), 0)::double precision,
-  COALESCE(SUM(cache_write_tokens), 0)::bigint,
-  COALESCE(SUM(cache_write_1h_tokens), 0)::bigint,
-  COALESCE(SUM(cache_write_cost_usd), 0)::double precision,
-  COALESCE(SUM(thinking_tokens), 0)::bigint,
-  COALESCE(SUM(input_image_tokens), 0)::bigint,
-  COALESCE(SUM(output_image_tokens), 0)::bigint,
-  COALESCE(SUM(total_cost_usd), 0)::double precision,
-  COALESCE(SUM(duration_ms_sum), 0)::bigint,
-  COALESCE(SUM(duration_ms_count), 0)::bigint,
-  COALESCE(SUM(first_token_ms_sum), 0)::bigint,
-  COALESCE(SUM(first_token_ms_count), 0)::bigint,
-  MAX(last_used_at)
+SELECT request_count, success_count, error_count, input_tokens, output_tokens,
+  cache_read_tokens, CAST(cache_read_cost_usd AS double precision), cache_write_tokens,
+  cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision), thinking_tokens,
+  input_image_tokens, output_image_tokens, CAST(total_cost_usd AS double precision),
+  duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
+FROM juhe_stats.usage_overview_summary_windows
+WHERE system_account_id = $1 AND window_key = $2 AND start_date = $3 AND end_date = $4`
+
+const managementStatsOverviewDailySQL = `
+SELECT stat_date, input_tokens, output_tokens, CAST(total_cost_usd AS double precision)
 FROM juhe_stats.usage_stats_daily
 WHERE system_account_id = $1
   AND scope_type = 'system_account'
   AND scope_id = $1
   AND stat_date >= $2
-  AND stat_date <= $3`
+  AND stat_date <= $3
+ORDER BY stat_date ASC
+LIMIT 31`
 
 const managementStatsOverviewTrendSQL = `
 SELECT bucket_key, request_count, error_count, input_tokens, output_tokens,
@@ -65,68 +59,43 @@ WHERE system_account_id = $1 AND window_key = $2 AND start_date = $3 AND end_dat
 ORDER BY rank ASC, provider_code ASC, error_code ASC, status_code ASC
 LIMIT 10`
 
-type managementStatsOverviewQueries interface {
-	summaryRow(context.Context, port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewSummaryRow, bool, error)
-	trendRows(context.Context, port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewTrendRow, error)
-	modelRows(context.Context, port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewModelRow, error)
-	errorRows(context.Context, port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewErrorRow, error)
-}
-
 type managementStatsOverviewPGQueries struct {
 	pool *pgxpool.Pool
 }
 
-func (s *Store) ReadManagementStatsOverview(ctx context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewWindow, error) {
-	return readManagementStatsOverview(ctx, &managementStatsOverviewPGQueries{pool: s.pool}, input)
+func (s *Store) ReadManagementStatsOverviewSummary(ctx context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewSummaryRow, bool, error) {
+	return (&managementStatsOverviewPGQueries{pool: s.pool}).summaryRow(ctx, input)
 }
 
-func readManagementStatsOverview(ctx context.Context, queries managementStatsOverviewQueries, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewWindow, error) {
-	result := port.ManagementStatsOverviewWindow{
-		HourlyTrend:       []port.ManagementStatsOverviewTrendRow{},
-		ModelDistribution: []port.ManagementStatsOverviewModelRow{},
-		Errors:            []port.ManagementStatsOverviewErrorRow{},
-	}
-	summary, found, err := queries.summaryRow(ctx, input)
-	if err != nil {
-		return port.ManagementStatsOverviewWindow{}, fmt.Errorf("summary overview read: %w", err)
-	}
-	if found {
-		result.Summary = &summary
-	}
-	result.HourlyTrend, err = queries.trendRows(ctx, input)
-	if err != nil {
-		return port.ManagementStatsOverviewWindow{}, fmt.Errorf("trend overview read: %w", err)
-	}
-	result.ModelDistribution, err = queries.modelRows(ctx, input)
-	if err != nil {
-		return port.ManagementStatsOverviewWindow{}, fmt.Errorf("models overview read: %w", err)
-	}
-	result.Errors, err = queries.errorRows(ctx, input)
-	if err != nil {
-		return port.ManagementStatsOverviewWindow{}, fmt.Errorf("errors overview read: %w", err)
-	}
-	if result.HourlyTrend == nil {
-		result.HourlyTrend = []port.ManagementStatsOverviewTrendRow{}
-	}
-	if result.ModelDistribution == nil {
-		result.ModelDistribution = []port.ManagementStatsOverviewModelRow{}
-	}
-	if result.Errors == nil {
-		result.Errors = []port.ManagementStatsOverviewErrorRow{}
-	}
-	return result, nil
+func (s *Store) ReadManagementStatsOverviewDailyTrend(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewDailyRow, error) {
+	return (&managementStatsOverviewPGQueries{pool: s.pool}).dailyRows(ctx, input)
+}
+
+func (s *Store) ReadManagementStatsOverviewHourlyTrend(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewTrendRow, error) {
+	return (&managementStatsOverviewPGQueries{pool: s.pool}).trendRows(ctx, input)
+}
+
+func (s *Store) ReadManagementStatsOverviewModelDistribution(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewModelRow, error) {
+	return (&managementStatsOverviewPGQueries{pool: s.pool}).modelRows(ctx, input)
+}
+
+func (s *Store) ReadManagementStatsOverviewErrors(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewErrorRow, error) {
+	return (&managementStatsOverviewPGQueries{pool: s.pool}).errorRows(ctx, input)
 }
 
 func (q *managementStatsOverviewPGQueries) summaryRow(ctx context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewSummaryRow, bool, error) {
 	var row port.ManagementStatsOverviewSummaryRow
 	var lastUsedAt pgtype.Text
-	err := q.pool.QueryRow(ctx, managementStatsOverviewSummarySQL, input.SystemAccountID, input.StartDate, input.EndDate).Scan(
+	err := q.pool.QueryRow(ctx, managementStatsOverviewSummarySQL, input.SystemAccountID, input.WindowKey, input.StartDate, input.EndDate).Scan(
 		&row.RequestCount, &row.SuccessCount, &row.ErrorCount, &row.InputTokens, &row.OutputTokens,
 		&row.CacheReadTokens, &row.CacheReadCost, &row.CacheWriteTokens, &row.CacheWrite1hTokens,
 		&row.CacheWriteCost, &row.ThinkingTokens, &row.InputImageTokens, &row.OutputImageTokens,
 		&row.TotalCost, &row.DurationMsSum, &row.DurationMsCount, &row.FirstTokenMsSum,
 		&row.FirstTokenMsCount, &lastUsedAt,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementStatsOverviewSummaryRow{}, false, nil
+	}
 	if err != nil {
 		return port.ManagementStatsOverviewSummaryRow{}, false, err
 	}
@@ -135,6 +104,23 @@ func (q *managementStatsOverviewPGQueries) summaryRow(ctx context.Context, input
 		row.LastUsedAt = &value
 	}
 	return row, true, nil
+}
+
+func (q *managementStatsOverviewPGQueries) dailyRows(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewDailyRow, error) {
+	rows, err := q.pool.Query(ctx, managementStatsOverviewDailySQL, input.SystemAccountID, input.StartDate, input.EndDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []port.ManagementStatsOverviewDailyRow{}
+	for rows.Next() {
+		var row port.ManagementStatsOverviewDailyRow
+		if err := rows.Scan(&row.StatDate, &row.InputTokens, &row.OutputTokens, &row.TotalCost); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 func (q *managementStatsOverviewPGQueries) trendRows(ctx context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewTrendRow, error) {

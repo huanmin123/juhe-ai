@@ -100,6 +100,37 @@ type ErrorPoint struct {
 	ErrorCount   int64   `json:"errorCount"`
 }
 
+type DailyPoint struct {
+	StatDate    string  `json:"statDate"`
+	TotalTokens int64   `json:"totalTokens"`
+	TotalCost   float64 `json:"totalCost"`
+}
+
+type SummaryResult struct {
+	Range   Range   `json:"range"`
+	Summary Summary `json:"summary"`
+}
+
+type DailyTrendResult struct {
+	Range      Range        `json:"range"`
+	DailyTrend []DailyPoint `json:"dailyTrend"`
+}
+
+type HourlyTrendResult struct {
+	Range       Range        `json:"range"`
+	HourlyTrend []TrendPoint `json:"hourlyTrend"`
+}
+
+type ModelDistributionResult struct {
+	Range             Range        `json:"range"`
+	ModelDistribution []ModelPoint `json:"modelDistribution"`
+}
+
+type ErrorsResult struct {
+	Range  Range        `json:"range"`
+	Errors []ErrorPoint `json:"errors"`
+}
+
 type Overview struct {
 	Range             Range        `json:"range"`
 	Summary           Summary      `json:"summary"`
@@ -113,34 +144,122 @@ func NewService(opts ServiceOptions) *Service {
 }
 
 func (s *Service) Overview(ctx context.Context, systemAccountID string, input Input) (Overview, error) {
-	if s == nil || s.reader == nil {
-		return Overview{}, fmt.Errorf("management stats overview reader is required")
-	}
-	if s.windowReader == nil {
-		return Overview{}, fmt.Errorf("management stats usage window reader is required")
-	}
-	systemAccountID = strings.TrimSpace(systemAccountID)
-	if systemAccountID == "" {
-		return Overview{}, fmt.Errorf("management stats overview system account id is required")
-	}
-	window, err := s.windowReader.UsageWindow(ctx)
-	if err != nil {
-		return Overview{}, fmt.Errorf("read management stats usage window: %w", err)
-	}
-	usageRange, err := normalizeRange(window, input)
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
 	if err != nil {
 		return Overview{}, err
 	}
-	stored, err := s.reader.ReadManagementStatsOverview(ctx, port.ManagementStatsOverviewReadInput{
+	summary, found, err := s.reader.ReadManagementStatsOverviewSummary(ctx, readInput)
+	if err != nil {
+		return Overview{}, fmt.Errorf("read management stats overview summary: %w", err)
+	}
+	hourly, err := s.reader.ReadManagementStatsOverviewHourlyTrend(ctx, readInput)
+	if err != nil {
+		return Overview{}, fmt.Errorf("read management stats overview hourly trend: %w", err)
+	}
+	models, err := s.reader.ReadManagementStatsOverviewModelDistribution(ctx, readInput)
+	if err != nil {
+		return Overview{}, fmt.Errorf("read management stats overview model distribution: %w", err)
+	}
+	errors, err := s.reader.ReadManagementStatsOverviewErrors(ctx, readInput)
+	if err != nil {
+		return Overview{}, fmt.Errorf("read management stats overview errors: %w", err)
+	}
+	stored := port.ManagementStatsOverviewWindow{HourlyTrend: hourly, ModelDistribution: models, Errors: errors}
+	if found {
+		stored.Summary = &summary
+	}
+	return mapOverview(usageRange, stored), nil
+}
+
+func (s *Service) Summary(ctx context.Context, systemAccountID string, input Input) (SummaryResult, error) {
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
+	if err != nil {
+		return SummaryResult{}, err
+	}
+	row, found, err := s.reader.ReadManagementStatsOverviewSummary(ctx, readInput)
+	if err != nil {
+		return SummaryResult{}, fmt.Errorf("read management stats overview summary: %w", err)
+	}
+	result := SummaryResult{Range: usageRange}
+	if found {
+		result.Summary = mapSummary(row)
+	}
+	return result, nil
+}
+
+func (s *Service) DailyTrend(ctx context.Context, systemAccountID string, input Input) (DailyTrendResult, error) {
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
+	if err != nil {
+		return DailyTrendResult{}, err
+	}
+	rows, err := s.reader.ReadManagementStatsOverviewDailyTrend(ctx, readInput)
+	if err != nil {
+		return DailyTrendResult{}, fmt.Errorf("read management stats overview daily trend: %w", err)
+	}
+	return DailyTrendResult{Range: usageRange, DailyTrend: mapDailyTrend(usageRange, rows)}, nil
+}
+
+func (s *Service) HourlyTrend(ctx context.Context, systemAccountID string, input Input) (HourlyTrendResult, error) {
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
+	if err != nil {
+		return HourlyTrendResult{}, err
+	}
+	rows, err := s.reader.ReadManagementStatsOverviewHourlyTrend(ctx, readInput)
+	if err != nil {
+		return HourlyTrendResult{}, fmt.Errorf("read management stats overview hourly trend: %w", err)
+	}
+	return HourlyTrendResult{Range: usageRange, HourlyTrend: mapHourlyTrend(rows)}, nil
+}
+
+func (s *Service) ModelDistribution(ctx context.Context, systemAccountID string, input Input) (ModelDistributionResult, error) {
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
+	if err != nil {
+		return ModelDistributionResult{}, err
+	}
+	rows, err := s.reader.ReadManagementStatsOverviewModelDistribution(ctx, readInput)
+	if err != nil {
+		return ModelDistributionResult{}, fmt.Errorf("read management stats overview model distribution: %w", err)
+	}
+	return ModelDistributionResult{Range: usageRange, ModelDistribution: mapModelDistribution(rows)}, nil
+}
+
+func (s *Service) Errors(ctx context.Context, systemAccountID string, input Input) (ErrorsResult, error) {
+	usageRange, readInput, err := s.normalizeReadInput(ctx, systemAccountID, input)
+	if err != nil {
+		return ErrorsResult{}, err
+	}
+	rows, err := s.reader.ReadManagementStatsOverviewErrors(ctx, readInput)
+	if err != nil {
+		return ErrorsResult{}, fmt.Errorf("read management stats overview errors: %w", err)
+	}
+	return ErrorsResult{Range: usageRange, Errors: mapErrors(rows)}, nil
+}
+
+func (s *Service) normalizeReadInput(ctx context.Context, systemAccountID string, input Input) (Range, port.ManagementStatsOverviewReadInput, error) {
+	if s == nil || s.reader == nil {
+		return Range{}, port.ManagementStatsOverviewReadInput{}, fmt.Errorf("management stats overview reader is required")
+	}
+	if s.windowReader == nil {
+		return Range{}, port.ManagementStatsOverviewReadInput{}, fmt.Errorf("management stats usage window reader is required")
+	}
+	systemAccountID = strings.TrimSpace(systemAccountID)
+	if systemAccountID == "" {
+		return Range{}, port.ManagementStatsOverviewReadInput{}, fmt.Errorf("management stats overview system account id is required")
+	}
+	window, err := s.windowReader.UsageWindow(ctx)
+	if err != nil {
+		return Range{}, port.ManagementStatsOverviewReadInput{}, fmt.Errorf("read management stats usage window: %w", err)
+	}
+	usageRange, err := normalizeRange(window, input)
+	if err != nil {
+		return Range{}, port.ManagementStatsOverviewReadInput{}, err
+	}
+	return usageRange, port.ManagementStatsOverviewReadInput{
 		SystemAccountID: systemAccountID,
 		WindowKey:       usageRange.StartDate + ":" + usageRange.EndDate,
 		StartDate:       usageRange.StartDate,
 		EndDate:         usageRange.EndDate,
-	})
-	if err != nil {
-		return Overview{}, fmt.Errorf("read management stats overview: %w", err)
-	}
-	return mapOverview(usageRange, stored), nil
+	}, nil
 }
 
 func normalizeRange(window managementstats.UsageWindow, input Input) (Range, error) {
@@ -153,11 +272,12 @@ func normalizeRange(window managementstats.UsageWindow, input Input) (Range, err
 		return Range{}, fmt.Errorf("management stats usage window max days is invalid")
 	}
 	floor := today.AddDate(0, 0, -(maxDays - 1))
-	if parsed, parseErr := time.Parse(time.DateOnly, window.StartDate); parseErr == nil && parsed.After(floor) {
-		floor = parsed
-	}
 	startText := strings.TrimSpace(input.StartDate)
 	endText := strings.TrimSpace(input.EndDate)
+	if startText == "" && endText == "" {
+		startText = strings.TrimSpace(window.StartDate)
+		endText = strings.TrimSpace(window.EndDate)
+	}
 	if startText == "" {
 		startText = endText
 	}
@@ -205,21 +325,47 @@ func mapOverview(usageRange Range, stored port.ManagementStatsOverviewWindow) Ov
 		Errors:            make([]ErrorPoint, 0, len(stored.Errors)),
 	}
 	if stored.Summary != nil {
-		row := stored.Summary
-		overview.Summary = Summary{
-			RequestCount: row.RequestCount, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
-			CacheReadTokens: row.CacheReadTokens, CacheReadCost: row.CacheReadCost,
-			CacheWriteTokens: row.CacheWriteTokens, CacheWrite1hTokens: row.CacheWrite1hTokens,
-			CacheWriteCost: row.CacheWriteCost, ThinkingTokens: row.ThinkingTokens,
-			InputImageTokens: row.InputImageTokens, OutputImageTokens: row.OutputImageTokens,
-			TotalTokens: row.InputTokens + row.OutputTokens, TotalCost: row.TotalCost,
-			LastUsedAt: row.LastUsedAt, SuccessCount: row.SuccessCount, ErrorCount: row.ErrorCount,
-			ErrorRate: ratio(row.ErrorCount, row.RequestCount), AverageDurationMs: average(row.DurationMsSum, row.DurationMsCount),
-			AverageFirstTokenMs: average(row.FirstTokenMsSum, row.FirstTokenMsCount),
-		}
+		overview.Summary = mapSummary(*stored.Summary)
 	}
-	for _, row := range stored.HourlyTrend {
-		overview.HourlyTrend = append(overview.HourlyTrend, TrendPoint{
+	overview.HourlyTrend = mapHourlyTrend(stored.HourlyTrend)
+	overview.ModelDistribution = mapModelDistribution(stored.ModelDistribution)
+	overview.Errors = mapErrors(stored.Errors)
+	return overview
+}
+
+func mapSummary(row port.ManagementStatsOverviewSummaryRow) Summary {
+	return Summary{
+		RequestCount: row.RequestCount, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+		CacheReadTokens: row.CacheReadTokens, CacheReadCost: row.CacheReadCost,
+		CacheWriteTokens: row.CacheWriteTokens, CacheWrite1hTokens: row.CacheWrite1hTokens,
+		CacheWriteCost: row.CacheWriteCost, ThinkingTokens: row.ThinkingTokens,
+		InputImageTokens: row.InputImageTokens, OutputImageTokens: row.OutputImageTokens,
+		TotalTokens: row.InputTokens + row.OutputTokens, TotalCost: row.TotalCost,
+		LastUsedAt: row.LastUsedAt, SuccessCount: row.SuccessCount, ErrorCount: row.ErrorCount,
+		ErrorRate: ratio(row.ErrorCount, row.RequestCount), AverageDurationMs: average(row.DurationMsSum, row.DurationMsCount),
+		AverageFirstTokenMs: average(row.FirstTokenMsSum, row.FirstTokenMsCount),
+	}
+}
+
+func mapDailyTrend(usageRange Range, rows []port.ManagementStatsOverviewDailyRow) []DailyPoint {
+	byDate := make(map[string]port.ManagementStatsOverviewDailyRow, len(rows))
+	for _, row := range rows {
+		byDate[row.StatDate] = row
+	}
+	start, _ := time.Parse(time.DateOnly, usageRange.StartDate)
+	result := make([]DailyPoint, 0, usageRange.Days)
+	for offset := 0; offset < usageRange.Days; offset++ {
+		statDate := start.AddDate(0, 0, offset).Format(time.DateOnly)
+		row := byDate[statDate]
+		result = append(result, DailyPoint{StatDate: statDate, TotalTokens: row.InputTokens + row.OutputTokens, TotalCost: row.TotalCost})
+	}
+	return result
+}
+
+func mapHourlyTrend(rows []port.ManagementStatsOverviewTrendRow) []TrendPoint {
+	result := make([]TrendPoint, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, TrendPoint{
 			StatHour: row.StatHour, RequestCount: row.RequestCount, CacheReadTokens: row.CacheReadTokens,
 			CacheWriteTokens: row.CacheWriteTokens, CacheWrite1hTokens: row.CacheWrite1hTokens,
 			CacheWriteCost: row.CacheWriteCost, ThinkingTokens: row.ThinkingTokens,
@@ -228,8 +374,13 @@ func mapOverview(usageRange Range, stored port.ManagementStatsOverviewWindow) Ov
 			AverageDurationMs: average(row.DurationMsSum, row.DurationMsCount), ErrorCount: row.ErrorCount,
 		})
 	}
-	for _, row := range stored.ModelDistribution {
-		overview.ModelDistribution = append(overview.ModelDistribution, ModelPoint{
+	return result
+}
+
+func mapModelDistribution(rows []port.ManagementStatsOverviewModelRow) []ModelPoint {
+	result := make([]ModelPoint, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, ModelPoint{
 			Model: row.Model, ProviderCode: row.ProviderCode, RequestCount: row.RequestCount,
 			TotalTokens: row.InputTokens + row.OutputTokens, CacheReadTokens: row.CacheReadTokens,
 			CacheWriteTokens: row.CacheWriteTokens, CacheWrite1hTokens: row.CacheWrite1hTokens,
@@ -237,18 +388,23 @@ func mapOverview(usageRange Range, stored port.ManagementStatsOverviewWindow) Ov
 			InputImageTokens: row.InputImageTokens, OutputImageTokens: row.OutputImageTokens, TotalCost: row.TotalCost,
 		})
 	}
-	for _, row := range stored.Errors {
+	return result
+}
+
+func mapErrors(rows []port.ManagementStatsOverviewErrorRow) []ErrorPoint {
+	result := make([]ErrorPoint, 0, len(rows))
+	for _, row := range rows {
 		var statusCode *int32
 		if row.StatusCode != 0 {
 			value := row.StatusCode
 			statusCode = &value
 		}
-		overview.Errors = append(overview.Errors, ErrorPoint{
+		result = append(result, ErrorPoint{
 			ErrorCode: row.ErrorCode, ProviderCode: row.ProviderCode, StatusCode: statusCode,
 			ErrorMessage: row.ErrorMessage, ErrorCount: row.ErrorCount,
 		})
 	}
-	return overview
+	return result
 }
 
 func average(sum int64, count int64) *float64 {

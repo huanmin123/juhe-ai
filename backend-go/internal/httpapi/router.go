@@ -258,6 +258,16 @@ type RouterOptions struct {
 	ManagementMyStatsAIPerformanceAccountsHandler     http.Handler
 	ManagementStatsUsageOverviewHandler               http.Handler
 	ManagementMyStatsUsageOverviewHandler             http.Handler
+	ManagementStatsUsageOverviewSummaryHandler        http.Handler
+	ManagementMyStatsUsageOverviewSummaryHandler      http.Handler
+	ManagementStatsUsageOverviewDailyTrendHandler     http.Handler
+	ManagementMyStatsUsageOverviewDailyTrendHandler   http.Handler
+	ManagementStatsUsageOverviewHourlyTrendHandler    http.Handler
+	ManagementMyStatsUsageOverviewHourlyTrendHandler  http.Handler
+	ManagementStatsUsageOverviewModelsHandler         http.Handler
+	ManagementMyStatsUsageOverviewModelsHandler       http.Handler
+	ManagementStatsUsageOverviewErrorsHandler         http.Handler
+	ManagementMyStatsUsageOverviewErrorsHandler       http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -577,7 +587,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementStatsAIPerformanceAccountsHandler == nil &&
 				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil &&
 				opts.ManagementStatsUsageOverviewHandler == nil &&
-				opts.ManagementMyStatsUsageOverviewHandler == nil {
+				opts.ManagementMyStatsUsageOverviewHandler == nil &&
+				opts.ManagementStatsUsageOverviewSummaryHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewSummaryHandler == nil &&
+				opts.ManagementStatsUsageOverviewDailyTrendHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewDailyTrendHandler == nil &&
+				opts.ManagementStatsUsageOverviewHourlyTrendHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewHourlyTrendHandler == nil &&
+				opts.ManagementStatsUsageOverviewModelsHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewModelsHandler == nil &&
+				opts.ManagementStatsUsageOverviewErrorsHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewErrorsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.Config.ManagementAPIEnabled {
@@ -1550,6 +1570,36 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyStatsUsageOverviewHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview", opts.ManagementMyStatsUsageOverviewHandler.ServeHTTP)
 			}
+			if opts.ManagementStatsUsageOverviewSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview/summary", opts.ManagementStatsUsageOverviewSummaryHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview/summary", opts.ManagementMyStatsUsageOverviewSummaryHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageOverviewDailyTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview/daily-trend", opts.ManagementStatsUsageOverviewDailyTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewDailyTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview/daily-trend", opts.ManagementMyStatsUsageOverviewDailyTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageOverviewHourlyTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview/hourly-trend", opts.ManagementStatsUsageOverviewHourlyTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewHourlyTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview/hourly-trend", opts.ManagementMyStatsUsageOverviewHourlyTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageOverviewModelsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview/model-distribution", opts.ManagementStatsUsageOverviewModelsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewModelsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview/model-distribution", opts.ManagementMyStatsUsageOverviewModelsHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageOverviewErrorsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview/errors", opts.ManagementStatsUsageOverviewErrorsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewErrorsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview/errors", opts.ManagementMyStatsUsageOverviewErrorsHandler.ServeHTTP)
+			}
 		}
 	})
 
@@ -1797,7 +1847,17 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementStatsAIPerformanceAccountsHandler != nil ||
 		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil ||
 		opts.ManagementStatsUsageOverviewHandler != nil ||
-		opts.ManagementMyStatsUsageOverviewHandler != nil
+		opts.ManagementMyStatsUsageOverviewHandler != nil ||
+		opts.ManagementStatsUsageOverviewSummaryHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewSummaryHandler != nil ||
+		opts.ManagementStatsUsageOverviewDailyTrendHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewDailyTrendHandler != nil ||
+		opts.ManagementStatsUsageOverviewHourlyTrendHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewHourlyTrendHandler != nil ||
+		opts.ManagementStatsUsageOverviewModelsHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewModelsHandler != nil ||
+		opts.ManagementStatsUsageOverviewErrorsHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewErrorsHandler != nil
 }
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {

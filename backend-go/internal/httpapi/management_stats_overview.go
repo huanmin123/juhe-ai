@@ -14,7 +14,23 @@ var managementStatsOverviewDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$
 
 type managementStatsUsageOverviewService interface {
 	Overview(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.Overview, error)
+	Summary(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.SummaryResult, error)
+	DailyTrend(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.DailyTrendResult, error)
+	HourlyTrend(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.HourlyTrendResult, error)
+	ModelDistribution(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.ModelDistributionResult, error)
+	Errors(context.Context, string, managementstatsoverview.Input) (managementstatsoverview.ErrorsResult, error)
 }
+
+type managementStatsOverviewSection string
+
+const (
+	managementStatsOverviewCombinedSection managementStatsOverviewSection = "combined"
+	managementStatsOverviewSummarySection  managementStatsOverviewSection = "summary"
+	managementStatsOverviewDailySection    managementStatsOverviewSection = "daily"
+	managementStatsOverviewHourlySection   managementStatsOverviewSection = "hourly"
+	managementStatsOverviewModelsSection   managementStatsOverviewSection = "models"
+	managementStatsOverviewErrorsSection   managementStatsOverviewSection = "errors"
+)
 
 func NewManagementStatsUsageOverviewHandler(service *managementstatsoverview.Service) http.Handler {
 	return newManagementStatsUsageOverviewHandler(service)
@@ -24,15 +40,55 @@ func NewManagementMyStatsUsageOverviewHandler(service *managementstatsoverview.S
 	return newManagementMyStatsUsageOverviewHandler(service)
 }
 
+func NewManagementStatsUsageOverviewSummaryHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewSummarySection)
+}
+
+func NewManagementMyStatsUsageOverviewSummaryHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewSummarySection)
+}
+
+func NewManagementStatsUsageOverviewDailyTrendHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewDailySection)
+}
+
+func NewManagementMyStatsUsageOverviewDailyTrendHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewDailySection)
+}
+
+func NewManagementStatsUsageOverviewHourlyTrendHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewHourlySection)
+}
+
+func NewManagementMyStatsUsageOverviewHourlyTrendHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewHourlySection)
+}
+
+func NewManagementStatsUsageOverviewModelDistributionHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewModelsSection)
+}
+
+func NewManagementMyStatsUsageOverviewModelDistributionHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewModelsSection)
+}
+
+func NewManagementStatsUsageOverviewErrorsHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewErrorsSection)
+}
+
+func NewManagementMyStatsUsageOverviewErrorsHandler(service *managementstatsoverview.Service) http.Handler {
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewErrorsSection)
+}
+
 func newManagementStatsUsageOverviewHandler(service managementStatsUsageOverviewService) http.Handler {
-	return managementStatsUsageOverviewHandler(service, true)
+	return managementStatsUsageOverviewHandler(service, true, managementStatsOverviewCombinedSection)
 }
 
 func newManagementMyStatsUsageOverviewHandler(service managementStatsUsageOverviewService) http.Handler {
-	return managementStatsUsageOverviewHandler(service, false)
+	return managementStatsUsageOverviewHandler(service, false, managementStatsOverviewCombinedSection)
 }
 
-func managementStatsUsageOverviewHandler(service managementStatsUsageOverviewService, adminScope bool) http.Handler {
+func managementStatsUsageOverviewHandler(service managementStatsUsageOverviewService, adminScope bool, section managementStatsOverviewSection) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
 		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" || service == nil {
@@ -52,13 +108,30 @@ func managementStatsUsageOverviewHandler(service managementStatsUsageOverviewSer
 		if adminScope {
 			systemAccountID = managementStatsOverviewAdminScope(r)
 		}
-		result, err := service.Overview(r.Context(), systemAccountID, input)
+		result, err := readManagementStatsOverviewSection(r.Context(), service, section, systemAccountID, input)
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
 		writeData(w, http.StatusOK, result)
 	})
+}
+
+func readManagementStatsOverviewSection(ctx context.Context, service managementStatsUsageOverviewService, section managementStatsOverviewSection, systemAccountID string, input managementstatsoverview.Input) (any, error) {
+	switch section {
+	case managementStatsOverviewSummarySection:
+		return service.Summary(ctx, systemAccountID, input)
+	case managementStatsOverviewDailySection:
+		return service.DailyTrend(ctx, systemAccountID, input)
+	case managementStatsOverviewHourlySection:
+		return service.HourlyTrend(ctx, systemAccountID, input)
+	case managementStatsOverviewModelsSection:
+		return service.ModelDistribution(ctx, systemAccountID, input)
+	case managementStatsOverviewErrorsSection:
+		return service.Errors(ctx, systemAccountID, input)
+	default:
+		return service.Overview(ctx, systemAccountID, input)
+	}
 }
 
 func managementStatsOverviewInput(r *http.Request) (managementstatsoverview.Input, bool) {

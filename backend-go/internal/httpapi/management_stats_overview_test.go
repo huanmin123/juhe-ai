@@ -93,21 +93,38 @@ func TestRouterRegistersStatsUsageOverviewAsLimitedNoTouchReadRoutes(t *testing.
 		writeData(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
 	opts := RouterOptions{
-		Config:                                config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		SystemAPIRateLimitReader:              systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{IPReadPerMinute: 600, IPReadBurstPer10Seconds: 120, UserReadPerMinute: 300}},
-		SystemAPIIPRateLimiter:                NewInMemorySystemAPIIPRateLimiter(),
-		SystemAPIAuthenticatedRateLimiter:     userLimiter,
-		ManagementAPIAuthMiddleware:           NewManagementAPIAuthMiddleware(authenticator),
-		ManagementAPIAuthTouchMiddleware:      NewManagementAPIAuthTouchMiddleware(authenticator),
-		ManagementStatsUsageOverviewHandler:   handler,
-		ManagementMyStatsUsageOverviewHandler: handler,
+		Config:                                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		SystemAPIRateLimitReader:                         systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{IPReadPerMinute: 600, IPReadBurstPer10Seconds: 120, UserReadPerMinute: 300}},
+		SystemAPIIPRateLimiter:                           NewInMemorySystemAPIIPRateLimiter(),
+		SystemAPIAuthenticatedRateLimiter:                userLimiter,
+		ManagementAPIAuthMiddleware:                      NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:                 NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementStatsUsageOverviewHandler:              handler,
+		ManagementMyStatsUsageOverviewHandler:            handler,
+		ManagementStatsUsageOverviewSummaryHandler:       handler,
+		ManagementMyStatsUsageOverviewSummaryHandler:     handler,
+		ManagementStatsUsageOverviewDailyTrendHandler:    handler,
+		ManagementMyStatsUsageOverviewDailyTrendHandler:  handler,
+		ManagementStatsUsageOverviewHourlyTrendHandler:   handler,
+		ManagementMyStatsUsageOverviewHourlyTrendHandler: handler,
+		ManagementStatsUsageOverviewModelsHandler:        handler,
+		ManagementMyStatsUsageOverviewModelsHandler:      handler,
+		ManagementStatsUsageOverviewErrorsHandler:        handler,
+		ManagementMyStatsUsageOverviewErrorsHandler:      handler,
 	}
 	if !managementBusinessRoutesConfigured(opts) || managementWriteRoutesConfigured(opts) {
 		t.Fatalf("stats overview route classification is wrong")
 	}
 	router := NewRouter(opts)
-	for _, path := range []string{"/__aisys__/api/stats/usage-overview", "/__aisys__/api/my-stats/usage-overview"} {
+	for _, path := range []string{
+		"/__aisys__/api/stats/usage-overview", "/__aisys__/api/my-stats/usage-overview",
+		"/__aisys__/api/stats/usage-overview/summary", "/__aisys__/api/my-stats/usage-overview/summary",
+		"/__aisys__/api/stats/usage-overview/daily-trend", "/__aisys__/api/my-stats/usage-overview/daily-trend",
+		"/__aisys__/api/stats/usage-overview/hourly-trend", "/__aisys__/api/my-stats/usage-overview/hourly-trend",
+		"/__aisys__/api/stats/usage-overview/model-distribution", "/__aisys__/api/my-stats/usage-overview/model-distribution",
+		"/__aisys__/api/stats/usage-overview/errors", "/__aisys__/api/my-stats/usage-overview/errors",
+	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
 		rec := httptest.NewRecorder()
@@ -119,15 +136,74 @@ func TestRouterRegistersStatsUsageOverviewAsLimitedNoTouchReadRoutes(t *testing.
 	if authenticator.cookieHeader != "juhe_ai_session=session-token" || authenticator.touchCookieHeader != "" {
 		t.Fatalf("read/touch auth = %q / %q", authenticator.cookieHeader, authenticator.touchCookieHeader)
 	}
-	if userLimiter.calls != 2 || userLimiter.limit != 300 {
+	if userLimiter.calls != 12 || userLimiter.limit != 300 {
 		t.Fatalf("user limiter calls/limit = %d/%d", userLimiter.calls, userLimiter.limit)
+	}
+}
+
+func TestManagementStatsUsageOverviewProgressiveHandlersReturnNarrowPayloads(t *testing.T) {
+	service := &managementStatsUsageOverviewServiceStub{}
+	auth := managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}
+	tests := []struct {
+		name    string
+		handler http.Handler
+		wantKey string
+	}{
+		{name: "summary", handler: managementStatsUsageOverviewHandler(service, true, managementStatsOverviewSummarySection), wantKey: "summary"},
+		{name: "daily", handler: managementStatsUsageOverviewHandler(service, true, managementStatsOverviewDailySection), wantKey: "dailyTrend"},
+		{name: "hourly", handler: managementStatsUsageOverviewHandler(service, true, managementStatsOverviewHourlySection), wantKey: "hourlyTrend"},
+		{name: "models", handler: managementStatsUsageOverviewHandler(service, true, managementStatsOverviewModelsSection), wantKey: "modelDistribution"},
+		{name: "errors", handler: managementStatsUsageOverviewHandler(service, true, managementStatsOverviewErrorsSection), wantKey: "errors"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := requestWithManagementAuthContext(httptest.NewRequest(http.MethodGet, "/?startDate=2026-07-01&endDate=2026-07-02", nil), auth)
+			rec := httptest.NewRecorder()
+			test.handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope struct {
+				Data map[string]json.RawMessage `json:"data"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(envelope.Data) != 2 || envelope.Data["range"] == nil || envelope.Data[test.wantKey] == nil {
+				t.Fatalf("keys = %+v", envelope.Data)
+			}
+			if test.wantKey != "summary" && string(envelope.Data[test.wantKey]) != "[]" {
+				t.Fatalf("%s = %s, want []", test.wantKey, envelope.Data[test.wantKey])
+			}
+		})
 	}
 }
 
 func TestRouterDoesNotRegisterStatsUsageOverviewWithoutOptIn(t *testing.T) {
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
-	router := NewRouter(RouterOptions{Config: config.Config{Host: "127.0.0.1", Port: 3000}, ManagementStatsUsageOverviewHandler: handler, ManagementMyStatsUsageOverviewHandler: handler})
-	for _, path := range []string{"/__aisys__/api/stats/usage-overview", "/__aisys__/api/my-stats/usage-overview"} {
+	router := NewRouter(RouterOptions{
+		Config:                                           config.Config{Host: "127.0.0.1", Port: 3000},
+		ManagementStatsUsageOverviewHandler:              handler,
+		ManagementMyStatsUsageOverviewHandler:            handler,
+		ManagementStatsUsageOverviewSummaryHandler:       handler,
+		ManagementMyStatsUsageOverviewSummaryHandler:     handler,
+		ManagementStatsUsageOverviewDailyTrendHandler:    handler,
+		ManagementMyStatsUsageOverviewDailyTrendHandler:  handler,
+		ManagementStatsUsageOverviewHourlyTrendHandler:   handler,
+		ManagementMyStatsUsageOverviewHourlyTrendHandler: handler,
+		ManagementStatsUsageOverviewModelsHandler:        handler,
+		ManagementMyStatsUsageOverviewModelsHandler:      handler,
+		ManagementStatsUsageOverviewErrorsHandler:        handler,
+		ManagementMyStatsUsageOverviewErrorsHandler:      handler,
+	})
+	for _, path := range []string{
+		"/__aisys__/api/stats/usage-overview", "/__aisys__/api/my-stats/usage-overview",
+		"/__aisys__/api/stats/usage-overview/summary", "/__aisys__/api/my-stats/usage-overview/summary",
+		"/__aisys__/api/stats/usage-overview/daily-trend", "/__aisys__/api/my-stats/usage-overview/daily-trend",
+		"/__aisys__/api/stats/usage-overview/hourly-trend", "/__aisys__/api/my-stats/usage-overview/hourly-trend",
+		"/__aisys__/api/stats/usage-overview/model-distribution", "/__aisys__/api/my-stats/usage-overview/model-distribution",
+		"/__aisys__/api/stats/usage-overview/errors", "/__aisys__/api/my-stats/usage-overview/errors",
+	} {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusNotFound {
@@ -149,6 +225,41 @@ func (s *managementStatsUsageOverviewServiceStub) Overview(_ context.Context, sc
 	s.scope = scope
 	s.input = input
 	return s.result, s.err
+}
+
+func (s *managementStatsUsageOverviewServiceStub) Summary(_ context.Context, scope string, input managementstatsoverview.Input) (managementstatsoverview.SummaryResult, error) {
+	s.calls++
+	s.scope = scope
+	s.input = input
+	return managementstatsoverview.SummaryResult{}, s.err
+}
+
+func (s *managementStatsUsageOverviewServiceStub) DailyTrend(_ context.Context, scope string, input managementstatsoverview.Input) (managementstatsoverview.DailyTrendResult, error) {
+	s.calls++
+	s.scope = scope
+	s.input = input
+	return managementstatsoverview.DailyTrendResult{DailyTrend: []managementstatsoverview.DailyPoint{}}, s.err
+}
+
+func (s *managementStatsUsageOverviewServiceStub) HourlyTrend(_ context.Context, scope string, input managementstatsoverview.Input) (managementstatsoverview.HourlyTrendResult, error) {
+	s.calls++
+	s.scope = scope
+	s.input = input
+	return managementstatsoverview.HourlyTrendResult{HourlyTrend: []managementstatsoverview.TrendPoint{}}, s.err
+}
+
+func (s *managementStatsUsageOverviewServiceStub) ModelDistribution(_ context.Context, scope string, input managementstatsoverview.Input) (managementstatsoverview.ModelDistributionResult, error) {
+	s.calls++
+	s.scope = scope
+	s.input = input
+	return managementstatsoverview.ModelDistributionResult{ModelDistribution: []managementstatsoverview.ModelPoint{}}, s.err
+}
+
+func (s *managementStatsUsageOverviewServiceStub) Errors(_ context.Context, scope string, input managementstatsoverview.Input) (managementstatsoverview.ErrorsResult, error) {
+	s.calls++
+	s.scope = scope
+	s.input = input
+	return managementstatsoverview.ErrorsResult{Errors: []managementstatsoverview.ErrorPoint{}}, s.err
 }
 
 var _ managementStatsUsageOverviewService = (*managementStatsUsageOverviewServiceStub)(nil)

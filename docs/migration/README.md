@@ -48,7 +48,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 22. [W5 管理端策略路由删除迁移记录](W5-管理端策略路由删除迁移记录.md)：管理 / 个人两条 DELETE 的 admin global / owner narrowing、self actor、默认与 API Key 引用保护、事务锁读、204 空响应、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
 23. [W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)：管理端 / 个人端 API Key 创建、完整密钥查看与刷新、加密存储、权限、缓存失效、操作日志和真实依赖门禁。
 24. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
-25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts、使用记录列表、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in；`000088` 补齐本轮统计 reader fresh Goose catalog，但 Node stats worker 仍是唯一 writer。
+25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts、usage overview combined 与五段 progressive、使用记录列表、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in；`000088` / `000089` 补齐本轮统计 reader 与 Node writer 共存所需 fresh Goose catalog，但 Node stats worker 仍是唯一 writer。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
 27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
 28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000073` 后的连续版本规则和删除门禁。
@@ -93,7 +93,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `W5-管理端策略路由删除迁移记录.md` | W5 策略路由管理 / 个人两条 DELETE 迁移记录；固定 admin global / owner narrowing、self actor scope、无 body parser / mutation guard、默认和 API Key 引用 400 保护、事务 `FOR UPDATE`、204 空 body、`route_strategy_deleted` 失效、marker-only operation log、前端 request-capture，以及真实 PostgreSQL / Redis 互操作 / 前端 / 切流 / Node 删除门禁 |
 | `W5-管理端APIKey密钥生命周期迁移记录.md` | W5 `POST /api-keys` / `POST /my-api-keys`、`GET .../secret` 与 `POST .../refresh-key` 管理 / 个人双路由已进入 Go opt-in；固定 owner scope、strict create body、AES-GCM 密文、一次性明文返回、create runtime/quota 与 refresh validation/runtime/quota 失效、session touch、operation log marker 和真实 PostgreSQL / Redis / Asynq 门禁；删除由独立迁移记录维护，不代表 API Key 生产接管 |
 | `W5-管理端APIKey删除迁移记录.md` | W5 `DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 已进入 Go opt-in；固定 admin global / owner narrowing、self actor scope、写鉴权与限流、204 空 body / no-store、默认 Key 保护、PostgreSQL 原子硬删除与 cleanup-target upsert、validation 必需失效、`api_keys.delete` 操作日志、残余失效重试风险和真实依赖门禁 |
-| `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；固定管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts 的窄契约、31 天窗口、预聚合读取、schema catalog / writer owner 分离和删除门禁 |
+| `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；固定管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts、usage overview 五段渐进读取的窄契约、31 天窗口、预聚合读取、schema catalog / writer owner 分离和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
 | `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
 | `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、陈旧任务版本护栏、`cooldown_retest` 统计排除和 Go 原生 worker 接线门禁 |

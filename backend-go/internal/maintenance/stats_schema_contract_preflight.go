@@ -12,12 +12,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const statsSchemaContractVersion = 2
+const statsSchemaContractVersion = 3
 
 const statsSchemaColumnsQuery = `
 SELECT COALESCE(jsonb_object_agg(column_name, data_type), '{}'::jsonb)::text
 FROM information_schema.columns
 WHERE table_schema = $1 AND table_name = $2`
+
+const statsSchemaUniqueKeysQuery = `
+SELECT COALESCE(jsonb_agg(key_columns), '[]'::jsonb)::text
+FROM (
+  SELECT jsonb_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS key_columns
+  FROM information_schema.table_constraints AS tc
+  JOIN information_schema.key_column_usage AS kcu
+    ON kcu.constraint_schema = tc.constraint_schema
+   AND kcu.constraint_name = tc.constraint_name
+   AND kcu.table_schema = tc.table_schema
+   AND kcu.table_name = tc.table_name
+  WHERE tc.table_schema = $1
+    AND tc.table_name = $2
+    AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+  GROUP BY tc.constraint_name
+) AS keys`
 
 // StatsSchemaFeatureContract describes only tables read by Go opt-in endpoints.
 // Node remains the sole writer until the worker migration has its own cutover evidence.
@@ -27,8 +43,10 @@ type StatsSchemaFeatureContract struct {
 }
 
 type StatsSchemaRelationContract struct {
-	Name    string
-	Columns []string
+	Name        string
+	Columns     []string
+	ColumnTypes map[string]string
+	UniqueKey   []string
 }
 
 type StatsSchemaContractPreflightResult struct {
@@ -163,6 +181,27 @@ func inspectStatsSchemaContract(
 				info.Ready = false
 				result.Issues = append(result.Issues, fmt.Sprintf("juhe_stats.%s missing columns: %s", relation.Name, joinComma(missing)))
 			}
+			mismatched := mismatchedStatsSchemaColumnTypes(columns, relation.ColumnTypes)
+			if len(mismatched) > 0 {
+				result.Success = false
+				info.Ready = false
+				result.Issues = append(result.Issues, fmt.Sprintf("juhe_stats.%s column type mismatch: %s", relation.Name, joinComma(mismatched)))
+			}
+			if len(relation.UniqueKey) > 0 {
+				keys, unavailable, err := inspectStatsSchemaUniqueKeys(ctx, querier, relation.Name)
+				if err != nil {
+					return StatsSchemaContractPreflightResult{}, err
+				}
+				if unavailable {
+					result.Success = false
+					info.Ready = false
+					result.Issues = append(result.Issues, fmt.Sprintf("inspect juhe_stats.%s unique keys: unavailable", relation.Name))
+				} else if !containsStatsSchemaKey(keys, relation.UniqueKey) {
+					result.Success = false
+					info.Ready = false
+					result.Issues = append(result.Issues, fmt.Sprintf("juhe_stats.%s missing unique key: %s", relation.Name, joinComma(relation.UniqueKey)))
+				}
+			}
 		}
 		result.Features = append(result.Features, info)
 	}
@@ -170,6 +209,22 @@ func inspectStatsSchemaContract(
 		return StatsSchemaContractPreflightResult{}, err
 	}
 	return result, nil
+}
+
+func inspectStatsSchemaUniqueKeys(ctx context.Context, querier statsSchemaContractQuerier, table string) ([][]string, bool, error) {
+	var raw string
+	err := querier.QueryRow(ctx, statsSchemaUniqueKeysQuery, "juhe_stats", table).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+	keys := [][]string{}
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		return nil, false, fmt.Errorf("decode juhe_stats.%s unique keys: %w", table, err)
+	}
+	return keys, false, nil
 }
 
 func inspectStatsSchemaRelation(ctx context.Context, querier statsSchemaContractQuerier, table string) (map[string]string, bool, error) {
@@ -197,6 +252,36 @@ func missingStatsSchemaColumns(actual map[string]string, required []string) []st
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+func mismatchedStatsSchemaColumnTypes(actual map[string]string, required map[string]string) []string {
+	mismatched := make([]string, 0)
+	for column, want := range required {
+		if got, ok := actual[column]; ok && got != want {
+			mismatched = append(mismatched, fmt.Sprintf("%s=%s want %s", column, got, want))
+		}
+	}
+	sort.Strings(mismatched)
+	return mismatched
+}
+
+func containsStatsSchemaKey(actual [][]string, required []string) bool {
+	for _, key := range actual {
+		if len(key) != len(required) {
+			continue
+		}
+		matched := true
+		for index := range required {
+			if key[index] != required[index] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func joinComma(values []string) string {
@@ -241,26 +326,58 @@ func statsSchemaReadContracts() []StatsSchemaFeatureContract {
 		{
 			Name: "stats-overview",
 			Relations: []StatsSchemaRelationContract{
+				{Name: "usage_overview_summary_windows", Columns: []string{
+					"system_account_id", "window_key", "start_date", "end_date", "request_count", "success_count", "error_count",
+					"input_tokens", "output_tokens", "cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens",
+					"cache_write_1h_tokens", "cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens",
+					"total_cost_usd", "duration_ms_sum", "duration_ms_count", "first_token_ms_sum", "first_token_ms_count", "last_used_at",
+				}, ColumnTypes: map[string]string{
+					"system_account_id": "text", "window_key": "text", "start_date": "text", "end_date": "text",
+					"request_count": "bigint", "success_count": "bigint", "error_count": "bigint",
+					"input_tokens": "bigint", "output_tokens": "bigint", "cache_read_tokens": "bigint",
+					"cache_read_cost_usd": "double precision", "cache_write_tokens": "bigint", "cache_write_1h_tokens": "bigint",
+					"cache_write_cost_usd": "double precision", "thinking_tokens": "bigint", "input_image_tokens": "bigint",
+					"output_image_tokens": "bigint", "total_cost_usd": "double precision", "duration_ms_sum": "bigint",
+					"duration_ms_count": "bigint", "first_token_ms_sum": "bigint", "first_token_ms_count": "bigint", "last_used_at": "text",
+				}, UniqueKey: []string{"system_account_id", "window_key"}},
 				{Name: "usage_stats_daily", Columns: []string{
 					"system_account_id", "scope_type", "scope_id", "stat_date", "request_count", "success_count", "error_count",
 					"input_tokens", "output_tokens", "cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens",
 					"cache_write_1h_tokens", "cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens",
 					"total_cost_usd", "duration_ms_sum", "duration_ms_count", "first_token_ms_sum", "first_token_ms_count", "last_used_at",
-				}},
+				}, ColumnTypes: map[string]string{
+					"system_account_id": "text", "scope_type": "text", "scope_id": "text", "stat_date": "text",
+					"input_tokens": "bigint", "output_tokens": "bigint", "total_cost_usd": "double precision",
+				}, UniqueKey: []string{"system_account_id", "scope_type", "scope_id", "stat_date"}},
 				{Name: "usage_overview_trend_windows", Columns: []string{
 					"system_account_id", "window_key", "start_date", "end_date", "bucket_key", "request_count", "error_count",
 					"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens",
 					"cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens", "total_cost_usd",
 					"duration_ms_sum", "duration_ms_count",
-				}},
+				}, ColumnTypes: map[string]string{
+					"system_account_id": "text", "window_key": "text", "start_date": "text", "end_date": "text", "bucket_key": "text",
+					"request_count": "bigint", "error_count": "bigint", "input_tokens": "bigint", "output_tokens": "bigint",
+					"cache_read_tokens": "bigint", "cache_write_tokens": "bigint", "cache_write_1h_tokens": "bigint",
+					"cache_write_cost_usd": "double precision", "thinking_tokens": "bigint", "input_image_tokens": "bigint",
+					"output_image_tokens": "bigint", "total_cost_usd": "double precision", "duration_ms_sum": "bigint", "duration_ms_count": "bigint",
+				}, UniqueKey: []string{"system_account_id", "window_key", "bucket_key"}},
 				{Name: "usage_model_rank_windows", Columns: []string{
 					"system_account_id", "window_key", "start_date", "end_date", "rank", "provider_code", "model", "request_count",
 					"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens",
 					"cache_write_cost_usd", "thinking_tokens", "input_image_tokens", "output_image_tokens", "total_cost_usd",
-				}},
+				}, ColumnTypes: map[string]string{
+					"system_account_id": "text", "window_key": "text", "start_date": "text", "end_date": "text", "rank": "integer",
+					"provider_code": "text", "model": "text", "request_count": "bigint", "input_tokens": "bigint", "output_tokens": "bigint",
+					"cache_read_tokens": "bigint", "cache_write_tokens": "bigint", "cache_write_1h_tokens": "bigint",
+					"cache_write_cost_usd": "double precision", "thinking_tokens": "bigint", "input_image_tokens": "bigint",
+					"output_image_tokens": "bigint", "total_cost_usd": "double precision",
+				}, UniqueKey: []string{"system_account_id", "window_key", "rank", "provider_code", "model"}},
 				{Name: "usage_error_rank_windows", Columns: []string{
 					"system_account_id", "window_key", "start_date", "end_date", "rank", "provider_code", "error_code", "status_code", "error_message", "error_count",
-				}},
+				}, ColumnTypes: map[string]string{
+					"system_account_id": "text", "window_key": "text", "start_date": "text", "end_date": "text", "rank": "integer",
+					"provider_code": "text", "error_code": "text", "status_code": "integer", "error_message": "text", "error_count": "bigint",
+				}, UniqueKey: []string{"system_account_id", "window_key", "rank", "provider_code", "error_code", "status_code"}},
 			},
 		},
 		{

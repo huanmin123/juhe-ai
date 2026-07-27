@@ -55,13 +55,13 @@ func TestServiceOverviewMapsPreaggregatedWindows(t *testing.T) {
 	}
 	if reader.input != (port.ManagementStatsOverviewReadInput{
 		SystemAccountID: "global",
-		WindowKey:       "2026-07-22:2026-07-22",
-		StartDate:       "2026-07-22",
+		WindowKey:       "2026-06-22:2026-07-22",
+		StartDate:       "2026-06-22",
 		EndDate:         "2026-07-22",
 	}) {
 		t.Fatalf("reader input = %+v", reader.input)
 	}
-	if got.Range.StartDate != "2026-07-22" || got.Range.EndDate != "2026-07-22" || got.Range.Days != 1 || got.Range.MaxDays != 31 {
+	if got.Range.StartDate != "2026-06-22" || got.Range.EndDate != "2026-07-22" || got.Range.Days != 31 || got.Range.MaxDays != 31 {
 		t.Fatalf("range = %+v", got.Range)
 	}
 	if got.Summary.RequestCount != 4 || got.Summary.TotalTokens != 30 || got.Summary.ErrorRate != 0.25 ||
@@ -87,6 +87,7 @@ func TestServiceOverviewNormalizesNodeCompatibleDateWindows(t *testing.T) {
 		wantStart string
 		wantEnd   string
 	}{
+		{name: "empty input uses the fixed window", input: Input{}, wantStart: "2026-06-22", wantEnd: "2026-07-22"},
 		{name: "one boundary becomes one day", input: Input{StartDate: "2026-07-10"}, wantStart: "2026-07-10", wantEnd: "2026-07-10"},
 		{name: "old dates clamp to supported floor", input: Input{StartDate: "2020-01-01", EndDate: "2020-02-01"}, wantStart: "2026-06-22", wantEnd: "2026-06-22"},
 		{name: "future dates clamp to today", input: Input{StartDate: "2099-01-01", EndDate: "2099-02-01"}, wantStart: "2026-07-22", wantEnd: "2026-07-22"},
@@ -114,6 +115,65 @@ func TestServiceOverviewNormalizesNodeCompatibleDateWindows(t *testing.T) {
 				t.Fatalf("empty collections must encode as arrays: %+v", got)
 			}
 		})
+	}
+}
+
+func TestServiceProgressiveSectionsReadOnlyTheirOwnSource(t *testing.T) {
+	reader := &overviewReaderStub{
+		daily: []port.ManagementStatsOverviewDailyRow{{StatDate: "2026-07-01", InputTokens: 2, OutputTokens: 3, TotalCost: 0.5}},
+		window: port.ManagementStatsOverviewWindow{
+			Summary:           &port.ManagementStatsOverviewSummaryRow{RequestCount: 1},
+			HourlyTrend:       []port.ManagementStatsOverviewTrendRow{{StatHour: "2026-07-01T00"}},
+			ModelDistribution: []port.ManagementStatsOverviewModelRow{{Model: "gpt-5"}},
+			Errors:            []port.ManagementStatsOverviewErrorRow{{ErrorCode: "timeout"}},
+		},
+	}
+	service := NewService(ServiceOptions{
+		Reader:       reader,
+		WindowReader: usageWindowReaderStub{window: managementstats.UsageWindow{StartDate: "2026-06-22", EndDate: "2026-07-22", MaxDays: 31}},
+	})
+
+	daily, err := service.DailyTrend(context.Background(), "sys_1", Input{StartDate: "2026-07-01", EndDate: "2026-07-03"})
+	if err != nil {
+		t.Fatalf("DailyTrend() error = %v", err)
+	}
+	if reader.dailyCalls != 1 || reader.summaryCalls != 0 || reader.hourlyCalls != 0 || reader.modelCalls != 0 || reader.errorCalls != 0 {
+		t.Fatalf("calls summary/daily/hourly/models/errors = %d/%d/%d/%d/%d", reader.summaryCalls, reader.dailyCalls, reader.hourlyCalls, reader.modelCalls, reader.errorCalls)
+	}
+	if len(daily.DailyTrend) != 3 || daily.DailyTrend[0].TotalTokens != 5 || daily.DailyTrend[1].StatDate != "2026-07-02" || daily.DailyTrend[1].TotalTokens != 0 || daily.DailyTrend[2].StatDate != "2026-07-03" {
+		t.Fatalf("daily trend = %+v", daily.DailyTrend)
+	}
+
+	reader.resetCalls()
+	if _, err := service.Summary(context.Background(), "sys_1", Input{}); err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if reader.summaryCalls != 1 || reader.dailyCalls+reader.hourlyCalls+reader.modelCalls+reader.errorCalls != 0 {
+		t.Fatalf("summary calls = %+v", reader)
+	}
+
+	reader.resetCalls()
+	if _, err := service.HourlyTrend(context.Background(), "sys_1", Input{}); err != nil {
+		t.Fatalf("HourlyTrend() error = %v", err)
+	}
+	if reader.hourlyCalls != 1 || reader.summaryCalls+reader.dailyCalls+reader.modelCalls+reader.errorCalls != 0 {
+		t.Fatalf("hourly calls = %+v", reader)
+	}
+
+	reader.resetCalls()
+	if _, err := service.ModelDistribution(context.Background(), "sys_1", Input{}); err != nil {
+		t.Fatalf("ModelDistribution() error = %v", err)
+	}
+	if reader.modelCalls != 1 || reader.summaryCalls+reader.dailyCalls+reader.hourlyCalls+reader.errorCalls != 0 {
+		t.Fatalf("model calls = %+v", reader)
+	}
+
+	reader.resetCalls()
+	if _, err := service.Errors(context.Background(), "sys_1", Input{}); err != nil {
+		t.Fatalf("Errors() error = %v", err)
+	}
+	if reader.errorCalls != 1 || reader.summaryCalls+reader.dailyCalls+reader.hourlyCalls+reader.modelCalls != 0 {
+		t.Fatalf("error calls = %+v", reader)
 	}
 }
 
@@ -180,14 +240,56 @@ func (s usageWindowReaderStub) UsageWindow(context.Context) (managementstats.Usa
 }
 
 type overviewReaderStub struct {
-	input  port.ManagementStatsOverviewReadInput
-	window port.ManagementStatsOverviewWindow
-	err    error
+	input        port.ManagementStatsOverviewReadInput
+	window       port.ManagementStatsOverviewWindow
+	daily        []port.ManagementStatsOverviewDailyRow
+	err          error
+	summaryCalls int
+	dailyCalls   int
+	hourlyCalls  int
+	modelCalls   int
+	errorCalls   int
 }
 
-func (s *overviewReaderStub) ReadManagementStatsOverview(_ context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewWindow, error) {
+func (s *overviewReaderStub) ReadManagementStatsOverviewSummary(_ context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewSummaryRow, bool, error) {
 	s.input = input
-	return s.window, s.err
+	s.summaryCalls++
+	if s.err != nil || s.window.Summary == nil {
+		return port.ManagementStatsOverviewSummaryRow{}, false, s.err
+	}
+	return *s.window.Summary, true, nil
+}
+
+func (s *overviewReaderStub) ReadManagementStatsOverviewDailyTrend(_ context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewDailyRow, error) {
+	s.input = input
+	s.dailyCalls++
+	return s.daily, s.err
+}
+
+func (s *overviewReaderStub) ReadManagementStatsOverviewHourlyTrend(_ context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewTrendRow, error) {
+	s.input = input
+	s.hourlyCalls++
+	return s.window.HourlyTrend, s.err
+}
+
+func (s *overviewReaderStub) ReadManagementStatsOverviewModelDistribution(_ context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewModelRow, error) {
+	s.input = input
+	s.modelCalls++
+	return s.window.ModelDistribution, s.err
+}
+
+func (s *overviewReaderStub) ReadManagementStatsOverviewErrors(_ context.Context, input port.ManagementStatsOverviewReadInput) ([]port.ManagementStatsOverviewErrorRow, error) {
+	s.input = input
+	s.errorCalls++
+	return s.window.Errors, s.err
+}
+
+func (s *overviewReaderStub) resetCalls() {
+	s.summaryCalls = 0
+	s.dailyCalls = 0
+	s.hourlyCalls = 0
+	s.modelCalls = 0
+	s.errorCalls = 0
 }
 
 var _ port.ManagementStatsOverviewReader = (*overviewReaderStub)(nil)

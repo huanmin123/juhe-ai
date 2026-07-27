@@ -508,6 +508,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyStatsAIPerformanceAccountsHandler:     managementHandlers.MyStatsAIPerformanceAccountsHandler,
 		ManagementStatsUsageOverviewHandler:               managementHandlers.StatsUsageOverviewHandler,
 		ManagementMyStatsUsageOverviewHandler:             managementHandlers.MyStatsUsageOverviewHandler,
+		ManagementStatsUsageOverviewSummaryHandler:        managementHandlers.StatsUsageOverviewSummaryHandler,
+		ManagementMyStatsUsageOverviewSummaryHandler:      managementHandlers.MyStatsUsageOverviewSummaryHandler,
+		ManagementStatsUsageOverviewDailyTrendHandler:     managementHandlers.StatsUsageOverviewDailyTrendHandler,
+		ManagementMyStatsUsageOverviewDailyTrendHandler:   managementHandlers.MyStatsUsageOverviewDailyTrendHandler,
+		ManagementStatsUsageOverviewHourlyTrendHandler:    managementHandlers.StatsUsageOverviewHourlyTrendHandler,
+		ManagementMyStatsUsageOverviewHourlyTrendHandler:  managementHandlers.MyStatsUsageOverviewHourlyTrendHandler,
+		ManagementStatsUsageOverviewModelsHandler:         managementHandlers.StatsUsageOverviewModelsHandler,
+		ManagementMyStatsUsageOverviewModelsHandler:       managementHandlers.MyStatsUsageOverviewModelsHandler,
+		ManagementStatsUsageOverviewErrorsHandler:         managementHandlers.StatsUsageOverviewErrorsHandler,
+		ManagementMyStatsUsageOverviewErrorsHandler:       managementHandlers.MyStatsUsageOverviewErrorsHandler,
 	})
 
 	server := &http.Server{
@@ -771,6 +781,16 @@ type managementAPIHandlers struct {
 	MyStatsAIPerformanceAccountsHandler     http.Handler
 	StatsUsageOverviewHandler               http.Handler
 	MyStatsUsageOverviewHandler             http.Handler
+	StatsUsageOverviewSummaryHandler        http.Handler
+	MyStatsUsageOverviewSummaryHandler      http.Handler
+	StatsUsageOverviewDailyTrendHandler     http.Handler
+	MyStatsUsageOverviewDailyTrendHandler   http.Handler
+	StatsUsageOverviewHourlyTrendHandler    http.Handler
+	MyStatsUsageOverviewHourlyTrendHandler  http.Handler
+	StatsUsageOverviewModelsHandler         http.Handler
+	MyStatsUsageOverviewModelsHandler       http.Handler
+	StatsUsageOverviewErrorsHandler         http.Handler
+	MyStatsUsageOverviewErrorsHandler       http.Handler
 }
 
 type managementAPIInvalidator interface {
@@ -1332,6 +1352,16 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		MyStatsAIPerformanceAccountsHandler:     httpapi.NewManagementMyStatsAIPerformanceAccountsHandler(statsService),
 		StatsUsageOverviewHandler:               httpapi.NewManagementStatsUsageOverviewHandler(statsOverviewService),
 		MyStatsUsageOverviewHandler:             httpapi.NewManagementMyStatsUsageOverviewHandler(statsOverviewService),
+		StatsUsageOverviewSummaryHandler:        httpapi.NewManagementStatsUsageOverviewSummaryHandler(statsOverviewService),
+		MyStatsUsageOverviewSummaryHandler:      httpapi.NewManagementMyStatsUsageOverviewSummaryHandler(statsOverviewService),
+		StatsUsageOverviewDailyTrendHandler:     httpapi.NewManagementStatsUsageOverviewDailyTrendHandler(statsOverviewService),
+		MyStatsUsageOverviewDailyTrendHandler:   httpapi.NewManagementMyStatsUsageOverviewDailyTrendHandler(statsOverviewService),
+		StatsUsageOverviewHourlyTrendHandler:    httpapi.NewManagementStatsUsageOverviewHourlyTrendHandler(statsOverviewService),
+		MyStatsUsageOverviewHourlyTrendHandler:  httpapi.NewManagementMyStatsUsageOverviewHourlyTrendHandler(statsOverviewService),
+		StatsUsageOverviewModelsHandler:         httpapi.NewManagementStatsUsageOverviewModelDistributionHandler(statsOverviewService),
+		MyStatsUsageOverviewModelsHandler:       httpapi.NewManagementMyStatsUsageOverviewModelDistributionHandler(statsOverviewService),
+		StatsUsageOverviewErrorsHandler:         httpapi.NewManagementStatsUsageOverviewErrorsHandler(statsOverviewService),
+		MyStatsUsageOverviewErrorsHandler:       httpapi.NewManagementMyStatsUsageOverviewErrorsHandler(statsOverviewService),
 	}
 }
 

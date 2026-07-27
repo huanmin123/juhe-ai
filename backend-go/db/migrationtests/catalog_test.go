@@ -117,10 +117,83 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000088_w6_progressive_stats_read_catalog.sql",
+		Name:    "000089_w6_management_stats_overview_catalog.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
+	}
+}
+
+func TestManagementStatsOverviewMigrationCompletesFreshGooseCatalog(t *testing.T) {
+	const migrationName = "000089_w6_management_stats_overview_catalog.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ToLower(strings.ReplaceAll(string(source), "\r\n", "\n"))
+
+	for _, table := range []string{
+		"usage_model_daily",
+		"usage_error_daily",
+		"usage_overview_summary_windows",
+		"usage_overview_trend_windows",
+		"usage_model_rank_windows",
+		"usage_error_rank_windows",
+	} {
+		want := "create table if not exists juhe_stats." + table
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+
+	indexes := []string{
+		"idx_usage_model_daily_date",
+		"idx_usage_model_daily_stat_date",
+		"idx_usage_model_daily_updated",
+		"idx_usage_error_daily_date",
+		"idx_usage_error_daily_stat_date",
+		"idx_usage_error_daily_updated",
+		"idx_usage_overview_summary_windows_end",
+		"idx_usage_overview_summary_windows_prewarm_order",
+		"idx_usage_overview_trend_windows_lookup",
+		"idx_usage_overview_trend_windows_end",
+		"idx_usage_model_rank_windows_lookup",
+		"idx_usage_model_rank_windows_end",
+		"idx_usage_error_rank_windows_lookup",
+		"idx_usage_error_rank_windows_end",
+	}
+	for _, index := range indexes {
+		want := "create index if not exists " + index
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+	if got := strings.Count(sql, "create index if not exists idx_usage_"); got != len(indexes) {
+		t.Fatalf("%s usage index count = %d, want %d", migrationName, got, len(indexes))
+	}
+
+	for _, want := range []string{
+		"primary key (system_account_id, stat_date, provider_code, model)",
+		"primary key (system_account_id, stat_date, error_group, provider_code, error_code, status_code)",
+		"primary key (system_account_id, window_key)",
+		"primary key (system_account_id, window_key, bucket_key)",
+		"primary key (system_account_id, window_key, rank, provider_code, model)",
+		"primary key (system_account_id, window_key, rank, provider_code, error_code, status_code)",
+		"where request_count > 0\n    and system_account_id <> 'global'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+
+	down := strings.Split(sql, "-- +goose down")
+	if len(down) != 2 {
+		t.Fatalf("%s missing Goose Down section", migrationName)
+	}
+	for _, forbidden := range []string{"drop table", "delete from", "truncate", "insert into", "update "} {
+		if strings.Contains(down[1], forbidden) {
+			t.Fatalf("%s Down must preserve shared Node-writer data; found %q", migrationName, forbidden)
+		}
 	}
 }
 
