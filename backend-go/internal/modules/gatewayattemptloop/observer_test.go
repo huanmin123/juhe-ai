@@ -11,7 +11,7 @@ import (
 )
 
 func TestRunObserverSeesEachActualAttemptAndOnlyOneFirstByte(t *testing.T) {
-	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	executor := &observingExecutor{results: []AttemptResult{{RetryAllowed: true}, {Success: true, Committed: true}}, now: now}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second}).WithNow(func() time.Time { return now })
 	observer := &observerStub{}

@@ -119,7 +119,7 @@ func TestObserverReleasesLongLivedAttemptWhenStoreIdentityExpires(t *testing.T) 
 }
 
 func TestObserverIntegratesWithAttemptLoop(t *testing.T) {
-	now := time.Date(2026, 7, 26, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	store := newStore(t)
 	observer := newObserver(t, store, now, Options{})
 	executor := loopExecutor{now: now}
