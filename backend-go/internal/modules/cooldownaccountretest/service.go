@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	ErrProbeNotConfigured       = errors.New("cooldown account retest probe is not configured")
+	ErrProbeNotConfigured      = errors.New("cooldown account retest probe is not configured")
 	ErrUnsupportedProbeOutcome = errors.New("unsupported cooldown account retest probe outcome")
 )
 

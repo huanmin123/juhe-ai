@@ -22,9 +22,10 @@ import {
 } from './stream-inspection.js'
 import {
   parseGeminiUsageFromJsonBuffer,
+  parseGeminiUsageFromJsonValue,
   parseGeminiUsageFromJsonTextFragment
 } from './usage.js'
-import { parseGeminiErrorPayload } from './error-payload.js'
+import { parseGeminiErrorPayload, parseGeminiErrorPayloadFromJsonValue } from './error-payload.js'
 
 export const geminiV1BetaProtocolDriver: GatewayProtocolDriver = {
   id: 'gemini-v1beta',
@@ -48,8 +49,10 @@ export const geminiV1BetaProtocolDriver: GatewayProtocolDriver = {
   sseResponseInspectionFailureEvent: 'none',
   drainForKeepAliveAfterTerminal: false,
   parseUsageFromJsonBuffer: parseGeminiUsageFromJsonBuffer,
+  parseUsageFromJsonValue: parseGeminiUsageFromJsonValue,
   parseUsageFromJsonTextFragment: parseGeminiUsageFromJsonTextFragment,
   parseErrorPayload: parseGeminiErrorPayload,
+  parseErrorPayloadFromJsonValue: parseGeminiErrorPayloadFromJsonValue,
   applyStreamUsageFallback: applyGeminiStreamUsageFallback
 }
 

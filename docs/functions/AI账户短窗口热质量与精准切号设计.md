@@ -347,13 +347,13 @@ spend 1 credit = 1 same_tier_exploration assignment
 | 作用域 | 典型故障 | 电路范围 |
 | --- | --- | --- |
 | `key` | 本地 Key 解密 / 装配失败，或用户显式高级策略指定 Key 动作 | 当前 `keyFingerprint` |
-| `protocol_model` | 当前请求形态发生 transport、timeout、读取中断或未完成响应 | `accountRuntimeKey + protocolProfile + requestLane + modelFamily` |
-| `account` | 多个独立 `protocol_model` 作用域均发生本地可验证失败，或用户显式高级策略指定账号动作 | `accountRuntimeKey`，跨请求、IP、会话和路由实例共享 |
+| `protocol_model / model_capability` | 当前请求形态发生 transport、timeout、读取中断、未完成响应或独立 execution 失败 | 最终 Attempt 的 `scopeId`：运行账户 + 协议档案 + 最终模型 + endpoint + lane + adapter route + credential scope |
+| `account` | 用户显式高级策略指定账号动作，或未来由专属 owner 证明真正与模型无关的账户全局事实 | `accountRuntimeKey`；当前没有从请求派生子 incident 自动建立该层的入口 |
 | `upstream_bucket` | 多个不同账号在同一代理 / Base URL / provider 出现 transport、timeout 或读取中断 | 复用现有上游桶健康作用域 |
 
-只有多个独立本地 transport 事实或用户显式高级策略明确指定账号动作时，才写全局 `accountRuntimeKey` 电路。单模型、单 endpoint 或单 Key 故障不能因为共享物理账号而阻断其他模型或另一条快速路由中的健康能力。任何上游状态码、响应头、错误码或正文都不能作为系统自动扩大作用域的证据。
+任意数量的模型 / endpoint / lane / adapter / Key 子 incident 都不能写全局 `accountRuntimeKey` 电路。父层只允许用户显式高级策略，或未来专属账户全局 owner 的与模型无关独立证据建立；当前自动入口固定关闭。单能力故障不能因为共享物理账号而阻断其他能力。任何上游状态码、响应头、错误码、正文或子 scope 数量都不能作为扩大作用域的证据。
 
-自动从 `protocol_model` 扩大到 `account` 只按窗口内当前仍为 `OPEN` 的独立 scope 计数。`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 默认 `3`、合法范围 `3..64`；`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 默认 `600000ms`、合法范围 `60000..86400000ms`。scope key 固定包含 `accountRuntimeKey + protocolProfile + requestLane + modelBucket`；同 scope 重复失败、较大的 confirmation 计数和同坏会话并发都只贡献一个 scope。每个 scope 的新证据只刷新自己的观察时间，窗口滚动淘汰过期项；任一新的完整 framing 清除尚未提交的聚合升级证据，但不提前关闭已经建立的 account 电路。实现不得把阈值配置到 3 以下，也不得把单作用域的并发失败扩大成账号级故障。
+旧 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 与 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 在切换时删除；迁移期即使环境中仍存在也只能告警并忽略，不能重新启用子 scope 投票。既有由该规则生成的父 incident 必须按 provenance / childIncidentIds 清单 CAS 关闭，子 incident 原样保留；来源不明时进入人工 manifest 门禁。
 
 热质量按以下维度隔离：
 
@@ -529,7 +529,7 @@ stateDiagram-v2
 ```text
 gateway-circuit:v1:account:{accountRuntimeKey}
 gateway-circuit:v1:key:{accountRuntimeKey}:{keyFingerprint}
-gateway-circuit:v1:protocol-model:{accountRuntimeKey}:{protocolProfile}:{requestLane}:{modelFamily}
+gateway-circuit:v2:protocol-model:{scopeId}
 gateway-policy-block:v1:{policyScope}
 gateway-hot-quality:v1:{qualityScope}
 ```
@@ -750,9 +750,9 @@ routeCoordinationBudget
 | 整请求墙钟总预算 | `GatewayRequestWallBudget` 不暂停；文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒。决策点到期 handoff 客户端重试重选；在途 attempt 不被另一 lane 的短时限机械取消 |
 | 零可派发等待预算 | `ServerRetryBudget`，默认 270 秒累计，attempt/读取暂停 |
 
-同层规则：当前层内每个唯一 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的账号不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
+同层规则：当前层内每个唯一最终 Attempt `scopeId` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的精确 scope 不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
 
-如果当前层所有账号已经处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有 account 电路已经建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
+如果当前层所有精确 scope 已处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `scopeId` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有真正 account 电路已经由专属全局 owner 建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
 
 普通路由在请求开始时只解析一次 `normalRoutingConfig.firstByteDeadlineMs`，普通模式、快速模式和同请求后续文本账号 attempt 都复用这个路由观察值。建议默认 10 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入公共 `normalRoutingConfig.firstByteDeadlineMs`，迁移完成后删除速度模式专属字段，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
 

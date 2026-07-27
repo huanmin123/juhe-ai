@@ -176,19 +176,36 @@ export function parseGatewayProtocolUsageFromJsonBufferForRequest(
   return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonBuffer(responseBody)
 }
 
+export function parseGatewayProtocolUsageFromJsonValue(
+  profile: ProviderProtocolProfileDefinition | undefined,
+  value: unknown
+): ParsedUsage {
+  return requireGatewayProtocolDriverForProfile(profile).parseUsageFromJsonValue(value)
+}
+
+export function parseGatewayProtocolUsageFromJsonValueForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  value: unknown
+): ParsedUsage {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonValue(value)
+}
+
 export function parseGatewayProtocolUsageFromJsonTextFragment(
   profile: ProviderProtocolProfileDefinition | undefined,
-  text?: string
+  text?: string,
+  skipFullDocumentParse = false
 ): ParsedUsage {
-  return requireGatewayProtocolDriverForProfile(profile).parseUsageFromJsonTextFragment(text)
+  return requireGatewayProtocolDriverForProfile(profile).parseUsageFromJsonTextFragment(text, skipFullDocumentParse)
 }
 
 export function parseGatewayProtocolUsageFromJsonTextFragmentForRequest(
   req: Request,
   profile: ProviderProtocolProfileDefinition | undefined,
-  text?: string
+  text?: string,
+  skipFullDocumentParse = false
 ): ParsedUsage {
-  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonTextFragment(text)
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseUsageFromJsonTextFragment(text, skipFullDocumentParse)
 }
 
 export function parseGatewayProtocolErrorPayload(
@@ -206,6 +223,21 @@ export function parseGatewayProtocolErrorPayloadForRequest(
   headers: Headers
 ): GatewayProtocolErrorPayload {
   return gatewayProtocolDriverForRequestOrProfile(req, profile).parseErrorPayload(text, headers)
+}
+
+export function parseGatewayProtocolErrorPayloadFromJsonValue(
+  profile: ProviderProtocolProfileDefinition | undefined,
+  value: unknown
+): GatewayProtocolErrorPayload {
+  return requireGatewayProtocolDriverForProfile(profile).parseErrorPayloadFromJsonValue(value)
+}
+
+export function parseGatewayProtocolErrorPayloadFromJsonValueForRequest(
+  req: Request,
+  profile: ProviderProtocolProfileDefinition | undefined,
+  value: unknown
+): GatewayProtocolErrorPayload {
+  return gatewayProtocolDriverForRequestOrProfile(req, profile).parseErrorPayloadFromJsonValue(value)
 }
 
 export function applyGatewayProtocolStreamUsageFallback(

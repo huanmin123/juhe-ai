@@ -181,6 +181,11 @@ export function geminiInteractionIdFromResponseBody(bodyText: string | undefined
   return undefined
 }
 
+export function geminiInteractionIdFromParsedResponse(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return interactionIdFromJsonObject(value as Record<string, unknown>, true)
+}
+
 export function geminiInteractionIdFromJsonPrefix(rawBody: Buffer): string | undefined {
   let index = skipJsonWhitespace(rawBody, 0)
   if (rawBody[index] !== 0x7b) return undefined
@@ -213,18 +218,21 @@ function parseInteractionIdFromJson(value: string, allowRootId: boolean): string
   try {
     const parsed = JSON.parse(value) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-    const payload = parsed as Record<string, unknown>
-    const interaction = payload.interaction
-    if (interaction && typeof interaction === 'object' && !Array.isArray(interaction)) {
-      const id = normalizeInteractionId((interaction as Record<string, unknown>).id)
-      if (id) return id
-    }
-    const interactionId = normalizeInteractionId(payload.interaction_id)
-    if (interactionId) return interactionId
-    return allowRootId ? normalizeInteractionId(payload.id) : undefined
+    return interactionIdFromJsonObject(parsed as Record<string, unknown>, allowRootId)
   } catch {
     return undefined
   }
+}
+
+function interactionIdFromJsonObject(payload: Record<string, unknown>, allowRootId: boolean): string | undefined {
+  const interaction = payload.interaction
+  if (interaction && typeof interaction === 'object' && !Array.isArray(interaction)) {
+    const id = normalizeInteractionId((interaction as Record<string, unknown>).id)
+    if (id) return id
+  }
+  const interactionId = normalizeInteractionId(payload.interaction_id)
+  if (interactionId) return interactionId
+  return allowRootId ? normalizeInteractionId(payload.id) : undefined
 }
 
 function skipJsonWhitespace(rawBody: Buffer, index: number): number {

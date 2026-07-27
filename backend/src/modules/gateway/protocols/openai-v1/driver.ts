@@ -19,9 +19,10 @@ import {
 } from './stream-inspection.js'
 import {
   parseOpenAIUsageFromJsonBuffer,
+  parseOpenAIUsageFromJsonValue,
   parseOpenAIUsageFromJsonTextFragment
 } from './usage.js'
-import { parseOpenAIErrorPayload } from './error-payload.js'
+import { parseOpenAIErrorPayload, parseOpenAIErrorPayloadFromJsonValue } from './error-payload.js'
 
 export const openAIV1ProtocolDriver: GatewayProtocolDriver = {
   id: 'openai-v1',
@@ -43,8 +44,10 @@ export const openAIV1ProtocolDriver: GatewayProtocolDriver = {
   sseResponseInspectionFailureEvent: 'default',
   drainForKeepAliveAfterTerminal: true,
   parseUsageFromJsonBuffer: parseOpenAIUsageFromJsonBuffer,
+  parseUsageFromJsonValue: parseOpenAIUsageFromJsonValue,
   parseUsageFromJsonTextFragment: parseOpenAIUsageFromJsonTextFragment,
   parseErrorPayload: parseOpenAIErrorPayload,
+  parseErrorPayloadFromJsonValue: parseOpenAIErrorPayloadFromJsonValue,
   applyStreamUsageFallback: applyOpenAIStreamUsageFallback
 }
 

@@ -22,7 +22,10 @@ import {
   accountDiagnosticRetryTimeouts
 } from '../../modules/accounts/account-diagnostic-retry-policy.js'
 import {
+  extractAccountTestResponseOutputText,
   parseAccountTestUpstreamErrorCode,
+  parseAccountTestStreamFailureMessage,
+  parseAccountTestUpstreamMessage,
   redactAccountTestImageResponse,
   resolveAccountTestResponseDiagnostics
 } from '../../modules/accounts/account-test-response-diagnostics.js'
@@ -32,6 +35,7 @@ import {
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from '../../modules/accounts/account-test-success-evidence.js'
+import { parseDiagnosticResponseContext } from '../../modules/gateway/diagnostics/diagnostic-response-context.js'
 import { accountBatchEditSchema, accountCreateSchema, accountModelCatalogRefreshSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
@@ -185,6 +189,25 @@ assert.equal(hasAccountTestProtocolSuccessEvidence(
 
 const upstreamFailureResponse = 'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"upstream original failure"}}}\n\n'
 assert.equal(parseAccountTestUpstreamErrorCode(upstreamFailureResponse), 'server_is_overloaded', '人工账号测试必须从上游原始 SSE 提取错误码')
+let accountDiagnosticJsonParseCount = 0
+const sharedFailureContext = parseDiagnosticResponseContext(upstreamFailureResponse, {
+  onJsonParseAttempt: () => { accountDiagnosticJsonParseCount += 1 }
+})
+assert.equal(parseAccountTestUpstreamErrorCode(sharedFailureContext), 'server_is_overloaded')
+assert.equal(parseAccountTestUpstreamMessage(sharedFailureContext, 'openai'), 'upstream original failure')
+assert.equal(parseAccountTestStreamFailureMessage(sharedFailureContext, 'openai'), 'upstream original failure')
+assert.equal(extractAccountTestResponseOutputText(sharedFailureContext, 'openai'), undefined)
+assert.equal(hasAccountTestProtocolSuccessEvidence('responses_sse', sharedFailureContext), false)
+assert.equal(accountDiagnosticJsonParseCount, 1, '同一账户诊断 SSE payload 的错误码、消息、输出和完成证据必须共享一次 JSON 解析')
+
+let accountMultilineParseCount = 0
+const multilineChatContext = parseDiagnosticResponseContext(
+  'event: chunk\r\ndata: {"model":"gpt-test",\r\ndata: "choices":[{"delta":{"content":"OK"},"finish_reason":null}]}\r\n\r\ndata: [DONE]',
+  { onJsonParseAttempt: () => { accountMultilineParseCount += 1 } }
+)
+assert.equal(extractAccountTestResponseOutputText(multilineChatContext, 'openai'), 'OK', 'SSE framing 必须合并 multi-line data')
+assert.equal(hasAccountTestProtocolSuccessEvidence('chat_sse', multilineChatContext), true, 'CRLF 且末尾无空行的 SSE 必须 flush 最后事件')
+assert.equal(accountMultilineParseCount, 1, '[DONE] 不得触发 JSON.parse，multi-line payload 只解析一次')
 assert.deepEqual(resolveAccountTestResponseDiagnostics({
   downstreamResponseText: 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"upstream_retryable_error","message":"上游流式响应在输出前失败，请重试"}}}\n\n',
   downstreamResponseHeaders: { 'content-type': 'text/event-stream; charset=utf-8' },
@@ -437,7 +460,9 @@ assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupported
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
-assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? redactAccountTestImageResponse\(responseText\)/, '图片测试必须先脱敏图片响应正文')
+assert.match(serviceSource, /const responseContext = parseDiagnosticResponseContext\(responseText\)/, '账户测试必须为最终诊断正文创建唯一解析上下文')
+assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? redactAccountTestImageResponse\(responseContext\)/, '图片测试必须复用解析上下文后脱敏图片响应正文')
+assert.doesNotMatch(serviceSource, /parseOpenAIJsonBody|parseOpenAIUpstreamMessage|parseAnthropicUpstreamMessage|parseGeminiPayloads/, '账户测试不得绕过统一诊断上下文重复解析响应正文')
 assert.match(serviceSource, /responseBody: imageResponseBody,\s*responseText: JSON\.stringify\(imageResponseBody\)/, '图片测试必须仅返回已脱敏的响应 JSON')
 assert.match(serviceSource, /probeKind === 'image_generation'\s*\? proxyFailureMessage \|\| protocolEvidenceError \|\| accountTestHttpFailureMessage/, '图片测试失败信息不得回显上游响应正文')
 assert.match(serviceSource, /const suppressDiagnostics = probeKind === 'image_generation'/, '图片测试异常路径不得保留原始错误正文')

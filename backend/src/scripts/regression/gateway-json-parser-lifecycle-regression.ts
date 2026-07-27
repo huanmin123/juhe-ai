@@ -14,6 +14,7 @@ import { buildGeminiGenerateContentAnthropicMessagesBridgeBody } from '../../mod
 import { buildGeminiGenerateContentChatBridgeBody } from '../../modules/providers/drivers/_shared/gemini-openai-chat-bridge.js'
 import { buildOpenAIToAnthropicBridgeBody } from '../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'
 import { buildOpenAIOrAnthropicToGeminiNativeBody } from '../../modules/providers/drivers/_shared/openai-anthropic-gemini-native-bridge.js'
+import { gatewaySerializedJsonObject } from '../../modules/gateway/request/serialized-json-body.js'
 
 const padding = 'x'.repeat(320 * 1024)
 const body = Buffer.from(JSON.stringify({ model: 'gpt-regression', stream: true, input: padding }), 'utf8')
@@ -124,7 +125,8 @@ async function assertBridgeRequestBodyCacheReuse(): Promise<void> {
   ]
 
   for (const item of cases) {
-    await item.build(item.req)
+    const serializedBody = await item.build(item.req)
+    assert.ok(gatewaySerializedJsonObject(serializedBody), `${item.label} 必须把已转换对象绑定到精确 Buffer，供账户覆盖免解析复用`)
     const cachedBody = item.req.body
     assert(cachedBody && typeof cachedBody === 'object', `${item.label} 首次解析应写回 req.body`)
     await item.build(item.req)

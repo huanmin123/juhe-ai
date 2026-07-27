@@ -27,7 +27,8 @@ import {
   gatewayProtocolClientErrorProtocolForRequest,
   gatewayProtocolDefaultClientProfileForRequest,
   gatewayProtocolResponseEndpointFamilyForRequest,
-  parseGatewayProtocolUsageFromJsonBufferForRequest
+  parseGatewayProtocolUsageFromJsonTextFragmentForRequest,
+  parseGatewayProtocolUsageFromJsonValueForRequest
 } from '../protocols/registry.js'
 import {
   forgetOpenAIAccountForSessionAsync
@@ -65,6 +66,10 @@ import {
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
+import {
+  parseGatewayNonStreamJsonBody,
+  type GatewayNonStreamJsonBody
+} from './non-stream-json-body.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
@@ -78,6 +83,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   startedAt: number
   responseBody: Buffer
   responseBodyText: string
+  parsedJsonBody?: GatewayNonStreamJsonBody
   firstTokenMs?: number
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   clientStrategy?: OpenAIGatewayClientStrategyContext
@@ -88,12 +94,9 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   onCodexResponsesGuardResult?: (result: CodexResponsesGuardJsonResult) => void
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
-  let parsedJson: unknown
-  try {
-    parsedJson = input.responseBody.length > 0
-      ? JSON.parse(input.responseBodyText) as unknown
-      : undefined
-  } catch {
+  const parsedJsonBody = input.parsedJsonBody
+    ?? parseGatewayNonStreamJsonBody(input.responseBody.length > 0 ? input.responseBodyText : undefined, input.upstreamResponse.headers)
+  if (parsedJsonBody.status !== 'valid') {
     const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, {})
     if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
     if (
@@ -102,6 +105,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     ) {
       return finalizeBufferedJsonProtocolFailure({
         ...input,
+        parsedJsonBody,
         codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
       }, {
         message: codexResponsesStrictInterceptMessage(guardResult),
@@ -111,6 +115,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     if (guardResult?.mode === 'safe_repair' && guardResult.outcome === 'blocked' && guardResult.retryable) {
       return finalizeBufferedJsonProtocolFailure({
         ...input,
+        parsedJsonBody,
         accountStateMutationEnabled: false,
         codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
       }, {
@@ -120,6 +125,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     }
     return undefined
   }
+  const parsedJson = parsedJsonBody.value
   const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, parsedJson)
   if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
   if (
@@ -128,6 +134,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   ) {
     return finalizeBufferedJsonProtocolFailure({
       ...input,
+      parsedJsonBody,
       codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
     }, {
       message: codexResponsesStrictInterceptMessage(guardResult),
@@ -137,6 +144,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   if (guardResult?.mode === 'safe_repair' && guardResult.outcome === 'blocked' && guardResult.retryable) {
     return finalizeBufferedJsonProtocolFailure({
       ...input,
+      parsedJsonBody,
       accountStateMutationEnabled: false,
       codexResponsesGuard: codexResponsesGuardUsageSummary(guardResult)
     }, {
@@ -150,6 +158,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   if (protocolFailure) {
     return finalizeBufferedJsonProtocolFailure({
       ...input,
+      parsedJsonBody,
       accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
     }, protocolFailure)
   }
@@ -212,7 +221,7 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     label: 'response_inspection',
     metadata: responseInspectionAuditMetadata(decision)
   })
-  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
+  const usage = parseGatewayProtocolUsageFromJsonValueForRequest(input.req, input.account, parsedJson)
   const message = decision.upstreamErrorMessage ?? decision.rewriteMessage ?? `JSON 响应命中检查策略：${decision.policyName ?? decision.policyId ?? '未命名策略'}`
   const errorCode = decision.rewriteErrorCode ?? decision.upstreamErrorCode ?? 'response_inspection_matched'
   await forgetOpenAIAccountForSessionAsync(input.sessionAffinityKey, input.account.id)
@@ -400,6 +409,7 @@ async function finalizeBufferedJsonProtocolFailure(
     startedAt: number
     responseBody: Buffer
     responseBodyText: string
+    parsedJsonBody: GatewayNonStreamJsonBody
     firstTokenMs?: number
     settings: GatewaySettings
     accountStateMutationEnabled: boolean
@@ -409,7 +419,9 @@ async function finalizeBufferedJsonProtocolFailure(
   failure: { message: string; errorCode: string }
 ): Promise<UpstreamResponseHandlingResult> {
   const responsePayload = gatewayErrorPayload(failure.message, 'upstream_response_error', failure.errorCode)
-  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
+  const usage = input.parsedJsonBody.status === 'valid'
+    ? parseGatewayProtocolUsageFromJsonValueForRequest(input.req, input.account, input.parsedJsonBody.value)
+    : parseGatewayProtocolUsageFromJsonTextFragmentForRequest(input.req, input.account, input.responseBodyText, true)
   await forgetOpenAIAccountForSessionAsync(input.sessionAffinityKey, input.account.id)
   input.auditCapture.completeAttempt(input.auditAttemptId, {
     statusCode: input.upstreamResponse.status,

@@ -1,12 +1,12 @@
 # AI 账户运行态探针恢复设计
 
-> 本文负责账户级 transport 运行态。多模型完整目标另由 [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md) 约束：模型能力确认与恢复使用精确失败作用域，不复用账户哨兵；完整失败对 transport 电路保持中性，但独立模型能力探针可以形成不带具体错误语义的局部阻断。目标实现必须与本文账户级状态机并存，不能互相替代。
+> 本文负责 transport / recovery 运行态。多模型完整目标由 [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md) 约束：普通请求派生的恢复全部使用最终 Attempt 精确作用域，不复用账户哨兵；当前没有自动 account-global owner。本文出现的 `recovery_wait / precheck_pending` 默认均指精确 scope，只有明确标注 account-global 且具有专属 owner 时才表示整号。
 
 ## 目标
 
 本文固定 AI 账户在真实网关失败、高并发失败风暴、调度降级、临时不可用和恢复探测之间的状态机。核心目标是：
 
-- 普通用户请求只负责救当前请求、记录诊断事实；只有本地可验证 transport failure 才能建立有界 IP / 传输局部回避，并在不存在同账户后台事件时原子首次投递 `recovery_wait`。opaque HTTP、协议失败和坏会话只扩大本请求排除集合，不能建立、续期、升级或清理账户级运行态。
+- 普通用户请求只负责救当前请求、记录诊断事实并向 request collector 提交最终 Attempt 候选；本地可验证 transport failure 还可建立有界 IP / 传输局部回避。durable admission 以 scopeId 跨实例单飞创建精确 `recovery_wait / intent`，不能按 accountId 投递固定哨兵。opaque HTTP、协议失败和坏会话不能建立、续期、升级或清理账户级运行态。
 - 账号运行态建立、恢复、调度降级确认和持久状态确认统一由独立后台探针或明确人工操作完成；账户所有者显式配置的账户错误策略和响应拦截策略属于主动管理意图，命中后仍可按配置直接执行。
 - 高并发或多 IP 同一时间打出的失败不能把账号快速打死。
 - 每个运行态和持久态都必须有自动恢复出口，避免长期挂死。
@@ -16,8 +16,8 @@
 
 真实请求链路和后台探针链路必须分工：
 
-- 真实请求结果：安全文本请求可在语义提交前排除本请求已失败的 Key/账号并切换后续候选；只有建连失败、lane hard timeout、真实读取中断或未完成 framing 等本地 transport failure 才能建立传输局部回避并原子首次投递 `recovery_wait`。未命中显式策略时，完整 HTTP/协议结果不得改变任何跨请求调度资格。
-- 后台探针调度：`recovery_wait` 是不展示、保持普通可调度的内部后台任务。独立后台探针形成 `transport_failed` 后，才允许 CAS 建立 `precheck_pending` 等账户级传输运行态；后续探针由状态机和 due sweep 调度，不依赖新的用户请求到来。
+- 真实请求结果：安全文本请求可在语义提交前排除本请求已失败的 Key/账号并切换后续候选；所有可精确归因的终态失败可进入 capability collector，只有建连失败、lane hard timeout、真实读取中断或未完成 framing 等本地 transport failure 还能建立来源局部回避。未命中显式策略时，普通请求不得改变任何共享状态。
+- 后台探针调度：精确 `recovery_wait / intent` 是不作为账户状态展示的内部任务。独立后台探针形成 `transport_failed` 后，只允许 CAS 推进同 Attempt scope 的 `precheck_pending / circuit`；后续探针由状态机和 due sweep 调度，不依赖新的用户请求到来。
 - 后台兜底探针：扫描 due 的探针任务，补偿漏调度、进程重启和无新请求场景。本地运行态由 Web / Redis runtime state 探针恢复，已落库冷却态由 ops-worker 冷却复测恢复。
 - 真实请求形成完整 framing：只记录本次业务事实，并可清理本请求或当前来源范围内的 transport 局部回避；不能清理、降级或恢复账户级运行态和持久状态。账户级恢复只由匹配 generation 的后台探针、主动健康检查、显式人工恢复或对应后台任务完成。
 - 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、无后台成功证据和独立后台探针结果。
@@ -29,12 +29,12 @@
 | 状态 | 存储位置 | 调度影响 | 触发入口 | 自动恢复 |
 | --- | --- | --- | --- | --- |
 | `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 运行态 transport 怀疑被清理；持久账户业务状态仅由匹配来源的 `complete_success` 或明确恢复动作激活 | 无需恢复 |
-| `recovery_wait` | memory / Redis 后台任务 | 不影响普通调度，不作为账户状态展示 | 普通请求的本地 transport failure 原子首次投递后台核实 | 后台任务接管后按探针三态删除、退避或推进；普通请求不得续期或改写 |
+| `recovery_wait` | Redis + durable intent | 只在 soft avoid 窗口内避让该 Attempt，不作为账户状态展示 | 普通请求终态候选经 scopeId admission accepted | 后台任务按精确 generation 删除、退避或推进；普通请求不得续期或改写 |
 | `failure_observed` | memory / Redis 后台观察 | 不影响排序 | 后台核实任务开始处理 transport failure | 后台探针 `framing_complete_neutral` 只清理匹配 transport 怀疑，或观察过期清理 |
 | `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 后台探针或后台状态评估确认持续首字慢 | 后台探针连续达标、TTL 到期或手动恢复清理 |
 | `local_suppressed` | memory / Redis TTL 运行态 | 暂不选中该账号 | 用户显式响应拦截 `avoid_account_ttl` 等主动策略 | 配置 TTL 到期或人工恢复清理；后台自动成功不能提前解除显式策略 |
 | `runtime_degraded` | memory / Redis 运行态快照 | 普通候选优先，降级账号兜底 | 后台 transport 探针确认近期不稳 | 只有匹配 generation / provenance 的 `complete_success`、观察窗口过期或手动恢复清理；`framing_complete_neutral` 只保留诊断 / 顺延，不恢复该运行态 |
-| `precheck_pending` | memory / Redis 运行态快照 | 软阻断普通候选；后台探针、主动健康检查和 generation 租约半开可访问 | 首次有效独立后台探针形成 `transport_failed` | 只有匹配 generation / provenance 的 `complete_success` 或专属人工出口恢复；`framing_complete_neutral` 只保留 transport 怀疑并顺延，transport failure 释放租约并继续后台确认，unknown 只退避 |
+| `precheck_pending` | Redis + circuit ledger | 只软阻断匹配 Attempt；其他模型 / endpoint / Key 继续调度 | 首次有效独立后台探针形成 `transport_failed` | 只有匹配 scope / generation 的独立成功或恢复流程推进；不能借账户哨兵或其他 Key 恢复 |
 | `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式策略，或真正账户全局事实 owner 的独立确认；模型子 scope 不得写入 | 系统自动账户全局态只由匹配来源的 `complete_success` 冷却复测恢复；显式策略按自身 TTL/匹配恢复/人工动作清理 |
 | `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式账户错误策略或明确后台任务 | 配置 TTL、匹配来源后台任务或人工恢复；无关 transport 成功不得清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 本地可验证硬异常或用户显式策略/人工操作 | 可自动恢复的同来源本地异常由对应任务恢复；远端 OAuth token endpoint 失败只诊断和退避，不写账户 `error`；显式硬异常需要用户修配置或手动恢复 |
@@ -43,14 +43,14 @@
 
 ## 失败采样规则
 
-失败样本按运行态键聚合：
+请求派生失败按精确运行态键聚合：
 
 ```text
-自有账户：accountId
-授权实例：accountId + 使用方系统账户 + 本地分组 + 授权 ID
+scopeId = accountRuntimeKey + 最终模型 + endpoint + lane + adapter route + credential scope
+授权实例另携 binding system account + local group + authorization ID 做权限 fencing
 ```
 
-普通请求可以记录已经真实进入上游账号调用链路的诊断样本，但只有以下本地 transport 事实能服务来源级回避和首次 `recovery_wait` 投递，且仍不能直接建立账户级运行态：
+普通请求可以记录已经真实进入上游账号调用链路的诊断样本；所有可归因终态失败由 Collector 决定能力候选，只有以下本地 transport 事实还能服务来源级回避和精确 transport intent，且仍不能直接建立共享状态：
 
 - 上游请求异常、连接失败、超时、EOF。
 - 上游 transport / lane hard timeout / read error / 未完成 framing；精确客户端画像确认的协议失败只影响当前请求，不进入账号运行态探针输入。
@@ -119,8 +119,8 @@ generation
 
 调度器职责：
 
-- standalone 模式同一个 `runtimeKey` 尽量只保留一个本地探针；performance 模式允许多个 server 节点短暂重复执行同一个 `runtimeKey` 的探针。
-- 后台状态机内部生成的相同或更早 `dueAt` 意图可以按 generation 合并；普通请求只能首次创建 `recovery_wait`，不能合并失败计数、改写 generation、刷新 TTL 或推迟已有任务。
+- standalone 和 performance 都通过同一 scopeId admission / durable intent 保证跨实例单飞；performance 不允许多个 server 对同 generation 短暂重复执行。物理相同的授权实例任务另由 PhysicalProbeExecutionKey 合并。
+- 后台状态机内部生成的相同或更早 `dueAt` 意图按 scopeId + generation 合并；普通请求只能 nomination，只有 durable accepted 才创建 `recovery_wait`，不能合并失败计数、改写 generation、刷新 TTL 或推迟已有任务。
 - 所有探针任务带 `generation`。探针开始时记录 generation，结束回写前必须确认 generation 未变化；如果后台探针 / 主动健康检查 / 匹配租约半开形成 `framing_complete_neutral` 并只清理同代轻量 transport 怀疑、手动恢复或新状态转换已经推进 generation，旧探针结果直接丢弃，旧 generation 也不能覆盖或删除新 generation 状态。该 framing 结果不能恢复 `runtime_degraded`、`precheck_pending`、持久账户或 Key 业务状态。
 - 调度时间必须带 jitter，避免大批账号在同一秒同时探测。
 - 有本机全局并发保护、单账号最小间隔，以及 provider / proxy / baseUrl 维度的本机最小间隔。预算不足时只推迟 due 时间，不把账号升级为更重状态；该预算不进入 Redis 分布式锁。
@@ -131,11 +131,11 @@ generation
 
 | 级别 | 状态 | 探针策略 |
 | --- | --- | --- |
-| L1 recovery intake | `recovery_wait` | 单次账号健康探针；未形成有效上游尝试时丢弃结论，账户保持普通可调度 |
+| L1 recovery intake | 精确 `recovery_wait` | 使用失败 Attempt 的 ProbeRecipe；未形成有效上游尝试时丢弃结论，其他能力保持普通可调度 |
 | L2 latency verify | `latency_degraded` | 使用账号健康探针校验首字是否回到策略阈值内；连续达标后清理 |
 | L2 stability verify | `runtime_degraded` | 低频账号健康探针；必要时连续成功再清 |
-| L3 precheck confirm | `precheck_pending` | 独立 transport 探针；多轮 `transport_failed` 且并发归零后才落库，匹配 generation 的 `framing_complete_neutral` 只诊断 / 顺延，`unknown` 只退避；运行态和持久业务状态要求匹配 provenance 的 `complete_success` |
-| L4 cooldown retest | 系统自动 transport 来源的 `temporary_unavailable` | ops-worker 持久冷却复测，退避更保守；用户显式 `rate_limited/error` 不被无关 transport 成功清理 |
+| L3 precheck confirm | 精确 `precheck_pending` | 独立 transport / capability 探针分别持 lease 并推进同 scope；`framing_complete_neutral` 对 transport 中性、对 execution 可以 unavailable，`unknown` 只退避 |
+| L4 cooldown retest | legacy / 专属 account-global owner 的 `temporary_unavailable` | ops-worker 按匹配 provenance 复测；当前请求派生子 scope 永不进入，用户显式 `rate_limited/error` 不被无关成功清理 |
 | L5 hard error | `error` | 默认不高频自动探，只对可恢复错误触发 |
 
 ## 父子作用域、恢复与冷重建
@@ -173,12 +173,12 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 ## 系统账户检查探针
 
-运行态恢复和事前确认只使用一类底层执行器：系统账户检查探针。
+运行态恢复和事前确认共享底层最小执行器，但任务 owner 和配方严格分离。
 
 系统账户检查探针、模型子 scope 探针与人工测试复用最小请求构造和网关链路，但不复用人工测试会话或状态策略：
 
 - 底层入口使用纯结果执行器 `executeAccountProbe()`。
-- 账户级探针严格读取 `healthCheckModel`；模型子 scope 探针读取持久化 ProbeRecipe，并用当前 route planner 重新解析、核对最终 Attempt 描述。
+- 只有 pending_test 激活、周期哨兵和未来真正 account-global owner 读取 `healthCheckModel`；所有请求派生 transport / model_capability scope 都读取持久 ProbeRecipe，并用当前 route planner 重新解析、核对最终 Attempt 描述。
 - 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint；模型子 scope 禁止回退到账户哨兵。
 - 探针链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
 - 探针使用 `traffic_source = runtime_recovery_probe`；执行器不自行修改状态，由运行态恢复策略根据 `purpose` 和 generation 决定是否清理或升级。
@@ -196,48 +196,48 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 失败现场只保留为本地事实分类和排障信息：
 
 - 建连失败、lane hard timeout、真实读取中断、未完成 framing，以及本地独立确认的代理/凭据装配失败可以进入对应 transport 或本地依赖状态机。
-- 完整 HTTP `4xx/5xx`、所谓认证/限流/余额/封禁文案、上游错误码、精确客户端协议失败和 `2xx-invalid-body` 都保持系统自动业务状态中性；只能作为诊断或用户显式策略输入。
+- 完整 HTTP `4xx/5xx`、所谓认证/限流/余额/封禁文案、上游错误码、精确客户端协议失败和 `2xx-invalid-body` 对 transport 保持中性，不能推断具体业务语义；独立 execution capability 探针可把完整失败归并为当前精确 scope 的通用 unavailable。
 - `model_not_found`、`unsupported_endpoint`、模型映射错误、某 endpoint 不支持 stream、`invalid_request`、`context_length_exceeded`、用户 payload 非法和策略拒绝只影响当前请求，不直接打死账号。
 
 ## 后台探针职责
 
 后台主动探针负责所有恢复和重状态确认：
 
-1. 扫描 due 的 `recovery_wait`、系统自动失败观察、运行态降级、`precheck_pending` 和持久冷却态；不接管用户显式策略 TTL。
-2. 多个 Web 节点可以短暂重复执行同一个运行态键的探针；探针结果回写必须校验 generation，旧探针结果直接丢弃，不能靠 Redis 分布式锁保证唯一执行。
-3. 账户级任务固定使用 `healthCheckModel`；模型子 scope 任务使用持久 ProbeRecipe 和当前 route planner 解析出的精确 model / endpoint，二者均不从历史测试或目录默认猜测。
+1. 扫描 due 的精确 `recovery_wait`、系统自动失败观察、运行态降级、精确 `precheck_pending` 和 legacy / 专属 owner 持久冷却态；不接管用户显式策略 TTL。
+2. 多个 Web 节点必须通过 durable intent、claim 和 PhysicalProbeExecutionKey 单飞；探针结果回写校验 scope、generation、双 revision、claim / fencing token 和正向 observation fence，不能用允许短暂重复执行替代一致性。
+3. pending_test 激活、周期哨兵和真正 account-global 任务才使用 `healthCheckModel`；请求派生子 scope 使用持久 ProbeRecipe 和当前 route planner 解析出的精确 model / endpoint，二者均不从历史测试或目录默认猜测。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计或账号质量统计。
-6. 运行态探针或主动健康检查形成 `framing_complete_neutral` 时，只能按 generation 清理同来源轻量 transport 怀疑；ops-worker 对系统自动 transport 冷却态复测、`runtime_degraded`、`precheck_pending` 和父 account 恢复都只有形成匹配来源的 `complete_success` 才能改变业务状态。用户显式策略状态不被无关探针成功清理。
+6. `framing_complete_neutral` 对 transport 只形成 framing 完整观察，对精确 execution capability 可以形成通用 unavailable；两者必须分别持 lease 并 fenced 提交。ops-worker 对 legacy / 专属 account-global 冷却态、`runtime_degraded` 和父 account 恢复只有形成匹配来源的 `complete_success` 才能改变其 owner 状态。用户显式策略状态不被无关探针成功清理。
 7. 只有 `transport_failed` 推进后台传输状态机；`unknown` 保持状态和计数并递进退避，完整 HTTP/协议结果不回灌成用户请求失败，也不进入账号质量失败统计。
 
 ## 状态转换条件
 
-### 普通请求到 `recovery_wait`
+### 普通请求到精确 `recovery_wait`
 
-未命中用户显式策略的普通请求只有形成本地可验证 transport failure 时，才允许执行以下账户核实副作用：
+未命中用户显式策略的普通请求形成可精确归因终态失败时，只允许执行以下候选动作：
 
-- 当前请求排除已失败账号并继续换号；按 IP / transport scope 建立有界局部回避。普通请求 transport 结果不得归咎并写共享 Key 状态。
-- 仅在该运行态键不存在后台事件时，原子首次创建 `recovery_wait`。
+- 当前请求排除已失败 Attempt 并继续换号；只有本地 transport failure 可按 IP / transport scope 建立有界局部回避。普通请求结果不得写共享 Key 或账户状态。
+- Collector flush 后由 scopeId admission 原子创建 durable `recovery_wait / intent`；每请求最多 accepted 一个，5 分钟冷却从 accepted 开始。
 - 已有事件时不得累计请求次数、合并来源、替换 generation、刷新 TTL 或提前 / 推迟 due 时间。
 - 普通成功和失败都不能建立、清理或改写账户级运行态。
 
-opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点语义处理当前请求，不能执行上述副作用。`recovery_wait` 不展示账户异常、不影响普通调度；后台执行器未形成可归因结果时结论为 `unknown`，保持状态与计数并按递进退避和 jitter 后移 due。
+opaque HTTP 和精确客户端协议失败可以成为 execution capability 候选，但不能进入 transport 电路；路由配置截止保持中性。精确 `recovery_wait` 不展示账户异常，30 秒内只 soft avoid 同 Attempt；后台执行器未形成可归因结果时结论为 `unknown`，保持稳定 phase 并按递进退避和 jitter 后移 due。
 
 ### 有效后台失败到 `precheck_pending`
 
-独立后台探针形成 `transport_failed` 后，才能按当前 generation 原子进入 `precheck_pending`：
+独立后台探针形成 `transport_failed` 后，才能按当前 scope + generation 原子进入精确 `precheck_pending`：
 
 - standalone 使用 memory 条件更新；performance 使用 Redis `phase + generation + leaseId` Lua CAS。
-- `precheck_pending` 立即从普通候选中软阻断，但后台探针、主动健康检查和受控半开仍可访问。
+- `precheck_pending` 只从普通候选中阻断匹配 Attempt，后台探针和受控半开仍可访问；其他模型 / endpoint / adapter / Key 不受影响。
 - 后台探针任务取消、执行器内部错误、检查模型配置异常、未实际派发或无法归因都属于 `unknown`，不得建立软阻断；完整 HTTP framing 为 transport 恢复证据，不得按状态码/正文建立软阻断。
-- 后台探针后续结果按最小观察时间、独立轮次和 generation 推进；普通请求数量和普通成功信号不能参与账户级状态转换。
+- 后台探针后续结果按最小观察时间、独立轮次和 generation 推进；普通请求数量不能参与状态转换。同 scope 新业务成功只更新 positive observation fence，不能直接恢复 OPEN，但可使较旧负向 outcome superseded。
 
 ### 全池软阻断与受控半开
 
 当前分组普通候选全部软阻断时，先尝试健康候选和路由策略允许的后备分组；仍无可用候选时：
 
-- 按 `runtimeKey + generation` 获取账户半开租约，并按 `systemAccountId + groupId` 限制同分组同时最多一个半开。
+- 按 `scopeId + generation` 获取精确半开租约，并同时受 accountRuntimeKey、物理账户和全局探针预算限制。
 - 只有租约持有者可以发起真实半开请求；显式用户策略建立的 TTL 避让不参与系统自动半开。
 - 其他请求按分组、模型和候选 generation 进入有上限的 FIFO 等待；协调器使用单 timer、支持 AbortSignal 并在结束时清理等待者。
 - 半开请求禁用同账户 / 同 Key 原地重试。完整 HTTP framing 或 SSE 在没有读取中断时正常结束形成 `framing_complete`，按 generation CAS 清理同来源 transport 软阻断；headers、首字节或部分 token 不算 framing 完成，状态码和业务正文不参与。
@@ -278,7 +278,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 用户请求得到失败结果时允许做：
 
 - 记录失败使用记录和审计。
-- 写本请求诊断样本；只有本地 transport failure 原子首次投递 `recovery_wait`。
+- 写本请求诊断样本，并在终态由 Collector 提交精确能力候选；只有本地 transport failure 还能进入同 Attempt 的 transport confirmation。
 - 忘记当前会话亲和。
 - 按本请求排除集合切换后续 Key/账号/分组救安全文本请求；只有 transport failure 可建立 IP / transport 跨请求局部回避，普通请求结果不写共享 Key 失败。
 - 命中账户所有者显式错误策略或响应拦截策略时，按配置执行明确动作。
@@ -290,7 +290,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - 直接建立 `local_suppressed` 或 `precheck_pending` 等系统自动账户级运行态。
 - 把普通成功作为清理任何账户级运行态的依据。
 - 因多个 IP 同时失败而绕过最小观察时间。
-- 用“用户请求到来”作为探针触发条件。
+- 让用户请求直接执行探针或推进共享 phase；请求只能 nomination，后续由 durable intent 独立推进。
 - 把请求数量当成状态转换依据。
 - 不得根据完整 HTTP 状态、错误码、错误正文或精确客户端协议字段建立任何系统自动共享状态。
 - 图片、音频、文件、资源创建、hosted tool 和其他请求在未交付结果且语义未提交时，必须与普通文本一样继续后备候选；不得按请求类型建立例外。
@@ -299,13 +299,13 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 
 | 状态 | 自动恢复出口 | 人工恢复出口 |
 | --- | --- | --- |
-| `recovery_wait` | 后台任务完成、丢弃未知结论或推进为探针运行态 | 无需展示；人工恢复可精确清理后台事件 |
+| 精确 `recovery_wait` | 后台任务完成、丢弃未知结论或推进同 scope 运行态 | 无需作为账户状态展示；能力详情可“重新检查此能力” |
 | `failure_observed` | 窗口过期；后台探针 `framing_complete_neutral` 清理匹配 transport 怀疑 | 手动恢复正常 |
 | `latency_degraded` | 后台探针连续首字达标；TTL 过期 | 手动恢复正常；关闭对应普通路由速度优先 |
 | `local_suppressed` | 显式策略 TTL 到期 | 手动恢复正常 |
 | `runtime_degraded` | 匹配来源的 `complete_success`；观察窗口过期 | 手动恢复正常 |
-| `precheck_pending` | 后台探针或匹配 generation 的半开形成 `complete_success`；中性 framing 只清理 transport 怀疑 | 手动恢复正常 |
-| 系统自动 transport 来源的 `temporary_unavailable` | 后台冷却复测形成匹配来源的 `complete_success` | 手动恢复正常 |
+| 精确 `precheck_pending` | 匹配 scope / generation 的独立 transport 或 capability 恢复流程 | 能力详情“重新检查此能力”；不得恢复整号 |
+| legacy / 专属 account-global `temporary_unavailable` | 后台冷却复测形成匹配来源的 `complete_success` | 手动恢复正常 |
 | 用户显式 `temporary_unavailable / rate_limited` | 配置 TTL、匹配的策略恢复动作 | 手动恢复正常 |
 | `error` | 同来源本地配置维护成功或匹配来源的 `complete_success`；远端 OAuth 失败不进入此状态 | 人工“异常恢复”只进入 `pending_test` 并立即投递后台复检 |
 
@@ -323,7 +323,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 
 建议保留这些事件语义：
 
-- `gateway_account_failure_observed`：真实请求的本地 transport failure 已记录为诊断样本并首次投递核实；opaque HTTP/协议失败不触发。
+- `gateway_account_failure_observed`：历史事件名；真实请求的本地 transport failure 已按 scopeId 记录并提交精确 nomination。事件必须含 scopeId，不能被消费为 account-global 事实。
 - `gateway_account_latency_degraded`：普通路由速度优先确认账号近期首字慢，账号进入速度降级。
 - `gateway_account_latency_probe_success`：首字恢复探针达标，速度降级恢复计数推进或已清理。
 - `gateway_account_latency_probe_failed`：首字恢复探针未达标，继续速度降级并等待下一轮。
@@ -334,8 +334,8 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - `gateway_account_recovery_probe_success`：后台探针形成 `framing_complete_neutral`，匹配来源的轻量 transport 怀疑已清理；事件名不表达协议业务成功，也不恢复 `runtime_degraded`、`precheck_pending`、父 account、持久账户或 Key 业务状态。形成匹配 `complete_success` 时另记录对应的业务恢复结果。
 - `gateway_account_recovery_probe_failed`：后台探针形成 `transport_failed`，等待下一轮；`unknown` 使用独立结果并递进退避，不得冒充失败。
 - `gateway_account_runtime_degraded`：后台确认近期不稳，账号进入调度降级。
-- `gateway_account_precheck_scheduled`：后台进入持久状态确认。
-- `gateway_account_precheck_failed_marked`：后台确认失败并写入持久状态。
+- `gateway_account_precheck_scheduled`：历史事件名；后台进入精确 scope 确认。
+- `gateway_account_precheck_failed_marked`：历史事件名；后台确认失败并写入精确 circuit ledger，不写 accounts.status。
 - `background_cooldown_account_retest_retry_exhausted`：冷却复测队列项执行异常且无可用重试；必须附带脱敏后的原始错误，区分 PostgreSQL 参数、事务、DB service 超时和探针执行错误。
 
 日志只记录账号 ID、运行态键、状态、窗口、失败计数、首字耗时、探针结果和短错误摘要，不写完整请求 / 响应 payload。
@@ -344,7 +344,7 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 
 改动该状态机时至少验证：
 
-- 单账号高并发多 IP 同一波 transport failure 只影响当前请求和来源 transport 局部回避，并原子首次投递 `recovery_wait`，不建立账户级运行态或持久状态；同一坏会话的 opaque HTTP/协议错误甚至不得投递恢复或形成跨请求回避。
+- 单账号高并发多 IP 同一波 transport failure 只影响当前请求和来源 transport 局部回避，并按 scopeId 单飞创建一个 durable intent，不建立账户级运行态或持久状态；opaque HTTP/协议错误可成为精确 execution 候选，但不得形成来源跨请求回避。
 - 普通路由速度优先下，首字慢只记录样本并投递后台核实；只有后台确认后才进入 `latency_degraded`，且不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。
 - `latency_degraded` 账号在同普通路由分组内后置，未降级硬可承接账号可临时越过账户超级优先、账号优先级、备用层和会话亲和；全部候选都速度降级时旁路排序并保留原候选顺序。
 - 后台探针形成匹配来源的 `complete_success` 并清理 `latency_degraded` 后，后续请求重新按账户配置排序，已恢复的主账号不会因为之前切到替补账号而长期饿死。
@@ -356,8 +356,8 @@ opaque HTTP、精确客户端协议失败和路由配置截止只允许按端点
 - SQLite 与真实 PostgreSQL 都要覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
 - 各类请求的 opaque HTTP 与 transport 失败在语义提交前都能按唯一 Key/账户候选救回当前请求，整个请求最多 64 次真实 attempt。
 - 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
-- performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
-- `precheck_pending` 在 memory / Redis 下都软阻断普通调度；全池软阻断时健康 / 后备优先、同账户与同分组单飞半开、FIFO 等待均生效。`noAvailableAccountWaitTimeoutSeconds` 控制的 `ServerRetryBudget` 默认 270 秒，只累计零可派发、半开和 FIFO / 并发槽等待；正常上游 attempt 不消耗该累计等待预算。可重放文本的 `GatewayRequestWallBudget` 是另一套固定默认 270 秒绝对墙钟，不能混为一谈。
+- performance / Redis runtime state 下，多节点同 scope 必须由 durable intent / claim 单飞，不能接受短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
+- 精确 `precheck_pending` 在 Redis 下只阻断匹配 Attempt；Route 全部 Key 或账户全部 Route 都阻断时才派生无可调度能力门禁。健康 / 后备优先、scope 单飞半开和有界等待均生效；等待预算与请求墙钟不能混为一谈。
 - 模型 / endpoint 明确不支持时不进入账号级状态升级；账户级恢复不能猜测失败请求形态，模型子 scope 只能复用最终派发描述和最小 ProbeRecipe，不能复用用户 payload，也不能因此把整号打成不可用。
 - Mock AI 覆盖失败后恢复、失败后持续不可用、高并发失败风暴和授权实例隔离。
 - Mock AI 覆盖 `SUSPECT` 连续 unknown：状态/generation/确认计数不变，due 随递进退避和 jitter 后移，不出现零间隔自旋。

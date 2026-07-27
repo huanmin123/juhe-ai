@@ -94,9 +94,12 @@ import {
   gatewayProtocolDefaultClientProfileForRequest,
   gatewayProtocolResponseEndpointFamilyForRequest,
   gatewayProtocolResponseProtocolForRequest,
-  parseGatewayProtocolUsageFromJsonBufferForRequest,
+  parseGatewayProtocolUsageFromJsonTextFragment,
   parseGatewayProtocolUsageFromJsonTextFragmentForRequest,
-  parseGatewayProtocolErrorPayloadForRequest
+  parseGatewayProtocolUsageFromJsonValue,
+  parseGatewayProtocolUsageFromJsonValueForRequest,
+  parseGatewayProtocolErrorPayload,
+  parseGatewayProtocolErrorPayloadFromJsonValue
 } from '../protocols/registry.js'
 import {
   requestModel
@@ -140,11 +143,16 @@ import {
   GeminiInteractionAffinityUnavailableError,
   geminiInteractionResourceIdFromRequest,
   geminiInteractionIdFromJsonPrefix,
-  geminiInteractionIdFromResponseBody,
+  geminiInteractionIdFromParsedResponse,
   isGeminiInteractionCreateRequest,
   isGeminiInteractionResourceRequest,
   rememberGeminiInteractionAffinityAsync
 } from '../protocols/gemini-v1beta/interaction-affinity.service.js'
+import {
+  gatewayNonStreamJsonBodyFromValue,
+  parseGatewayNonStreamJsonBody,
+  type GatewayNonStreamJsonBody
+} from './non-stream-json-body.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
@@ -166,18 +174,14 @@ export function protocolValidatedNonStreamResponse(input: {
   req: Request
   account: UpstreamAccount
   responseBodyText?: string
+  parsedJsonBody?: GatewayNonStreamJsonBody
   statusCode: number
 }): boolean {
   if (input.statusCode < 200 || input.statusCode >= 300) return false
   if (isSuccessfulEmptyUpstreamResponseAllowed(input)) return true
-  const text = input.responseBodyText?.trim()
-  if (!text) return false
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text) as unknown
-  } catch {
-    return false
-  }
+  const parsedJsonBody = input.parsedJsonBody ?? parseGatewayNonStreamJsonBody(input.responseBodyText)
+  if (parsedJsonBody.status !== 'valid') return false
+  const parsed = parsedJsonBody.value
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
   const root = parsed as Record<string, unknown>
   if (isRecordValue(root.error) || root.type === 'error' || root.status === 'failed') return false
@@ -793,6 +797,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let responseResourceId: string | undefined
   let responseUsageText: string | undefined
   let responseSemanticText: string | undefined
+  let parsedJsonBody: GatewayNonStreamJsonBody | undefined
   let codexGuardedCompleteBody: Buffer | undefined
   let codexGuardedCompleteBodyText: string | undefined
   let codexResponsesGuard: CodexResponsesGuardUsageSummary | undefined
@@ -873,8 +878,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         if (pipeResult.fullyBuffered) {
           const completeBody = pipeResult.completeBody ?? Buffer.alloc(0)
           const completeBodyText = pipeResult.completeBodyText ?? completeBody.toString('utf8')
+          parsedJsonBody = parseGatewayNonStreamJsonBody(completeBodyText, upstreamResponse.headers)
           if (isGeminiInteractionCreateRequest(req)) {
-            responseResourceId = geminiInteractionIdFromResponseBody(completeBodyText)
+            responseResourceId = parsedJsonBody.status === 'valid'
+              ? geminiInteractionIdFromParsedResponse(parsedJsonBody.value)
+              : undefined
           }
           const jsonInspectionResult = await inspectBufferedGatewayJsonResponse({
             req,
@@ -889,6 +897,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             startedAt,
             responseBody: completeBody,
             responseBodyText: completeBodyText,
+            parsedJsonBody,
             firstTokenMs,
             responseInspectionPolicies: managementResponseInspectionPoliciesForInput(input),
             clientStrategy: input.clientStrategy,
@@ -903,6 +912,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
               if (result.outcome === 'repaired_safe' || result.outcome === 'repaired_bridge') {
                 codexGuardedCompleteBodyText = JSON.stringify(result.value)
                 codexGuardedCompleteBody = Buffer.from(codexGuardedCompleteBodyText, 'utf8')
+                parsedJsonBody = gatewayNonStreamJsonBodyFromValue(result.value)
               }
             },
             sessionAffinityKey
@@ -914,6 +924,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             ...input,
             responseBody: completeBody,
             responseBodyText: completeBodyText,
+            parsedJsonBody,
             firstTokenMs
           })
           if (hybridQualityResult) {
@@ -1206,26 +1217,41 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     }
     throw error
   }
-  if (responseBody) {
-    usage = parseGatewayProtocolUsageFromJsonBufferForRequest(req, account, responseBody)
+  if (!parsedJsonBody && responseBodyText !== undefined) {
+    parsedJsonBody = parseGatewayNonStreamJsonBody(responseBodyText, upstreamResponse.headers)
+  }
+  if (parsedJsonBody?.status === 'valid') {
+    usage = forwardedResponseSuccessful
+      ? parseGatewayProtocolUsageFromJsonValueForRequest(req, account, parsedJsonBody.value)
+      : parseGatewayProtocolUsageFromJsonValue(account, parsedJsonBody.value)
   } else if (responseUsageText) {
-    usage = parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText)
+    const skipFullDocumentParse = parsedJsonBody?.status === 'invalid'
+    usage = forwardedResponseSuccessful
+      ? parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText, skipFullDocumentParse)
+      : parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText, skipFullDocumentParse)
   }
   if (forwardedResponseSuccessful) {
     usage = applyNonStreamUsageFallback({
       req,
       account,
       usage,
-      responseBody,
-      responseBodyText: responseBodyText ?? responseSemanticText,
+      parsedJsonBody,
       endpoint: usageContext.endpoint
     })
   }
   if (interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
-    errorPayload = parseGatewayProtocolErrorPayloadForRequest(req, account, responseBodyText ?? '', upstreamResponse.headers)
+    errorPayload = parsedJsonBody?.status === 'valid'
+      ? parseGatewayProtocolErrorPayloadFromJsonValue(account, parsedJsonBody.value)
+      : parsedJsonBody
+        ? {}
+        : parseGatewayProtocolErrorPayload(account, responseBodyText ?? '', upstreamResponse.headers)
   }
   if (forwardedResponseSuccessful) {
-    bodyOmission = nonStreamImageResponseBodyOmission(responseBodyText ?? responseSemanticText ?? responseBody?.toString('utf8'), responseBody?.byteLength)
+    bodyOmission = nonStreamImageResponseBodyOmission(
+      responseBodyText ?? responseSemanticText ?? responseBody?.toString('utf8'),
+      responseBody?.byteLength,
+      parsedJsonBody
+    )
     if (bodyOmission) {
       responseBody = undefined
       responseBodyText = undefined
@@ -1254,6 +1280,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       req,
       account,
       responseBodyText: responseBodyText ?? responseSemanticText ?? responseUsageText,
+      parsedJsonBody,
       statusCode: upstreamResponse.status
     }),
     errorPayload
@@ -1560,8 +1587,12 @@ function responsePrecommitDeadlineErrorFor(error: unknown) {
   return undefined
 }
 
-function nonStreamImageResponseBodyOmission(bodyText: string | undefined, capturedBytes: number | undefined): StreamBodyOmissionSummary | undefined {
-  if (!bodyText || !nonStreamBodyLooksLikeImageGenerationPayload(bodyText)) return undefined
+function nonStreamImageResponseBodyOmission(
+  bodyText: string | undefined,
+  capturedBytes: number | undefined,
+  parsedJsonBody?: GatewayNonStreamJsonBody
+): StreamBodyOmissionSummary | undefined {
+  if (!bodyText || !nonStreamBodyLooksLikeImageGenerationPayload(bodyText, parsedJsonBody)) return undefined
   const bodyBytes = capturedBytes ?? Buffer.byteLength(bodyText, 'utf8')
   return {
     omitted: true,
@@ -1573,12 +1604,14 @@ function nonStreamImageResponseBodyOmission(bodyText: string | undefined, captur
   }
 }
 
-function nonStreamBodyLooksLikeImageGenerationPayload(bodyText: string): boolean {
-  try {
-    return jsonContainsImageGenerationResult(JSON.parse(bodyText) as unknown)
-  } catch {
-    return bodyText.includes('"type":"image_generation_call"') && bodyText.includes('"result"')
+function nonStreamBodyLooksLikeImageGenerationPayload(
+  bodyText: string,
+  parsedJsonBody?: GatewayNonStreamJsonBody
+): boolean {
+  if (parsedJsonBody?.status === 'valid') {
+    return jsonContainsImageGenerationResult(parsedJsonBody.value)
   }
+  return bodyText.includes('"type":"image_generation_call"') && bodyText.includes('"result"')
 }
 
 function jsonContainsImageGenerationResult(value: unknown): boolean {
@@ -1603,6 +1636,7 @@ async function inspectBufferedHybridQualityResponse(input: {
   startedAt: number
   responseBody: Buffer
   responseBodyText: string
+  parsedJsonBody: GatewayNonStreamJsonBody
   firstTokenMs?: number
   hybridRoute?: HybridGatewayRuntimeRoute
   signal: AbortSignal
@@ -1646,7 +1680,9 @@ async function inspectBufferedHybridQualityResponse(input: {
   if (!quality.triggered || quality.pass) {
     return undefined
   }
-  const usage = parseGatewayProtocolUsageFromJsonBufferForRequest(input.req, input.account, input.responseBody)
+  const usage = input.parsedJsonBody.status === 'valid'
+    ? parseGatewayProtocolUsageFromJsonValueForRequest(input.req, input.account, input.parsedJsonBody.value)
+    : parseGatewayProtocolUsageFromJsonTextFragmentForRequest(input.req, input.account, input.responseBodyText, true)
   const message = hybridQualityFailureMessage(quality)
   const errorCode = quality.errorCode ?? `hybrid_quality_${quality.result?.failureType ?? 'failed'}`
   input.auditCapture.completeAttempt(input.auditAttemptId, {
@@ -1734,21 +1770,11 @@ function applyNonStreamUsageFallback(input: {
   req: Request
   account: UpstreamAccount
   usage: ParsedUsage
-  responseBody?: Buffer
-  responseBodyText?: string
+  parsedJsonBody?: GatewayNonStreamJsonBody
   endpoint: string
 }): ParsedUsage {
-  const bodyText = input.responseBody
-    ? input.responseBody.toString('utf8')
-    : input.responseBodyText
-  if (!bodyText) return input.usage
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bodyText) as unknown
-  } catch {
-    return input.usage
-  }
-  const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsed, input.req, input.account)
+  if (input.parsedJsonBody?.status !== 'valid') return input.usage
+  const frames = extractGatewayProtocolJsonSemanticFramesForRequest(input.parsedJsonBody.value, input.req, input.account)
   const outputText = frames
     .filter((frame) => (frame.frameType === 'output_text_delta' || frame.frameType === 'output_text_done') && typeof frame.text === 'string')
     .map((frame) => frame.text ?? '')

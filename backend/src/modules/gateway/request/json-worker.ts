@@ -16,11 +16,13 @@ type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
   | 'parse_json_body'
   | 'normalize_openai_oauth_codex_body'
+  | 'normalize_openai_oauth_codex_parsed_body'
 
 interface GatewayJsonWorkerRequest {
   id: number
   type: GatewayJsonWorkerJobType
-  rawBody: Uint8Array
+  rawBody?: Uint8Array
+  parsedBody?: unknown
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
 }
 
@@ -45,8 +47,8 @@ const workerPort = parentPort
 workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
   const id = message.id
   try {
-    const rawBody = Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
     if (message.type === 'extract_json_body_metadata') {
+      const rawBody = requiredRawBody(message)
       workerPort.postMessage({
         id,
         ok: true,
@@ -55,6 +57,7 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
       return
     }
     if (message.type === 'normalize_openai_oauth_codex_body') {
+      const rawBody = requiredRawBody(message)
       if (!message.normalizeInput) {
         throw new Error('OpenAI OAuth Codex 归一化参数缺失', {
           cause: new Error('normalize_input_missing')
@@ -70,6 +73,23 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
       })
       return
     }
+    if (message.type === 'normalize_openai_oauth_codex_parsed_body') {
+      if (!message.normalizeInput) {
+        throw new Error('OpenAI OAuth Codex 归一化参数缺失', {
+          cause: new Error('normalize_input_missing')
+        })
+      }
+      const {
+        normalizeOpenAIOAuthCodexParsedBody
+      } = await import(resolveNormalizerModuleUrl()) as typeof import('../adapters/gpt-codex/oauth-normalizer.js')
+      workerPort.postMessage({
+        id,
+        ok: true,
+        value: normalizeOpenAIOAuthCodexParsedBody(message.parsedBody, message.normalizeInput)
+      })
+      return
+    }
+    const rawBody = requiredRawBody(message)
     workerPort.postMessage({
       id,
       ok: true,
@@ -79,6 +99,15 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
     workerPort.postMessage(workerErrorResponse(id, message.type, error))
   }
 })
+
+function requiredRawBody(message: GatewayJsonWorkerRequest): Buffer {
+  if (!message.rawBody) {
+    throw new Error('网关 JSON worker 请求体缺失', {
+      cause: new Error('raw_body_missing')
+    })
+  }
+  return Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
+}
 
 function resolveNormalizerModuleUrl(): string {
   return import.meta.url.endsWith('.ts')

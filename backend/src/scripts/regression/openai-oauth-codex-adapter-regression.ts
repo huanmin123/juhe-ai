@@ -61,6 +61,7 @@ async function main(): Promise<void> {
   await testLargeApiKeyLiteBodyWorkerNormalization()
   await testMediumBodyDeferredMiddlewareToOAuthNormalizer()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
+  await testLargeBodyParsesOnceAcrossAccountSwitches()
   await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
@@ -555,6 +556,39 @@ async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
   assert.equal(body.metadata, undefined)
   assert.equal((body.tools as Array<Record<string, unknown>>)[0].type, 'web_search')
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
+}
+
+async function testLargeBodyParsesOnceAcrossAccountSwitches(): Promise<void> {
+  const requestBody = {
+    model: 'gpt-5.3-codex',
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 64 * 1024),
+    tools: [{ type: 'web_search_preview' }]
+  }
+  const rawBodyText = JSON.stringify(requestBody)
+  const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, rawBodyText)
+  const originalJsonParse = JSON.parse
+  let parseCount = 0
+  try {
+    JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+      parseCount += 1
+      return originalJsonParse(...args)
+    }) as typeof JSON.parse
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+      ...account,
+      id: 'acct_owner_oauth_switched',
+      apiKey: 'oauth-access-token-switched'
+    }, identity)
+  } finally {
+    JSON.parse = originalJsonParse
+  }
+  assert.equal(parseCount, 1, '同一大请求跨 OAuth 账户切换时只能完整解析一次')
+  assert.ok(req.gatewayParsedJsonBodyAvailable, '请求级解析结果必须供后续账户 attempt 复用')
+
+  const parserSource = readFileSync(new URL('../../modules/gateway/request/json-parser.ts', import.meta.url), 'utf8')
+  const adapterSource = readFileSync(new URL('../../modules/gateway/adapters/gpt-codex/oauth-adapter.ts', import.meta.url), 'utf8')
+  assert.match(parserSource, /normalize_openai_oauth_codex_parsed_body/, '生产 worker 必须支持已解析对象的 OAuth 规范化任务')
+  assert.match(adapterSource, /normalizeOpenAIOAuthCodexParsedBodyInWorker/, '大 Body OAuth adapter 必须把遍历和 stringify 下沉到 worker')
 }
 
 async function testRequiredBodyFieldRejection(): Promise<void> {

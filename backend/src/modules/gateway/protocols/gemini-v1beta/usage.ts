@@ -9,12 +9,18 @@ export function parseGeminiUsageFromJsonBuffer(responseBody: Buffer): ParsedUsag
   return parseGeminiUsageFromJsonTextFragment(responseBody.toString('utf8'))
 }
 
-export function parseGeminiUsageFromJsonTextFragment(text?: string): ParsedUsage {
+export function parseGeminiUsageFromJsonValue(value: unknown): ParsedUsage {
+  return extractGeminiUsage(value)
+}
+
+export function parseGeminiUsageFromJsonTextFragment(text?: string, skipFullDocumentParse = false): ParsedUsage {
   if (!text) return emptyUsage()
-  try {
-    return extractGeminiUsage(JSON.parse(text))
-  } catch {
-    // Large-response inspection can provide a bounded JSON fragment instead of a complete document.
+  if (!skipFullDocumentParse) {
+    try {
+      return extractGeminiUsage(JSON.parse(text))
+    } catch {
+      // Large-response inspection can provide a bounded JSON fragment instead of a complete document.
+    }
   }
   const serviceTier = normalizeOptionalUsageServiceTier(extractJsonStringPropertyFromTextFragment(text, 'service_tier'))
   for (const propertyName of ['total_usage', 'usageMetadata', 'usage']) {

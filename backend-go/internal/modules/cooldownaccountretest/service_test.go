@@ -55,6 +55,7 @@ type fakeEnqueuer struct {
 	mu                       sync.Mutex
 	active, maxActive, calls int
 	accountIDs               []string
+	err                      error
 }
 
 type fakeQuotaChecker struct {
@@ -92,7 +93,11 @@ func (f *fakeEnqueuer) EnqueueCooldownAccountRetest(ctx context.Context, task po
 	}
 	f.mu.Lock()
 	f.active--
+	err := f.err
 	f.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
 	return task.AccountID != "duplicate", nil
 }
 
@@ -224,7 +229,11 @@ func TestSchedulerOverScansQuotaRejectedCandidates(t *testing.T) {
 	second.CooldownUntil = first.CooldownUntil.Add(time.Minute)
 	second.Priority = 2
 	second.CreatedAt = first.CreatedAt.Add(time.Minute)
-	store := &fakeStore{page: port.CooldownAccountRetestPage{Candidates: []port.CooldownAccountRetestCandidate{first, second}}}
+	third := validCandidate("later-eligible")
+	third.CooldownUntil = second.CooldownUntil.Add(time.Minute)
+	third.Priority = 3
+	third.CreatedAt = second.CreatedAt.Add(time.Minute)
+	store := &fakeStore{page: port.CooldownAccountRetestPage{Candidates: []port.CooldownAccountRetestCandidate{first, second, third}}}
 	enqueuer := &fakeEnqueuer{}
 	result, next, err := (Scheduler{
 		Store: store, Enqueuer: enqueuer, Quota: fakeQuotaChecker{eligible: map[string]bool{"eligible": true}},
@@ -239,8 +248,22 @@ func TestSchedulerOverScansQuotaRejectedCandidates(t *testing.T) {
 	if len(enqueuer.accountIDs) != 1 || enqueuer.accountIDs[0] != "eligible" {
 		t.Fatalf("enqueued account IDs = %v", enqueuer.accountIDs)
 	}
-	if next != nil {
-		t.Fatalf("next cursor = %+v, want nil after final scanned candidate", next)
+	if next == nil || next.ID != second.ID || !next.CooldownUntil.Equal(second.CooldownUntil) || next.Priority != second.Priority || !next.CreatedAt.Equal(second.CreatedAt) {
+		t.Fatalf("next cursor = %+v, want cursor after selected candidate %+v", next, second)
+	}
+}
+
+func TestSchedulerKeepsOriginalCursorWhenEnqueueFails(t *testing.T) {
+	cursor := &port.CooldownAccountRetestCursor{ID: "original-cursor"}
+	store := &fakeStore{page: port.CooldownAccountRetestPage{Candidates: []port.CooldownAccountRetestCandidate{validCandidate("eligible")}}}
+	result, next, err := (Scheduler{
+		Store: store, Enqueuer: &fakeEnqueuer{err: errors.New("queue unavailable")}, Quota: fakeQuotaChecker{},
+	}).RunPage(context.Background(), cursor, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "enqueue cooldown account retest") {
+		t.Fatalf("RunPage() error = %v", err)
+	}
+	if next != cursor || result.EnqueuedCount != 0 {
+		t.Fatalf("next=%+v result=%+v, want original cursor and no enqueue", next, result)
 	}
 }
 

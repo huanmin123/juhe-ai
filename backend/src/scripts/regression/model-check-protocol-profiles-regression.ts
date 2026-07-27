@@ -159,6 +159,63 @@ assert.equal(geminiParsed.model, 'gemini-3.5-flash')
 assert.equal(geminiParsed.outputText, 'OK-MODEL-CHECK')
 assert.equal(geminiParsed.usage?.totalTokenCount, 10)
 
+let directJsonParseCount = 0
+const countedJson = parseModelCheckProbeResponse({
+  protocol: 'openai_responses',
+  path: '/v1/responses',
+  bodyText: JSON.stringify({
+    model: 'gpt-5.6-sol',
+    output_text: 'OK',
+    usage: { total_tokens: 2 },
+    system_fingerprint: 'fp-test'
+  }),
+  parseOptions: { onJsonParseAttempt: () => { directJsonParseCount += 1 } }
+})
+assert.equal(countedJson.outputText, 'OK')
+assert.equal(countedJson.model, 'gpt-5.6-sol')
+assert.equal(countedJson.usage?.total_tokens, 2)
+assert.equal(countedJson.systemFingerprint, 'fp-test')
+assert.equal(directJsonParseCount, 1, '模型检测 JSON 的输出、模型、用量和指纹必须共享一次解析')
+
+for (const fixture of [
+  {
+    protocol: 'openai_chat' as const,
+    path: '/v1/chat/completions',
+    bodyText: 'event: chunk\r\ndata: {"model":"glm-5.2",\r\ndata: "choices":[{"delta":{"content":"OK"}}],"usage":{"total_tokens":3}}',
+    expectedModel: 'glm-5.2',
+    expectedUsageKey: 'total_tokens',
+    expectedUsage: 3
+  },
+  {
+    protocol: 'anthropic_messages' as const,
+    path: '/v1/messages',
+    bodyText: 'event: message_start\r\ndata: {"message":{"model":"claude-opus-4-8",\r\ndata: "usage":{"input_tokens":4}}}\r\n\r\nevent: content_block_delta\r\ndata: {"delta":{"text":"OK"}}',
+    expectedModel: 'claude-opus-4-8',
+    expectedUsageKey: 'input_tokens',
+    expectedUsage: 4
+  },
+  {
+    protocol: 'gemini_native' as const,
+    path: '/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse',
+    bodyText: 'data: {"modelVersion":"gemini-3.5-flash",\r\ndata: "candidates":[{"content":{"parts":[{"text":"OK"}]}}],"usageMetadata":{"totalTokenCount":5}}',
+    expectedModel: 'gemini-3.5-flash',
+    expectedUsageKey: 'totalTokenCount',
+    expectedUsage: 5
+  }
+]) {
+  let parseCount = 0
+  const parsed = parseModelCheckProbeResponse({
+    protocol: fixture.protocol,
+    path: fixture.path,
+    bodyText: fixture.bodyText,
+    parseOptions: { onJsonParseAttempt: () => { parseCount += 1 } }
+  })
+  assert.equal(parsed.outputText, 'OK', `${fixture.protocol} 必须解析 multi-line data 与 EOF frame`)
+  assert.equal(parsed.model, fixture.expectedModel, `${fixture.protocol} 必须从同一 parsed context 提取 model`)
+  assert.equal(parsed.usage?.[fixture.expectedUsageKey], fixture.expectedUsage, `${fixture.protocol} 必须从同一 parsed context 提取 usage`)
+  assert.equal(parseCount, fixture.protocol === 'anthropic_messages' ? 2 : 1, `${fixture.protocol} 每个 SSE data payload 只能解析一次`)
+}
+
 const chatToolRequest = createModelCheckToolCallingRequest('openai_chat', 'glm-5.2')
 assert.equal(chatToolRequest.path, '/v1/chat/completions')
 assert(hasFunctionCall({

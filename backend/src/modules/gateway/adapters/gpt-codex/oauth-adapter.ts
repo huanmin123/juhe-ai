@@ -2,11 +2,13 @@ import type { Request } from 'express'
 
 import {
   getGatewayRequestBodyState,
+  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
+  normalizeOpenAIOAuthCodexParsedBodyInWorker,
   parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
 import {
@@ -82,14 +84,35 @@ async function normalizeOpenAIOAuthCodexBody(
   }
 
   const body = await parseOpenAIOAuthCodexJsonObjectBody(req, signal)
-  return normalizeOpenAIOAuthCodexParsedBody(body, {
+  const normalizeInput = {
     inputHeaders,
     account,
     identity,
     compact,
     modelOverride: options.modelOverride,
     requestOverrideModelCapabilities: options.requestOverrideModelCapabilities
-  })
+  }
+  const rawBodyBytes = (req as GatewayRawBodyRequest).rawBody?.byteLength ?? 0
+  if (rawBodyBytes > gatewayJsonBodyInlineParseMaxBytes) {
+    try {
+      return await normalizeOpenAIOAuthCodexParsedBodyInWorker(
+        body,
+        rawBodyBytes,
+        normalizeInput,
+        undefined,
+        signal
+      )
+    } catch (error) {
+      if (isGatewayJsonWorkerQueueFullError(error)) {
+        throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
+          statusCode: 503,
+          type: 'server_overloaded'
+        })
+      }
+      throw error
+    }
+  }
+  return normalizeOpenAIOAuthCodexParsedBody(body, normalizeInput)
 }
 
 async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortSignal): Promise<unknown> {

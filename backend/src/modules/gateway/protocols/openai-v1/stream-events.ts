@@ -14,6 +14,7 @@ export interface ParsedOpenAIStreamEvent {
   rawText?: string
   eventName: string
   dataText: string
+  dataBytes?: number
   data?: Record<string, unknown>
   dataParseError: boolean
   eventType: string
@@ -37,26 +38,31 @@ export interface OpenAIStreamEventClassification {
 export function parseOpenAISseEventText(rawText: string): ParsedOpenAIStreamEvent {
   let eventName = ''
   const dataLines: string[] = []
+  let dataBytes = 0
   for (const line of rawText.split(/\r?\n|\r/)) {
     if (line.startsWith('event:')) {
       eventName = line.slice(6).trim()
     } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
+      const dataLine = line.slice(5).trimStart()
+      dataLines.push(dataLine)
+      dataBytes += Buffer.byteLength(dataLine, 'utf8')
     }
   }
-  return parseOpenAIStreamEventData(dataLines.join('\n').trim(), eventName, rawText)
+  return parseOpenAIStreamEventData(dataLines.join('\n').trim(), eventName, rawText, dataBytes)
 }
 
 export function parseOpenAIStreamEventData(
   dataText: string,
   eventName: string,
-  rawText?: string
+  rawText?: string,
+  dataBytes = Buffer.byteLength(dataText, 'utf8')
 ): ParsedOpenAIStreamEvent {
   if (!dataText || dataText === '[DONE]') {
     return {
       rawText,
       eventName,
       dataText,
+      dataBytes,
       dataParseError: false,
       eventType: dataText === '[DONE]' ? '[DONE]' : eventName
     }
@@ -72,6 +78,7 @@ export function parseOpenAIStreamEventData(
       rawText,
       eventName,
       dataText,
+      dataBytes,
       data,
       dataParseError: false,
       eventType,
@@ -83,6 +90,7 @@ export function parseOpenAIStreamEventData(
       rawText,
       eventName,
       dataText,
+      dataBytes,
       dataParseError: true,
       eventType: eventName
     }

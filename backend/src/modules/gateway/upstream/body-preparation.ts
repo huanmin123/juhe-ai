@@ -30,7 +30,7 @@ export function prepareAnthropicMessagesBodyForAttempt(
 ): UpstreamBody | undefined {
   if (body === undefined) return undefined
 
-  if (isJsonRecord(body)) {
+  if (!Buffer.isBuffer(body) && typeof body !== 'string') {
     return Buffer.from(JSON.stringify(
       isAnthropicMessagesRequest(headers, upstreamUrl)
         ? normalizeAnthropicMessagesBody(body).body

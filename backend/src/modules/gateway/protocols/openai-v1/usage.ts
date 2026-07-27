@@ -15,6 +15,12 @@ export function parseOpenAIUsageFromJsonBuffer(responseBody: Buffer): ParsedUsag
   }
 }
 
+export function parseOpenAIUsageFromJsonValue(value: unknown): ParsedUsage {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return emptyUsage()
+  const root = value as Record<string, unknown>
+  return extractOpenAIUsage(root.usage, normalizeServiceTier(root.service_tier))
+}
+
 export function parseOpenAIUsageFromJsonTextFragment(text?: string): ParsedUsage {
   if (!text) return emptyUsage()
   const usageText = extractJsonObjectPropertyFromTextFragment(text, 'usage')

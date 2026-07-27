@@ -377,6 +377,7 @@ export function rewriteCodexResponsesSseEvent(
       ...event,
       rawText,
       dataText,
+      dataBytes: Buffer.byteLength(dataText, 'utf8'),
       data,
       dataParseError: false
     }

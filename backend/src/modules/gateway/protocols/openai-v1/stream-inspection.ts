@@ -308,7 +308,7 @@ export class OpenAIStreamInspector {
       this.resetOversizedEventState()
       return
     }
-    const event = parseOpenAIStreamEventData(data, currentEventName)
+    const event = parseOpenAIStreamEventData(data, currentEventName, undefined, currentDataBytes)
     this.inspectParsedEvent(event, currentDataBytes)
     this.resetOversizedEventState()
   }

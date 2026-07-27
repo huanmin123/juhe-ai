@@ -64,6 +64,30 @@ func TestRunCooldownAccountRetestConsumerFailsBeforeRedisWhenProcessorIncomplete
 	}
 }
 
+func TestRunCooldownAccountRetestConsumerRequiresQuotaBeforeRedis(t *testing.T) {
+	err := RunCooldownAccountRetestConsumer(context.Background(), CooldownAccountRetestConsumerOptions{Processor: module.Processor{
+		Store: cooldownRetestStoreStub{}, Outcomes: cooldownRetestOutcomeStoreStub{}, Probe: cooldownRetestSuccessProbeStub{},
+	}})
+	if err == nil || err.Error() != "cooldown account retest quota checker is required" {
+		t.Fatalf("RunCooldownAccountRetestConsumer() error = %v", err)
+	}
+}
+
+func TestHandleCooldownAccountRetestTaskSkipsUnsupportedOutcome(t *testing.T) {
+	payload, headers, err := job.EncodeTask(cooldownRetestValidTask())
+	if err != nil {
+		t.Fatalf("EncodeTask() error = %v", err)
+	}
+	processor := module.Processor{
+		Store: cooldownRetestDueStoreStub{}, Outcomes: cooldownRetestOutcomeStoreStub{},
+		Probe: cooldownRetestUnsupportedProbeStub{}, Quota: cooldownRetestQuotaCheckerStub{},
+	}
+	err = handleCooldownAccountRetestTask(context.Background(), processor, payload, headers)
+	if !errors.Is(err, module.ErrUnsupportedProbeOutcome) || !errors.Is(err, asynq.SkipRetry) {
+		t.Fatalf("error = %v, want unsupported outcome and SkipRetry", err)
+	}
+}
+
 func TestCooldownAccountRetestTrackedMuxWaitsForOutcomeHandlerReturn(t *testing.T) {
 	taskPayload, taskHeaders, err := job.EncodeTask(cooldownRetestValidTask())
 	if err != nil {
@@ -164,6 +188,7 @@ func cooldownRetestValidTask() port.CooldownAccountRetestTask {
 	return port.CooldownAccountRetestTask{
 		AccountID: "acct_1", ConfigRevision: 1, DispatchRevision: 1,
 		ObservationStartedAt: &started, Generation: "generation-1",
+		MaxPauseMinutes: 30, MaxRecoveryHours: 24,
 	}
 }
 
@@ -171,6 +196,12 @@ type cooldownRetestSuccessProbeStub struct{}
 
 func (cooldownRetestSuccessProbeStub) Probe(context.Context, port.CooldownAccountRetestCandidate) (port.CooldownAccountRetestProbeResult, error) {
 	return port.CooldownAccountRetestProbeResult{Outcome: "complete_success"}, nil
+}
+
+type cooldownRetestUnsupportedProbeStub struct{}
+
+func (cooldownRetestUnsupportedProbeStub) Probe(context.Context, port.CooldownAccountRetestCandidate) (port.CooldownAccountRetestProbeResult, error) {
+	return port.CooldownAccountRetestProbeResult{Outcome: "future_outcome"}, nil
 }
 
 type cooldownRetestBlockingOutcomeStoreStub struct {

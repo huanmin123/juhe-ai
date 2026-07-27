@@ -477,10 +477,10 @@ export class OpenAIResponseInspectionBuffer {
   }
 
   private rememberParsedEvent(buffer: Buffer, event: ParsedOpenAIStreamEvent | undefined): void {
-    if (!event) return
+    if (!event || event.dataText === '' || buffer.length > maxBufferedSseEventBytes) return
     this.parsedEventByChunk.set(buffer, {
       event,
-      dataBytes: sseEventDataBytes(event.rawText ?? buffer.toString('utf8'))
+      dataBytes: event.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8')
     })
   }
 }
@@ -496,15 +496,6 @@ function normalizeEventTransform(
     parsedEvent: value?.parsedEvent ?? (value?.buffer ? undefined : fallbackEvent),
     intercepted: value?.intercepted
   }
-}
-
-function sseEventDataBytes(rawText: string): number {
-  let dataBytes = 0
-  for (const line of rawText.split(/\r?\n|\r/)) {
-    if (!line.startsWith('data:')) continue
-    dataBytes += Buffer.byteLength(line.slice(5).trimStart(), 'utf8')
-  }
-  return dataBytes
 }
 
 function openAIEndpointFamilyOrUnknown(endpointFamily: ResponseEndpointFamily): OpenAIResponseEndpointFamily {

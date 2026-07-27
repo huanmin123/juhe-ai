@@ -9,6 +9,11 @@ export function parseAnthropicUsageFromJsonBuffer(responseBody: Buffer): ParsedU
   return parseAnthropicUsageFromJsonTextFragment(responseBody.toString('utf8'))
 }
 
+export function parseAnthropicUsageFromJsonValue(value: unknown): ParsedUsage {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return emptyUsage()
+  return extractAnthropicUsage((value as Record<string, unknown>).usage)
+}
+
 export function parseAnthropicUsageFromJsonTextFragment(text?: string): ParsedUsage {
   if (!text) return emptyUsage()
   const usageText = extractJsonObjectPropertyFromTextFragment(text, 'usage')

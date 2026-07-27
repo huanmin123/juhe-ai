@@ -22,9 +22,10 @@ import {
 } from './stream-inspection.js'
 import {
   parseAnthropicUsageFromJsonBuffer,
+  parseAnthropicUsageFromJsonValue,
   parseAnthropicUsageFromJsonTextFragment
 } from './usage.js'
-import { parseAnthropicErrorPayload } from './error-payload.js'
+import { parseAnthropicErrorPayload, parseAnthropicErrorPayloadFromJsonValue } from './error-payload.js'
 
 export const anthropicV1ProtocolDriver: GatewayProtocolDriver = {
   id: 'anthropic-v1',
@@ -48,8 +49,10 @@ export const anthropicV1ProtocolDriver: GatewayProtocolDriver = {
   sseResponseInspectionFailureEvent: 'none',
   drainForKeepAliveAfterTerminal: false,
   parseUsageFromJsonBuffer: parseAnthropicUsageFromJsonBuffer,
+  parseUsageFromJsonValue: parseAnthropicUsageFromJsonValue,
   parseUsageFromJsonTextFragment: parseAnthropicUsageFromJsonTextFragment,
   parseErrorPayload: parseAnthropicErrorPayload,
+  parseErrorPayloadFromJsonValue: parseAnthropicErrorPayloadFromJsonValue,
   applyStreamUsageFallback: applyAnthropicStreamUsageFallback
 }
 
