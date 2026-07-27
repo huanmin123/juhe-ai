@@ -10,7 +10,7 @@ import {
 } from './body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from './json-parser.js'
 
 export async function downgradeGatewayAutoImageGenerationToolForPermission(
@@ -29,9 +29,7 @@ export async function downgradeGatewayAutoImageGenerationToolForPermission(
   }
 
   try {
-    const parsedBody = await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-    request.gatewayParsedJsonBodyAvailable = true
-    request.gatewayParsedJsonBody = parsedBody
+    const parsedBody = await parseGatewayRequestJsonBody(req, undefined, signal)
     const previousState = getGatewayRequestBodyState(req)
     request.gatewayRequestBody = createGatewayRequestBodyState({
       rawBody,
@@ -72,6 +70,7 @@ function markGatewayJsonBodyInvalid(req: Request): void {
   const rawBody = request.rawBody ?? Buffer.alloc(0)
   request.gatewayParsedJsonBodyAvailable = false
   request.gatewayParsedJsonBody = undefined
+  request.gatewayParsedJsonBodyPromise = undefined
   request.gatewayUpstreamBodyCache = undefined
   request.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,

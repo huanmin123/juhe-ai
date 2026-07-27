@@ -32,12 +32,11 @@ import {
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
   getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
@@ -309,12 +308,9 @@ async function normalizeGeminiInteractionsStreamBody(
     if (bodyState?.jsonParseStatus === 'invalid_json') {
       throw geminiInteractionsJsonBodyError('Interactions 请求体必须是有效的 JSON 对象')
     }
-    const rawBody = requestWithBody.rawBody
-    if (!rawBody || rawBody.length === 0) return body
+    if (!requestWithBody.rawBody?.length) return body
     try {
-      parsedBody = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-        ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-        : JSON.parse(rawBody.toString('utf8')) as unknown
+      parsedBody = await parseGatewayRequestJsonBody(req, undefined, signal)
     } catch (error) {
       if (isGatewayJsonWorkerQueueFullError(error)) {
         throw new GatewayRequestValidationError(

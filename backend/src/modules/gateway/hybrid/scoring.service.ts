@@ -14,7 +14,7 @@ import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
 import { getGatewaySessionIdentity } from '../session-identity/index.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
@@ -282,7 +282,7 @@ async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: 
   if (request.rawBody.length > hybridScoringRawBodyParseMaxBytes) {
     return undefined
   }
-  const parsed = await parseGatewayJsonBodyInWorker(request.rawBody, timeoutMs, signal)
+  const parsed = await parseGatewayRequestJsonBody(req, timeoutMs, signal)
   return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>
     : undefined

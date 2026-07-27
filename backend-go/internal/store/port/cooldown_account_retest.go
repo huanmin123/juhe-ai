@@ -18,10 +18,13 @@ type CooldownAccountRetestCandidate struct {
 	ID                      string
 	Name                    string
 	ConfigRevision          int
+	DispatchRevision        int
 	CooldownUntil           time.Time
 	Priority                int
 	CreatedAt               time.Time
 	ObservationStartedAt    *time.Time
+	Generation              string
+	SourceConfigRevision    *int
 	SystemAccountID         string
 	GroupID                 string
 	HealthCheckModel        string
@@ -47,11 +50,14 @@ type CooldownAccountRetestStore interface {
 }
 
 type CooldownAccountRetestTask struct {
-	AccountID            string
-	ConfigRevision       int
-	ObservationStartedAt *time.Time
-	MaxPauseMinutes      int
-	MaxRecoveryHours     int
+	AccountID            string     `json:"accountId"`
+	ConfigRevision       int        `json:"configRevision"`
+	DispatchRevision     int        `json:"dispatchRevision"`
+	ObservationStartedAt *time.Time `json:"observationStartedAt"`
+	Generation           string     `json:"generation"`
+	SourceConfigRevision *int       `json:"sourceConfigRevision,omitempty"`
+	MaxPauseMinutes      int        `json:"maxPauseMinutes"`
+	MaxRecoveryHours     int        `json:"maxRecoveryHours"`
 }
 
 type CooldownAccountRetestProbeResult struct {

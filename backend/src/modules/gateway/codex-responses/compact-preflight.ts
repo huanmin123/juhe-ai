@@ -12,10 +12,9 @@ import type { GatewayUpstreamRequestCoordinationContext } from '../dispatch/upst
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import {
   createGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
@@ -294,6 +293,7 @@ function buildSyntheticChatCompletionsRequest(sourceReq: Request, body: JsonReco
   synthetic.rawBody = rawBody
   synthetic.gatewayParsedJsonBodyAvailable = true
   synthetic.gatewayParsedJsonBody = body
+  synthetic.gatewayParsedJsonBodyPromise = undefined
   synthetic.gatewayUpstreamBodyCache = undefined
   setGatewayModelMappingSourceEndpointFamilyOverride(synthetic, OPENAI_CHAT_COMPLETIONS_FAMILY)
   synthetic.gatewayRequestBody = createGatewayRequestBodyState({
@@ -322,9 +322,7 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
   if (!rawBody || rawBody.length === 0) {
     return {}
   }
-  const parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-    ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-    : JSON.parse(rawBody.toString('utf8')) as unknown
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   return isPlainObject(parsed) ? { ...parsed } : {}
 }
 

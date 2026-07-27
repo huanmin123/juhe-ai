@@ -20,7 +20,7 @@ import type { ResponseInspectionPolicySummary } from '../../../storage/response-
 import { orderGatewayApiKeyGroupBindingsForDispatchAsync } from '../routing/api-key-group-route-selector.service.js'
 import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
 import { replaceGatewayJsonBodyModel } from '../request/body.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { applyHybridRouteAffinityAsync } from './affinity.service.js'
 import { scoreHybridGatewayRequest, type HybridScoringResult } from './scoring.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
@@ -378,7 +378,7 @@ async function rewriteHybridRequestModel(req: Request, targetModel: string, sign
   if (!request.rawBody?.length) {
     throw new Error('混合路由无法改写空请求体')
   }
-  const parsed = await parseGatewayJsonBodyInWorker(request.rawBody, 30000, signal)
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('混合路由请求体必须是 JSON 对象')
   }

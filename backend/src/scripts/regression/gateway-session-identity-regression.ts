@@ -12,10 +12,9 @@ const testSecret = 'gateway-session-identity-regression-secret'
 
 function request(
   path: string,
-  headers: Record<string, string | string[] | undefined> = {},
-  body: Record<string, unknown> = {}
+  headers: Record<string, string | string[] | undefined> = {}
 ): GatewaySessionIdentityRequest {
-  return { method: 'POST', originalUrl: path, path, headers, body }
+  return { method: 'POST', originalUrl: path, path, headers }
 }
 
 function scope(clientProfile = 'generic'): GatewaySessionIdentityScope {
@@ -62,13 +61,17 @@ function main(): void {
   )
   assert.equal(claudeHeaderOnGenericClient.status, 'missing')
 
-  const bodyOnly = resolveGatewaySessionIdentity(
-    request('/responses', {}, {
+  const bodyOnlyRequest = {
+    ...request('/responses'),
+    body: {
       conversation: 'body-conversation',
       session_id: 'body-session',
       request: { session_id: 'gemini-session' },
       client_metadata: { session_id: 'codex-body-session' }
-    }),
+    }
+  } as GatewaySessionIdentityRequest
+  const bodyOnly = resolveGatewaySessionIdentity(
+    bodyOnlyRequest,
     scope('codex')
   )
   assert.equal(bodyOnly.status, 'missing')

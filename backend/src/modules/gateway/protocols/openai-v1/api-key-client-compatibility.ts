@@ -3,12 +3,11 @@ import type { Request } from 'express'
 import type { ClientCompatibilityCapability } from '../../../../domain/types.js'
 import {
   getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
 import { splitPathAndQuery } from './route-helpers.js'
 import {
@@ -97,9 +96,7 @@ async function parseOpenAIClientCompatibilityJsonBody(req: Request, signal?: Abo
 
   let parsed: unknown
   try {
-    parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new Error('网关请求解析繁忙，请稍后重试')

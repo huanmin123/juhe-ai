@@ -1,7 +1,7 @@
 import type { Request } from 'express'
 
 import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../request/body.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import type { HybridQualityInspectionOutcome } from './quality-inspection.service.js'
 
 const hybridQualityRepairInstructionMaxChars = 2000
@@ -68,7 +68,7 @@ async function mutableGatewayJsonBody(req: Request, signal?: AbortSignal): Promi
     return { ...body }
   }
   if (!request.rawBody?.length) return undefined
-  const parsed = await parseGatewayJsonBodyInWorker(request.rawBody, 30000, signal)
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   return isJsonRecord(parsed) ? { ...parsed } : undefined
 }
 

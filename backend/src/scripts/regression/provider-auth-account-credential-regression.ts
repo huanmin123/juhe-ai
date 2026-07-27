@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { Request } from 'express'
 
 import {
@@ -189,6 +191,12 @@ const anthropicMessagesRequest = requestFixture('/v1/messages', {
 const anthropicOauthParts = await anthropicProviderDriver.buildUpstreamRequestParts(anthropicMessagesRequest, anthropicOauthAccount, { systemAccountId: 'sys', groupId: 'grp' })
 assert.equal(anthropicOauthParts.headers.get('authorization'), 'Bearer anthropic-access-token')
 assert.equal(anthropicOauthParts.headers.get('x-api-key'), null)
+
+const anthropicOAuthRefreshSource = readFileSync(resolve('src/modules/anthropic-oauth/anthropic-oauth.routes.ts'), 'utf8')
+assert.match(anthropicOAuthRefreshSource, /post\('\/accounts\/:id\/refresh-token'[\s\S]*Anthropic OAuth 账户缺少 Refresh Token/, 'Anthropic OAuth 手动刷新必须拒绝缺少 refresh_token 的账户')
+assert.match(anthropicOAuthRefreshSource, /refreshAnthropicAuthToken\([\s\S]*refreshToken,[\s\S]*clientId: stringCredential\(account\.credentials, 'client_id'\)/, 'Anthropic OAuth 手动刷新必须复用已保存 refresh_token 和 client_id')
+assert.match(anthropicOAuthRefreshSource, /clearAccountFailureStateAsync\(account\.id, requestAccess\)/, 'Anthropic OAuth 手动刷新成功后必须清理旧失败态')
+assert.match(anthropicOAuthRefreshSource, /sanitizeAccountCredentialCarrierResponse\(restoredAccount\)/, 'Anthropic OAuth 手动刷新响应必须继续走凭据脱敏输出')
 
 console.log('provider auth account credential regression passed')
 

@@ -2,14 +2,12 @@ import type { Request } from 'express'
 
 import {
   getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  normalizeOpenAIOAuthCodexBodyInWorker,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
 import {
   normalizeOpenAIOAuthCodexParsedBody,
@@ -83,31 +81,6 @@ async function normalizeOpenAIOAuthCodexBody(
     return { stream: false, session: {} }
   }
 
-  const rawBody = (req as GatewayRawBodyRequest).rawBody
-  if (rawBody && rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
-    try {
-      return await normalizeOpenAIOAuthCodexBodyInWorker(rawBody, {
-        inputHeaders,
-        account,
-        identity,
-        compact,
-        modelOverride: options.modelOverride,
-        requestOverrideModelCapabilities: options.requestOverrideModelCapabilities
-      }, undefined, signal)
-    } catch (error) {
-      if (error instanceof OpenAIOAuthCodexAdapterError) {
-        throw error
-      }
-      if (isGatewayJsonWorkerQueueFullError(error)) {
-        throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
-          statusCode: 503,
-          type: 'server_overloaded'
-        })
-      }
-      throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
-    }
-  }
-
   const body = await parseOpenAIOAuthCodexJsonObjectBody(req, signal)
   return normalizeOpenAIOAuthCodexParsedBody(body, {
     inputHeaders,
@@ -134,12 +107,10 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
     throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
   }
 
-  const rawBody = (req as GatewayRawBodyRequest).rawBody
+  const rawBody = requestWithBody.rawBody
   if (rawBody && rawBody.length > 0) {
     try {
-      return rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-        ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-        : JSON.parse(rawBody.toString('utf8')) as unknown
+      return await parseGatewayRequestJsonBody(req, undefined, signal)
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error

@@ -47,7 +47,6 @@ export interface GatewaySessionIdentityRequest {
   method: string
   originalUrl?: string
   path?: string
-  body?: unknown
   headers?: Record<string, string | readonly string[] | undefined>
   headersDistinct?: Record<string, readonly string[] | undefined>
   rawHeaders?: readonly string[]

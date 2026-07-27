@@ -6,6 +6,7 @@ import type { Request } from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { gatewayForegroundAccountCircuitFailureEvidenceKey } from '../../modules/gateway/dispatch/upstream-dispatch.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import { resolveGatewaySessionIdentity } from '../../modules/gateway/session-identity/index.js'
 import { MemoryAccountCircuitStore } from '../../modules/gateway/runtime/account-circuit-memory-store.js'
 import {
   accountCircuitScopeKey,
@@ -1188,11 +1189,20 @@ function accountCircuitRequestFixture(input: {
   headers?: Record<string, string>
 } = {}): Request {
   const headers = new Map(Object.entries(input.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]))
-  return {
+  const request = {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
     body: input.body,
     rawBody: input.rawBody,
     header: (name: string) => headers.get(name.toLowerCase())
   } as unknown as Request
+  resolveGatewaySessionIdentity(request, {
+    clientProfile: 'codex',
+    systemAccountId: 'system-a',
+    apiKeyId: 'gateway-key-a'
+  })
+  return request
 }
 
 function accountFixture(overrides: Partial<UpstreamAccount> = {}): UpstreamAccount {

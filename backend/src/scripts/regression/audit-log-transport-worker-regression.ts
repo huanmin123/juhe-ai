@@ -45,9 +45,7 @@ try {
   assert.equal(summary.retainedTailBytes, summaryEdgeBytes, '大正文摘要必须保留后 256KB 窗口')
   assert.equal(Buffer.from(String(summary.headBase64), 'base64').byteLength, summaryEdgeBytes, '头部窗口 base64 必须可还原为 256KB')
   assert.equal(Buffer.from(String(summary.tailBase64), 'base64').byteLength, summaryEdgeBytes, '尾部窗口 base64 必须可还原为 256KB')
-  const jsonSummary = summary.json as Record<string, unknown>
-  assert.equal(jsonSummary.topLevelType, 'object', '超大 JSON 不完整解析时仍应保留顶层类型')
-  assert((jsonSummary.topLevelKeys as string[]).includes('model'), '超大 JSON 摘要应保留可推断的顶层 key')
+  assert.equal(summary.json, undefined, '审计摘要不应为了展示解析原始 JSON Body')
   assert.equal(decoded.captureStatus, 'complete', '正文按既定摘要契约保全时不应把整条审计伪标为 dropped')
 
   const aggregateEncoded = await encodeAuditLogForRedisStreamInWorker(

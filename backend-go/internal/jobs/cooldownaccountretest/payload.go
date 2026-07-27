@@ -14,7 +14,7 @@ import (
 const (
 	TaskType       = "cooldown-account-retest:probe"
 	QueueName      = "account-probes"
-	PayloadVersion = 1
+	PayloadVersion = 2
 )
 
 var ErrInvalidPayload = errors.New("invalid cooldown account retest task payload")
@@ -50,7 +50,12 @@ func UniqueKey(task port.CooldownAccountRetestTask) string {
 	if task.ObservationStartedAt != nil {
 		observation = task.ObservationStartedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
 	}
-	raw := fmt.Sprintf("%s|%d|%s", strings.TrimSpace(task.AccountID), task.ConfigRevision, observation)
+	sourceRevision := "owner"
+	if task.SourceConfigRevision != nil {
+		sourceRevision = fmt.Sprintf("%d", *task.SourceConfigRevision)
+	}
+	raw := fmt.Sprintf("%s|%d|%d|%s|%s|%s", strings.TrimSpace(task.AccountID), task.ConfigRevision,
+		task.DispatchRevision, observation, strings.TrimSpace(task.Generation), sourceRevision)
 	sum := sha256.Sum256([]byte(raw))
 	return "cooldown-account-retest:" + hex.EncodeToString(sum[:])
 }
@@ -61,6 +66,18 @@ func validateTask(task port.CooldownAccountRetestTask) error {
 	}
 	if task.ConfigRevision < 1 {
 		return errors.New("config revision must be positive")
+	}
+	if task.DispatchRevision < 1 {
+		return errors.New("dispatch revision must be positive")
+	}
+	if task.ObservationStartedAt == nil || task.ObservationStartedAt.IsZero() {
+		return errors.New("observation start is required")
+	}
+	if strings.TrimSpace(task.Generation) == "" {
+		return errors.New("generation is required")
+	}
+	if task.SourceConfigRevision != nil && *task.SourceConfigRevision < 1 {
+		return errors.New("source config revision must be positive")
 	}
 	if task.MaxPauseMinutes < 0 || task.MaxRecoveryHours < 0 {
 		return errors.New("recovery limits must not be negative")

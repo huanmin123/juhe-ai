@@ -3,7 +3,6 @@ import type { Request } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import { gatewayProtocolResponseProtocolForRequest } from '../protocols/registry.js'
-import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { requestStream } from '../request/metadata.js'
 import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 
@@ -35,7 +34,6 @@ export interface OpenAIGatewayCodexTurnContext {
   turnId: string
   sessionId?: string
   threadId?: string
-  rawBodyHash: string
   stateKey: string
 }
 
@@ -65,16 +63,6 @@ interface CodexTurnMetadata {
   threadId?: string
 }
 
-const gatewayClientStrategyFullHashMaxBytes = 256 * 1024
-const gatewayClientStrategyHashSampleCount = 16
-const gatewayClientStrategyHashSampleBytes = 4 * 1024
-const gatewayClientStrategyBodyHashMaxDepth = 8
-const gatewayClientStrategyBodyHashMaxObjectKeys = 80
-const gatewayClientStrategyBodyHashMaxArrayItems = 120
-const gatewayClientStrategyBodyHashMaxNodes = 5000
-const gatewayClientStrategyBodyHashMaxStringChars = 16 * 1024
-const gatewayClientStrategyBodyHashStringEdgeChars = 4 * 1024
-
 export function resolveOpenAIGatewayClientStrategy(
   req: Request,
   identity: OpenAIGatewayClientStrategyIdentity
@@ -92,7 +80,7 @@ export function resolveOpenAIGatewayClientStrategy(
   const canUseCodexProfile = Boolean(codexMetadata?.turnId)
     && (downstreamProtocol === 'responses_sse' || isOpenAICodexCompactPostRequest(req))
   const codexTurn = canUseCodexProfile && codexMetadata?.turnId
-    ? buildCodexTurnContext(req, identity, codexMetadata)
+    ? buildCodexTurnContext(identity, codexMetadata)
     : undefined
 
   const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
@@ -235,7 +223,6 @@ export function openAIGatewayClientStrategyAuditMetadata(
     codexTurnIdPresent: Boolean(strategy.codexTurn?.turnId),
     codexSessionIdPresent: Boolean(strategy.codexTurn?.sessionId),
     codexThreadIdPresent: Boolean(strategy.codexTurn?.threadId),
-    codexRawBodyHash: strategy.codexTurn?.rawBodyHash,
     codexTurnStateKey: strategy.codexTurn?.stateKey,
     preCommitFailureSignal: strategy.retryCoordination.preCommitFailureSignal,
     committedFailureSignal: strategy.retryCoordination.committedFailureSignal,
@@ -339,11 +326,9 @@ function geminiQueryParam(req: Request, name: string): string | undefined {
 }
 
 function buildCodexTurnContext(
-  req: Request,
   identity: OpenAIGatewayClientStrategyIdentity,
   metadata: Required<Pick<CodexTurnMetadata, 'turnId'>> & CodexTurnMetadata
 ): OpenAIGatewayCodexTurnContext {
-  const rawBodyHash = hashGatewayRequestBody(req)
   const keyPayload = {
     systemAccountId: identity.systemAccountId,
     apiKeyId: identity.apiKeyId ?? 'internal',
@@ -354,7 +339,6 @@ function buildCodexTurnContext(
     turnId: metadata.turnId,
     sessionId: metadata.sessionId,
     threadId: metadata.threadId,
-    rawBodyHash,
     stateKey: createHash('sha256').update(JSON.stringify(keyPayload)).digest('hex')
   }
 }
@@ -391,135 +375,6 @@ function parseJsonObject(value: string | undefined): Record<string, unknown> | u
   } catch {
     return undefined
   }
-}
-
-function hashGatewayRequestBody(req: Request): string {
-  const rawBody = (req as GatewayRawBodyRequest).rawBody
-  if (rawBody) {
-    return hashGatewayRawBody(rawBody)
-  }
-  const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.jsonParseStatus === 'deferred_large_json') {
-    return createHash('sha256').update(`deferred_large_json:${bodyState.rawBodyBytes}`).digest('hex')
-  }
-  return hashBoundedJsonLikeValue(req.body ?? {})
-}
-
-function hashGatewayRawBody(rawBody: Buffer): string {
-  if (rawBody.byteLength <= gatewayClientStrategyFullHashMaxBytes) {
-    return createHash('sha256').update(rawBody).digest('hex')
-  }
-  const hash = createHash('sha256')
-  hash.update(`sampled:${rawBody.byteLength}:`)
-  const sampleBytes = Math.min(gatewayClientStrategyHashSampleBytes, rawBody.byteLength)
-  const maxStart = Math.max(0, rawBody.byteLength - sampleBytes)
-  for (let index = 0; index < gatewayClientStrategyHashSampleCount; index += 1) {
-    const start = Math.floor((maxStart * index) / Math.max(1, gatewayClientStrategyHashSampleCount - 1))
-    hash.update(rawBody.subarray(start, start + sampleBytes))
-  }
-  return hash.digest('hex')
-}
-
-function hashBoundedJsonLikeValue(value: unknown): string {
-  const hash = createHash('sha256')
-  const context = {
-    nodes: 0,
-    truncated: false,
-    seen: new WeakSet<object>()
-  }
-  updateHashWithJsonLikeValue(hash, value, context, 0)
-  if (context.truncated) {
-    hash.update('|truncated')
-  }
-  return hash.digest('hex')
-}
-
-function updateHashWithJsonLikeValue(
-  hash: ReturnType<typeof createHash>,
-  value: unknown,
-  context: { nodes: number; truncated: boolean; seen: WeakSet<object> },
-  depth: number
-): void {
-  if (context.nodes >= gatewayClientStrategyBodyHashMaxNodes || depth > gatewayClientStrategyBodyHashMaxDepth) {
-    context.truncated = true
-    hash.update('|limit')
-    return
-  }
-  context.nodes += 1
-
-  if (value === null || value === undefined) {
-    hash.update(String(value))
-    return
-  }
-  const valueType = typeof value
-  if (valueType === 'string') {
-    updateHashWithBoundedString(hash, value as string)
-    return
-  }
-  if (valueType === 'number' || valueType === 'boolean' || valueType === 'bigint') {
-    hash.update(`${valueType}:${String(value)}`)
-    return
-  }
-  if (Buffer.isBuffer(value)) {
-    hash.update(`buffer:${value.byteLength}:`)
-    hash.update(value.subarray(0, Math.min(value.byteLength, gatewayClientStrategyHashSampleBytes)))
-    return
-  }
-  if (value instanceof Date) {
-    hash.update(`date:${value.toISOString()}`)
-    return
-  }
-  if (typeof value !== 'object') {
-    hash.update(`${valueType}:${String(value)}`)
-    return
-  }
-  if (context.seen.has(value)) {
-    hash.update('|circular')
-    return
-  }
-  context.seen.add(value)
-
-  if (Array.isArray(value)) {
-    hash.update(`array:${value.length}:`)
-    const length = Math.min(value.length, gatewayClientStrategyBodyHashMaxArrayItems)
-    for (let index = 0; index < length; index += 1) {
-      hash.update(`[${index}]`)
-      updateHashWithJsonLikeValue(hash, value[index], context, depth + 1)
-    }
-    if (value.length > length) {
-      context.truncated = true
-      hash.update(`|array_truncated:${value.length - length}`)
-    }
-    return
-  }
-
-  hash.update('object:{')
-  let visited = 0
-  const record = value as Record<string, unknown>
-  for (const key in record) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) continue
-    if (visited >= gatewayClientStrategyBodyHashMaxObjectKeys) {
-      context.truncated = true
-      hash.update('|object_truncated')
-      break
-    }
-    updateHashWithBoundedString(hash, key)
-    hash.update(':')
-    updateHashWithJsonLikeValue(hash, record[key], context, depth + 1)
-    visited += 1
-  }
-  hash.update('}')
-}
-
-function updateHashWithBoundedString(hash: ReturnType<typeof createHash>, value: string): void {
-  hash.update(`string:${value.length}:`)
-  if (value.length <= gatewayClientStrategyBodyHashMaxStringChars) {
-    hash.update(value)
-    return
-  }
-  hash.update(value.slice(0, gatewayClientStrategyBodyHashStringEdgeChars))
-  hash.update('|...')
-  hash.update(value.slice(Math.max(0, value.length - gatewayClientStrategyBodyHashStringEdgeChars)))
 }
 
 function normalizedOpenAIRequestPath(req: Request): string {

@@ -248,17 +248,30 @@ func HealthCheckEligible(candidate HealthCheckCandidate, now time.Time) bool {
 // cooldown retest is queued. Both values must still match before persistence.
 type RetestTaskVersion struct {
 	ConfigRevision       int
+	DispatchRevision     int
 	ObservationStartedAt *time.Time
+	Generation           string
+	SourceConfigRevision *int
 }
 
 func CooldownRetestTaskCurrent(queued, current RetestTaskVersion) bool {
-	if queued.ConfigRevision != current.ConfigRevision {
+	if queued.ConfigRevision != current.ConfigRevision ||
+		queued.DispatchRevision != current.DispatchRevision ||
+		strings.TrimSpace(queued.Generation) != strings.TrimSpace(current.Generation) ||
+		!sameOptionalInt(queued.SourceConfigRevision, current.SourceConfigRevision) {
 		return false
 	}
 	if queued.ObservationStartedAt == nil || current.ObservationStartedAt == nil {
 		return queued.ObservationStartedAt == nil && current.ObservationStartedAt == nil
 	}
 	return queued.ObservationStartedAt.Equal(*current.ObservationStartedAt)
+}
+
+func sameOptionalInt(left, right *int) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 type RetestAction string
@@ -278,7 +291,7 @@ func CooldownRetestActionFor(outcome ProbeOutcome) (RetestAction, bool) {
 	switch outcome {
 	case ProbeOutcomeCompleteSuccess:
 		return RetestActionRestore, true
-	case ProbeOutcomeTaskFailure:
+	case ProbeOutcomeTaskFailure, ProbeOutcomeFramingCompleteNeutral:
 		return RetestActionDefer, true
 	case ProbeOutcomeUpstreamFailure:
 		return RetestActionRecordFailure, true

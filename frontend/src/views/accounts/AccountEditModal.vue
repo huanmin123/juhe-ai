@@ -270,7 +270,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -315,7 +315,7 @@ const props = withDefaults(defineProps<{
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   authorizedEditing: boolean
   authLoading: boolean
-  authResult?: OpenAIAuthURLResult
+  authResult?: OAuthAuthURLResult
   baseUrlPlaceholder: string
   balanceQueryCanRun?: boolean
   balanceQueryLoading?: boolean

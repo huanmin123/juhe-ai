@@ -19,7 +19,7 @@ import {
 } from './accountAvailabilitySchedule'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
 import { validateAccountEndpointModes } from './accountEndpointModes'
-import { canCreateOAuthAccount, endpointModesForProfile, supportsOAuthAccountType } from './accountProviderCapabilities'
+import { canManageNativeOAuthAccount, endpointModesForProfile, supportsOAuthAccountType } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import {
   accountModelMappingEndpointFamilyText,
@@ -138,10 +138,14 @@ export function validateAccountSaveForm(input: {
   const formProviderProfile = resolveFormProviderProfile(form, input.providers)
   if (!editingId && form.type === 'oauth' && !supportsOAuthAccountType(formProviderProfile)) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && !form.baseUrl.trim()) return '请填写 Base URL'
-  if (!editingId && form.type === 'oauth' && canCreateOAuthAccount(formProviderProfile) && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
-  if (!editingId && form.type === 'oauth' && canCreateOAuthAccount(formProviderProfile) && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
-  if (!editingId && form.type === 'oauth' && canCreateOAuthAccount(formProviderProfile) && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
-  if (!editingId && form.type === 'oauth' && !canCreateOAuthAccount(formProviderProfile) && !form.accessToken.trim()) {
+  const managedOAuthCreation = !editingId
+    && form.type === 'oauth'
+    && canManageNativeOAuthAccount(formProviderProfile)
+    && form.oauthMode !== 'access_token'
+  if (managedOAuthCreation && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
+  if (managedOAuthCreation && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
+  if (managedOAuthCreation && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
+  if (!managedOAuthCreation && !editingId && form.type === 'oauth' && !form.accessToken.trim()) {
     return form.providerCode === 'anthropic' ? '请填写 Claude Code OAuth Token' : '请填写 Access Token'
   }
   const supportedModels = normalizeSupportedModels(form.supportedModels)

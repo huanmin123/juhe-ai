@@ -62,6 +62,7 @@ function gatewayRequestWithModelOverride(req: Request, model: string): Request {
   output.body = body
   output.gatewayParsedJsonBodyAvailable = true
   output.gatewayParsedJsonBody = body
+  output.gatewayParsedJsonBodyPromise = undefined
   output.gatewayUpstreamBodyCache = undefined
   if (bodyState) {
     output.gatewayRequestBody = {

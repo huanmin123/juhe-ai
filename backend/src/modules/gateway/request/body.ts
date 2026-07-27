@@ -59,6 +59,7 @@ export type GatewayRawBodyRequest = Request & {
   gatewayRequestBody?: GatewayRequestBodyState
   gatewayParsedJsonBodyAvailable?: boolean
   gatewayParsedJsonBody?: unknown
+  gatewayParsedJsonBodyPromise?: Promise<unknown>
   gatewayUpstreamBodyCache?: {
     passthrough?: { body: Buffer | undefined }
   }
@@ -294,6 +295,7 @@ export function replaceGatewayJsonBody(req: Request, body: Record<string, unknow
   request.body = body
   request.gatewayParsedJsonBodyAvailable = true
   request.gatewayParsedJsonBody = body
+  request.gatewayParsedJsonBodyPromise = undefined
   request.gatewayUpstreamBodyCache = undefined
   request.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,

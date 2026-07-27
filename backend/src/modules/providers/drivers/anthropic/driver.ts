@@ -184,7 +184,7 @@ export const anthropicProviderDriver: ProviderDriver = {
     }
     const nativeBody = modelMapping
       ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
-      : buildAnthropicNativePassthroughBody(req)
+      : buildUpstreamRequestBody(req)
     return {
       headers,
       body: isAnthropicMessagesPath(req)
@@ -339,50 +339,9 @@ function anthropicBetaHeader(req: Request): string | undefined {
   return merged.length ? merged.join(',') : undefined
 }
 
-function buildAnthropicNativePassthroughBody(req: Request): Buffer | undefined {
-  const body = buildUpstreamRequestBody(req)
-  if (!body || !isAnthropicMessagesPath(req)) return body
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(body.toString('utf8')) as unknown
-  } catch {
-    return body
-  }
-  if (!isPlainObject(parsed)) return body
-  const normalized = { ...parsed }
-  if (normalized.stream === false) {
-    delete normalized.stream
-  }
-  if (Array.isArray(normalized.messages)) {
-    normalized.messages = normalized.messages.map(normalizeAnthropicNativeMessage)
-  }
-  return Buffer.from(JSON.stringify(normalized), 'utf8')
-}
-
-function normalizeAnthropicNativeMessage(value: unknown): unknown {
-  if (!isPlainObject(value) || !Array.isArray(value.content)) return value
-  const content = value.content
-  if (!content.every(isPlainAnthropicNativeTextBlock)) return value
-  return {
-    ...value,
-    content: content.map((block) => typeof block.text === 'string' ? block.text : '').join('')
-  }
-}
-
-function isPlainAnthropicNativeTextBlock(value: unknown): value is { type: 'text'; text: string } {
-  return isPlainObject(value)
-    && value.type === 'text'
-    && typeof value.text === 'string'
-    && Object.keys(value).every((key) => key === 'type' || key === 'text')
-}
-
 function isAnthropicMessagesPath(req: Request): boolean {
   const path = (req.originalUrl || req.path || '').split('?', 1)[0] ?? ''
   return (path.startsWith('/') ? path : `/${path}`).replace(/^\/v1(?=\/|$)/, '') === '/messages'
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function splitAnthropicBetaHeader(value: string | undefined): string[] {

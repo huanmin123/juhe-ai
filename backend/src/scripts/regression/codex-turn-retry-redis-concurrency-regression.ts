@@ -164,7 +164,6 @@ function codexStrategy(stateKey: string): OpenAIGatewayClientStrategyContext {
     codexCompactionExpected: false,
     codexTurn: {
       turnId: stateKey,
-      rawBodyHash: stateKey,
       stateKey
     },
     retryCoordination: {

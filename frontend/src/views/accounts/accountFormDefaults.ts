@@ -3,7 +3,7 @@ import { defaultProviderProtocolProfileId, isHybridProviderCode, preferredDefaul
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
 import { defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
-import { defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
+import { accountProviderProtocolKind, defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
 
@@ -37,6 +37,9 @@ export function defaultAccountForm(
   const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode, providerList, profile?.id)
   const supportedModels: string[] = []
   const supportedEndpointModes = defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile })
+  const defaultOAuthMode = resolvedType === 'oauth' && accountProviderProtocolKind(profile) === 'anthropic_v1'
+    ? 'access_token'
+    : 'manual'
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
@@ -54,7 +57,7 @@ export function defaultAccountForm(
     googleClientId: '',
     googleClientSecret: '',
     googleQuotaProjectId: '',
-    oauthMode: 'manual',
+    oauthMode: defaultOAuthMode,
     callbackUrl: '',
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,

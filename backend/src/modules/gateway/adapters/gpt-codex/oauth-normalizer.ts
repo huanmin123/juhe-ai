@@ -218,34 +218,18 @@ function resolveOpenAIOAuthCodexSession(
   account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity
 ): OpenAIOAuthCodexSessionResolution {
-  const metadata = isPlainObject(body.metadata) ? body.metadata : undefined
   const rawPromptCacheKey = firstNonEmptyString(
     body.prompt_cache_key,
     headerValue(inputHeaders, 'prompt_cache_key'),
     headerValue(inputHeaders, 'x-prompt-cache-key')
   )
-  const rawSessionId = firstNonEmptyString(
-    headerValue(inputHeaders, 'session_id'),
-    headerValue(inputHeaders, 'session-id'),
-    headerValue(inputHeaders, 'x-session-id'),
-    body.session_id,
-    metadata?.session_id,
-    rawPromptCacheKey
-  )
-  const rawConversationId = firstNonEmptyString(
-    headerValue(inputHeaders, 'thread-id'),
-    headerValue(inputHeaders, 'conversation_id'),
-    headerValue(inputHeaders, 'conversation-id'),
-    headerValue(inputHeaders, 'x-conversation-id'),
-    body.conversation_id,
-    metadata?.conversation_id,
-    rawPromptCacheKey
-  )
-  const rawPrimary = firstNonEmptyString(rawSessionId, rawConversationId, rawPromptCacheKey, metadata?.user_id)
+  const rawSessionId = firstNonEmptyString(headerValue(inputHeaders, 'session-id'))
+  const rawConversationId = firstNonEmptyString(headerValue(inputHeaders, 'thread-id'))
+  const rawPrimary = firstNonEmptyString(rawSessionId, rawConversationId, rawPromptCacheKey)
 
   return {
-    sessionId: rawSessionId ? isolateOpenAIOAuthCodexSessionId(rawSessionId, account, identity) : rawPromptCacheKey ? isolateOpenAIOAuthCodexSessionId(rawPromptCacheKey, account, identity) : undefined,
-    conversationId: rawConversationId ? isolateOpenAIOAuthCodexSessionId(rawConversationId, account, identity) : rawPromptCacheKey ? isolateOpenAIOAuthCodexSessionId(rawPromptCacheKey, account, identity) : undefined,
+    sessionId: rawSessionId ? isolateOpenAIOAuthCodexSessionId(rawSessionId, account, identity) : undefined,
+    conversationId: rawConversationId ? isolateOpenAIOAuthCodexSessionId(rawConversationId, account, identity) : undefined,
     promptCacheKey: rawPromptCacheKey ? isolateOpenAIOAuthCodexSessionId(rawPromptCacheKey, account, identity) : rawPrimary ? isolateOpenAIOAuthCodexSessionId(rawPrimary, account, identity) : undefined
   }
 }

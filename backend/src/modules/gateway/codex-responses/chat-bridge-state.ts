@@ -24,10 +24,9 @@ import {
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import {
   getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   replaceGatewayJsonBody,
   type GatewayRawBodyRequest
 } from '../request/body.js'
@@ -786,9 +785,7 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
   if (bodyState?.jsonParseStatus === 'invalid_json') {
     return {}
   }
-  const parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-    ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-    : JSON.parse(rawBody.toString('utf8')) as unknown
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   return isPlainObject(parsed) ? { ...parsed } : {}
 }
 

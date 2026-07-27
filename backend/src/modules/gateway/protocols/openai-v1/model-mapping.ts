@@ -24,12 +24,11 @@ import {
 } from '../../../../domain/gemini-endpoint-modes.js'
 import {
   getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
 import { requestModel } from '../../request/metadata.js'
 import { requestStream } from '../../request/metadata.js'
@@ -265,9 +264,7 @@ async function parseOpenAIModelMappingJsonObjectBody(req: Request, signal?: Abor
 
   let parsed: unknown
   try {
-    parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {

@@ -70,8 +70,9 @@ type cooldownAccountRetestScan func(...any) error
 
 func scanCooldownAccountRetestCandidate(scan cooldownAccountRetestScan) (port.CooldownAccountRetestCandidate, error) {
 	var candidate port.CooldownAccountRetestCandidate
-	if err := scan(&candidate.ID, &candidate.Name, &candidate.ConfigRevision, &candidate.CooldownUntil,
-		&candidate.Priority, &candidate.CreatedAt, &candidate.ObservationStartedAt, &candidate.SystemAccountID,
+	if err := scan(&candidate.ID, &candidate.Name, &candidate.ConfigRevision, &candidate.DispatchRevision, &candidate.CooldownUntil,
+		&candidate.Priority, &candidate.CreatedAt, &candidate.ObservationStartedAt, &candidate.Generation,
+		&candidate.SourceConfigRevision, &candidate.SystemAccountID,
 		&candidate.GroupID, &candidate.HealthCheckModel, &candidate.HealthCheckEndpointMode); err != nil {
 		return port.CooldownAccountRetestCandidate{}, fmt.Errorf("scan cooldown account retest candidate: %w", err)
 	}

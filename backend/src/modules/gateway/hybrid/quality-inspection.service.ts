@@ -8,7 +8,7 @@ import type {
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
-import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
+import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
 import {
@@ -304,7 +304,7 @@ async function parseHybridQualityRequestBody(req: Request, signal?: AbortSignal)
   if (!request.rawBody?.length || request.rawBody.length > hybridQualityRequestParseMaxBytes) {
     return undefined
   }
-  const parsed = await parseGatewayJsonBodyInWorker(request.rawBody, 30000, signal)
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>
     : undefined

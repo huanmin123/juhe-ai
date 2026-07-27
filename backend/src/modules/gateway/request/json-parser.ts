@@ -2,10 +2,14 @@ import { availableParallelism } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
+import type { Request } from 'express'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestId, getTraceId } from '../../../shared/request-context.js'
-import { gatewayJsonBodyLargeWarningBytes } from './body.js'
+import {
+  gatewayJsonBodyLargeWarningBytes,
+  type GatewayRawBodyRequest
+} from './body.js'
 import { extractGatewayJsonBodyMetadata, type GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import {
   type NormalizedCodexBody,
@@ -156,6 +160,50 @@ export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000,
     timeoutMs,
     signal
   })
+}
+
+export async function parseGatewayRequestJsonBody(
+  req: Request,
+  timeoutMs = 30000,
+  signal?: AbortSignal
+): Promise<unknown> {
+  const request = req as GatewayRawBodyRequest
+  if (request.body !== undefined && !Buffer.isBuffer(request.body)) {
+    request.gatewayParsedJsonBodyAvailable = true
+    request.gatewayParsedJsonBody = request.body
+    return request.body
+  }
+  if (request.gatewayParsedJsonBodyAvailable) {
+    return request.gatewayParsedJsonBody
+  }
+  const rawBody = request.rawBody
+  if (!rawBody || rawBody.length === 0) {
+    return undefined
+  }
+  if (request.gatewayParsedJsonBodyPromise) {
+    return await request.gatewayParsedJsonBodyPromise
+  }
+  const parsePromise = parseGatewayJsonBodyInWorker(rawBody, timeoutMs, signal)
+  request.gatewayParsedJsonBodyPromise = parsePromise
+  try {
+    const parsed = await parsePromise
+    if (request.rawBody === rawBody) {
+      request.body = parsed
+      request.gatewayParsedJsonBodyAvailable = true
+      request.gatewayParsedJsonBody = parsed
+      if (request.gatewayRequestBody?.isJson) {
+        request.gatewayRequestBody = {
+          ...request.gatewayRequestBody,
+          jsonParseStatus: 'parsed'
+        }
+      }
+    }
+    return parsed
+  } finally {
+    if (request.gatewayParsedJsonBodyPromise === parsePromise) {
+      request.gatewayParsedJsonBodyPromise = undefined
+    }
+  }
 }
 
 export function extractGatewayJsonBodyMetadataInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {

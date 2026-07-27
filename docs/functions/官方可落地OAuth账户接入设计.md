@@ -8,7 +8,10 @@
 
 - OpenAI 属于项目内可管理的授权 / 刷新链路。
 - Gemini 更接近“用户持有 Google OAuth access token / refresh token 后的导入型账户”。
-- Anthropic 当前可独立落地的是“用户已持有官方 OAuth / Claude Code 体系产生的 Bearer token，并直接导入账户”；不在项目内发起浏览器换码，也不复用第三方 client identity。
+- Anthropic 当前已独立落地两类能力：
+  - 用户已持有官方 OAuth / Claude Code 体系产生的 Bearer token，可直接导入账户；
+  - 项目内发起 Anthropic 官方 OAuth / PKCE 浏览器换码，并支持 Refresh Token 创建与重新授权。
+  仍不复用第三方 client identity，也不接入订阅代理语义。
 
 本次目标是把这些已可落地的语义统一进现有账户模型、网关鉴权、前端账户表单和测试链路，而不是把 CLIProxyAPI、sub2api_source 或其他项目里的私有订阅代理整体移植进来。
 
@@ -42,9 +45,12 @@
 | --- | --- | --- | --- | --- | --- |
 | OpenAI / GPT | 官方管理式 OAuth | 项目内发起授权 | `access_token`、`refresh_token` | `Authorization: Bearer` | 继续走现有刷新链路 |
 | Gemini | 导入型 Google OAuth | 直接录入凭据 | `access_token`、`refresh_token` | `Authorization: Bearer` | 保持现有逻辑 |
-| Anthropic | 导入型 Bearer Token OAuth | 直接录入凭据 | `access_token` | `Authorization: Bearer` | 当前不在项目内管理刷新 |
+| Anthropic | 官方托管 OAuth + Bearer Token 导入 | 站内授权或直接录入凭据 | `access_token` / `refresh_token` | `Authorization: Bearer` | 支持 Refresh Token 创建、刷新与重新授权 |
 
-Anthropic 这里的 “OAuth” 指官方 OAuth / Claude Code 体系产出的 Bearer token 账户导入，不等同于“本项目自己发起 Anthropic 浏览器 OAuth”。
+Anthropic 这里的 “OAuth” 现在同时覆盖两种入口：
+
+- 官方 OAuth / PKCE 浏览器授权后由项目内换码创建；
+- 官方 OAuth / Claude Code 体系产出的 Bearer token 直接导入。
 
 ## 统一建模
 
@@ -90,7 +96,7 @@ Anthropic 这里的 “OAuth” 指官方 OAuth / Claude Code 体系产出的 Be
 
 - 账户测试取密逻辑按供应商区分。
 - 仅 OpenAI 管理式 OAuth 继续走刷新 / 重新授权相关逻辑。
-- Anthropic 导入型 OAuth 走“直接验证 access token 是否可调用”的路径。
+- Anthropic 托管 OAuth 支持项目内换码、Refresh Token 创建、手动刷新和重新授权；直接导入型 Bearer Token 继续走“直接验证 access token 是否可调用”的路径。
 
 ## 前端设计
 
@@ -98,18 +104,19 @@ Anthropic 这里的 “OAuth” 指官方 OAuth / Claude Code 体系产出的 Be
 
 - UI 区分“支持 OAuth 账户类型”和“支持管理式 OAuth 授权按钮”两个概念。
 - OpenAI：支持管理式授权按钮。
-- Gemini / Anthropic：支持 OAuth 账户类型，但默认走直接录入凭据。
+- Gemini：支持 OAuth 账户类型，但默认走直接录入凭据。
+- Anthropic：支持 OAuth 账户类型，同时支持托管授权按钮、Refresh Token 和直接录入凭据。
 
 ### 表单交互
 
-- 新建 Anthropic OAuth 账户时，展示 `Access Token`（必要）与可选补充字段。
+- 新建 Anthropic OAuth 账户时，展示三种入口：官方 OAuth 回调 URL、Refresh Token、Access Token。
 - OpenAI 保持现有授权按钮与回填逻辑。
 - endpoint modes、文案说明、可选协议能力说明都按供应商 profile 切换。
 
 ### 编辑与维护
 
-- Anthropic OAuth 不暴露 OpenAI 专用的“重新授权 / 刷新”操作。
-- 编辑时允许直接替换 access token。
+- Anthropic OAuth 暴露独立的“刷新令牌”和“重新授权”操作，但语义绑定到 Anthropic 路由而不是复用 OpenAI 文案。
+- 编辑时仍允许直接替换 access token；若仅替换裸 access token，继续通过编辑保存而不是“重新授权”接口。
 
 ## 测试策略
 
@@ -130,7 +137,7 @@ Anthropic 这里的 “OAuth” 指官方 OAuth / Claude Code 体系产出的 Be
 ## 风险与注意事项
 
 - `oauth` 是账户类型，不是供应商协议；任何“按类型推断供应商能力”的旧逻辑都要收口。
-- Anthropic 当前落地的是 token 导入型 OAuth，不是项目内托管的浏览器授权。
+- Anthropic 当前既支持项目内托管的官方 OAuth 浏览器授权，也支持 token 导入型 OAuth。
 - 后续若要新增其他供应商 OAuth，必须先补充独立的供应商矩阵、凭据语义、刷新方式和真实 E2E 证据。
 
 ## 关联文档

@@ -61,7 +61,7 @@ export function accountTypeTitle(providerName: string, type: AccountType) {
 
 export function accountTypeDescription(providerCode: string, type: AccountType, providerProtocolProfileId?: string) {
   if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
-  if (providerCode === ANTHROPIC_PROVIDER_CODE && type === 'oauth') return '适合 Anthropic 官方 OAuth / Claude Code Bearer Token 导入；使用 Anthropic Messages 原生协议，不走站内浏览器授权。'
+  if (providerCode === ANTHROPIC_PROVIDER_CODE && type === 'oauth') return '适合 Anthropic 官方 OAuth 托管授权、Refresh Token 或 Claude Code Bearer Token 导入；使用 Anthropic Messages 原生协议。'
   if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
   if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return '使用 Google OAuth 用户授权访问 Gemini API；支持自动刷新 Access Token 与官方 Interactions API。'
   if (isXaiProviderCode(providerCode) && type === 'api_key') return '适合 xAI 官方 API Key；原生支持 OpenAI v1 Chat Completions 与 Responses 文本接口。'
