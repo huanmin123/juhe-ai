@@ -111,9 +111,43 @@ func TestRunWorkerWithRuntimeGateRejectsManifestMismatchBeforeLock(t *testing.T)
 	}{
 		{name: "schema", edit: func(manifest *workerOwnerManifest) { manifest.SchemaVersion = 1 }, want: "schemaVersion"},
 		{name: "epoch", edit: func(manifest *workerOwnerManifest) { manifest.DeploymentEpoch = "other" }, want: "deployment epoch"},
+		{name: "Node version", edit: func(manifest *workerOwnerManifest) { manifest.Release.NodeVersion = "" }, want: "Node version"},
+		{name: "invalid management owner", edit: func(manifest *workerOwnerManifest) { manifest.RouteOwners.Management = "" }, want: "routeOwners.management"},
 		{name: "node owner", edit: func(manifest *workerOwnerManifest) { manifest.RouteOwners.Worker = "node" }, want: "routeOwners.worker=go"},
 		{name: "Go version", edit: func(manifest *workerOwnerManifest) { manifest.Release.GoVersion = "other" }, want: "Go version"},
 		{name: "database schema", edit: func(manifest *workerOwnerManifest) { manifest.Release.SchemaVersion-- }, want: "schema version"},
+		{name: "missing rollback owners", edit: func(manifest *workerOwnerManifest) {
+			manifest.RollbackRouteOwners.Management = ""
+			manifest.RollbackRouteOwners.Public = ""
+			manifest.RollbackRouteOwners.Gateway = ""
+			manifest.RollbackRouteOwners.Worker = ""
+		}, want: "rollbackRouteOwners"},
+		{name: "missing route allowlist", edit: func(manifest *workerOwnerManifest) { manifest.RouteAllowlist = nil }, want: "routeAllowlist is required"},
+		{name: "invalid route allowlist", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{{Surface: "management", Method: "GET", Path: "/__aisys__/api/test", Owner: "go", RollbackOwner: "go"}}
+		}, want: "must differ"},
+		{name: "dot path segment", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{validWorkerOwnerRoute("management", "/__aisys__/api/accounts/..")}
+		}, want: "dot segments"},
+		{name: "partial path template", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{validWorkerOwnerRoute("management", "/__aisys__/api/accounts/{id}.json")}
+		}, want: "complete segment"},
+		{name: "unsupported path character", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{validWorkerOwnerRoute("management", "/__aisys__/api/a b")}
+		}, want: "unsupported path characters"},
+		{name: "gateway parameter first segment", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{validWorkerOwnerRoute("gateway", "/{surface}/api/accounts")}
+		}, want: "first segment must be literal"},
+		{name: "duplicate path parameter", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{validWorkerOwnerRoute("management", "/__aisys__/api/{id}/accounts/{id}")}
+		}, want: "unique parameter names"},
+		{name: "overlapping path templates", edit: func(manifest *workerOwnerManifest) {
+			manifest.RouteAllowlist = []workerOwnerRoute{
+				validWorkerOwnerRoute("management", "/__aisys__/api/accounts/{id}"),
+				validWorkerOwnerRoute("management", "/__aisys__/api/accounts/current"),
+			}
+		}, want: "overlaps"},
+		{name: "oversized route allowlist", edit: func(manifest *workerOwnerManifest) { manifest.RouteAllowlist = make([]workerOwnerRoute, 2049) }, want: "at most 2048"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -364,7 +398,12 @@ func validWorkerOwnerManifest(cfg config.Config) workerOwnerManifest {
 	manifest.RouteOwners.Gateway = "node"
 	manifest.RouteOwners.Worker = "go"
 	manifest.RollbackRouteOwners = manifest.RouteOwners
+	manifest.RouteAllowlist = []workerOwnerRoute{}
 	return manifest
+}
+
+func validWorkerOwnerRoute(surface, path string) workerOwnerRoute {
+	return workerOwnerRoute{Surface: surface, Method: "GET", Path: path, Owner: "go", RollbackOwner: "node"}
 }
 
 func assertDeadlineWithin(t *testing.T, ctx context.Context, maximum time.Duration) {
