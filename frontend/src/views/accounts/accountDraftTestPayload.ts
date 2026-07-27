@@ -17,6 +17,7 @@ interface AccountDraftTestPayloadInput {
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   form: AccountFormModel
   mappingAnthropicSourceModelOptions?: AccountModelSelectOption[]
+  mappingCurrentProviderSourceModelOptions?: AccountModelSelectOption[]
   mappingGeminiSourceModelOptions?: AccountModelSelectOption[]
   mappingSourceModelOptions?: AccountModelSelectOption[]
   mappingUpstreamModelOptions?: AccountModelSelectOption[]

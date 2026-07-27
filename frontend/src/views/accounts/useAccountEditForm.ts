@@ -184,6 +184,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     selectedProtocolProfile.value,
     form.type
   ))
+  const mappingCurrentProviderSourceModelOptions = computed(() => loadedProviderModelOptions.value)
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
@@ -223,6 +224,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isManagementView: options.isManagementView,
     loadData: options.loadData,
     mappingAnthropicSourceModelOptions,
+    mappingCurrentProviderSourceModelOptions,
     mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,
     providerModelOptions,
@@ -402,6 +404,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
     void loadProviderGroupOptions(providerCode)
+    void loadCurrentProviderModelOptions()
   }
 
   function selectAccountType(type: AccountType) {
@@ -566,7 +569,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function loadCurrentProviderModelOptions(keyword = ''): Promise<void> {
     await loadProviderModelOptions(form.providerCode, {
       keyword,
-      selectedIds: form.supportedModels
+      selectedIds: [
+        ...form.supportedModels,
+        ...form.modelMappings.map((mapping) => mapping.sourceModel)
+      ]
     })
   }
 
@@ -825,6 +831,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isSupportedOAuthForm,
     isTokenCredentialForm,
     mappingAnthropicSourceModelOptions,
+    mappingCurrentProviderSourceModelOptions,
     mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,
     modalConfirmLoading,
@@ -921,6 +928,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         errorPolicyRules: accountErrorPolicyRules.value,
         responseInspectionRules: accountResponseInspectionRules.value,
         mappingAnthropicSourceModelOptions: mappingAnthropicSourceModelOptions.value,
+        mappingCurrentProviderSourceModelOptions: mappingCurrentProviderSourceModelOptions.value,
         mappingGeminiSourceModelOptions: mappingGeminiSourceModelOptions.value,
         mappingSourceModelOptions: mappingSourceModelOptions.value,
         mappingUpstreamModelOptions: providerModelOptions.value,

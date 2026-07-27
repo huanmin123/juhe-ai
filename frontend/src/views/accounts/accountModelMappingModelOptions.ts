@@ -1,4 +1,5 @@
 import type { ProviderModelApiProtocol } from '@/types/domain'
+import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 
 export type AccountModelMappingModelOption = {
@@ -23,5 +24,33 @@ export function filterAccountModelMappingOptionsByEndpointFamily(
 ): AccountModelMappingModelOption[] {
   const protocol = accountModelMappingEndpointFamilyProtocol(endpointFamily)
   return options.filter((option) => option.supportedApiProtocols?.includes(protocol))
+}
+
+export function accountModelMappingSourceModelOptions(input: {
+  providerCode?: string
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
+  currentProviderOptions: AccountModelMappingModelOption[]
+  openAIProtocolOptions: AccountModelMappingModelOption[]
+  anthropicProtocolOptions: AccountModelMappingModelOption[]
+  geminiProtocolOptions: AccountModelMappingModelOption[]
+}): AccountModelMappingModelOption[] {
+  if (!isHybridProviderCode(input.providerCode)) return input.currentProviderOptions
+  return filterAccountModelMappingOptionsByEndpointFamily(
+    protocolSourceOptions(input),
+    input.sourceEndpointFamily
+  )
+}
+
+function protocolSourceOptions(input: {
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
+  openAIProtocolOptions: AccountModelMappingModelOption[]
+  anthropicProtocolOptions: AccountModelMappingModelOption[]
+  geminiProtocolOptions: AccountModelMappingModelOption[]
+}): AccountModelMappingModelOption[] {
+  if (input.sourceEndpointFamily === 'messages') return input.anthropicProtocolOptions
+  if (input.sourceEndpointFamily === 'generate_content' || input.sourceEndpointFamily === 'stream_generate_content') {
+    return input.geminiProtocolOptions
+  }
+  return input.openAIProtocolOptions
 }
 

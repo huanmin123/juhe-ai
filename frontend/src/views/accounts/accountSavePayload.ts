@@ -28,8 +28,10 @@ import {
 import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
+  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
+import { accountModelMappingSourceModelOptions } from './accountModelMappingModelOptions'
 import {
   accountGptRequestOverrideCapabilities,
   isAccountGptReasoningEffortOverrideAvailable,
@@ -108,6 +110,7 @@ export function validateAccountSaveForm(input: {
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   providers?: ProviderDefinition[]
   mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
   mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
   mappingSourceModelOptions?: ModelMappingProtocolOption[]
   mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
@@ -454,15 +457,22 @@ function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
-    const sourceModelOptions = sourceModelOptionsForEndpointFamily(sourceEndpointFamily, options)
-    const sourceModelProtocolAllowed = isOpenAIResponsesToChatMapping(item, providerProfile)
-      ? (
-          modelOptionSupportsProtocol(sourceModel, OPENAI_RESPONSES_FAMILY, sourceModelOptions)
-          || modelOptionSupportsProtocol(sourceModel, OPENAI_CHAT_COMPLETIONS_FAMILY, sourceModelOptions)
-        )
-      : modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
-    if (!sourceModelProtocolAllowed) {
-      return `下游模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
+    const sourceModelOptions = accountModelMappingSourceModelOptions({
+      providerCode: formProviderCode(providerProfile),
+      sourceEndpointFamily,
+      currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
+      openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
+      anthropicProtocolOptions: options.mappingAnthropicSourceModelOptions ?? [],
+      geminiProtocolOptions: options.mappingGeminiSourceModelOptions ?? []
+    })
+    if (!modelExistsInOptions(sourceModel, sourceModelOptions)) {
+      return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
+    }
+    if (
+      isHybridProviderCode(formProviderCode(providerProfile))
+      && !modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
+    ) {
+      return `客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
     }
     if (!modelOptionSupportsProtocol(upstreamModel, upstreamEndpointFamily, options.mappingUpstreamModelOptions)) {
       return `上游模型 ${upstreamModel} 不支持 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 协议，请先选择协议支持的模型`
@@ -479,19 +489,6 @@ function validateAccountModelMappings(
   return undefined
 }
 
-function sourceModelOptionsForEndpointFamily(
-  endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
-  options: {
-    mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
-    mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
-    mappingSourceModelOptions?: ModelMappingProtocolOption[]
-  }
-): ModelMappingProtocolOption[] | undefined {
-  if (endpointFamily === 'messages') return options.mappingAnthropicSourceModelOptions
-  if (endpointFamily === 'generate_content' || endpointFamily === 'stream_generate_content') return options.mappingGeminiSourceModelOptions
-  return options.mappingSourceModelOptions
-}
-
 function modelOptionSupportsProtocol(
   model: string,
   endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'] | AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'],
@@ -504,11 +501,12 @@ function modelOptionSupportsProtocol(
   return item.supportedApiProtocols.includes(endpointFamily as ProviderModelApiProtocol)
 }
 
-function isOpenAIResponsesToChatMapping(
-  mapping: AccountFormModel['modelMappings'][number],
-  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]
-): boolean {
-  return mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
-    && isOpenAIProtocolProfile(providerProfile)
+function modelExistsInOptions(model: string, options: ModelMappingProtocolOption[] | undefined): boolean {
+  if (!options?.length) return true
+  return options.some((option) => option.value === model)
+}
+
+function formProviderCode(providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]): string | undefined {
+  if (!providerProfile) return undefined
+  return 'providerCode' in providerProfile ? providerProfile.providerCode : providerProfile.code
 }

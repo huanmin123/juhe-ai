@@ -1,12 +1,13 @@
 import { computed, ref, type ComputedRef } from 'vue'
 
 import { api, type ListParams } from '@/api/client'
-import type { ProviderModelOption } from '@/types/domain'
+import type { ProviderModelApiProtocol, ProviderModelOption } from '@/types/domain'
 
 export interface ProviderModelSelectOption {
   label: string
   value: string
   providerCodes: string[]
+  supportedApiProtocols: ProviderModelApiProtocol[]
 }
 
 interface UseProviderModelSelectOptionsOptions {
@@ -35,13 +36,22 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   let loadingPromise: Promise<void> | undefined
 
   const selectOptions = computed<ProviderModelSelectOption[]>(() => {
-    const grouped = new Map<string, { name: string; providerCodes: Set<string> }>()
+    const grouped = new Map<string, {
+      name: string
+      providerCodes: Set<string>
+      supportedApiProtocols: Set<ProviderModelApiProtocol>
+    }>()
     for (const option of providerModelOptions.value) {
       const id = option.id.trim()
       const name = option.name.trim()
       if (!id || !name) continue
-      const existing = grouped.get(id) ?? { name, providerCodes: new Set<string>() }
+      const existing = grouped.get(id) ?? {
+        name,
+        providerCodes: new Set<string>(),
+        supportedApiProtocols: new Set<ProviderModelApiProtocol>()
+      }
       if (option.providerCode?.trim()) existing.providerCodes.add(option.providerCode.trim())
+      for (const protocol of option.supportedApiProtocols) existing.supportedApiProtocols.add(protocol)
       grouped.set(id, existing)
     }
     return [...grouped.entries()]
@@ -51,7 +61,8 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
         return {
           label: providerCodes.length ? `${item.name}（${providerCodes.join('、')}）` : item.name,
           value,
-          providerCodes
+          providerCodes,
+          supportedApiProtocols: [...item.supportedApiProtocols].sort()
         }
       })
   })

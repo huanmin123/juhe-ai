@@ -15,6 +15,8 @@ import {
 } from '../../views/accounts/accountModelMappingProtocolMatrix'
 
 const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
+const accountApiKeySectionSource = readFileSync(new URL('../../views/accounts/AccountApiKeySection.vue', import.meta.url), 'utf8')
+const accountEditFormSource = readFileSync(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url), 'utf8')
 const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')
 const accountStrategySectionSource = readFileSync(new URL('../../views/accounts/AccountStrategySection.vue', import.meta.url), 'utf8')
 const userHelpSource = readFileSync(new URL('../../../public/help/user/index.html', import.meta.url), 'utf8')
@@ -60,6 +62,13 @@ assertEqual(accountModelMappingEndpointFamilyProtocol('responses'), 'responses',
 assertEqual(accountModelMappingEndpointFamilyProtocol('messages'), 'messages', 'Messages 协议映射错误')
 assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedModels)', '账号模型别名右侧下拉只能从账户支持模型构建')
 assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
+assertIncludes(accountApiKeySectionSource, 'mode="multiple"', '支持模型必须只能从模型目录多选')
+assertNotIncludes(accountApiKeySectionSource, 'mode="tags"', '支持模型不得开放任意模型 ID 输入')
+assertMatch(
+  accountEditFormSource,
+  /function selectProvider[\s\S]*?resetForm\(providerCode, ''\)[\s\S]*?loadCurrentProviderModelOptions\(\)/,
+  '切换供应商并带出默认账户类型后必须立即加载该供应商模型目录'
+)
 assertIncludes(
   accountEditModalSource,
   "credentialItem('supported_endpoint_modes', '上游接口能力'",

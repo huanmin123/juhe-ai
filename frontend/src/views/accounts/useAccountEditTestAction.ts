@@ -30,6 +30,7 @@ interface UseAccountEditTestActionOptions {
   errorPolicyRules: MaybeRefOrGetter<AccountErrorPolicyRuleForm[]>
   form: AccountFormModel
   mappingAnthropicSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
+  mappingCurrentProviderSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
   mappingGeminiSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
   mappingSourceModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
   mappingUpstreamModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
@@ -88,6 +89,7 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
         errorPolicyRules: toValue(options.errorPolicyRules),
         responseInspectionRules: toValue(options.responseInspectionRules),
         mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
+        mappingCurrentProviderSourceModelOptions: toValue(options.mappingCurrentProviderSourceModelOptions),
         mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
         mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
         mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),
@@ -106,6 +108,7 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
         errorPolicyRules: toValue(options.errorPolicyRules),
         responseInspectionRules: toValue(options.responseInspectionRules),
         mappingAnthropicSourceModelOptions: toValue(options.mappingAnthropicSourceModelOptions),
+        mappingCurrentProviderSourceModelOptions: toValue(options.mappingCurrentProviderSourceModelOptions),
         mappingGeminiSourceModelOptions: toValue(options.mappingGeminiSourceModelOptions),
         mappingSourceModelOptions: toValue(options.mappingSourceModelOptions),
         mappingUpstreamModelOptions: toValue(options.mappingUpstreamModelOptions),

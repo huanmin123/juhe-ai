@@ -204,6 +204,7 @@
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :loading="accountEditDetailLoading"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+      :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
       :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
       :mapping-source-model-options="mappingSourceModelOptions"
       :model-options="providerModelOptions"
@@ -696,6 +697,7 @@ const {
   isTokenCredentialForm,
   isOpenAIOAuthForm,
   mappingAnthropicSourceModelOptions,
+  mappingCurrentProviderSourceModelOptions,
   mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
   modalConfirmLoading,
@@ -988,6 +990,7 @@ const {
   errorPolicyRules: accountErrorPolicyRules,
   form,
   mappingAnthropicSourceModelOptions,
+  mappingCurrentProviderSourceModelOptions,
   mappingGeminiSourceModelOptions,
   mappingSourceModelOptions,
   mappingUpstreamModelOptions: providerModelOptions,

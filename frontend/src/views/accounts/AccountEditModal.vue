@@ -157,6 +157,7 @@
                 :is-management-view="isManagementView"
                 :is-o-auth-form="isOAuthForm"
                 :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
+                :mapping-current-provider-source-model-options="mappingCurrentProviderSourceModelOptions"
                 :mapping-gemini-source-model-options="mappingGeminiSourceModelOptions"
                 :mapping-source-model-options="mappingSourceModelOptions"
                 :mapping-upstream-model-options="mappingUpstreamModelOptions"
@@ -336,6 +337,7 @@ const props = withDefaults(defineProps<{
   isOpenAIOAuthForm: boolean
   loading?: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]
+  mappingCurrentProviderSourceModelOptions: SelectOption[]
   mappingGeminiSourceModelOptions: SelectOption[]
   mappingSourceModelOptions: SelectOption[]
   modelOptions: AccountModelSelectOption[]

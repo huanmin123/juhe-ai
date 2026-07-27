@@ -52,6 +52,7 @@ interface UseAccountEditSaveFlowOptions {
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
+  mappingCurrentProviderSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   mappingGeminiSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   mappingSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   providerModelOptions: ReadonlyValue<AccountModelSelectOption[]>
@@ -84,6 +85,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       responseInspectionRules: options.accountResponseInspectionRules.value,
       providers: options.providers.value,
       mappingAnthropicSourceModelOptions: options.mappingAnthropicSourceModelOptions.value,
+      mappingCurrentProviderSourceModelOptions: options.mappingCurrentProviderSourceModelOptions.value,
       mappingGeminiSourceModelOptions: options.mappingGeminiSourceModelOptions.value,
       mappingSourceModelOptions: options.mappingSourceModelOptions.value,
       mappingUpstreamModelOptions: options.providerModelOptions.value

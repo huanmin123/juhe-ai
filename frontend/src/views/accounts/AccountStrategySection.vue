@@ -25,7 +25,7 @@
               :disabled="authorizedEditing"
               :options="sourceEndpointFamilyOptions"
               class="model-mapping-endpoint"
-              placeholder="来源协议"
+              placeholder="客户端协议"
             />
             <a-select
               v-model:value="mapping.sourceModel"
@@ -33,7 +33,7 @@
               :disabled="authorizedEditing"
               option-filter-prop="label"
               :options="mappingSourceModelOptionsFor(mapping)"
-              placeholder="来源模型"
+              placeholder="客户端模型"
               show-search
               @dropdown-visible-change="handleSourceModelDropdown(mapping.sourceEndpointFamily, $event)"
               @search="handleSourceModelSearch(mapping.sourceEndpointFamily, $event)"
@@ -46,7 +46,7 @@
               :disabled="authorizedEditing"
               :options="upstreamEndpointFamilyOptions(mapping)"
               class="model-mapping-endpoint"
-              placeholder="目标协议"
+              placeholder="上游协议"
             />
             <a-select
               v-model:value="mapping.upstreamModel"
@@ -54,7 +54,7 @@
               :disabled="authorizedEditing"
               option-filter-prop="label"
               :options="mappingUpstreamModelOptionsFor(mapping.upstreamEndpointFamily)"
-              placeholder="目标模型"
+              placeholder="上游模型"
               show-search
               @dropdown-visible-change="emit('current-provider-model-options-open', $event)"
               @search="emit('current-provider-model-options-search', $event)"
@@ -100,13 +100,12 @@ import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_RESPONSES_FAMILY,
-  isHybridProviderCode,
-  isOpenAIProtocolProfile
+  isHybridProviderCode
 } from '@/shared/providerProtocol'
 import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import {
+  accountModelMappingSourceModelOptions,
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from './accountModelMappingModelOptions'
@@ -128,6 +127,7 @@ const props = defineProps<{
   isOAuthForm: boolean
   isManagementView: boolean
   mappingAnthropicSourceModelOptions: ModelMappingSourceModelOption[]
+  mappingCurrentProviderSourceModelOptions: ModelMappingSourceModelOption[]
   mappingGeminiSourceModelOptions: ModelMappingSourceModelOption[]
   mappingSourceModelOptions: ModelMappingSourceModelOption[]
   mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
@@ -196,28 +196,24 @@ watch(() => [
 })
 
 function mappingSourceModelOptionsFor(mapping: AccountFormModel['modelMappings'][number]) {
-  const options = rawMappingSourceModelOptionsFor(mapping.sourceEndpointFamily)
-  if (isOpenAIResponsesToChatMapping(mapping)) {
-    return options.filter((option) => {
-      const protocols = option.supportedApiProtocols ?? []
-      return protocols.includes(OPENAI_RESPONSES_FAMILY) || protocols.includes(OPENAI_CHAT_COMPLETIONS_FAMILY)
-    })
-  }
-  return filterAccountModelMappingOptionsByEndpointFamily(options, mapping.sourceEndpointFamily)
-}
-
-function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  if (sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) return props.mappingAnthropicSourceModelOptions
-  if (sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY) {
-    return props.mappingGeminiSourceModelOptions
-  }
-  return props.mappingSourceModelOptions
+  return accountModelMappingSourceModelOptions({
+    providerCode: props.form.providerCode,
+    sourceEndpointFamily: mapping.sourceEndpointFamily,
+    currentProviderOptions: props.mappingCurrentProviderSourceModelOptions,
+    openAIProtocolOptions: props.mappingSourceModelOptions,
+    anthropicProtocolOptions: props.mappingAnthropicSourceModelOptions,
+    geminiProtocolOptions: props.mappingGeminiSourceModelOptions
+  })
 }
 
 function handleSourceModelDropdown(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
   open: boolean
 ): void {
+  if (!isHybridAccount.value) {
+    emit('current-provider-model-options-open', open)
+    return
+  }
   const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
     ? 'anthropic'
     : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
@@ -230,6 +226,10 @@ function handleSourceModelSearch(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
   value: string
 ): void {
+  if (!isHybridAccount.value) {
+    emit('current-provider-model-options-search', value)
+    return
+  }
   const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
     ? 'anthropic'
     : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
@@ -265,12 +265,6 @@ function defaultUpstreamEndpointFamilyForSource(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
 ): AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'] {
   return defaultAccountModelMappingUpstreamEndpointFamily(sourceEndpointFamily, modelMappingProtocolContext())
-}
-
-function isOpenAIResponsesToChatMapping(mapping: AccountFormModel['modelMappings'][number]): boolean {
-  return mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
-    && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY
-    && isOpenAIProtocolProfile(props.selectedProtocolProfile)
 }
 
 function addModelMapping(): void {

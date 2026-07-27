@@ -40,13 +40,36 @@ try {
   providerCode.value = 'anthropic'
   const anthropicLoad = resource.loadModelOptions({ keyword: 'claude', limit: 10 })
   await waitFor(() => calls.length === 2)
-  pending.get('anthropic')?.resolve([{ id: 'claude-sonnet', name: 'Claude Sonnet' }])
+  pending.get('anthropic')?.resolve([{
+    id: 'claude-sonnet',
+    name: 'Claude Sonnet',
+    supportedApiProtocols: ['messages'],
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: []
+  }])
   await anthropicLoad
-  pending.get('openai')?.resolve([{ id: 'gpt-5', name: 'GPT-5' }])
+  pending.get('openai')?.resolve([{
+    id: 'gpt-5',
+    name: 'GPT-5',
+    supportedApiProtocols: ['chat_completions', 'responses'],
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: []
+  }])
   await openaiLoad
 
-  assert.deepEqual(resource.providerModelOptions.value, [{ id: 'claude-sonnet', name: 'Claude Sonnet' }])
-  assert.deepEqual(resource.selectOptions.value, [{ label: 'Claude Sonnet', value: 'claude-sonnet', providerCodes: [] }])
+  assert.deepEqual(resource.providerModelOptions.value, [{
+    id: 'claude-sonnet',
+    name: 'Claude Sonnet',
+    supportedApiProtocols: ['messages'],
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: []
+  }])
+  assert.deepEqual(resource.selectOptions.value, [{
+    label: 'Claude Sonnet',
+    value: 'claude-sonnet',
+    providerCodes: [],
+    supportedApiProtocols: ['messages']
+  }])
   assert.equal(resource.loading.value, false)
 } finally {
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalLoader
