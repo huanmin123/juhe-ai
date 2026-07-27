@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-strict-match-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -22,6 +23,15 @@ const responseModel = 'gpt-5.4-mini-2026-03-17'
 const targetModel = 'gpt-5.4'
 const mappedRequestModel = 'gpt-5.5'
 const mappedUpstreamModel = 'gpt-5.6-sol'
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 const upstream = createMockUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -60,7 +70,7 @@ try {
     model: targetModel,
     profile: 'full',
     trustedComparison: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, undefined, { policy: fullPolicy })
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.level, 'suspicious', '变体模型响应不能被判为较可信或高可信')
@@ -82,6 +92,7 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   repositories.updateAccount(mappedAccount.id, {
     supportedModels: [mappedUpstreamModel],
+    healthCheckModel: mappedUpstreamModel,
     modelMappings: [{
       sourceModel: mappedRequestModel,
       sourceEndpointFamily: 'responses',
@@ -96,20 +107,21 @@ try {
     model: mappedRequestModel,
     profile: 'full',
     trustedComparison: false
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
   assert.equal(mappedDetail.status, 'completed')
   assert.equal(
     mappedDetail.checks.some((item) => item.itemKey.startsWith('target.') && item.evidenceSummary.modelMismatch === true),
     false,
     '合法模型映射不应被模型检测误判为返回模型不一致'
   )
-  const mappedBasic = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_basic')
-  assert(mappedBasic, '映射模型检测应生成基础 Responses 检测项')
-  assert.equal(mappedBasic.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
-  assert.equal(mappedBasic.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
-  assert.equal(mappedBasic.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
-  assert.equal(mappedBasic.evidenceSummary.responseModel, mappedRequestModel, '映射命中后应允许上游返回公开请求模型名')
-  assert.equal(mappedBasic.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
+  assert(!mappedDetail.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功不应生成模型评分项')
+  const mappedStream = mappedDetail.checks.find((item) => item.itemKey === 'target.responses_stream')
+  assert(mappedStream, `映射模型检测应生成流式 Responses 检测项：${JSON.stringify(mappedDetail.checks.map((item) => ({ itemKey: item.itemKey, status: item.status })))}`)
+  assert.equal(mappedStream.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
+  assert.equal(mappedStream.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
+  assert.equal(mappedStream.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
+  assert.equal(mappedStream.evidenceSummary.responseModel, mappedRequestModel, '映射命中后应允许上游返回公开请求模型名')
+  assert.equal(mappedStream.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
   const mappedTrustReport = mappedDetail.resultSummary.trustReport as Record<string, unknown> | undefined
   assert.equal(mappedTrustReport?.mappingStatus, 'configured_mapping', '显式模型映射必须展示为已配置映射')
   assert.notEqual(mappedTrustReport?.identityStatus, 'suspected_downgrade', '显式映射不能被身份维度误判为降级')

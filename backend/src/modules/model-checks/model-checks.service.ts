@@ -1012,7 +1012,10 @@ async function executeProbeSuite(
 
   const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
   const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
-  pushProbeItem(items, evaluateBasicForProfile(profile, basic, model, prefix), progress)
+  const basicItem = evaluateBasicForProfile(profile, basic, model, prefix)
+  if (!basic.success || basicItem.status === 'failed') {
+    pushProbeItem(items, basicItem, progress)
+  }
   if (!basic.success) {
     if (profileMode === 'full') pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }

@@ -137,16 +137,13 @@ export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: st
   }
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const hasOutput = Boolean(result.outputText)
-  const score = modelEvidence.modelMismatch
-    ? (result.success ? 4 : 0) + (hasOutput ? 2 : 0)
-    : (result.success ? 10 : 0) + (modelEvidence.matchedModel ? 5 : 0) + (hasOutput ? 5 : 0)
-  const status = modelEvidence.modelMismatch
-    ? 'failed'
-    : score >= 18 ? 'passed' : score >= 10 ? 'warning' : 'failed'
-  return item(options.itemKey, options.itemType, status, score, 20, result, {
-    message: describeModelMismatch(modelEvidence) ?? (result.success ? options.successMessage : result.errorMessage ?? `${options.failurePrefix}，HTTP ${result.statusCode}`),
+  const status = modelEvidence.modelMismatch ? 'failed' : 'passed'
+  return item(options.itemKey, options.itemType, status, 0, 0, result, {
+    message: describeModelMismatch(modelEvidence) ?? options.successMessage,
     ...modelEvidence,
-    hasOutput
+    hasOutput,
+    qualificationOnly: true,
+    excludedFromScoring: true
   })
 }
 
@@ -738,12 +735,16 @@ export function emptyProbeResult(): GatewayProbeResult {
 }
 
 export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean; profile?: ModelCheckProfile }): ModelCheckSummaryResult {
-  const scoredChecks = checks.filter((item) => item.maxScore > 0)
+  const scoredChecks = checks.filter((item) => item.maxScore > 0 && (
+    item.itemKey.startsWith('target.')
+    || item.itemKey === 'trusted_comparison.comparison'
+    || item.itemKey === 'trusted_comparison.distribution_similarity'
+  ))
   const maxScore = scoredChecks.reduce((sum, item) => sum + item.maxScore, 0)
   const rawScore = scoredChecks.reduce((sum, item) => sum + item.score, 0)
   const score = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0
   const failedCount = scoredChecks.filter((item) => item.status === 'failed').length
-  const modelMismatchCount = checks.filter(hasModelMismatchEvidence).length
+  const modelMismatchCount = checks.filter((item) => item.itemKey.startsWith('target.') && hasModelMismatchEvidence(item)).length
   const targetBasic = checks.find((item) => item.itemKey === 'target.responses_basic' || item.itemKey === 'target.protocol_basic')
   const targetBehavior = checks.find((item) => item.itemKey === 'target.behavior_probe')
   const targetLongContext = checks.find((item) => item.itemKey === 'target.long_context')
@@ -830,11 +831,12 @@ export function summarizeEvidenceCompleteness(checks: ModelCheckItemSummary[]): 
       summary.requestFailureProbeCount += requestFailureCount
       return summary
     }
-    if (evidence?.requestFailure === true || evidence?.excludedFromScoring === true) {
+    if (evidence?.requestFailure === true) {
       summary.evidenceProbeCount += 1
       summary.requestFailureProbeCount += 1
       return summary
     }
+    if (evidence?.excludedFromScoring === true) return summary
     if (item.status !== 'skipped') {
       summary.evidenceProbeCount += 1
       summary.scoredEvidenceProbeCount += 1

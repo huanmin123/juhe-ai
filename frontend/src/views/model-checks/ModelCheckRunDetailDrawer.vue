@@ -72,8 +72,8 @@
         </a-descriptions-item>
       </a-descriptions>
 
-      <div v-if="run.checks.length" class="check-list">
-        <div v-for="check in run.checks" :key="check.id" class="check-item">
+      <div v-if="visibleChecks.length" class="check-list">
+        <div v-for="check in visibleChecks" :key="check.id" class="check-item">
           <div class="check-item-head">
             <span>{{ checkTitle(check) }}</span>
             <a-space wrap>
@@ -112,7 +112,8 @@ import {
   profileText,
   runTrustedComparison,
   statusColor,
-  statusText
+  statusText,
+  visibleModelCheckChecks
 } from './modelCheckFormatters'
 
 const props = defineProps<{
@@ -132,6 +133,7 @@ const trustReport = computed(() => {
   const value = props.run?.resultSummary?.trustReport
   return value && typeof value === 'object' ? value as ModelCheckTrustReport : undefined
 })
+const visibleChecks = computed(() => visibleModelCheckChecks(props.run?.checks ?? []))
 
 const identityStatusText = (value: ModelCheckTrustReport['identityStatus']) => ({
   consistent: '当前受控探针一致', suspected_downgrade: '疑似降级', suspected_same_source: '疑似同源', population_outlier: '群体离群', insufficient_evidence: '证据不足'

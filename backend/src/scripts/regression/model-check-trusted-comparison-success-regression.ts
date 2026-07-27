@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-trusted-comparison-success-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -19,6 +20,15 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const upstream = createMockUpstream()
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -65,14 +75,14 @@ try {
     profile: 'full',
     trustedComparison: true,
     trustedComparisonAccountId: comparisonAccount.id
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.trustedComparison, true)
   assert.equal(detail.trustedComparisonAvailable, true)
   assert.equal(detail.level, 'high_confidence', '可信对比通过后应允许高可信')
   assert(!detail.checks.some((item) => item.itemType === 'model_catalog'), '可信对比检测不应生成本地模型目录检测项')
-  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '应记录可信对比基础探针')
+  assert(!detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '可信对比基础连通成功不应生成评分项')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context' && item.status === 'passed'), '可信对比也应执行长上下文探针')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '应记录可信对比汇总项')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity' && item.status === 'passed'), '可信对比应执行并通过分布相似度对照')
@@ -92,7 +102,7 @@ try {
   assert.equal(quickDetail.trustedComparison, true)
   assert.equal(quickDetail.trustedComparisonAvailable, true)
   assert.equal(quickDetail.level, 'likely', '快速可信对比通过后仍只能给出初步可信结论')
-  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '快速检测应执行可信对比基础探针')
+  assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '快速检测不应展示可信对比基础连通评分项')
   assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.behavior_probe' && item.status === 'passed'), '快速检测应执行可信对比轻量行为探针')
   assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '快速检测应记录可信对比汇总项')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity'), '快速检测不应执行深度分布相似度探针')

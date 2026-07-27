@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ModelCheckItemSummary } from '../../domain/types.js'
+import type { ModelCheckItemSummary, ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-probe-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -27,6 +27,15 @@ const retryState = {
   rateLimitedBasicAttempts: 0,
   opaque400BasicAttempts: 0,
   opaque429BasicAttempts: 0
+}
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
 }
 const upstream = createRetryAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
@@ -64,8 +73,7 @@ try {
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, access)
-  const transientBasic = requiredCheck(transientRun.checks, 'target.responses_basic')
+  }, access, undefined, undefined, { policy: fullPolicy })
   const transientStream = requiredCheck(transientRun.checks, 'target.responses_stream')
   assert.equal(
     transientRun.level,
@@ -75,10 +83,7 @@ try {
   assert.equal(retryState.transientBasicAttempts, 3, '瞬态异常 basic 探针应在同一账号上尝试三次')
   assert.equal(retryState.transientStreamAttempts, 3, '瞬态流式异常应在同一账号上尝试三次')
   assert(Date.now() - transientStartedAt >= 35, '普通瞬态错误也应执行统一等待，不能贴着重打')
-  assert.equal(transientBasic.status, 'passed', '第 3 次恢复后 basic 探针应通过')
-  assert.equal(transientBasic.evidenceSummary.attemptCount, 3, `basic 探针应记录总尝试次数：${JSON.stringify(transientBasic.evidenceSummary)}`)
-  assert.equal(transientBasic.evidenceSummary.retryAttemptCount, 2, 'basic 探针应记录重试次数')
-  assert.deepEqual(transientBasic.evidenceSummary.attemptStatusCodes, [503, 503, 200], 'basic 探针应记录每次尝试状态码')
+  assert(!transientRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '恢复成功的基础预检不应生成模型评分项')
   assert.equal(transientStream.status, 'passed', '第 3 次恢复后流式探针应通过')
   assert.equal(transientStream.evidenceSummary.attemptCount, 3, '流式探针应记录总尝试次数')
   assert.deepEqual(transientStream.evidenceSummary.attemptStatusCodes, [503, 503, 200], '流式探针应记录每次 HTTP 状态码')
@@ -99,15 +104,11 @@ try {
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, access)
-  const rateLimitedBasic = requiredCheck(rateLimitedRun.checks, 'target.responses_basic')
+  }, access, undefined, undefined, { policy: fullPolicy })
   assert.equal(rateLimitedRun.level, 'high_confidence', `429 瞬态限流恢复后不应误判失败：${JSON.stringify(checkStatusSummary(rateLimitedRun.checks))}`)
   assert.equal(retryState.rateLimitedBasicAttempts, 3, '429 basic 探针应等待后在同一账号上尝试三次')
   assert(Date.now() - rateLimitedStartedAt >= 35, '失败重试应执行统一等待，不能贴着重打')
-  assert.equal(rateLimitedBasic.status, 'passed', '第 3 次限流恢复后 basic 探针应通过')
-  assert.equal(rateLimitedBasic.evidenceSummary.retryAttemptCount, 2, '429 basic 探针应记录重试次数')
-  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptStatusCodes, [429, 429, 200], '429 basic 探针应记录网关侧状态码')
-  assert.deepEqual(rateLimitedBasic.evidenceSummary.attemptUpstreamStatusCodes, [429, 429, 200], '429 basic 探针应记录真实上游状态码')
+  assert(!rateLimitedRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '限流恢复成功的基础预检不应生成模型评分项')
 
   const opaque400Fixture = createMockGatewayFixture({
     label: 'model-check-retry-opaque-400',
@@ -124,7 +125,7 @@ try {
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
   const opaque400Basic = requiredCheck(opaque400Run.checks, 'target.responses_basic')
 
   const opaque429Fixture = createMockGatewayFixture({
@@ -142,7 +143,7 @@ try {
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
   const opaque429Basic = requiredCheck(opaque429Run.checks, 'target.responses_basic')
   assert.equal(retryState.opaque400BasicAttempts, 3, '400 + rate_limit 文本与 429 应执行同样的有界重试')
   assert.equal(retryState.opaque429BasicAttempts, 3, '429 + 任意正文应执行同样的有界重试')
@@ -171,7 +172,7 @@ try {
     model: 'gpt-5.5',
     profile: 'full',
     trustedComparison: false
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
   const persistentBasic = requiredCheck(persistentRun.checks, 'target.responses_basic')
   assert.equal(persistentRun.level, 'unavailable', '连续重试仍失败时应落不可检测')
   assert.equal(retryState.persistentBasicAttempts, 3, '持续异常 basic 探针应达到最大尝试次数')

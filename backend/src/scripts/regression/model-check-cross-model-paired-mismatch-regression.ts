@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-cross-paired-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -21,6 +22,15 @@ mkdirSync(tempRoot, { recursive: true })
 const targetModel = 'gpt-5.5'
 const pairedModel = 'gpt-5.4'
 const pairedResponseModel = 'gpt-5.4-mini-2026-03-17'
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 const upstream = createMockUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -52,7 +62,7 @@ try {
     model: targetModel,
     profile: 'full',
     trustedComparison: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, undefined, { policy: fullPolicy })
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.level, 'likely', '辅助模型对照不匹配只能降低可信度，不能把目标模型直接判为疑似不符')
