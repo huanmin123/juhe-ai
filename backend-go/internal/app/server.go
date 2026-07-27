@@ -492,6 +492,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
+		ManagementSystemMetricsTrendHandler:               managementHandlers.SystemMetricsTrendHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 		ManagementStatsAccountUsageHandler:                managementHandlers.StatsAccountUsageHandler,
@@ -765,6 +766,7 @@ type managementAPIHandlers struct {
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
 	SystemMetricsHandler                    http.Handler
+	SystemMetricsTrendHandler               http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 	StatsAccountUsageHandler                http.Handler
@@ -1336,6 +1338,7 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, logger),
 		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
+		SystemMetricsTrendHandler:               httpapi.NewManagementSystemMetricsTrendHandler(statsService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 		StatsAccountUsageHandler:                httpapi.NewManagementStatsAccountUsageHandler(statsService),

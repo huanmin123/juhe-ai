@@ -106,7 +106,7 @@ func TestManagementSystemMetricsHandlerRedactsServiceErrors(t *testing.T) {
 	}
 }
 
-func TestRouterRegistersManagementSystemMetricsAsLimitedNoTouchReadAndLeavesRuntime404(t *testing.T) {
+func TestRouterRegistersManagementSystemMetricsTrendAsLimitedNoTouchReadAndLeavesRuntime404(t *testing.T) {
 	readAuthenticator := &managementAPIAuthenticatorStub{context: managementauth.Context{
 		SystemAccountID: "sys_admin", Role: "admin", SessionID: "sess_read",
 	}}
@@ -130,20 +130,28 @@ func TestRouterRegistersManagementSystemMetricsAsLimitedNoTouchReadAndLeavesRunt
 			handlerCalls++
 			writeData(w, http.StatusOK, map[string]any{"hourlyTrend": []any{}})
 		}),
+		ManagementSystemMetricsTrendHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalls++
+			writeData(w, http.StatusOK, map[string]any{
+				"hourlyTrend": []any{}, "processEventLoopLatestStatus": []any{},
+				"processEventLoopPeakStatus": []any{}, "processEventLoopTrend": []any{},
+			})
+		}),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/stats/system-metrics", nil)
-	req.Header.Set("Cookie", "juhe_ai_session=session-token")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK || handlerCalls != 1 {
-		t.Fatalf("status=%d handlerCalls=%d body=%s", rec.Code, handlerCalls, rec.Body.String())
+	for _, path := range []string{"/__aisys__/api/stats/system-metrics", "/__aisys__/api/stats/system-metrics/trend"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s status=%d cache=%q handlerCalls=%d body=%s", path, rec.Code, rec.Header().Get("Cache-Control"), handlerCalls, rec.Body.String())
+		}
 	}
-	if rec.Header().Get("Cache-Control") != "no-store" || readAuthenticator.cookieHeader != "juhe_ai_session=session-token" || touchAuthenticator.touchCookieHeader != "" {
-		t.Fatalf("cache=%q readCookie=%q touchCookie=%q", rec.Header().Get("Cache-Control"), readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	if handlerCalls != 2 || readAuthenticator.cookieHeader != "juhe_ai_session=session-token" || touchAuthenticator.touchCookieHeader != "" {
+		t.Fatalf("handlerCalls=%d readCookie=%q touchCookie=%q", handlerCalls, readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
 	}
-	if ipLimiter.calls != 1 || userLimiter.calls != 1 || userLimiter.limit != 300 {
+	if ipLimiter.calls != 2 || userLimiter.calls != 2 || userLimiter.limit != 300 {
 		t.Fatalf("limiter calls ip=%d user=%d userLimit=%d", ipLimiter.calls, userLimiter.calls, userLimiter.limit)
 	}
 
@@ -151,7 +159,7 @@ func TestRouterRegistersManagementSystemMetricsAsLimitedNoTouchReadAndLeavesRunt
 	runtimeReq.Header.Set("Cookie", "juhe_ai_session=session-token")
 	runtimeRec := httptest.NewRecorder()
 	router.ServeHTTP(runtimeRec, runtimeReq)
-	if runtimeRec.Code != http.StatusNotFound || handlerCalls != 1 {
+	if runtimeRec.Code != http.StatusNotFound || handlerCalls != 2 {
 		t.Fatalf("runtime status=%d handlerCalls=%d body=%s", runtimeRec.Code, handlerCalls, runtimeRec.Body.String())
 	}
 }

@@ -24,6 +24,10 @@ func NewManagementSystemMetricsHandler(service *managementstats.Service) http.Ha
 	return newManagementSystemMetricsHandler(service)
 }
 
+func NewManagementSystemMetricsTrendHandler(service *managementstats.Service) http.Handler {
+	return newManagementSystemMetricsHandler(service)
+}
+
 func newManagementSystemMetricsHandler(service managementSystemMetricsService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
