@@ -75,6 +75,12 @@ assert.match(metricsRegistrySource, /runtimeMode === 'performance'[\s\S]*cacheDr
 assert.match(metricsRegistrySource, /registryTtlSeconds = 20/, '进程指标注册必须使用短 TTL 避免退出节点残留')
 assert.match(backgroundJobsSource, /readPerformanceProcessEventLoopSamples\(\)[\s\S]*回退 IPC 采样/, 'Stats Worker 必须优先汇总注册表并在失败时回退 IPC')
 assert.match(
+  backgroundJobsSource,
+  /performanceProcessMetricsTopologyComplete\(registryProcessSamples, runtimeConfig\.topology\)/,
+  'Stats Worker 必须按拓扑角色和副本核验完整性，不能只比较样本条数'
+)
+assert.doesNotMatch(backgroundJobsSource, /registryProcessSamples\.length\s*>?=/, '重复旧实例不得用数量掩盖当前角色缺失')
+assert.match(
   supervisorSource,
   /attachBackgroundAuxiliaryWorkerProcess\(child/,
   '非 primary Usage / Log worker ready 后必须保留父进程 IPC 桥'
@@ -101,11 +107,27 @@ try {
   runChild('performance-gateway', {
     ...performanceEnv(),
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://127.0.0.1:65535',
     JUHE_AI_INSTANCE_ID: 'gateway-2',
     JUHE_AI_GATEWAY_REPLICAS: '5',
     JUHE_AI_USAGE_WORKER_REPLICAS: '4',
     JUHE_AI_LOG_WORKER_REPLICAS: '3'
   })
+  runChildFailure('performance-gateway-missing-health-dispatch', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: ''
+  }, 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL')
+  runChildFailure('performance-gateway-remote-health-dispatch', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://192.0.2.1:3200'
+  }, 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL')
+  runChildFailure('performance-gateway-path-health-dispatch', {
+    ...performanceEnv(),
+    JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://127.0.0.1:3200/custom-path'
+  }, 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL')
   runChild('performance-worker', {
     ...performanceEnv(),
     JUHE_AI_PROCESS_ROLE: 'worker',
@@ -151,8 +173,8 @@ function runChildFailure(mode: string, overrides: NodeJS.ProcessEnv, expectedMes
     },
     encoding: 'utf8'
   })
-  assert.notEqual(result.status, 0, `topology child ${mode} 应拒绝缺少稳定实例 ID 的 production performance 配置`)
-  assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(expectedMessage), `topology child ${mode} 应报告缺失配置名`)
+  assert.notEqual(result.status, 0, `topology child ${mode} 应拒绝非法 performance 配置`)
+  assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(expectedMessage), `topology child ${mode} 应报告对应配置名`)
 }
 
 function performanceEnv(): NodeJS.ProcessEnv {

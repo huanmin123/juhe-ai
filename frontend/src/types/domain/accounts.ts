@@ -305,6 +305,12 @@ export interface AccountSummary {
   concurrencyLimit: number
   currentConcurrency: number
   runtimeAvailability?: AccountRuntimeAvailability
+  circuitSummary?: {
+    status: 'normal' | 'verifying' | 'avoided' | 'recovering'
+    reason?: 'connect_failed' | 'timeout_before_complete' | 'read_interrupted' | 'incomplete_response' | 'explicit_policy'
+    since?: string
+    nextCheckAt?: string
+  }
   effectiveAvailability?: AccountEffectiveAvailability
   availabilityPresentation?: AccountAvailabilityPresentation
   priority: number

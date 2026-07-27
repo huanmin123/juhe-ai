@@ -9,7 +9,6 @@ import {
   bindGroupTip as buildBindGroupTip,
   defaultGroupForProvider
 } from './accountDerivedState'
-import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { accountOperationScopeParams } from './accountOperationScope'
 
 type ReadonlyValue<T> = {
@@ -79,11 +78,6 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
       } else {
         await api.myAccounts.bindGroup(account.id, payload)
       }
-      invalidateAccountDetailForAccount({
-        accountId: account.id,
-        isManagementView: options.isManagementView.value,
-        scopeParams
-      })
       message.success('授权账户已绑定分组')
       bindGroupModalOpen.value = false
       bindingAccount.value = undefined

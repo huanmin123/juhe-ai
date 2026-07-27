@@ -195,6 +195,8 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 
 ## 当前接口入口
 
+> 2026-07-27 状态闭环修订：后台激活和周期健康以固定健康模型的协议诊断结果判断通用可用性；完整 framing 失败对 transport 电路仍中性，但会累计账户健康失败阈值。下方历史总览中“只有 transport failure 才推进激活检查”的旧表述不再适用于激活和周期健康。
+
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
 - OpenAI 兼容 / GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户和测试相关 DTO 返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于账户类型、表单默认值和运行时诊断；分组 DTO 不返回这些协议档案字段。
 - 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD`、`endDate=YYYY-MM-DD`、`page` 和 `pageSize` 参数读取窗口分页，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
@@ -261,10 +263,10 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - OAuth token 刷新、人工测试和后台系统检查都优先使用账户绑定代理；没有绑定代理时默认直连。账户创建、导入和离线修复不得自动绑定本机固定端口代理，代理必须由用户显式配置。
 - 人工测试复用受控的真实 OpenAI 网关请求执行器并写入使用记录与审计，不能在测试服务里单独直连上游。新增和编辑表单测试固定使用当前表单 `healthCheckModel`，不提供临时模型下拉；列表单项测试打开时按需调用 `test-options`，候选来自账户供应商、协议档案和所有者作用域可见的启用文本模型目录，不受 `supportedModels` 限制，默认选中账户检查模型。完整诊断在网关为普通客户端改写失败响应时，测试结果的 `responseText`、`responseHeaders`、`message` 和 `errorCode` 仍优先使用最后一次真实上游尝试的有界原始诊断，不能把网关生成的 `upstream_retryable_error` 当成上游返回展示；未捕获上游正文时才保留下游兜底响应。人工测试不保存本次模型，不追加支持模型，也不更新 OAuth 生产额度快照。
 - 人工测试成功或失败都不修改账户、授权实例、来源账户、账户内 Key、健康事实、状态、调度、冷却、最近错误、代理桶、客户端 IP / Codex turn 回避或会话亲和。每次单账户测试使用独立 `testSessionId`；账户 A 与账户 B 可并行启动，停止操作只取消当前会话。账户页面不提供多账户批量测试。
-- 后台激活、周期健康、运行态恢复、账号级冷却复测和 Key 恢复探针严格使用账户 `healthCheckModel`。后台冷却复测固定启用，按 `3s -> 6s -> 12s -> 24s -> ...` 退避处理系统自动 transport 来源的 `temporary_unavailable`；`complete_success` 只按匹配 provenance 激活 / 恢复，`framing_complete_neutral` 只诊断、有界顺延并最多关闭同来源 transport 怀疑，`upstream_failure` 仅在 `transport_incomplete` 时继续退避和累计，`probe_task_failure/stale/unknown` 不计数不改状态。用户显式 `temporary_unavailable / rate_limited` 只按其 TTL、匹配恢复动作或人工恢复清理。恢复探活使用 `traffic_source = cooldown_retest` 写入明细和审计，不进入业务统计或账户质量统计。
-- 后台激活和周期健康检查同样不得把完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 解释为凭据死亡、限流或封禁。协议成功可以激活/记录正向健康；完整 framing 但协议未成功保持业务中性并有界延后，transport failure 才进入传输退避，本地配置/解密硬错误才进入对应配置异常路径。
+- 后台激活、周期健康、质量失败确认、运行态恢复、账号级冷却复测和 Key 恢复探针严格使用账户 `healthCheckModel`。后台激活、周期健康和质量失败确认以受控协议诊断是否成功判断通用账户可用性；完整 HTTP 失败和 transport failure 都可以形成失败证据，但不得解释成凭据死亡、限流或封禁。运行态 transport 恢复、账号级冷却复测和 Key 恢复仍按匹配 provenance 消费 transport 结果；`probe_task_failure/stale/unknown` 不计数不改状态。用户显式 `temporary_unavailable / rate_limited` 只按其 TTL、匹配恢复动作或人工恢复清理。恢复探活使用专用 traffic source 写入明细和审计，不进入普通业务质量统计。
+- 后台激活和周期健康检查不得按完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 派生具体错误类型；协议成功可以激活/记录正向健康，协议未成功只推进通用健康失败阈值，本地配置/解密硬错误进入对应配置异常路径。
 
-账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。系统自动确认只由真实网关 transport sample 首次投递，按账户所属系统账户和绑定分组上下文执行独立探针；通用协议成功可作为正向健康证据，本地 transport failure 才是负向证据，完整 HTTP 业务失败保持中性。该确认探针使用 `traffic_source = cooldown_retest`，不进入业务统计或账号质量统计。
+账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。真实 gateway 请求的 opaque 完整失败只负责按账户去重、10 分钟限频地投递独立健康检查；通用协议成功保留账户，完整 HTTP 协议失败或 transport failure 累计通用健康失败阈值。确认过程不读取状态码/正文推断具体语义，并使用专用 traffic source，避免探针结果回灌普通账号质量统计。
 
 ## 会话亲和调度
 

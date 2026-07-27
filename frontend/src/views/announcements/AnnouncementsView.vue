@@ -105,7 +105,6 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { invalidateEntityDetailCache, loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatDateTime } from '@/shared/formatters'
 import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { AnnouncementLevel, AnnouncementListItem, AnnouncementStatus } from '@/types/domain'
@@ -273,12 +272,7 @@ async function openEdit(record: AnnouncementListItem) {
   detailLoading.value = true
   editingId.value = record.id
   try {
-    const detail = await loadEntityDetailCached({
-      force: true,
-      id: record.id,
-      load: () => api.announcements.detail(record.id),
-      namespace: 'announcement-detail'
-    })
+    const detail = await api.announcements.detail(record.id)
     if (requestGeneration !== announcementDetailRequestGeneration || editingId.value !== record.id) return
     Object.assign(form, {
       title: detail.title,
@@ -300,7 +294,6 @@ async function openEdit(record: AnnouncementListItem) {
 }
 
 function invalidatePendingAnnouncementDetail(id: string): void {
-  invalidateEntityDetailCache('announcement-detail', id)
   if (editingId.value !== id) return
   announcementDetailRequestGeneration += 1
   editingId.value = undefined

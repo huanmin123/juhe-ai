@@ -49,8 +49,104 @@ await waitFor(() => started.includes('normal-d:2'), '等待中的重复任务应
 
 releaseAll()
 await waitFor(() => queue.snapshot().pendingCount === 0 && queue.snapshot().runningCount === 0, '队列最终应清空')
+await assertConditionalPriorityReplacement()
+await assertRequestFailureUsesReservedConcurrency()
 
 console.log('retry queue 优先级回归通过：保留并发、等待升级和运行后补执行符合契约')
+
+async function assertConditionalPriorityReplacement(): Promise<void> {
+  const pendingStarted: string[] = []
+  const blockerRelease: { current?: () => void } = {}
+  const pendingQueue = createRetryQueue<{ id: string; revision: number }>({
+    name: 'retry-queue-conditional-pending-regression',
+    policy: fixedRetryPolicy('retry_queue_conditional_pending_regression', 1000, 1),
+    concurrency: 1,
+    run: async (item) => {
+      pendingStarted.push(`${item.id}:${item.revision}`)
+      if (item.id === 'blocker') {
+        await new Promise<void>((resolve) => { blockerRelease.current = resolve })
+      }
+      return true
+    }
+  })
+  pendingQueue.enqueue('blocker', { id: 'blocker', revision: 1 }, { priority: 0 })
+  await waitFor(() => pendingStarted.length === 1, '条件替换回归的阻塞任务应先开始')
+  pendingQueue.enqueue('scheduled', { id: 'scheduled', revision: 1 }, { priority: 20 })
+  assert.equal(pendingQueue.enqueue('scheduled', { id: 'scheduled', revision: 2 }, {
+    priority: 15,
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true
+  }), true, '更高优先级 request_failure 应替换等待中的 scheduled')
+  assert.equal(pendingQueue.enqueue('scheduled', { id: 'scheduled', revision: 3 }, {
+    priority: 15,
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true
+  }), false, '同优先级 request_failure 不得反复替换等待任务')
+  pendingQueue.enqueue('configuration', { id: 'configuration', revision: 1 }, { priority: 10 })
+  assert.equal(pendingQueue.enqueue('configuration', { id: 'configuration', revision: 2 }, {
+    priority: 15,
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true
+  }), false, 'request_failure 不得覆盖更高优先级 configuration')
+  blockerRelease.current?.()
+  await waitFor(() => pendingQueue.snapshot().pendingCount === 0 && pendingQueue.snapshot().runningCount === 0, '条件替换等待队列应清空')
+  assert.deepEqual(pendingStarted, ['blocker:1', 'configuration:1', 'scheduled:2'])
+
+  const runningStarted: string[] = []
+  const scheduledRelease: { current?: () => void } = {}
+  const runningQueue = createRetryQueue<{ id: string; revision: number }>({
+    name: 'retry-queue-conditional-running-regression',
+    policy: fixedRetryPolicy('retry_queue_conditional_running_regression', 1000, 1),
+    concurrency: 1,
+    run: async (item) => {
+      runningStarted.push(`${item.id}:${item.revision}`)
+      if (item.revision === 1) {
+        await new Promise<void>((resolve) => { scheduledRelease.current = resolve })
+      }
+      return true
+    }
+  })
+  runningQueue.enqueue('scheduled', { id: 'scheduled', revision: 1 }, { priority: 20 })
+  await waitFor(() => runningStarted.length === 1, '运行中替换回归的 scheduled 应先开始')
+  assert.equal(runningQueue.enqueue('scheduled', { id: 'request-failure', revision: 2 }, {
+    priority: 15,
+    replaceExisting: true,
+    replaceExistingOnlyIfHigherPriority: true
+  }), true, '运行中的 scheduled 应保留一次 request_failure follow-up')
+  scheduledRelease.current?.()
+  await waitFor(() => runningQueue.snapshot().pendingCount === 0 && runningQueue.snapshot().runningCount === 0, '运行中条件替换队列应清空')
+  assert.deepEqual(runningStarted, ['scheduled:1', 'request-failure:2'])
+}
+
+async function assertRequestFailureUsesReservedConcurrency(): Promise<void> {
+  const started: string[] = []
+  const releases: Array<() => void> = []
+  let blocking = true
+  const healthQueue = createRetryQueue<{ id: string }>({
+    name: 'retry-queue-request-failure-reservation-regression',
+    policy: fixedRetryPolicy('retry_queue_request_failure_reservation_regression', 1000, 1),
+    concurrency: 10,
+    reservedPriorityConcurrency: {
+      priorityAtMost: 15,
+      slots: 3
+    },
+    run: async (item) => {
+      started.push(item.id)
+      if (blocking) await new Promise<void>((resolve) => releases.push(resolve))
+      return true
+    }
+  })
+  for (let index = 1; index <= 8; index += 1) {
+    healthQueue.enqueue(`scheduled-${index}`, { id: `scheduled-${index}` }, { priority: 20 })
+  }
+  await waitFor(() => started.length === 7, '周期检查只能占用 7 个普通并发槽')
+  healthQueue.enqueue('request-failure', { id: 'request-failure' }, { priority: 15 })
+  await waitFor(() => started.includes('request-failure'), '请求失败探针必须立即使用保留并发槽')
+  assert.equal(started.includes('scheduled-8'), false, '第 8 个周期检查不得占用保留并发槽')
+  blocking = false
+  for (const release of releases.splice(0)) release()
+  await waitFor(() => healthQueue.snapshot().pendingCount === 0 && healthQueue.snapshot().runningCount === 0, '保留并发回归队列应清空')
+}
 
 function releaseOne(): void {
   releases.shift()?.()

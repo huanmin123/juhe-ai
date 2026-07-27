@@ -2,7 +2,6 @@ import { message } from '@/lib/antd'
 import { ref } from 'vue'
 
 import { api } from '@/api/client'
-import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import type { RuntimeLogGrepItem, RuntimeLogSummary } from '@/types/domain'
 
 type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
@@ -20,11 +19,7 @@ export function useRuntimeLogDetailState() {
     selectedLog.value = record
     detailOpen.value = true
     try {
-      const detail = await loadEntityDetailCached({
-        id: record.id,
-        load: () => api.runtimeLogs.detail(record.id),
-        namespace: 'runtime-log-detail'
-      })
+      const detail = await api.runtimeLogs.detail(record.id)
       if (detailRequestId === requestId) {
         selectedLog.value = detail
       }

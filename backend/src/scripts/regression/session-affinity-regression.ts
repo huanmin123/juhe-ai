@@ -5,6 +5,7 @@ import type { Request } from 'express'
 import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import {
   areOpenAIHighConcurrencyAccountsHardBusy,
+  claimOpenAIAccountForSessionAsync,
   forgetOpenAIAccountForSession,
   migrateOpenAIAccountSessionAffinity,
   orderOpenAIAccountsBySessionAffinity,
@@ -12,6 +13,7 @@ import {
   rememberOpenAIAccountForSession,
   resolveOpenAIGatewaySessionAffinityKey
 } from '../../modules/gateway/runtime/session-affinity.service.js'
+import { resolveGatewaySessionIdentity } from '../../modules/gateway/session-identity/index.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { GatewayAccountModelPriority } from '../../modules/gateway/dispatch/model-filter.js'
@@ -27,7 +29,8 @@ async function main(): Promise<void> {
   testAffinityPromotesWithinSameAvailabilityBucket()
   testAffinityFallbackContinuesAfterPromotedAccountWithinSamePriority()
   testAffinityPromotesAcrossAccountTypesWithinSameBucket()
-  testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard()
+  testAffinityBindingUsesFirstWriterAcrossAccountTypes()
+  await testConcurrentAffinityClaimUsesSingleWinner()
   testScopedMigrationOnlyMovesMatchingBindings()
   testTrafficMigrationPreferenceBiasesNewRequests()
   testTrafficMigrationPreferenceBypassesSuperPriority()
@@ -67,34 +70,56 @@ function testSessionAffinityMigrationUsesReverseIndex(): void {
 
 function testAffinityKeyUsesLocalIdentityOnly(): void {
   const req = createSessionRequest('shared-cache')
-  const keyA = resolveOpenAIGatewaySessionAffinityKey(req, {
+  const sessionIdentity = resolveTestSessionIdentity(req)
+  const keyA = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-a',
-    groupId: 'group-a'
+    groupId: 'group-a',
+    routeStrategyId: 'route-a',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   })
-  const keyARepeat = resolveOpenAIGatewaySessionAffinityKey(req, {
+  const keyARepeat = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-a',
-    groupId: 'group-a'
+    groupId: 'group-a',
+    routeStrategyId: 'route-a',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
   })
 
   assert.equal(typeof keyA, 'string', '可识别会话请求应生成亲和 key')
   assert.equal(keyA, keyARepeat, '同一本地系统账户、API Key 和客户端会话应复用同一个亲和 key')
-  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
+  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-b',
     groupId: 'group-a'
   }), '不同本地 API Key 必须隔离会话亲和')
-  assert.equal(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
+  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
     systemAccountId: 'system-a',
     apiKeyId: 'key-a',
     groupId: 'group-b'
-  }), '同一 API Key 下不同分组不应重新切分会话亲和')
-  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(req, {
+  }), '不同分组必须隔离会话亲和')
+  assert.notEqual(keyA, resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
     systemAccountId: 'system-b',
     apiKeyId: 'key-a',
     groupId: 'group-a'
   }), '不同调用方系统账户必须隔离会话亲和')
+
+  const hintOnlyRequest = {
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    headers: {},
+    body: { prompt_cache_key: 'shared-cache' }
+  } as Request
+  const hintOnlyIdentity = resolveGatewaySessionIdentity(hintOnlyRequest, {
+    clientProfile: 'generic',
+    systemAccountId: 'system-a',
+    apiKeyId: 'key-a'
+  })
+  assert.equal(resolveOpenAIGatewaySessionAffinityKey(hintOnlyIdentity, {
+    systemAccountId: 'system-a',
+    apiKeyId: 'key-a',
+    groupId: 'group-a'
+  }), undefined, 'prompt_cache_key 只能作为缓存提示，不能建立正式会话亲和')
 }
 
 function testMissingBoundAccountDoesNotAffectCandidates(): void {
@@ -206,15 +231,16 @@ function testAffinityPromotesAcrossAccountTypesWithinSameBucket(): void {
   forgetOpenAIAccountForSession(sessionKey)
 }
 
-function testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard(): void {
+function testAffinityBindingUsesFirstWriterAcrossAccountTypes(): void {
   const req = createSessionRequest('mixed-local-cache')
-  const identity = {
+  const scope = {
     systemAccountId: 'system-a',
     apiKeyId: 'key-a',
     groupId: 'group-a'
   }
-  const sessionKey = resolveOpenAIGatewaySessionAffinityKey(req, identity)
-  const repeatedSessionKey = resolveOpenAIGatewaySessionAffinityKey(req, identity)
+  const sessionIdentity = resolveTestSessionIdentity(req)
+  const sessionKey = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, scope)
+  const repeatedSessionKey = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, scope)
   const accounts = [
     createAccount('api-key-candidate', { priority: 0, type: 'api_key' }),
     createAccount('oauth-candidate', { priority: 0, type: 'oauth' })
@@ -222,11 +248,33 @@ function testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard(): void {
 
   assert(sessionKey, '可识别本地会话应生成亲和 key')
   assert.equal(sessionKey, repeatedSessionKey, 'OAuth/API Key 切换不应为同一本地会话生成新的亲和分片')
-  rememberOpenAIAccountForSession(sessionKey, 'oauth-candidate', identity)
+  rememberOpenAIAccountForSession(sessionKey, 'oauth-candidate', scope)
   assert.deepEqual(orderedIds(accounts, sessionKey), ['oauth-candidate', 'api-key-candidate'], '同一本地会话先命中 OAuth 后应保留会话亲和')
 
-  rememberOpenAIAccountForSession(sessionKey, 'api-key-candidate', identity)
-  assert.deepEqual(orderedIds(accounts, sessionKey), ['api-key-candidate', 'oauth-candidate'], '同一本地会话切到 API Key 后应覆盖同一个亲和槽，而不是按账号类型另起分片')
+  rememberOpenAIAccountForSession(sessionKey, 'api-key-candidate', scope)
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['oauth-candidate', 'api-key-candidate'], '后到请求不得覆盖同一亲和槽的首个绑定账号')
+  forgetOpenAIAccountForSession(sessionKey, 'oauth-candidate')
+  rememberOpenAIAccountForSession(sessionKey, 'api-key-candidate', scope)
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['api-key-candidate', 'oauth-candidate'], '首个绑定释放后才允许后续账号接管亲和槽')
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+async function testConcurrentAffinityClaimUsesSingleWinner(): Promise<void> {
+  const sessionKey = 'session-affinity-regression:concurrent-first-writer'
+  forgetOpenAIAccountForSession(sessionKey)
+  const scope = { systemAccountId: 'system-a', apiKeyId: 'key-a', groupId: 'group-a' }
+  const winners = await Promise.all([
+    claimOpenAIAccountForSessionAsync(sessionKey, 'candidate-a', scope),
+    claimOpenAIAccountForSessionAsync(sessionKey, 'candidate-b', scope),
+    claimOpenAIAccountForSessionAsync(sessionKey, 'candidate-c', scope)
+  ])
+  assert.equal(new Set(winners).size, 1, '同一会话的并发首批请求必须观察到唯一亲和 winner')
+  assert.equal(winners[0], 'candidate-a', '内存驱动应由首个到达的候选原子占有亲和槽')
+  assert.deepEqual(orderedIds([
+    createAccount('candidate-b', { priority: 0 }),
+    createAccount('candidate-a', { priority: 0 }),
+    createAccount('candidate-c', { priority: 0 })
+  ], sessionKey), ['candidate-a', 'candidate-c', 'candidate-b'], '后到并发请求应在最终派发前服从首写 winner')
   forgetOpenAIAccountForSession(sessionKey)
 }
 
@@ -796,17 +844,27 @@ function createAccount(
   }
 }
 
-function createSessionRequest(promptCacheKey: string): Request {
+function createSessionRequest(sessionId: string): Request {
   const headers: Record<string, string> = {
-    prompt_cache_key: promptCacheKey
+    'session-id': sessionId
   }
   return {
+    method: 'POST',
+    originalUrl: '/v1/responses',
     headers,
     body: {},
     header(name: string): string | undefined {
       return headers[name.toLowerCase()]
     }
   } as Request
+}
+
+function resolveTestSessionIdentity(req: Request) {
+  return resolveGatewaySessionIdentity(req, {
+    clientProfile: 'codex',
+    systemAccountId: 'system-a',
+    apiKeyId: 'key-a'
+  })
 }
 
 function modelPriority(ranks: Record<string, number>): GatewayAccountModelPriority {

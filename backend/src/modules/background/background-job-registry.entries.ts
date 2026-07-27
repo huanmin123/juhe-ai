@@ -5,20 +5,6 @@ const entry = <const T extends BackgroundJobRegistryEntry>(value: T) => value
 
 export const backgroundScheduledJobs = [
   scheduled({
-    jobName: 'usage-record-first-page-prewarm',
-    category: 'scheduled',
-    kind: 'maintenance',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: false,
-    singleOwner: true,
-    shardable: false,
-    leaseRequired: false,
-    blocksUserVisibleFreshness: false,
-    writes: ['cache:usage_record_first_page'],
-    notes: '仅 ingest/usage worker 的 replica 0 注册，避免 performance 多副本重复候选查询和首屏预热'
-  }),
-  scheduled({
     jobName: 'system-metrics-sample',
     category: 'scheduled',
     kind: 'sample',

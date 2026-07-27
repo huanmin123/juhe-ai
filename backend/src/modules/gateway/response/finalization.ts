@@ -61,6 +61,7 @@ import {
   type StreamFailureContext,
   type StreamBodyOmissionSummary
 } from './stream.js'
+import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 import {
   inspectResponseSemanticFrames,
   resolveRuntimeResponseInspectionPolicies,
@@ -302,6 +303,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   }
 
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
+  let codexTurnFailureRemembered = false
   const codexResponsesGuard = createCodexResponsesGuardForInput(input)
   const shouldMutateAccountForStreamFailure = (
     errorCode: string | undefined,
@@ -321,7 +323,12 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       res,
       input.timeoutProfile,
       startedAt,
-      (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
+      async (message, errorCode, context) => {
+        await handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context))
+        if (context.availabilityProbeEligible) {
+          dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+        }
+      },
       signal,
       {
         clientRetryEnabled: false,
@@ -349,6 +356,69 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true),
         downstreamCommitState: input.downstreamCommitState,
         codexResponsesGuard,
+        beforeCommittedFailureSignal: async (context) => {
+          if (
+            isAccountDiagnosticTrafficSource(usageContext.trafficSource)
+            || clientStrategy?.allowCodexTurnAccountAvoidance !== true
+            || !context.accountFailureEligible
+            || !context.semanticCommitted
+            || !context.outputReceived
+          ) {
+            return
+          }
+          const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
+            errorCode: context.errorCode,
+            message: context.message,
+            evidence: 'committed_retry_signal',
+            observationId: `${auditAttemptId}:client_visible_failure`
+          })
+          if (!codexTurnFailure) {
+            return
+          }
+          codexTurnFailureRemembered = true
+          auditCapture.addGatewayMetadata({
+            label: 'codex_turn_committed_retry_signal',
+            metadata: {
+              stateKey: codexTurnFailure.stateKey,
+              failureCount: codexTurnFailure.failureCount,
+              failedAccountIds: codexTurnFailure.failedAccountIds,
+              avoidanceActivatedAccountIds: codexTurnFailure.avoidanceActivatedAccountIds,
+              duplicateObservation: codexTurnFailure.duplicateObservation,
+              accountId: account.id,
+              downstreamBytesWritten: context.downstreamBytesWritten
+            }
+          })
+        },
+        onIncompleteClientAbort: async (context) => {
+          if (
+            isAccountDiagnosticTrafficSource(usageContext.trafficSource)
+            || clientStrategy?.allowCodexTurnAccountAvoidance !== true
+          ) {
+            return
+          }
+          const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
+            errorCode: 'incomplete_downstream_abort',
+            message: downstreamConnectionClosedMessage,
+            evidence: 'incomplete_downstream_abort',
+            observationId: `${auditAttemptId}:incomplete_downstream_abort`
+          })
+          if (!codexTurnFailure) {
+            return
+          }
+          auditCapture.addGatewayMetadata({
+            label: 'codex_turn_incomplete_downstream_abort',
+            metadata: {
+              stateKey: codexTurnFailure.stateKey,
+              failureCount: codexTurnFailure.failureCount,
+              failedAccountIds: codexTurnFailure.failedAccountIds,
+              avoidanceActivatedAccountIds: codexTurnFailure.avoidanceActivatedAccountIds,
+              duplicateObservation: codexTurnFailure.duplicateObservation,
+              accountId: account.id,
+              downstreamBytesWritten: context.downstreamBytesWritten,
+              outputReceived: context.outputReceived
+            }
+          })
+        },
         beforeDownstreamCommit: isGeminiInteractionCreateRequest(req) && upstreamResponse.ok
           ? async ({ responseResourceId }) => {
             await rememberGeminiInteractionBeforeDownstreamCommit({
@@ -556,11 +626,13 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     }
     if (
       !isAccountDiagnosticTrafficSource(usageContext.trafficSource)
+      && !codexTurnFailureRemembered
       && shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)
     ) {
       const codexTurnFailure = await rememberCodexTurnStreamFailureAsync(clientStrategy, account.id, {
         errorCode: streamResult.responseInspection?.upstreamErrorCode ?? streamResult.errorCode,
-        message: streamResult.message
+        message: streamResult.message,
+        observationId: `${auditAttemptId}:client_visible_failure`
       })
       if (codexTurnFailure) {
         auditCapture.addGatewayMetadata({
@@ -569,6 +641,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
             stateKey: codexTurnFailure.stateKey,
             failureCount: codexTurnFailure.failureCount,
             failedAccountIds: codexTurnFailure.failedAccountIds,
+            avoidanceActivatedAccountIds: codexTurnFailure.avoidanceActivatedAccountIds,
+            duplicateObservation: codexTurnFailure.duplicateObservation,
             accountId: account.id
           }
         })
@@ -1053,8 +1127,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       // The downstream response is already committed and cannot be replayed.
-      // Keep this request's audit/usage failure, but do not turn one body
-      // interruption into shared account, Key, proxy, or client-IP state.
+      // Keep this request's audit/usage failure; shared account state still
+      // requires the independent fixed-model health confirmation below.
       await recordCompletedUpstreamAttempt(req, {
         ...usageContext,
         account,
@@ -1112,6 +1186,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       })
       const provenTransportFailure = !responsePrecommitDeadlineError
         && isProvenUpstreamBodyTransportError(error)
+      if (provenTransportFailure) {
+        dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+      }
       return {
         alreadyFinalized: true,
         errorCode,

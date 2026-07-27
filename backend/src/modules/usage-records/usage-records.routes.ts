@@ -7,7 +7,6 @@ import { canAccessAll, scopedSystemAccountId } from '../../storage/access-scope.
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import type { ProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
-import { getUsageRecordFirstPage, seedUsageRecordFirstPage } from './usage-record-first-page-cache.service.js'
 
 export const usageRecordsRouter = Router()
 
@@ -19,13 +18,7 @@ usageRecordsRouter.get('/', async (req, res, next) => {
       return
     }
     const options = await parseListOptionsAsync(req.query)
-    const hotPage = await getUsageRecordFirstPage(access, options)
-    if (hotPage) {
-      res.json(ok({ ...hotPage, items: await Promise.all(hotPage.items.map(withCostBreakdownAsync)) }))
-      return
-    }
     const records = await listUsageRecordsAsync(access, options)
-    void seedUsageRecordFirstPage(access, options, records)
     res.json(ok({ ...records, items: await Promise.all(records.items.map(withCostBreakdownAsync)) }))
   } catch (error) {
     next(error)

@@ -67,6 +67,7 @@ const [
   settingsRepository,
   gatewayCache,
   usageRecordQueue,
+  failureUsageFinalization,
   auditLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -77,6 +78,7 @@ const [
   import('../../storage/settings.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/gateway/usage/failure-finalization.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
@@ -117,6 +119,7 @@ let upstreamServer: http.Server | undefined
 let appServer: http.Server | undefined
 
 try {
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
   gatewayCache.clearGatewayRuntimeCache()
 
@@ -348,7 +351,7 @@ try {
       'content-type': 'application/json; charset=utf-8',
       'x-vendor-error': 'invented'
     })
-    res.end('{"error":{"type":"vendor_invented_error","code":"made_up_418","message":"opaque non-stream failure"}}')
+    res.end('{"error":{"type":"vendor_invented_error","code":"made_up_418","message":"opaque non-stream failure Authorization: Bearer sk-upstream-usage-secret-token"}}')
   })
   await listen(upstreamServer)
   const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
@@ -835,6 +838,19 @@ try {
     'Bearer sk-generic-opaque-bad-b'
   ]))
   assert.equal(upstreamAuthorizations[2], 'Bearer sk-generic-opaque-good')
+  assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '失败使用记录异步收尾必须在有界时间内排空')
+  await usageRecordQueue.flushUsageRecordQueueAsync({ drain: true, retryOnFailure: false })
+  const allFailedUsageRecords = repositories.listUsageRecords(access, {
+    page: 1,
+    pageSize: 20,
+    result: 'failed',
+    trafficSource: 'gateway'
+  }).items
+  const failedUsageRecords = allFailedUsageRecords.filter((item) => item.accountId === account.id)
+  assert.equal(failedUsageRecords.length, 2, `同账户两个失败 Key 都必须写入失败使用记录：${JSON.stringify(allFailedUsageRecords.map((item) => ({ accountId: item.accountId, errorCode: item.errorCode, errorMessage: item.errorMessage })))}`)
+  assert(failedUsageRecords.every((item) => item.errorCode === 'made_up_418'), '失败使用记录必须保留上游 error code')
+  assert(failedUsageRecords.every((item) => item.errorMessage === 'opaque non-stream failure Authorization: [redacted] [redacted]'), '失败使用记录必须保留并脱敏上游 error message')
+  assert(failedUsageRecords.every((item) => item.errorMessage !== '上游返回非成功 HTTP 响应'), '失败使用记录不得再写统一占位文案')
 
   const exactHitOffset = upstreamAuthorizations.length
   const exactNonStream = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -1398,6 +1414,7 @@ try {
   await closeServer(appServer)
   await closeServer(upstreamServer)
   usageRecordQueue.clearUsageRecordQueueForTest()
+  usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   auditLogQueue.clearAuditLogQueueForTest()
   await readWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.getBusinessDatabase().close()

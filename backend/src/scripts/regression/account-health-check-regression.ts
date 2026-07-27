@@ -291,6 +291,16 @@ try {
   assert.equal(dueAfterSuccess?.healthCheckFailureCount, 0, '健康检测成功应清零失败计数')
   assert.equal(dueAfterSuccess?.lastHealthCheckStatusCode, 200, '健康检测成功应记录 HTTP 状态码')
   assert.equal(dueAfterSuccess?.lastHealthCheckTraceId, 'trace-health-success-regression', '健康检测成功应记录结构化 traceId')
+  assert.equal(
+    repositories.findAccountForHealthCheck(dueAccount.id),
+    undefined,
+    '下次检查时间未到时，周期健康检查仍应跳过账户'
+  )
+  assert.equal(
+    repositories.findAccountForHealthCheck(dueAccount.id, { ignoreSchedule: true })?.id,
+    dueAccount.id,
+    '真实请求失败触发的独立检查必须绕过周期到期门槛'
+  )
 
   const staleProbeAccount = createActiveAccount(repositories, group.id, '健康检测配置版本账号', 'sk-health-revision')
   const staleProbeBefore = repositories.findAccountSummary(staleProbeAccount.id, access)

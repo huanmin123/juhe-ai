@@ -51,6 +51,7 @@ export interface RuntimeConfig {
   }
   dbServiceHttpHost: string
   dbServiceHttpPort: number
+  accountHealthCheckDispatchUrl?: string
   systemApi: {
     dbServiceMaxInFlight: number
   }
@@ -248,6 +249,7 @@ const configuredRuntimeMode = runtimeModeConfig('JUHE_AI_RUNTIME_MODE', hasPerfo
 const configuredPerformanceNodeRole = configuredRuntimeMode === 'performance'
   ? performanceNodeRoleConfig('JUHE_AI_PERFORMANCE_NODE_ROLE', 'combined')
   : 'combined'
+const configuredProcessRole = processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server')
 const defaultSystemApiDbServiceMaxInFlight =
   configuredRuntimeMode === 'performance'
     ? defaultPerformanceSystemApiDbServiceMaxInFlight
@@ -273,6 +275,15 @@ const configuredPostgresUrl = optionalStringConfig('JUHE_AI_POSTGRES_URL')
 const configuredRedisCacheUrl = optionalStringConfig('JUHE_AI_REDIS_CACHE_URL')
 const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
 const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL')
+const configuredAccountHealthCheckDispatchUrl = accountHealthCheckDispatchUrlConfig(
+  'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL',
+  optionalStringConfig('JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL'),
+  {
+    runtimeMode: configuredRuntimeMode,
+    performanceNodeRole: configuredPerformanceNodeRole,
+    processRole: configuredProcessRole
+  }
+)
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
@@ -306,7 +317,7 @@ assertRuntimeLogFileIndexingConfig({
 export const runtimeConfig: RuntimeConfig = {
   runtimeMode: configuredRuntimeMode,
   performanceNodeRole: configuredPerformanceNodeRole,
-  processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
+  processRole: configuredProcessRole,
   workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker'),
   instanceId: runtimeInstanceIdConfig('JUHE_AI_INSTANCE_ID', configuredRuntimeMode),
   workerReplicaIndex: numberConfig('JUHE_AI_WORKER_REPLICA_INDEX', 0, 0, 63),
@@ -340,6 +351,7 @@ export const runtimeConfig: RuntimeConfig = {
   },
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
+  accountHealthCheckDispatchUrl: configuredAccountHealthCheckDispatchUrl,
   systemApi: {
     dbServiceMaxInFlight: numberConfig(
       'JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT',
@@ -700,6 +712,45 @@ function assertRuntimeModeDrivers(config: {
     ['JUHE_AI_REDIS_STATE_URL', config.redisStateUrl],
     ['JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl]
   ])
+}
+
+function accountHealthCheckDispatchUrlConfig(
+  name: string,
+  configuredValue: string | undefined,
+  runtime: {
+    runtimeMode: RuntimeMode
+    performanceNodeRole: PerformanceNodeRole
+    processRole: ProcessRole
+  }
+): string | undefined {
+  const required = runtime.runtimeMode === 'performance'
+    && runtime.performanceNodeRole === 'gateway'
+    && runtime.processRole === 'server'
+  if (!configuredValue) {
+    if (required) {
+      throw new Error(`${name} 在 performance gateway server 模式下必须配置为 control 的 loopback Origin`)
+    }
+    return undefined
+  }
+  let url: URL
+  try {
+    url = new URL(configuredValue)
+  } catch {
+    throw new Error(`${name} 必须是有效 URL`)
+  }
+  if (
+    url.protocol !== 'http:'
+    || (url.hostname !== '127.0.0.1' && url.hostname !== '[::1]' && url.hostname !== '::1')
+    || !url.port
+    || url.username
+    || url.password
+    || (url.pathname !== '/' && url.pathname !== '')
+    || url.search
+    || url.hash
+  ) {
+    throw new Error(`${name} 只能配置为带显式端口的 loopback HTTP Origin，不能包含路径、用户名密码、查询参数或片段`)
+  }
+  return url.origin
 }
 
 export function assertRuntimeLogFileIndexingConfig(config: {

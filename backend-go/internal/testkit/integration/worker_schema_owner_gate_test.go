@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,11 +99,32 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		t.Fatalf("goose up to %d: %v", version.SchemaVersion-1, err)
 	}
 
+	runtimeRoot := t.TempDir()
+	manifestPath := filepath.Join(runtimeRoot, "owner-manifest.json")
+	manifestData, err := json.Marshal(map[string]any{
+		"schemaVersion":   2,
+		"deploymentEpoch": "integration-epoch",
+		"release": map[string]any{
+			"nodeVersion": "integration-node", "goVersion": version.Version, "schemaVersion": version.SchemaVersion,
+		},
+		"routeOwners":         map[string]string{"management": "node", "public": "node", "gateway": "node", "worker": "go"},
+		"rollbackRouteOwners": map[string]string{"management": "node", "public": "node", "gateway": "node", "worker": "node"},
+		"routeAllowlist":      []any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal worker owner manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatalf("write worker owner manifest: %v", err)
+	}
 	cfg := config.Config{
 		OwnerLockEnabled:         true,
-		OwnerLockPath:            filepath.Join(t.TempDir(), "runtime", "worker.lock"),
+		OwnerLockPath:            filepath.Join(runtimeRoot, "runtime", "worker.lock"),
 		OwnerLockDeploymentEpoch: "integration-epoch",
 		OwnerLockRole:            " worker ",
+		OwnerManifestPath:        manifestPath,
+		GoWorkerExclusiveOwner:   true,
+		LegacyNodeWorkerDrained:  true,
 		PostgresURL:              postgresURL,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

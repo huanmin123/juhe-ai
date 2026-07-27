@@ -60,7 +60,7 @@ function setCurrentUser(id: string): void {
 
 async function main() {
   try {
-    await verifyLazyLoadCacheAndIdentityIsolation()
+    await verifyLazyLoadAndIdentityIsolation()
     await verifyFailureCanRetry()
     await verifyLateResponsesCannotWin()
     await verifySearchCanRevisitAnInvalidatedKey()
@@ -73,7 +73,7 @@ async function main() {
   }
 }
 
-async function verifyLazyLoadCacheAndIdentityIsolation(): Promise<void> {
+async function verifyLazyLoadAndIdentityIsolation(): Promise<void> {
   const calls: Array<Record<string, unknown> | undefined> = []
   mutableApi.proxies.options = async (params) => {
     calls.push(params)
@@ -88,18 +88,17 @@ async function verifyLazyLoadCacheAndIdentityIsolation(): Promise<void> {
 
   const second = createHarness()
   second.handleDropdown(true)
-  await Promise.resolve()
-  assert.equal(calls.length, 1, '相同身份和查询的重复展开应命中会话缓存')
-  assert.deepEqual(second.proxies.value.map((item) => item.id), ['proxy-1'])
+  await waitFor(() => calls.length === 2, '相同身份和查询的重复展开也应读取当前代理选项')
+  assert.deepEqual(second.proxies.value.map((item) => item.id), ['proxy-2'])
 
   setCurrentUser('cache-user-b')
   const third = createHarness()
   third.handleDropdown(true)
-  await waitFor(() => calls.length === 2, '切换登录用户后不得复用旧缓存')
+  await waitFor(() => calls.length === 3, '切换登录用户后应读取新身份的当前选项')
 
   authState.revision.value += 1
   await third.load()
-  assert.equal(calls.length, 3, '认证 revision 变化后不得复用旧缓存')
+  assert.equal(calls.length, 4, '认证 revision 变化后必须重新请求')
 }
 
 async function verifyFailureCanRetry(): Promise<void> {

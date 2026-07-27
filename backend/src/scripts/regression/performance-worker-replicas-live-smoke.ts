@@ -14,6 +14,7 @@ import {
 import { getUsageRecordSpoolRuntime } from '../../modules/gateway/usage/usage-record-spool.js'
 import { closeRedisClients, createDedicatedRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import {
+  performanceProcessMetricsRegistryIndexKey,
   readPerformanceProcessEventLoopSamples,
   stopPerformanceProcessMetricsPublisher
 } from '../../shared/performance-process-metrics-registry.js'
@@ -58,6 +59,7 @@ const publicGroupName = redisNamespacedGroup(redisStreamQueueContracts.publicApi
 const allQueueKeys = Object.values(redisStreamQueueContracts).map((contract) => redisNamespacedKey(contract.streamKey))
 const queueFenceToken = `worker-replicas-fence-${marker}`
 const processMetricsKeyPattern = `${redisNamespacedKey('juhe-ai:runtime:process-event-loop:')}*`
+const processMetricsIndexKey = performanceProcessMetricsRegistryIndexKey()
 const workers: ChildProcess[] = []
 const workerLabels = new Map<ChildProcess, string>()
 const workerOutput = new Map<ChildProcess, string>()
@@ -149,6 +151,7 @@ try {
   if (allQueueKeys.length > 0) await redis.sendCommand(['DEL', ...allQueueKeys]).catch(() => 0)
   const processMetricKeys = await scanKeys(cacheRedis, processMetricsKeyPattern).catch(() => [])
   if (processMetricKeys.length > 0) await cacheRedis.sendCommand(['DEL', ...processMetricKeys]).catch(() => 0)
+  await cacheRedis.del(processMetricsIndexKey).catch(() => 0)
   stopPerformanceProcessMetricsPublisher()
   await redis.quit?.().catch(() => undefined)
   await cacheRedis.quit?.().catch(() => undefined)

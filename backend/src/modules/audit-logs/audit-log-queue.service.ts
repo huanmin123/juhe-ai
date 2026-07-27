@@ -826,6 +826,16 @@ export function isAuditLogInput(value: unknown): value is AuditLogInput {
   }
   const record = value as Record<string, unknown>
   return typeof record.traceId === 'string'
+    && optionalAuditLogString(record.conversationKey)
+    && optionalAuditLogString(record.sessionNamespace)
+    && optionalAuditLogString(record.sessionSource)
+    && optionalAuditLogString(record.sessionResolution)
+    && optionalAuditLogString(record.sessionConfidence)
+    && optionalAuditLogString(record.threadKey)
+    && optionalAuditLogString(record.turnKey)
+    && optionalAuditLogString(record.agentKey)
+    && optionalAuditLogString(record.parentResponseKey)
+    && (record.identityConflict === undefined || typeof record.identityConflict === 'boolean')
     && typeof record.method === 'string'
     && typeof record.path === 'string'
     && typeof record.auditOutcome === 'string'
@@ -834,6 +844,10 @@ export function isAuditLogInput(value: unknown): value is AuditLogInput {
     && typeof record.sampleReason === 'string'
     && Array.isArray(record.attempts)
     && Array.isArray(record.payloads)
+}
+
+function optionalAuditLogString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
 }
 
 function scheduleAuditLogFlush(delayMs: number): void {

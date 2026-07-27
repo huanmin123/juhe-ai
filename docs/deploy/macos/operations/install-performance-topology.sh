@@ -102,11 +102,12 @@ case "$NGINX_CONFIG" in /*) ;; *) echo '--nginx-config must be absolute' >&2; ex
 printf 'mode=%s scope=%s base=%s control=%s gateways=%s-%s usage=%s log=%s ingress=%s nginx=%s\n' \
   "$MODE" "$SCOPE" "$BASE_DIR" "$CONTROL_PORT" "$GATEWAY_BASE_PORT" "$LAST_GATEWAY_PORT" \
   "$USAGE_WORKERS" "$LOG_WORKERS" "$INGRESS_PORT" "$NGINX_CONFIG"
-printf 'plan: 1 control + %s gateway launchd jobs, then nginx least_conn cutover after every local health check\n' "$GATEWAY_COUNT"
+printf 'plan: restart and verify %s gateway publishers one by one, restart control/workers last, then nginx least_conn cutover\n' "$GATEWAY_COUNT"
 [ "$MODE" = apply ] || exit 0
 
 [ -f "$CURRENT_DIR/backend/dist/server.js" ] || { echo "missing built server: $CURRENT_DIR/backend/dist/server.js" >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" ] || { echo 'missing runtime preflight script' >&2; exit 1; }
+[ -f "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" ] || { echo 'missing performance metrics registry preflight script' >&2; exit 1; }
 [ -f "$CURRENT_DIR/backend/.env" ] || { echo 'missing current/backend/.env' >&2; exit 1; }
 command -v node >/dev/null
 command -v launchctl >/dev/null
@@ -127,6 +128,15 @@ service_names() {
     printf 'gateway-%s\n' "$index"
     index=$((index + 1))
   done
+}
+
+activation_service_names() {
+  index=1
+  while [ "$index" -le "$GATEWAY_COUNT" ]; do
+    printf 'gateway-%s\n' "$index"
+    index=$((index + 1))
+  done
+  printf '%s\n' control-1
 }
 
 service_port() {
@@ -158,6 +168,9 @@ render_run_script() {
     printf 'export JUHE_AI_INSTANCE_ID=%s\n' "$name"
     printf 'export JUHE_AI_HOST=127.0.0.1\n'
     printf 'export JUHE_AI_PORT=%s\n' "$port"
+    if [ "$role" = gateway ]; then
+      printf 'export JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL=http://127.0.0.1:%s\n' "$CONTROL_PORT"
+    fi
     printf 'export JUHE_AI_DB_SERVICE_HTTP_PORT=0\n'
     printf 'export JUHE_AI_GATEWAY_REPLICAS=%s\n' "$GATEWAY_COUNT"
     printf 'export JUHE_AI_USAGE_WORKER_REPLICAS=%s\n' "$USAGE_WORKERS"
@@ -222,9 +235,9 @@ render_nginx() {
       '        proxy_pass http://juhe_ai_control;' \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
-      '        proxy_set_header X-Real-IP $remote_addr;' \
-      '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
-      '        proxy_set_header X-Forwarded-Proto $scheme;' \
+      '        proxy_set_header X-Real-IP $http_x_real_ip;' \
+      '        proxy_set_header X-Forwarded-For $http_x_forwarded_for;' \
+      '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aipublic__ {' \
       '        proxy_pass http://juhe_ai_control;' \
@@ -233,9 +246,9 @@ render_nginx() {
       '        proxy_pass http://juhe_ai_control;' \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
-      '        proxy_set_header X-Real-IP $remote_addr;' \
-      '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
-      '        proxy_set_header X-Forwarded-Proto $scheme;' \
+      '        proxy_set_header X-Real-IP $http_x_real_ip;' \
+      '        proxy_set_header X-Forwarded-For $http_x_forwarded_for;' \
+      '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location = /__aiinternal__ {' \
       '        proxy_pass http://juhe_ai_control;' \
@@ -244,17 +257,17 @@ render_nginx() {
       '        proxy_pass http://juhe_ai_control;' \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
-      '        proxy_set_header X-Real-IP $remote_addr;' \
-      '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
-      '        proxy_set_header X-Forwarded-Proto $scheme;' \
+      '        proxy_set_header X-Real-IP $http_x_real_ip;' \
+      '        proxy_set_header X-Forwarded-For $http_x_forwarded_for;' \
+      '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '    }' \
       '    location / {' \
       '        proxy_pass http://juhe_ai_gateway_pool;' \
       '        proxy_http_version 1.1;' \
       '        proxy_set_header Host $host;' \
-      '        proxy_set_header X-Real-IP $remote_addr;' \
-      '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
-      '        proxy_set_header X-Forwarded-Proto $scheme;' \
+      '        proxy_set_header X-Real-IP $http_x_real_ip;' \
+      '        proxy_set_header X-Forwarded-For $http_x_forwarded_for;' \
+      '        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;' \
       '        proxy_set_header Connection "";' \
       '        proxy_request_buffering off;' \
       '        proxy_buffering off;' \
@@ -289,6 +302,39 @@ wait_for_health() {
   done
   echo "$name did not remain healthy on port $port" >&2
   return 1
+}
+
+wait_for_metrics_registry() {
+  name="$1"
+  set -- node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --timeout-ms 15000
+  if [ "$name" = control-1 ]; then
+    set -- "$@" --role "control:$name" --role "db-service:$name"
+    index=1
+    while [ "$index" -le "$GATEWAY_COUNT" ]; do
+      set -- "$@" --role "gateway:gateway-$index" --role "db-service:gateway-$index"
+      index=$((index + 1))
+    done
+    index=1
+    while [ "$index" -le "$USAGE_WORKERS" ]; do set -- "$@" --role "usage-worker:$index"; index=$((index + 1)); done
+    index=1
+    while [ "$index" -le "$LOG_WORKERS" ]; do set -- "$@" --role "log-worker:$index"; index=$((index + 1)); done
+    set -- "$@" --role stats-worker:1 --role ops-worker:1
+  else
+    set -- "$@" --role "gateway:$name" --role "db-service:$name"
+  fi
+  NODE_ENV=production \
+  JUHE_AI_RUNTIME_MODE=performance \
+  JUHE_AI_PERFORMANCE_NODE_ROLE=control \
+  JUHE_AI_PROCESS_ROLE=server \
+  JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
+  JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
+  JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
+  JUHE_AI_LOG_WORKER_REPLICAS="$LOG_WORKERS" \
+  JUHE_AI_STATS_WORKER_REPLICAS=1 \
+  JUHE_AI_OPS_WORKER_REPLICAS=1 \
+  JUHE_AI_LOG_FILE_ENABLED=false \
+  JUHE_AI_LOG_CONSOLE_ENABLED=false \
+  "$@"
 }
 
 health_identity_matches() {
@@ -340,7 +386,7 @@ done
 [ ! -f "$NGINX_CONFIG" ] || cp -p -- "$NGINX_CONFIG" "$NGINX_BACKUP"
 MUTATED=1
 
-for name in $(service_names); do
+for name in $(activation_service_names); do
   plist="$(service_plist_path "$name")"
   run_script="$(service_run_path "$name")"
   mv -f -- "$STAGE_DIR/$name.sh" "$run_script"
@@ -348,6 +394,8 @@ for name in $(service_names); do
   launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
   launchctl bootstrap "$DOMAIN" "$plist"
   launchctl kickstart -k "$DOMAIN/$(service_label "$name")"
+  wait_for_health "$name"
+  wait_for_metrics_registry "$name"
 done
 for name in $(service_names); do wait_for_health "$name"; done
 

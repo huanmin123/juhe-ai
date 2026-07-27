@@ -54,7 +54,7 @@ assert.match(dataRetentionRepositorySource, /clientIpRangeWindowDirtyIps[\s\S]*c
 
 const backgroundStatsWriterSource = source('../../modules/background/background-stats-writer.ts')
 assert.doesNotMatch(backgroundStatsWriterSource, /skippedPostgres|background_stats_writer_postgres_operation_skipped|高性能模式暂跳过|return \[\]/, 'PG 模式 stats-writer 不能对未实现统计维护操作静默跳过或返回模拟成功结果')
-assert.match(backgroundStatsWriterSource, /case 'refresh_account_quality':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshAccountQualityAsync\(operation\.windowMinutes, operation\.failureCandidateLimit\)/, 'PG 模式账户质量刷新必须走 PostgreSQL async 入口，不能回落 SQLite 或 fail-fast')
+assert.match(backgroundStatsWriterSource, /case 'refresh_account_quality':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*refreshAccountQualityAsync\(operation\.windowMinutes, operation\.failureCandidateLimit, operation\.failureCandidateOffset/, 'PG 模式账户质量刷新必须走 PostgreSQL async 入口并传递公平分页游标，不能回落 SQLite 或 fail-fast')
 assert.match(backgroundStatsWriterSource, /case 'check_usage_stats_consistency':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*checkUsageStatsConsistencyAsync\(operation\.limit\)/, 'PG 模式统计一致性校验必须走 PostgreSQL async 入口')
 assert.match(backgroundStatsWriterSource, /case 'collect_table_storage_snapshot':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*collectTableStorageSnapshotAsync\(operation\.sampledAt, operation\.options\)/, 'PG 模式表容量采样必须走 PostgreSQL async 入口，不能回落 SQLite')
 assert.match(backgroundStatsWriterSource, /case 'cleanup_usage_stats_retention':[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*cleanupUsageStatsBucketsBeforeAsync\(operation\.input\)/, 'PG 模式统计保留清理必须走 PostgreSQL async 入口')

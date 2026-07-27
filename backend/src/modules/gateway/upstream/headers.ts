@@ -63,4 +63,17 @@ export function isSensitiveHeaderName(name: string): boolean {
     || normalized.includes('secret')
     || normalized.includes('token')
     || normalized.includes('credential')
+    || isSessionIdentityHeaderName(normalized)
+}
+
+function isSessionIdentityHeaderName(normalized: string): boolean {
+  return normalized === 'x-codex-turn-metadata'
+    || normalized === 'x-client-request-id'
+    || normalized === 'x-grok-conv-id'
+    || normalized === 'prompt-cache-key'
+    || normalized === 'prompt_cache_key'
+    || normalized === 'previous-response-id'
+    || normalized === 'previous_response_id'
+    || /(?:^|[-_])(session|conversation|thread|turn|agent)[-_]id$/.test(normalized)
+    || /(?:^|[-_])parent[-_](?:session|thread|agent|response)[-_]id$/.test(normalized)
 }

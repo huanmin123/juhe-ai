@@ -210,7 +210,7 @@ assert.match(codexTurnRetrySource, /createRuntimeStateStore\('gateway-codex-turn
 assert.doesNotMatch(codexTurnRetrySource, /createAppCache/, 'Codex turn retry 不能依赖 createAppCache 作为 performance 事实源')
 assert.doesNotMatch(codexTurnRetrySource, /withRedisCodexTurnRetryLock|codexTurnRetryLock|acquireLock|releaseLock|运行态锁等待超时/, 'Redis Codex turn retry 不能在请求路径引入分布式锁等待')
 assert.match(functionBody(codexTurnRetrySource, 'orderOpenAIAccountsByCodexTurnAvoidanceAsync'), /getRedisCodexTurnRetryState/, 'Redis Codex turn retry 排序必须读取共享状态')
-assert.match(functionBody(codexTurnRetrySource, 'rememberCodexTurnStreamFailureAsync'), /getRedisCodexTurnRetryState[\s\S]*setRedisCodexTurnRetryState/, 'Redis Codex turn retry 失败记录必须无锁写共享状态')
+assert.match(functionBody(codexTurnRetrySource, 'rememberCodexTurnStreamFailureAsync'), /getRedisCodexTurnRetryState[\s\S]*compareSetJson/, 'Redis Codex turn retry 失败记录必须通过有界 CAS 合并共享状态')
 assert.match(source('modules/gateway/dispatch/preparation.ts'), /await orderOpenAIAccountsByCodexTurnAvoidanceAsync/, '调度准备必须等待 Redis Codex turn retry 排序')
 assert.match(source('modules/gateway/response/finalization.ts'), /await rememberCodexTurnStreamFailureAsync/, '响应最终化必须等待 Redis Codex turn retry 失败记录')
 assert.match(source('modules/gateway/routes.ts'), /await rememberCodexTurnFailureWhenClientRetryIsVisible/, '可见客户端重试响应前必须等待 Redis Codex turn retry 失败记录')

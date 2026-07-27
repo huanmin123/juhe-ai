@@ -326,7 +326,6 @@ const {
 } = useRemoteSystemAccountOptions({
   enabled: () => isManagementView.value,
   errorMessage: '加载模型归属用户失败',
-  localCacheKeyParts: () => ['providers', 'model-catalog'],
   selectedIds: () => [modelSystemAccountFilter.value],
   onMissingSelectedIds: (ids) => {
     if (!ids.includes(modelSystemAccountFilter.value)) return

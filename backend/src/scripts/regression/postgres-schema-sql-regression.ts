@@ -327,6 +327,23 @@ assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS policy_
 assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text/, '既有 PostgreSQL 模型检查必须补质量决策列')
 assert.match(sql, /ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text/, '既有 PostgreSQL 模型检查必须补健康同步状态列')
 assert.match(sql, /ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text/, '既有 PostgreSQL observation 必须补聚合完成标记')
+for (const [columnName, columnType] of [
+  ['conversation_key', 'text'],
+  ['session_namespace', 'text'],
+  ['session_source', 'text'],
+  ['session_resolution', 'text'],
+  ['session_confidence', 'text'],
+  ['thread_key', 'text'],
+  ['turn_key', 'text'],
+  ['agent_key', 'text'],
+  ['parent_response_key', 'text'],
+  ['identity_conflict', 'integer']
+] as const) {
+  assert.match(sql, new RegExp(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${columnName} ${columnType}`), `既有 PostgreSQL audit_logs 必须补 ${columnName}`)
+}
+const auditIdentityAlterPosition = sql.indexOf('ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS identity_conflict integer')
+const auditIdentityIndexPosition = sql.indexOf('CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_conversation_created')
+assert(auditIdentityAlterPosition >= 0 && auditIdentityAlterPosition < auditIdentityIndexPosition, 'PostgreSQL 会话身份补列必须先于依赖新列的索引')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS client_ip_account_range_window_dirty_ips[\s\S]*generation bigint NOT NULL DEFAULT 1[\s\S]*first_dirty_at text NOT NULL/, '客户端 IP 账号范围窗口 dirty 表必须包含 generation 和首次标脏时间')
 assert.match(sql, /ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1/, '既有 PostgreSQL 客户端 IP dirty 表必须补 generation')
@@ -343,6 +360,8 @@ const schemaWithoutApprovedRuntimeUpgrades = sql
   .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_decision_json text;/g, '')
   .replace(/ALTER TABLE model_check_runs ADD COLUMN IF NOT EXISTS quality_health_sync_status text;/g, '')
   .replace(/ALTER TABLE model_check_observations ADD COLUMN IF NOT EXISTS aggregation_completed_at text;/g, '')
+  .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS (?:conversation_key|session_namespace|session_source|session_resolution|session_confidence|thread_key|turn_key|agent_key|parent_response_key) text;/g, '')
+  .replace(/ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS identity_conflict integer;/g, '')
   .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1;/g, '')
   .replace(/ALTER TABLE client_ip_range_window_dirty_ips ADD COLUMN IF NOT EXISTS first_dirty_at text;/g, '')
   .replace(/UPDATE client_ip_range_window_dirty_ips SET first_dirty_at = updated_at WHERE first_dirty_at IS NULL; ALTER TABLE client_ip_range_window_dirty_ips ALTER COLUMN first_dirty_at SET NOT NULL;/g, '')

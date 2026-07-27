@@ -88,6 +88,7 @@ export function shouldRememberCodexTurnStreamFailure(
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): clientStrategy is OpenAIGatewayClientStrategyContext {
   return !streamResult.completed
+    && streamResult.gatewayLocalFailure !== true
     && clientStrategy?.allowCodexTurnAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode

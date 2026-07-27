@@ -4,7 +4,10 @@ import { stat as statFile } from 'node:fs/promises'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { readPerformanceProcessEventLoopSamples } from '../../shared/performance-process-metrics-registry.js'
+import {
+  performanceProcessMetricsTopologyComplete,
+  readPerformanceProcessEventLoopSamples
+} from '../../shared/performance-process-metrics-registry.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
 import { getSettings, getSettingsAsync } from '../../storage/repositories.js'
 import {
@@ -62,7 +65,6 @@ import {
   backgroundTaskRunReconcileIntervalMs,
   runBackgroundTaskRunReconcile
 } from './background-task-run-reconcile.job.js'
-import { runUsageRecordFirstPagePrewarmJob } from './usage-record-first-page-prewarm.job.js'
 import {
   installDefaultScheduledAccountCircuitRecoveryResolver,
   runScheduledAccountCircuitRecovery
@@ -340,9 +342,6 @@ function scheduleBackgroundJobs(): void {
 }
 
 function scheduleUsageIngestJobs(): void {
-  if (runtimeConfig.cacheDriver === 'redis' && runtimeConfig.workerReplicaIndex === 0) {
-    scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, stablePhaseWindowMs: 30 * secondMs, scheduleMode: 'fixedDelay', resourceLane: 'stats-heavy', timeoutMs: 15 * secondMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: ({ signal }) => runUsageRecordFirstPagePrewarmJob({}, { signal }) })
-  }
   scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
   scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
   scheduler.schedule({
@@ -803,9 +802,8 @@ async function runSystemMetricsSample(): Promise<void> {
       return []
     })
     : []
-  const registryExpectedProcessCount = performanceRegistryExpectedProcessCount()
   const registryComplete = runtimeConfig.runtimeMode === 'performance'
-    && registryProcessSamples.length >= registryExpectedProcessCount
+    && performanceProcessMetricsTopologyComplete(registryProcessSamples, runtimeConfig.topology)
   const ipcProcessSamples = registryComplete
     ? undefined
     : await requestServerProcessEventLoopSamples().catch((error) => {
@@ -818,13 +816,19 @@ async function runSystemMetricsSample(): Promise<void> {
     ...registryProcessSamples,
     ...(ipcProcessSamples ?? [])
   ]
-  if (!remoteProcessSamples || remoteProcessSamples.length === 0) {
+  const remoteProcessSamplesComplete = runtimeConfig.runtimeMode === 'performance'
+    ? performanceProcessMetricsTopologyComplete(remoteProcessSamples, runtimeConfig.topology)
+    : remoteProcessSamples.length > 0
+  if (!remoteProcessSamplesComplete) {
     missingRemoteProcessEventLoopSampleWarningCount += 1
     if (missingRemoteProcessEventLoopSampleWarningCount === 1 || missingRemoteProcessEventLoopSampleWarningCount % 10 === 0) {
       logger.warn({
         event: 'background_system_metrics_remote_event_loop_sample_missing',
-        missingRemoteProcessEventLoopSampleWarningCount
-      }, '系统指标远端事件循环采样缺失')
+        missingRemoteProcessEventLoopSampleWarningCount,
+        registryProcessSampleCount: registryProcessSamples.length,
+        ipcProcessSampleCount: ipcProcessSamples?.length ?? 0,
+        observedProcessRoles: [...new Set(remoteProcessSamples.map((sample) => sample.processRole))].sort()
+      }, '系统指标远端事件循环采样不完整')
     }
   } else {
     missingRemoteProcessEventLoopSampleWarningCount = 0
@@ -856,16 +860,6 @@ async function runSystemMetricsSample(): Promise<void> {
     logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), '系统指标采样失败')
     throw error
   }
-}
-
-function performanceRegistryExpectedProcessCount(): number {
-  if (runtimeConfig.runtimeMode !== 'performance') return 0
-  return 2
-    + runtimeConfig.topology.gatewayReplicas * 2
-    + runtimeConfig.topology.usageWorkerReplicas
-    + runtimeConfig.topology.logWorkerReplicas
-    + runtimeConfig.topology.statsWorkerReplicas
-    + runtimeConfig.topology.opsWorkerReplicas
 }
 
 function mergeProcessEventLoopSamples(samples: ReturnType<typeof buildProcessEventLoopSample>[]): ReturnType<typeof buildProcessEventLoopSample>[] {

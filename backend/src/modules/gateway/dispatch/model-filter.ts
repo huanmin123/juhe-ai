@@ -51,18 +51,23 @@ export function filterGatewayAccountsByRequestedModel(
       continue
     }
     limitedAccountCount += 1
+    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
+    if (mapping) {
+      if (isMappingAllowedBySupportedModels(mapping.upstreamModel, supportedModels)) {
+        mappingMatchedCount += 1
+        rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.mapping)
+        mappingMatchedAccounts.push(account)
+      } else {
+        skippedCount += 1
+        rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.unsupported)
+      }
+      continue
+    }
     const match = resolveGatewayAccountModelMatch(model, supportedModels)
     if (match === 'direct') {
       directMatchedCount += 1
       rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.direct)
       directMatchedAccounts.push(account)
-      continue
-    }
-    const mapping = resolveOpenAIAccountModelMapping(account, model, sourceEndpointFamily)
-    if (mapping && isMappingAllowedBySupportedModels(mapping.upstreamModel, supportedModels)) {
-      mappingMatchedCount += 1
-      rankByAccountId.set(account.id, gatewayAccountModelPriorityRank.mapping)
-      mappingMatchedAccounts.push(account)
       continue
     }
     skippedCount += 1

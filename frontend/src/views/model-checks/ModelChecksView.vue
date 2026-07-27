@@ -140,7 +140,6 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
@@ -257,6 +256,7 @@ const qualityPolicy = ref<ModelQualityPolicy>({
 const submitting = computed(() => modelCheckRunSession.submitting)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
+let runDetailRequestId = 0
 const terminalVisible = computed(() => modelCheckRunSession.terminalVisible)
 const terminalLines = computed(() => modelCheckRunSession.terminalLines)
 const options = ref<ModelCheckOptions>(modelCheckFallbackOptions)
@@ -608,22 +608,30 @@ async function reloadRuns() {
 }
 
 async function loadRunDetail(id: string) {
+  const requestId = ++runDetailRequestId
+  const systemAccountId = modelCheckScopeParams.value?.systemAccountId
   detailOpen.value = true
   detailLoading.value = true
+  currentRun.value = undefined
   try {
-    currentRun.value = await loadEntityDetailCached({
-      id,
-      load: () => modelChecksApi.detail(id, modelCheckScopeParams.value),
-      namespace: 'model-check-run-detail',
-      scope: JSON.stringify(modelCheckScopeParams.value ?? {})
-    })
-    rememberRunAccountLabels([currentRun.value])
+    const nextRun = await modelChecksApi.detail(id, modelCheckScopeParams.value)
+    if (!isCurrentRunDetailRequest(requestId, systemAccountId)) return
+    currentRun.value = nextRun
+    rememberRunAccountLabels([nextRun])
   } catch (error) {
+    if (!isCurrentRunDetailRequest(requestId, systemAccountId)) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测详情失败'))
   } finally {
-    detailLoading.value = false
+    if (requestId === runDetailRequestId) {
+      detailLoading.value = false
+    }
   }
+}
+
+function isCurrentRunDetailRequest(requestId: number, systemAccountId: string | undefined): boolean {
+  return requestId === runDetailRequestId
+    && systemAccountId === modelCheckScopeParams.value?.systemAccountId
 }
 
 function handleSystemAccountFilterChange() {
@@ -638,6 +646,8 @@ function handleSystemAccountFilterChange() {
 }
 
 function resetModelCheckScopedState() {
+  runDetailRequestId += 1
+  detailLoading.value = false
   resetAccountOptionsState()
   filters.targetId = undefined
   selectedHistoryTargetAccount.value = undefined
@@ -875,6 +885,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  runDetailRequestId += 1
   window.removeEventListener('resize', updateViewportWidth)
 })
 </script>

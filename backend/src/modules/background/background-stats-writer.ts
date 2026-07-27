@@ -118,6 +118,7 @@ export type BackgroundStatsWriteOperation = (
     type: 'refresh_account_quality'
     windowMinutes: number
     failureCandidateLimit: number
+    failureCandidateOffset: number
   }
   | {
     type: 'record_system_metrics_sample'
@@ -283,9 +284,9 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { refreshed: await refreshGroupAccountStats(requiredPostgresScheduledLease(operation)) }
     case 'refresh_account_quality':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit, requiredPostgresScheduledLease(operation))
+        return await refreshAccountQualityAsync(operation.windowMinutes, operation.failureCandidateLimit, operation.failureCandidateOffset, requiredPostgresScheduledLease(operation))
       }
-      return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit)
+      return refreshAccountQuality(operation.windowMinutes, operation.failureCandidateLimit, operation.failureCandidateOffset)
     case 'record_system_metrics_sample':
       await insertSystemMetricsSampleBatchAsync(
         operation.sample,
@@ -487,19 +488,25 @@ async function refreshGroupAccountStats(scheduledLease?: ScheduledJobLeaseFence)
   })
 }
 
-function refreshAccountQuality(windowMinutes: number, failureCandidateLimit: number): AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } {
+function refreshAccountQuality(windowMinutes: number, failureCandidateLimit: number, failureCandidateOffset: number): AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] } {
   const result = refreshAccountQualityFromUsage(boundedPositiveInteger(windowMinutes, 1, 24 * 60))
   return {
     ...result,
-    failureCandidates: listAccountQualityFailurePrecheckCandidates(boundedPositiveInteger(failureCandidateLimit, 1, 100))
+    failureCandidates: listAccountQualityFailurePrecheckCandidates(
+      boundedPositiveInteger(failureCandidateLimit, 1, 100),
+      boundedNonNegativeInteger(failureCandidateOffset, 1_000_000)
+    )
   }
 }
 
-async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number, scheduledLease?: ScheduledJobLeaseFence): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
+async function refreshAccountQualityAsync(windowMinutes: number, failureCandidateLimit: number, failureCandidateOffset: number, scheduledLease?: ScheduledJobLeaseFence): Promise<AccountQualityRealtimeRefreshResult & { failureCandidates: AccountQualityFailurePrecheckCandidate[] }> {
   const result = await refreshAccountQualityFromUsageAsync(boundedPositiveInteger(windowMinutes, 1, 24 * 60), undefined, scheduledLease)
   return {
     ...result,
-    failureCandidates: await listAccountQualityFailurePrecheckCandidatesAsync(boundedPositiveInteger(failureCandidateLimit, 1, 100))
+    failureCandidates: await listAccountQualityFailurePrecheckCandidatesAsync(
+      boundedPositiveInteger(failureCandidateLimit, 1, 100),
+      boundedNonNegativeInteger(failureCandidateOffset, 1_000_000)
+    )
   }
 }
 
@@ -520,6 +527,11 @@ function processEventLoopSampleInput(sample: ProcessEventLoopSample): ProcessEve
 function boundedPositiveInteger(value: number, min: number, max: number): number {
   const parsed = Math.trunc(Number(value))
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : min
+}
+
+function boundedNonNegativeInteger(value: number, max: number): number {
+  const parsed = Math.trunc(Number(value))
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(max, parsed)) : 0
 }
 
 function requiredPostgresScheduledLease(operation: BackgroundStatsWriteOperation): ScheduledJobLeaseFence | undefined {

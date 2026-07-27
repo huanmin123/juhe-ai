@@ -10,6 +10,29 @@
       <template v-if="detail">
         <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
           <a-descriptions-item label="traceId">{{ detail.traceId }}</a-descriptions-item>
+          <a-descriptions-item label="会话归一化">
+            <a-tag :color="sessionResolutionColor(detail.sessionResolution)">{{ sessionResolutionText(detail.sessionResolution) }}</a-tag>
+            <a-tag v-if="detail.identityConflict" color="red">身份冲突</a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="会话 Key" :span="2">
+            <span class="identity-key">{{ detail.conversationKey ?? '-' }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="会话命名空间">{{ detail.sessionNamespace ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="识别来源">{{ detail.sessionSource ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="解析置信度">{{ sessionConfidenceText(detail.sessionConfidence) }}</a-descriptions-item>
+          <a-descriptions-item label="身份冲突">{{ identityConflictText(detail.identityConflict) }}</a-descriptions-item>
+          <a-descriptions-item label="线程 Key" :span="2">
+            <span class="identity-key">{{ detail.threadKey ?? '-' }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="轮次 Key" :span="2">
+            <span class="identity-key">{{ detail.turnKey ?? '-' }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="Agent Key" :span="2">
+            <span class="identity-key">{{ detail.agentKey ?? '-' }}</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="父响应 Key" :span="2">
+            <span class="identity-key">{{ detail.parentResponseKey ?? '-' }}</span>
+          </a-descriptions-item>
           <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
           <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
           <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
@@ -118,26 +141,12 @@
                 <div class="payload-viewer-main">
                   <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
                   <span>{{ formatBytes(selectedPayload.sizeBytes) }}</span>
-                  <a-tag class="payload-state-tag" :color="payloadStorageStatusColor(selectedPayload.headersStorageStatus)">
-                    {{ payloadStorageStatusText('Headers', selectedPayload.hasHeaders, selectedPayload.headersStorageStatus) }}
-                  </a-tag>
-                  <a-tag class="payload-state-tag" :color="payloadStorageStatusColor(selectedPayload.bodyStorageStatus)">
-                    {{ payloadStorageStatusText('Body', selectedPayload.hasBody, selectedPayload.bodyStorageStatus) }}
-                  </a-tag>
                   <a-tabs v-model:activeKey="payloadContentTab" class="payload-content-tabs" size="small">
                     <a-tab-pane key="headers" tab="Headers" />
                     <a-tab-pane key="body" tab="Body" />
                   </a-tabs>
                 </div>
                 <div class="payload-viewer-actions">
-                  <a-button
-                    v-if="selectedPayload.bodyTruncated && selectedPayload.bodyNextOffset !== undefined"
-                    size="small"
-                    :loading="payloadLoadingId === selectedPayload.id"
-                    @click="emit('load-next-payload')"
-                  >
-                    加载下一段
-                  </a-button>
                   <a-tooltip title="搜索当前内容">
                     <a-button size="small" :disabled="!selectedPayloadCurrentText" @click="openSelectedPayloadSearch">
                       <template #icon><SearchOutlined /></template>
@@ -188,16 +197,18 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
+  identityConflictText,
   outcomeText,
   payloadPartText,
   prettyJson,
+  sessionConfidenceText,
+  sessionResolutionColor,
+  sessionResolutionText,
   trafficSourceText
 } from './auditLogFormatters'
 import {
   payloadBodyUnavailableText,
-  payloadCaptureStatusDescription,
-  payloadStorageStatusColor,
-  payloadStorageStatusText
+  payloadCaptureStatusDescription
 } from './auditPayloadDetails'
 
 const props = defineProps<{
@@ -209,7 +220,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (event: 'load-next-payload'): void
   (event: 'load-payload', payloadId: string): void
   (event: 'update:open', value: boolean): void
 }>()
@@ -629,6 +639,14 @@ function handleRequestChainAction(record: RequestChainRow): void {
   margin-bottom: 16px;
 }
 
+.identity-key {
+  display: block;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .payload-viewer {
   margin-top: 16px;
 }
@@ -682,11 +700,6 @@ function handleRequestChainAction(record: RequestChainRow): void {
 
 .payload-content-tabs :deep(.ant-tabs-content-holder) {
   display: none;
-}
-
-.payload-state-tag {
-  flex: 0 0 auto;
-  margin-inline-end: 0;
 }
 
 .payload-viewer-actions {

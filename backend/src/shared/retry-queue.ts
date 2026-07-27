@@ -55,6 +55,7 @@ export interface RetryQueue<T> {
 export interface RetryQueueEnqueueOptions {
   priority?: number
   replaceExisting?: boolean
+  replaceExistingOnlyIfHigherPriority?: boolean
 }
 
 export interface RetryQueueSnapshot {
@@ -268,6 +269,8 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
       const existing = items.get(key)
       if (existing) {
         if (!enqueueOptions.replaceExisting) return false
+        const existingPriority = existing.followUp?.priority ?? existing.priority
+        if (enqueueOptions.replaceExistingOnlyIfHigherPriority && priority >= existingPriority) return false
         const replacementPriority = Math.min(existing.followUp?.priority ?? existing.priority, priority)
         if (existing.running) {
           existing.followUp = { item, priority: replacementPriority }

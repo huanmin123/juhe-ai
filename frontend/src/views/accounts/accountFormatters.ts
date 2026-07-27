@@ -94,6 +94,9 @@ export function accountStatusColor(account: AccountSummary) {
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
+  const circuitStatus = activeCircuitStatus(account)
+  if (circuitStatus === 'avoided') return 'gold'
+  if (circuitStatus === 'verifying' || circuitStatus === 'recovering') return 'blue'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'degraded') return 'gold'
   if (runtimeStatus === 'precheck_pending') return 'blue'
@@ -116,6 +119,10 @@ export function accountStatusText(account: AccountSummary) {
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
+  const circuitStatus = activeCircuitStatus(account)
+  if (circuitStatus === 'avoided') return '熔断避让'
+  if (circuitStatus === 'verifying') return '熔断验证'
+  if (circuitStatus === 'recovering') return '熔断恢复'
   const runtimeStatus = activeRuntimeAvailabilityStatus(account)
   if (runtimeStatus === 'degraded') return '调度降级'
   if (runtimeStatus === 'precheck_pending') return '待探针确认'
@@ -143,7 +150,7 @@ function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatus
   const successRateText = successRate === undefined ? '' : `，成功率 ${Math.round(successRate * 100)}%`
   const lines = [
     `AI账户质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
-    '归因范围：仅统计真实上游失败和账号依赖失败',
+    '归因范围：仅统计明确账号失败和账号依赖失败',
     '不计入：并发满、额度/认证/规则拦截、客户端断开',
     '账户状态：基础状态仍为可调度，不参与状态筛选'
   ]
@@ -210,7 +217,19 @@ function accountCooldownRetestText(account: AccountSummary): string {
 }
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
-  return accountStatusPresentationTooltipLines(account)
+  const lines = accountStatusPresentationTooltipLines(account)
+  const circuitStatus = activeCircuitStatus(account)
+  if (circuitStatus === 'avoided') {
+    lines.push('账户电路正在避让失败作用域，请求不会继续命中该作用域')
+  } else if (circuitStatus === 'verifying') {
+    lines.push('账户电路正在执行受控验证，验证完成前不会恢复对应作用域')
+  } else if (circuitStatus === 'recovering') {
+    lines.push('账户电路已收到恢复信号，正在等待恢复流程完成')
+  }
+  if (circuitStatus && account.circuitSummary?.nextCheckAt) {
+    lines.push(`下次电路检查：${formatDateTime(account.circuitSummary.nextCheckAt)}`)
+  }
+  return lines
 }
 
 function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
@@ -415,6 +434,13 @@ function isAuthorizationSourceAccountExpired(account: AccountSummary): boolean {
 
 function activeRuntimeAvailabilityStatus(account: AccountSummary) {
   const status = account.runtimeAvailability?.status
+  if (!status || status === 'normal') return undefined
+  if (account.status !== 'active') return undefined
+  return status
+}
+
+function activeCircuitStatus(account: AccountSummary) {
+  const status = account.circuitSummary?.status
   if (!status || status === 'normal') return undefined
   if (account.status !== 'active') return undefined
   return status

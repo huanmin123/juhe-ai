@@ -19,11 +19,43 @@ const publishPhaseWindowStartMs = 250
 const publishPhaseWindowEndMs = 3_000
 const minimumNextPublishDelayMs = 10
 const registryTtlSeconds = 20
+const registryIndexTtlSeconds = 60
 const commandTimeoutMs = 800
-const scanPageLimit = 4
-const registryEntryLimit = 128
+const registryEntryLimit = 512
+const publishFailureBackoffMaxMs = 10_000
 const registryKeyPrefix = redisNamespacedKey('juhe-ai:runtime:process-event-loop:')
 const registryKeyVersion = 'v2'
+const registryIndexKey = redisNamespacedKey('juhe-ai:runtime:process-event-loop-index:v2')
+const publishRegistrySampleScript = `
+local redis_time = redis.call('TIME')
+local observed_at_ms = redis_time[1] * 1000 + math.floor(redis_time[2] / 1000)
+local minimum_score = observed_at_ms - tonumber(ARGV[2]) * 1000
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('ZADD', KEYS[2], observed_at_ms, KEYS[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', '(' .. minimum_score)
+local cardinality = redis.call('ZCARD', KEYS[2])
+local cardinality_limit = tonumber(ARGV[3])
+if cardinality > cardinality_limit then
+  redis.call('ZREMRANGEBYRANK', KEYS[2], 0, cardinality - cardinality_limit - 1)
+end
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return observed_at_ms
+`
+const readActiveRegistryKeysScript = `
+local redis_time = redis.call('TIME')
+local observed_at_ms = redis_time[1] * 1000 + math.floor(redis_time[2] / 1000)
+local minimum_score = observed_at_ms - tonumber(ARGV[1]) * 1000
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. minimum_score)
+return redis.call('ZRANGEBYSCORE', KEYS[1], minimum_score, observed_at_ms, 'WITHSCORES', 'LIMIT', '0', ARGV[2])
+`
+
+export interface PerformanceProcessMetricsTopology {
+  gatewayReplicas: number
+  usageWorkerReplicas: number
+  logWorkerReplicas: number
+  statsWorkerReplicas: number
+  opsWorkerReplicas: number
+}
 
 let publishTimer: NodeJS.Timeout | undefined
 let publisherStarted = false
@@ -33,6 +65,7 @@ let registryClientPromise: Promise<RedisCommandClient> | undefined
 
 export function startPerformanceProcessMetricsPublisher(): void {
   if (!performanceRegistryEnabled() || publisherStarted) return
+  publishFailureCount = 0
   publisherStarted = true
   scheduleNextPublish()
 }
@@ -62,6 +95,12 @@ export function delayUntilPerformanceProcessMetricsPublishPhaseMs(nowMs: number,
   return delayMs
 }
 
+export function performanceProcessMetricsPublishFailureBackoffMs(failureCount: number): number {
+  const normalizedFailureCount = Math.max(0, Math.floor(finiteNonNegative(failureCount)))
+  if (normalizedFailureCount === 0) return 0
+  return Math.min(publishIntervalMs * 2 ** Math.min(normalizedFailureCount - 1, 4), publishFailureBackoffMaxMs)
+}
+
 export function performanceProcessMetricsRegistryKey(
   instanceId: string,
   processRole: ProcessEventLoopRole
@@ -69,11 +108,18 @@ export function performanceProcessMetricsRegistryKey(
   return `${registryKeyPrefix}${registryKeyVersion}:${sanitizeRedisNamespacePart(instanceId)}:${sanitizeRedisNamespacePart(processRole)}`
 }
 
+export function performanceProcessMetricsRegistryIndexKey(): string {
+  return registryIndexKey
+}
+
 function scheduleNextPublish(): void {
   if (!publisherStarted || publishTimer) return
   const seed = `${stableRuntimeIdentity(runtimeConfig.instanceId)}:${stableRuntimeIdentity(currentProcessEventLoopRole())}`
   const phaseMs = stablePerformanceProcessMetricsPublishPhaseMs(seed)
-  const delayMs = delayUntilPerformanceProcessMetricsPublishPhaseMs(Date.now(), phaseMs)
+  const delayMs = Math.max(
+    delayUntilPerformanceProcessMetricsPublishPhaseMs(Date.now(), phaseMs),
+    performanceProcessMetricsPublishFailureBackoffMs(publishFailureCount)
+  )
   publishTimer = setTimeout(() => {
     publishTimer = undefined
     if (!publisherStarted) return
@@ -128,51 +174,93 @@ async function publishCurrentProcessMetrics(): Promise<void> {
 
 async function writeRegistrySample(redisUrl: string, sample: ProcessEventLoopSample): Promise<void> {
   const client = await getRegistryClient(redisUrl)
-  const key = performanceProcessMetricsRegistryKey(runtimeConfig.instanceId, sample.processRole)
-  await client.set(key, JSON.stringify(sample), { EX: registryTtlSeconds })
+  await writePerformanceProcessMetricsRegistrySample(client, runtimeConfig.instanceId, sample)
 }
 
 async function readRegistry(redisUrl: string): Promise<ProcessEventLoopSample[]> {
   const client = await getRegistryClient(redisUrl)
-  const keys = await scanRegistryKeys(client)
-  if (keys.length === 0) return []
-  const values = await client.sendCommand(['MGET', ...keys])
+  return await readPerformanceProcessMetricsRegistrySamples(client)
+}
+
+export async function writePerformanceProcessMetricsRegistrySample(
+  client: RedisCommandClient,
+  instanceId: string,
+  sample: ProcessEventLoopSample
+): Promise<void> {
+  const key = performanceProcessMetricsRegistryKey(instanceId, sample.processRole)
+  const sampledAtMs = Date.parse(sample.sampledAt)
+  if (!Number.isFinite(sampledAtMs)) {
+    throw new Error('高性能进程指标采样时间无效')
+  }
+  await client.eval(publishRegistrySampleScript, {
+    keys: [key, registryIndexKey],
+    arguments: [
+      JSON.stringify(sample),
+      String(registryTtlSeconds),
+      String(registryEntryLimit),
+      String(registryIndexTtlSeconds)
+    ]
+  })
+}
+
+export async function readPerformanceProcessMetricsRegistrySamples(
+  client: RedisCommandClient
+): Promise<ProcessEventLoopSample[]> {
+  const indexedEntries = await client.eval(readActiveRegistryKeysScript, {
+    keys: [registryIndexKey],
+    arguments: [
+      String(registryTtlSeconds),
+      String(registryEntryLimit)
+    ]
+  })
+  const entries = uniqueRegistryEntries(indexedEntries)
+  if (entries.length === 0) return []
+  const values = await client.sendCommand(['MGET', ...entries.map((entry) => entry.key)])
   if (!Array.isArray(values)) return []
-  const now = Date.now()
   const samples: ProcessEventLoopSample[] = []
-  for (const value of values.slice(0, registryEntryLimit)) {
-    const sample = parseRegistrySample(value, now)
+  for (let index = 0; index < Math.min(values.length, entries.length); index += 1) {
+    const sample = parseRegistrySample(values[index], entries[index].observedAtMs)
     if (sample) samples.push(sample)
   }
   return samples
 }
 
-async function scanRegistryKeys(client: RedisCommandClient): Promise<string[]> {
-  const keys: string[] = []
-  let cursor = '0'
-  for (let page = 0; page < scanPageLimit; page += 1) {
-    const result = await client.sendCommand(['SCAN', cursor, 'MATCH', `${registryKeyPrefix}*`, 'COUNT', '64'])
-    const parsed = parseScanResult(result)
-    if (!parsed) break
-    cursor = parsed.cursor
-    for (const key of parsed.keys) {
-      if (keys.length >= registryEntryLimit) return keys
-      keys.push(key)
-    }
-    if (cursor === '0') break
-  }
-  return keys
+export function performanceProcessMetricsTopologyComplete(
+  samples: readonly Pick<ProcessEventLoopSample, 'processRole'>[],
+  topology: PerformanceProcessMetricsTopology
+): boolean {
+  const roles = new Set(samples.map((sample) => sample.processRole))
+  const controlInstanceIds = roleInstanceIds(roles, 'control:')
+  const gatewayInstanceIds = roleInstanceIds(roles, 'gateway:')
+  const dbServiceInstanceIds = roleInstanceIds(roles, 'db-service:')
+  if (matchingInstanceCount(controlInstanceIds, dbServiceInstanceIds) < 1) return false
+  if (matchingInstanceCount(gatewayInstanceIds, dbServiceInstanceIds) < topology.gatewayReplicas) return false
+  return numberedWorkerRolesComplete(roles, 'usage-worker', topology.usageWorkerReplicas)
+    && numberedWorkerRolesComplete(roles, 'log-worker', topology.logWorkerReplicas)
+    && numberedWorkerRolesComplete(roles, 'stats-worker', topology.statsWorkerReplicas)
+    && numberedWorkerRolesComplete(roles, 'ops-worker', topology.opsWorkerReplicas)
 }
 
-function parseScanResult(value: unknown): { cursor: string; keys: string[] } | undefined {
-  if (!Array.isArray(value) || value.length < 2 || !Array.isArray(value[1])) return undefined
-  return {
-    cursor: String(value[0] ?? '0'),
-    keys: value[1].filter((key): key is string => typeof key === 'string')
+function uniqueRegistryEntries(value: unknown): Array<{ key: string; observedAtMs: number }> {
+  if (!Array.isArray(value)) return []
+  const entries = new Map<string, number>()
+  for (let index = 0; index + 1 < value.length; index += 2) {
+    const key = value[index]
+    const observedAtMs = Number(value[index + 1])
+    if (
+      typeof key !== 'string'
+      || !key.startsWith(`${registryKeyPrefix}${registryKeyVersion}:`)
+      || !Number.isFinite(observedAtMs)
+      || observedAtMs <= 0
+    ) continue
+    const existing = entries.get(key)
+    if (existing === undefined || observedAtMs > existing) entries.set(key, observedAtMs)
+    if (entries.size >= registryEntryLimit) break
   }
+  return [...entries].map(([key, observedAtMs]) => ({ key, observedAtMs }))
 }
 
-function parseRegistrySample(value: unknown, now: number): ProcessEventLoopSample | undefined {
+function parseRegistrySample(value: unknown, observedAtMs: number): ProcessEventLoopSample | undefined {
   if (typeof value !== 'string') return undefined
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>
@@ -181,11 +269,10 @@ function parseRegistrySample(value: unknown, now: number): ProcessEventLoopSampl
     const sampledAt = typeof parsed.sampledAt === 'string' ? parsed.sampledAt : ''
     const sampledAtMs = Date.parse(sampledAt)
     if (!processRole || !processPid || !Number.isFinite(sampledAtMs)) return undefined
-    if (sampledAtMs < now - registryTtlSeconds * 1_000 || sampledAtMs > now + 5_000) return undefined
     return {
       processRole,
       processPid,
-      sampledAt,
+      sampledAt: new Date(observedAtMs).toISOString(),
       eventLoopLagMs: finiteMetric(parsed.eventLoopLagMs),
       processRssBytes: finiteMetric(parsed.processRssBytes),
       processHeapUsedBytes: finiteMetric(parsed.processHeapUsedBytes),
@@ -196,6 +283,35 @@ function parseRegistrySample(value: unknown, now: number): ProcessEventLoopSampl
   } catch {
     return undefined
   }
+}
+
+function roleInstanceIds(roles: ReadonlySet<ProcessEventLoopRole>, prefix: string): Set<string> {
+  const instanceIds = new Set<string>()
+  for (const role of roles) {
+    if (!role.startsWith(prefix)) continue
+    const instanceId = role.slice(prefix.length).trim()
+    if (instanceId) instanceIds.add(instanceId)
+  }
+  return instanceIds
+}
+
+function matchingInstanceCount(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  let count = 0
+  for (const value of left) {
+    if (right.has(value)) count += 1
+  }
+  return count
+}
+
+function numberedWorkerRolesComplete(
+  roles: ReadonlySet<ProcessEventLoopRole>,
+  role: 'usage-worker' | 'log-worker' | 'stats-worker' | 'ops-worker',
+  replicas: number
+): boolean {
+  for (let replica = 1; replica <= replicas; replica += 1) {
+    if (!roles.has(`${role}:${replica}`)) return false
+  }
+  return true
 }
 
 function finitePositiveInteger(value: unknown): number | undefined {

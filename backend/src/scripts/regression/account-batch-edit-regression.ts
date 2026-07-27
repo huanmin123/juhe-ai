@@ -60,6 +60,8 @@ try {
       api_key: 'sk-account-batch-edit-a',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5', 'gpt-5.4'],
+    healthCheckModel: 'gpt-5.4',
     groupId: group.id
   }, access)
   const accountB = repositories.createAccount({
@@ -71,6 +73,8 @@ try {
       api_key: 'sk-account-batch-edit-b',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5', 'gpt-5.4'],
+    healthCheckModel: 'gpt-5.4',
     groupId: group.id
   }, access)
   setAccountsActive([accountA.id, accountB.id])
@@ -279,6 +283,8 @@ try {
       refresh_token: 'refresh-account-batch-edit',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
   await assert.rejects(
@@ -348,12 +354,14 @@ try {
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '批量编辑多 Key A', type: 'api_key',
     credentials: { api_keys: ['sk-batch-multi-a1', 'sk-batch-multi-a2'], base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'], healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
   const multiB = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '批量编辑多 Key B', type: 'api_key',
     credentials: { api_keys: ['sk-batch-multi-b1', 'sk-batch-multi-b2'], base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'], healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
   setAccountsActive([multiA.id, multiB.id])

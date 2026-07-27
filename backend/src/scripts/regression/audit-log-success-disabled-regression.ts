@@ -38,16 +38,35 @@ try {
     req: auditRequest(),
     traceId: successTraceId,
     clientIp: '127.0.0.1',
-    startedAtMs: Date.now(),
-    captureMode: 'metadata_only'
+    startedAtMs: Date.now()
+  })
+  const successAttemptId = successCapture.startAttempt({
+    account: auditAccount(),
+    attemptIndex: 0,
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    method: 'POST',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ model: 'gpt-5.6-sol', input: 'hello' })
+  })
+  successCapture.completeAttempt(successAttemptId, {
+    success: true,
+    statusCode: 200,
+    responseHeaders: new Headers({ 'content-type': 'application/json' }),
+    responseBody: JSON.stringify({ ok: true })
   })
   successCapture.finalize({ outcome: 'success', success: true, statusCode: 200 })
   auditQueue.flushAllAuditLogQueue()
+  const successEvents = repositories.listAuditLogs({ traceId: successTraceId })
   assert.equal(
-    repositories.listAuditLogs({ traceId: successTraceId }).total,
-    0,
-    '成功审计三项全为 0 时，metadata-only 捕获实际 finalize 后也不得落库'
+    successEvents.total,
+    1,
+    '成功审计三项全为 0 时仍应落库轻量 envelope'
   )
+  const successDetail = repositories.getAuditLogDetail(successEvents.items[0]?.id ?? '')
+  assert.equal(successDetail?.captureStatus, 'metadata_only', '未采样成功请求应标记 metadata_only')
+  assert.equal(successDetail?.sampleReason, 'success_metadata_only', '未采样成功请求应记录轻量 envelope 原因')
+  assert.equal(successDetail?.attempts.length, 0, '未采样成功请求不应持久化 attempt 详情')
+  assert.equal(successDetail?.payloads.length, 0, '未采样成功请求不应持久化 payload 详情')
 
   const failureTraceId = 'trace-audit-problem-all-zero'
   const failureCapture = auditCapture.createAuditCapture({
@@ -90,4 +109,24 @@ function auditRequest(): Request & { rawBody?: Buffer } {
       return headers[name.toLowerCase()]
     }
   } as Request & { rawBody?: Buffer }
+}
+
+function auditAccount(): Parameters<ReturnType<typeof auditCapture.createAuditCapture>['startAttempt']>[0]['account'] {
+  return {
+    id: 'account_success_metadata_only',
+    systemAccountId: 'sys_admin',
+    accountOwnerSystemAccountId: 'sys_admin',
+    groupOwnerSystemAccountId: 'sys_admin',
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    name: 'Success Metadata Only Account',
+    type: 'api_key',
+    status: 'active',
+    concurrencyLimit: 1,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    baseUrl: 'https://api.openai.com',
+    apiKey: 'sk-test'
+  } as Parameters<ReturnType<typeof auditCapture.createAuditCapture>['startAttempt']>[0]['account']
 }

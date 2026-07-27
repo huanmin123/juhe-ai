@@ -931,7 +931,9 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'find_account_for_health_check':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await findAccountForHealthCheckAsync(operation.accountId)
+        return await findAccountForHealthCheckAsync(operation.accountId, {
+          ignoreSchedule: operation.ignoreSchedule
+        })
       }
       return handleDbServiceOperationSync(operation)
     case 'record_account_health_check_success':
@@ -1598,7 +1600,9 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return listAccountsDueForHealthCheck(operation.input)
     }
     case 'find_account_for_health_check': {
-      return findAccountForHealthCheck(operation.accountId)
+      return findAccountForHealthCheck(operation.accountId, {
+        ignoreSchedule: operation.ignoreSchedule
+      })
     }
     case 'record_account_health_check_success': {
       const changed = recordAccountHealthCheckSuccess(operation.accountId, operation.input)

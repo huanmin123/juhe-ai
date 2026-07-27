@@ -29,11 +29,6 @@ interface ChatProviderCatalogItem {
   supportedTools?: readonly string[]
 }
 
-interface CacheEntry<TValue> {
-  expiresAtMs: number
-  value: TValue
-}
-
 export function resolveChatModelOptionsFromAccountSnapshot<TOption extends ChatModelOptionLike>(input: {
   accounts: readonly ChatModelAccountSnapshot[]
   modelOptions: readonly TOption[]
@@ -66,35 +61,20 @@ function stableProviderCatalogItem(providerCode: string, item: ChatProviderCatal
   }
 }
 
-export function createChatModelOptionsSnapshotCache<TValue>(input: {
-  ttlMs: number
-  now?: () => number
-}): {
+export function createChatModelOptionsRequestCoalescer<TValue>(): {
   getOrLoad: (identity: string, load: () => Promise<TValue>) => Promise<TValue>
-  clear: () => void
 } {
-  const now = input.now ?? Date.now
-  const values = new Map<string, CacheEntry<TValue>>()
   const pending = new Map<string, Promise<TValue>>()
 
   return {
     async getOrLoad(identity, load) {
-      const cached = values.get(identity)
-      if (cached && cached.expiresAtMs > now()) return cached.value
       const existing = pending.get(identity)
       if (existing) return existing
-      const request = load().then((value) => {
-        values.set(identity, { value, expiresAtMs: now() + input.ttlMs })
-        return value
-      }).finally(() => {
-        pending.delete(identity)
+      const request = load().finally(() => {
+        if (pending.get(identity) === request) pending.delete(identity)
       })
       pending.set(identity, request)
       return request
-    },
-    clear() {
-      values.clear()
-      pending.clear()
     }
   }
 }

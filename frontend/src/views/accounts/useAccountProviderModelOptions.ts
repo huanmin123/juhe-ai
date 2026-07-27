@@ -17,6 +17,7 @@ interface ProviderAccountModelResourceOptions {
   providerCode: string
   scopeParams?: AccountScopeParams
   selectedIds?: string[]
+  keyword?: string
 }
 
 export async function loadAccountProviderModelOptionsResource(
@@ -31,7 +32,7 @@ export async function loadAccountProviderModelOptionsResource(
       code,
       scopeParams,
       selectedIds,
-      undefined
+      options.keyword?.trim() || undefined
     )
   }
 }
@@ -129,13 +130,16 @@ async function loadAccountModelOptions(
   selectedIds: string[],
   keyword?: string
 ): Promise<AccountModelSelectOption[]> {
-  const models = await api.providers.modelOptions({
-    ...scopeParams,
-    providerCode,
-    limit: 50,
-    ...(keyword ? { keyword } : {}),
-    ...(selectedIds.length ? { selectedIds } : {})
-  })
+  const selectedIdBatches = chunkedSelectedModelIds(selectedIds)
+  const models = (await Promise.all((selectedIdBatches.length ? selectedIdBatches : [[]]).map((batch) => (
+    api.providers.modelOptions({
+      ...scopeParams,
+      providerCode,
+      limit: 50,
+      ...(keyword ? { keyword } : {}),
+      ...(batch.length ? { selectedIds: batch } : {})
+    })
+  )))).flat()
   return dedupeAccountModelOptions(models.map((item) => {
     return {
       label: item.name,
@@ -149,7 +153,15 @@ async function loadAccountModelOptions(
 }
 
 function normalizedSelectedModelIds(values: string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 50)
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))]
+}
+
+function chunkedSelectedModelIds(values: string[]): string[][] {
+  const output: string[][] = []
+  for (let index = 0; index < values.length; index += 50) {
+    output.push(values.slice(index, index + 50))
+  }
+  return output
 }
 
 function dedupeAccountModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {

@@ -97,18 +97,24 @@ export async function listAccountsDueForHealthCheckAsync(options: AccountHealthC
   return await healthCheckAccountSummariesAsync(client, dueRows)
 }
 
-export function findAccountForHealthCheck(accountId: string): AccountSummary | undefined {
+export function findAccountForHealthCheck(
+  accountId: string,
+  options: { ignoreSchedule?: boolean } = {}
+): AccountSummary | undefined {
   disableExpiredAccounts()
-  return healthCheckAccountSummaries(queryAccountsDueForHealthCheck(1, accountId))[0]
+  return healthCheckAccountSummaries(queryAccountsDueForHealthCheck(1, accountId, options.ignoreSchedule === true))[0]
 }
 
-export async function findAccountForHealthCheckAsync(accountId: string): Promise<AccountSummary | undefined> {
+export async function findAccountForHealthCheckAsync(
+  accountId: string,
+  options: { ignoreSchedule?: boolean } = {}
+): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return findAccountForHealthCheck(accountId)
+    return findAccountForHealthCheck(accountId, options)
   }
   await disableExpiredAccountsAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await queryAccountsDueForHealthCheckAsync(client, 1, accountId)
+  const rows = await queryAccountsDueForHealthCheckAsync(client, 1, accountId, options.ignoreSchedule === true)
   return (await healthCheckAccountSummariesAsync(client, rows))[0]
 }
 
@@ -787,7 +793,11 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   return dueRows
 }
 
-function queryAccountsDueForHealthCheck(limit: number, accountId: string | undefined): AccountListRow[] {
+function queryAccountsDueForHealthCheck(
+  limit: number,
+  accountId: string | undefined,
+  ignoreSchedule = false
+): AccountListRow[] {
   const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
@@ -795,9 +805,9 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
     ...endpointModes,
     now,
     now,
-    now,
     now
   ]
+  if (!ignoreSchedule) params.push(now)
   if (accountId) {
     params.push(accountId)
   }
@@ -823,11 +833,11 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
             AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           )
         )
-        AND (
+        ${ignoreSchedule ? '' : `AND (
           (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
           OR accounts.next_health_check_at IS NULL
           OR accounts.next_health_check_at <= ?
-        )
+        )`}
         ${accountIdFilter}
         AND EXISTS (
           SELECT 1
@@ -856,7 +866,12 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
     ))
 }
 
-async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit: number, accountId: string | undefined): Promise<AccountListRow[]> {
+async function queryAccountsDueForHealthCheckAsync(
+  client: DatabaseClient,
+  limit: number,
+  accountId: string | undefined,
+  ignoreSchedule = false
+): Promise<AccountListRow[]> {
   const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
@@ -864,9 +879,9 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     ...endpointModes,
     now,
     now,
-    now,
     now
   ]
+  if (!ignoreSchedule) params.push(now)
   if (accountId) {
     params.push(accountId)
   }
@@ -913,11 +928,11 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
         )
       )
-      AND (
+      ${ignoreSchedule ? '' : `AND (
         (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
         OR accounts.next_health_check_at IS NULL
         OR accounts.next_health_check_at <= ?
-      )
+      )`}
       ${accountIdFilter}
       AND group_bindings.group_id IS NOT NULL
     ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,

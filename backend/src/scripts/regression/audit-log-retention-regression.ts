@@ -340,8 +340,14 @@ try {
     errorGroupCutoffUpdatedAt: '2000-01-01T00:00:00.000Z',
     limit: 100
   })
-  assert(hotTrimmed >= 1, '热窗口后置清理应删除未命中长期采样的普通成功请求')
-  assert.equal(repositories.listAuditLogs({ traceId: hotTrimSuccessTraceId }).total, 0, '未采样成功请求超过热窗口后应被删除')
+  assert(hotTrimmed >= 1, '热窗口后置清理应降级未命中长期采样的普通成功请求详情')
+  assert.equal(repositories.listAuditLogs({ traceId: hotTrimSuccessTraceId }).total, 1, '未采样成功请求超过热窗口后应保留轻量 envelope')
+  const hotTrimmedDetail = repositories.getAuditLogDetail(hotTrimSuccessEvents.items[0]?.id ?? '')
+  assert.equal(hotTrimmedDetail?.captureStatus, 'metadata_only', '热窗口后应标记 metadata_only')
+  assert.equal(hotTrimmedDetail?.payloads.length, 0, '热窗口后应删除 payload 详情')
+  assert.equal(hotTrimmedDetail?.attempts.length, 0, '热窗口后应删除 attempt 详情')
+  assert((repositories.getAuditLogDetail(largeSuccessEvents.items[0]?.id ?? '')?.payloads.length ?? 0) > 0, '命中长期采样的成功请求不应被热窗口清理降级')
+  assert((repositories.getAuditLogDetail(sensitiveHeaderAuditId)?.payloads.length ?? 0) > 0, '失败请求不应被成功热窗口清理降级')
 
   const previousProcessRole = runtimeConfig.processRole
   const pendingWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
@@ -478,7 +484,7 @@ try {
   assert.equal(bodyBlob.compression, 'gzip', '大 JSON payload 应压缩为 gzip')
   assert(bodyBlob.compressed_size_bytes < bodyBlob.raw_size_bytes, '压缩后大小应小于原文大小')
 
-  const blobPath = resolve(backendRoot, 'data', 'audit', 'blobs', bodyBlob.storage_key)
+  const blobPath = resolve(tempRoot, 'audit', 'blobs', bodyBlob.storage_key)
   assert(existsSync(blobPath), 'payload blob 文件应存在')
   assert.equal(gunzipSync(readFileSync(blobPath)).toString('utf8'), repeatedBody, 'gzip blob 解压后应还原原文')
 
@@ -548,7 +554,7 @@ function cleanupTemporaryAuditBlobs(): void {
       .all() as Array<{ storage_key?: string }>
     for (const row of rows) {
       if (!row.storage_key) continue
-      rmSync(resolve(backendRoot, 'data', 'audit', 'blobs', row.storage_key), { force: true })
+      rmSync(resolve(tempRoot, 'audit', 'blobs', row.storage_key), { force: true })
     }
   } catch {
   }
@@ -574,6 +580,7 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
   assert(auditRetentionSource.includes('postgresAuditRetentionSelectBatchLimit = 100'), 'PG 审计日志保留清理单轮候选必须有生产安全上限')
   assert(auditRetentionSource.includes('postgresAuditRetentionDeleteSubBatchLimit = 10'), 'PG 审计日志保留清理删除子批次必须保持小事务')
   assert(auditRetentionSource.includes('postgresAuditRetentionLimit(limit)'), 'PG 审计日志保留清理必须对调用方传入 limit 做硬上限裁剪')
+  assert.match(auditRetentionSource, /trimAuditLogDetailsByWhereAsync[\s\S]*DELETE FROM juhe_dataset\.audit_payload_refs[\s\S]*DELETE FROM juhe_dataset\.audit_log_attempts[\s\S]*UPDATE juhe_dataset\.audit_logs[\s\S]*capture_status = 'metadata_only'/, 'PG 成功热保留清理必须只解绑详情并将父记录降级为 metadata_only')
   assert.match(auditRetentionSource, /for \(const chunk of chunkStringIds\(ids, postgresAuditRetentionDeleteSubBatchLimit\)\)[\s\S]*client\.transaction[\s\S]*audit_log_attempts WHERE audit_log_id = ANY\(\?::text\[\]\)', \[chunk\]/, 'PG 审计日志保留清理必须按 chunk 开短事务删除 attempts')
   assert.doesNotMatch(auditRetentionSource, /audit_log_attempts WHERE audit_log_id = ANY\(\?::text\[\]\)', \[ids\]/, 'PG 审计日志保留清理不能用整批 ids 一次删除 attempts')
   assert(recordMaintenanceSource.includes('auditRetainedDataCleanupBatchSizeLimit = 100'), '审计保留维护任务必须限制从 data-retention 继承的大批量参数')

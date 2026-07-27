@@ -24,7 +24,7 @@
         </div>
         <div class="page-toolbar-actions">
           <a-button :disabled="loading" @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="loadPageData">
+          <a-button :loading="loading" @click="loadPageData(true)">
             <template #icon>
               <ReloadOutlined />
             </template>
@@ -293,8 +293,8 @@ async function loadData() {
   }
 }
 
-function loadPageData() {
-  void loadUsageStatsWindow().then(() => {
+function loadPageData(force = false) {
+  void loadUsageStatsWindow({ force, viewScope: 'admin' }).then(() => {
     if (!dateRangeExplicit.value) syncImplicitDateRangeToStatsWindow()
   }).catch(() => undefined)
   void loadRuntimeData()
@@ -341,7 +341,7 @@ function handleDateRangeOpenChange(open: boolean) {
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow()
+  await loadUsageStatsWindow({ viewScope: 'admin' })
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({

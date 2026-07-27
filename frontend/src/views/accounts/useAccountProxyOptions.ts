@@ -17,11 +17,6 @@ interface UseAccountProxyOptionsConfig {
   searchDelayMs?: number
 }
 
-const PROXY_OPTIONS_ENDPOINT_VERSION = 'proxies.options.v1'
-const maxSessionCacheEntries = 50
-const sessionCache = new Map<string, ProxyProfileOptionSummary[]>()
-let sessionCacheIdentity = ''
-
 export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}) {
   const proxies = ref<ProxyProfileOptionSummary[]>([])
   const keyword = ref('')
@@ -49,16 +44,8 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
       requestKeyword ?? '',
       scope.selectedIds
     ])
-    if (!force) {
-      const cached = readSessionCache(requestKey)
-      if (cached) {
-        invalidateInFlightRequest()
-        proxies.value = cached
-        return
-      }
-      if (loadingKey === requestKey && loadingPromise) {
-        return loadingPromise
-      }
+    if (!force && loadingKey === requestKey && loadingPromise) {
+      return loadingPromise
     }
     const currentRequestId = ++requestId
     loading.value = true
@@ -74,7 +61,6 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
         if (currentRequestId !== requestId || activeIdentity !== proxyOptionIdentityKey()) return
         rememberProxyLabels(nextProxies)
         proxies.value = nextProxies
-        writeSessionCache(requestKey, nextProxies)
       } catch (error) {
         if (currentRequestId !== requestId || activeIdentity !== proxyOptionIdentityKey()) return
         console.error(error)
@@ -138,10 +124,6 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
     const nextIdentity = proxyOptionIdentityKey()
     const identityChanged = nextIdentity !== activeIdentity
     if (identityChanged) activeIdentity = nextIdentity
-    if (sessionCacheIdentity !== nextIdentity) {
-      sessionCache.clear()
-      sessionCacheIdentity = nextIdentity
-    }
     if (!identityChanged) return
     proxies.value = []
     invalidateInFlightRequest()
@@ -179,26 +161,9 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
   }
 }
 
-function readSessionCache(key: string): ProxyProfileOptionSummary[] | undefined {
-  const value = sessionCache.get(key)
-  if (!value) return undefined
-  sessionCache.delete(key)
-  sessionCache.set(key, value)
-  return value
-}
-
-function writeSessionCache(key: string, value: ProxyProfileOptionSummary[]): void {
-  sessionCache.delete(key)
-  sessionCache.set(key, value)
-  if (sessionCache.size <= maxSessionCacheEntries) return
-  const oldestKey = sessionCache.keys().next().value
-  if (oldestKey) sessionCache.delete(oldestKey)
-}
-
 function proxyOptionIdentityKey(): string {
   const viewer = authState.currentUser.value
   return [
-    PROXY_OPTIONS_ENDPOINT_VERSION,
     authState.revision.value,
     viewer?.id ?? 'anonymous',
     viewer?.role ?? 'anonymous'

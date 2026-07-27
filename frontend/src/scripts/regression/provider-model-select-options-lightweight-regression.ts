@@ -71,6 +71,21 @@ try {
     supportedApiProtocols: ['messages']
   }])
   assert.equal(resource.loading.value, false)
+
+  const batchedCalls: Array<Record<string, unknown> | undefined> = []
+  ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = async (params) => {
+    batchedCalls.push(params)
+    return []
+  }
+  const batchedSelectedIds = Array.from({ length: 51 }, (_, index) => `selected-${index + 1}`)
+  const batchedResource = useProviderModelSelectOptions({
+    providerCode: ref('openai'),
+    selectedIds: ref(batchedSelectedIds)
+  })
+  await batchedResource.loadModelOptions()
+  assert.equal(batchedCalls.length, 2, '超过单次接口上限的已选模型必须分批补齐')
+  assert.deepEqual(batchedCalls[0]?.selectedIds, batchedSelectedIds.slice(0, 50))
+  assert.deepEqual(batchedCalls[1]?.selectedIds, batchedSelectedIds.slice(50))
 } finally {
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalLoader
 }

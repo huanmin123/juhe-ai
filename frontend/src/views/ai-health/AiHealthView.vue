@@ -16,8 +16,8 @@
       </template>
       <template #actions>
         <div class="ai-health-legend" aria-label="状态图例">
-          <span><i class="success" />可用</span>
-          <span><i class="failure" />不可用</span>
+          <span><i class="success" />检查成功</span>
+          <span><i class="failure" />检查失败</span>
           <span><i class="unknown" />无记录</span>
         </div>
       </template>
@@ -36,16 +36,17 @@
               </div>
               <div class="ai-health-account-rate">
                 <strong>{{ formatHealthRate(account.healthRate) }}</strong>
-                <span>账户可用率</span>
+                <span>检查成功率</span>
               </div>
             </header>
 
             <div class="ai-health-account-meta">
               <span v-if="isManagementView && account.systemAccountName">所属用户：{{ account.systemAccountName }}</span>
-              <span>最近检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
-              <span>下次检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
-              <span class="success-text">可用 {{ account.successHours }}</span>
-              <span class="failure-text">不可用 {{ account.failureHours }}</span>
+              <span>最近独立检查：{{ formatDateTime(account.lastHealthCheckAt) }}</span>
+              <span v-if="account.lastHealthSuccessAt">最近健康成功信号：{{ formatDateTime(account.lastHealthSuccessAt) }}</span>
+              <span>下次独立检查：{{ formatDateTime(account.nextHealthCheckAt) }}</span>
+              <span class="success-text">检查成功 {{ account.successHours }}</span>
+              <span class="failure-text">检查失败 {{ account.failureHours }}</span>
               <span class="unknown-text">无记录 {{ account.unknownHours }}</span>
             </div>
 
@@ -175,14 +176,14 @@ function scrollContentToTop(): void {
 }
 
 function healthStatusLabel(status: AiHealthHourStatus): string {
-  if (status === 'success') return '当前可用'
-  if (status === 'failure') return '当前不可用'
+  if (status === 'success') return '最近检查成功'
+  if (status === 'failure') return '最近检查失败'
   return '暂无检查'
 }
 
 function pointStatusLabel(status: AiHealthHourStatus): string {
-  if (status === 'success') return '可用'
-  if (status === 'failure') return '不可用'
+  if (status === 'success') return '检查成功'
+  if (status === 'failure') return '检查失败'
   return '无记录'
 }
 
@@ -193,7 +194,7 @@ function healthStatusColor(status: AiHealthHourStatus): string {
 }
 
 function accountStatusLabel(status: AccountStatus): string {
-  if (status === 'active') return '可调度'
+  if (status === 'active') return '已启用'
   if (status === 'pending_test') return '待检查'
   if (status === 'disabled') return '已停用'
   if (status === 'error') return '异常'

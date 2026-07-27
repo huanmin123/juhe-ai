@@ -77,7 +77,7 @@
         </div>
         <div class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
           <router-view v-slot="{ Component, route: viewRoute }">
-            <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
+            <KeepAlive v-if="viewRoute.meta.keepAlive === true" :max="keepAliveMax">
               <component :is="Component" :key="viewRoute.path" />
             </KeepAlive>
             <component :is="Component" v-else :key="viewRoute.path" />

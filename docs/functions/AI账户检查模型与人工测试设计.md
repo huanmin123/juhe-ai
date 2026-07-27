@@ -180,7 +180,7 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 
 `testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个普通生成模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
-后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`，只做诊断 / 有界顺延，不是自动负向状态证据。
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都不能激活 `pending_test` 账户；framing 完整时归为 `framing_complete_neutral`。人工测试只显示诊断，激活、周期健康、请求失败二次确认和质量确认则把它作为通用可用性失败。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
@@ -190,7 +190,7 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 
 | 场景 | 模型来源 | 允许的状态副作用 |
 | --- | --- | --- |
-| 新账户激活检查 | 账户检查模型 | `complete_success` 后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；完整 framing 中性结果只顺延；只有连续独立 `transport_incomplete` 从首次起满 24 小时后仍失败才原子转为 `error` |
+| 新账户激活检查 | 账户检查模型 | `complete_success` 后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；完整 framing 协议失败和 `transport_incomplete` 都是可用性失败，从首次起满 24 小时后仍独立失败才原子转为 `error` |
 | 关键配置变更复检 | 账户检查模型 | 按配置变更类型进入待检查或正常健康阈值流程 |
 | 正常账户周期健康检查 | 账户检查模型 | 写健康事实；达到阈值且确认账户级故障后进入保护状态 |
 | 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
@@ -218,7 +218,7 @@ runApiKeyRecoveryProbe()
 - 新增账户默认保存为 `pending_test` 且不可调度。
 - 导入请求中的 `active` 同样先落为 `pending_test`。
 - 保存事务完成后立即投递后台激活检查，不等待人工测试任务，也不接受人工测试任务 ID 作为激活凭证。
-- 后台激活检查得到 `complete_success` 后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。完整 framing 但协议未成功保持 `pending_test`，只写有界诊断并每 1 小时顺延；只有连续独立 `transport_incomplete` 才保存首次失败时间并累计，从首次传输失败起满 24 小时后的再次独立传输失败才原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次传输失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
+- 后台激活检查得到 `complete_success` 后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。完整 framing 但协议未成功和 `transport_incomplete` 都保持 `pending_test`、写失败事实并每 1 小时复检；从首次可用性失败起满 24 小时后的再次独立失败才原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
 - 检查失败的 `pending_test` 提供“重新检查”：同一事务把失败计数、首次失败时间、错误摘要和检查计划重置到新账户待检查基线，随后立即投递后台激活检查。尚无失败事实的普通待检查账户不提供该操作。
 - 用户可以在保存前人工测试草稿，但该结果只用于判断是否愿意保存，不参与账户激活。
 - 明确创建为 `disabled` 的账户尊重人工停用，不投递激活检查。
@@ -244,7 +244,7 @@ runApiKeyRecoveryProbe()
 
 ## 12. 失败分类
 
-系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。只有第三类是自动负向证据；完整 HTTP/SSE 的任意状态码、错误对象或协议失败都属于中性，任务、本地配置或过期结果不计数、不改状态。
+系统探针统一返回 `complete_success`、`framing_complete_neutral`、仅代表 `transport_incomplete` 的 `upstream_failure`，以及 `probe_task_failure/stale/unknown`。传输电路、账号冷却和 Key 恢复只把第三类视为负向证据；固定模型、固定协议的激活、周期健康、请求失败二次确认和质量确认还把第二类视为账户可用性失败。任务、本地配置或过期结果不计数、不改状态。
 
 自动 transport 失败候选：
 
@@ -260,7 +260,7 @@ runApiKeyRecoveryProbe()
 - 本地请求形态与已声明协议能力不匹配，或最小检查请求模板无法构造。
 - 本地凭据缺失、解密失败或必要配置非法。
 
-这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
+这些本地故障只记录“检查模型配置异常”，走 `probe_task_failure/unknown`，不能直接把整个账户写成 `temporary_unavailable`、`rate_limited` 或 `error`。上游 status/body 中的 `model_not_found`、未授权、权限不足、`unsupported_endpoint` 或类似文案不属于本地可验证配置事实；framing 完整时一律是 `framing_complete_neutral`，只形成通用可用性失败，不派生具体业务语义。成功检查只证明当前检查模型和对应最小请求链路可用，不代表全部支持模型都已经逐个验证。
 
 ## 13. 状态边界
 
@@ -269,7 +269,7 @@ runApiKeyRecoveryProbe()
 | 账户状态 | 系统行为 |
 | --- | --- |
 | `active` | 周期健康检查和必要运行态恢复 |
-| `pending_test` | 激活检查；中性 / unknown 有界顺延，连续独立 `transport_incomplete` 后每 1 小时重试，首次传输失败满 24 小时后仍有独立传输失败才进入 `error` |
+| `pending_test` | 激活检查；任务 unknown 有界顺延，完整 framing 协议失败或 `transport_incomplete` 后每 1 小时重试，首次可用性失败满 24 小时后仍有独立失败才进入 `error` |
 | `temporary_unavailable` | 账号级冷却恢复 |
 | `rate_limited` | 限流恢复 |
 | `error` | 人工“异常恢复”只原子重置为 `pending_test` 并立即投递激活检查，不能直接恢复为 `active` |

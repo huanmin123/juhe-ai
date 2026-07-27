@@ -45,6 +45,7 @@ import {
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
+import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 
 /** Every gateway endpoint uses the same availability-first candidate failover rule. */
 export function isOpaqueUpstreamFailoverAllowed(_req: Request): boolean {
@@ -262,7 +263,9 @@ export async function handleFailedUpstreamResponse(
         cooldownStatus: explicitPolicyDecision.cooldownStatus
       }
     })
-    if (explicitPolicyDecision.action !== 'retry_next') {
+    if (explicitPolicyDecision.action === 'retry_next') {
+      dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+    } else {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
         ...failureInput,
         policyDecision: explicitPolicyDecision
@@ -353,10 +356,11 @@ export async function handleOpaqueFailedUpstreamResponse(
     statusCode: response.status,
     headers: response.headers,
     bodyText: responseBodyRead.diagnosticBodyText,
-    errorMessage: '上游返回非成功 HTTP 响应',
-    failureAttribution: explicitPolicyDecision ? 'account_upstream' : 'opaque_upstream',
-    interpretUpstreamSemantics: false
+    failureAttribution: explicitPolicyDecision ? 'account_upstream' : 'opaque_upstream'
   })
+  if (!explicitPolicyDecision || explicitPolicyDecision.action === 'retry_next') {
+    dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
+  }
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
   const keyScopedFailure = hasAlternativeAccountApiKeys(account)
@@ -513,6 +517,7 @@ export async function handleUpstreamRequestError(
   }
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+  dispatchRequestFailureAccountHealthCheck(req, usageContext.trafficSource, account.id)
   // A generic request transport failure is evidence for the independent
   // account circuit only. It may have been caused by this request/session, so
   // it must not mutate proxy health, local account suppression/precheck,

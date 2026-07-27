@@ -4,9 +4,6 @@ import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystem
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import {
-  loadAccountNameMap,
-  loadApiKeyNameMap,
-  loadGroupNameMap,
   loadSystemAccountNameMapByIds,
   loadSystemAccountNameMapByIdsAsync
 } from './repository-lookups.js'
@@ -34,7 +31,7 @@ import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 import { accountHealthSuccessSignalSchedule, recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import {
   ensurePostgresUsageRecordPartitions,
@@ -51,11 +48,6 @@ import type { ProviderCostBreakdown } from '../modules/model-pricing/model-prici
 import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { readUsageHealthCheckSettingsSnapshot } from './usage-health-check-settings-snapshot.js'
-import {
-  publishUsageRecordFirstPage,
-  usageRecordFirstPageCandidateInputs,
-  type UsageRecordFirstPageNameMaps
-} from '../modules/usage-records/usage-record-first-page-cache.service.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -393,7 +385,6 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
     throw error
   }
-  void publishUsageRecordFirstPageWithNamesBestEffort(inputs)
 }
 
 export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): Promise<void> {
@@ -403,7 +394,6 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
     await createUsageRecordsBatchPostgres(inputs, client)
-    await publishUsageRecordFirstPageWithNamesBestEffort(inputs, client)
     return
   }
 
@@ -437,8 +427,6 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
     }
     throw error
   }
-  const client = createSqliteDatabaseClient(businessDatabase)
-  await publishUsageRecordFirstPageWithNamesBestEffort(inputs, client)
 }
 
 export async function freezeUsageRecordPricingFactsAsync(input: UsageRecordInput): Promise<UsageRecordInput> {
@@ -474,54 +462,6 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[], clien
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt, healthCheckSettings)
   })
   return writePlan.shardEntries
-}
-
-function loadUsageRecordFirstPageNameMaps(inputs: UsageRecordInput[]): UsageRecordFirstPageNameMaps {
-  return {
-    apiKeyNames: loadApiKeyNameMap(inputs.map((input) => input.apiKeyId)),
-    groupNames: loadGroupNameMap(inputs.map((input) => input.groupId)),
-    accountNames: loadAccountNameMap(inputs.map((input) => input.accountId))
-  }
-}
-
-async function loadUsageRecordFirstPageNameMapsAsync(client: DatabaseClient, inputs: UsageRecordInput[]): Promise<UsageRecordFirstPageNameMaps> {
-  const [apiKeyNames, groupNames, accountNames] = await Promise.all([
-    loadUsageRecordFirstPageNamesAsync(client, 'api_keys', inputs.map((input) => input.apiKeyId)),
-    loadUsageRecordFirstPageNamesAsync(client, 'groups', inputs.map((input) => input.groupId)),
-    loadUsageRecordFirstPageNamesAsync(client, 'accounts', inputs.map((input) => input.accountId))
-  ])
-  return { apiKeyNames, groupNames, accountNames }
-}
-
-async function loadUsageRecordFirstPageNamesAsync(
-  client: DatabaseClient,
-  tableName: 'api_keys' | 'groups' | 'accounts',
-  values: Array<string | undefined>
-): Promise<Map<string, string>> {
-  const ids = [...new Set(values.filter((value): value is string => Boolean(value)))]
-  const names = new Map<string, string>()
-  for (const chunk of chunkValues(ids, 900)) {
-    const rows = await client.query<{ id: string; name: string }>(`
-      SELECT id, name
-      FROM ${client.dialect.qualifyTable('juhe_business', tableName)}
-      WHERE id IN (${sqlPlaceholders(chunk.length)})
-    `, chunk)
-    for (const row of rows) names.set(row.id, row.name)
-  }
-  return names
-}
-
-async function publishUsageRecordFirstPageWithNamesBestEffort(inputs: UsageRecordInput[], client?: DatabaseClient): Promise<void> {
-  try {
-    const candidates = usageRecordFirstPageCandidateInputs(inputs)
-    if (candidates.length === 0) return
-    const names = client
-      ? await loadUsageRecordFirstPageNameMapsAsync(client, candidates)
-      : loadUsageRecordFirstPageNameMaps(candidates)
-    await publishUsageRecordFirstPage(candidates, names)
-  } catch (error) {
-    logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_publish_failed' }), '使用记录首屏热列表异步更新失败，已保留数据库事实')
-  }
 }
 
 async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {

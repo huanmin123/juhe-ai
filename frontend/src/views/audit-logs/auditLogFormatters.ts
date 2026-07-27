@@ -89,6 +89,44 @@ export function formatHashPreview(value?: string): string {
   return value.length > 8 ? `${value.slice(0, 4)}....${value.slice(-4)}` : value
 }
 
+export function formatConversationKeyPreview(value?: string): string {
+  if (!value) return '-'
+  return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
+}
+
+export function sessionResolutionText(value?: string): string {
+  return {
+    official: '官方会话',
+    continuation: '续链恢复',
+    thread_fallback: '线程兜底',
+    missing: '未识别',
+    conflict: '身份冲突',
+    invalid: '无效标识'
+  }[value || ''] ?? (value || '未识别')
+}
+
+export function sessionResolutionColor(value?: string): string | undefined {
+  if (value === 'official') return 'green'
+  if (value === 'continuation') return 'blue'
+  if (value === 'thread_fallback') return 'gold'
+  if (value === 'conflict' || value === 'invalid') return 'red'
+  return undefined
+}
+
+export function sessionConfidenceText(value?: string): string {
+  return {
+    authoritative: '权威',
+    derived: '推导',
+    compatibility: '兼容'
+  }[value || ''] ?? (value || '-')
+}
+
+export function identityConflictText(value?: boolean): string {
+  if (value === true) return '是'
+  if (value === false) return '否'
+  return '-'
+}
+
 export function compressionText(rawBytes: number, compressedBytes: number): string {
   if (!rawBytes) return '-'
   if (!compressedBytes || compressedBytes >= rawBytes) return '未压缩'

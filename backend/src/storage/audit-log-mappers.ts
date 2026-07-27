@@ -34,6 +34,16 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
   return {
     id: String(row.id),
     traceId: String(row.trace_id),
+    conversationKey: optionalString(row.conversation_key),
+    sessionNamespace: optionalString(row.session_namespace),
+    sessionSource: optionalString(row.session_source),
+    sessionResolution: optionalString(row.session_resolution),
+    sessionConfidence: optionalString(row.session_confidence),
+    threadKey: optionalString(row.thread_key),
+    turnKey: optionalString(row.turn_key),
+    agentKey: optionalString(row.agent_key),
+    parentResponseKey: optionalString(row.parent_response_key),
+    identityConflict: optionalBoolean(row.identity_conflict),
     trafficSource: auditTrafficSource(row.traffic_source),
     systemAccountId,
     systemAccountName: systemAccountId ? systemAccountNames.get(systemAccountId) : undefined,
@@ -87,6 +97,16 @@ export function auditLogListItemFromRow(row: AuditLogRow, systemAccountNames: Ma
   return {
     id: String(row.id),
     traceId: String(row.trace_id),
+    conversationKey: optionalString(row.conversation_key),
+    sessionNamespace: optionalString(row.session_namespace),
+    sessionSource: optionalString(row.session_source),
+    sessionResolution: optionalString(row.session_resolution),
+    sessionConfidence: optionalString(row.session_confidence),
+    threadKey: optionalString(row.thread_key),
+    turnKey: optionalString(row.turn_key),
+    agentKey: optionalString(row.agent_key),
+    parentResponseKey: optionalString(row.parent_response_key),
+    identityConflict: optionalBoolean(row.identity_conflict),
     trafficSource: auditTrafficSource(row.traffic_source),
     systemAccountId,
     systemAccountName: systemAccountId ? systemAccountNames.get(systemAccountId) : undefined,
@@ -219,4 +239,9 @@ export function auditLogPayloadSummaryFromRow(row: AuditLogRow): AuditLogPayload
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined
+  return value === true || value === 1 || value === '1'
 }

@@ -54,6 +54,16 @@ export interface AuditLogAttemptInput {
 export interface AuditLogInput {
   id?: string
   traceId: string
+  conversationKey?: string
+  sessionNamespace?: string
+  sessionSource?: string
+  sessionResolution?: string
+  sessionConfidence?: string
+  threadKey?: string
+  turnKey?: string
+  agentKey?: string
+  parentResponseKey?: string
+  identityConflict?: boolean
   trafficSource?: AuditTrafficSource
   systemAccountId?: string
   apiKeyId?: string
@@ -81,7 +91,7 @@ export interface AuditLogInput {
   errorMessage?: string
   sampleBucket: number
   sampleReason: string
-  captureStatus?: 'complete' | 'dropped' | 'overflow'
+  captureStatus?: 'complete' | 'metadata_only' | 'dropped' | 'overflow'
   startedAt: string
   endedAt: string
   durationMs?: number
@@ -96,6 +106,16 @@ export interface AuditLogInput {
 export interface AuditLogSummary {
   id: string
   traceId: string
+  conversationKey?: string
+  sessionNamespace?: string
+  sessionSource?: string
+  sessionResolution?: string
+  sessionConfidence?: string
+  threadKey?: string
+  turnKey?: string
+  agentKey?: string
+  parentResponseKey?: string
+  identityConflict?: boolean
   trafficSource: AuditTrafficSource
   systemAccountId?: string
   systemAccountName?: string
@@ -144,7 +164,10 @@ export interface AuditLogSummary {
 }
 
 export type AuditLogListItem = Pick<AuditLogSummary,
-  | 'id' | 'traceId' | 'trafficSource'
+  | 'id' | 'traceId' | 'conversationKey'
+  | 'sessionNamespace' | 'sessionSource' | 'sessionResolution' | 'sessionConfidence'
+  | 'threadKey' | 'turnKey' | 'agentKey' | 'parentResponseKey' | 'identityConflict'
+  | 'trafficSource'
   | 'systemAccountId' | 'systemAccountName'
   | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
   | 'accountId' | 'accountName'
@@ -229,6 +252,7 @@ export interface AuditLogListOptions {
   page?: number
   pageSize?: number
   traceId?: string
+  conversationKey?: string
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string
@@ -248,6 +272,7 @@ export interface AuditLogPayloadReadOptions {
   offset?: number
   limit?: number
   includeHeaders?: boolean
+  full?: boolean
 }
 
 export interface AuditLogListResult {

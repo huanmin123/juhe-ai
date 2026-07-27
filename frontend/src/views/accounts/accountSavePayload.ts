@@ -25,6 +25,7 @@ import {
   accountModelMappingEndpointFamilyText,
   accountModelMappingProtocolValidationMessage
 } from './accountModelMappingProtocolMatrix'
+import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import {
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_RESPONSES_FAMILY,
@@ -180,14 +181,16 @@ export function validateAccountSaveForm(input: {
     formProviderProfile.profile ?? formProviderProfile.provider,
     {
       mappingAnthropicSourceModelOptions: input.mappingAnthropicSourceModelOptions,
+      mappingCurrentProviderSourceModelOptions: input.mappingCurrentProviderSourceModelOptions,
       mappingGeminiSourceModelOptions: input.mappingGeminiSourceModelOptions,
       mappingSourceModelOptions: input.mappingSourceModelOptions,
-      mappingUpstreamModelOptions: input.mappingUpstreamModelOptions
+      mappingUpstreamModelOptions: input.mappingUpstreamModelOptions,
+      providerCode: form.providerCode
     }
   )
 }
 
-type ModelMappingProtocolOption = {
+export type ModelMappingProtocolOption = {
   value: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
@@ -422,16 +425,18 @@ function normalizeAccountModelMappings(value: AccountFormModel['modelMappings'])
   return output
 }
 
-function validateAccountModelMappings(
+export function validateAccountModelMappings(
   value: AccountFormModel['modelMappings'],
   supportedModels: string[],
   supportedEndpointModes: AccountFormModel['supportedEndpointModes'],
-  providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number],
+  providerProfile?: AccountModelMappingProviderProfile,
   options: {
     mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+    mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
     mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
     mappingSourceModelOptions?: ModelMappingProtocolOption[]
     mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
+    providerCode?: string
   } = {}
 ): string | undefined {
   const seenSources = new Set<string>()
@@ -457,8 +462,9 @@ function validateAccountModelMappings(
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {
       return '模型映射的下游模型和上游模型不能完全相同'
     }
+    const providerCode = options.providerCode ?? formProviderCode(providerProfile)
     const sourceModelOptions = accountModelMappingSourceModelOptions({
-      providerCode: formProviderCode(providerProfile),
+      providerCode,
       sourceEndpointFamily,
       currentProviderOptions: options.mappingCurrentProviderSourceModelOptions ?? [],
       openAIProtocolOptions: options.mappingSourceModelOptions ?? [],
@@ -469,7 +475,7 @@ function validateAccountModelMappings(
       return `客户端模型 ${sourceModel} 不在当前可选模型目录中`
     }
     if (
-      isHybridProviderCode(formProviderCode(providerProfile))
+      isHybridProviderCode(providerCode)
       && !modelOptionSupportsProtocol(sourceModel, sourceEndpointFamily, sourceModelOptions)
     ) {
       return `客户端模型 ${sourceModel} 不支持 ${accountModelMappingEndpointFamilyText(sourceEndpointFamily)} 协议，请先选择协议支持的模型`
@@ -496,9 +502,7 @@ function modelOptionSupportsProtocol(
 ): boolean {
   if (!options?.length) return true
   const item = options.find((option) => option.value === model)
-  if (!item) return true
-  if (!item.supportedApiProtocols?.length) return true
-  return item.supportedApiProtocols.includes(endpointFamily as ProviderModelApiProtocol)
+  return Boolean(item?.supportedApiProtocols?.includes(endpointFamily as ProviderModelApiProtocol))
 }
 
 function modelExistsInOptions(model: string, options: ModelMappingProtocolOption[] | undefined): boolean {
@@ -506,7 +510,10 @@ function modelExistsInOptions(model: string, options: ModelMappingProtocolOption
   return options.some((option) => option.value === model)
 }
 
-function formProviderCode(providerProfile?: ProviderDefinition | ProviderDefinition['protocolProfiles'][number]): string | undefined {
+function formProviderCode(providerProfile?: AccountModelMappingProviderProfile): string | undefined {
   if (!providerProfile) return undefined
-  return 'providerCode' in providerProfile ? providerProfile.providerCode : providerProfile.code
+  if ('providerCode' in providerProfile && typeof providerProfile.providerCode === 'string') {
+    return providerProfile.providerCode
+  }
+  return 'code' in providerProfile ? providerProfile.code : undefined
 }

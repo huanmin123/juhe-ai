@@ -50,6 +50,7 @@
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
 - 统计 scope 使用 `ip_hash`；列表接口从 IP 注册表出发，按 `ip_hash + start_date + end_date` 左连接统计窗口。窗口内无用量的已注册 IP 仍返回，范围统计字段为零。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
+- `usage_records.client_ip` 取自 Express 解析后的 `req.ip`。当前生产边界使用 `trust proxy=1`：公网边界代理负责写入唯一可信来源，后续本机性能槽位只能透传该来源，不能再追加一跳回环地址。
 - IP 封禁是网关运行前置判断；standalone 请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存，高性能 Redis cache driver 下按当前 `ip_hash` 读取单 IP shared cache，cache miss 只能走 `ip_hash` 索引回源，禁止加载全量 active 策略，也禁止把策略数组塞进 API Key runtime 响应。
 
 ## 数据流
@@ -69,6 +70,13 @@
 ```
 
 Node / Go 共存期仍由 Node 的 `client-ip-stats-aggregation` 与 range refresh 生产上述事实；Go `GET /ip-stats` 只读注册表、策略表和 Node worker 生成的列表窗口，不写注册表、daily、range、dirty 或 stats state。窗口未 ready 时仍返回注册表成员与策略状态，但不读取部分窗口统计。
+
+### 可信反向代理链路
+
+- TLS 入口从边缘 PROXY protocol v2 读取真实对端，并覆盖写入单值 `X-Real-IP` 与 `X-Forwarded-For`；不接受公网请求自带的来源头作为事实。
+- 外层入口 Nginx 与本机性能槽位 Nginx 都原样透传这三个头。性能槽位渲染必须使用 `$http_x_real_ip`、`$http_x_forwarded_for` 和 `$http_x_forwarded_proto`。
+- 性能槽位禁止使用 `$remote_addr`、`$proxy_add_x_forwarded_for` 或 `$scheme` 重建这些头；其 socket 对端是外层本机代理，追加后会形成 `真实IP, 127.0.0.1`，使 `trust proxy=1` 选择错误地址。
+- 回归门禁必须覆盖管理、公开、内部和网关四类 location。代理层级或信任跳数变化时，必须同步审计入口覆盖规则、全部中间代理和 Express 信任配置。
 
 封禁流程：
 

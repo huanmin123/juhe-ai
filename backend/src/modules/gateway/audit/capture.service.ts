@@ -38,6 +38,11 @@ import type {
 import { resolveCatalogPricingModel } from '../../model-pricing/model-catalog.service.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
+import {
+  isAuditSessionIdentityJsonRequest,
+  isAuditSessionIdentityStructuredPayload,
+  redactAuditSessionIdentityRequestBodyResult
+} from './session-identity-redaction.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -53,6 +58,14 @@ interface AuditCaptureContextInput {
 }
 
 interface AuditGatewayContext {
+  sessionId?: string
+  sessionClientType?: string
+  conversationKey?: string
+  sessionNamespace?: string
+  sessionSource?: string
+  sessionResolution?: string
+  sessionConfidence?: string
+  identityConflict?: boolean
   systemAccountId?: string
   apiKeyId?: string
   groupId?: string
@@ -328,13 +341,25 @@ export class AuditCaptureContext {
       startedAt: new Date(startedAtMs).toISOString()
     }
     this.attempts.push(attempt)
+    const requestContentType = input.headers.get('content-type') ?? undefined
+    const requestContentEncoding = input.headers.get('content-encoding') ?? undefined
+    const rawRequestBody = input.body === undefined ? undefined : bodyToBuffer(input.body)
+    const jsonIdentityRedactionApplied = isAuditSessionIdentityJsonRequest(requestContentType, undefined)
+    const redactedRequestBody = redactAuditSessionIdentityRequestBodyResult({
+      rawBody: rawRequestBody,
+      contentType: requestContentType,
+      contentEncoding: requestContentEncoding
+    })
     const requestPayload: PendingAuditPayloadInput = {
       attemptTempId: tempId,
       partType: 'upstream_request',
       headers: headersToSafeObject(input.headers),
-      body: input.body,
-      contentType: input.headers.get('content-type') ?? undefined,
-      contentEncoding: input.headers.get('content-encoding') ?? undefined
+      body: redactedRequestBody.body,
+      bodySha256: rawRequestBody ? createHash('sha256').update(rawRequestBody).digest('hex') : undefined,
+      rawBodySizeBytes: rawRequestBody?.byteLength,
+      captureStatus: redactedRequestBody.omittedForSafety ? 'dropped' : undefined,
+      contentType: requestContentType,
+      contentEncoding: jsonIdentityRedactionApplied ? undefined : requestContentEncoding
     }
     const state: AuditAttemptState = { tempId, attempt, requestPayload, requestPayloadCaptured: false, startedAtMs, completed: false }
     this.activeAttemptByTempId.set(tempId, state)
@@ -482,27 +507,6 @@ export class AuditCaptureContext {
     if (input.accountId) {
       this.bindContext({ accountId: input.accountId })
     }
-    const shouldCapture = outcome !== 'success' || this.successHotRetentionEnabled || this.successCaptureSelected
-    if (!shouldCapture) {
-      logger.debug({
-        event: 'gateway_audit_capture_skipped',
-        traceId: this.traceId,
-        outcome,
-        success,
-        successHotRetentionEnabled: this.successHotRetentionEnabled,
-        successCaptureSelected: this.successCaptureSelected,
-        sampleBucket: this.sampleBucket
-      }, '网关审计捕获已按采样策略跳过')
-      logRequestStage('audit.finalize', {
-        traceId: this.traceId,
-        outcome,
-        success,
-        skipped: true,
-        sampleBucket: this.sampleBucket
-      }, 'success', finalizeStartedAt)
-      return
-    }
-
     const shouldCapturePayloadBodies = this.capturePayloadBodies && (
       outcome !== 'success'
       || this.successHotRetentionEnabled
@@ -521,6 +525,12 @@ export class AuditCaptureContext {
       })
     }
     this.applyPayloadRetention(outcome === 'success' ? 'success' : 'failure')
+    const unsampledSuccessEnvelope = !this.overflowed
+      && outcome === 'success'
+      && !this.successHotRetentionEnabled
+      && !this.successCaptureSelected
+    const retainedAttempts = unsampledSuccessEnvelope ? [] : this.attempts
+    const retainedPayloads = unsampledSuccessEnvelope ? [] : this.payloads
     const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
     const auditLog: AuditLogInput = {
       id: `audit_${Date.now()}_${randomUUID()}`,
@@ -552,23 +562,23 @@ export class AuditCaptureContext {
         : sanitizeOptionalDiagnosticMessage(input.errorMessage),
       sampleBucket: this.sampleBucket,
       sampleReason: this.sampleReasonForOutcome(outcome),
-      captureStatus: this.overflowed ? 'overflow' : 'complete',
+      captureStatus: this.overflowed ? 'overflow' : this.metadataOnly || unsampledSuccessEnvelope ? 'metadata_only' : 'complete',
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
       durationMs: endedAtMs - this.startedAtMs,
       httpCompletedAt: this.httpCompletedAtMs === undefined ? undefined : new Date(this.httpCompletedAtMs).toISOString(),
       httpDurationMs: this.httpCompletedAtMs === undefined ? undefined : this.httpCompletedAtMs - this.startedAtMs,
       firstTokenMs: input.firstTokenMs,
-      attempts: this.attempts,
-      payloads: this.payloads
+      attempts: retainedAttempts,
+      payloads: retainedPayloads
     }
     logger.debug({
       event: 'gateway_audit_capture_finalized',
       traceId: this.traceId,
       outcome,
       success,
-      payloadCount: this.payloads.length,
-      attemptCount: this.attempts.length,
+      payloadCount: retainedPayloads.length,
+      attemptCount: retainedAttempts.length,
       captureStatus: auditLog.captureStatus,
       sampleReason: auditLog.sampleReason
     }, '网关审计捕获已完成，准备投递')
@@ -577,8 +587,8 @@ export class AuditCaptureContext {
       traceId: this.traceId,
       outcome,
       success,
-      payloadCount: this.payloads.length,
-      attemptCount: this.attempts.length,
+      payloadCount: retainedPayloads.length,
+      attemptCount: retainedAttempts.length,
       captureStatus: auditLog.captureStatus,
       ...(!success ? {
         failureReason: outcome,
@@ -605,34 +615,64 @@ export class AuditCaptureContext {
   private addClientRequestPayload(): void {
     if (!this.enabled || !this.capturePayloadBodies || this.clientRequestPayloadCaptured) return
     const rawBody = (this.req as RawBodyRequest).rawBody
+    if (rawBody && rawBody.byteLength > this.activeCaptureMaxBytes) {
+      this.clientRequestPayloadCaptured = true
+      this.markResidentPayloadOverflow(rawBody.byteLength)
+      return
+    }
+    const contentType = this.req.header('content-type')
+    const contentEncoding = this.req.header('content-encoding')
+    const jsonIdentityRedactionApplied = isAuditSessionIdentityJsonRequest(contentType, this.req.body)
+    const redactedBody = redactAuditSessionIdentityRequestBodyResult({
+      body: this.req.body,
+      rawBody,
+      contentType,
+      contentEncoding
+    })
     this.clientRequestPayloadCaptured = true
+    if (redactedBody.omittedForSafety) {
+      this.addPayload({
+        partType: 'client_request',
+        headers: requestHeadersToObject(this.req),
+        body: redactedBody.body,
+        rawBodySizeBytes: rawBody?.byteLength,
+        bodySha256: rawBody ? createHash('sha256').update(rawBody).digest('hex') : undefined,
+        captureStatus: 'dropped',
+        contentType,
+        contentEncoding: undefined
+      })
+      return
+    }
     this.addPayload({
       partType: 'client_request',
       headers: requestHeadersToObject(this.req),
-      body: rawBody,
-      contentType: this.req.header('content-type'),
-      contentEncoding: this.req.header('content-encoding')
+      body: redactedBody.body,
+      rawBodySizeBytes: rawBody?.byteLength,
+      bodySha256: rawBody ? createHash('sha256').update(rawBody).digest('hex') : undefined,
+      contentType,
+      contentEncoding: jsonIdentityRedactionApplied ? undefined : contentEncoding
     })
   }
 
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
+    const preparedPayload = redactAuditPayloadSessionIdentity(payload)
     if (!shouldOffloadAuditPayloadRetention()) {
-      summarizeAuditPayloadForLimit(payload, this.problemFullBodyLimitBytes)
+      summarizeAuditPayloadForLimit(preparedPayload, this.problemFullBodyLimitBytes)
     }
-    const nextResidentPayloadBytes = this.residentPayloadBytes + estimatePayloadBytes(payload)
+    const nextResidentPayloadBytes = this.residentPayloadBytes + estimatePayloadBytes(preparedPayload)
     if (nextResidentPayloadBytes > this.activeCaptureMaxBytes) {
       this.markResidentPayloadOverflow(nextResidentPayloadBytes)
       return
     }
-    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, this.problemFullBodyLimitBytes)
+    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(preparedPayload, this.problemFullBodyLimitBytes)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
       this.markResidentPayloadOverflow(nextResidentPayloadBytes)
       return
     }
     this.payloads.push({
-      ...payload,
+      ...preparedPayload,
       id: `audpay_${Date.now()}_${randomUUID()}`,
       sequenceIndex: this.sequenceIndex,
       createdAt: nowIso()
@@ -701,7 +741,29 @@ export class AuditCaptureContext {
     if (this.successCaptureSelected) {
       return `success_sample_${this.successSampleRate}`
     }
-    return 'success_hot_full_retention'
+    return this.successHotRetentionEnabled ? 'success_hot_full_retention' : 'success_metadata_only'
+  }
+}
+
+function redactAuditPayloadSessionIdentity(
+  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>
+): Omit<AuditLogPayloadInput, 'sequenceIndex'> {
+  if (payload.body === undefined || !isAuditSessionIdentityStructuredPayload(payload.contentType, undefined)) {
+    return payload
+  }
+  const rawBody = bodyToBuffer(payload.body)
+  const result = redactAuditSessionIdentityRequestBodyResult({
+    rawBody,
+    contentType: payload.contentType,
+    contentEncoding: payload.contentEncoding
+  })
+  return {
+    ...payload,
+    body: result.body,
+    bodySha256: payload.bodySha256 ?? createHash('sha256').update(rawBody).digest('hex'),
+    rawBodySizeBytes: payload.rawBodySizeBytes ?? rawBody.byteLength,
+    captureStatus: result.omittedForSafety ? 'dropped' : payload.captureStatus,
+    contentEncoding: undefined
   }
 }
 

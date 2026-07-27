@@ -256,7 +256,6 @@ interface DatabaseStorageHistoryRow {
 
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
-const tableStorageOverviewCacheTtlMs = 30_000
 const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 const statsSchemaName = 'juhe_stats'
 const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
@@ -266,7 +265,6 @@ const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
   { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' },
   { role: 'codex-context-state', schemaName: 'juhe_codex_context', databasePath: 'postgres:juhe_codex_context' }
 ]
-let tableStorageOverviewCache: { key: string; cachedAtMs: number; value: TableStorageOverview } | undefined
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -384,22 +382,14 @@ export function getTableStorageOverview(input: TableStorageOverviewInput = {}): 
 }
 
 export async function getTableStorageOverviewAsync(input: TableStorageOverviewInput = {}): Promise<TableStorageOverview> {
-  const cachedOverview = getCachedTableStorageOverview(input)
-  if (cachedOverview) return cachedOverview
-
-  let overview: TableStorageOverview
   if (sqliteReadWorkerPoolEnabled()) {
-    overview = await requestSqliteReadWorker({
+    return await requestSqliteReadWorker({
       type: 'get_table_storage_overview_read_only',
       input
     })
-    setCachedTableStorageOverview(input, overview)
-    return overview
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    overview = getTableStorageOverview(input)
-    setCachedTableStorageOverview(input, overview)
-    return overview
+    return getTableStorageOverview(input)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const databaseRows = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.one<LatestDatabaseSnapshotRow>(`
@@ -427,7 +417,7 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
     LIMIT ?
   `, [databaseRole, databaseRole, limit])))
   const tables = tableRowsByRole.flat()
-  overview = {
+  return {
     sampledAt,
     databases: databases.map(databaseOverviewSnapshotFromRow),
     tables: tables
@@ -435,30 +425,6 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
       .slice(0, limit)
       .map(tableOverviewSnapshotFromRow)
   }
-  setCachedTableStorageOverview(input, overview)
-  return overview
-}
-
-function getCachedTableStorageOverview(input: TableStorageOverviewInput): TableStorageOverview | undefined {
-  const key = tableStorageOverviewCacheKey(input)
-  const cached = tableStorageOverviewCache
-  if (!cached || cached.key !== key) return undefined
-  if (Date.now() - cached.cachedAtMs > tableStorageOverviewCacheTtlMs) return undefined
-  return cached.value
-}
-
-function setCachedTableStorageOverview(input: TableStorageOverviewInput, value: TableStorageOverview): void {
-  tableStorageOverviewCache = {
-    key: tableStorageOverviewCacheKey(input),
-    cachedAtMs: Date.now(),
-    value
-  }
-}
-
-function tableStorageOverviewCacheKey(input: TableStorageOverviewInput): string {
-  return JSON.stringify({
-    limit: input.limit ?? ''
-  })
 }
 
 export function listTableStorageHistory(input: {

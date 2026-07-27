@@ -14,7 +14,9 @@ export const auditLogMaxListWindowRows = 1001
 // wider projection below; list callers never need payload/error body columns.
 export function auditLogListSelectColumns(alias: string): string {
   return [
-    'id', 'trace_id', 'traffic_source', 'system_account_id', 'api_key_id',
+    'id', 'trace_id', 'conversation_key', 'session_namespace', 'session_source',
+    'session_resolution', 'session_confidence', 'thread_key', 'turn_key', 'agent_key',
+    'parent_response_key', 'identity_conflict', 'traffic_source', 'system_account_id', 'api_key_id',
     'group_id', 'account_id', 'method', 'path', 'model', 'upstream_model',
     'model_mapping_applied', 'stream', 'audit_outcome', 'success',
     'final_status_code', 'duration_ms', 'http_duration_ms', 'created_at'
@@ -26,6 +28,7 @@ export function buildAuditLogFilters(options: AuditLogListOptions): { clause: st
   const params: AuditLogFilterValue[] = []
 
   pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
+  pushExactFilter(clauses, params, 'al.conversation_key', options.conversationKey)
   pushPathExactFilter(clauses, params, 'al.path', options.path)
   pushExactFilter(clauses, params, 'al.model', options.model)
   pushPrefixFilter(clauses, params, 'al.client_ip', options.clientIp)

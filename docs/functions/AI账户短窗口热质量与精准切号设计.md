@@ -328,7 +328,7 @@ spend 1 credit = 1 same_tier_exploration assignment
 
 ## 5. 热质量模型
 
-本文“热质量”只统计可验证的协议成功、传输失败和首字速度，不等于按上游状态码猜测业务可用性。只有协议结构验证成功的响应进入 `completedResponses` 和正向速度样本；完整 HTTP `401 / 429 / 5xx`、任意错误正文和 `2xx-invalid-body` 进入中性的 `upstreamResponseFailures` 诊断计数，不抬高也不降低共享可靠性。账户所有者若希望特定响应产生语义动作，必须在前端高级设置中显式配置规则。
+本文“热质量”只统计可验证的协议成功、传输失败和首字速度，不等于按上游状态码猜测业务可用性。只有协议结构验证成功的响应进入 `completedResponses` 和正向速度样本；完整 HTTP `401 / 429 / 5xx`、任意错误正文和 `2xx-invalid-body` 进入中性的 `upstreamResponseFailures` 诊断计数，不抬高也不降低共享可靠性。gateway 可以据此投递去重限频的独立健康检查，但不能直接写账户状态、transport 电路或数据库质量分。账户所有者若希望特定响应产生语义动作，必须在前端高级设置中显式配置规则。
 
 ### 5.1 存储边界
 

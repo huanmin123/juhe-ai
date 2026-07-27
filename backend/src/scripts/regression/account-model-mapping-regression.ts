@@ -501,7 +501,7 @@ try {
     modelMappings: [
       responsesMapping(crossProviderSourceModel, replacementUpstreamModel)
     ]
-  }, ownerAccess), /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, '账号模型别名来源模型必须来自当前供应商协议模型池')
+  }, ownerAccess), /账号模型别名来源模型不在当前供应商模型目录中/, '普通账户客户端模型必须来自当前供应商完整模型目录')
   const crossProviderSourceBindings = customProviderModelBindings({
     providerCode: GLM_PROVIDER_CODE,
     model: crossProviderSourceModel,
@@ -516,7 +516,7 @@ try {
         responsesMapping(unavailableSourceModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, '草稿模型不能作为下游映射源')
+  }, /账号模型别名来源模型不在当前供应商模型目录中/, '草稿模型不能作为客户端映射源')
 
   assert.throws(() => {
     repositories.updateAccount(account.id, {
@@ -525,13 +525,18 @@ try {
       ]
     }, ownerAccess)
   }, /账号模型别名目标模型不在当前供应商模型目录中/, '映射上游模型必须存在于当前账号可用模型池')
-  assert.throws(() => {
-    repositories.updateAccount(account.id, {
+  assert.doesNotThrow(() => {
+    const updatedWithChatOnlySource = repositories.updateAccount(account.id, {
       modelMappings: [
         responsesMapping(chatCompletionsUpstreamModel, replacementUpstreamModel)
       ]
     }, ownerAccess)
-  }, /账号模型别名来源模型不在当前供应商的对应协议模型目录中/, 'Responses 来源模型必须声明支持 Responses 协议，不能选择 Chat-only 模型')
+    assert.equal(
+      updatedWithChatOnlySource?.modelMappings?.[0]?.sourceModel,
+      chatCompletionsUpstreamModel,
+      '普通账户客户端模型不按来源协议过滤，Responses 映射应允许当前供应商目录中的 Chat-only 模型名'
+    )
+  }, '普通账户客户端模型只受当前供应商目录约束，不应受左右协议反向过滤')
   assertHybridProtocolModelPools()
   assertImportPreviewRejectsInvalidMapping(group.id)
   assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
@@ -983,6 +988,65 @@ function assertHybridProtocolModelPools(): void {
     }, ownerAccess)
     assert.equal(account.modelMappings?.[0]?.sourceModel, sourceModel, '合法混合供应商映射应保留 Responses 来源模型')
   }, '混合供应商应允许 Responses 协议模型映射到 Chat 上游模型')
+
+  assert.throws(() => {
+    createRegressionAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: '混合供应商 Messages 不能选择 Chat-only 来源模型',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-hybrid-account-model-mapping-invalid-messages-source',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      modelMappings: [
+        messagesToChatMapping(chatCompletionsUpstreamModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名来源模型不在对应协议模型池中/, 'Hybrid Messages 客户端模型必须真实声明 Messages 协议')
+
+  assert.throws(() => {
+    createRegressionAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: '混合供应商 Messages 上游不能选择 Chat-only 模型',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-hybrid-account-model-mapping-invalid-messages-upstream',
+        base_url: 'https://api.anthropic.com',
+        supported_endpoint_modes: ['messages_json']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      healthCheckEndpointMode: 'messages_json',
+      modelMappings: [
+        messagesToMessagesMapping(anthropicMessagesSourceModel, chatCompletionsUpstreamModel)
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名目标模型不在对应上游协议模型池中/, 'Hybrid Messages 上游模型必须真实声明 Messages 协议')
+
+  assert.throws(() => {
+    createRegressionAccount({
+      providerCode: HYBRID_PROVIDER_CODE,
+      providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+      name: '混合供应商 Gemini 上游不能选择 Chat-only 模型',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-hybrid-account-model-mapping-invalid-gemini-upstream',
+        base_url: 'https://generativelanguage.googleapis.com',
+        supported_endpoint_modes: ['generate_content_json']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      healthCheckEndpointMode: 'generate_content_json',
+      modelMappings: [
+        toGeminiGenerateContentMapping(sourceModel, chatCompletionsUpstreamModel, 'responses')
+      ],
+      groupId: group.id
+    }, ownerAccess)
+  }, /账号模型别名目标模型不在对应上游协议模型池中/, 'Hybrid Gemini 上游模型必须真实声明 GenerateContent 协议')
 }
 
 function assertProtocolMatrixHelper(): void {
@@ -1188,7 +1252,7 @@ function assertImportPreviewRejectsInvalidMapping(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(result.canImport, false, '非法模型映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', '非法模型映射导入预览应标记账户失败')
-  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名来源模型不在当前供应商的对应协议模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
+  assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名来源模型不在当前供应商模型目录中')), '导入预览应在预览阶段暴露模型映射目录错误')
 }
 
 function assertImportPreviewRejectsNonNativeResponsesMapping(groupId: string): void {

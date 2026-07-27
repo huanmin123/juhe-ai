@@ -15,6 +15,7 @@ import type {
 } from '../../../storage/repositories.js'
 import type { GatewayApiKeyGroupBindingRow } from '../../../storage/gateway-api-key.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
+import type { GatewayModelAccountFilterResult } from '../dispatch/model-filter.js'
 
 export type NormalGatewayModelRouteSource = 'account_mapping' | 'catalog_provider'
 
@@ -104,16 +105,13 @@ export async function resolveNormalGatewayModelRoute(
     bindings,
     targetModel: requestedModel,
     requestClientCompatibility,
-    candidatePriority: (candidate) => candidate.modelFilter.mappingMatchedCount > 0
-      ? 2
-      : catalogRoute.outcome === 'matched' && candidate.binding.provider_code === catalogRoute.route.providerCode
-        ? 1
-        : Number.NEGATIVE_INFINITY
+    candidatePriority: (candidate) => normalGatewayModelTargetPriority(
+      candidate.modelFilter,
+      catalogRoute.outcome === 'matched' && candidate.binding.provider_code === catalogRoute.route.providerCode
+    )
   })
   if (mappingTarget) {
-    const routeSource = mappingTarget.modelFilter.mappingMatchedCount > 0
-      ? 'account_mapping'
-      : 'catalog_provider'
+    const routeSource = normalGatewayModelRouteSource(mappingTarget.modelFilter)
     const selectedProviderBindings = bindings
       .filter(candidate => candidate.provider_code === mappingTarget.binding.provider_code)
       .map(copyGroupBinding)
@@ -184,6 +182,21 @@ export async function resolveNormalGatewayModelRoute(
     requestedModel,
     matchedProviderCodes: matchedRoute.matchedProviderCodes
   }
+}
+
+export function normalGatewayModelTargetPriority(
+  modelFilter: Pick<GatewayModelAccountFilterResult, 'directMatchedCount' | 'mappingMatchedCount'>,
+  catalogProviderMatched: boolean
+): number {
+  if (modelFilter.directMatchedCount > 0) return 2
+  if (modelFilter.mappingMatchedCount > 0) return 1
+  return catalogProviderMatched ? 0 : Number.NEGATIVE_INFINITY
+}
+
+export function normalGatewayModelRouteSource(
+  modelFilter: Pick<GatewayModelAccountFilterResult, 'directMatchedCount'>
+): NormalGatewayModelRouteSource {
+  return modelFilter.directMatchedCount > 0 ? 'catalog_provider' : 'account_mapping'
 }
 
 function activeGatewayApiKeyGroupBindings(apiKeyRecord: GatewayApiKeyRow): GatewayApiKeyGroupBindingRow[] {

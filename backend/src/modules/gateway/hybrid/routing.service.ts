@@ -25,8 +25,18 @@ import { applyHybridRouteAffinityAsync } from './affinity.service.js'
 import { scoreHybridGatewayRequest, type HybridScoringResult } from './scoring.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayRawBodyRequest } from '../request/body.js'
+import { getGatewaySessionIdentity } from '../session-identity/index.js'
 
 const hybridRouteDiagnosticsChannel = channel('juhe-ai:hybrid-route-decision')
+
+function hybridIdentityDiagnostics(req: Request): {
+  conversationKey?: string
+} {
+  const identity = getGatewaySessionIdentity(req)
+  return {
+    conversationKey: identity?.conversationKey
+  }
+}
 
 export type HybridGatewayRouteResult =
   | {
@@ -112,8 +122,7 @@ export async function resolveHybridGatewayRoute(input: {
       const routeDiagnostics = {
         traceId: input.traceId,
         apiKeyId: input.apiKeyRecord.id,
-        sessionId: input.req.get?.('x-session-id'),
-        clientRequestId: input.req.get?.('x-client-request-id'),
+        ...hybridIdentityDiagnostics(input.req),
         endpoint: input.endpoint,
         outcome: 'selected',
         level: scoring.level,
@@ -161,8 +170,7 @@ export async function resolveHybridGatewayRoute(input: {
     hybridRouteDiagnosticsChannel.publish({
       traceId: input.traceId,
       apiKeyId: input.apiKeyRecord.id,
-      sessionId: input.req.get?.('x-session-id'),
-      clientRequestId: input.req.get?.('x-client-request-id'),
+      ...hybridIdentityDiagnostics(input.req),
       endpoint: input.endpoint,
       outcome: 'failed',
       reason,
@@ -202,8 +210,7 @@ export async function resolveHybridGatewayRoute(input: {
     const routeDiagnostics = {
       traceId: input.traceId,
       apiKeyId: input.apiKeyRecord.id,
-      sessionId: input.req.get?.('x-session-id'),
-      clientRequestId: input.req.get?.('x-client-request-id'),
+      ...hybridIdentityDiagnostics(input.req),
       endpoint: input.endpoint,
       outcome: 'selected',
       level: scoring.level,
@@ -251,8 +258,7 @@ export async function resolveHybridGatewayRoute(input: {
   hybridRouteDiagnosticsChannel.publish({
     traceId: input.traceId,
     apiKeyId: input.apiKeyRecord.id,
-    sessionId: input.req.get?.('x-session-id'),
-    clientRequestId: input.req.get?.('x-client-request-id'),
+    ...hybridIdentityDiagnostics(input.req),
     endpoint: input.endpoint,
     outcome: 'failed',
     reason: 'hybrid_target_group_unavailable',

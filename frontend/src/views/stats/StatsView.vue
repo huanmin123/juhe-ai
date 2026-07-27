@@ -297,7 +297,10 @@ async function loadData(options: { force?: boolean } = {}) {
   chartSectionResolved.modelDistribution = false
   chartSectionResolved.errors = false
   try {
-    await loadUsageStatsWindow()
+    await loadUsageStatsWindow({
+      force: options.force === true,
+      viewScope: isManagementView.value ? 'admin' : 'self'
+    })
     if (didUsageStatsWindowLoadFail(isManagementView.value ? 'admin' : 'self')) {
       throw new Error('统计日期窗口加载失败')
     }
@@ -627,7 +630,7 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow()
+  await loadUsageStatsWindow({ viewScope: isManagementView.value ? 'admin' : 'self' })
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({

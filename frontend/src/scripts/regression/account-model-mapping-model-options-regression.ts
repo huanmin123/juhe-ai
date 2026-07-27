@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 
 import {
   accountModelMappingEndpointFamilyProtocol,
+  accountModelMappingSourceModelOptions,
+  accountModelMappingUpstreamModelOptions,
   filterAccountModelMappingOptionsByEndpointFamily,
   type AccountModelMappingModelOption
 } from '../../views/accounts/accountModelMappingModelOptions'
@@ -31,6 +33,37 @@ const options: AccountModelMappingModelOption[] = [
   { label: 'gemini-native', value: 'gemini-native', supportedApiProtocols: ['generate_content', 'stream_generate_content'] },
   { label: 'unknown-legacy', value: 'unknown-legacy' }
 ]
+
+const ordinarySourceOptions = accountModelMappingSourceModelOptions({
+  providerCode: 'deepseek',
+  sourceEndpointFamily: 'responses',
+  currentProviderOptions: options,
+  openAIProtocolOptions: [],
+  anthropicProtocolOptions: [],
+  geminiProtocolOptions: []
+})
+assertDeepEqual(
+  values(ordinarySourceOptions),
+  values(options),
+  '普通账户客户端模型必须使用当前供应商完整目录，不能按客户端或上游协议反向过滤'
+)
+assertDeepEqual(
+  values(accountModelMappingSourceModelOptions({
+    providerCode: 'hybrid',
+    sourceEndpointFamily: 'messages',
+    currentProviderOptions: options,
+    openAIProtocolOptions: options,
+    anthropicProtocolOptions: options,
+    geminiProtocolOptions: options
+  })),
+  ['claude-messages'],
+  'Hybrid 客户端模型必须按客户端协议使用对应全局协议池'
+)
+assertDeepEqual(
+  values(accountModelMappingUpstreamModelOptions(options, 'responses')),
+  ['gpt-responses-only', 'gpt-dual'],
+  '上游模型必须按上游协议过滤'
+)
 
 assertDeepEqual(
   values(filterAccountModelMappingOptionsByEndpointFamily(options, 'chat_completions')),
@@ -75,6 +108,8 @@ assertIncludes(
   '账户详情必须把 supported_endpoint_modes 展示为上游接口能力'
 )
 assertIncludes(accountStrategySectionSource, 'label="上游接口能力"', '账户表单必须使用上游接口能力标签')
+assertIncludes(accountStrategySectionSource, 'placeholder="客户端模型"', '账户表单左侧必须明确使用客户端模型文案')
+assertIncludes(accountStrategySectionSource, 'placeholder="上游模型"', '账户表单右侧必须明确使用上游模型文案')
 assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
 assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
 assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')

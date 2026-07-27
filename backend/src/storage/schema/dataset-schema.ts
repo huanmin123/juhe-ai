@@ -115,6 +115,16 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           traffic_source TEXT NOT NULL,
           system_account_id TEXT,
           api_key_id TEXT,
+          conversation_key TEXT,
+          session_namespace TEXT,
+          session_source TEXT,
+          session_resolution TEXT,
+          session_confidence TEXT,
+          thread_key TEXT,
+          turn_key TEXT,
+          agent_key TEXT,
+          parent_response_key TEXT,
+          identity_conflict INTEGER,
           group_id TEXT,
           account_id TEXT,
           provider_code TEXT,
@@ -579,7 +589,46 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_record_cleanup_targets_attempt ON account_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, account_id);
 
   `)
+  if (ensureAuditLogSessionIdentityColumns(database)) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_conversation_created
+        ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id)
+        WHERE conversation_key IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_thread_created
+        ON audit_logs(system_account_id, api_key_id, thread_key, created_at, id)
+        WHERE thread_key IS NOT NULL;
+    `)
+  }
   database.exec(`
     DROP INDEX IF EXISTS idx_audit_logs_traffic_source_created;
   `)
+}
+
+function ensureAuditLogSessionIdentityColumns(database: DatabaseSync): boolean {
+  const columnRows = database.prepare('PRAGMA table_info(audit_logs)').all() as Array<{ name?: string }>
+  if (columnRows.length === 0) return false
+  const existingColumns = new Set(
+    columnRows
+      .map((column) => column.name)
+      .filter((name): name is string => Boolean(name))
+  )
+  const requiredColumns = [
+    ['conversation_key', 'TEXT'],
+    ['session_namespace', 'TEXT'],
+    ['session_source', 'TEXT'],
+    ['session_resolution', 'TEXT'],
+    ['session_confidence', 'TEXT'],
+    ['thread_key', 'TEXT'],
+    ['turn_key', 'TEXT'],
+    ['agent_key', 'TEXT'],
+    ['parent_response_key', 'TEXT'],
+    ['identity_conflict', 'INTEGER']
+  ] as const
+
+  for (const [name, type] of requiredColumns) {
+    if (existingColumns.has(name)) continue
+    database.exec(`ALTER TABLE audit_logs ADD COLUMN ${name} ${type}`)
+  }
+  return true
 }

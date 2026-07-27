@@ -8,11 +8,11 @@
 
 ## 2. 自动探针结果契约
 
-后台激活、周期健康、运行态恢复和冷却复测统一消费四类结果：
+后台激活、周期健康、请求失败确认、质量失败确认、运行态恢复和冷却复测统一消费四类结果，但按任务职责区分账户可用性与 transport 状态：
 
 - `complete_success`：协议成功且 framing 完整；按当前任务职责激活、记录正向健康或恢复匹配来源的自动状态。
-- `framing_complete_neutral`：framing 完整但协议 / 业务未成功；只记录有界诊断并顺延，最多关闭同来源 transport 怀疑，不计数、不启动或推进 24 小时 / 7 天窗口、不改变业务状态。
-- `upstream_failure`：仅限连接失败、硬超时、读取中断或 framing 未完成的 `transport_incomplete`；是自动状态机唯一负向证据。
+- `framing_complete_neutral`：framing 完整但协议 / 业务未成功；对 transport 电路和冷却恢复保持中性，但对固定模型、固定协议的后台激活、周期健康、请求失败确认和质量失败确认属于一次账户可用性失败，可累计对应健康阈值。
+- `upstream_failure`：仅限连接失败、硬超时、读取中断或 framing 未完成的 `transport_incomplete`；既是 transport 状态机负向证据，也是账户可用性失败。
 - `probe_task_failure`、`stale` 或其他 `unknown`：任务、本地配置、解密、版本过期或无法归因；不计数、不改变状态。
 
 不得从上游 HTTP status/body 推断凭据失效、授权失败、限流、封禁或服务故障。本地可验证的配置、解密和 OAuth token 生命周期问题走独立路径。人工测试与模型检测始终无状态。
@@ -21,9 +21,9 @@
 
 新建账户默认和需要重新确认连接配置的账户进入 `pending_test`，在后台检查通过前保持 `schedulable = false`。管理页面的新建表单默认选择“待检查”；操作者明确选择“可调度”即确认跳过初始检查，创建时直接恢复持久调度资格。该确认仍受账户时间计划和套餐过期状态约束，且不改变导入或内部创建路径的默认待检查语义。
 
-- 第一次独立 `transport_incomplete` 写入 `health_check_failure_started_at`；只有后续独立、同来源且通过 CAS 的 `transport_incomplete` 才能累计并保留最早起点。
-- `last_health_check_*` 可保存最近一次诊断；只有 `transport_incomplete` 才增加失败计数，`framing_complete_neutral` 只更新有界诊断并固定顺延 1 小时。
-- 从首次 `transport_incomplete` 起满 24 小时后的下一次独立 `transport_incomplete`，repository 才可原子写入 `status = error`、`schedulable = false`、`last_error_code = account_activation_check_timeout` 和明确的 `last_error_message`，同时停止继续安排 `pending_test` 复检。
+- 第一次独立账户可用性失败写入 `health_check_failure_started_at`；只有后续独立、同配置 revision 且通过 CAS 的可用性失败才累计并保留最早起点。
+- `last_health_check_*` 保存最近一次诊断；`transport_incomplete` 与受控探针的 `framing_complete_neutral` 都增加健康失败计数，任务故障和 stale/unknown 只更新有界调度。
+- 从首次账户可用性失败起满 24 小时后的下一次独立失败，repository 才可原子写入 `status = error`、`schedulable = false`、`last_error_code = account_activation_check_timeout` 和明确的 `last_error_message`，同时停止继续安排 `pending_test` 复检。
 - `complete_success` 清空自动 transport 失败计数和首次失败时间，将持久 `schedulable` 开关恢复为允许调度，并按账户时间计划把当前 `status` 激活或停用；时间计划不得反向关闭持久调度开关。
 - `probe_task_failure` / `stale` / `unknown` 不修改计数或状态，只做有界重排。
 

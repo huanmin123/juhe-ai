@@ -42,6 +42,7 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   areOpenAIHighConcurrencyAccountsBusyForLane,
   areOpenAIHighConcurrencyAccountsBusyForLaneAsync,
+  claimOpenAIAccountForSessionAsync,
   orderOpenAIAccountsBySessionAffinity,
   orderOpenAIAccountsBySessionAffinityAsync,
   type OpenAIAccountDispatchOrderingOptions
@@ -422,8 +423,42 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   if (readyPreparation.outcome !== 'ready') {
     return readyPreparation
   }
+  let readyAccounts = readyPreparation.accounts
+  try {
+    const proposedAccountId = readyAccounts[0]?.id
+    const claimedAccountId = proposedAccountId
+      ? await claimOpenAIAccountForSessionAsync(input.sessionAffinityKey, proposedAccountId, {
+          systemAccountId: input.systemAccountId,
+          apiKeyId: input.apiKeyId,
+          groupId: input.groupId
+        })
+      : undefined
+    if (claimedAccountId && claimedAccountId !== proposedAccountId && readyAccounts.some(account => account.id === claimedAccountId)) {
+      readyAccounts = await orderOpenAIAccountsBySessionAffinityAsync(
+        readyAccounts,
+        input.sessionAffinityKey,
+        dispatchOrderingOptions
+      )
+    }
+    if (input.sessionAffinityKey && proposedAccountId) {
+      input.auditCapture.addGatewayMetadata({
+        label: 'session_affinity_claim',
+        metadata: {
+          proposedAccountId,
+          claimedAccountId,
+          winnerAvailable: claimedAccountId ? readyAccounts.some(account => account.id === claimedAccountId) : false,
+          applied: readyAccounts[0]?.id === claimedAccountId
+        }
+      })
+    }
+  } catch (error) {
+    readyPreparation.releaseClientIpConcurrency()
+    await readyPreparation.settleHotQualityExplorationAfterDispatch?.('not_dispatched')
+    throw error
+  }
   return {
     ...readyPreparation,
+    accounts: readyAccounts,
     precheckHalfOpenEligible,
     normalRouteLatencyDegradationApplied: latencyDegradationOrder.applied,
     codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,

@@ -1,6 +1,3 @@
-import { createHash } from 'node:crypto'
-import type { Request } from 'express'
-
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createAppCache } from '../../../shared/cache.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -24,6 +21,10 @@ import {
   gatewayAccountConcurrencyAccountId,
   gatewayAccountConcurrencyAccountIds
 } from '../dispatch/account-concurrency-identity.js'
+import {
+  deriveGatewaySessionAffinityKey,
+  type GatewaySessionIdentity
+} from '../session-identity/index.js'
 
 interface SessionBinding {
   accountId: string
@@ -149,22 +150,16 @@ interface TrafficMigrationPreferenceWriteOptions {
   throwOnRedisError?: boolean
 }
 
-export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
+export function resolveOpenAIGatewaySessionAffinityKey(identity: Pick<GatewaySessionIdentity, 'conversationKey'> | undefined, input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  routeStrategyId?: string
+  providerProtocolProfileId?: string
 }): string | undefined {
-  const session = extractSessionIdentity(req)
-  if (!session) {
-    return undefined
-  }
-  return createHash('sha256')
-    .update(JSON.stringify({
-      systemAccountId: input.systemAccountId,
-      apiKeyId: input.apiKeyId ?? 'internal',
-      session
-    }))
-    .digest('hex')
+  return identity
+    ? deriveGatewaySessionAffinityKey(identity, input)
+    : undefined
 }
 
 export function orderOpenAIAccountsBySessionAffinity(
@@ -590,23 +585,36 @@ export function rememberOpenAIAccountForSession(sessionAffinityKey: string | und
 }
 
 export async function rememberOpenAIAccountForSessionAsync(sessionAffinityKey: string | undefined, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): Promise<void> {
+  await claimOpenAIAccountForSessionAsync(sessionAffinityKey, accountId, scope)
+}
+
+export async function claimOpenAIAccountForSessionAsync(
+  sessionAffinityKey: string | undefined,
+  accountId: string,
+  scope?: OpenAIGatewaySessionAffinityScope
+): Promise<string | undefined> {
   if (!sessionAffinityKey) {
-    return
+    return undefined
   }
   if (!shouldUseRedisSessionAffinity()) {
-    rememberOpenAIAccountForSession(sessionAffinityKey, accountId, scope)
-    return
+    if (!canUseProcessLocalSessionAffinity()) return undefined
+    return claimOpenAIAccountForSessionLocal(sessionAffinityKey, accountId, scope)
   }
   try {
     let previous = await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (previous) {
+        if (previous.binding.accountId === accountId) {
+          await refreshRedisSessionAffinityBinding(await redisSessionAffinityClient(), sessionAffinityKey, previous)
+        }
+        return previous.binding.accountId
+      }
       const written = await setRedisSessionAffinityBinding(sessionAffinityKey, {
         accountId,
-        scope,
-        ...(previous?.binding.accountId === accountId && previous.binding.trafficMigrationPreferred ? { trafficMigrationPreferred: true } : {})
+        scope
       }, previous)
       if (written) {
-        return
+        return accountId
       }
       previous = await getRedisSessionAffinityRecord(sessionAffinityKey, { refreshTtl: false })
     }
@@ -616,15 +624,23 @@ export async function rememberOpenAIAccountForSessionAsync(sessionAffinityKey: s
       accountId
     }), 'Redis 会话亲和绑定写入失败，已跳过本次亲和记录')
   }
+  return undefined
 }
 
 function rememberOpenAIAccountForSessionLocal(sessionAffinityKey: string, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): void {
+  claimOpenAIAccountForSessionLocal(sessionAffinityKey, accountId, scope)
+}
+
+function claimOpenAIAccountForSessionLocal(sessionAffinityKey: string, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): string {
   const previous = sessionAffinityCache.get(sessionAffinityKey)
+  if (previous) {
+    return previous.accountId
+  }
   setSessionAffinityBinding(sessionAffinityKey, {
     accountId,
-    scope,
-    ...(previous?.accountId === accountId && previous.trafficMigrationPreferred ? { trafficMigrationPreferred: true } : {})
+    scope
   })
+  return accountId
 }
 
 export function rememberOpenAIAccountTrafficMigrationPreference(
@@ -1333,35 +1349,6 @@ function trafficMigrationGroupPreferenceScopeKey(systemAccountId: string, groupI
   return `${systemAccountId}:*:${groupId}`
 }
 
-function extractSessionIdentity(req: Request): { source: string; value: string } | undefined {
-  for (const name of sessionHeaderNames) {
-    const value = stringValue(req.header(name))
-    if (value) {
-      return { source: `header:${name.toLowerCase()}`, value }
-    }
-  }
-
-  for (const path of sessionBodyPaths) {
-    const value = stringValue(valueAtPath(req.body, path))
-    if (value) {
-      return { source: `body:${path.join('.')}`, value }
-    }
-  }
-
-  return undefined
-}
-
-function valueAtPath(value: unknown, path: string[]): unknown {
-  let current = value
-  for (const key of path) {
-    if (typeof current !== 'object' || current === null) {
-      return undefined
-    }
-    current = (current as Record<string, unknown>)[key]
-  }
-  return current
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
@@ -1433,28 +1420,3 @@ function orderOpenAIAccountsByModelPriority(
   }
   return [...accounts].sort((left, right) => compareGatewayAccountModelPriority(left, right, modelPriority))
 }
-
-const sessionHeaderNames = [
-  'session_id',
-  'session-id',
-  'x-session-id',
-  'conversation_id',
-  'conversation-id',
-  'x-conversation-id',
-  'prompt_cache_key',
-  'x-prompt-cache-key',
-  'previous_response_id',
-  'previous-response-id',
-  'x-previous-response-id',
-  'x-client-request-id'
-]
-
-const sessionBodyPaths = [
-  ['previous_response_id'],
-  ['session_id'],
-  ['conversation_id'],
-  ['prompt_cache_key'],
-  ['metadata', 'session_id'],
-  ['metadata', 'conversation_id'],
-  ['metadata', 'user_id']
-]

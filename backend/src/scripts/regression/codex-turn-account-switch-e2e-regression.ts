@@ -12,6 +12,7 @@ import type { Request } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { resolveGatewaySessionIdentity } from '../../modules/gateway/session-identity/index.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-codex-turn-switch-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -72,6 +73,7 @@ interface SeededGateway {
   failedAccountId: string
   freshAccountId: string
   apiKeyId: string
+  routeStrategyId: string
   failedUpstreamKey: string
   freshUpstreamKey: string
 }
@@ -515,9 +517,9 @@ async function assertCodexPostOutputFailureTerminatesWithoutReplay(
     1,
     `Codex 精确客户端在输出后失败时必须收到且只收到一个网关受控失败事件：${streamText}`
   )
-  assert(streamText.includes('upstream_stream_interrupted'), `输出后受控失败事件必须使用稳定的网关中断码：${streamText}`)
+  assert(streamText.includes('upstream_retryable_error'), `输出后受控失败事件必须使用稳定的客户端可重试码：${streamText}`)
   assert(streamText.includes('上游流式响应在输出后中断'), `输出后受控失败事件必须使用网关脱敏文案：${streamText}`)
-  assert(!streamText.includes('upstream_retryable_error'), `输出后不得伪造成尚未产生语义输出的客户端重试事件：${streamText}`)
+  assert(!streamText.includes('upstream_stream_interrupted'), `输出后精确客户端不得继续使用旧中断码：${streamText}`)
   assert(!streamText.includes('cyber_policy'), `输出后不得透出供应商自造错误码：${streamText}`)
   assert(!streamText.includes('possible cybersecurity risk'), `输出后不得透出供应商错误文案：${streamText}`)
 
@@ -530,6 +532,18 @@ async function assertCodexPostOutputFailureTerminatesWithoutReplay(
     beforeRuntimeAvailability,
     '输出后供应商失败结构不得创建账户运行态抑制'
   )
+
+  const beforeTurnRetryFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeTurnRetryFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  const turnRetryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'codex-turn-direct-formal-success',
+    turnId: 'turn-cyber-policy',
+    codex: true,
+    retryTag: 'committed-retry-signal-account-avoidance'
+  })
+  assert(turnRetryText.includes('response.completed'), `输出后强失败的同 turn 重试应由备用账号完成：${turnRetryText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeTurnRetryFailedHits, 0, '强失败证据应让同 turn 下一请求跨优先级避开原账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeTurnRetryFreshHits, 1, '强失败证据应直接选择同 turn 备用账号')
 }
 
 async function assertClientAbortClearsSessionAffinity(
@@ -542,10 +556,12 @@ async function assertClientAbortClearsSessionAffinity(
   const beforePrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeStickyHits = hitCount(upstreamState, seeded.freshUpstreamKey)
 
-  const sessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(sessionId), {
+  const sessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionIdentity(sessionId, seeded), {
     systemAccountId: seeded.systemAccountId,
     apiKeyId: seeded.apiKeyId,
-    groupId: seeded.groupId
+    groupId: seeded.groupId,
+    routeStrategyId: seeded.routeStrategyId,
+    providerProtocolProfileId: sessionAffinityProviderProfilePool(seeded)
   })
   assert(sessionKey, '测试应能生成会话亲和 key')
   sessionAffinity.rememberOpenAIAccountForSession(sessionKey, seeded.freshAccountId, {
@@ -589,11 +605,37 @@ async function assertClientAbortClearsSessionAffinity(
   assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeRetryPrimaryHits, 1, 'client_aborted 后应释放会话亲和并回到正常账号顺序')
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeRetryStickyHits, 0, 'client_aborted 后不应继续粘住已断开的备用账号')
 
+  const weakTurnId = `turn-client-abort-weak-threshold-${Date.now()}`
+  const beforeWeakPrimaryHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeWeakFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+  await requestResponsesStreamAndAbortAfterFirstChunk(baseUrl, seeded.apiKey, {
+    scenario: 'client-abort-before-terminal',
+    turnId: weakTurnId,
+    codex: true
+  })
+  await requestResponsesStreamAndAbortAfterFirstChunk(baseUrl, seeded.apiKey, {
+    scenario: 'client-abort-before-terminal',
+    turnId: weakTurnId,
+    codex: true
+  })
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeWeakPrimaryHits, 2, '同账号第一次弱断流后第二次仍应按正常顺序尝试原账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeWeakFreshHits, 0, '弱证据达到两次前不得提前切号')
+  const weakRetryText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'after-client-abort',
+    turnId: weakTurnId,
+    codex: true
+  })
+  assert(weakRetryText.includes('response.completed'), `两次弱断流后的第三次请求应完成：${weakRetryText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeWeakPrimaryHits, 2, '两次同账号弱断流后第三次请求不得再次命中原账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeWeakFreshHits, 1, '两次同账号弱断流后第三次请求应切到备用账号')
+
   const headerDelaySessionId = `session-client-abort-before-headers-${Date.now()}`
-  const headerDelaySessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionRequest(headerDelaySessionId), {
+  const headerDelaySessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey(createSessionIdentity(headerDelaySessionId, headerSeeded), {
     systemAccountId: headerSeeded.systemAccountId,
     apiKeyId: headerSeeded.apiKeyId,
-    groupId: headerSeeded.groupId
+    groupId: headerSeeded.groupId,
+    routeStrategyId: headerSeeded.routeStrategyId,
+    providerProtocolProfileId: sessionAffinityProviderProfilePool(headerSeeded)
   })
   assert(headerDelaySessionKey, '测试应能生成响应头前断开场景的会话亲和 key')
   sessionAffinity.rememberOpenAIAccountForSession(headerDelaySessionKey, headerSeeded.freshAccountId, {
@@ -706,6 +748,7 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     failedAccountId: failedAccount.id,
     freshAccountId: freshAccount.id,
     apiKeyId: apiKey.id,
+    routeStrategyId: apiKey.routeStrategyId,
     failedUpstreamKey,
     freshUpstreamKey
   }
@@ -795,6 +838,7 @@ function seedThreeAccountGateway(
     latentFailedAccountId: latentFailedAccount.id,
     freshAccountId: freshAccount.id,
     apiKeyId: apiKey.id,
+    routeStrategyId: apiKey.routeStrategyId,
     failedUpstreamKey,
     latentFailedUpstreamKey,
     freshUpstreamKey
@@ -859,6 +903,7 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     failedAccountId: failedAccount.id,
     probeFailedAccountId: probeFailedAccount.id,
     apiKeyId: apiKey.id,
+    routeStrategyId: apiKey.routeStrategyId,
     failedUpstreamKey,
     probeFailedUpstreamKey
   }
@@ -1023,7 +1068,7 @@ async function requestResponsesRaw(
     })
   }
   if (input.sessionId) {
-    headers['x-session-id'] = input.sessionId
+    headers['session-id'] = input.sessionId
   }
   const response = await fetchResponsesWithTransientResetRetry(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -1093,7 +1138,7 @@ async function requestResponsesStreamAndAbortAfterFirstChunk(
     })
   }
   if (input.sessionId) {
-    headers['x-session-id'] = input.sessionId
+    headers['session-id'] = input.sessionId
   }
   await new Promise<void>((resolveAbort, rejectAbort) => {
     let settled = false
@@ -1180,7 +1225,7 @@ async function requestResponsesStreamAndAbortAfterUpstreamRequestStarted(
     })
   }
   if (input.sessionId) {
-    headers['x-session-id'] = input.sessionId
+    headers['session-id'] = input.sessionId
   }
   let destroyedByTest = false
   let unexpectedRequestError: unknown
@@ -1409,12 +1454,34 @@ function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {
 }
 
 function createSessionRequest(sessionId: string): Request {
+  const headers: Record<string, string> = { 'session-id': sessionId }
   return {
-    header(name: string) {
-      return name.toLowerCase() === 'x-session-id' ? sessionId : undefined
+    method: 'POST',
+    originalUrl: '/v1/responses',
+    headers,
+    header(name: string): string | undefined {
+      return headers[name.toLowerCase()]
     },
     body: {}
   } as Request
+}
+
+function createSessionIdentity(sessionId: string, seeded: Pick<SeededGateway, 'systemAccountId' | 'apiKeyId'>) {
+  return resolveGatewaySessionIdentity(createSessionRequest(sessionId), {
+    clientProfile: 'codex',
+    systemAccountId: seeded.systemAccountId,
+    apiKeyId: seeded.apiKeyId
+  })
+}
+
+function sessionAffinityProviderProfilePool(
+  seeded: Pick<SeededGateway, 'systemAccountId' | 'groupId'>
+): string {
+  const profileIds = [...new Set(
+    repositories.listOpenAIAccountsForGroup(seeded.groupId, seeded.systemAccountId)
+      .map((account) => account.providerProtocolProfileId?.trim() || account.providerCode.trim())
+  )].sort()
+  return `pool:${profileIds.join(',') || 'empty'}`
 }
 
 function listen(server: http.Server): Promise<void> {

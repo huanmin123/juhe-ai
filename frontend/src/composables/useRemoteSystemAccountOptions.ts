@@ -2,10 +2,7 @@ import { onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
-import {
-  removeLocalSelectPreferenceValues,
-  type LocalSelectStorageKeyPart
-} from '@/shared/selectLocalPreferenceCache'
+import { removeLocalSelectPreferenceValues } from '@/shared/selectLocalPreferenceCache'
 import type { SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -13,8 +10,6 @@ interface RemoteSystemAccountOptionsConfig {
   enabled?: () => boolean
   errorMessage?: string
   limit?: number
-  cacheTtlMs?: number
-  localCacheKeyParts?: () => LocalSelectStorageKeyPart[]
   onMissingSelectedIds?: (ids: string[]) => void
   preferenceKeys?: () => string[]
   searchDelayMs?: number

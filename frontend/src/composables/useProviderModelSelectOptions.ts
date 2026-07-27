@@ -85,27 +85,29 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     ].map((code) => code.trim()).filter(Boolean))].sort()
     const providerCode = providerCodes.length === 1 ? providerCodes[0] : undefined
     const selectedIds = [...new Set([...(options.selectedIds?.value ?? []), ...(params.selectedIds ?? [])]
-      .map((id) => id.trim()).filter(Boolean))].slice(0, 50)
+      .map((id) => id.trim()).filter(Boolean))]
     const query = {
       ...scopeParams,
       ...(providerCode ? { providerCode } : {}),
       ...(options.protocol ? { protocol: options.protocol } : {}),
       ...(params.keyword?.trim() ? { keyword: params.keyword.trim() } : {}),
-      limit: Math.min(50, Math.max(1, params.limit ?? 50)),
-      ...(selectedIds.length ? { selectedIds } : {})
+      limit: Math.min(50, Math.max(1, params.limit ?? 50))
     }
     const promise = (async () => {
       try {
-        const result = providerCodes.length <= 1
-          ? await api.providers.modelOptions(query)
-          : await Promise.all(providerCodes.map((code) => api.providers.modelOptions({
-              ...query,
-              providerCode: code
-            }))).then((results) => {
-              const byId = new Map<string, ProviderModelOption>()
-              for (const item of results.flat()) byId.set(item.id, item)
-              return [...byId.values()]
-            })
+        const selectedIdBatches = chunkedSelectedModelIds(selectedIds)
+        const requestBatches = selectedIdBatches.length ? selectedIdBatches : [[]]
+        const requestProviderCodes = providerCodes.length ? providerCodes : [undefined]
+        const results = await Promise.all(requestProviderCodes.flatMap((code) => requestBatches.map((batch) => (
+          api.providers.modelOptions({
+            ...query,
+            ...(code ? { providerCode: code } : {}),
+            ...(batch.length ? { selectedIds: batch } : {})
+          })
+        ))))
+        const byId = new Map<string, ProviderModelOption>()
+        for (const item of results.flat()) byId.set(item.id, item)
+        const result = [...byId.values()]
         if (isCurrentRequest(requestId, contextKey)) {
           providerModelOptions.value = result
           loadedScopeKey = scopeKey
@@ -176,6 +178,14 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   function hasModel(model: string): boolean {
     return optionValues.value.has(model.trim())
   }
+}
+
+function chunkedSelectedModelIds(values: string[]): string[][] {
+  const output: string[][] = []
+  for (let index = 0; index < values.length; index += 50) {
+    output.push(values.slice(index, index + 50))
+  }
+  return output
 }
 
 export function filterModelOption(input: string, option?: ProviderModelSelectOption): boolean {

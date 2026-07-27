@@ -45,6 +45,7 @@ import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import { resolveUsageServiceTiers, type UsageServiceTier } from './service-tier.js'
 import type { UsageReasoningEffort } from './reasoning-effort.js'
+import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -155,11 +156,18 @@ export async function recordFailedUpstreamAttempt(
   const errorPayload = interpretUpstreamSemantics && input.bodyText && input.headers instanceof Headers
     ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
-  const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
-  const errorType = sanitizeOptionalDiagnosticMessage(typeof errorPayload.type === 'string' ? errorPayload.type : undefined)
-  const errorMessage = input.errorMessage
-    ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
-    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
+  const errorCode = sanitizeOptionalDiagnosticMessage(
+    typeof errorPayload.code === 'string'
+      ? errorPayload.code
+      : typeof errorPayload.type === 'string'
+        ? errorPayload.type
+        : undefined
+  )
+  const errorMessage = sanitizeOptionalDiagnosticMessage(
+    input.errorMessage
+      ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
+      ?? input.bodyText
+  ) ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
   const failureObservation = interpretUpstreamSemantics
       ? classifyGatewayUpstreamFailure({
           phase: input.failureAttribution === 'client_lifecycle'
@@ -605,7 +613,9 @@ function failedUpstreamAttemptAttribution(input: {
 }
 
 function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
-  return value
+  const text = value?.trim()
+  if (!text) return undefined
+  return sanitizeDiagnosticPayload(text.slice(0, 4000)).slice(0, 1000)
 }
 
 function accountUsageModelAccounting(

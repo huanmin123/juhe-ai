@@ -49,6 +49,7 @@ assert.ok(!source.includes('<a-tab-pane key="payloads"'), '审计详情不应保
 assert.ok(source.includes('class="request-chain-section"'), '请求链路应作为详情抽屉的直接内容展示')
 assert.ok(source.includes(':data-source="requestChainRows"'), '合并后的列表应继续使用完整请求链路数据')
 assert.ok(source.includes('class="payload-viewer"'), '链路详情入口应在列表下方复用原文查看器')
+assert.ok(!source.includes('payloadStorageStatusText'), '原文查看器不应重复显示 Headers 或 Body 可读状态标签')
 
 const accountCellStart = source.indexOf("column.key === 'account'")
 const accountCellEnd = source.indexOf("column.key === 'status'", accountCellStart)

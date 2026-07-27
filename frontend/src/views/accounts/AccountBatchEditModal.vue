@@ -305,28 +305,34 @@
                         v-model:value="mapping.sourceEndpointFamily"
                         :disabled="disabled"
                         :options="sourceEndpointOptions"
+                        placeholder="客户端协议"
                       />
                       <a-select
                         v-model:value="mapping.sourceModel"
                         show-search
                         option-filter-prop="label"
                         :disabled="disabled"
-                        :options="modelOptions"
-                        placeholder="来源模型"
+                        :options="mappingSourceModelOptionsFor(mapping)"
+                        placeholder="客户端模型"
+                        @dropdown-visible-change="handleMappingModelOptionsOpen"
+                        @search="handleMappingModelOptionsSearch"
                       />
                       <SwapRightOutlined class="mapping-arrow" />
                       <a-select
                         v-model:value="mapping.upstreamEndpointFamily"
                         :disabled="disabled"
                         :options="upstreamEndpointOptionsFor(mapping)"
+                        placeholder="上游协议"
                       />
                       <a-select
                         v-model:value="mapping.upstreamModel"
                         show-search
                         option-filter-prop="label"
                         :disabled="disabled"
-                        :options="mappingUpstreamModelOptions"
-                        placeholder="目标模型"
+                        :options="mappingUpstreamModelOptionsFor(mapping)"
+                        placeholder="上游模型"
+                        @dropdown-visible-change="handleMappingModelOptionsOpen"
+                        @search="handleMappingModelOptionsSearch"
                       />
                       <a-switch v-model:checked="mapping.enabled" :disabled="disabled" />
                       <a-tooltip title="删除别名">
@@ -439,6 +445,10 @@ import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import { providerModelsForProtocolProfile, type AccountModelSelectOption } from './accountEditFormPayload'
 import {
+  accountModelMappingSourceModelOptions,
+  accountModelMappingUpstreamModelOptions
+} from './accountModelMappingModelOptions'
+import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
   availableAccountGptServiceTierOptions,
@@ -482,9 +492,11 @@ const saving = ref(false)
 const modelsLoading = ref(false)
 const contextError = ref('')
 const accountDetails = ref<AccountSummary[]>([])
+const currentProviderModelOptions = ref<AccountModelSelectOption[]>([])
 const modelOptions = ref<AccountModelSelectOption[]>([])
 const form = reactive<AccountBatchEditForm>(createAccountBatchEditForm())
 let loadToken = 0
+let modelOptionsRequestId = 0
 
 const tagOptions = computed(() => props.tags.map((tag) => ({ label: tag.name, value: tag.name })))
 const accountNameSummary = computed(() => {
@@ -521,8 +533,15 @@ const effectiveBatchEndpointModes = computed(() => (
 ))
 const healthCheckEndpointModeOptions = computed(() => accountHealthCheckEndpointModeOptions(effectiveBatchEndpointModes.value))
 const mappingUpstreamModelOptions = computed(() => {
-  const labels = new Map(modelOptions.value.map((option) => [option.value, option.label]))
-  return effectiveBatchModels.value.map((model) => ({ label: labels.get(model) ?? model, value: model }))
+  const options = new Map(currentProviderModelOptions.value.map((option) => [option.value, option]))
+  return effectiveBatchModels.value.map((model) => {
+    const option = options.get(model)
+    return {
+      label: option?.label ?? model,
+      value: model,
+      supportedApiProtocols: option?.supportedApiProtocols
+    }
+  })
 })
 const endpointModeOptions = computed(() => {
   const profile = selectedProtocolProfile.value ?? homogeneousAccount.value
@@ -593,6 +612,7 @@ async function loadContext(): Promise<void> {
   activeTab.value = 'general'
   Object.assign(form, createAccountBatchEditForm())
   accountDetails.value = []
+  currentProviderModelOptions.value = []
   modelOptions.value = []
   contextError.value = ''
   if (props.accounts.length < 2 || props.accounts.length > 100) {
@@ -625,9 +645,10 @@ async function loadContext(): Promise<void> {
   }
 }
 
-async function loadModelOptions(token: number): Promise<void> {
+async function loadModelOptions(token: number, keyword = ''): Promise<void> {
   const account = homogeneousAccount.value
   if (!account) return
+  const requestId = ++modelOptionsRequestId
   modelsLoading.value = true
   try {
     const scope = props.isManagementView
@@ -637,18 +658,39 @@ async function loadModelOptions(token: number): Promise<void> {
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
       scopeParams: scope,
-      selectedIds: effectiveBatchModels.value
+      selectedIds: [
+        ...effectiveBatchModels.value,
+        ...form.modelMappings.flatMap((mapping) => [mapping.sourceModel, mapping.upstreamModel])
+      ],
+      keyword
     })
-    if (token !== loadToken || !open.value) return
+    if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
+    currentProviderModelOptions.value = models.data
     modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, account.type)
   } finally {
-    if (token === loadToken) modelsLoading.value = false
+    if (token === loadToken && requestId === modelOptionsRequestId) modelsLoading.value = false
   }
+}
+
+function handleMappingModelOptionsOpen(nextOpen: boolean): void {
+  if (nextOpen) void loadModelOptions(loadToken)
+}
+
+function handleMappingModelOptionsSearch(value: string): void {
+  void loadModelOptions(loadToken, value.trim())
 }
 
 async function save(): Promise<void> {
   if (saveDisabled.value) return
-  const result = buildAccountBatchEditRequest(accountDetails.value, form)
+  const result = buildAccountBatchEditRequest(accountDetails.value, form, {
+    mappingAnthropicSourceModelOptions: currentProviderModelOptions.value,
+    mappingCurrentProviderSourceModelOptions: currentProviderModelOptions.value,
+    mappingGeminiSourceModelOptions: currentProviderModelOptions.value,
+    mappingSourceModelOptions: currentProviderModelOptions.value,
+    mappingUpstreamModelOptions: mappingUpstreamModelOptions.value,
+    providerCode: homogeneousAccount.value?.providerCode,
+    providerProfile: selectedProtocolProfile.value ?? selectedProvider.value
+  })
   if (!result.payload) {
     message.warning(result.message ?? '批量编辑配置无效')
     return
@@ -705,6 +747,24 @@ function upstreamEndpointOptionsFor(mapping: AccountModelMapping) {
       context: mappingContext()
     })
   }))
+}
+
+function mappingSourceModelOptionsFor(mapping: AccountModelMapping): AccountModelSelectOption[] {
+  return accountModelMappingSourceModelOptions({
+    providerCode: homogeneousAccount.value?.providerCode,
+    sourceEndpointFamily: mapping.sourceEndpointFamily,
+    currentProviderOptions: currentProviderModelOptions.value,
+    openAIProtocolOptions: currentProviderModelOptions.value,
+    anthropicProtocolOptions: currentProviderModelOptions.value,
+    geminiProtocolOptions: currentProviderModelOptions.value
+  }) as AccountModelSelectOption[]
+}
+
+function mappingUpstreamModelOptionsFor(mapping: AccountModelMapping): AccountModelSelectOption[] {
+  return accountModelMappingUpstreamModelOptions(
+    mappingUpstreamModelOptions.value,
+    mapping.upstreamEndpointFamily
+  ) as AccountModelSelectOption[]
 }
 
 function mappingContext() {

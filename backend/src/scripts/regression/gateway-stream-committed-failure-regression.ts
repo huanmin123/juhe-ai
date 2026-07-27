@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events'
 import type { Response } from 'express'
 
 import { pipeUpstreamStream } from '../../modules/gateway/response/stream.js'
+import { UpstreamRequestAbortedError } from '../../modules/gateway/upstream/request.js'
 
 const timeoutProfile = {
   firstResponseTimeoutMs: 5_000,
@@ -14,29 +15,57 @@ const timeoutProfile = {
 }
 
 await assertPreciseCommittedThrowIsSanitized()
+await assertMissingTerminalRecordsBeforeRetrySignal()
 await assertGenericCommittedThrowDisconnects()
 await assertFailureAfterWrittenTerminalDisconnects()
 await assertEofFlushFailureIsSanitized()
 await assertTerminalWriteFailureCannotBecomeSuccess()
 await assertFailureSignalWriteFailureDisconnects()
+await assertIncompleteClientAbortCallbackBoundaries()
 
 console.log('gateway stream committed failure regression passed')
 
 async function assertPreciseCommittedThrowIsSanitized(): Promise<void> {
   const response = fakeResponse()
+  const signalContexts: Array<{ accountFailureEligible: boolean }> = []
   const result = await pipe(upstreamOutputThenThrow(), response, {
-    committedFailureSignal: 'protocol_error_event'
+    committedFailureSignal: 'protocol_error_event',
+    beforeCommittedFailureSignal: async (context) => {
+      signalContexts.push(context)
+    }
   })
   const body = writtenText(response)
   assert.equal(result.completed, false)
   assert.equal(result.transportFailure, undefined, '无 transport provenance 的 iterable 异常必须保持请求级中性')
   assert.equal(result.gatewayLocalFailure, true, '无 provenance 的异常必须显式报告 gateway local unknown')
   assert.equal(count(body, 'event: response.failed'), 1, '精确客户端必须且只能收到一个受控失败终态')
-  assert.match(body, /upstream_stream_interrupted/)
+  assert.match(body, /upstream_retryable_error/)
   assert.match(body, /上游流式响应在输出后中断/)
   assert.doesNotMatch(body, /vendor-secret-code|vendor-private-message/)
   assert.equal(response.endCalls, 1)
   assert.equal(response.destroyCalls, 0)
+  assert.equal(signalContexts.length, 1)
+  assert.equal(signalContexts[0]?.accountFailureEligible, false, '无上游 provenance 的网关本地异常不得归罪账号')
+}
+
+async function assertMissingTerminalRecordsBeforeRetrySignal(): Promise<void> {
+  const response = fakeResponse()
+  let callbackBody = ''
+  let accountFailureEligible = false
+  const result = await pipe(singleChunkBody(outputEvent()), response, {
+    committedFailureSignal: 'protocol_error_event',
+    beforeCommittedFailureSignal: async (context) => {
+      callbackBody = writtenText(response)
+      accountFailureEligible = context.accountFailureEligible
+    }
+  })
+  const body = writtenText(response)
+  assert.equal(result.completed, false)
+  assert.equal(result.errorCode, 'upstream_stream_interrupted', '内部原因分类不得被 committed 客户端码覆盖')
+  assert.equal(accountFailureEligible, true, '缺少终态属于当前上游流的强失败证据')
+  assert.equal(count(callbackBody, 'event: response.failed'), 0, 'turn 状态回调必须发生在可重试终态写出前')
+  assert.equal(count(body, 'event: response.failed'), 1)
+  assert.match(body, /upstream_retryable_error/)
 }
 
 async function assertGenericCommittedThrowDisconnects(): Promise<void> {
@@ -76,7 +105,7 @@ async function assertEofFlushFailureIsSanitized(): Promise<void> {
   const body = writtenText(response)
   assert.equal(result.completed, false)
   assert.equal(count(body, 'event: response.failed'), 1, 'EOF flush 失败必须只产生一个受控失败终态')
-  assert.match(body, /upstream_stream_interrupted/)
+  assert.match(body, /upstream_retryable_error/)
   assert.doesNotMatch(body, /vendor-secret-code|vendor-private-message/)
   assert.equal(response.endCalls, 1)
   assert.equal(response.destroyCalls, 0)
@@ -114,10 +143,49 @@ async function assertFailureSignalWriteFailureDisconnects(): Promise<void> {
   assert.equal(response.destroyCalls, 1, '受控终态写失败必须降级为断连')
 }
 
+async function assertIncompleteClientAbortCallbackBoundaries(): Promise<void> {
+  const outputAbortController = new AbortController()
+  let outputAbortCallbacks = 0
+  await assert.rejects(pipe(abortAfterChunk(outputEvent(), outputAbortController), fakeResponse(), {
+    committedFailureSignal: 'protocol_error_event',
+    signal: outputAbortController.signal,
+    onIncompleteClientAbort: async () => {
+      outputAbortCallbacks += 1
+    }
+  }), UpstreamRequestAbortedError)
+  assert.equal(outputAbortCallbacks, 1, '已有可见输出且无终态的 client abort 必须回调一次弱证据')
+
+  const heartbeatAbortController = new AbortController()
+  let heartbeatAbortCallbacks = 0
+  await assert.rejects(pipe(abortAfterChunk(Buffer.from(': ping\n\n'), heartbeatAbortController), fakeResponse(), {
+    committedFailureSignal: 'protocol_error_event',
+    signal: heartbeatAbortController.signal,
+    onIncompleteClientAbort: async () => {
+      heartbeatAbortCallbacks += 1
+    }
+  }), UpstreamRequestAbortedError)
+  assert.equal(heartbeatAbortCallbacks, 0, '仅 transport heartbeat 的 client abort 不得记录弱证据')
+
+  const terminalAbortController = new AbortController()
+  let terminalAbortCallbacks = 0
+  const terminalResult = await pipe(abortAfterChunk(completedEvent(), terminalAbortController), fakeResponse(), {
+    committedFailureSignal: 'protocol_error_event',
+    signal: terminalAbortController.signal,
+    onIncompleteClientAbort: async () => {
+      terminalAbortCallbacks += 1
+    }
+  })
+  assert.equal(terminalResult.completed, true)
+  assert.equal(terminalAbortCallbacks, 0, '成功终态后的 client close 不得记录弱证据')
+}
+
 interface PipeOptions {
   committedFailureSignal: 'protocol_error_event' | 'disconnect'
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
+  beforeCommittedFailureSignal?: (context: { accountFailureEligible: boolean }) => Promise<void>
+  onIncompleteClientAbort?: () => Promise<void>
+  signal?: AbortSignal
 }
 
 async function pipe(
@@ -131,7 +199,7 @@ async function pipe(
     timeoutProfile,
     Date.now(),
     async () => {},
-    undefined,
+    options.signal,
     {
       responseProtocol: 'openai_v1',
       endpointFamily: 'responses',
@@ -139,6 +207,8 @@ async function pipe(
       interpretProtocolFailures: true,
       retryBeforeDownstreamWriteUntilOutput: true,
       committedFailureSignal: options.committedFailureSignal,
+      beforeCommittedFailureSignal: options.beforeCommittedFailureSignal,
+      onIncompleteClientAbort: options.onIncompleteClientAbort,
       transformUpstreamChunk: options.transformUpstreamChunk,
       flushTransformedUpstreamChunks: options.flushTransformedUpstreamChunks
     }
@@ -157,6 +227,15 @@ async function* successTerminalThenFailure(): AsyncGenerator<Uint8Array> {
 
 async function* singleChunkBody(chunk: Buffer): AsyncGenerator<Uint8Array> {
   yield chunk
+}
+
+async function* abortAfterChunk(
+  chunk: Buffer,
+  controller: AbortController
+): AsyncGenerator<Uint8Array> {
+  yield chunk
+  controller.abort()
+  await new Promise<void>((resolve) => setImmediate(resolve))
 }
 
 function outputEvent(): Buffer {

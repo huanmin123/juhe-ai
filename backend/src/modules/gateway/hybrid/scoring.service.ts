@@ -16,6 +16,7 @@ import {
 } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
+import { getGatewaySessionIdentity } from '../session-identity/index.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
 import {
   dispatchHybridAuxiliaryChatCompletion,
@@ -468,7 +469,7 @@ function buildHybridScoringCacheKey(input: {
         originalModel: requestModel(input.req),
         rawBodyDigest: rawBodyDigest(input.req),
         contextDigest: digestText(input.context),
-        selectedHeadersDigest: digestText(JSON.stringify(selectedScoringCacheHeaders(input.req)))
+        conversationKey: getGatewaySessionIdentity(input.req)?.conversationKey
       }
     }))
     .digest('hex')
@@ -492,21 +493,6 @@ function hybridScoringConfigFingerprint(config: ApiKeyHybridRoutingConfig): Reco
       enabled: route.enabled
     }))
   }
-}
-
-function selectedScoringCacheHeaders(req: Request): Record<string, string> {
-  const headers: Record<string, string> = {}
-  for (const name of scoringCacheHeaderNames) {
-    const value = stringHeaderValue(req.header(name))
-    if (value) {
-      headers[name] = value
-    }
-  }
-  return headers
-}
-
-function stringHeaderValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 function rawBodyDigest(req: Request): string | undefined {
@@ -663,18 +649,3 @@ function failedScoringResult(
     statusCode
   }
 }
-
-const scoringCacheHeaderNames = [
-  'session_id',
-  'session-id',
-  'x-session-id',
-  'conversation_id',
-  'conversation-id',
-  'x-conversation-id',
-  'prompt_cache_key',
-  'x-prompt-cache-key',
-  'previous_response_id',
-  'previous-response-id',
-  'x-previous-response-id',
-  'x-codex-turn-metadata'
-]

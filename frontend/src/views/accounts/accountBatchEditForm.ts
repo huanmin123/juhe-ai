@@ -27,7 +27,12 @@ import {
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
+import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
+import {
+  validateAccountModelMappings,
+  type ModelMappingProtocolOption
+} from './accountSavePayload'
 
 export type AccountBatchEditFieldKey =
   | 'tags'
@@ -74,6 +79,16 @@ export interface AccountBatchEditForm {
 export interface AccountBatchEditBuildResult {
   payload?: AccountBatchEditRequest
   message?: string
+}
+
+export interface AccountBatchEditModelMappingOptions {
+  mappingAnthropicSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingCurrentProviderSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingGeminiSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingSourceModelOptions?: ModelMappingProtocolOption[]
+  mappingUpstreamModelOptions?: ModelMappingProtocolOption[]
+  providerCode?: string
+  providerProfile?: AccountModelMappingProviderProfile
 }
 
 export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, string> = {
@@ -131,7 +146,8 @@ export function enabledAccountBatchEditFieldLabels(form: AccountBatchEditForm): 
 
 export function buildAccountBatchEditRequest(
   accounts: AccountSummary[],
-  form: AccountBatchEditForm
+  form: AccountBatchEditForm,
+  modelMappingOptions: AccountBatchEditModelMappingOptions = {}
 ): AccountBatchEditBuildResult {
   if (accounts.length < 2 || accounts.length > 100) {
     return { message: '批量编辑一次只能选择 2 到 100 个账户' }
@@ -211,7 +227,7 @@ export function buildAccountBatchEditRequest(
   if (invalidMappingIndex >= 0) {
     return { message: `请完整填写第 ${invalidMappingIndex + 1} 条账号模型别名` }
   }
-  const mappingValidation = validateBatchAccountModelMappings(accounts, form)
+  const mappingValidation = validateBatchAccountModelMappings(accounts, form, modelMappingOptions)
   if (mappingValidation) return { message: mappingValidation }
 
   const updates: AccountBatchEditRequest['updates'] = {}
@@ -276,7 +292,8 @@ export function intersectAccountSupportedEndpointModes(
 
 function validateBatchAccountModelMappings(
   accounts: AccountSummary[],
-  form: AccountBatchEditForm
+  form: AccountBatchEditForm,
+  modelMappingOptions: AccountBatchEditModelMappingOptions
 ): string | undefined {
   if (!form.enabled.modelMappings && !form.enabled.supportedEndpointModes) return undefined
   for (const account of accounts) {
@@ -294,7 +311,28 @@ function validateBatchAccountModelMappings(
       if (message) return message
     }
   }
+  if (form.enabled.modelMappings) {
+    const supportedModels = form.enabled.supportedModels
+      ? normalizedTextList(form.supportedModels)
+      : intersectAccountSupportedModels(accounts)
+    const supportedEndpointModes = form.enabled.supportedEndpointModes
+      ? form.supportedEndpointModes
+      : intersectAccountSupportedEndpointModes(accounts)
+    return validateAccountModelMappings(
+      form.modelMappings,
+      supportedModels,
+      supportedEndpointModes,
+      modelMappingOptions.providerProfile ?? accounts[0],
+      modelMappingOptions
+    )
+  }
   return undefined
+}
+
+function intersectAccountSupportedModels(accounts: AccountSummary[]): string[] {
+  if (!accounts.length) return []
+  const [first, ...rest] = accounts.map((account) => normalizedTextList(account.supportedModels ?? []))
+  return first.filter((model) => rest.every((models) => models.includes(model)))
 }
 
 function accountSupportedEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {

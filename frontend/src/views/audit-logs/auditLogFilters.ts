@@ -5,6 +5,7 @@ import { normalizedStatusCode } from './auditLogFormatters'
 
 export interface AuditLogFilterValues {
   accountIdFilter: string
+  conversationKeyFilter: string
   outcomeFilter: AuditOutcome | 'all'
   pathFilter: string
   statusCodeFilter: string
@@ -26,7 +27,7 @@ export interface AuditLogFilterCounts {
 export function auditLogFilterCounts(filters: AuditLogFilterValues): AuditLogFilterCounts {
   const advanced = auditLogAdvancedFilterCount(filters)
   return {
-    active: advanced + (filters.traceIdFilter.trim() ? 1 : 0),
+    active: advanced + (filters.traceIdFilter.trim() ? 1 : 0) + (filters.conversationKeyFilter.trim() ? 1 : 0),
     advanced
   }
 }
@@ -40,6 +41,7 @@ export function auditLogListParams(filters: AuditLogFilterValues, pageState: Aud
     page: pageState.current,
     pageSize: pageState.pageSize,
     traceId: filters.traceIdFilter.trim() || undefined,
+    conversationKey: filters.conversationKeyFilter.trim() || undefined,
     accountId: filters.accountIdFilter || undefined,
     outcome: filters.outcomeFilter,
     path: filters.pathFilter || undefined,

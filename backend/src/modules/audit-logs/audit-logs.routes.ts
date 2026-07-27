@@ -148,8 +148,7 @@ auditLogsRouter.get('/:id', async (req, res, next) => {
 auditLogsRouter.get('/:id/payloads/:payloadId', async (req, res, next) => {
   try {
     const payload = await getAuditLogPayload(req.params.id, req.params.payloadId, {
-      offset: finiteNumberQueryValue(req.query.offset),
-      limit: finiteNumberQueryValue(req.query.limit)
+      full: true
     })
     if (!payload) {
       sendNotFound(res, '审计原文不存在')
@@ -181,6 +180,7 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
     traceId: optionalQueryText(query.traceId),
+    conversationKey: optionalQueryText(query.conversationKey),
     errorGroupId: optionalQueryText(query.errorGroupId),
     outcome: typeof query.outcome === 'string' && auditOutcomes.has(query.outcome as AuditOutcome | 'all')
       ? query.outcome as AuditOutcome | 'all'

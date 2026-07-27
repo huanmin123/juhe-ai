@@ -10,6 +10,18 @@ import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 
 assertStatus('可调度账户', accountFixture(), '可调度', 'green')
+const circuitAvoidedAccount = accountFixture({
+  circuitSummary: {
+    status: 'avoided',
+    reason: 'connect_failed',
+    nextCheckAt: '2099-07-27T10:00:00.000Z'
+  }
+})
+assertStatus('熔断避让账户', circuitAvoidedAccount, '熔断避让', 'gold')
+assertTrue(
+  accountStatusTooltipLines(circuitAvoidedAccount).some((line) => line.includes('请求不会继续命中该作用域')),
+  '熔断避让账户 tooltip 应说明调度已避让对应作用域'
+)
 const activeAccountMenuItems = accountMenuItems(accountFixture())
 assertTrue(
   activeAccountMenuItems.some((item) => (

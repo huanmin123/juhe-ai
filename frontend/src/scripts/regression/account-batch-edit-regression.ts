@@ -167,7 +167,8 @@ for (const [source, expectedText] of [
   [accountScheduleSource, 'label="时间计划"'],
   [accountStrategySource, 'label="账号模型别名"'],
   [accountStrategySource, '新增别名'],
-  [accountStrategySource, 'placeholder="目标模型"'],
+  [accountStrategySource, 'placeholder="客户端模型"'],
+  [accountStrategySource, 'placeholder="上游模型"'],
   [accountGptOverridesSource, 'label="服务等级"'],
   [accountGptOverridesSource, 'label="思考级别"']
 ] as const) {
@@ -175,6 +176,8 @@ for (const [source, expectedText] of [
   assert.ok(modalSource.includes(expectedText), `批量编辑必须使用统一文案：${expectedText}`)
 }
 assert.match(modalSource, /isAccountModelMappingSourceEndpointFamilyAllowed/, '批量来源协议选项必须复用结构矩阵过滤')
+assert.match(modalSource, /mappingSourceModelOptionsFor\(mapping\)/, '批量客户端模型必须复用单编辑来源模型策略')
+assert.match(modalSource, /mappingUpstreamModelOptionsFor\(mapping\)/, '批量上游模型必须按每行上游协议过滤')
 assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
 assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')
 assert.doesNotMatch(modalSource, /advancedDetail\(/, '批量编辑不得逐账户读取高级详情')

@@ -71,7 +71,7 @@ import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-gene
 import { classifyChatGenerationError, type PublicChatGenerationErrorCode } from './chat-generation-error.js'
 import { createChatSseSubscriber, startChatSseHeartbeat, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
-import { createChatModelOptionsSnapshotCache, resolveChatModelOptionsFromAccountSnapshot } from './chat-model-availability.js'
+import { createChatModelOptionsRequestCoalescer, resolveChatModelOptionsFromAccountSnapshot } from './chat-model-availability.js'
 import { type ChatHostedTool } from './chat-tools.js'
 import { ChatInternalToolRegistry } from './tools/registry.js'
 import { ChatInternalToolOrchestrator } from './tools/orchestrator.js'
@@ -152,9 +152,8 @@ const registry = chatGenerationRegistry
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
-const chatModelOptionsCacheTtlMs = 30_000
 const chatModelOptionsSlowStageMs = 1_000
-const chatModelOptionsSnapshotCache = createChatModelOptionsSnapshotCache<ChatModelListOption[]>({ ttlMs: chatModelOptionsCacheTtlMs })
+const chatModelOptionsRequests = createChatModelOptionsRequestCoalescer<ChatModelListOption[]>()
 
 class ChatRequestError extends Error {
   constructor(public readonly code: 'chat_image_not_supported' | 'chat_request_body_too_large', message: string) {
@@ -1600,7 +1599,7 @@ async function loadChatConversationToolCapabilities(
 async function loadOwnedChatModelListAsync(conversationId: string, systemAccountId: string): Promise<ChatModelListOption[]> {
   const modelAccess = await requireOwnedChatModelAccessAsync(conversationId, systemAccountId)
   const cacheIdentity = `${systemAccountId}:${modelAccess.apiKey.id}`
-  return chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => (await loadChatModelListsFromAccountSnapshot({
+  return chatModelOptionsRequests.getOrLoad(cacheIdentity, async () => (await loadChatModelListsFromAccountSnapshot({
     groupIds: modelAccess.groupIds,
     systemAccountId,
     apiKeyId: modelAccess.apiKey.id

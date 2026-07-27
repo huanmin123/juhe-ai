@@ -18,7 +18,6 @@ import type {
 import type {
   AuditLogHotSearchParams,
   AuditLogListParams,
-  AuditLogPayloadParams,
   OperationLogListParams,
   PublicApiLogListParams,
   RuntimeLogGrepParams,
@@ -32,7 +31,7 @@ export const auditLogsApi = {
   searchHot: (params?: AuditLogHotSearchParams) => unwrap<AuditLogHotSearchResult>(http.get('/audit-logs/search-hot', { params, ...noTimeout })),
   runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
   detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
-  payload: (id: string, payloadId: string, params?: AuditLogPayloadParams) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, { params, ...noTimeout }))
+  payload: (id: string, payloadId: string) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, noTimeout))
 }
 
 export const runtimeLogsApi = {

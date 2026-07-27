@@ -40,13 +40,14 @@ assert.match(adminViewSource, /let announcementDetailRequestGeneration = 0/, '�
 assert.match(adminViewSource, /function openCreate[\s\S]*?announcementDetailRequestGeneration \+= 1/, '打开新增必须使未完成的编辑详情请求失效')
 assert.match(adminViewSource, /async function openEdit[\s\S]*?const requestGeneration = \+\+announcementDetailRequestGeneration/, '每次打开编辑必须生成新的详情请求代次')
 assert.match(adminViewSource, /requestGeneration !== announcementDetailRequestGeneration \|\| editingId\.value !== record\.id/, 'A→B 编辑切换时旧详情不得落到新目标表单')
-assert.match(adminViewSource, /loadEntityDetailCached\([\s\S]*?force: true/, '公告编辑必须绕过可能被旧在途请求回填的短缓存')
+assert.match(adminViewSource, /async function openEdit[\s\S]*?await api\.announcements\.detail\(record\.id\)/, '公告编辑每次打开都必须直接读取权威详情')
+assert.doesNotMatch(adminViewSource, /loadEntityDetailCached|entityDetailCache/, '公告编辑不能缓存动态详情结果')
 assert.match(adminViewSource, /function invalidatePendingAnnouncementDetail[\s\S]*?announcementDetailRequestGeneration \+= 1/, '公告写操作必须使同一公告的在途详情请求失效')
 for (const actionName of ['saveAnnouncement', 'publishAnnouncement', 'unpublishAnnouncement', 'removeAnnouncement']) {
   assert.match(
     adminViewSource,
     new RegExp(`${actionName}[\\s\\S]{0,1600}invalidatePendingAnnouncementDetail\\(`),
-    `${actionName} 成功后必须失效公告详情缓存`
+    `${actionName} 成功后必须使同一公告的在途详情请求失效`
   )
 }
 assert.doesNotMatch(adminViewSource, /const\s+\w+\s*=\s*await api\.announcements\.(?:create|update|publish|unpublish)/, '公告管理页面不能依赖写操作返回完整公告摘要')

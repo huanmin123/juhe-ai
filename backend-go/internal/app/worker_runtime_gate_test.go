@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -16,10 +17,9 @@ import (
 	"juhe-ai/backend-go/internal/version"
 )
 
-func TestRunWorkerWithRuntimeGateDisabledCallsRunnerWithoutDependencies(t *testing.T) {
-	called := false
+func TestRunWorkerWithRuntimeGateDisabledFailsClosedWithoutDependencies(t *testing.T) {
 	err := runWorkerWithRuntimeGate(t.Context(), config.Config{}, nil, func(context.Context) error {
-		called = true
+		t.Fatal("runner called without worker owner lock")
 		return nil
 	}, workerRuntimeGateDependencies{
 		acquire: func(string, ownerlock.Metadata) (workerRuntimeLock, error) {
@@ -31,11 +31,8 @@ func TestRunWorkerWithRuntimeGateDisabledCallsRunnerWithoutDependencies(t *testi
 			return nil, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("runWorkerWithRuntimeGate() error = %v", err)
-	}
-	if !called {
-		t.Fatal("runner was not called")
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_OWNER_LOCK_ENABLED=true") {
+		t.Fatalf("runWorkerWithRuntimeGate() error = %v, want owner lock requirement", err)
 	}
 }
 
@@ -67,6 +64,88 @@ func TestRunWorkerWithRuntimeGateRejectsNonWorkerRoleBeforeDependencies(t *testi
 	}
 }
 
+func TestRunWorkerWithRuntimeGateRejectsIncompleteOwnershipEvidenceBeforeDependencies(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*config.Config)
+		want string
+	}{
+		{name: "exclusive owner", edit: func(cfg *config.Config) { cfg.GoWorkerExclusiveOwner = false }, want: "GO_WORKER_EXCLUSIVE_OWNER"},
+		{name: "legacy drained", edit: func(cfg *config.Config) { cfg.LegacyNodeWorkerDrained = false }, want: "LEGACY_NODE_WORKER_DRAINED"},
+		{name: "absolute lock path", edit: func(cfg *config.Config) { cfg.OwnerLockPath = "runtime/worker.lock" }, want: "lock path must be absolute"},
+		{name: "absolute manifest path", edit: func(cfg *config.Config) { cfg.OwnerManifestPath = "deploy/owner-manifest.json" }, want: "manifest path must be absolute"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := enabledWorkerGateConfig(t)
+			test.edit(&cfg)
+			err := runWorkerWithRuntimeGate(t.Context(), cfg, nil, func(context.Context) error {
+				t.Fatal("runner called without complete ownership evidence")
+				return nil
+			}, workerRuntimeGateDependencies{
+				readManifest: func(string) (workerOwnerManifest, error) {
+					t.Fatal("manifest read before ownership preconditions passed")
+					return workerOwnerManifest{}, nil
+				},
+				acquire: func(string, ownerlock.Metadata) (workerRuntimeLock, error) {
+					t.Fatal("owner lock acquired without complete ownership evidence")
+					return nil, nil
+				},
+				openStore: func(context.Context, string) (workerRuntimeSchemaStore, error) {
+					t.Fatal("PostgreSQL opened without complete ownership evidence")
+					return nil, nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runWorkerWithRuntimeGate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRunWorkerWithRuntimeGateRejectsManifestMismatchBeforeLock(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*workerOwnerManifest)
+		want string
+	}{
+		{name: "schema", edit: func(manifest *workerOwnerManifest) { manifest.SchemaVersion = 1 }, want: "schemaVersion"},
+		{name: "epoch", edit: func(manifest *workerOwnerManifest) { manifest.DeploymentEpoch = "other" }, want: "deployment epoch"},
+		{name: "node owner", edit: func(manifest *workerOwnerManifest) { manifest.RouteOwners.Worker = "node" }, want: "routeOwners.worker=go"},
+		{name: "Go version", edit: func(manifest *workerOwnerManifest) { manifest.Release.GoVersion = "other" }, want: "Go version"},
+		{name: "database schema", edit: func(manifest *workerOwnerManifest) { manifest.Release.SchemaVersion-- }, want: "schema version"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := enabledWorkerGateConfig(t)
+			manifest := validWorkerOwnerManifest(cfg)
+			test.edit(&manifest)
+			err := runWorkerWithRuntimeGate(t.Context(), cfg, nil, func(context.Context) error {
+				t.Fatal("runner called with mismatched manifest")
+				return nil
+			}, workerRuntimeGateDependencies{
+				readManifest: func(path string) (workerOwnerManifest, error) {
+					if path != cfg.OwnerManifestPath {
+						t.Fatalf("manifest path = %q, want %q", path, cfg.OwnerManifestPath)
+					}
+					return manifest, nil
+				},
+				acquire: func(string, ownerlock.Metadata) (workerRuntimeLock, error) {
+					t.Fatal("owner lock acquired with mismatched manifest")
+					return nil, nil
+				},
+				openStore: func(context.Context, string) (workerRuntimeSchemaStore, error) {
+					t.Fatal("PostgreSQL opened with mismatched manifest")
+					return nil, nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runWorkerWithRuntimeGate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testing.T) {
 	cfg := enabledWorkerGateConfig(t)
 	var calls []string
@@ -95,6 +174,13 @@ func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testin
 		calls = append(calls, "runner")
 		return runnerErr
 	}, workerRuntimeGateDependencies{
+		readManifest: func(path string) (workerOwnerManifest, error) {
+			if path != cfg.OwnerManifestPath {
+				t.Fatalf("manifest path = %q, want %q", path, cfg.OwnerManifestPath)
+			}
+			calls = append(calls, "manifest")
+			return validWorkerOwnerManifest(cfg), nil
+		},
 		acquire: func(path string, metadata ownerlock.Metadata) (workerRuntimeLock, error) {
 			if path != cfg.OwnerLockPath {
 				t.Fatalf("lock path = %q, want %q", path, cfg.OwnerLockPath)
@@ -116,7 +202,7 @@ func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testin
 	if !errors.Is(err, runnerErr) {
 		t.Fatalf("runWorkerWithRuntimeGate() error = %v, want runner error", err)
 	}
-	want := []string{"acquire", "open", "ping", "schema", "close", "runner", "release"}
+	want := []string{"manifest", "acquire", "open", "ping", "schema", "close", "runner", "release"}
 	if strings.Join(calls, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -246,13 +332,39 @@ func TestRunWorkerWithRuntimeGateReleasesAfterContextCanceledRunner(t *testing.T
 
 func enabledWorkerGateConfig(t *testing.T) config.Config {
 	t.Helper()
-	return config.Config{
+	root := t.TempDir()
+	cfg := config.Config{
 		OwnerLockEnabled:         true,
-		OwnerLockPath:            filepath.Join(t.TempDir(), "runtime", "worker.lock"),
+		OwnerLockPath:            filepath.Join(root, "runtime", "worker.lock"),
 		OwnerLockDeploymentEpoch: "epoch-test",
 		OwnerLockRole:            " worker ",
+		OwnerManifestPath:        filepath.Join(root, "owner-manifest.json"),
+		GoWorkerExclusiveOwner:   true,
+		LegacyNodeWorkerDrained:  true,
 		PostgresURL:              "postgres://worker-gate-test",
 	}
+	manifest := validWorkerOwnerManifest(cfg)
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal owner manifest: %v", err)
+	}
+	if err := os.WriteFile(cfg.OwnerManifestPath, data, 0o600); err != nil {
+		t.Fatalf("write owner manifest: %v", err)
+	}
+	return cfg
+}
+
+func validWorkerOwnerManifest(cfg config.Config) workerOwnerManifest {
+	manifest := workerOwnerManifest{SchemaVersion: 2, DeploymentEpoch: cfg.OwnerLockDeploymentEpoch}
+	manifest.Release.GoVersion = version.Version
+	manifest.Release.NodeVersion = "node-test"
+	manifest.Release.SchemaVersion = version.SchemaVersion
+	manifest.RouteOwners.Management = "node"
+	manifest.RouteOwners.Public = "node"
+	manifest.RouteOwners.Gateway = "node"
+	manifest.RouteOwners.Worker = "go"
+	manifest.RollbackRouteOwners = manifest.RouteOwners
+	return manifest
 }
 
 func assertDeadlineWithin(t *testing.T, ctx context.Context, maximum time.Duration) {

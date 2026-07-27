@@ -2,10 +2,7 @@ import { onBeforeUnmount, ref, shallowRef } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
-import {
-  removeLocalSelectPreferenceValues,
-  type LocalSelectStorageKeyPart
-} from '@/shared/selectLocalPreferenceCache'
+import { removeLocalSelectPreferenceValues } from '@/shared/selectLocalPreferenceCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -18,8 +15,6 @@ interface RemoteAuthorizationPrincipalOptionsConfig {
   isManagementView: () => boolean
   kind: AuthorizationPrincipalKind
   limit?: number
-  cacheTtlMs?: number
-  localCacheKeyParts?: () => LocalSelectStorageKeyPart[]
   onMissingSelectedIds?: (ids: string[]) => void
   preferenceKeys?: () => string[]
   searchDelayMs?: number

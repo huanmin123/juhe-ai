@@ -238,6 +238,7 @@ export interface AuditLogListParams extends ListParams {
   page?: number
   pageSize?: number
   traceId?: string
+  conversationKey?: string
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string
@@ -255,11 +256,6 @@ export interface AuditLogHotSearchParams {
   limit?: number
   startAt?: string
   endAt?: string
-}
-
-export interface AuditLogPayloadParams {
-  offset?: number
-  limit?: number
 }
 
 export interface PublicApiLogListParams {

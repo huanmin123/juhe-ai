@@ -22,6 +22,8 @@ assert.match(viewSource, /<span><i class="success" \/>可用<\/span>/, '绿色�
 assert.match(viewSource, /<span><i class="failure" \/>不可用<\/span>/, '红色图例必须使用“不可用”文案')
 assert.doesNotMatch(viewSource, /时区\s*\{\{/, '页面不应展示内部统计时区')
 assert.match(viewSource, /class="ai-health-content"/, '账户列表必须使用独立的自适应内容区')
+assert.match(viewSource, /最近独立检查/, '健康监控必须区分独立探针时间与成功健康信号')
+assert.match(viewSource, /account\.lastHealthSuccessAt/, '健康监控必须展示会顺延下次探针的最近成功信号')
 assert.match(viewSource, /\.ai-health-content\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1 1 auto;[^}]*overflow-y:\s*auto;/, '账户列表必须自适应剩余高度并内部滚动')
 assert.doesNotMatch(viewSource, /\.ai-health-page-card\s*\{[^}]*min-height:/, '页面不得覆盖通用响应式卡片高度')
 assert.doesNotMatch(viewSource, /<a-table|ResponsiveDataList/, '健康监控必须使用列表而不是表格')

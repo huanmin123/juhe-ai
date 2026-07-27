@@ -49,6 +49,16 @@ try {
     /if \(!isManagementView\.value\) return[\s\S]{0,160}loadUsageStatsWindow/,
     '个人使用记录页不得跳过 usage-window 而退回浏览器时区'
   )
+  assert.match(
+    usageRecordsViewSource,
+    /function refreshRecords\(\): void \{[\s\S]*resetPagination\(\)[\s\S]*loadData\(\{ forceOptions: true \}\)/,
+    '桌面手动刷新必须重置分页并发起新的列表请求'
+  )
+  assert.match(
+    usageRecordsViewSource,
+    /async function refreshMobileRecords\(\): Promise<void> \{[\s\S]*refreshMobileRecordsList\(\{ forceOptions: true \}\)/,
+    '移动端下拉刷新必须走独立刷新入口并发起新的列表请求'
+  )
   console.log('使用记录模型候选按需加载行为回归通过：桌面、移动、作用域、并发、竞态和时区缓存均符合契约')
 } finally {
   api.providers.modelOptions = originalModelOptions

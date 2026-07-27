@@ -5,10 +5,18 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
-import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
+import {
+  automaticAccountAvailabilityProbeFailed,
+  automaticAccountProbeOutcome
+} from '../accounts/automatic-account-probe-outcome.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { gatewayAccountRuntimeKey } from '../gateway/runtime/account-runtime-keys.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import {
+  backgroundProbeDbServiceTimeoutMs,
+  runWithBackgroundAccountAvailabilityProbe,
+  runWithBackgroundFullDiagnosticSlot
+} from './account-probe-limits.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
   enqueuedAt: string
@@ -73,80 +81,116 @@ async function runAccountQualityFailurePrecheckQueueItem(
   }
 
   const groupId = account.boundGroupId
-  let upstreamAttempt: UpstreamAttempt | undefined
-  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    diagnostics: 'full',
-    groupId,
-    systemAccountId: item.systemAccountId,
-    trafficSource: 'runtime_recovery_probe',
-    testEndpointMode: account.healthCheckEndpointMode,
-    disableAccountStateMutation: true,
-    retryAllFailures: true,
-    onDiagnosticAttemptProgress: () => {
-      upstreamAttempt = undefined
-    },
-    onUpstreamAttempt: (attempt) => {
-      upstreamAttempt = attempt
-    },
-    findAccountForTest: loadAccountForTestViaDbService,
-    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-    gatewaySettingsOverride: {
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    }
+  const candidateAccount = await loadOpenAIAccountForGroupViaDbService(groupId, account.id, item.systemAccountId, {
+    includeUnavailable: true,
+    ignoreAvailability: true
   })
-  rememberQualityFailurePrechecked(item.accountId)
-  const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
-
-  if (probeOutcome === 'complete_success') {
-    logger.info({
-      event: 'background_account_quality_failure_precheck_recovered',
+  const expectedDispatchRevision = candidateAccount?.dispatchRevision
+  if (
+    !candidateAccount
+    || candidateAccount.status !== 'active'
+    || !Number.isSafeInteger(expectedDispatchRevision)
+    || expectedDispatchRevision! < 1
+  ) {
+    rememberQualityFailurePrechecked(item.accountId)
+    logger.warn({
+      event: 'background_account_quality_failure_precheck_discarded',
       accountId: account.id,
       accountName: account.name,
-      statusCode: result.statusCode,
-      durationMs: result.durationMs,
-      recentRequestCount: item.recentRequestCount,
-      recentErrorCount: item.recentErrorCount,
-      attemptIndex: context.attemptIndex,
-      retryNumber: context.retryNumber
-    }, '账户近期频繁失败但后台确认通过，保留正常状态')
+      dispatchRevision: expectedDispatchRevision
+    }, '账户质量失败确认缺少当前调度代次，已跳过')
     return true
   }
 
-  if (probeOutcome !== 'upstream_failure') {
+  const precheckStartedAt = new Date().toISOString()
+  return await runWithBackgroundAccountAvailabilityProbe(gatewayAccountRuntimeKey(account), async () => {
+    let upstreamAttempt: UpstreamAttempt | undefined
+    const result = await testOpenAIAccountWithDiagnosticRetries(account, {
+      diagnostics: 'full',
+      groupId,
+      systemAccountId: item.systemAccountId,
+      trafficSource: 'runtime_recovery_probe',
+      testEndpointMode: account.healthCheckEndpointMode,
+      disableAccountStateMutation: true,
+      retryAllFailures: true,
+      onDiagnosticAttemptProgress: () => {
+        upstreamAttempt = undefined
+      },
+      onUpstreamAttempt: (attempt) => {
+        upstreamAttempt = attempt
+      },
+      candidateAccount,
+      findAccountForTest: loadAccountForTestViaDbService,
+      findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
+      gatewaySettingsOverride: {
+        temporaryUnschedulableRetryAttempts: 0,
+        temporaryUnschedulableRetryIntervalSeconds: 0
+      }
+    })
+    return { result, upstreamAttempt }
+  }, async ({ result, upstreamAttempt }, { joined }) => {
+    if (joined) {
+      logger.debug({
+        event: 'background_account_quality_failure_precheck_singleflight_joined',
+        accountId: item.accountId,
+        accountName: account.name
+      }, '同一账户已有可用性探针执行，本轮质量失败确认复用其结果')
+    }
+    rememberQualityFailurePrechecked(item.accountId)
+    const probeOutcome = automaticAccountProbeOutcome(result, { upstreamAttempt })
+
+    if (probeOutcome === 'complete_success') {
+      logger.info({
+        event: 'background_account_quality_failure_precheck_recovered',
+        accountId: account.id,
+        accountName: account.name,
+        statusCode: result.statusCode,
+        durationMs: result.durationMs,
+        recentRequestCount: item.recentRequestCount,
+        recentErrorCount: item.recentErrorCount,
+        attemptIndex: context.attemptIndex,
+        retryNumber: context.retryNumber
+      }, '账户近期频繁失败但后台确认通过，保留正常状态')
+      return true
+    }
+
+    if (!automaticAccountAvailabilityProbeFailed(probeOutcome)) {
+      logger.warn({
+        event: 'background_account_quality_failure_precheck_ineligible_failure_discarded',
+        accountId: account.id,
+        accountName: account.name,
+        statusCode: result.statusCode,
+        errorCode: result.errorCode,
+        durationMs: result.durationMs,
+        message: result.message,
+        recentRequestCount: item.recentRequestCount,
+        recentErrorCount: item.recentErrorCount
+      }, '账户近期频繁失败但后台探针未形成有效上游可用性结论，已跳过状态写入')
+      return true
+    }
+
+    const updated = await requestBackgroundWorkerDbService({
+      type: 'mark_account_precheck_temporary_unavailable',
+      account: candidateAccount,
+      reason: accountQualityFailurePrecheckReason(item, result),
+      precheckStartedAt,
+      expectedDispatchRevision: expectedDispatchRevision!,
+      expectedStatus: 'active'
+    }, backgroundProbeDbServiceTimeoutMs)
     logger.warn({
-      event: 'background_account_quality_failure_precheck_ineligible_failure_discarded',
+      event: 'background_account_quality_failure_precheck_marked',
       accountId: account.id,
       accountName: account.name,
       statusCode: result.statusCode,
       errorCode: result.errorCode,
       durationMs: result.durationMs,
-      message: result.message,
       recentRequestCount: item.recentRequestCount,
-      recentErrorCount: item.recentErrorCount
-    }, '账户近期频繁失败但后台探针未形成传输失败证据，已跳过状态写入')
+      recentErrorCount: item.recentErrorCount,
+      updated: updated?.updated ?? false,
+      skippedReason: updated?.skippedReason
+    }, '账户近期频繁失败且后台确认未通过，已尝试标记为临时不可调用')
     return true
-  }
-
-  const updated = await requestBackgroundWorkerDbService({
-    type: 'mark_account_test_temporary_unavailable',
-    accountId: account.id,
-    reason: accountQualityFailurePrecheckReason(item, result),
-    access: accountAccess
-  }, backgroundProbeDbServiceTimeoutMs)
-  logger.warn({
-    event: 'background_account_quality_failure_precheck_marked',
-    accountId: account.id,
-    accountName: account.name,
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    durationMs: result.durationMs,
-    recentRequestCount: item.recentRequestCount,
-    recentErrorCount: item.recentErrorCount,
-    accountStatus: updated?.accountStatus,
-    updated: updated?.updated ?? false
-  }, '账户近期频繁失败且后台确认未通过，已尝试标记为临时不可调用')
-  return true
+  })
 }
 
 async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope) {

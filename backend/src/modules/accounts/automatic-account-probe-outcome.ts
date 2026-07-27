@@ -116,6 +116,12 @@ export function automaticAccountProbeOutcome(
   return result.success ? 'complete_success' : 'framing_complete_neutral'
 }
 
+export function automaticAccountAvailabilityProbeFailed(
+  outcome: Exclude<AutomaticAccountProbeOutcome, 'stale'>
+): boolean {
+  return outcome === 'upstream_failure' || outcome === 'framing_complete_neutral'
+}
+
 export function automaticAccountProbeObservation(input: {
   runtimeKey: string
   generation: number

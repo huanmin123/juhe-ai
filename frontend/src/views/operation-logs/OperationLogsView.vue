@@ -84,7 +84,6 @@ import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
-import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import type { OperationLogDetail, OperationLogListItem } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
@@ -293,12 +292,7 @@ async function openDetail(record: OperationLogListItem): Promise<void> {
   detailOpen.value = true
   detailLoading.value = true
   try {
-    const nextDetail = await loadEntityDetailCached({
-      id: record.id,
-      load: () => operationLogsApi.detail(record.id),
-      namespace: 'operation-log-detail',
-      scope: isManagementView.value ? 'management' : 'self'
-    })
+    const nextDetail = await operationLogsApi.detail(record.id)
     if (requestId === detailRequestId) {
       detail.value = nextDetail
     }

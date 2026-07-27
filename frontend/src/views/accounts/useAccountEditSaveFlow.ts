@@ -31,7 +31,6 @@ import {
   sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
-import { invalidateAccountDetailForAccount } from './accountDetailCache'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -113,7 +112,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         } else {
           await api.myAccounts.update(options.editingId.value, updatePayload)
         }
-        invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
       } else if (options.form.type === 'oauth') {
         const created = usesManagedOAuthCreateFlow(options.form, options.providers.value)
@@ -191,7 +189,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           await api.myAccounts.updateTags(account.id, payload)
         }
       }
-      invalidateAccountDetailOptions(account.id, scopeParams)
       message.success('授权账户已更新')
       options.modalOpen.value = false
       await options.loadData()
@@ -266,7 +263,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       } else {
         await api.myAccounts.update(options.editingId.value, payload)
       }
-      invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
       message.success(balanceAutoDisabled ? '账户基础信息已更新，已因多 Key 自动关闭余额查询' : '账户基础信息已更新')
       options.modalOpen.value = false
       await options.loadData()
@@ -310,15 +306,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     return options.isManagementView.value
       ? api.accounts.create(payload, options.createScopeParams.value)
       : api.myAccounts.create(payload)
-  }
-
-  function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {
-    if (!accountId) return
-    invalidateAccountDetailForAccount({
-      accountId,
-      isManagementView: options.isManagementView.value,
-      scopeParams
-    })
   }
 
   return {

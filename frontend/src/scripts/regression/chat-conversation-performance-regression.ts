@@ -8,7 +8,7 @@ const ChatModelCapabilitiesLoadCoordinator = (performanceModule as unknown as { 
   load: (request: { conversationId: string; modelId: string }) => Promise<T>
   cancel: () => void
 } }).ChatModelCapabilitiesLoadCoordinator
-assert.equal(typeof ChatModelCapabilitiesLoadCoordinator, 'function', '必须提供可测试的单模型能力缓存与取消协调器')
+assert.equal(typeof ChatModelCapabilitiesLoadCoordinator, 'function', '必须提供可测试的单模型能力请求与取消协调器')
 if (!ChatModelCapabilitiesLoadCoordinator) throw new Error('ChatModelCapabilitiesLoadCoordinator 未实现')
 
 let capabilityCalls = 0
@@ -32,12 +32,13 @@ const switchedCapability = capabilityCoordinator.load({ conversationId: 'conv-1'
 assert.equal(firstCapabilityAborted, true, '切换模型必须取消旧能力请求')
 assert.equal(await switchedCapability, 'capability:model-b')
 resolveFirstCapability('capability:model-a')
-await Promise.allSettled([firstCapability, duplicateCapability])
+const canceledCapabilities = await Promise.allSettled([firstCapability, duplicateCapability])
+assert.equal(canceledCapabilities.every((result) => result.status === 'rejected'), true, '被取消的旧模型能力响应即使晚到也不得回填')
 assert.equal(await capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-b' }), 'capability:model-b')
-assert.equal(capabilityCalls, 2, '已完成能力结果必须命中缓存，不重复请求')
+assert.equal(capabilityCalls, 3, '已完成能力读取后的下一次动作必须重新请求')
 await assert.rejects(() => capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-error' }), /capability failed/)
 await assert.rejects(() => capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-error' }), /capability failed/)
-assert.equal(capabilityCalls, 4, '能力错误不得写入成功缓存，用户重试时必须重新请求')
+assert.equal(capabilityCalls, 5, '能力错误后用户重试时必须重新请求')
 
 const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve))
 
@@ -58,29 +59,17 @@ assert.equal(calls, 1, '同一 API Key 的模型列表请求必须 single-flight
 resolveLoad(['model_a'])
 assert.deepEqual(await concurrentFirst, ['model_a'])
 assert.deepEqual(await concurrentSecond, ['model_a'])
-assert.deepEqual(await coordinator.load(request), ['model_a'], '已有模型结果必须按 API Key 复用')
-assert.equal(calls, 1, '命中缓存时不能重复请求模型列表')
+assert.deepEqual(await coordinator.load(request), ['model_a'], '上一批模型请求完成后必须重新读取')
+assert.equal(calls, 2, '已完成的模型列表结果不能跨动作复用')
 
-let now = 0
-let ttlCalls = 0
-const ttlCoordinator = new ChatModelLoadCoordinator<string>({
-  load: async () => [`model_${++ttlCalls}`],
-  now: () => now,
-  cacheTtlMilliseconds: 30_000
+let freshCalls = 0
+const freshCoordinator = new ChatModelLoadCoordinator<string>({
+  load: async () => [`model_${++freshCalls}`]
 })
-const ttlRequest = { apiKeyId: 'key_ttl', conversationId: 'conv_ttl' }
-assert.deepEqual(await ttlCoordinator.load(ttlRequest), ['model_1'])
-now = 29_999
-assert.deepEqual(await ttlCoordinator.load(ttlRequest), ['model_1'], 'TTL 内必须继续复用缓存')
-now = 30_000
-assert.deepEqual(await ttlCoordinator.load(ttlRequest), ['model_2'], '模型配置缓存到期后必须重新加载')
-assert.equal(ttlCalls, 2, '过期模型缓存必须只触发一次新的加载')
-
-now = 60_000
-assert.deepEqual(ttlCoordinator.peek('key_ttl'), ['model_2'], '切换会话必须能直接复用过期的前端快照，不得自动访问后端')
-assert.equal(ttlCalls, 2, '读取已有前端快照不能触发网络请求')
-assert.deepEqual(await ttlCoordinator.refreshIfExpired(ttlRequest), ['model_3'], '用户展开模型下拉时才刷新过期快照')
-assert.equal(ttlCalls, 3, '过期快照展开时只能刷新一次')
+const freshRequest = { apiKeyId: 'key_fresh', conversationId: 'conv_fresh' }
+assert.deepEqual(await freshCoordinator.load(freshRequest), ['model_1'])
+assert.deepEqual(await freshCoordinator.load(freshRequest), ['model_2'], '再次展开模型列表必须重新加载当前事实')
+assert.equal(freshCalls, 2, '模型列表不得保留 TTL 结果缓存')
 
 let timeoutAttempts = 0
 const retryCoordinator = new ChatModelLoadCoordinator<string>({

@@ -795,6 +795,7 @@ export type DbServiceOperation =
   | {
     type: 'find_account_for_health_check'
     accountId: string
+    ignoreSchedule?: boolean
   }
   | {
     type: 'record_account_health_check_success'

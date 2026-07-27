@@ -67,6 +67,15 @@ const disabledMappedByUpstream = account('disabled-mapped-by-upstream', ['gpt-5.
 const mappedToUnsupportedUpstream = account('mapped-to-unsupported-upstream', ['gpt-5.4'], [
   { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'chat_completions', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
 ])
+const sameNameResponsesBridge = account('same-name-responses-bridge', ['gpt-5.5'], [
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'responses', upstreamModel: 'gpt-5.5', upstreamEndpointFamily: 'chat_completions', enabled: true }
+])
+const sameNameInvalidBridge = account('same-name-invalid-bridge', ['gpt-5.5'], [
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'responses', upstreamModel: 'gpt-5.5-private', upstreamEndpointFamily: 'chat_completions', enabled: true }
+])
+const disabledSameNameBridge = account('disabled-same-name-bridge', ['gpt-5.5'], [
+  { sourceModel: 'gpt-5.5', sourceEndpointFamily: 'responses', upstreamModel: 'gpt-5.5', upstreamEndpointFamily: 'chat_completions', enabled: false }
+])
 
 const matched = filterGatewayAccountsByRequestedModel([gpt55Only, emptySupportedModels, gpt54Only], 'gpt-5.5')
 assert.deepEqual(matched.accounts.map((item) => item.id), ['gpt55-only'])
@@ -89,6 +98,34 @@ assert.equal(prioritized.invalidModelConstraintCount, 1)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('gpt55-only'), 0)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('mapped-by-upstream'), 1)
 assert.equal(prioritized.modelPriority.rankByAccountId.get('empty-supported-models'), 2)
+
+const sameNameBridgePrioritized = filterGatewayAccountsByRequestedModel([
+  sameNameResponsesBridge,
+  gpt55Only
+], 'gpt-5.5', 'responses')
+assert.deepEqual(
+  sameNameBridgePrioritized.accounts.map((item) => item.id),
+  ['gpt55-only', 'same-name-responses-bridge'],
+  '跨账户仍应由真正直连账户优先，但同账户精确协议映射不能被 supportedModels 直连命中遮蔽'
+)
+assert.equal(sameNameBridgePrioritized.directMatchedCount, 1)
+assert.equal(sameNameBridgePrioritized.mappingMatchedCount, 1)
+assert.equal(sameNameBridgePrioritized.modelPriority.rankByAccountId.get('same-name-responses-bridge'), 1)
+
+const invalidSameNameBridge = filterGatewayAccountsByRequestedModel([
+  sameNameInvalidBridge
+], 'gpt-5.5', 'responses')
+assert.deepEqual(invalidSameNameBridge.accounts, [], '精确映射目标失效时不得回退为同名模型直连')
+assert.equal(invalidSameNameBridge.directMatchedCount, 0)
+assert.equal(invalidSameNameBridge.mappingMatchedCount, 0)
+assert.equal(invalidSameNameBridge.reason, 'unsupported_model')
+
+const disabledSameNameBridgeResult = filterGatewayAccountsByRequestedModel([
+  disabledSameNameBridge
+], 'gpt-5.5', 'responses')
+assert.deepEqual(disabledSameNameBridgeResult.accounts.map((item) => item.id), ['disabled-same-name-bridge'])
+assert.equal(disabledSameNameBridgeResult.directMatchedCount, 1, '停用映射不应遮蔽账户真实直连支持')
+assert.equal(disabledSameNameBridgeResult.mappingMatchedCount, 0)
 
 const mapped = filterGatewayAccountsByRequestedModel([
   mappedByUpstream,

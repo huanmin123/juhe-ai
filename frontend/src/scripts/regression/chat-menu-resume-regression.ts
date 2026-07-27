@@ -23,6 +23,7 @@ const mainSource = readFileSync(new URL('../../main.ts', import.meta.url), 'utf8
 const layoutSource = readFileSync(new URL('../../layouts/AppLayout.vue', import.meta.url), 'utf8')
 
 assert.match(routerSource, /path:\s*'\/my-chat'[\s\S]{0,300}keepAlive:\s*true/, 'AI 问答路由必须启用 KeepAlive')
+assert.match(layoutSource, /viewRoute\.meta\.keepAlive === true/, '动态管理页面不得默认 KeepAlive，只有显式声明的页面可以缓存组件实例')
 assert.match(viewSource, /onActivated/, '返回 AI 问答时必须恢复页面监听与轻量同步')
 assert.match(viewSource, /onDeactivated/, '离开 AI 问答时必须只暂停页面监听和定时器')
 assert.doesNotMatch(viewSource, /onBeforeUnmount\([\s\S]{0,900}streamController\?\.abort\(\)/, '页面卸载不得中止已接受生成')

@@ -8,6 +8,10 @@ import type {
 } from '../../../domain/types.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
+import {
+  deriveGatewaySessionAffinityKey,
+  getGatewaySessionIdentity
+} from '../session-identity/index.js'
 
 interface HybridRouteAffinityBinding {
   route: ApiKeyHybridLevelRoute
@@ -42,7 +46,7 @@ export function applyHybridRouteAffinity(input: {
   level: number
   route: ApiKeyHybridLevelRoute
 }): HybridRouteAffinityDecision {
-  const sessionKey = hybridRouteAffinityKey(input.req, input.systemAccountId, input.apiKeyId)
+  const sessionKey = hybridRouteAffinityKey(input.req, input.systemAccountId, input.apiKeyId, input.config)
   if (!sessionKey || input.config.cacheAffinityEnabled === false || input.config.affinityTtlSeconds <= 0) {
     return { route: input.route, applied: false }
   }
@@ -78,7 +82,7 @@ export async function applyHybridRouteAffinityAsync(input: {
   if (runtimeConfig.runtimeStateDriver !== 'redis') {
     return applyHybridRouteAffinity(input)
   }
-  const sessionKey = hybridRouteAffinityKey(input.req, input.systemAccountId, input.apiKeyId)
+  const sessionKey = hybridRouteAffinityKey(input.req, input.systemAccountId, input.apiKeyId, input.config)
   if (!sessionKey || input.config.cacheAffinityEnabled === false || input.config.affinityTtlSeconds <= 0) {
     return { route: input.route, applied: false }
   }
@@ -194,72 +198,33 @@ function hybridRouteAffinityStateKey(key: string): string {
   return `session:${key}`
 }
 
-function hybridRouteAffinityKey(req: Request, systemAccountId: string, apiKeyId?: string): string | undefined {
-  const session = extractHybridSessionIdentity(req)
-  if (!session) {
-    return undefined
-  }
-  return createHash('sha256')
+function hybridRouteAffinityKey(
+  req: Request,
+  systemAccountId: string,
+  apiKeyId: string | undefined,
+  config: ApiKeyHybridRoutingConfig
+): string | undefined {
+  const identity = getGatewaySessionIdentity(req)
+  if (!identity) return undefined
+  return deriveGatewaySessionAffinityKey(identity, {
+    systemAccountId,
+    apiKeyId,
+    routeStrategyId: 'hybrid_smart',
+    groupId: hybridRoutePoolScope(config)
+  })
+}
+
+function hybridRoutePoolScope(config: ApiKeyHybridRoutingConfig): string {
+  const fingerprint = createHash('sha256')
     .update(JSON.stringify({
-      systemAccountId,
-      apiKeyId: apiKeyId ?? 'internal',
-      session
+      scoringGroupId: config.scoringGroupId ?? null,
+      levelRoutes: config.levelRoutes.map((route) => ({
+        minLevel: route.minLevel,
+        maxLevel: route.maxLevel,
+        targetModel: route.targetModel,
+        enabled: route.enabled
+      }))
     }))
     .digest('hex')
+  return `hybrid-route-pool:${fingerprint}`
 }
-
-function extractHybridSessionIdentity(req: Request): { source: string; value: string } | undefined {
-  for (const name of sessionHeaderNames) {
-    const value = stringValue(req.header(name))
-    if (value) {
-      return { source: `header:${name.toLowerCase()}`, value }
-    }
-  }
-  for (const path of sessionBodyPaths) {
-    const value = stringValue(valueAtPath(req.body, path))
-    if (value) {
-      return { source: `body:${path.join('.')}`, value }
-    }
-  }
-  return undefined
-}
-
-function valueAtPath(value: unknown, path: string[]): unknown {
-  let current = value
-  for (const key of path) {
-    if (typeof current !== 'object' || current === null) {
-      return undefined
-    }
-    current = (current as Record<string, unknown>)[key]
-  }
-  return current
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-const sessionHeaderNames = [
-  'session_id',
-  'session-id',
-  'x-session-id',
-  'conversation_id',
-  'conversation-id',
-  'x-conversation-id',
-  'prompt_cache_key',
-  'x-prompt-cache-key',
-  'previous_response_id',
-  'previous-response-id',
-  'x-previous-response-id',
-  'x-client-request-id'
-]
-
-const sessionBodyPaths = [
-  ['previous_response_id'],
-  ['session_id'],
-  ['conversation_id'],
-  ['prompt_cache_key'],
-  ['metadata', 'session_id'],
-  ['metadata', 'conversation_id'],
-  ['metadata', 'user_id']
-]

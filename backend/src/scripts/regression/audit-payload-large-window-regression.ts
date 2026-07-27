@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import type { AuditLogInput } from '../../storage/repositories.js'
 
@@ -41,6 +41,14 @@ try {
   const payload = detail?.payloads.find((item) => item.partType === 'gateway_error')
   assert(payload, '审计详情应包含超大 gateway_error payload 引用')
 
+  const fullPayload = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, { full: true })
+  assert.equal(fullPayload?.bodyText, largeBody, '管理员审计详情应在一次读取中返回完整 payload')
+  assert.equal(fullPayload?.bodyOffset, 0)
+  assert.equal(fullPayload?.bodyLimit, largeBodyBytes)
+  assert.equal(fullPayload?.bodyBytesReturned, largeBodyBytes)
+  assert.equal(fullPayload?.bodyNextOffset, undefined)
+  assert.equal(fullPayload?.bodyTruncated, false)
+
   const firstWindow = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, { offset: 0, limit: 128 })
   assert.equal(firstWindow?.headersIncluded, true, '审计 payload 首窗口应包含 Headers')
 
@@ -56,7 +64,7 @@ try {
   assert.equal(payloadWindow?.headers, undefined, '审计 payload 后续窗口不应重复返回 Headers')
 
   const truncatedFileOffset = offset + limit
-  truncateSync(resolve(backendRoot, 'data', 'audit', 'blobs', bodyBlob.storage_key), truncatedFileOffset)
+  truncateSync(resolve(tempRoot, 'audit', 'blobs', bodyBlob.storage_key), truncatedFileOffset)
   const stalledWindow = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, {
     offset: truncatedFileOffset,
     limit
@@ -65,7 +73,7 @@ try {
   assert.equal(stalledWindow?.bodyTruncated, true, '元数据仍有剩余字节时应保留正文不完整状态')
   assert.equal(stalledWindow?.bodyNextOffset, undefined, '0 字节窗口不得返回未前进的 nextOffset')
 
-  console.log('审计 payload 超大窗口回归通过：1MB+ payload 保持 plain 并支持 offset 窗口读取')
+  console.log('审计 payload 完整读取回归通过：管理员详情一次返回完整正文，底层仍支持 offset 窗口读取')
 } finally {
   cleanupTemporaryAuditBlobs()
   try {
@@ -138,7 +146,7 @@ function cleanupTemporaryAuditBlobs(): void {
       .all() as Array<{ storage_key?: string }>
     for (const row of rows) {
       if (!row.storage_key) continue
-      rmSync(resolve(backendRoot, 'data', 'audit', 'blobs', row.storage_key), { force: true })
+      rmSync(resolve(tempRoot, 'audit', 'blobs', row.storage_key), { force: true })
     }
   } catch {
   }

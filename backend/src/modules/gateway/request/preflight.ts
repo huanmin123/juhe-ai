@@ -32,6 +32,10 @@ import {
   type OpenAIGatewayClientStrategyContext
 } from '../client-profiles/strategy.js'
 import {
+  resolveGatewaySessionIdentity,
+  type GatewaySessionIdentity
+} from '../session-identity/index.js'
+import {
   type GatewayCircuitDecision,
   inspectClientIpErrorCircuitAsync,
   recordClientIpErrorCircuitSuccessAsync
@@ -177,6 +181,7 @@ export interface OpenAIGatewayDispatchContext {
   activeGatewaySettings: GatewaySettings
   usageContext: GatewayFailureUsageContext
   accounts: UpstreamAccount[]
+  sessionIdentity: GatewaySessionIdentity
   sessionAffinityKey?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
@@ -214,6 +219,7 @@ export interface OpenAIGatewayRouteAction {
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
   requestLane: OpenAIGatewayRequestLane
   clientStrategy: OpenAIGatewayClientStrategyContext
+  sessionIdentity: GatewaySessionIdentity
   serverRetryBudget: ServerRetryBudget
   gatewayRequestWallBudget: GatewayRequestWallBudget
   routeCoordinationBudget: RouteCoordinationBudget
@@ -585,6 +591,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     endpoint
   })
+  let sessionIdentity = resolveGatewaySessionIdentity(req, {
+    clientProfile: initialClientStrategy.clientProfile,
+    systemAccountId,
+    apiKeyId
+  })
+  bindAuditSessionIdentity(auditCapture, sessionIdentity, initialClientStrategy.clientProfile)
   if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
     const previousGroupId = groupId
     const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
@@ -807,6 +819,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     providerCode: groupAccess?.providerCode
   })
+  if (clientStrategy.clientProfile !== initialClientStrategy.clientProfile) {
+    sessionIdentity = resolveGatewaySessionIdentity(req, {
+      clientProfile: clientStrategy.clientProfile,
+      systemAccountId,
+      apiKeyId
+    })
+  }
+  bindAuditSessionIdentity(auditCapture, sessionIdentity, clientStrategy.clientProfile)
   logRequestStage('client.profile', {
     traceId,
     clientProfile: clientStrategy.clientProfile,
@@ -942,14 +962,16 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const rawSessionAffinityKey = resolveOpenAIGatewaySessionAffinityKey(req, {
-    systemAccountId,
-    apiKeyId,
-    groupId
-  })
-  const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
   const accountLoadStartedAt = performance.now()
   const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+  const rawSessionAffinityKey = resolveOpenAIGatewaySessionAffinityKey(sessionIdentity, {
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    routeStrategyId: apiKeyRecord?.route_strategy_id,
+    providerProtocolProfileId: gatewayAffinityProviderProfilePool(rawCandidateAccounts)
+  })
+  const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
   logRequestStage('account.load_candidates', {
     traceId,
     groupId,
@@ -1012,6 +1034,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupFallbackApiKeyRecord,
     requestLane,
     clientStrategy,
+    sessionIdentity,
     serverRetryBudget,
     gatewayRequestWallBudget,
     routeCoordinationBudget,
@@ -1249,6 +1272,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     activeGatewaySettings,
     usageContext,
     accounts: codexBridgeCompactPreflight.accounts,
+    sessionIdentity,
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,
@@ -1820,6 +1844,32 @@ async function accountModelsTargetImage(
       || item.outputUsdPerImage !== undefined
     )
   )))
+}
+
+function gatewayAffinityProviderProfilePool(accounts: UpstreamAccount[]): string {
+  const profileIds = [...new Set(accounts.map((account) => (
+    account.providerProtocolProfileId?.trim() || account.providerCode.trim()
+  )))].sort()
+  return `pool:${profileIds.join(',') || 'empty'}`
+}
+
+function bindAuditSessionIdentity(
+  auditCapture: AuditCaptureContext,
+  sessionIdentity: GatewaySessionIdentity,
+  clientProfile: string
+): void {
+  auditCapture.bindContext({
+    sessionId: sessionIdentity.sessionId,
+    sessionClientType: clientProfile,
+    conversationKey: sessionIdentity.conversationKey,
+    sessionNamespace: sessionIdentity.semanticNamespace,
+    sessionSource: sessionIdentity.source
+      ? `${sessionIdentity.source.location}:${sessionIdentity.source.path}`
+      : undefined,
+    sessionResolution: sessionIdentity.resolution,
+    sessionConfidence: sessionIdentity.confidence,
+    identityConflict: sessionIdentity.status === 'conflict' || sessionIdentity.conflicts.length > 0
+  })
 }
 
 export function buildGatewayUsageContext(input: {

@@ -205,6 +205,12 @@ try {
     '普通单次失败质量反馈不应进入后台确认候选'
   )
   assert.equal(
+    accountQualityRepository.listAccountQualityFailurePrecheckCandidates(10, 1)
+      .some((item) => item.accountId === failureCandidates[0]?.accountId),
+    false,
+    '失败候选 offset 必须越过当前页首账户，供后台轮转扫描后续候选'
+  )
+  assert.equal(
     repositories.findAccountSummary(failureCandidateAccount.id, access)?.status,
     'active',
     '账号质量刷新只生成确认候选，不直接写持久临时不可调用'
@@ -336,16 +342,21 @@ function assertSourceGuards(): void {
   assert.match(source, /ORDER BY first_dirty_at ASC, account_id ASC/, '账号质量 dirty claim 应按首次变脏时间公平推进')
   assert.match(source, /normalizeAccountQualityDirtyLimit/, '账号质量 dirty claim 必须对调用方批量参数设置硬上限')
   assert.match(source, /listAccountQualityFailurePrecheckCandidates/, '账号质量刷新应暴露频繁失败确认候选查询')
+  assert.match(source, /LIMIT \? OFFSET \?/, '频繁失败确认候选查询必须支持轮转分页，避免前排冷却账户长期遮挡后续账户')
   assert.match(source, /account_quality_scores INDEXED BY idx_account_quality_scores_failure_precheck/, '频繁失败确认候选查询应命中专用索引')
   assert.match(schemaSource, /idx_account_quality_scores_failure_precheck/, '统计库应为账号质量频繁失败确认候选提供索引')
   assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS account_quality_dirty_accounts/, '统计库应保存账号质量 dirty 游标表')
   assert.match(schemaSource, /idx_account_quality_dirty_accounts_first_dirty[^;]+first_dirty_at, account_id/, '账号质量 dirty 表应有首次变脏公平索引')
   assert.match(accountQualityWriterSource, /markAccountQualityDirty/, '用量统计写入账号质量分钟桶时应同步打 dirty 标记')
   assert.match(failurePrecheckSource, /loadAccountForTestViaDbService\(item\.accountId,\s*accountAccess\)/, '频繁失败确认应按质量样本所属系统账户上下文读取账户')
-  assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_test_temporary_unavailable'/, '频繁失败确认落库应通过 DB service 复用账户测试临时不可调用语义')
+  assert.match(failurePrecheckSource, /requestBackgroundWorkerDbService\(\{\s*type:\s*'mark_account_precheck_temporary_unavailable'/, '频繁失败确认落库应通过带调度代次围栏的 DB service 操作写入临时不可调用')
   assert.doesNotMatch(failurePrecheckSource, /\bmodel\s*:/, '频繁失败确认应交给统一账户测试模型解析器，不能复用失败请求模型')
   assert.match(failurePrecheckSource, /systemAccountId:\s*item\.systemAccountId/, '频繁失败确认应显式使用质量样本所属用户的个人默认模型作用域')
   assert.match(failurePrecheckSource, /trafficSource:\s*'runtime_recovery_probe'/, '频繁失败运行态确认探针应使用独立来源，避免和持久冷却复测混用')
+  assert.match(failurePrecheckSource, /runWithBackgroundAccountAvailabilityProbe/, '质量失败确认必须与周期和即时健康检查共享账户级 single-flight')
+  const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
+  assert.match(accountProbeJobsSource, /failureCandidateOffset:\s*accountQualityFailurePrecheckOffset/, '质量失败候选必须从当前公平分页位置继续扫描')
+  assert.match(accountProbeJobsSource, /accountQualityFailurePrecheckOffset \+ failureCandidates\.length/, '完整候选页处理后必须推进公平分页位置')
   assert.doesNotMatch(failurePrecheckSource, /requestShape/, '频繁失败确认探针不能复用失败请求形态')
   assert.doesNotMatch(gatewayAccountSideEffectsSource, /\bmodel:\s*await preferredSystemAccountTestModelAsync/, '运行态恢复探针应交给统一账户测试模型解析器')
   assert.match(gatewayAccountSideEffectsSource, /systemAccountId:\s*state\.systemAccountId/, '运行态恢复探针应显式使用当前运行态用户作用域')

@@ -364,6 +364,7 @@ const performanceRequestContextProbe = spawnSync(process.execPath, [
     NODE_ENV: 'test',
     JUHE_AI_RUNTIME_MODE: 'performance',
     JUHE_AI_PERFORMANCE_NODE_ROLE: 'gateway',
+    JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL: 'http://127.0.0.1:65535',
     JUHE_AI_DATABASE_DRIVER: 'postgres',
     JUHE_AI_CACHE_DRIVER: 'redis',
     JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',

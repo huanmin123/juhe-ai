@@ -223,6 +223,15 @@ function encodedTransportBytes(encoded: string): number {
 function truncateAuditLogStrings(input: AuditLogInput): AuditLogInput {
   return {
     ...input,
+    conversationKey: truncateOptionalString(input.conversationKey, 256),
+    sessionNamespace: truncateOptionalString(input.sessionNamespace, 256),
+    sessionSource: truncateOptionalString(input.sessionSource, 256),
+    sessionResolution: truncateOptionalString(input.sessionResolution, 64),
+    sessionConfidence: truncateOptionalString(input.sessionConfidence, 64),
+    threadKey: truncateOptionalString(input.threadKey, 256),
+    turnKey: truncateOptionalString(input.turnKey, 256),
+    agentKey: truncateOptionalString(input.agentKey, 256),
+    parentResponseKey: truncateOptionalString(input.parentResponseKey, 256),
     path: truncateString(input.path, 2048),
     queryString: truncateOptionalString(input.queryString, 4096),
     model: truncateOptionalString(input.model, 512),

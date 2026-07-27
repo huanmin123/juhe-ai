@@ -32,12 +32,143 @@ function main(): void {
   testMissingRawBodyHashDoesNotStringifyFullBody()
   testCodexTurnStateKeyIgnoresGroupAndKeepsApiKeyBoundary()
   testSecondCodexRetryAvoidsFailedAccounts()
+  testCommittedRetrySignalAvoidsImmediatelyAcrossPriority()
+  testIncompleteAbortRequiresTwoSameAccountObservations()
+  testDuplicateObservationDoesNotAdvanceAvoidance()
+  testDifferentAccountsDoNotShareWeakThreshold()
+  testWeakAbortDoesNotCrossPriorityTier()
+  testWeakAbortAvoidanceExpires()
   testChangedBodyRetryAvoidsFailedAccount()
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
   testCodexCompactRequestUsesCodexProfile()
-  console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 不切分 turn 状态、同一 turn 失败两次后才切号、状态丢失不避让和非 Responses 隔离符合预期')
+  console.log('Codex 客户端策略回归通过：精确 turn_id、强证据立即跨优先级避让、弱断流按账号两次激活、observation 幂等、body 变化共享 turn 和隔离边界符合预期')
+}
+
+function testCommittedRetrySignalAvoidsImmediatelyAcrossPriority(): void {
+  clearCodexTurnRetryStateForTest()
+  const strategy = codexStrategy('turn_committed_retry_signal')
+  const failed = account('acct_high')
+  failed.priority = 0
+  const fallback = account('acct_fallback')
+  fallback.priority = 100
+  fallback.fallbackEnabled = true
+
+  const recorded = rememberCodexTurnStreamFailure(strategy, failed.id, {
+    evidence: 'committed_retry_signal',
+    observationId: 'attempt-1'
+  })
+  assert.deepEqual(recorded?.avoidanceActivatedAccountIds, [failed.id])
+  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([failed, fallback], strategy)
+  assert.equal(avoidance.applied, true)
+  assert.deepEqual(avoidance.accounts.map((item) => item.id), [fallback.id, failed.id])
+}
+
+function testIncompleteAbortRequiresTwoSameAccountObservations(): void {
+  clearCodexTurnRetryStateForTest()
+  const strategy = codexStrategy('turn_weak_abort')
+  const accounts = [account('acct_a'), account('acct_b')]
+  rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'abort-1'
+  })
+  assert.equal(orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy).applied, false)
+  const second = rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'abort-2'
+  })
+  assert.deepEqual(second?.avoidanceActivatedAccountIds, ['acct_a'])
+  assert.deepEqual(orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy).accounts.map((item) => item.id), ['acct_b', 'acct_a'])
+}
+
+function testDuplicateObservationDoesNotAdvanceAvoidance(): void {
+  clearCodexTurnRetryStateForTest()
+  const strategy = codexStrategy('turn_duplicate_observation')
+  const first = rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'same-attempt'
+  })
+  const duplicate = rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'same-attempt'
+  })
+  assert.equal(first?.failureCount, 1)
+  assert.equal(duplicate?.failureCount, 1)
+  assert.equal(duplicate?.duplicateObservation, true)
+  assert.equal(orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b')], strategy).applied, false)
+}
+
+function testDifferentAccountsDoNotShareWeakThreshold(): void {
+  clearCodexTurnRetryStateForTest()
+  const strategy = codexStrategy('turn_distinct_weak_accounts')
+  rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'abort-a'
+  })
+  rememberCodexTurnStreamFailure(strategy, 'acct_b', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'abort-b'
+  })
+  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([account('acct_a'), account('acct_b'), account('acct_c')], strategy)
+  assert.equal(avoidance.applied, false)
+  assert.deepEqual(avoidance.avoidedAccountIds, [])
+}
+
+function testWeakAbortDoesNotCrossPriorityTier(): void {
+  clearCodexTurnRetryStateForTest()
+  const strategy = codexStrategy('turn_weak_priority_boundary')
+  rememberCodexTurnStreamFailure(strategy, 'acct_high', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'weak-high-1'
+  })
+  rememberCodexTurnStreamFailure(strategy, 'acct_high', {
+    evidence: 'incomplete_downstream_abort',
+    observationId: 'weak-high-2'
+  })
+  const high = account('acct_high')
+  high.priority = 0
+  const fallback = account('acct_fallback')
+  fallback.priority = 100
+  fallback.fallbackEnabled = true
+  const avoidance = orderOpenAIAccountsByCodexTurnAvoidance([high, fallback], strategy)
+  assert.equal(avoidance.thresholdReached, true)
+  assert.equal(avoidance.applied, false, '弱 client abort 证据不得跨显式优先级或 fallback tier')
+  assert.deepEqual(avoidance.accounts.map((item) => item.id), [high.id, fallback.id])
+}
+
+function testWeakAbortAvoidanceExpires(): void {
+  clearCodexTurnRetryStateForTest()
+  const originalNow = Date.now
+  let now = originalNow()
+  Date.now = () => now
+  try {
+    const strategy = codexStrategy('turn_weak_expiry')
+    rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+      evidence: 'incomplete_downstream_abort',
+      observationId: 'expiry-1'
+    })
+    rememberCodexTurnStreamFailure(strategy, 'acct_a', {
+      evidence: 'incomplete_downstream_abort',
+      observationId: 'expiry-2'
+    })
+    const accounts = [account('acct_a'), account('acct_b')]
+    assert.equal(orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy).applied, true)
+    now += 60_001
+    assert.equal(orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy).applied, false, '弱断流避让必须在短窗口后失效')
+  } finally {
+    Date.now = originalNow
+  }
+}
+
+function codexStrategy(turnId: string) {
+  return resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: turnId,
+    stream: true
+  }, {
+    'x-codex-turn-metadata': JSON.stringify({ turn_id: turnId })
+  }), identity)
 }
 
 function testLargeRawBodyHashUsesBoundedSample(): void {
@@ -291,9 +422,9 @@ function testAllFailedAccountsBypassAvoidance(): void {
     'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_all_failed' })
   }), identity)
 
-  rememberCodexTurnStreamFailure(strategy, 'acct_a')
-  rememberCodexTurnStreamFailure(strategy, 'acct_b')
-  rememberCodexTurnStreamFailure(strategy, 'acct_c')
+  rememberCodexTurnStreamFailure(strategy, 'acct_a', { evidence: 'committed_retry_signal' })
+  rememberCodexTurnStreamFailure(strategy, 'acct_b', { evidence: 'committed_retry_signal' })
+  rememberCodexTurnStreamFailure(strategy, 'acct_c', { evidence: 'committed_retry_signal' })
 
   const accounts = [account('acct_a'), account('acct_b'), account('acct_c')]
   const avoidance = orderOpenAIAccountsByCodexTurnAvoidance(accounts, strategy)

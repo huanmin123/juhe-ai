@@ -205,6 +205,17 @@ try {
     reason: 'configuration'
   })
 
+  const requestFailureBody = Buffer.from(JSON.stringify({
+    accountId: 'account-request-failure',
+    reason: 'request_failure'
+  }))
+  const requestFailure = await request(baseUrl, { body: requestFailureBody })
+  assert.equal(requestFailure.statusCode, 202, '合法 request_failure 请求应返回 202')
+  assert.deepEqual(dispatchCalls.at(-1), {
+    accountId: 'account-request-failure',
+    reason: 'request_failure'
+  })
+
   await assertStatus(baseUrl, {
     body: Buffer.from(JSON.stringify({ accountId: 'account-scheduled', reason: 'scheduled' }))
   }, 400, 'scheduled 原因必须被拒绝')

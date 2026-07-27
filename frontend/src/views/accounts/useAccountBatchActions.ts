@@ -3,7 +3,6 @@ import type { ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
-import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
@@ -43,15 +42,6 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
           : api.myAccounts.update(account.id, payload)
       })
       const failedCount = results.filter((result) => result.status === 'rejected').length
-      for (const [index, result] of results.entries()) {
-        if (result.status !== 'fulfilled') continue
-        const account = selected[index]
-        invalidateAccountDetailForAccount({
-          accountId: account.id,
-          isManagementView: options.isManagementView.value,
-          scopeParams: accountOperationScopeParams(account, options.accountScopeParams.value)
-        })
-      }
       if (failedCount === 0) {
         message.success(successLabel)
         options.clearSelection()

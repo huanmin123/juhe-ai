@@ -74,6 +74,32 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
     source: 'model-trust-observation-aggregation-pg-indexes',
     sql: 'CREATE INDEX IF NOT EXISTS idx_model_check_observations_pending_aggregation ON model_check_observations(created_at, id) WHERE aggregation_completed_at IS NULL'
   },
+  ...[
+    ['conversation_key', 'text'],
+    ['session_namespace', 'text'],
+    ['session_source', 'text'],
+    ['session_resolution', 'text'],
+    ['session_confidence', 'text'],
+    ['thread_key', 'text'],
+    ['turn_key', 'text'],
+    ['agent_key', 'text'],
+    ['parent_response_key', 'text'],
+    ['identity_conflict', 'integer']
+  ].map(([columnName, columnType]) => ({
+    schemaName: 'juhe_dataset' as const,
+    source: 'audit-log-session-identity-pg-columns',
+    sql: `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${columnName} ${columnType}`
+  })),
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-session-identity-pg-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_conversation_created ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id) WHERE conversation_key IS NOT NULL'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-session-identity-pg-indexes',
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_thread_created ON audit_logs(system_account_id, api_key_id, thread_key, created_at, id) WHERE thread_key IS NOT NULL'
+  },
   {
     schemaName: 'juhe_stats',
     source: 'client-ip-range-window-dirty-pg-columns',

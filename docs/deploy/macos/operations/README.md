@@ -18,6 +18,7 @@
 - 外部 HTTP watchdog 已退役，不提供安装、恢复或启动脚本。主进程退出由 launchd `KeepAlive` 拉起，DB service 和 worker 继续由主进程 supervisor 管理。
 - 真实路径、label、用户、入口域名、端口、代理订阅和凭据由部署人员通过参数或服务器私有配置提供，不写入仓库。
 - 高性能拓扑脚本不会安装 Nginx，也不会修改 Nginx 主配置；`--nginx-config` 必须是主配置已 include 的绝对路径。默认仅 dry-run，`--apply` 要求构建产物、共享 `backend/.env`、Node、launchd、Nginx 和所有目标端口均可用。
+- 高性能槽位 Nginx 是外层可信反向代理与 Node 之间的本机路由层，必须原样传递外层写入的 `X-Real-IP`、`X-Forwarded-For` 和 `X-Forwarded-Proto`。不得用 `$remote_addr` 或 `$proxy_add_x_forwarded_for` 重建来源链，否则 Express 在 `trust proxy=1` 下会把本机回环地址识别为客户端 IP。
 - `install-launchd-service.sh --apply` 必须显式传 `--health-port` 或 loopback `--health-base-url`；加载后在有界窗口内连续确认 `/__aisys__/health` 与 `/__aisys__/api/health`，失败会恢复旧定义和 loaded 状态。
 - `manage-sing-box.sh` 的 `launchd` 更新在 bootstrap、kickstart、监听身份或代理探测失败时恢复旧 plist 与原 loaded 状态；`existing` 不会因为任意进程占用端口就接管。
 - `temporary-cutover.sh` 不复制数据库、不生成临时 env、不停止主服务或临时服务。环境私有流程先完成资源隔离与候选启动，再使用本脚本切流；切流成功后也保留源服务，确认稳定后才显式清理。

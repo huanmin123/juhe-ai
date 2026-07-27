@@ -3,7 +3,7 @@ import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
 
 export type AccountModelMappingModelOption = {
-  label: string
+  label?: string
   value: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
 }
@@ -24,6 +24,13 @@ export function filterAccountModelMappingOptionsByEndpointFamily(
 ): AccountModelMappingModelOption[] {
   const protocol = accountModelMappingEndpointFamilyProtocol(endpointFamily)
   return options.filter((option) => option.supportedApiProtocols?.includes(protocol))
+}
+
+export function accountModelMappingUpstreamModelOptions(
+  options: AccountModelMappingModelOption[],
+  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
+): AccountModelMappingModelOption[] {
+  return filterAccountModelMappingOptionsByEndpointFamily(options, upstreamEndpointFamily)
 }
 
 export function accountModelMappingSourceModelOptions(input: {

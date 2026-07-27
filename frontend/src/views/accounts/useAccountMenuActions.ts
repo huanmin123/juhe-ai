@@ -3,7 +3,6 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
-import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
@@ -44,7 +43,6 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       } else {
         await api.myOpenaiOAuth.refreshToken(account.id)
       }
-      invalidateAccountDetail(account, scopeParams)
       message.success(`${account.name}: 令牌刷新成功`)
       await options.loadData()
     } catch (error) {
@@ -63,7 +61,6 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         const updated = options.isManagementView.value
           ? await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
           : await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
-        invalidateAccountDetail(account, scopeParams)
         options.updateLoadedAccount(updated)
         message.success(successText)
       } catch (error) {
@@ -80,7 +77,6 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       const updated = options.isManagementView.value
         ? await api.accounts.update(account.id, payload, scopeParams)
         : await api.myAccounts.update(account.id, payload)
-      invalidateAccountDetail(account, scopeParams)
       options.updateLoadedAccount(updated)
       message.success(successText)
     } catch (error) {
@@ -105,7 +101,6 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
           const updated = options.isManagementView.value
             ? await api.accounts.forceActivate(account.id, scopeParams)
             : await api.myAccounts.forceActivate(account.id)
-          invalidateAccountDetail(account, scopeParams)
           options.updateLoadedAccount(updated)
           message.success(updated.status === 'active'
             ? '账户已恢复可调度并参与调度'
@@ -252,13 +247,6 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     void handleAccountMenu(String(event.key), account)
   }
 
-  function invalidateAccountDetail(account: AccountSummary, scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)): void {
-    invalidateAccountDetailForAccount({
-      accountId: account.id,
-      isManagementView: options.isManagementView.value,
-      scopeParams
-    })
-  }
 
   return {
     handleAccountMenuClick

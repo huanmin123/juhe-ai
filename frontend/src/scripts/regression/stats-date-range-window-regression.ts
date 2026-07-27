@@ -38,13 +38,13 @@ assert.match(
 
 assert.match(
   statsViewSource,
-  /loadUsageStatsWindow\(\)/,
-  'stats overview loads must reuse the shared stats window cache'
+  /loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*isManagementView\.value \? 'admin' : 'self'[\s\S]*\}\)/,
+  'stats overview loads must use the scoped stats window and let manual refresh bypass its metadata cache'
 )
 
 assert.match(
   statsViewSource,
-  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\)[\s\S]*quickRangeDateRange/,
+  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\{\s*viewScope:\s*isManagementView\.value \? 'admin' : 'self'\s*\}\)[\s\S]*quickRangeDateRange/,
   'stats overview quick ranges must resolve the shared window before calculating today'
 )
 
@@ -61,8 +61,8 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /void\s+loadUsageStatsWindow\(\)[\s\S]*return\s+loadData\(\)/,
-  'system metrics must start the cached-window request without blocking its trend request'
+  /void\s+loadUsageStatsWindow\(\{\s*force,\s*viewScope:\s*'admin'\s*\}\)[\s\S]*return\s+loadData\(\)/,
+  'system metrics must start the scoped cached-window request without blocking its trend request'
 )
 
 assert.match(
@@ -93,6 +93,12 @@ assert.match(
   usageStatsViewSource,
   /dateRange:\s*dateRangeExplicit\.value\s*\?\s*selectedRange\.value\s*:\s*undefined/,
   'account usage stats must not submit browser-local default date ranges'
+)
+
+assert.match(
+  usageStatsViewSource,
+  /loadUsageStatsWindow\(\{[\s\S]*force:\s*options\?\.forceCache === true,[\s\S]*viewScope:\s*isManagementView\.value \? 'admin' : 'self'[\s\S]*\}\)/,
+  'account usage stats must use the scoped stats window and refresh its metadata on explicit refresh'
 )
 
 assert.match(

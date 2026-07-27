@@ -21,7 +21,7 @@ const loopbackAddresses = new BlockList()
 loopbackAddresses.addSubnet('127.0.0.0', 8, 'ipv4')
 loopbackAddresses.addAddress('::1', 'ipv6')
 
-export type AccountHealthCheckDispatchReason = 'activation' | 'configuration'
+export type AccountHealthCheckDispatchReason = 'activation' | 'configuration' | 'request_failure'
 
 export interface AccountHealthCheckDispatchRouterOptions {
   secret: string
@@ -252,7 +252,11 @@ function parseDispatchPayload(rawBody: Buffer): {
   const accountId = record.accountId.trim()
   if (!accountId) return undefined
 
-  if (record.reason !== 'activation' && record.reason !== 'configuration') {
+  if (
+    record.reason !== 'activation'
+    && record.reason !== 'configuration'
+    && record.reason !== 'request_failure'
+  ) {
     return undefined
   }
 

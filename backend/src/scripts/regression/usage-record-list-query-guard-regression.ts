@@ -449,6 +449,22 @@ try {
     /lower\(accounts\.name\)/,
     'PG 使用记录账号关键词预解析不能折叠账号名称大小写'
   )
+  assert.doesNotMatch(
+    usageRecordsRepositorySource,
+    /usage-record-first-page-cache|usageRecordFirstPage/i,
+    '动态使用记录仓储不得重新接入后端首屏响应缓存'
+  )
+  const usageRecordsRoutesSource = readFileSync(resolve('src/modules/usage-records/usage-records.routes.ts'), 'utf8')
+  assert.match(
+    usageRecordsRoutesSource,
+    /const records = await listUsageRecordsAsync\(access, options\)/,
+    '使用记录列表路由必须直接读取最新仓储事实'
+  )
+  assert.doesNotMatch(
+    usageRecordsRoutesSource,
+    /getUsageRecordFirstPage|seedUsageRecordFirstPage/,
+    '使用记录列表路由不得返回或回填后端首屏缓存'
+  )
   const postgresListRowsFunction = usageRecordsRepositorySource.match(/async function listPostgresUsageRecordRows[\s\S]*?\n}\n\nfunction listUsageRecordRowsFromShards/)?.[0] ?? ''
   assert.doesNotMatch(postgresListRowsFunction, /SELECT\s+ur\.\*/i, 'PG 使用记录列表回表不应 SELECT ur.* 拉取详情快照大字段')
   assert.doesNotMatch(postgresListRowsFunction, /request_snapshot_json|response_snapshot_json/i, 'PG 使用记录列表不应读取请求或响应快照字段')

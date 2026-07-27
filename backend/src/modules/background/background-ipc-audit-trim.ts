@@ -38,6 +38,15 @@ function trimAuditLogForWorkerIpc(item: AuditLogInput): AuditLogInput {
 function trimAuditLogTopLevelStringsForWorkerIpc(item: AuditLogInput): AuditLogInput {
   return {
     ...item,
+    conversationKey: truncateOptionalAuditIpcString(item.conversationKey, 256),
+    sessionNamespace: truncateOptionalAuditIpcString(item.sessionNamespace, 256),
+    sessionSource: truncateOptionalAuditIpcString(item.sessionSource, 256),
+    sessionResolution: truncateOptionalAuditIpcString(item.sessionResolution, 64),
+    sessionConfidence: truncateOptionalAuditIpcString(item.sessionConfidence, 64),
+    threadKey: truncateOptionalAuditIpcString(item.threadKey, 256),
+    turnKey: truncateOptionalAuditIpcString(item.turnKey, 256),
+    agentKey: truncateOptionalAuditIpcString(item.agentKey, 256),
+    parentResponseKey: truncateOptionalAuditIpcString(item.parentResponseKey, 256),
     path: truncateAuditIpcString(item.path, 2048),
     queryString: truncateOptionalAuditIpcString(item.queryString, 4096),
     model: truncateOptionalAuditIpcString(item.model, 512),
@@ -198,6 +207,16 @@ export function estimateAuditLogBytes(input: AuditLogInput): number {
 function estimateAuditTopLevelBytes(input: AuditLogInput): number {
   return estimateJsonBytes({
     traceId: input.traceId,
+    conversationKey: input.conversationKey,
+    sessionNamespace: input.sessionNamespace,
+    sessionSource: input.sessionSource,
+    sessionResolution: input.sessionResolution,
+    sessionConfidence: input.sessionConfidence,
+    threadKey: input.threadKey,
+    turnKey: input.turnKey,
+    agentKey: input.agentKey,
+    parentResponseKey: input.parentResponseKey,
+    identityConflict: input.identityConflict,
     trafficSource: input.trafficSource,
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,

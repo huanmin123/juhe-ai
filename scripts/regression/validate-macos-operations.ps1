@@ -48,8 +48,41 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'location ^~ /__aiinternal__/', 'wait_for_health', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'activation_service_names', 'wait_for_health', 'wait_for_metrics_registry', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+foreach ($contract in @(
+  'proxy_set_header X-Real-IP $http_x_real_ip;',
+  'proxy_set_header X-Forwarded-For $http_x_forwarded_for;',
+  'proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;'
+)) {
+  $count = ([regex]::Matches($performanceInstaller, [regex]::Escape($contract))).Count
+  if ($count -ne 4) { throw "Performance topology must preserve the trusted proxy header in all four routes: $contract (found $count)" }
+}
+foreach ($forbidden in @(
+  'proxy_set_header X-Real-IP $remote_addr;',
+  'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+  'proxy_set_header X-Forwarded-Proto $scheme;'
+)) {
+  if ($performanceInstaller.Contains($forbidden, [StringComparison]::Ordinal)) {
+    throw "Performance topology must not rewrite or append the trusted proxy chain: $forbidden"
+  }
+}
+$activationFunctionStart = $performanceInstaller.IndexOf('activation_service_names() {', [StringComparison]::Ordinal)
+$activationLoopStart = $performanceInstaller.IndexOf('for name in $(activation_service_names); do', [StringComparison]::Ordinal)
+$activationFunctionEnd = $performanceInstaller.IndexOf("`n}", $activationFunctionStart, [StringComparison]::Ordinal)
+$activationFunctionBlock = $performanceInstaller.Substring($activationFunctionStart, $activationFunctionEnd - $activationFunctionStart)
+$activationGatewayLoop = $activationFunctionBlock.IndexOf('while [ "$index" -le "$GATEWAY_COUNT" ]; do', [StringComparison]::Ordinal)
+$activationGatewayLoopEnd = $activationFunctionBlock.IndexOf('  done', $activationGatewayLoop, [StringComparison]::Ordinal)
+$activationControlWithinFunction = $activationFunctionBlock.IndexOf("  printf '%s\n' control-1", [StringComparison]::Ordinal)
+$activationHealthCheck = $performanceInstaller.IndexOf('  wait_for_health "$name"', $activationLoopStart, [StringComparison]::Ordinal)
+$activationRegistryCheck = $performanceInstaller.IndexOf('  wait_for_metrics_registry "$name"', $activationHealthCheck, [StringComparison]::Ordinal)
+$activationControlLast = $performanceInstaller.IndexOf("  printf '%s\n' control-1", $activationFunctionStart, [StringComparison]::Ordinal)
+$activationLoopEnd = $performanceInstaller.IndexOf("`ndone", $activationRegistryCheck, [StringComparison]::Ordinal)
+$activationBootstrap = $performanceInstaller.IndexOf('  launchctl bootstrap "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
+$activationKickstart = $performanceInstaller.IndexOf('  launchctl kickstart -k "$DOMAIN/$(service_label "$name")"', $activationBootstrap, [StringComparison]::Ordinal)
+if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationBootstrap -lt $activationLoopStart -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationControlLast -lt $activationFunctionStart -or $activationControlLast -gt $activationLoopStart) {
+  throw 'Performance topology must activate and verify gateway publishers before restarting control/workers'
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)

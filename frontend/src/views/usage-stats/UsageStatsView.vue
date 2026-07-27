@@ -250,7 +250,10 @@ const {
           void loadAccountUsageSummary(normalizedOverview.range, systemAccountId)
         }
       })(),
-      loadUsageStatsWindow()
+      loadUsageStatsWindow({
+        force: options?.forceCache === true,
+        viewScope: isManagementView.value ? 'admin' : 'self'
+      })
     ])
     if (!usageOverview) {
       if (resourceRequestSeq !== usageStatsResourceRequestSeq) {

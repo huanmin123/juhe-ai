@@ -1,5 +1,5 @@
 import type { ComputedRef } from 'vue'
-import { computed, onActivated, onDeactivated, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, ref } from 'vue'
 
 import { message } from '@/lib/antd'
 import {
@@ -10,7 +10,6 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { ModelCheckAccountOption, ModelCheckRunPayload } from '@/types/domain'
 import {
   canSelectModelCheckAccount,
@@ -49,9 +48,6 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   const comparisonOptions = ref<AccountSelectOption[]>([])
   const historyTargetOptions = ref<AccountSelectOption[]>([])
   const accountProfilesById = ref<Record<string, ModelCheckAccountProfile>>({})
-  const targetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
-  const comparisonOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
-  const historyTargetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
   const selectedTargetAccount = ref<AccountSelection>()
   const selectedComparisonAccount = ref<AccountSelection>()
   const selectedHistoryTargetAccount = ref<AccountSelection>()
@@ -60,12 +56,15 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   let historyTargetOptionsRequestId = 0
   let active = true
   onActivated(() => { active = true })
-  onDeactivated(() => {
+  onDeactivated(invalidateAccountOptionRequests)
+  onBeforeUnmount(invalidateAccountOptionRequests)
+
+  function invalidateAccountOptionRequests() {
     active = false
     targetOptionsRequestId += 1
     comparisonOptionsRequestId += 1
     historyTargetOptionsRequestId += 1
-  })
+  }
   const selectedTargetAccountProfile = computed(() => accountProfilesById.value[input.form.targetId])
   const selectedComparisonAccountProfile = computed(() => accountProfilesById.value[input.form.trustedComparisonAccountId ?? ''])
 
@@ -75,12 +74,6 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     const selectedIds = [input.form.targetId].filter(Boolean).sort()
     const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds])
     const requestId = ++targetOptionsRequestId
-    const cachedOptions = targetOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      targetOptionsLoading.value = false
-      targetOptions.value = cachedOptions
-      return
-    }
     targetOptionsLoading.value = true
     try {
       const accounts = await loadShared(requestKey, () => input.accountsApi.options({
@@ -90,15 +83,14 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50,
         selectedIds
       }))
+      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId)) return
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
-      targetOptionsCache.set(requestKey, nextOptions)
-      if (active && requestId === targetOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
-        targetOptions.value = nextOptions
-      }
+      targetOptions.value = nextOptions
     } catch (error) {
+      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId)) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载检测目标失败'))
     } finally {
@@ -111,15 +103,11 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadComparisonOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
+    const targetId = input.form.targetId
+    const model = input.form.model
     const selectedIds = [input.form.targetId, input.form.trustedComparisonAccountId ?? ''].filter(Boolean).sort()
     const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds, input.form.targetId, input.form.model])
     const requestId = ++comparisonOptionsRequestId
-    const cachedOptions = comparisonOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      comparisonOptionsLoading.value = false
-      comparisonOptions.value = cachedOptions
-      return
-    }
     comparisonOptionsLoading.value = true
     try {
       const accounts = await loadShared(requestKey, () => input.accountsApi.options({
@@ -129,19 +117,22 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50,
         selectedIds
       }))
+      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId)
+        || targetId !== input.form.targetId
+        || model !== input.form.model) return
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectTrustedModelCheckAccount(account, {
-          excludedAccountId: input.form.targetId,
+          excludedAccountId: targetId,
           targetAccount: selectedTargetAccountProfile.value,
-          model: input.form.model
+          model
         }))
         .map(accountTargetOption)
-      comparisonOptionsCache.set(requestKey, nextOptions)
-      if (active && requestId === comparisonOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
-        comparisonOptions.value = nextOptions
-      }
+      comparisonOptions.value = nextOptions
     } catch (error) {
+      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId)
+        || targetId !== input.form.targetId
+        || model !== input.form.model) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载可信对比账户失败'))
     } finally {
@@ -154,15 +145,10 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadHistoryTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
-    const selectedIds = [selectedHistoryTargetAccount.value?.id ?? ''].filter(Boolean).sort()
+    const selectedHistoryTargetId = selectedHistoryTargetAccount.value?.id
+    const selectedIds = [selectedHistoryTargetId ?? ''].filter(Boolean).sort()
     const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'history', normalizedKeyword, 50, selectedIds])
     const requestId = ++historyTargetOptionsRequestId
-    const cachedOptions = historyTargetOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      historyTargetOptionsLoading.value = false
-      historyTargetOptions.value = cachedOptions
-      return
-    }
     historyTargetOptionsLoading.value = true
     try {
       const accounts = await loadShared(requestKey, () => input.accountsApi.options({
@@ -172,15 +158,16 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         limit: 50,
         selectedIds
       }))
+      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId)
+        || selectedHistoryTargetId !== selectedHistoryTargetAccount.value?.id) return
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
-      historyTargetOptionsCache.set(requestKey, nextOptions)
-      if (active && requestId === historyTargetOptionsRequestId && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId) {
-        historyTargetOptions.value = nextOptions
-      }
+      historyTargetOptions.value = nextOptions
     } catch (error) {
+      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId)
+        || selectedHistoryTargetId !== selectedHistoryTargetAccount.value?.id) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载历史账户筛选项失败'))
     } finally {
@@ -200,9 +187,6 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     targetOptionsLoading.value = false
     comparisonOptionsLoading.value = false
     historyTargetOptionsLoading.value = false
-    targetOptionsCache.clear()
-    comparisonOptionsCache.clear()
-    historyTargetOptionsCache.clear()
     targetOptionsRequestId += 1
     comparisonOptionsRequestId += 1
     historyTargetOptionsRequestId += 1
@@ -214,6 +198,12 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     input.form.trustedComparison = false
     input.form.trustedComparisonAccountId = undefined
     selectedComparisonAccount.value = undefined
+  }
+
+  function isCurrentAccountOptionRequest(requestId: number, latestRequestId: number, systemAccountId: string | undefined) {
+    return active
+      && requestId === latestRequestId
+      && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId
   }
 
   function handleTargetSearch(value: string) {
@@ -234,7 +224,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
 
   function handleTargetDropdownVisibleChange(open: boolean) {
-    if (open && !targetOptions.value.length) {
+    if (open) {
       void loadTargetOptions()
     }
   }
@@ -244,7 +234,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
 
   function handleComparisonDropdownVisibleChange(open: boolean) {
-    if (open && !comparisonOptions.value.length) {
+    if (open) {
       void loadComparisonOptions()
     }
   }
@@ -254,7 +244,7 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   }
 
   function handleHistoryTargetDropdownVisibleChange(open: boolean) {
-    if (open && !historyTargetOptions.value.length) {
+    if (open) {
       void loadHistoryTargetOptions()
     }
   }

@@ -64,6 +64,7 @@ import {
 } from './stream-finalization-retry-decision.js'
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 import { runtimeConfig } from '../../../config/runtime.js'
+import { dispatchRequestFailureAccountHealthCheck } from './request-failure-health-check.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
@@ -440,10 +441,10 @@ async function finalizeBufferedJsonProtocolFailure(
     }),
     errorMessage: failure.message
   })
+  dispatchRequestFailureAccountHealthCheck(input.req, input.usageContext.trafficSource, input.account.id)
   // A complete 2xx response with an invalid protocol shape is request-local
-  // evidence. A bad session or provider-specific payload must not suppress the
-  // account or schedule a shared precheck; the caller may still try another
-  // account before committing the downstream response.
+  // evidence. The request may fail over, while shared account state remains
+  // gated by the independent fixed-model health confirmation.
   if (!input.res.headersSent && !input.res.writableEnded && !input.res.destroyed) {
     input.auditCapture.addGatewayMetadata({
       label: 'upstream_protocol_server_retry',

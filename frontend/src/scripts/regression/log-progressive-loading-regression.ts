@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import type { AuditLogDetail, AuditLogSummary } from '../../types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary } from '../../types/domain'
 import { useAuditLogDetailPayload } from '../../views/audit-logs/useAuditLogDetailPayload'
 
 function source(relativePath: string): string {
@@ -11,7 +11,6 @@ function source(relativePath: string): string {
 const auditViewSource = source('../../views/audit-logs/AuditLogsView.vue')
 const auditModeBridgeSource = source('../../views/audit-logs/useAuditLogModeBridge.ts')
 const auditPayloadStateSource = source('../../views/audit-logs/useAuditLogDetailPayload.ts')
-const auditPayloadDetailsSource = source('../../views/audit-logs/auditPayloadDetails.ts')
 const auditDetailDrawerSource = source('../../views/audit-logs/AuditLogDetailDrawer.vue')
 const runtimeViewSource = source('../../views/runtime-logs/RuntimeLogsView.vue')
 const runtimePageContentSource = source('../../views/runtime-logs/RuntimeLogPageContent.vue')
@@ -21,6 +20,7 @@ const runtimeFacetsStateSource = source('../../views/runtime-logs/useRuntimeLogF
 const logsApiSource = source('../../api/domains/logs.ts')
 const runtimeTypesSource = source('../../types/domain/runtime-logs.ts')
 const runtimeRouteSource = source('../../../../backend/src/modules/runtime-logs/runtime-logs.routes.ts')
+const auditRouteSource = source('../../../../backend/src/modules/audit-logs/audit-logs.routes.ts')
 const dbServiceIpcSource = source('../../../../backend/src/modules/db-service/db-service-ipc.ts')
 const globalStylesSource = source('../../styles/global.css')
 
@@ -129,6 +129,24 @@ await stalePayload
 assert.equal(payloadState.detail.value?.id, 'audit-payload-race-b', '切换详情后应保留新详情')
 assert.equal(payloadState.selectedPayload.value, undefined, '旧 payload 失败不得写入新详情')
 assert.deepEqual(payloadErrors, [], '过期 payload 失败不得在新详情上弹错')
+
+const fullPayload = {
+  id: 'payload-full',
+  bodyText: '完整正文',
+  bodyTruncated: false
+} as AuditLogPayloadDetail
+const payloadCalls: Array<[string, string]> = []
+const fullPayloadState = useAuditLogDetailPayload({
+  loadDetail: async (id) => ({ id } as AuditLogDetail),
+  loadPayload: async (auditLogId, payloadId) => {
+    payloadCalls.push([auditLogId, payloadId])
+    return fullPayload
+  }
+})
+await fullPayloadState.openDetail({ id: 'audit-full' } as AuditLogSummary)
+await fullPayloadState.loadPayload('payload-full')
+assert.deepEqual(payloadCalls, [['audit-full', 'payload-full']], '查看审计 payload 只能发起一次完整内容请求')
+assert.deepEqual(fullPayloadState.selectedPayload.value, fullPayload, '完整 payload 响应应直接展示，不再做前端分段拼接')
 assert.match(logsApiSource, /grepOptions: \(\) => unwrap<RuntimeLogGrepRuntime>/, 'grep 文件范围应有独立按需 API')
 assert.match(runtimeViewSource, /loadRuntimeLogGrepOptions/, '只有 grep 模式才应加载文件范围选项')
 const facetsType = runtimeTypesSource.match(/export interface RuntimeLogFacets \{[\s\S]*?\n\}/)?.[0] ?? ''
@@ -144,23 +162,18 @@ const runtimeFacetsRouteSource = runtimeRouteSource.match(
 assert.match(runtimeFacetsRouteSource, /requestDbService\(\{ type: 'get_runtime_log_facets' \}\)/, 'facets 必须只读取专用只读 worker 结果')
 assert.doesNotMatch(runtimeFacetsRouteSource, /requestServerRuntime|type: 'status'|getRuntimeLogGrepRuntime|buildBackgroundQueueHealthSnapshot|gatewayAccountSideEffects/, 'facets 不得读取 server runtime、DB status、grep 或网关副作用')
 
-assert.doesNotMatch(
-  auditPayloadStateSource,
-  /while\s*\(/,
-  '点击审计 payload 后不得循环拉取完整正文'
-)
-assert.match(auditPayloadStateSource, /loadNextPayloadWindow/, '审计 payload 应提供显式下一段加载')
 const openAuditDetailSource = auditPayloadStateSource.match(/async function openDetail[\s\S]*?async function loadPayload/)?.[0] ?? ''
 assert.match(openAuditDetailSource, /payloadRequestId \+= 1/, '切换审计详情时必须作废上一条记录的 payload 请求')
 assert.match(openAuditDetailSource, /detail\.value = undefined/, '加载新审计详情时必须立即隐藏旧详情，避免旧 payload 操作串页')
-assert.match(auditPayloadStateSource, /bodyBytesReturned <= 0/, '下一段未读取到字节时必须停止继续加载')
-assert.match(auditPayloadStateSource, /bodyNextOffset <= requestedOffset/, '下一段 offset 未前进时必须停止继续加载')
-assert.match(auditPayloadDetailsSource, /headersIncluded: current\.headersIncluded/, '窗口合并应保留首段 Headers 状态')
-assert.match(auditDetailDrawerSource, /加载下一段/, '审计详情应提供用户可见的下一段按钮')
-assert.match(auditDetailDrawerSource, /load-next-payload/, '下一段按钮必须通过独立事件触发')
+assert.doesNotMatch(auditPayloadStateSource, /loadNextPayloadWindow|auditPayloadReadWindowBytes/, '前端不得保留审计正文分段加载状态')
+assert.doesNotMatch(auditDetailDrawerSource, /加载下一段|load-next-payload/, '审计详情不得显示下一段交互')
+assert.match(logsApiSource, /payload: \(id: string, payloadId: string\)/, '审计 payload API 不应再暴露 offset/limit 参数')
+const auditPayloadRouteSource = auditRouteSource.match(/auditLogsRouter\.get\('\/:id\/payloads\/:payloadId'[\s\S]*?\n}\)/)?.[0] ?? ''
+assert.match(auditPayloadRouteSource, /full: true/, '管理员审计 payload 接口必须一次返回完整正文')
+assert.doesNotMatch(auditPayloadRouteSource, /req\.query\.(offset|limit)/, '管理员审计 payload 接口不得继续接受窗口参数')
 
 const grepItemType = runtimeTypesSource.match(/export interface RuntimeLogGrepItem \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(grepItemType, /rawJson:/, 'grep 命中项不得重复返回 rawJson 和 line')
 assert.match(grepItemType, /line:/, 'grep 命中项应保留单份原始行')
 
-console.log('日志渐进式加载回归通过：运行态、facets、审计正文和 grep 原文均按需读取')
+console.log('日志加载回归通过：审计正文单次完整返回，运行态、facets 和 grep 原文仍按需读取')

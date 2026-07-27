@@ -367,18 +367,21 @@ export async function cleanupCreatedAuditBlobFilesAsync(storageKeys: string[]): 
 
 export async function readAuditPayloadBlobWindow(
   blobId: string | undefined,
-  options: { offset?: number; limit?: number }
+  options: { offset?: number; limit?: number; full?: boolean }
 ): Promise<AuditPayloadBlobWindow> {
   assertAuditPayloadBlobSqliteOnly('readAuditPayloadBlobWindow')
-  const offset = normalizePayloadReadOffset(options.offset)
-  const limit = normalizePayloadReadLimit(options.limit)
+  const full = options.full === true
+  const requestedOffset = normalizePayloadReadOffset(options.offset)
+  const requestedLimit = full ? 0 : normalizePayloadReadLimit(options.limit)
   if (!blobId) {
-    return emptyPayloadBlobWindow(offset, limit, 0, 'not_saved')
+    return emptyPayloadBlobWindow(full ? 0 : requestedOffset, requestedLimit, 0, 'not_saved')
   }
   const meta = loadPayloadBlobMeta(blobId)
   if (!meta) {
-    return emptyPayloadBlobWindow(offset, limit, 0, 'metadata_missing')
+    return emptyPayloadBlobWindow(full ? 0 : requestedOffset, requestedLimit, 0, 'metadata_missing')
   }
+  const offset = full ? 0 : requestedOffset
+  const limit = full ? meta.rawSizeBytes : requestedLimit
   const filePath = blobFilePath(meta.storageKey)
   if (!await fileExists(filePath)) {
     return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes, 'file_missing')
@@ -394,7 +397,7 @@ export async function readAuditPayloadBlobWindow(
     offset,
     limit,
     totalBytes: meta.rawSizeBytes,
-    nextOffset: truncated && bytesReturned > 0 ? nextOffset : undefined,
+    nextOffset: !full && truncated && bytesReturned > 0 ? nextOffset : undefined,
     truncated,
     storageStatus: 'available'
   }
@@ -457,17 +460,20 @@ async function deleteAuditPayloadBlobMetadataRowsPostgresAsync(client: DatabaseC
 export async function readAuditPayloadBlobWindowWithClient(
   client: DatabaseClient,
   blobId: string | undefined,
-  options: { offset?: number; limit?: number }
+  options: { offset?: number; limit?: number; full?: boolean }
 ): Promise<AuditPayloadBlobWindow> {
-  const offset = normalizePayloadReadOffset(options.offset)
-  const limit = normalizePayloadReadLimit(options.limit)
+  const full = options.full === true
+  const requestedOffset = normalizePayloadReadOffset(options.offset)
+  const requestedLimit = full ? 0 : normalizePayloadReadLimit(options.limit)
   if (!blobId) {
-    return emptyPayloadBlobWindow(offset, limit, 0, 'not_saved')
+    return emptyPayloadBlobWindow(full ? 0 : requestedOffset, requestedLimit, 0, 'not_saved')
   }
   const meta = await loadPayloadBlobMetaWithClient(client, blobId)
   if (!meta) {
-    return emptyPayloadBlobWindow(offset, limit, 0, 'metadata_missing')
+    return emptyPayloadBlobWindow(full ? 0 : requestedOffset, requestedLimit, 0, 'metadata_missing')
   }
+  const offset = full ? 0 : requestedOffset
+  const limit = full ? meta.rawSizeBytes : requestedLimit
   const filePath = blobFilePath(meta.storageKey)
   if (!await fileExists(filePath)) {
     return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes, 'file_missing')
@@ -483,7 +489,7 @@ export async function readAuditPayloadBlobWindowWithClient(
     offset,
     limit,
     totalBytes: meta.rawSizeBytes,
-    nextOffset: truncated && bytesReturned > 0 ? nextOffset : undefined,
+    nextOffset: !full && truncated && bytesReturned > 0 ? nextOffset : undefined,
     truncated,
     storageStatus: 'available'
   }

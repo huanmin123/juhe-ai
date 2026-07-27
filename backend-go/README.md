@@ -139,7 +139,9 @@ go run ./cmd/juhe-ai server
 
 其中 W5 分组挂载范围已经包含 create/list/detail/update/delete 双作用域路由，W6 只读范围还包含公开接口日志列表 / 详情和 `GET /__aisys__/api/ip-stats`。真实管理 smoke 根命令为 `pnpm smoke:plan0081-real-go-management`，本地 mock regression 为 `pnpm test:plan0081-real-go-management-smoke`。默认 smoke 会读取外部来源列表 / 可选非内置来源详情、公开接口日志第一页、分组、供应商 / 模型 options 和客户端 IP 统计列表，但不会读取任何 Token secret。只有同时提供 `JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_ID` 与 `JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_TOKEN_ID` 才会额外验证 secret；只提供其中一个会在发送 HTTP 前失败。source / token 路径段都使用 encoded segment，成功摘要只输出 `externalIntegrationSourceTokenSecretChecked` 布尔值，明文 Token 和 raw Axios secret 错误不会写入控制台。当前本机未执行显式真实 Go URL / Cookie listener smoke，也未据此验证真实 PostgreSQL / Redis / session；生产切流和 Node 删除仍未完成。完整命令和其他安全边界见 `../docs/develop/测试与验证说明.md`。
 
-启动 W1b public API log ingest worker 需要 PostgreSQL 和 Redis queue：
+所有会消费队列或写 PostgreSQL / Redis 的 `juhe-ai-worker` 命令都要求完整 worker owner 证据：`JUHE_AI_OWNER_LOCK_ENABLED=true`、`JUHE_AI_OWNER_LOCK_ROLE=worker`、`JUHE_AI_GO_WORKER_EXCLUSIVE_OWNER=true`、`JUHE_AI_LEGACY_NODE_WORKER_DRAINED=true`，并提供绝对 `JUHE_AI_OWNER_LOCK_PATH` 与 `JUHE_AI_OWNER_MANIFEST_PATH`。manifest 必须声明 `routeOwners.worker=go`，且 deployment epoch、Go 版本、Goose schema 与当前二进制一致。当前仓库生产 manifest 仍是 `worker=node`，所以 mutating 命令不能连接生产资源；本地验证必须使用隔离 PG/Redis/queue、隔离绝对锁路径和隔离 manifest。
+
+启动 W1b public API log ingest worker 需要 PostgreSQL 和 Redis queue，并满足上述 owner 门禁：
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
@@ -182,14 +184,14 @@ go run ./cmd/juhe-ai-worker authorization-usage-range-windows-refresh
 
 该 worker 默认每 6 小时刷新一次，初始延迟 43 分钟；可用 `--run-once` 做一次性 smoke，用 `--interval`、`--initial-delay` 和 `--timezone` 调整本地验证参数。它按 `usageStatsTimezone` 计算当天、昨日、近 7 天、近 31 天和当月 hot ranges，只从 `juhe_stats.authorization_*_usage_summary_daily` 汇总写入 `authorization_*_usage_range_windows`，不读取 `juhe_usage.usage_records`。真实 PG smoke、生产部署 / supervisor 接管和 Node stats-worker 删除仍未完成。
 
-启动 W4 网关配额快照构建 worker 默认只需要 PostgreSQL：
+启动 W4 网关配额快照构建 worker 默认只需要 PostgreSQL；默认只读模式不需要 worker owner 门禁：
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
 go run ./cmd/juhe-ai-worker gateway-quota-snapshot-build --run-once
 ```
 
-如需把构建结果发布给 Node gateway Redis 模式消费，额外配置 Redis state 并显式开启发布：
+如需把构建结果发布到 Redis runtime state，除 Redis state 外还必须满足本节开头的完整 worker owner 门禁并显式开启发布：
 
 ```powershell
 $env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'

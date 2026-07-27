@@ -351,6 +351,7 @@ export async function getAuditLogPayloadReadOnly(
 
 function shouldIncludeAuditPayloadHeaders(options: AuditLogPayloadReadOptions): boolean {
   if (options.includeHeaders !== undefined) return options.includeHeaders
+  if (options.full) return true
   const offset = typeof options.offset === 'number' ? options.offset : Number(options.offset ?? 0)
   return !Number.isFinite(offset) || offset <= 0
 }

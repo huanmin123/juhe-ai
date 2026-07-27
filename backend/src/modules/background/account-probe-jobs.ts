@@ -37,6 +37,7 @@ import {
 
 const accountQualityFailurePrecheckBatchSize = 10
 const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
+let accountQualityFailurePrecheckOffset = 0
 let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
@@ -65,9 +66,13 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
       type: 'refresh_account_quality',
       windowMinutes,
       failureCandidateLimit: accountQualityFailurePrecheckBatchSize,
+      failureCandidateOffset: accountQualityFailurePrecheckOffset,
       scheduledLease: deps.scheduledLease
     }, 45_000)
     const failureCandidates = realtimeResult.failureCandidates
+    accountQualityFailurePrecheckOffset = failureCandidates.length < accountQualityFailurePrecheckBatchSize
+      ? 0
+      : accountQualityFailurePrecheckOffset + failureCandidates.length
     const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(accountQualityFailurePrecheckBatchSize)
     setAccountQualityFailurePrecheckQueueConcurrency(queueConcurrency)
     let failurePrecheckEnqueuedCount = 0

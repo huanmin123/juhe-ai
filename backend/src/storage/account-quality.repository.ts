@@ -258,8 +258,9 @@ export async function refreshAccountQualityFromUsageAsync(
   return { refreshed: rows.length, removed, windowStartedAt, windowEndedAt }
 }
 
-export function listAccountQualityFailurePrecheckCandidates(limit = 20): AccountQualityFailurePrecheckCandidate[] {
+export function listAccountQualityFailurePrecheckCandidates(limit = 20, offset = 0): AccountQualityFailurePrecheckCandidate[] {
   const normalizedLimit = Math.max(1, Math.min(Math.trunc(limit), 100))
+  const normalizedOffset = normalizedAccountQualityFailurePrecheckOffset(offset)
   const rows = getStatsDatabase()
     .prepare(`
       SELECT
@@ -284,9 +285,9 @@ export function listAccountQualityFailurePrecheckCandidates(limit = 20): Account
         COALESCE(success_rate, 1) ASC,
         updated_at DESC,
         account_id ASC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `)
-    .all(normalizedLimit) as unknown as Array<{
+    .all(normalizedLimit, normalizedOffset) as unknown as Array<{
       account_id?: string | null
       system_account_id?: string | null
       provider_code?: string | null
@@ -327,8 +328,9 @@ export function listAccountQualityFailurePrecheckCandidates(limit = 20): Account
     .filter((row): row is AccountQualityFailurePrecheckCandidate => Boolean(row))
 }
 
-export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 20): Promise<AccountQualityFailurePrecheckCandidate[]> {
+export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 20, offset = 0): Promise<AccountQualityFailurePrecheckCandidate[]> {
   const normalizedLimit = Math.max(1, Math.min(Math.trunc(limit), 100))
+  const normalizedOffset = normalizedAccountQualityFailurePrecheckOffset(offset)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<{
     account_id?: string | null
@@ -364,8 +366,8 @@ export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 2
       COALESCE(success_rate, 1) ASC,
       updated_at DESC,
       account_id ASC
-    LIMIT ?
-  `, [normalizedLimit])
+    LIMIT ? OFFSET ?
+  `, [normalizedLimit, normalizedOffset])
   return rows
     .map((row): AccountQualityFailurePrecheckCandidate | undefined => {
       const accountId = row.account_id?.trim()
@@ -389,6 +391,11 @@ export async function listAccountQualityFailurePrecheckCandidatesAsync(limit = 2
       return candidate
     })
     .filter((row): row is AccountQualityFailurePrecheckCandidate => Boolean(row))
+}
+
+function normalizedAccountQualityFailurePrecheckOffset(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(Math.trunc(value), 1_000_000))
 }
 
 function loadDirtyAccountQualityIds(database: ReturnType<typeof getStatsDatabase>, limit: number): string[] {

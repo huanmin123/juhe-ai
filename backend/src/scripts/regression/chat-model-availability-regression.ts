@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import {
-  createChatModelOptionsSnapshotCache,
+  createChatModelOptionsRequestCoalescer,
   loadChatModelOptionsFromProviderCatalogs,
   resolveChatModelOptionsFromAccountSnapshot
 } from '../../modules/chat/chat-model-availability.js'
@@ -45,9 +45,8 @@ assert.deepEqual(resolveChatModelOptionsFromAccountSnapshot({
   modelOptions: [{ id: 'gpt-bridge' }]
 }), [{ id: 'gpt-bridge', supportedApiProtocols: ['responses'] }], '跨协议映射必须依据上游 messages 端点模式判定候选模型可用性')
 
-let now = 1_000
 let loads = 0
-const cache = createChatModelOptionsSnapshotCache({ ttlMs: 5_000, now: () => now })
+const requests = createChatModelOptionsRequestCoalescer()
 const load = async () => {
   loads += 1
   await new Promise((resolve) => setTimeout(resolve, 5))
@@ -55,18 +54,14 @@ const load = async () => {
 }
 
 const concurrent = await Promise.all([
-  cache.getOrLoad('owner:key', load),
-  cache.getOrLoad('owner:key', load),
-  cache.getOrLoad('owner:key', load)
+  requests.getOrLoad('owner:key', load),
+  requests.getOrLoad('owner:key', load),
+  requests.getOrLoad('owner:key', load)
 ])
 assert.equal(loads, 1, '同一路由身份并发读取必须 single-flight，避免模型列表请求放大')
 assert.deepEqual(concurrent[0], concurrent[1])
-assert.deepEqual(await cache.getOrLoad('owner:key', load), concurrent[0])
-assert.equal(loads, 1, '短 TTL 内重复读取必须命中快照缓存')
-
-now += 5_001
-await cache.getOrLoad('owner:key', load)
-assert.equal(loads, 2, 'TTL 到期后必须重新加载，以便展示配置变更')
+assert.deepEqual(await requests.getOrLoad('owner:key', load), concurrent[0])
+assert.equal(loads, 2, '上一批请求完成后必须重新加载，以便立即展示配置变更')
 
 const loadedProviderCodes: string[] = []
 const providerModels = await loadChatModelOptionsFromProviderCatalogs({

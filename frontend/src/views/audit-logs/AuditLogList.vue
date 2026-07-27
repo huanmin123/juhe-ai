@@ -5,7 +5,7 @@
     :data-source="records"
     row-key="id"
     :loading="loading"
-    :scroll-x="1580"
+    :scroll-x="1840"
     :pagination="pagination"
     :mobile-pagination="mobilePagination"
     :mobile-has-more="mobileHasMore"
@@ -22,6 +22,24 @@
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'traceId'">
         <span class="trace-cell mono-cell">{{ record.traceId }}</span>
+      </template>
+      <template v-else-if="column.key === 'session'">
+        <div v-if="record.conversationKey" class="session-cell">
+          <a-tooltip :title="`完整会话 Key：${record.conversationKey}`">
+            <a-button class="session-key-button mono-cell" type="link" @click="emit('filter-conversation', record.conversationKey)">
+              {{ formatConversationKeyPreview(record.conversationKey) }}
+            </a-button>
+          </a-tooltip>
+          <div class="session-cell-meta">
+            <a-tag :color="sessionResolutionColor(record.sessionResolution)">{{ sessionResolutionText(record.sessionResolution) }}</a-tag>
+            <span v-if="record.sessionSource">{{ record.sessionSource }}</span>
+            <a-tag v-if="record.identityConflict" color="red">冲突</a-tag>
+          </div>
+        </div>
+        <span v-else class="session-cell-meta">
+          <a-tag :color="sessionResolutionColor(record.sessionResolution)">{{ sessionResolutionText(record.sessionResolution) }}</a-tag>
+          <span v-if="record.sessionSource">{{ record.sessionSource }}</span>
+        </span>
       </template>
       <template v-else-if="column.key === 'outcome'">
         <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
@@ -89,6 +107,19 @@
             <span>traceId</span>
             <strong class="mono-cell">{{ record.traceId }}</strong>
           </div>
+          <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>会话</span>
+            <a-button
+              v-if="record.conversationKey"
+              class="session-key-button mono-cell"
+              type="link"
+              @click="emit('filter-conversation', record.conversationKey)"
+            >
+              {{ formatConversationKeyPreview(record.conversationKey) }}
+            </a-button>
+            <strong v-else>{{ sessionResolutionText(record.sessionResolution) }}</strong>
+            <small v-if="record.sessionSource">{{ record.sessionSource }} · {{ sessionResolutionText(record.sessionResolution) }}</small>
+          </div>
           <div class="mobile-list-meta-item">
             <span>AI账户</span>
             <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
@@ -120,10 +151,13 @@ import type { AuditLogListItem } from '@/types/domain'
 import {
   displayAuditGroupName,
   displayName,
+  formatConversationKeyPreview,
   formatDateTime,
   formatDuration,
   outcomeColor,
   outcomeText,
+  sessionResolutionColor,
+  sessionResolutionText,
   statusColor,
   trafficSourceColor,
   trafficSourceText
@@ -148,6 +182,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
   (event: 'detail', record: AuditLogListItem): void
+  (event: 'filter-conversation', conversationKey: string): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
@@ -194,6 +229,44 @@ function auditDurationLabel(record: AuditLogListItem): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-cell {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.session-key-button {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-cell-meta {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  color: #64748b;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.session-cell-meta .ant-tag {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+.mobile-list-meta-item small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #64748b;
 }
 
 .endpoint-cell {

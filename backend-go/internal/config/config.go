@@ -56,6 +56,9 @@ type Config struct {
 	OwnerLockPath                      string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
 	OwnerLockDeploymentEpoch           string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
 	OwnerLockRole                      string        `env:"JUHE_AI_OWNER_LOCK_ROLE" envDefault:"server"`
+	OwnerManifestPath                  string        `env:"JUHE_AI_OWNER_MANIFEST_PATH"`
+	GoWorkerExclusiveOwner             bool          `env:"JUHE_AI_GO_WORKER_EXCLUSIVE_OWNER" envDefault:"false"`
+	LegacyNodeWorkerDrained            bool          `env:"JUHE_AI_LEGACY_NODE_WORKER_DRAINED" envDefault:"false"`
 }
 
 type TrustProxyConfig struct {

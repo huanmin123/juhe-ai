@@ -68,8 +68,7 @@ assertRoleBlockContainsOnly('ingest-worker', [
   'account-record-cleanup-retry',
   'audit-hot-retention-cleanup',
   'data-retention-cleanup',
-  'runtime-log-index-maintenance',
-  'usage-record-first-page-prewarm'
+  'runtime-log-index-maintenance'
 ])
 assertRoleBlockContainsOnly('stats-worker', [
   'background-task-run-reconcile',

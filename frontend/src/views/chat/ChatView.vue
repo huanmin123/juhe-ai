@@ -995,7 +995,7 @@ async function loadModelsOnOpen(): Promise<void> {
   const request = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: conversation.id }
   modelsLoading.value = true
   try {
-    const items = [...await modelLoadCoordinator.refreshIfExpired(request)]
+    const items = [...await modelLoadCoordinator.load(request)]
     if (selectedConversationId.value !== conversation.id) return
     models.value = items
     if (!selectedModel.value || !items.some((item) => item.id === selectedModel.value)) {

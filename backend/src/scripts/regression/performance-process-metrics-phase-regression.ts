@@ -4,20 +4,25 @@ import { readFileSync } from 'node:fs'
 import {
   delayUntilPerformanceProcessMetricsPublishPhaseMs,
   performanceProcessMetricsRegistryKey,
+  performanceProcessMetricsPublishFailureBackoffMs,
   stablePerformanceProcessMetricsPublishPhaseMs
 } from '../../shared/performance-process-metrics-registry.js'
 
 const seeds = [
-  'control-a:control:control-a',
-  'db-a:db-service:db-a',
+  'control-1:control:control-1',
+  'control-1:db-service:control-1',
   'gateway-1:gateway:gateway-1',
   'gateway-2:gateway:gateway-2',
-  'usage-1:usage-worker:1',
-  'usage-2:usage-worker:2',
-  'log-1:log-worker:1',
-  'log-2:log-worker:2',
-  'stats-1:stats-worker:1',
-  'ops-1:ops-worker:1'
+  'gateway-3:gateway:gateway-3',
+  'gateway-1:db-service:gateway-1',
+  'gateway-2:db-service:gateway-2',
+  'gateway-3:db-service:gateway-3',
+  'control-1-usage-worker-1:usage-worker:1',
+  'control-1-usage-worker-2:usage-worker:2',
+  'control-1-log-worker-1:log-worker:1',
+  'control-1-log-worker-2:log-worker:2',
+  'control-1-stats-worker-1:stats-worker:1',
+  'control-1-ops-worker-1:ops-worker:1'
 ]
 const phases = seeds.map(stablePerformanceProcessMetricsPublishPhaseMs)
 
@@ -30,11 +35,23 @@ for (let index = 0; index < seeds.length; index += 1) {
   assert.ok(phases[index] >= 250 && phases[index] < 3_000, 'publisher 必须限制在预留写入波次内')
 }
 assert.ok(new Set(phases).size >= seeds.length - 1, '默认性能拓扑的 publisher 不应重新聚集到同一毫秒')
+assert.ok(Math.max(...phases) - Math.min(...phases) >= 1_500, '默认 14 个 publisher 的相位必须覆盖至少 1.5 秒窗口')
+const phaseBuckets = new Map<number, number>()
+for (const phase of phases) {
+  const bucket = Math.floor(phase / 250)
+  phaseBuckets.set(bucket, (phaseBuckets.get(bucket) ?? 0) + 1)
+}
+assert.ok(Math.max(...phaseBuckets.values()) <= 4, '任意 250ms 窗口不得聚集超过 4 个默认 publisher')
 
 assert.equal(delayUntilPerformanceProcessMetricsPublishPhaseMs(500, 1_000), 500, '应等待当前周期内的目标相位')
 assert.equal(delayUntilPerformanceProcessMetricsPublishPhaseMs(1_000, 1_000), 5_000, '命中相位时必须等待下一周期，禁止零延迟循环')
 assert.equal(delayUntilPerformanceProcessMetricsPublishPhaseMs(991, 1_000), 5_009, '过近相位必须推迟到下一周期')
 assert.equal(delayUntilPerformanceProcessMetricsPublishPhaseMs(6_500, 1_000), 4_500, '相位计算必须按墙钟周期锚定而不是进程启动时间')
+assert.equal(performanceProcessMetricsPublishFailureBackoffMs(0), 0)
+assert.equal(performanceProcessMetricsPublishFailureBackoffMs(1), 5_000)
+assert.equal(performanceProcessMetricsPublishFailureBackoffMs(2), 10_000)
+assert.equal(performanceProcessMetricsPublishFailureBackoffMs(5), 10_000)
+assert.equal(performanceProcessMetricsPublishFailureBackoffMs(100), 10_000, '连续失败退避必须小于 20 秒注册 lease')
 
 const deploymentAWorkerKey = performanceProcessMetricsRegistryKey('deployment-a-usage-worker-1', 'usage-worker:1')
 const deploymentBWorkerKey = performanceProcessMetricsRegistryKey('deployment-b-usage-worker-1', 'usage-worker:1')
@@ -61,14 +78,23 @@ assert.doesNotMatch(
 assert.match(source, /clearTimeout\(publishTimer\)/, 'stop 必须取消尚未触发的相位 timer')
 assert.match(
   source,
-  /performanceProcessMetricsRegistryKey\(runtimeConfig\.instanceId, sample\.processRole\)/,
-  'publisher 必须使用 instanceId 和角色构造注册 key，不能退回 role-only key'
+  /writePerformanceProcessMetricsRegistrySample\(client, runtimeConfig\.instanceId, sample\)/,
+  'publisher 必须把 runtime instanceId 和角色样本传入原子注册写入，不能退回 role-only key'
 )
 assert.match(
   source,
-  /'SCAN', cursor, 'MATCH', `\$\{registryKeyPrefix\}\*`/,
-  '读侧必须继续扫描公共前缀，使滚动升级期间的旧 key 和 v2 key 都可被发现'
+  /client\.eval\(publishRegistrySampleScript/,
+  'publisher 必须用单条原子命令刷新样本和活跃索引'
 )
-assert.match(source, /registryTtlSeconds = 20/, '新旧注册项必须继续依赖短 TTL 清理退出实例')
+assert.doesNotMatch(source, /\['SCAN'/, '读侧不得重新扫描共享 Redis 键空间')
+assert.match(source, /registryTtlSeconds = 20/, '进程样本必须继续依赖短 TTL 清理退出实例')
+assert.match(source, /registryIndexTtlSeconds = 60/, '活跃索引必须在 publisher 全部退出后自动过期')
+assert.match(source, /redis\.call\('TIME'\)/, 'publisher 和 reader 必须使用 Redis 统一时钟')
+assert.match(source, /ZREMRANGEBYRANK/, 'publisher 必须限制 reader 缺席时的索引基数')
+assert.match(
+  source,
+  /const delayMs = Math\.max\([\s\S]*performanceProcessMetricsPublishFailureBackoffMs\(publishFailureCount\)/,
+  '实际 scheduler 必须接入连续失败退避，不能只保留未使用的纯函数'
+)
 
-console.log('performance 进程指标回归通过：发布错峰、多实例 key 隔离、滚动发现与 TTL 清理语义正确')
+console.log('performance 进程指标回归通过：发布错峰、多实例 key 隔离、原子索引与 TTL 清理语义正确')

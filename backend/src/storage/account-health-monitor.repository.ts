@@ -185,6 +185,7 @@ function mapAiHealthAccount(
     ownerSystemAccountName: account.ownerSystemAccountName,
     accessType: account.accessType,
     lastHealthCheckAt: account.lastHealthCheckAt,
+    lastHealthSuccessAt: account.lastHealthSuccessAt,
     nextHealthCheckAt: account.nextHealthCheckAt,
     latestStatus,
     successHours,

@@ -47,7 +47,6 @@ import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
 import { accountProviderProtocolKind, canCreateOAuthAccount, supportsOAuthAccountType } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
-import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { normalizedAccountApiKeys } from './accountCredentials'
 import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
@@ -755,12 +754,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     level: AccountDetailLevel = 'advanced'
   ): Promise<AccountSummary | undefined> {
     try {
-      return await loadAccountDetailCached({
-        accountId,
-        isManagementView: options.isManagementView.value,
-        level,
-        scopeParams
-      })
+      if (options.isManagementView.value) {
+        return level === 'edit-basic'
+          ? await api.accounts.editBasicDetail(accountId, scopeParams)
+          : await api.accounts.advancedDetail(accountId, scopeParams)
+      }
+      return level === 'edit-basic'
+        ? await api.myAccounts.editBasicDetail(accountId)
+        : await api.myAccounts.advancedDetail(accountId)
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, fallbackMessage))
@@ -943,3 +944,4 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
+type AccountDetailLevel = 'edit-basic' | 'advanced'

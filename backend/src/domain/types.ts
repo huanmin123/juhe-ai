@@ -521,6 +521,7 @@ export interface AiHealthAccountRow {
   ownerSystemAccountName?: string
   accessType?: ResourceAccessType
   lastHealthCheckAt?: string
+  lastHealthSuccessAt?: string
   nextHealthCheckAt?: string
   latestStatus: AiHealthHourStatus
   successHours: number

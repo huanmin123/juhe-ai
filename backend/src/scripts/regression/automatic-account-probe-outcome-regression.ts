@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
+  automaticAccountAvailabilityProbeFailed,
   automaticAccountProbeOutcome,
   transportProbeOutcomeFromAccountTestResult
 } from '../../modules/accounts/automatic-account-probe-outcome.js'
@@ -74,6 +75,19 @@ for (const status of [400, 401, 429, 500, 503]) {
       status
     }
   }), 'framing_complete_neutral', `完整 HTTP ${status} 只能形成中性 framing 结果`)
+  assert.equal(
+    automaticAccountAvailabilityProbeFailed(automaticAccountProbeOutcome({
+      success: false,
+      statusCode: status
+    }, {
+      upstreamAttempt: {
+        upstreamUrl: 'https://api.openai.com/v1/responses',
+        status
+      }
+    })),
+    true,
+    `受控可用性探针的完整 HTTP ${status} 失败必须形成可用性失败证据`
+  )
   assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
     success: false,
     statusCode: status,
@@ -333,9 +347,13 @@ for (const [name, source] of [
     `${name}不能再用错误类型分类决定账户状态`
   )
 }
-assert.match(healthCheckSource, /countTowardsThreshold: probeOutcome === 'upstream_failure'/, '健康检查只能累计 transport incomplete')
+assert.match(healthCheckSource, /countTowardsThreshold: availabilityProbeFailed/, '健康检查必须累计受控探针确认的完整 HTTP 与 transport 失败')
+assert.match(qualityPrecheckSource, /automaticAccountAvailabilityProbeFailed\(probeOutcome\)/, '质量失败复核必须接受受控探针确认的完整 HTTP 失败')
+assert.match(qualityPrecheckSource, /type: 'mark_account_precheck_temporary_unavailable'/, '质量失败复核必须使用带调度代次和成功信号栅栏的状态写入')
+assert.doesNotMatch(qualityPrecheckSource, /type: 'mark_account_test_temporary_unavailable'/, '质量失败复核不得复用缺少事前确认栅栏的人工测试写入')
+assert.match(qualityPrecheckSource, /candidateAccount\.status !== 'active'/, '质量失败复核只能继续处理仍为 active 的候选账户')
+assert.match(qualityPrecheckSource, /expectedStatus: 'active'/, '质量失败复核状态写入必须固定要求账户仍为 active')
 for (const [name, source] of [
-  ['质量失败复核', qualityPrecheckSource],
   ['账户冷却复测', cooldownRetestSource],
   ['账户 Key 冷却复测', apiKeyRetestSource]
 ] as const) {

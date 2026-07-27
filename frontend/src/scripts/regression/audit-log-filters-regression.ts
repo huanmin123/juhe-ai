@@ -5,6 +5,7 @@ import { auditLogListParams } from '@/views/audit-logs/auditLogFilters'
 const pageState = { current: 1, pageSize: 100 }
 const baseFilters = {
   accountIdFilter: '',
+  conversationKeyFilter: '',
   outcomeFilter: 'all' as const,
   pathFilter: '',
   statusCodeFilter: '',

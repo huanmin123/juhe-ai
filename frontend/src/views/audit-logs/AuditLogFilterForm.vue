@@ -38,6 +38,9 @@
     <a-form-item label="接口路径">
       <a-input v-model:value="pathValue" allow-clear placeholder="/v1/responses" @press-enter="handleAdvancedApply" />
     </a-form-item>
+    <a-form-item label="会话 Key">
+      <a-input v-model:value="conversationKeyValue" allow-clear placeholder="完整 conversationKey（精确匹配）" @press-enter="handleAdvancedApply" />
+    </a-form-item>
     <a-form-item label="状态码">
       <a-input v-model:value="statusCodeValue" allow-clear placeholder="401 / 503" @press-enter="handleAdvancedApply" />
     </a-form-item>
@@ -78,6 +81,7 @@ const props = withDefaults(defineProps<{
   accountSelection?: AccountSelection
   accountOptions: AccountOptionSummary[]
   accountOptionsLoading?: boolean
+  conversationKey: string
   path: string
   statusCode: string
 }>(), {
@@ -95,6 +99,7 @@ const emit = defineEmits<{
   (event: 'update:systemAccountSelection', value: PrincipalSelection | undefined): void
   (event: 'update:accountId', value: string): void
   (event: 'update:accountSelection', value: AccountSelection | undefined): void
+  (event: 'update:conversationKey', value: string): void
   (event: 'update:path', value: string): void
   (event: 'update:statusCode', value: string): void
   (event: 'apply'): void
@@ -127,6 +132,10 @@ const accountIdValue = computed({
 const accountSelectionValue = computed({
   get: () => props.accountSelection,
   set: (value) => emit('update:accountSelection', value)
+})
+const conversationKeyValue = computed({
+  get: () => props.conversationKey,
+  set: (value) => emit('update:conversationKey', value)
 })
 const pathValue = computed({
   get: () => props.path,

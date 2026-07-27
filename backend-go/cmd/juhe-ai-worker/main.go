@@ -24,10 +24,11 @@ func main() {
 }
 
 type workerCommandDependencies struct {
-	loadConfig         func() (config.Config, error)
-	newLogger          func(string, io.Writer) (*slog.Logger, error)
-	newLoggerRuntime   func(string, io.Writer) (*logging.Runtime, error)
-	runWithRuntimeGate func(context.Context, config.Config, *slog.Logger, app.WorkerRunner) error
+	loadConfig          func() (config.Config, error)
+	newLogger           func(string, io.Writer) (*slog.Logger, error)
+	newLoggerRuntime    func(string, io.Writer) (*logging.Runtime, error)
+	runWithRuntimeGate  func(context.Context, config.Config, *slog.Logger, app.WorkerRunner) error
+	runWithoutOwnerGate func(context.Context, app.WorkerRunner) error
 }
 
 type workerRunnerFactory func(config.Config, *slog.Logger) app.WorkerRunner
@@ -42,6 +43,9 @@ func defaultWorkerCommandDependencies() workerCommandDependencies {
 			return logging.NewRuntime(level, output, logging.RuntimeOptions{Role: "go-worker"})
 		},
 		runWithRuntimeGate: app.RunWorkerWithRuntimeGate,
+		runWithoutOwnerGate: func(ctx context.Context, runner app.WorkerRunner) error {
+			return runner(ctx)
+		},
 	}
 }
 
@@ -139,7 +143,7 @@ func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 	gatewayQuotaSnapshotCommand := &cobra.Command{
 		Use:   "gateway-quota-snapshot-build",
 		Short: "Build gateway quota snapshot from PostgreSQL aggregates",
-		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+		RunE: newWorkerCommandRunEWithGatePolicy(deps, func() bool { return gatewayQuotaSnapshotOptions.PublishRuntimeState }, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
 			return func(ctx context.Context) error {
 				return app.RunGatewayQuotaSnapshotBuildWorker(ctx, cfg, logger, gatewayQuotaSnapshotOptions)
 			}
@@ -204,6 +208,14 @@ func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 }
 
 func newWorkerCommandRunE(deps workerCommandDependencies, factory workerRunnerFactory) func(*cobra.Command, []string) error {
+	return newWorkerCommandRunEWithGatePolicy(deps, func() bool { return true }, factory)
+}
+
+func newWorkerCommandRunEWithGatePolicy(
+	deps workerCommandDependencies,
+	requiresOwnerGate func() bool,
+	factory workerRunnerFactory,
+) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		cfg, err := deps.loadConfig()
 		if err != nil {
@@ -225,7 +237,15 @@ func newWorkerCommandRunE(deps workerCommandDependencies, factory workerRunnerFa
 		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		runErr := deps.runWithRuntimeGate(ctx, cfg, logger, factory(cfg, logger))
+		runner := factory(cfg, logger)
+		var runErr error
+		if requiresOwnerGate == nil || requiresOwnerGate() {
+			runErr = deps.runWithRuntimeGate(ctx, cfg, logger, runner)
+		} else if deps.runWithoutOwnerGate != nil {
+			runErr = deps.runWithoutOwnerGate(ctx, runner)
+		} else {
+			runErr = runner(ctx)
+		}
 		if loggerRuntime == nil {
 			return runErr
 		}

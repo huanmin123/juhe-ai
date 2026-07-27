@@ -67,8 +67,9 @@ func TestExecuteCommandReturnsWhenFatalWriterBlocks(t *testing.T) {
 	}
 }
 
-func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+func TestWorkerCommandsUseCapabilityAwareRuntimeGate(t *testing.T) {
 	var gated []string
+	var ungated []string
 	deps := workerCommandDependencies{
 		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
 		newLogger: func(string, io.Writer) (*slog.Logger, error) {
@@ -81,6 +82,13 @@ func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 			gated = append(gated, "gate")
 			return nil
 		},
+		runWithoutOwnerGate: func(_ context.Context, runner app.WorkerRunner) error {
+			if runner == nil {
+				t.Fatal("ungated execution received nil runner")
+			}
+			ungated = append(ungated, "read-only")
+			return nil
+		},
 	}
 	root := newRootCommand(deps)
 	for _, name := range []string{
@@ -89,7 +97,6 @@ func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		"authorization-expiry-sweep",
 		"operation-log-retention-cleanup",
 		"authorization-usage-range-windows-refresh",
-		"gateway-quota-snapshot-build",
 		"model-quality-health-sync",
 		"cooldown-account-retest",
 	} {
@@ -110,6 +117,28 @@ func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		}
 	}
 
+	quotaCommand, _, err := root.Find([]string{"gateway-quota-snapshot-build"})
+	if err != nil {
+		t.Fatalf("find gateway-quota-snapshot-build: %v", err)
+	}
+	quotaCommand.SetContext(t.Context())
+	if err := quotaCommand.RunE(quotaCommand, nil); err != nil {
+		t.Fatalf("run read-only gateway quota snapshot: %v", err)
+	}
+	if len(ungated) != 1 {
+		t.Fatalf("read-only gateway quota snapshot ungated calls = %d, want 1", len(ungated))
+	}
+	beforeQuotaGate := len(gated)
+	if err := quotaCommand.Flags().Set("publish-runtime-state", "true"); err != nil {
+		t.Fatalf("set publish-runtime-state: %v", err)
+	}
+	if err := quotaCommand.RunE(quotaCommand, nil); err != nil {
+		t.Fatalf("run publishing gateway quota snapshot: %v", err)
+	}
+	if len(gated) != beforeQuotaGate+1 || len(ungated) != 1 {
+		t.Fatalf("publishing snapshot gate calls = %d, ungated = %d", len(gated)-beforeQuotaGate, len(ungated))
+	}
+
 	modelQualityCommand, _, err := root.Find([]string{"model-quality-health-sync"})
 	if err != nil {
 		t.Fatalf("find model-quality-health-sync: %v", err)
@@ -128,9 +157,10 @@ func TestWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		t.Fatalf("find version: %v", err)
 	}
 	before := len(gated)
+	beforeUngated := len(ungated)
 	versionCommand.Run(versionCommand, nil)
-	if len(gated) != before {
-		t.Fatal("version command used worker runtime gate")
+	if len(gated) != before || len(ungated) != beforeUngated {
+		t.Fatal("version command used worker execution gate")
 	}
 }
 
