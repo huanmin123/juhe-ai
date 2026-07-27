@@ -288,6 +288,43 @@ func TestManagementAuthorizationUsageOverviewQueriesReadRangeWindowsOnly(t *test
 			t.Fatalf("user usage args missing %v: %v", want, userArgs)
 		}
 	}
+	for _, want := range []string{
+		"page_rows.team_filter_id <> '' AND filter_team.name IS NOT NULL",
+		"ELSE ARRAY[]::text[]",
+	} {
+		if !strings.Contains(userQuery, want) {
+			t.Fatalf("user usage query missing current-filter team name rule %q:\n%s", want, userQuery)
+		}
+	}
+	for _, forbidden := range []string{"JOIN LATERAL", "system_team_members", "ARRAY_AGG("} {
+		if strings.Contains(userQuery, forbidden) {
+			t.Fatalf("user usage query must not expand unrelated team memberships via %q:\n%s", forbidden, userQuery)
+		}
+	}
+}
+
+func TestManagementAuthorizationUsageNarrowSummariesMatchNodeTokenContract(t *testing.T) {
+	full := port.ManagementAccountUsageSummary{
+		RequestCount:       7,
+		InputTokens:        11,
+		OutputTokens:       13,
+		CacheReadTokens:    17,
+		CacheWriteTokens:   19,
+		CacheWrite1hTokens: 23,
+		ThinkingTokens:     29,
+		InputImageTokens:   31,
+		OutputImageTokens:  37,
+		TotalTokens:        999,
+		TotalCost:          0.42,
+	}
+	row := managementAuthorizationUsageRowSummary(full)
+	aggregate := managementAuthorizationUsageAggregateSummary(full)
+	if row.TotalTokens != 24 || aggregate.TotalTokens != 24 {
+		t.Fatalf("totalTokens = row %d aggregate %d, want input + output = 24", row.TotalTokens, aggregate.TotalTokens)
+	}
+	if row.RequestCount != 7 || row.TotalCost != 0.42 || aggregate.InputTokens != 11 || aggregate.CacheWriteTokens != 19 {
+		t.Fatalf("narrow summaries lost contract fields: row=%+v aggregate=%+v", row, aggregate)
+	}
 }
 
 func TestManagementAuthorizationUsageRangeRefreshQueriesReadDailySummariesOnly(t *testing.T) {

@@ -1326,22 +1326,18 @@ func TestManagementMyAuthorizationListHandlerUsesSelfScopeAndDirection(t *testin
 func TestManagementAuthorizationUsageOverviewHandlersParseQueryAndScope(t *testing.T) {
 	service := &managementAuthorizationCreateServiceStub{
 		teamUsageResult: managementauthorizations.TeamUsageOverview{
-			Range:     port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
-			Summary:   port.ManagementAccountUsageSummary{RequestCount: 3},
-			Rows:      []port.ManagementAuthorizationTeamUsageRow{{ID: "team_ops:account:acct_main", TeamID: "team_ops", Usage: port.ManagementAccountUsageSummary{RequestCount: 2}}},
-			TeamCount: 1,
-			Total:     1,
-			Page:      2,
-			PageSize:  1,
+			Range:    port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Rows:     []port.ManagementAuthorizationTeamUsageRow{{ID: "team_ops:account:acct_main", TeamID: "team_ops", Usage: port.ManagementAuthorizationUsageRowSummary{RequestCount: 2}}},
+			Total:    1,
+			Page:     2,
+			PageSize: 1,
 		},
 		userUsageResult: managementauthorizations.UserUsageOverview{
-			Range:     port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
-			Summary:   port.ManagementAccountUsageSummary{RequestCount: 4},
-			Rows:      []port.ManagementAuthorizationUserUsageRow{{ID: "sys_grantee:group:grp_main", SystemAccountID: "sys_grantee", SourceLabels: []string{"全部授权来源"}}},
-			UserCount: 1,
-			Total:     1,
-			Page:      1,
-			PageSize:  20,
+			Range:    port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Rows:     []port.ManagementAuthorizationUserUsageRow{{ID: "sys_grantee:group:grp_main", UserName: "Grantee"}},
+			Total:    1,
+			Page:     1,
+			PageSize: 20,
 		},
 	}
 	teamHandler := newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin)
@@ -1378,12 +1374,12 @@ func TestManagementAuthorizationUsageOverviewHandlersParseQueryAndScope(t *testi
 	if err := json.NewDecoder(teamRec.Body).Decode(&teamBody); err != nil {
 		t.Fatalf("decode team usage response: %v", err)
 	}
-	if teamBody.Data.Rows[0].ID != "team_ops:account:acct_main" || teamBody.Data.Summary.RequestCount != 3 {
+	if teamBody.Data.Rows[0].ID != "team_ops:account:acct_main" {
 		t.Fatalf("team usage response = %+v", teamBody.Data)
 	}
 
 	userHandler := newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeSelf)
-	userReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorizations/usage/user-details?systemAccountId=sys_owner&resourceType=group&granteeSystemAccountId=sys_grantee", nil)
+	userReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorizations/usage/user-details?systemAccountId=&systemAccountId=sys_owner&resourceType=group&granteeSystemAccountId=sys_grantee", nil)
 	userReq = userReq.WithContext(context.WithValue(userReq.Context(), managementAuthContextKey, managementauth.Context{
 		SystemAccountID: "sys_grantee",
 		Username:        "grantee",
@@ -1404,6 +1400,154 @@ func TestManagementAuthorizationUsageOverviewHandlersParseQueryAndScope(t *testi
 		service.userUsageInput.ResourceType != "group" ||
 		service.userUsageInput.GranteeSystemAccountID != "sys_grantee" {
 		t.Fatalf("user usage input = %+v", service.userUsageInput)
+	}
+}
+
+func TestManagementAuthorizationUsageSummaryHandlersParseQueryAndScope(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{
+		teamUsageSummaryResult: managementauthorizations.UsageSummary{
+			Range:   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Summary: port.ManagementAuthorizationUsageAggregateSummary{RequestCount: 3, InputTokens: 4, CacheWriteTokens: 5, TotalTokens: 6, TotalCost: 0.7},
+		},
+		userUsageSummaryResult: managementauthorizations.UsageSummary{
+			Range:   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-01", EndDate: "2026-07-09", Days: 9, MaxDays: 31},
+			Summary: port.ManagementAuthorizationUsageAggregateSummary{RequestCount: 8},
+		},
+	}
+	teamHandler := newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeAdmin, false)
+	teamReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/authorizations/usage/team-summary?systemAccountId=sys_owner&resourceType=account&resourceId=acct_main&teamId=team_ops&startDate=2026-07-01&endDate=2026-07-09", nil)
+	teamReq = teamReq.WithContext(context.WithValue(teamReq.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Username:        "admin",
+		Role:            "admin",
+		SessionID:       "sess_admin",
+	}))
+	teamRec := httptest.NewRecorder()
+
+	teamHandler.ServeHTTP(teamRec, teamReq)
+
+	if teamRec.Code != http.StatusOK {
+		t.Fatalf("team summary status = %d, want 200; body = %s", teamRec.Code, teamRec.Body.String())
+	}
+	if !service.teamUsageSummaryCalled ||
+		service.teamUsageSummaryInput.ActorSystemAccountID != "sys_admin" ||
+		service.teamUsageSummaryInput.ScopedSystemAccountID != "sys_owner" ||
+		service.teamUsageSummaryInput.ResourceType != "account" ||
+		service.teamUsageSummaryInput.ResourceID != "acct_main" ||
+		service.teamUsageSummaryInput.TeamID != "team_ops" ||
+		service.teamUsageSummaryInput.StartDate != "2026-07-01" ||
+		service.teamUsageSummaryInput.EndDate != "2026-07-09" {
+		t.Fatalf("team summary input = %+v", service.teamUsageSummaryInput)
+	}
+	var teamBody struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(teamRec.Body).Decode(&teamBody); err != nil {
+		t.Fatalf("decode team summary response: %v", err)
+	}
+	if len(teamBody.Data) != 2 || teamBody.Data["range"] == nil || teamBody.Data["summary"] == nil {
+		t.Fatalf("team summary response keys = %+v", teamBody.Data)
+	}
+
+	userHandler := newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeSelf, true)
+	userReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-authorizations/usage/user-summary?systemAccountId=&systemAccountId=sys_owner&resourceType=group&granteeSystemAccountId=sys_grantee", nil)
+	userReq = userReq.WithContext(context.WithValue(userReq.Context(), managementAuthContextKey, managementauth.Context{
+		SystemAccountID: "sys_grantee",
+		Username:        "grantee",
+		Role:            "user",
+		SessionID:       "sess_grantee",
+	}))
+	userRec := httptest.NewRecorder()
+
+	userHandler.ServeHTTP(userRec, userReq)
+
+	if userRec.Code != http.StatusOK {
+		t.Fatalf("user summary status = %d, want 200; body = %s", userRec.Code, userRec.Body.String())
+	}
+	if !service.userUsageSummaryCalled ||
+		service.userUsageSummaryInput.ActorSystemAccountID != "sys_grantee" ||
+		service.userUsageSummaryInput.ScopedSystemAccountID != "sys_grantee" ||
+		service.userUsageSummaryInput.ResourceType != "group" ||
+		service.userUsageSummaryInput.GranteeSystemAccountID != "sys_grantee" {
+		t.Fatalf("user summary input = %+v", service.userUsageSummaryInput)
+	}
+}
+
+func TestManagementAuthorizationUsageHandlersRejectContractDrift(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		userSummary bool
+		paginated   bool
+	}{
+		{name: "team rows reject user filter", path: "/usage/team-details?granteeSystemAccountId=sys_user", paginated: true},
+		{name: "team summary reject user filter", path: "/usage/team-summary?granteeSystemAccountId=sys_user"},
+		{name: "team summary reject pagination", path: "/usage/team-summary?page=1"},
+		{name: "user summary reject unknown", path: "/usage/user-summary?includeSummary=true", userSummary: true},
+		{name: "summary requires resource type", path: "/usage/user-summary?resourceId=acct_main", userSummary: true},
+		{name: "rows requires resource type", path: "/usage/user-details?resourceId=acct_main", userSummary: true, paginated: true},
+		{name: "reject duplicate scalar", path: "/usage/user-summary?teamId=one&teamId=two", userSummary: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &managementAuthorizationCreateServiceStub{}
+			var handler http.Handler
+			if test.paginated {
+				if test.userSummary {
+					handler = newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeAdmin)
+				} else {
+					handler = newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin)
+				}
+			} else {
+				handler = newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeAdmin, test.userSummary)
+			}
+			req := httptest.NewRequest(http.MethodGet, test.path, nil)
+			req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Role:            "admin",
+			}))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+			if service.teamUsageCalled || service.userUsageCalled || service.teamUsageSummaryCalled || service.userUsageSummaryCalled {
+				t.Fatal("service should not be called for invalid query")
+			}
+		})
+	}
+}
+
+func TestManagementAuthorizationUsageSummaryHandlerRequiresAdminAuthentication(t *testing.T) {
+	service := &managementAuthorizationCreateServiceStub{}
+	handler := newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeAdmin, false)
+	tests := []struct {
+		name    string
+		context *managementauth.Context
+		status  int
+	}{
+		{name: "anonymous", status: http.StatusUnauthorized},
+		{name: "ordinary user", context: &managementauth.Context{SystemAccountID: "sys_user", Role: "user"}, status: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/usage/team-summary", nil)
+			if test.context != nil {
+				req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, *test.context))
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != test.status {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.status, rec.Body.String())
+			}
+		})
+	}
+	if service.teamUsageSummaryCalled {
+		t.Fatal("service should not be called without admin authentication")
 	}
 }
 
@@ -1840,6 +1984,14 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 			Page:     1,
 			PageSize: 20,
 		},
+		teamUsageSummaryResult: managementauthorizations.UsageSummary{
+			Range:   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: 31},
+			Summary: port.ManagementAuthorizationUsageAggregateSummary{},
+		},
+		userUsageSummaryResult: managementauthorizations.UsageSummary{
+			Range:   port.ManagementAccountUsageStatsRange{StartDate: "2026-07-09", EndDate: "2026-07-09", Days: 1, MaxDays: 31},
+			Summary: port.ManagementAuthorizationUsageAggregateSummary{},
+		},
 		usageFound: true,
 		usageResult: managementauthorizations.UsageDetail{
 			Detail: managementauthorizations.Detail{
@@ -1894,8 +2046,12 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 		ManagementMyAuthorizationListHandler: newManagementAuthorizationListHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationTeamUsageOverviewHandler:   newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationTeamUsageOverviewHandler: newManagementAuthorizationTeamUsageOverviewHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationTeamUsageSummaryHandler:    newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeAdmin, false),
+		ManagementMyAuthorizationTeamUsageSummaryHandler:  newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeSelf, false),
 		ManagementAuthorizationUserUsageOverviewHandler:   newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationUserUsageOverviewHandler: newManagementAuthorizationUserUsageOverviewHandler(service, managementAuthorizationScopeSelf),
+		ManagementAuthorizationUserUsageSummaryHandler:    newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeAdmin, true),
+		ManagementMyAuthorizationUserUsageSummaryHandler:  newManagementAuthorizationUsageSummaryHandler(service, managementAuthorizationScopeSelf, true),
 		ManagementAuthorizationUsageHandler:               newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeAdmin),
 		ManagementMyAuthorizationUsageHandler:             newManagementAuthorizationUsageHandler(service, managementAuthorizationScopeSelf),
 		ManagementAuthorizationDetailHandler:              newManagementAuthorizationDetailHandler(service, managementAuthorizationScopeAdmin),
@@ -2024,12 +2180,16 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 	for _, path := range []string{
 		"/__aisys__/api/authorizations?systemAccountId=all",
 		"/__aisys__/api/authorizations/usage/team-details?systemAccountId=all",
+		"/__aisys__/api/authorizations/usage/team-summary?systemAccountId=all",
 		"/__aisys__/api/authorizations/usage/user-details?systemAccountId=all",
+		"/__aisys__/api/authorizations/usage/user-summary?systemAccountId=all",
 		"/__aisys__/api/authorizations/rauthgrant_main/usage?systemAccountId=all",
 		"/__aisys__/api/authorizations/rauthgrant_main?systemAccountId=all",
 		"/__aisys__/api/my-authorizations",
 		"/__aisys__/api/my-authorizations/usage/team-details",
+		"/__aisys__/api/my-authorizations/usage/team-summary",
 		"/__aisys__/api/my-authorizations/usage/user-details",
+		"/__aisys__/api/my-authorizations/usage/user-summary",
 		"/__aisys__/api/my-authorizations/rauthgrant_main/usage",
 		"/__aisys__/api/my-authorizations/rauthgrant_main",
 	} {
@@ -2048,52 +2208,60 @@ func TestRouterRegistersW4ManagementAuthorizationListDetailCreateUpdateExpireRet
 }
 
 type managementAuthorizationCreateServiceStub struct {
-	called               bool
-	input                managementauthorizations.CreateInput
-	result               managementauthorizations.Summary
-	err                  error
-	getCalled            bool
-	getInput             managementauthorizations.GetInput
-	getResult            managementauthorizations.Detail
-	getFound             bool
-	getErr               error
-	updateCalled         bool
-	updateInput          managementauthorizations.UpdateInput
-	updateResult         managementauthorizations.Summary
-	updateFound          bool
-	updateErr            error
-	returnCalled         bool
-	returnInput          managementauthorizations.ReturnInput
-	returnResult         managementauthorizations.Summary
-	returnFound          bool
-	returnErr            error
-	resourceReturnCalled bool
-	resourceReturnInput  managementauthorizations.ResourceReturnInput
-	resourceReturnResult managementauthorizations.Summary
-	resourceReturnFound  bool
-	resourceReturnErr    error
-	revokeCalled         bool
-	revokeInput          managementauthorizations.RevokeInput
-	revokeResult         managementauthorizations.Summary
-	revokeFound          bool
-	revokeErr            error
-	listCalled           bool
-	listInput            managementauthorizations.ListInput
-	listResult           managementauthorizations.ListResult
-	listErr              error
-	teamUsageCalled      bool
-	teamUsageInput       managementauthorizations.UsageOverviewInput
-	teamUsageResult      managementauthorizations.TeamUsageOverview
-	teamUsageErr         error
-	userUsageCalled      bool
-	userUsageInput       managementauthorizations.UsageOverviewInput
-	userUsageResult      managementauthorizations.UserUsageOverview
-	userUsageErr         error
-	usageCalled          bool
-	usageInput           managementauthorizations.UsageDetailInput
-	usageResult          managementauthorizations.UsageDetail
-	usageFound           bool
-	usageErr             error
+	called                 bool
+	input                  managementauthorizations.CreateInput
+	result                 managementauthorizations.Summary
+	err                    error
+	getCalled              bool
+	getInput               managementauthorizations.GetInput
+	getResult              managementauthorizations.Detail
+	getFound               bool
+	getErr                 error
+	updateCalled           bool
+	updateInput            managementauthorizations.UpdateInput
+	updateResult           managementauthorizations.Summary
+	updateFound            bool
+	updateErr              error
+	returnCalled           bool
+	returnInput            managementauthorizations.ReturnInput
+	returnResult           managementauthorizations.Summary
+	returnFound            bool
+	returnErr              error
+	resourceReturnCalled   bool
+	resourceReturnInput    managementauthorizations.ResourceReturnInput
+	resourceReturnResult   managementauthorizations.Summary
+	resourceReturnFound    bool
+	resourceReturnErr      error
+	revokeCalled           bool
+	revokeInput            managementauthorizations.RevokeInput
+	revokeResult           managementauthorizations.Summary
+	revokeFound            bool
+	revokeErr              error
+	listCalled             bool
+	listInput              managementauthorizations.ListInput
+	listResult             managementauthorizations.ListResult
+	listErr                error
+	teamUsageCalled        bool
+	teamUsageInput         managementauthorizations.UsageOverviewInput
+	teamUsageResult        managementauthorizations.TeamUsageOverview
+	teamUsageErr           error
+	userUsageCalled        bool
+	userUsageInput         managementauthorizations.UsageOverviewInput
+	userUsageResult        managementauthorizations.UserUsageOverview
+	userUsageErr           error
+	teamUsageSummaryCalled bool
+	teamUsageSummaryInput  managementauthorizations.UsageSummaryInput
+	teamUsageSummaryResult managementauthorizations.UsageSummary
+	teamUsageSummaryErr    error
+	userUsageSummaryCalled bool
+	userUsageSummaryInput  managementauthorizations.UsageSummaryInput
+	userUsageSummaryResult managementauthorizations.UsageSummary
+	userUsageSummaryErr    error
+	usageCalled            bool
+	usageInput             managementauthorizations.UsageDetailInput
+	usageResult            managementauthorizations.UsageDetail
+	usageFound             bool
+	usageErr               error
 }
 
 func (s *managementAuthorizationCreateServiceStub) Create(_ *http.Request, input managementauthorizations.CreateInput) (managementauthorizations.Summary, error) {
@@ -2130,6 +2298,24 @@ func (s *managementAuthorizationCreateServiceStub) UserUsageOverview(_ *http.Req
 		return managementauthorizations.UserUsageOverview{}, s.userUsageErr
 	}
 	return s.userUsageResult, nil
+}
+
+func (s *managementAuthorizationCreateServiceStub) TeamUsageSummary(_ *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error) {
+	s.teamUsageSummaryCalled = true
+	s.teamUsageSummaryInput = input
+	if s.teamUsageSummaryErr != nil {
+		return managementauthorizations.UsageSummary{}, s.teamUsageSummaryErr
+	}
+	return s.teamUsageSummaryResult, nil
+}
+
+func (s *managementAuthorizationCreateServiceStub) UserUsageSummary(_ *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error) {
+	s.userUsageSummaryCalled = true
+	s.userUsageSummaryInput = input
+	if s.userUsageSummaryErr != nil {
+		return managementauthorizations.UsageSummary{}, s.userUsageSummaryErr
+	}
+	return s.userUsageSummaryResult, nil
 }
 
 func (s *managementAuthorizationCreateServiceStub) UsageDetail(_ *http.Request, input managementauthorizations.UsageDetailInput) (managementauthorizations.UsageDetail, bool, error) {

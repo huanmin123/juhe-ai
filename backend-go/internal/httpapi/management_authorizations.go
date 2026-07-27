@@ -41,6 +41,11 @@ type managementAuthorizationUsageOverviewService interface {
 	UserUsageOverview(r *http.Request, input managementauthorizations.UsageOverviewInput) (managementauthorizations.UserUsageOverview, error)
 }
 
+type managementAuthorizationUsageSummaryService interface {
+	TeamUsageSummary(r *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error)
+	UserUsageSummary(r *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error)
+}
+
 type managementAuthorizationUsageDetailService interface {
 	UsageDetail(r *http.Request, input managementauthorizations.UsageDetailInput) (managementauthorizations.UsageDetail, bool, error)
 }
@@ -85,6 +90,14 @@ func (s managementAuthorizationServiceAdapter) UserUsageOverview(r *http.Request
 	return s.service.UserUsageOverview(r.Context(), input)
 }
 
+func (s managementAuthorizationServiceAdapter) TeamUsageSummary(r *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error) {
+	return s.service.TeamUsageSummary(r.Context(), input)
+}
+
+func (s managementAuthorizationServiceAdapter) UserUsageSummary(r *http.Request, input managementauthorizations.UsageSummaryInput) (managementauthorizations.UsageSummary, error) {
+	return s.service.UserUsageSummary(r.Context(), input)
+}
+
 func (s managementAuthorizationServiceAdapter) UsageDetail(r *http.Request, input managementauthorizations.UsageDetailInput) (managementauthorizations.UsageDetail, bool, error) {
 	return s.service.UsageDetail(r.Context(), input)
 }
@@ -121,12 +134,28 @@ func NewManagementMyAuthorizationTeamUsageOverviewHandler(service *managementaut
 	return newManagementAuthorizationTeamUsageOverviewHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
 }
 
+func NewManagementAuthorizationTeamUsageSummaryHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationUsageSummaryHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin, false)
+}
+
+func NewManagementMyAuthorizationTeamUsageSummaryHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationUsageSummaryHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf, false)
+}
+
 func NewManagementAuthorizationUserUsageOverviewHandler(service *managementauthorizations.Service) http.Handler {
 	return newManagementAuthorizationUserUsageOverviewHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin)
 }
 
 func NewManagementMyAuthorizationUserUsageOverviewHandler(service *managementauthorizations.Service) http.Handler {
 	return newManagementAuthorizationUserUsageOverviewHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf)
+}
+
+func NewManagementAuthorizationUserUsageSummaryHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationUsageSummaryHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeAdmin, true)
+}
+
+func NewManagementMyAuthorizationUserUsageSummaryHandler(service *managementauthorizations.Service) http.Handler {
+	return newManagementAuthorizationUsageSummaryHandler(managementAuthorizationServiceAdapter{service: service}, managementAuthorizationScopeSelf, true)
 }
 
 func NewManagementAuthorizationUsageHandler(service *managementauthorizations.Service) http.Handler {
@@ -372,12 +401,13 @@ func newManagementAuthorizationTeamUsageOverviewHandler(service managementAuthor
 			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
 			return
 		}
-		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, r.URL.Query(), scope)
+		queryValues := managementAuthorizationUsageQueryValues(r.URL.Query(), scope)
+		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, queryValues, scope)
 		if !validScope {
 			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 			return
 		}
-		input, ok := parseManagementAuthorizationUsageOverviewQuery(w, r.URL.Query())
+		input, ok := parseManagementAuthorizationUsageOverviewQuery(w, queryValues, false)
 		if !ok {
 			return
 		}
@@ -412,12 +442,13 @@ func newManagementAuthorizationUserUsageOverviewHandler(service managementAuthor
 			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
 			return
 		}
-		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, r.URL.Query(), scope)
+		queryValues := managementAuthorizationUsageQueryValues(r.URL.Query(), scope)
+		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, queryValues, scope)
 		if !validScope {
 			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 			return
 		}
-		input, ok := parseManagementAuthorizationUsageOverviewQuery(w, r.URL.Query())
+		input, ok := parseManagementAuthorizationUsageOverviewQuery(w, queryValues, true)
 		if !ok {
 			return
 		}
@@ -425,6 +456,53 @@ func newManagementAuthorizationUserUsageOverviewHandler(service managementAuthor
 		input.ActorRole = authContext.Role
 		input.ScopedSystemAccountID = scopedSystemAccountID
 		result, err := service.UserUsageOverview(r, input)
+		if errors.Is(err, managementauthorizations.ErrAuthorizationUsageInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementAuthorizationUsageSummaryHandler(service managementAuthorizationUsageSummaryService, scope managementAuthorizationScope, userSummary bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusUnauthorized, "未登录")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementAuthorizationScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		queryValues := managementAuthorizationUsageQueryValues(r.URL.Query(), scope)
+		scopedSystemAccountID, validScope := managementAuthorizationListScope(authContext, queryValues, scope)
+		if !validScope {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return
+		}
+		input, ok := parseManagementAuthorizationUsageSummaryQuery(w, queryValues, userSummary)
+		if !ok {
+			return
+		}
+		input.ActorSystemAccountID = authContext.SystemAccountID
+		input.ActorRole = authContext.Role
+		input.ScopedSystemAccountID = scopedSystemAccountID
+		var result managementauthorizations.UsageSummary
+		var err error
+		if userSummary {
+			result, err = service.UserUsageSummary(r, input)
+		} else {
+			result, err = service.TeamUsageSummary(r, input)
+		}
 		if errors.Is(err, managementauthorizations.ErrAuthorizationUsageInvalid) {
 			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 			return
@@ -1044,26 +1122,88 @@ func parseManagementAuthorizationListQuery(w http.ResponseWriter, values url.Val
 	}, true
 }
 
-func parseManagementAuthorizationUsageOverviewQuery(w http.ResponseWriter, values url.Values) (managementauthorizations.UsageOverviewInput, bool) {
+func parseManagementAuthorizationUsageOverviewQuery(w http.ResponseWriter, values url.Values, userUsage bool) (managementauthorizations.UsageOverviewInput, bool) {
+	parsed, ok := parseManagementAuthorizationUsageFilters(w, values, userUsage, true)
+	if !ok {
+		return managementauthorizations.UsageOverviewInput{}, false
+	}
+	return managementauthorizations.UsageOverviewInput{
+		ResourceType:           parsed.ResourceType,
+		ResourceID:             parsed.ResourceID,
+		TeamID:                 parsed.TeamID,
+		GranteeSystemAccountID: parsed.GranteeSystemAccountID,
+		StartDate:              parsed.StartDate,
+		EndDate:                parsed.EndDate,
+		Page:                   parsed.Page,
+		PageSize:               parsed.PageSize,
+	}, true
+}
+
+func parseManagementAuthorizationUsageSummaryQuery(w http.ResponseWriter, values url.Values, userUsage bool) (managementauthorizations.UsageSummaryInput, bool) {
+	parsed, ok := parseManagementAuthorizationUsageFilters(w, values, userUsage, false)
+	if !ok {
+		return managementauthorizations.UsageSummaryInput{}, false
+	}
+	return managementauthorizations.UsageSummaryInput{
+		ResourceType:           parsed.ResourceType,
+		ResourceID:             parsed.ResourceID,
+		TeamID:                 parsed.TeamID,
+		GranteeSystemAccountID: parsed.GranteeSystemAccountID,
+		StartDate:              parsed.StartDate,
+		EndDate:                parsed.EndDate,
+	}, true
+}
+
+func parseManagementAuthorizationUsageFilters(w http.ResponseWriter, values url.Values, userUsage bool, paginated bool) (managementauthorizations.UsageOverviewInput, bool) {
+	allowed := map[string]bool{
+		"systemAccountId": true,
+		"resourceType":    true,
+		"resourceId":      true,
+		"teamId":          true,
+		"startDate":       true,
+		"endDate":         true,
+	}
+	if userUsage {
+		allowed["granteeSystemAccountId"] = true
+	}
+	if paginated {
+		allowed["page"] = true
+		allowed["pageSize"] = true
+	}
+	if err := rejectUnknownQueryKeys(values, allowed); err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.UsageOverviewInput{}, false
+	}
+	if _, err := optionalQueryString(values, "systemAccountId", 1, 0); err != nil {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.UsageOverviewInput{}, false
+	}
 	resourceType, err := optionalQueryEnum(values, "resourceType", []string{"account", "group"})
 	if err != nil {
 		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 		return managementauthorizations.UsageOverviewInput{}, false
 	}
-	resourceID, err := optionalQueryString(values, "resourceId", 1, 160)
+	resourceID, err := optionalQueryString(values, "resourceId", 1, 0)
 	if err != nil {
 		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 		return managementauthorizations.UsageOverviewInput{}, false
 	}
-	teamID, err := optionalQueryString(values, "teamId", 1, 160)
+	if resourceID != "" && resourceType == "" {
+		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+		return managementauthorizations.UsageOverviewInput{}, false
+	}
+	teamID, err := optionalQueryString(values, "teamId", 1, 0)
 	if err != nil {
 		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 		return managementauthorizations.UsageOverviewInput{}, false
 	}
-	granteeID, err := optionalQueryString(values, "granteeSystemAccountId", 1, 160)
-	if err != nil {
-		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
-		return managementauthorizations.UsageOverviewInput{}, false
+	granteeID := ""
+	if userUsage {
+		granteeID, err = optionalQueryString(values, "granteeSystemAccountId", 1, 0)
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return managementauthorizations.UsageOverviewInput{}, false
+		}
 	}
 	startDate, err := optionalQueryString(values, "startDate", 1, 10)
 	if err != nil {
@@ -1075,15 +1215,19 @@ func parseManagementAuthorizationUsageOverviewQuery(w http.ResponseWriter, value
 		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
 		return managementauthorizations.UsageOverviewInput{}, false
 	}
-	page, err := optionalQueryInt(values, "page", 1, 0)
-	if err != nil {
-		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
-		return managementauthorizations.UsageOverviewInput{}, false
-	}
-	pageSize, err := optionalQueryInt(values, "pageSize", 1, 200)
-	if err != nil {
-		writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
-		return managementauthorizations.UsageOverviewInput{}, false
+	page := 0
+	pageSize := 0
+	if paginated {
+		page, err = optionalQueryInt(values, "page", 1, 0)
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return managementauthorizations.UsageOverviewInput{}, false
+		}
+		pageSize, err = optionalQueryInt(values, "pageSize", 1, 200)
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, "查询参数不合法")
+			return managementauthorizations.UsageOverviewInput{}, false
+		}
 	}
 	return managementauthorizations.UsageOverviewInput{
 		ResourceType:           resourceType,
@@ -1095,6 +1239,19 @@ func parseManagementAuthorizationUsageOverviewQuery(w http.ResponseWriter, value
 		Page:                   page,
 		PageSize:               pageSize,
 	}, true
+}
+
+func managementAuthorizationUsageQueryValues(values url.Values, scope managementAuthorizationScope) url.Values {
+	if scope != managementAuthorizationScopeSelf {
+		return values
+	}
+	selfValues := make(url.Values, len(values))
+	for key, items := range values {
+		if key != "systemAccountId" {
+			selfValues[key] = items
+		}
+	}
+	return selfValues
 }
 
 func parseManagementAuthorizationUsageQuery(w http.ResponseWriter, values url.Values) (managementauthorizations.UsageDetailInput, bool) {

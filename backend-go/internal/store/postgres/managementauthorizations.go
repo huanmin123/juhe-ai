@@ -77,10 +77,6 @@ func (s *Store) ListManagementAuthorizationTeamUsageOverview(ctx context.Context
 	if limit <= 0 {
 		return port.ManagementAuthorizationTeamUsageOverviewResult{}, nil
 	}
-	summary, err := s.findManagementAuthorizationTeamUsageSummary(ctx, input)
-	if err != nil {
-		return port.ManagementAuthorizationTeamUsageOverviewResult{}, err
-	}
 	query, args := managementAuthorizationTeamUsageOverviewQuery(input)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -103,17 +99,13 @@ func (s *Store) ListManagementAuthorizationTeamUsageOverview(ctx context.Context
 	if hasMore {
 		items = items[:pageSize]
 	}
-	return port.ManagementAuthorizationTeamUsageOverviewResult{Summary: summary, Rows: items, HasMore: hasMore}, nil
+	return port.ManagementAuthorizationTeamUsageOverviewResult{Rows: items, HasMore: hasMore}, nil
 }
 
 func (s *Store) ListManagementAuthorizationUserUsageOverview(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAuthorizationUserUsageOverviewResult, error) {
 	limit := input.Limit
 	if limit <= 0 {
 		return port.ManagementAuthorizationUserUsageOverviewResult{}, nil
-	}
-	summary, err := s.findManagementAuthorizationUserUsageSummary(ctx, input)
-	if err != nil {
-		return port.ManagementAuthorizationUserUsageOverviewResult{}, err
 	}
 	query, args := managementAuthorizationUserUsageOverviewQuery(input)
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -137,7 +129,7 @@ func (s *Store) ListManagementAuthorizationUserUsageOverview(ctx context.Context
 	if hasMore {
 		items = items[:pageSize]
 	}
-	return port.ManagementAuthorizationUserUsageOverviewResult{Summary: summary, Rows: items, HasMore: hasMore}, nil
+	return port.ManagementAuthorizationUserUsageOverviewResult{Rows: items, HasMore: hasMore}, nil
 }
 
 func (s *Store) FindManagementResourceAuthorizationUsage(ctx context.Context, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, bool, error) {
@@ -323,8 +315,8 @@ func (s *Store) findManagementResourceAuthorizationTeamUsage(ctx context.Context
 	}, nil
 }
 
-func (s *Store) findManagementAuthorizationTeamUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAccountUsageSummary, error) {
-	systemAccountID := managementAuthorizationUsageSystemAccountID(input)
+func (s *Store) FindManagementAuthorizationTeamUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageSummaryInput) (port.ManagementAuthorizationUsageAggregateSummary, error) {
+	systemAccountID := managementAuthorizationUsageSummarySystemAccountID(input)
 	resourceType, resourceID := managementAuthorizationUsageSummaryResourceFilter(input)
 	summary, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
 SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
@@ -344,16 +336,16 @@ WHERE system_account_id = $1
 LIMIT 1
 `, systemAccountID, input.StartDate, input.EndDate, strings.TrimSpace(input.TeamID), resourceType, resourceID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return port.ManagementAccountUsageSummary{}, nil
+		return port.ManagementAuthorizationUsageAggregateSummary{}, nil
 	}
 	if err != nil {
-		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management authorization team usage summary: %w", err)
+		return port.ManagementAuthorizationUsageAggregateSummary{}, fmt.Errorf("find management authorization team usage summary: %w", err)
 	}
-	return summary, nil
+	return managementAuthorizationUsageAggregateSummary(summary), nil
 }
 
-func (s *Store) findManagementAuthorizationUserUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAccountUsageSummary, error) {
-	systemAccountID := managementAuthorizationUsageSystemAccountID(input)
+func (s *Store) FindManagementAuthorizationUserUsageSummary(ctx context.Context, input port.ManagementAuthorizationUsageSummaryInput) (port.ManagementAuthorizationUsageAggregateSummary, error) {
+	systemAccountID := managementAuthorizationUsageSummarySystemAccountID(input)
 	resourceType, resourceID := managementAuthorizationUsageSummaryResourceFilter(input)
 	summary, err := scanManagementAuthorizationUsageSummary(s.pool.QueryRow(ctx, `
 SELECT request_count, input_tokens, output_tokens, cache_read_tokens,
@@ -374,12 +366,12 @@ WHERE system_account_id = $1
 LIMIT 1
 `, systemAccountID, input.StartDate, input.EndDate, strings.TrimSpace(input.TeamID), strings.TrimSpace(input.GranteeSystemAccountID), resourceType, resourceID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return port.ManagementAccountUsageSummary{}, nil
+		return port.ManagementAuthorizationUsageAggregateSummary{}, nil
 	}
 	if err != nil {
-		return port.ManagementAccountUsageSummary{}, fmt.Errorf("find management authorization user usage summary: %w", err)
+		return port.ManagementAuthorizationUsageAggregateSummary{}, fmt.Errorf("find management authorization user usage summary: %w", err)
 	}
-	return summary, nil
+	return managementAuthorizationUsageAggregateSummary(summary), nil
 }
 
 func (s *Store) findManagementResourceAuthorizationTeamUsageSummary(ctx context.Context, summary port.ManagementResourceAuthorizationSummary, teamID string, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementAccountUsageSummary, error) {
@@ -840,8 +832,8 @@ SELECT page_rows.team_filter_id,
   COALESCE(grantee_accounts.display_name, '') AS user_name,
   COALESCE(grantee_accounts.username, '') AS username,
   CASE
-    WHEN page_rows.team_filter_id <> '' THEN ARRAY[COALESCE(filter_team.name, '')]::text[]
-    ELSE COALESCE(memberships.team_names, ARRAY[]::text[])
+    WHEN page_rows.team_filter_id <> '' AND filter_team.name IS NOT NULL THEN ARRAY[filter_team.name]::text[]
+    ELSE ARRAY[]::text[]
   END AS team_names,
   COALESCE(accounts.name, groups.name, '') AS resource_name,
   CASE WHEN page_rows.resource_filter_type = 'account' THEN page_rows.resource_filter_id ELSE '' END AS account_id,
@@ -853,15 +845,6 @@ LEFT JOIN juhe_business.system_accounts AS grantee_accounts
   ON grantee_accounts.id = page_rows.grantee_filter_system_account_id
 LEFT JOIN juhe_business.system_teams AS filter_team
   ON filter_team.id = page_rows.team_filter_id
-LEFT JOIN LATERAL (
-  SELECT ARRAY_AGG(team_lookup.name ORDER BY team_lookup.name ASC, team_lookup.id ASC) AS team_names
-  FROM juhe_business.system_team_members AS member_lookup
-  INNER JOIN juhe_business.system_teams AS team_lookup
-    ON team_lookup.id = member_lookup.team_id
-  WHERE member_lookup.system_account_id = page_rows.grantee_filter_system_account_id
-    AND member_lookup.status = 'active'
-    AND team_lookup.status = 'active'
-) AS memberships ON true
 LEFT JOIN juhe_business.accounts AS accounts
   ON accounts.id = page_rows.resource_filter_id
   AND page_rows.resource_filter_type = 'account'
@@ -952,7 +935,18 @@ func managementAuthorizationUsageSystemAccountID(input port.ManagementAuthorizat
 	return strings.TrimSpace(input.ActorSystemAccountID)
 }
 
-func managementAuthorizationUsageSummaryResourceFilter(input port.ManagementAuthorizationUsageOverviewInput) (string, string) {
+func managementAuthorizationUsageSummarySystemAccountID(input port.ManagementAuthorizationUsageSummaryInput) string {
+	scopedID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if scopedID != "" {
+		return scopedID
+	}
+	if input.CanAccessAll {
+		return "global"
+	}
+	return strings.TrimSpace(input.ActorSystemAccountID)
+}
+
+func managementAuthorizationUsageSummaryResourceFilter(input port.ManagementAuthorizationUsageSummaryInput) (string, string) {
 	resourceType := strings.TrimSpace(input.ResourceType)
 	if resourceType == "" {
 		return "all", ""
@@ -3093,7 +3087,7 @@ func scanManagementAuthorizationUsageSummary(scanner managementAuthorizationSumm
 	); err != nil {
 		return port.ManagementAccountUsageSummary{}, err
 	}
-	usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens + usage.CacheWrite1hTokens + usage.ThinkingTokens + usage.InputImageTokens + usage.OutputImageTokens
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.LastUsedAt = timePtrFromTimestamptz(lastUsedAt)
 	return usage, nil
 }
@@ -3130,15 +3124,12 @@ func scanManagementAuthorizationTeamUsageRow(scanner managementAuthorizationSumm
 		ID:                            strings.Join([]string{teamID, resourceType, resourceID}, ":"),
 		TeamID:                        teamID,
 		TeamName:                      teamName,
-		Status:                        teamStatus,
 		ResourceType:                  resourceType,
 		ResourceID:                    resourceID,
 		ResourceName:                  resourceName,
-		AccountID:                     accountID,
-		AccountName:                   accountName,
 		AccountOwnerSystemAccountID:   ownerSystemAccountID,
 		AccountOwnerSystemAccountName: ownerSystemAccountName,
-		Usage:                         usage,
+		Usage:                         managementAuthorizationUsageRowSummary(usage),
 		LastUsedAt:                    lastUsedAt,
 	}, nil
 }
@@ -3175,27 +3166,36 @@ func scanManagementAuthorizationUserUsageRow(scanner managementAuthorizationSumm
 	if err != nil {
 		return port.ManagementAuthorizationUserUsageRow{}, fmt.Errorf("scan management authorization user usage row: %w", err)
 	}
-	sourceLabels := []string{"全部授权来源"}
-	if teamID != "" {
-		sourceLabels = []string{"团队授权"}
-	}
 	return port.ManagementAuthorizationUserUsageRow{
 		ID:                            strings.Join([]string{systemAccountID, resourceType, resourceID}, ":"),
-		SystemAccountID:               systemAccountID,
 		UserName:                      userName,
 		Username:                      username,
 		TeamNames:                     teamNames,
 		ResourceType:                  resourceType,
-		ResourceID:                    resourceID,
 		ResourceName:                  resourceName,
-		AccountID:                     accountID,
-		AccountName:                   accountName,
-		AccountOwnerSystemAccountID:   ownerSystemAccountID,
 		AccountOwnerSystemAccountName: ownerSystemAccountName,
-		SourceLabels:                  sourceLabels,
-		Usage:                         usage,
+		Usage:                         managementAuthorizationUsageRowSummary(usage),
 		LastUsedAt:                    lastUsedAt,
 	}, nil
+}
+
+func managementAuthorizationUsageRowSummary(summary port.ManagementAccountUsageSummary) port.ManagementAuthorizationUsageRowSummary {
+	return port.ManagementAuthorizationUsageRowSummary{
+		RequestCount: summary.RequestCount,
+		TotalTokens:  summary.InputTokens + summary.OutputTokens,
+		TotalCost:    summary.TotalCost,
+	}
+}
+
+func managementAuthorizationUsageAggregateSummary(summary port.ManagementAccountUsageSummary) port.ManagementAuthorizationUsageAggregateSummary {
+	return port.ManagementAuthorizationUsageAggregateSummary{
+		RequestCount:     summary.RequestCount,
+		InputTokens:      summary.InputTokens,
+		CacheWriteTokens: summary.CacheWriteTokens,
+		TotalTokens:      summary.InputTokens + summary.OutputTokens,
+		TotalCost:        summary.TotalCost,
+		LastUsedAt:       summary.LastUsedAt,
+	}
 }
 
 func scanManagementResourceAuthorizationUsageDetail(scanner managementAuthorizationSummaryScanner) (port.ManagementResourceAuthorizationUsageDetail, error) {
@@ -3243,7 +3243,7 @@ func scanManagementAuthorizationUsageRowPrefix(scanner managementAuthorizationSu
 	if err := scanner.Scan(dest...); err != nil {
 		return port.ManagementAccountUsageSummary{}, nil, err
 	}
-	usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens + usage.CacheWrite1hTokens + usage.ThinkingTokens + usage.InputImageTokens + usage.OutputImageTokens
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	lastUsedAtPtr := timePtrFromTimestamptz(lastUsedAt)
 	usage.LastUsedAt = lastUsedAtPtr
 	return usage, lastUsedAtPtr, nil
@@ -3518,3 +3518,5 @@ var _ port.ManagementResourceAuthorizationReturner = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationUpdater = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationExpirySweeper = (*Store)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*Store)(nil)
+var _ port.ManagementAuthorizationUsageOverviewReader = (*Store)(nil)
+var _ port.ManagementAuthorizationUsageSummaryReader = (*Store)(nil)

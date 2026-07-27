@@ -312,8 +312,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationListHandler:              managementHandlers.MyAuthorizationListHandler,
 		ManagementAuthorizationTeamUsageOverviewHandler:   managementHandlers.AuthorizationTeamUsageOverviewHandler,
 		ManagementMyAuthorizationTeamUsageOverviewHandler: managementHandlers.MyAuthorizationTeamUsageOverviewHandler,
+		ManagementAuthorizationTeamUsageSummaryHandler:    managementHandlers.AuthorizationTeamUsageSummaryHandler,
+		ManagementMyAuthorizationTeamUsageSummaryHandler:  managementHandlers.MyAuthorizationTeamUsageSummaryHandler,
 		ManagementAuthorizationUserUsageOverviewHandler:   managementHandlers.AuthorizationUserUsageOverviewHandler,
 		ManagementMyAuthorizationUserUsageOverviewHandler: managementHandlers.MyAuthorizationUserUsageOverviewHandler,
+		ManagementAuthorizationUserUsageSummaryHandler:    managementHandlers.AuthorizationUserUsageSummaryHandler,
+		ManagementMyAuthorizationUserUsageSummaryHandler:  managementHandlers.MyAuthorizationUserUsageSummaryHandler,
 		ManagementAuthorizationUsageHandler:               managementHandlers.AuthorizationUsageHandler,
 		ManagementMyAuthorizationUsageHandler:             managementHandlers.MyAuthorizationUsageHandler,
 		ManagementAuthorizationDetailHandler:              managementHandlers.AuthorizationDetailHandler,
@@ -567,8 +571,12 @@ type managementAPIHandlers struct {
 	MyAuthorizationListHandler              http.Handler
 	AuthorizationTeamUsageOverviewHandler   http.Handler
 	MyAuthorizationTeamUsageOverviewHandler http.Handler
+	AuthorizationTeamUsageSummaryHandler    http.Handler
+	MyAuthorizationTeamUsageSummaryHandler  http.Handler
 	AuthorizationUserUsageOverviewHandler   http.Handler
 	MyAuthorizationUserUsageOverviewHandler http.Handler
+	AuthorizationUserUsageSummaryHandler    http.Handler
+	MyAuthorizationUserUsageSummaryHandler  http.Handler
 	AuthorizationUsageHandler               http.Handler
 	MyAuthorizationUsageHandler             http.Handler
 	AuthorizationDetailHandler              http.Handler
@@ -1120,8 +1128,12 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		MyAuthorizationListHandler:              httpapi.NewManagementMyAuthorizationListHandler(authorizationService),
 		AuthorizationTeamUsageOverviewHandler:   httpapi.NewManagementAuthorizationTeamUsageOverviewHandler(authorizationService),
 		MyAuthorizationTeamUsageOverviewHandler: httpapi.NewManagementMyAuthorizationTeamUsageOverviewHandler(authorizationService),
+		AuthorizationTeamUsageSummaryHandler:    httpapi.NewManagementAuthorizationTeamUsageSummaryHandler(authorizationService),
+		MyAuthorizationTeamUsageSummaryHandler:  httpapi.NewManagementMyAuthorizationTeamUsageSummaryHandler(authorizationService),
 		AuthorizationUserUsageOverviewHandler:   httpapi.NewManagementAuthorizationUserUsageOverviewHandler(authorizationService),
 		MyAuthorizationUserUsageOverviewHandler: httpapi.NewManagementMyAuthorizationUserUsageOverviewHandler(authorizationService),
+		AuthorizationUserUsageSummaryHandler:    httpapi.NewManagementAuthorizationUserUsageSummaryHandler(authorizationService),
+		MyAuthorizationUserUsageSummaryHandler:  httpapi.NewManagementMyAuthorizationUserUsageSummaryHandler(authorizationService),
 		AuthorizationUsageHandler:               httpapi.NewManagementAuthorizationUsageHandler(authorizationService),
 		MyAuthorizationUsageHandler:             httpapi.NewManagementMyAuthorizationUsageHandler(authorizationService),
 		AuthorizationDetailHandler:              httpapi.NewManagementAuthorizationDetailHandler(authorizationService),

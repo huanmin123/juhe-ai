@@ -917,48 +917,64 @@ type ManagementAuthorizationUsageOverviewInput struct {
 	Offset                 int
 }
 
+type ManagementAuthorizationUsageSummaryInput struct {
+	ActorSystemAccountID   string
+	CanAccessAll           bool
+	ScopedSystemAccountID  string
+	ResourceType           string
+	ResourceID             string
+	TeamID                 string
+	GranteeSystemAccountID string
+	StartDate              string
+	EndDate                string
+}
+
+type ManagementAuthorizationUsageRowSummary struct {
+	RequestCount int64   `json:"requestCount"`
+	TotalTokens  int64   `json:"totalTokens"`
+	TotalCost    float64 `json:"totalCost"`
+}
+
+type ManagementAuthorizationUsageAggregateSummary struct {
+	RequestCount     int64      `json:"requestCount"`
+	InputTokens      int64      `json:"inputTokens"`
+	CacheWriteTokens int64      `json:"cacheWriteTokens"`
+	TotalTokens      int64      `json:"totalTokens"`
+	TotalCost        float64    `json:"totalCost"`
+	LastUsedAt       *time.Time `json:"lastUsedAt,omitempty"`
+}
+
 type ManagementAuthorizationTeamUsageRow struct {
-	ID                            string                        `json:"id"`
-	TeamID                        string                        `json:"teamId"`
-	TeamName                      string                        `json:"teamName"`
-	Status                        string                        `json:"status"`
-	ResourceType                  string                        `json:"resourceType,omitempty"`
-	ResourceID                    string                        `json:"resourceId,omitempty"`
-	ResourceName                  string                        `json:"resourceName,omitempty"`
-	AccountID                     string                        `json:"accountId,omitempty"`
-	AccountName                   string                        `json:"accountName,omitempty"`
-	AccountOwnerSystemAccountID   string                        `json:"accountOwnerSystemAccountId,omitempty"`
-	AccountOwnerSystemAccountName string                        `json:"accountOwnerSystemAccountName,omitempty"`
-	Usage                         ManagementAccountUsageSummary `json:"usage"`
-	LastUsedAt                    *time.Time                    `json:"lastUsedAt,omitempty"`
+	ID                            string                                 `json:"id"`
+	TeamID                        string                                 `json:"teamId"`
+	TeamName                      string                                 `json:"teamName"`
+	ResourceType                  string                                 `json:"resourceType,omitempty"`
+	ResourceID                    string                                 `json:"resourceId,omitempty"`
+	ResourceName                  string                                 `json:"resourceName,omitempty"`
+	AccountOwnerSystemAccountID   string                                 `json:"accountOwnerSystemAccountId,omitempty"`
+	AccountOwnerSystemAccountName string                                 `json:"accountOwnerSystemAccountName,omitempty"`
+	Usage                         ManagementAuthorizationUsageRowSummary `json:"usage"`
+	LastUsedAt                    *time.Time                             `json:"lastUsedAt,omitempty"`
 }
 
 type ManagementAuthorizationTeamUsageOverviewResult struct {
-	Summary ManagementAccountUsageSummary
 	Rows    []ManagementAuthorizationTeamUsageRow
 	HasMore bool
 }
 
 type ManagementAuthorizationUserUsageRow struct {
-	ID                            string                        `json:"id"`
-	SystemAccountID               string                        `json:"systemAccountId"`
-	UserName                      string                        `json:"userName"`
-	Username                      string                        `json:"username,omitempty"`
-	TeamNames                     []string                      `json:"teamNames,omitempty"`
-	ResourceType                  string                        `json:"resourceType,omitempty"`
-	ResourceID                    string                        `json:"resourceId,omitempty"`
-	ResourceName                  string                        `json:"resourceName,omitempty"`
-	AccountID                     string                        `json:"accountId,omitempty"`
-	AccountName                   string                        `json:"accountName,omitempty"`
-	AccountOwnerSystemAccountID   string                        `json:"accountOwnerSystemAccountId,omitempty"`
-	AccountOwnerSystemAccountName string                        `json:"accountOwnerSystemAccountName,omitempty"`
-	SourceLabels                  []string                      `json:"sourceLabels"`
-	Usage                         ManagementAccountUsageSummary `json:"usage"`
-	LastUsedAt                    *time.Time                    `json:"lastUsedAt,omitempty"`
+	ID                            string                                 `json:"id"`
+	UserName                      string                                 `json:"userName"`
+	Username                      string                                 `json:"username,omitempty"`
+	TeamNames                     []string                               `json:"teamNames,omitempty"`
+	ResourceType                  string                                 `json:"resourceType,omitempty"`
+	ResourceName                  string                                 `json:"resourceName,omitempty"`
+	AccountOwnerSystemAccountName string                                 `json:"accountOwnerSystemAccountName,omitempty"`
+	Usage                         ManagementAuthorizationUsageRowSummary `json:"usage"`
+	LastUsedAt                    *time.Time                             `json:"lastUsedAt,omitempty"`
 }
 
 type ManagementAuthorizationUserUsageOverviewResult struct {
-	Summary ManagementAccountUsageSummary
 	Rows    []ManagementAuthorizationUserUsageRow
 	HasMore bool
 }
@@ -966,6 +982,11 @@ type ManagementAuthorizationUserUsageOverviewResult struct {
 type ManagementAuthorizationUsageOverviewReader interface {
 	ListManagementAuthorizationTeamUsageOverview(ctx context.Context, input ManagementAuthorizationUsageOverviewInput) (ManagementAuthorizationTeamUsageOverviewResult, error)
 	ListManagementAuthorizationUserUsageOverview(ctx context.Context, input ManagementAuthorizationUsageOverviewInput) (ManagementAuthorizationUserUsageOverviewResult, error)
+}
+
+type ManagementAuthorizationUsageSummaryReader interface {
+	FindManagementAuthorizationTeamUsageSummary(ctx context.Context, input ManagementAuthorizationUsageSummaryInput) (ManagementAuthorizationUsageAggregateSummary, error)
+	FindManagementAuthorizationUserUsageSummary(ctx context.Context, input ManagementAuthorizationUsageSummaryInput) (ManagementAuthorizationUsageAggregateSummary, error)
 }
 
 type ManagementResourceAuthorizationUsageDetail struct {

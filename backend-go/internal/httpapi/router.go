@@ -62,8 +62,12 @@ type RouterOptions struct {
 	ManagementMyAuthorizationListHandler              http.Handler
 	ManagementAuthorizationTeamUsageOverviewHandler   http.Handler
 	ManagementMyAuthorizationTeamUsageOverviewHandler http.Handler
+	ManagementAuthorizationTeamUsageSummaryHandler    http.Handler
+	ManagementMyAuthorizationTeamUsageSummaryHandler  http.Handler
 	ManagementAuthorizationUserUsageOverviewHandler   http.Handler
 	ManagementMyAuthorizationUserUsageOverviewHandler http.Handler
+	ManagementAuthorizationUserUsageSummaryHandler    http.Handler
+	ManagementMyAuthorizationUserUsageSummaryHandler  http.Handler
 	ManagementAuthorizationUsageHandler               http.Handler
 	ManagementMyAuthorizationUsageHandler             http.Handler
 	ManagementAuthorizationDetailHandler              http.Handler
@@ -374,8 +378,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationListHandler == nil &&
 				opts.ManagementAuthorizationTeamUsageOverviewHandler == nil &&
 				opts.ManagementMyAuthorizationTeamUsageOverviewHandler == nil &&
+				opts.ManagementAuthorizationTeamUsageSummaryHandler == nil &&
+				opts.ManagementMyAuthorizationTeamUsageSummaryHandler == nil &&
 				opts.ManagementAuthorizationUserUsageOverviewHandler == nil &&
 				opts.ManagementMyAuthorizationUserUsageOverviewHandler == nil &&
+				opts.ManagementAuthorizationUserUsageSummaryHandler == nil &&
+				opts.ManagementMyAuthorizationUserUsageSummaryHandler == nil &&
 				opts.ManagementAuthorizationUsageHandler == nil &&
 				opts.ManagementMyAuthorizationUsageHandler == nil &&
 				opts.ManagementAuthorizationDetailHandler == nil &&
@@ -670,11 +678,23 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAuthorizationTeamUsageOverviewHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-authorizations/usage/team-details", opts.ManagementMyAuthorizationTeamUsageOverviewHandler.ServeHTTP)
 			}
+			if opts.ManagementAuthorizationTeamUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/authorizations/usage/team-summary", opts.ManagementAuthorizationTeamUsageSummaryHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationTeamUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-authorizations/usage/team-summary", opts.ManagementMyAuthorizationTeamUsageSummaryHandler.ServeHTTP)
+			}
 			if opts.ManagementAuthorizationUserUsageOverviewHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/authorizations/usage/user-details", opts.ManagementAuthorizationUserUsageOverviewHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAuthorizationUserUsageOverviewHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-authorizations/usage/user-details", opts.ManagementMyAuthorizationUserUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementAuthorizationUserUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/authorizations/usage/user-summary", opts.ManagementAuthorizationUserUsageSummaryHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAuthorizationUserUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-authorizations/usage/user-summary", opts.ManagementMyAuthorizationUserUsageSummaryHandler.ServeHTTP)
 			}
 			if opts.ManagementAuthorizationUsageHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/authorizations/{id}/usage", opts.ManagementAuthorizationUsageHandler.ServeHTTP)
@@ -1577,8 +1597,12 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAuthorizationListHandler != nil ||
 		opts.ManagementAuthorizationTeamUsageOverviewHandler != nil ||
 		opts.ManagementMyAuthorizationTeamUsageOverviewHandler != nil ||
+		opts.ManagementAuthorizationTeamUsageSummaryHandler != nil ||
+		opts.ManagementMyAuthorizationTeamUsageSummaryHandler != nil ||
 		opts.ManagementAuthorizationUserUsageOverviewHandler != nil ||
 		opts.ManagementMyAuthorizationUserUsageOverviewHandler != nil ||
+		opts.ManagementAuthorizationUserUsageSummaryHandler != nil ||
+		opts.ManagementMyAuthorizationUserUsageSummaryHandler != nil ||
 		opts.ManagementAuthorizationUsageHandler != nil ||
 		opts.ManagementMyAuthorizationUsageHandler != nil ||
 		opts.ManagementAuthorizationDetailHandler != nil ||

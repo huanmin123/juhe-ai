@@ -1173,14 +1173,12 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	store := &authorizationUsageStoreStub{
 		teamResult: port.ManagementAuthorizationTeamUsageOverviewResult{
-			Summary: port.ManagementAccountUsageSummary{RequestCount: 10},
 			Rows: []port.ManagementAuthorizationTeamUsageRow{{
 				ID: "team_ops:account:acct_main",
 			}},
 			HasMore: true,
 		},
 		userResult: port.ManagementAuthorizationUserUsageOverviewResult{
-			Summary: port.ManagementAccountUsageSummary{RequestCount: 7},
 			Rows: []port.ManagementAuthorizationUserUsageRow{{
 				ID: "sys_grantee:group:grp_main",
 			}},
@@ -1188,6 +1186,7 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 	}
 	service := NewServiceWithOptions(ServiceOptions{
 		UsageStore:              store,
+		UsageSummaryStore:       store,
 		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
 		Now:                     func() time.Time { return now },
 	})
@@ -1220,7 +1219,7 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 		store.teamInput.Offset != 1 {
 		t.Fatalf("team usage input = %+v", store.teamInput)
 	}
-	if teamOverview.Range.Days != 31 || teamOverview.Total != 3 || teamOverview.TeamCount != 3 || !teamOverview.HasMore {
+	if teamOverview.Range.Days != 31 || teamOverview.Total != 3 || !teamOverview.HasMore {
 		t.Fatalf("team overview = %+v", teamOverview)
 	}
 
@@ -1241,26 +1240,101 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 		store.userInput.Limit != defaultAuthorizationUsagePageSize+1 {
 		t.Fatalf("user usage input = %+v", store.userInput)
 	}
-	if userOverview.Range.Days != 31 || userOverview.Summary.RequestCount != 7 {
+	if userOverview.Range.Days != 31 || userOverview.Total != 1 {
 		t.Fatalf("user overview = %+v", userOverview)
+	}
+	if store.teamSummaryCalled || store.userSummaryCalled {
+		t.Fatalf("details must not call summary reader: team=%t user=%t", store.teamSummaryCalled, store.userSummaryCalled)
+	}
+}
+
+func TestServiceUsageSummaryNormalizesScopeRangeWithoutPagination(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	store := &authorizationUsageStoreStub{
+		teamSummaryResult: port.ManagementAuthorizationUsageAggregateSummary{RequestCount: 10},
+		userSummaryResult: port.ManagementAuthorizationUsageAggregateSummary{RequestCount: 7},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		UsageSummaryStore:       store,
+		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
+		Now:                     func() time.Time { return now },
+	})
+
+	teamSummary, err := service.TeamUsageSummary(context.Background(), UsageSummaryInput{
+		ActorSystemAccountID:  " sys_admin ",
+		ActorRole:             "admin",
+		ScopedSystemAccountID: " sys_owner ",
+		ResourceType:          " account ",
+		ResourceID:            " acct_main ",
+		TeamID:                " team_ops ",
+		StartDate:             "2026-06-01",
+		EndDate:               "2026-07-10",
+	})
+	if err != nil {
+		t.Fatalf("TeamUsageSummary() error = %v", err)
+	}
+	if !store.teamSummaryCalled ||
+		store.teamSummaryInput.ActorSystemAccountID != "sys_admin" ||
+		!store.teamSummaryInput.CanAccessAll ||
+		store.teamSummaryInput.ScopedSystemAccountID != "sys_owner" ||
+		store.teamSummaryInput.ResourceType != "account" ||
+		store.teamSummaryInput.ResourceID != "acct_main" ||
+		store.teamSummaryInput.TeamID != "team_ops" ||
+		store.teamSummaryInput.StartDate != "2026-06-09" ||
+		store.teamSummaryInput.EndDate != "2026-07-09" {
+		t.Fatalf("team summary input = %+v", store.teamSummaryInput)
+	}
+	if teamSummary.Range.Days != 31 || teamSummary.Summary.RequestCount != 10 {
+		t.Fatalf("team summary = %+v", teamSummary)
+	}
+
+	userSummary, err := service.UserUsageSummary(context.Background(), UsageSummaryInput{
+		ActorSystemAccountID:   " sys_grantee ",
+		ActorRole:              "user",
+		ScopedSystemAccountID:  "sys_other",
+		ResourceType:           "group",
+		GranteeSystemAccountID: " sys_filter ",
+	})
+	if err != nil {
+		t.Fatalf("UserUsageSummary() error = %v", err)
+	}
+	if !store.userSummaryCalled ||
+		store.userSummaryInput.CanAccessAll ||
+		store.userSummaryInput.ScopedSystemAccountID != "sys_grantee" ||
+		store.userSummaryInput.GranteeSystemAccountID != "sys_filter" ||
+		store.userSummaryInput.StartDate != "2026-06-09" ||
+		store.userSummaryInput.EndDate != "2026-07-09" {
+		t.Fatalf("user summary input = %+v", store.userSummaryInput)
+	}
+	if userSummary.Range.Days != 31 || userSummary.Summary.RequestCount != 7 {
+		t.Fatalf("user summary = %+v", userSummary)
 	}
 }
 
 func TestServiceUsageOverviewValidatesInput(t *testing.T) {
+	store := &authorizationUsageStoreStub{}
 	service := NewServiceWithOptions(ServiceOptions{
-		UsageStore:              &authorizationUsageStoreStub{},
+		UsageStore:              store,
+		UsageSummaryStore:       store,
 		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
 		Now:                     func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
 	})
 	for _, input := range []UsageOverviewInput{
 		{ActorSystemAccountID: "", ResourceType: "account"},
 		{ActorSystemAccountID: "sys_actor", ResourceType: "invalid"},
+		{ActorSystemAccountID: "sys_actor", ResourceID: "acct_without_type"},
 		{ActorSystemAccountID: "sys_actor", StartDate: "2026-99-99"},
 		{ActorSystemAccountID: "sys_actor", EndDate: "bad-date"},
 	} {
 		if _, err := service.TeamUsageOverview(context.Background(), input); !errors.Is(err, ErrAuthorizationUsageInvalid) {
 			t.Fatalf("TeamUsageOverview(%+v) error = %v, want invalid input", input, err)
 		}
+	}
+	if _, err := service.TeamUsageSummary(context.Background(), UsageSummaryInput{
+		ActorSystemAccountID: "sys_actor",
+		ResourceID:           "acct_without_type",
+	}); !errors.Is(err, ErrAuthorizationUsageInvalid) {
+		t.Fatalf("TeamUsageSummary() error = %v, want invalid resource pair", err)
 	}
 }
 
@@ -1763,19 +1837,27 @@ func (s *authorizationGetStoreStub) FindManagementResourceAuthorization(_ contex
 }
 
 type authorizationUsageStoreStub struct {
-	teamCalled   bool
-	teamInput    port.ManagementAuthorizationUsageOverviewInput
-	teamResult   port.ManagementAuthorizationTeamUsageOverviewResult
-	teamErr      error
-	userCalled   bool
-	userInput    port.ManagementAuthorizationUsageOverviewInput
-	userResult   port.ManagementAuthorizationUserUsageOverviewResult
-	userErr      error
-	detailCalled bool
-	detailInput  port.ManagementResourceAuthorizationUsageInput
-	detailResult port.ManagementResourceAuthorizationUsageResult
-	detailFound  bool
-	detailErr    error
+	teamCalled        bool
+	teamInput         port.ManagementAuthorizationUsageOverviewInput
+	teamResult        port.ManagementAuthorizationTeamUsageOverviewResult
+	teamErr           error
+	userCalled        bool
+	userInput         port.ManagementAuthorizationUsageOverviewInput
+	userResult        port.ManagementAuthorizationUserUsageOverviewResult
+	userErr           error
+	teamSummaryCalled bool
+	teamSummaryInput  port.ManagementAuthorizationUsageSummaryInput
+	teamSummaryResult port.ManagementAuthorizationUsageAggregateSummary
+	teamSummaryErr    error
+	userSummaryCalled bool
+	userSummaryInput  port.ManagementAuthorizationUsageSummaryInput
+	userSummaryResult port.ManagementAuthorizationUsageAggregateSummary
+	userSummaryErr    error
+	detailCalled      bool
+	detailInput       port.ManagementResourceAuthorizationUsageInput
+	detailResult      port.ManagementResourceAuthorizationUsageResult
+	detailFound       bool
+	detailErr         error
 }
 
 func (s *authorizationUsageStoreStub) ListManagementAuthorizationTeamUsageOverview(_ context.Context, input port.ManagementAuthorizationUsageOverviewInput) (port.ManagementAuthorizationTeamUsageOverviewResult, error) {
@@ -1794,6 +1876,24 @@ func (s *authorizationUsageStoreStub) ListManagementAuthorizationUserUsageOvervi
 		return port.ManagementAuthorizationUserUsageOverviewResult{}, s.userErr
 	}
 	return s.userResult, nil
+}
+
+func (s *authorizationUsageStoreStub) FindManagementAuthorizationTeamUsageSummary(_ context.Context, input port.ManagementAuthorizationUsageSummaryInput) (port.ManagementAuthorizationUsageAggregateSummary, error) {
+	s.teamSummaryCalled = true
+	s.teamSummaryInput = input
+	if s.teamSummaryErr != nil {
+		return port.ManagementAuthorizationUsageAggregateSummary{}, s.teamSummaryErr
+	}
+	return s.teamSummaryResult, nil
+}
+
+func (s *authorizationUsageStoreStub) FindManagementAuthorizationUserUsageSummary(_ context.Context, input port.ManagementAuthorizationUsageSummaryInput) (port.ManagementAuthorizationUsageAggregateSummary, error) {
+	s.userSummaryCalled = true
+	s.userSummaryInput = input
+	if s.userSummaryErr != nil {
+		return port.ManagementAuthorizationUsageAggregateSummary{}, s.userSummaryErr
+	}
+	return s.userSummaryResult, nil
 }
 
 func (s *authorizationUsageStoreStub) FindManagementResourceAuthorizationUsage(_ context.Context, input port.ManagementResourceAuthorizationUsageInput) (port.ManagementResourceAuthorizationUsageResult, bool, error) {
@@ -1837,5 +1937,6 @@ var _ port.ManagementResourceAuthorizationExpirySweeper = (*authorizationExpiryS
 var _ port.ManagementUsageStatsTimezoneReader = (*authorizationUsageStatsTimezoneStoreStub)(nil)
 var _ port.ManagementAuthorizationUsageRangeWindowRefresher = (*authorizationUsageRangeWindowStoreStub)(nil)
 var _ port.ManagementAuthorizationUsageOverviewReader = (*authorizationUsageStoreStub)(nil)
+var _ port.ManagementAuthorizationUsageSummaryReader = (*authorizationUsageStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*authorizationUsageStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)

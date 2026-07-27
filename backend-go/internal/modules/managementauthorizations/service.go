@@ -65,6 +65,7 @@ type Service struct {
 	revokeStore              port.ManagementResourceAuthorizationRevoker
 	expirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	usageStore               port.ManagementAuthorizationUsageOverviewReader
+	usageSummaryStore        port.ManagementAuthorizationUsageSummaryReader
 	usageDetailStore         port.ManagementResourceAuthorizationUsageReader
 	usageStatsTimezoneStore  port.ManagementUsageStatsTimezoneReader
 	usageRangeWindowStore    port.ManagementAuthorizationUsageRangeWindowRefresher
@@ -88,6 +89,7 @@ type ServiceOptions struct {
 	RevokeStore              port.ManagementResourceAuthorizationRevoker
 	ExpirySweepStore         port.ManagementResourceAuthorizationExpirySweeper
 	UsageStore               port.ManagementAuthorizationUsageOverviewReader
+	UsageSummaryStore        port.ManagementAuthorizationUsageSummaryReader
 	UsageDetailStore         port.ManagementResourceAuthorizationUsageReader
 	UsageStatsTimezoneStore  port.ManagementUsageStatsTimezoneReader
 	UsageRangeWindowStore    port.ManagementAuthorizationUsageRangeWindowRefresher
@@ -136,6 +138,18 @@ type UsageOverviewInput struct {
 	PageSize               int
 }
 
+type UsageSummaryInput struct {
+	ActorSystemAccountID   string
+	ActorRole              string
+	ScopedSystemAccountID  string
+	ResourceType           string
+	ResourceID             string
+	TeamID                 string
+	GranteeSystemAccountID string
+	StartDate              string
+	EndDate                string
+}
+
 type UsageDetailInput struct {
 	AuthorizationID       string
 	ActorSystemAccountID  string
@@ -163,25 +177,26 @@ type UsageRangeWindowRefreshResult struct {
 }
 
 type TeamUsageOverview struct {
-	Range     port.ManagementAccountUsageStatsRange      `json:"range"`
-	Summary   port.ManagementAccountUsageSummary         `json:"summary"`
-	Rows      []port.ManagementAuthorizationTeamUsageRow `json:"rows"`
-	TeamCount int                                        `json:"teamCount"`
-	Total     int                                        `json:"total"`
-	Page      int                                        `json:"page"`
-	PageSize  int                                        `json:"pageSize"`
-	HasMore   bool                                       `json:"hasMore"`
+	Range    port.ManagementAccountUsageStatsRange      `json:"range"`
+	Rows     []port.ManagementAuthorizationTeamUsageRow `json:"rows"`
+	Total    int                                        `json:"total"`
+	Page     int                                        `json:"page"`
+	PageSize int                                        `json:"pageSize"`
+	HasMore  bool                                       `json:"hasMore"`
 }
 
 type UserUsageOverview struct {
-	Range     port.ManagementAccountUsageStatsRange      `json:"range"`
-	Summary   port.ManagementAccountUsageSummary         `json:"summary"`
-	Rows      []port.ManagementAuthorizationUserUsageRow `json:"rows"`
-	UserCount int                                        `json:"userCount"`
-	Total     int                                        `json:"total"`
-	Page      int                                        `json:"page"`
-	PageSize  int                                        `json:"pageSize"`
-	HasMore   bool                                       `json:"hasMore"`
+	Range    port.ManagementAccountUsageStatsRange      `json:"range"`
+	Rows     []port.ManagementAuthorizationUserUsageRow `json:"rows"`
+	Total    int                                        `json:"total"`
+	Page     int                                        `json:"page"`
+	PageSize int                                        `json:"pageSize"`
+	HasMore  bool                                       `json:"hasMore"`
+}
+
+type UsageSummary struct {
+	Range   port.ManagementAccountUsageStatsRange             `json:"range"`
+	Summary port.ManagementAuthorizationUsageAggregateSummary `json:"summary"`
 }
 
 type Detail struct {
@@ -368,6 +383,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			usageStore = candidate
 		}
 	}
+	usageSummaryStore := opts.UsageSummaryStore
+	if usageSummaryStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementAuthorizationUsageSummaryReader); ok {
+			usageSummaryStore = candidate
+		}
+	}
 	usageDetailStore := opts.UsageDetailStore
 	if usageDetailStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementResourceAuthorizationUsageReader); ok {
@@ -396,6 +417,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		revokeStore:              revokeStore,
 		expirySweepStore:         expirySweepStore,
 		usageStore:               usageStore,
+		usageSummaryStore:        usageSummaryStore,
 		usageDetailStore:         usageDetailStore,
 		usageStatsTimezoneStore:  usageStatsTimezoneStore,
 		usageRangeWindowStore:    usageRangeWindowStore,
@@ -487,14 +509,12 @@ func (s *Service) TeamUsageOverview(ctx context.Context, input UsageOverviewInpu
 	}
 	total := authorizationPagedTotalUpperBound(page, pageSize, len(result.Rows), result.HasMore)
 	return TeamUsageOverview{
-		Range:     usageRange,
-		Summary:   result.Summary,
-		Rows:      result.Rows,
-		TeamCount: total,
-		Total:     total,
-		Page:      page,
-		PageSize:  pageSize,
-		HasMore:   result.HasMore,
+		Range:    usageRange,
+		Rows:     result.Rows,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  result.HasMore,
 	}, nil
 }
 
@@ -512,15 +532,43 @@ func (s *Service) UserUsageOverview(ctx context.Context, input UsageOverviewInpu
 	}
 	total := authorizationPagedTotalUpperBound(page, pageSize, len(result.Rows), result.HasMore)
 	return UserUsageOverview{
-		Range:     usageRange,
-		Summary:   result.Summary,
-		Rows:      result.Rows,
-		UserCount: total,
-		Total:     total,
-		Page:      page,
-		PageSize:  pageSize,
-		HasMore:   result.HasMore,
+		Range:    usageRange,
+		Rows:     result.Rows,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  result.HasMore,
 	}, nil
+}
+
+func (s *Service) TeamUsageSummary(ctx context.Context, input UsageSummaryInput) (UsageSummary, error) {
+	if s.usageSummaryStore == nil {
+		return UsageSummary{}, fmt.Errorf("management authorization usage summary reader is required")
+	}
+	storeInput, usageRange, err := s.authorizationUsageSummaryStoreInput(ctx, input)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	summary, err := s.usageSummaryStore.FindManagementAuthorizationTeamUsageSummary(ctx, storeInput)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	return UsageSummary{Range: usageRange, Summary: summary}, nil
+}
+
+func (s *Service) UserUsageSummary(ctx context.Context, input UsageSummaryInput) (UsageSummary, error) {
+	if s.usageSummaryStore == nil {
+		return UsageSummary{}, fmt.Errorf("management authorization usage summary reader is required")
+	}
+	storeInput, usageRange, err := s.authorizationUsageSummaryStoreInput(ctx, input)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	summary, err := s.usageSummaryStore.FindManagementAuthorizationUserUsageSummary(ctx, storeInput)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	return UsageSummary{Range: usageRange, Summary: summary}, nil
 }
 
 func (s *Service) UsageDetail(ctx context.Context, input UsageDetailInput) (UsageDetail, bool, error) {
@@ -556,6 +604,10 @@ func (s *Service) authorizationUsageOverviewStoreInput(ctx context.Context, inpu
 	if strings.TrimSpace(input.ResourceType) != "" && resourceType == "" {
 		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, ErrAuthorizationUsageInvalid
 	}
+	resourceID := strings.TrimSpace(input.ResourceID)
+	if resourceID != "" && resourceType == "" {
+		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, ErrAuthorizationUsageInvalid
+	}
 	pageSize := authorizationUsagePageSize(input.PageSize)
 	page := authorizationUsagePage(input.Page, pageSize)
 	usageRange, err := s.normalizeAuthorizationUsageRange(ctx, input.StartDate, input.EndDate)
@@ -572,7 +624,7 @@ func (s *Service) authorizationUsageOverviewStoreInput(ctx context.Context, inpu
 		CanAccessAll:           canAccessAll,
 		ScopedSystemAccountID:  scopedSystemAccountID,
 		ResourceType:           resourceType,
-		ResourceID:             strings.TrimSpace(input.ResourceID),
+		ResourceID:             resourceID,
 		TeamID:                 strings.TrimSpace(input.TeamID),
 		GranteeSystemAccountID: strings.TrimSpace(input.GranteeSystemAccountID),
 		StartDate:              usageRange.StartDate,
@@ -580,6 +632,41 @@ func (s *Service) authorizationUsageOverviewStoreInput(ctx context.Context, inpu
 		Limit:                  pageSize + 1,
 		Offset:                 (page - 1) * pageSize,
 	}, usageRange, page, pageSize, nil
+}
+
+func (s *Service) authorizationUsageSummaryStoreInput(ctx context.Context, input UsageSummaryInput) (port.ManagementAuthorizationUsageSummaryInput, port.ManagementAccountUsageStatsRange, error) {
+	actor := strings.TrimSpace(input.ActorSystemAccountID)
+	if actor == "" {
+		return port.ManagementAuthorizationUsageSummaryInput{}, port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
+	}
+	resourceType := normalizeResourceType(input.ResourceType)
+	if strings.TrimSpace(input.ResourceType) != "" && resourceType == "" {
+		return port.ManagementAuthorizationUsageSummaryInput{}, port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
+	}
+	resourceID := strings.TrimSpace(input.ResourceID)
+	if resourceID != "" && resourceType == "" {
+		return port.ManagementAuthorizationUsageSummaryInput{}, port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
+	}
+	usageRange, err := s.normalizeAuthorizationUsageRange(ctx, input.StartDate, input.EndDate)
+	if err != nil {
+		return port.ManagementAuthorizationUsageSummaryInput{}, port.ManagementAccountUsageStatsRange{}, err
+	}
+	canAccessAll := isAdminRole(input.ActorRole)
+	scopedSystemAccountID := strings.TrimSpace(input.ScopedSystemAccountID)
+	if !canAccessAll {
+		scopedSystemAccountID = actor
+	}
+	return port.ManagementAuthorizationUsageSummaryInput{
+		ActorSystemAccountID:   actor,
+		CanAccessAll:           canAccessAll,
+		ScopedSystemAccountID:  scopedSystemAccountID,
+		ResourceType:           resourceType,
+		ResourceID:             resourceID,
+		TeamID:                 strings.TrimSpace(input.TeamID),
+		GranteeSystemAccountID: strings.TrimSpace(input.GranteeSystemAccountID),
+		StartDate:              usageRange.StartDate,
+		EndDate:                usageRange.EndDate,
+	}, usageRange, nil
 }
 
 func (s *Service) authorizationUsageDetailStoreInput(ctx context.Context, input UsageDetailInput) (port.ManagementResourceAuthorizationUsageInput, port.ManagementAccountUsageStatsRange, int, int, error) {
