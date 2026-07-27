@@ -27,7 +27,7 @@ import {
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
-import { sanitizeRequestHeaders } from '../../modules/gateway/usage/snapshots.js'
+import { requestHeadersToObject } from '../../modules/gateway/usage/snapshots.js'
 import { applyOpenAIClientCompatibilityHeaders } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 
 type TestRequest = GatewayRawBodyRequest
@@ -582,8 +582,11 @@ function testApiKeyHeaderFiltering(): void {
     'x-stainless-lang': 'js',
     'x-stainless-package-version': '4.0.0',
     'x-openai-client-user-agent': 'sdk-noise',
+    'x-openai-internal-codex-responses-lite': 'true',
+    'x-openai-subagent': 'collab_spawn',
     'x-vercel-id': 'iad1::abc',
     'x-oai-attestation': 'device-proof',
+    originator: 'codex_cli_rs',
     'idempotency-key': 'idem-123',
     'x-custom-header': 'kept'
   }, apiKeyAccount)
@@ -620,15 +623,17 @@ function testApiKeyHeaderFiltering(): void {
     'x-stainless-lang',
     'x-stainless-package-version',
     'x-openai-client-user-agent',
+    'x-openai-internal-codex-responses-lite',
+    'x-openai-subagent',
     'x-vercel-id',
     'x-oai-attestation'
   ]) {
     assert.equal(headers.get(name), null, `${name} should be stripped`)
   }
   assert.equal(
-    Object.prototype.hasOwnProperty.call(sanitizeRequestHeaders({ 'x-oai-attestation': 'device-proof' }), 'x-oai-attestation'),
-    false,
-    'usage 请求快照必须从捕获范围排除 attestation 正文'
+    requestHeadersToObject({ 'x-oai-attestation': 'device-proof' })['x-oai-attestation'],
+    'device-proof',
+    '使用记录请求快照应按原文保留 attestation'
   )
 }
 

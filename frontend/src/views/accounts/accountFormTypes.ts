@@ -31,7 +31,7 @@ export interface AccountFormModel {
   googleClientId: string
   googleClientSecret: string
   googleQuotaProjectId: string
-  oauthMode: 'manual' | 'refresh_token'
+  oauthMode: 'manual' | 'refresh_token' | 'access_token'
   callbackUrl: string
   accountExpiresAt?: Dayjs | null
   concurrencyLimit: number
@@ -64,7 +64,7 @@ export interface AccountFormModel {
   balanceQueryDivisor: string
 }
 
-export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'callbackUrl' | 'refreshToken'>
+export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'callbackUrl' | 'refreshToken' | 'accessToken'>
 
 export interface AccountFilters {
   keyword: string

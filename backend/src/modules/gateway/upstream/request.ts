@@ -588,7 +588,8 @@ export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
 
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
   const headers = copySafeUpstreamRequestHeaders(inputHeaders, {
-    preserveCodexClientHeaders: isOpenAICodexClientHeaders(inputHeaders)
+    preserveOpenAIOAuthCodexClientHeaders: usesOpenAIOAuthCompactStreamRules(account)
+      && isOpenAICodexClientHeaders(inputHeaders)
   })
   headers.set('authorization', `Bearer ${account.apiKey}`)
   if (usesOpenAIOAuthCompactStreamRules(account)) {
@@ -615,12 +616,12 @@ function usesOpenAIOAuthCompactStreamRules(account?: {
 
 export function copySafeUpstreamRequestHeaders(
   inputHeaders: Record<string, string | string[] | undefined>,
-  options: { preserveCodexClientHeaders?: boolean } = {}
+  options: { preserveOpenAIOAuthCodexClientHeaders?: boolean } = {}
 ): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(inputHeaders)) {
     const lowerName = name.toLowerCase()
-    if (shouldSkipUpstreamRequestHeader(lowerName, options.preserveCodexClientHeaders)) {
+    if (shouldSkipUpstreamRequestHeader(lowerName, options.preserveOpenAIOAuthCodexClientHeaders)) {
       continue
     }
     if (Array.isArray(value)) {
@@ -664,9 +665,9 @@ function parseConnectionHeaderTokens(value: string | null): Set<string> | undefi
   return tokens.length > 0 ? new Set(tokens) : undefined
 }
 
-function shouldSkipUpstreamRequestHeader(name: string, preserveCodexClientHeaders = false): boolean {
+function shouldSkipUpstreamRequestHeader(name: string, preserveOpenAIOAuthCodexClientHeaders = false): boolean {
   const lowerName = name.toLowerCase()
-  if (preserveCodexClientHeaders && preservedCodexClientHeaders.has(lowerName)) {
+  if (preserveOpenAIOAuthCodexClientHeaders && openAIOAuthCodexAllowlistedHeaders.has(lowerName)) {
     return false
   }
   if (skippedUpstreamRequestHeaders.has(lowerName)) {
@@ -939,7 +940,7 @@ const skippedUpstreamRequestHeaderPrefixes = [
   'x-vercel-'
 ]
 
-const preservedCodexClientHeaders = new Set([
+const openAIOAuthCodexAllowlistedHeaders = new Set([
   'x-oai-attestation',
   'x-openai-subagent',
   openAICodexResponsesLiteHeader

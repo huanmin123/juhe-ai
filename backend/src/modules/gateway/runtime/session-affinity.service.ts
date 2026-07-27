@@ -37,6 +37,12 @@ interface RedisSessionBindingRecord {
   rawValue: string
 }
 
+let sessionAffinityRedisClientForTest: RedisCommandClient | undefined
+
+export function setOpenAISessionAffinityRedisClientForTest(client?: RedisCommandClient): void {
+  sessionAffinityRedisClientForTest = client
+}
+
 interface TrafficMigrationPreference {
   sourceAccountId: string
   targetAccountId: string
@@ -1103,6 +1109,9 @@ function parseRedisTrafficMigrationPreference(rawValue: string): TrafficMigratio
 }
 
 function redisSessionAffinityClient(): Promise<RedisCommandClient> {
+  if (sessionAffinityRedisClientForTest) {
+    return Promise.resolve(sessionAffinityRedisClientForTest)
+  }
   const redisUrl = runtimeConfig.redis.cacheUrl
   if (!redisUrl) {
     throw new Error('JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置')

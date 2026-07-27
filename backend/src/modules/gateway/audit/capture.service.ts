@@ -20,12 +20,7 @@ import {
 } from '../../audit-logs/audit-payload-summary.js'
 import { readAuditLogSettings } from '../../audit-logs/audit-log-settings.js'
 import { requestModel, requestStream } from '../request/metadata.js'
-import {
-  headersToSafeObject,
-  isUncapturedHeaderName,
-  sanitizeHeaderRecord,
-  sanitizeHeaderValue
-} from '../upstream/headers.js'
+import { headersToObject } from '../upstream/headers.js'
 import {
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
@@ -38,12 +33,6 @@ import type {
 import { resolveCatalogPricingModel } from '../../model-pricing/model-catalog.service.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
-import {
-  isAuditSessionIdentityJsonRequest,
-  isAuditSessionIdentityStructuredPayload,
-  redactAuditSessionIdentityRequestBodyResult
-} from './session-identity-redaction.js'
-
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
 interface AuditCaptureContextInput {
@@ -61,11 +50,6 @@ interface AuditGatewayContext {
   sessionId?: string
   sessionClientType?: string
   conversationKey?: string
-  sessionNamespace?: string
-  sessionSource?: string
-  sessionResolution?: string
-  sessionConfidence?: string
-  identityConflict?: boolean
   systemAccountId?: string
   apiKeyId?: string
   groupId?: string
@@ -344,22 +328,15 @@ export class AuditCaptureContext {
     const requestContentType = input.headers.get('content-type') ?? undefined
     const requestContentEncoding = input.headers.get('content-encoding') ?? undefined
     const rawRequestBody = input.body === undefined ? undefined : bodyToBuffer(input.body)
-    const jsonIdentityRedactionApplied = isAuditSessionIdentityJsonRequest(requestContentType, undefined)
-    const redactedRequestBody = redactAuditSessionIdentityRequestBodyResult({
-      rawBody: rawRequestBody,
-      contentType: requestContentType,
-      contentEncoding: requestContentEncoding
-    })
     const requestPayload: PendingAuditPayloadInput = {
       attemptTempId: tempId,
       partType: 'upstream_request',
-      headers: headersToSafeObject(input.headers),
-      body: redactedRequestBody.body,
+      headers: headersToObject(input.headers),
+      body: rawRequestBody,
       bodySha256: rawRequestBody ? createHash('sha256').update(rawRequestBody).digest('hex') : undefined,
       rawBodySizeBytes: rawRequestBody?.byteLength,
-      captureStatus: redactedRequestBody.omittedForSafety ? 'dropped' : undefined,
       contentType: requestContentType,
-      contentEncoding: jsonIdentityRedactionApplied ? undefined : requestContentEncoding
+      contentEncoding: requestContentEncoding
     }
     const state: AuditAttemptState = { tempId, attempt, requestPayload, requestPayloadCaptured: false, startedAtMs, completed: false }
     this.activeAttemptByTempId.set(tempId, state)
@@ -383,8 +360,8 @@ export class AuditCaptureContext {
     state.attempt.upstreamStatusCode = input.statusCode
     state.attempt.success = input.success
     state.attempt.errorPhase = input.errorPhase
-    state.attempt.errorCode = sanitizeOptionalDiagnosticMessage(input.errorCode)
-    state.attempt.errorMessage = sanitizeOptionalDiagnosticMessage(input.errorMessage)
+    state.attempt.errorCode = input.errorCode
+    state.attempt.errorMessage = input.errorMessage
     if (!input.success) {
       this.hadFailedAttempt = true
     }
@@ -400,7 +377,7 @@ export class AuditCaptureContext {
       this.addPayload({
         attemptTempId: tempId,
         partType: 'upstream_response',
-        headers: input.responseHeaders ? headersToSafeObject(input.responseHeaders) : undefined,
+        headers: input.responseHeaders ? headersToObject(input.responseHeaders) : undefined,
         body: input.responseBody,
         contentType: input.responseHeaders?.get('content-type') ?? undefined,
         contentEncoding: input.responseHeaders?.get('content-encoding') ?? undefined
@@ -439,8 +416,8 @@ export class AuditCaptureContext {
       upstreamStatusCode: input.statusCode,
       success: false,
       errorPhase: input.errorPhase,
-      errorCode: sanitizeOptionalDiagnosticMessage(input.errorCode),
-      errorMessage: sanitizeOptionalDiagnosticMessage(input.errorMessage),
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
       startedAt: new Date(input.startedAtMs).toISOString(),
       endedAt: new Date(endedAtMs).toISOString(),
       durationMs: endedAtMs - input.startedAtMs
@@ -518,7 +495,7 @@ export class AuditCaptureContext {
     if (shouldCapturePayloadBodies && (input.responseBody !== undefined || input.responseHeaders)) {
       this.addPayload({
         partType: input.responsePartType ?? (input.success ? 'gateway_response' : 'gateway_error'),
-        headers: input.responseHeaders ? normalizeSafeHeaders(input.responseHeaders) : undefined,
+        headers: input.responseHeaders ? normalizeAuditHeaders(input.responseHeaders) : undefined,
         body: input.responseBody,
         contentType: headerValue(input.responseHeaders, 'content-type'),
         contentEncoding: headerValue(input.responseHeaders, 'content-encoding')
@@ -556,10 +533,10 @@ export class AuditCaptureContext {
       success,
       finalStatusCode: input.statusCode,
       errorPhase: clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
-      errorCode: sanitizeOptionalDiagnosticMessage(input.errorCode),
+      errorCode: input.errorCode,
       errorMessage: clientAborted
-        ? sanitizeOptionalDiagnosticMessage(input.errorMessage) ?? 'Client aborted request'
-        : sanitizeOptionalDiagnosticMessage(input.errorMessage),
+        ? input.errorMessage ?? 'Client aborted request'
+        : input.errorMessage,
       sampleBucket: this.sampleBucket,
       sampleReason: this.sampleReasonForOutcome(outcome),
       captureStatus: this.overflowed ? 'overflow' : this.metadataOnly || unsampledSuccessEnvelope ? 'metadata_only' : 'complete',
@@ -622,42 +599,22 @@ export class AuditCaptureContext {
     }
     const contentType = this.req.header('content-type')
     const contentEncoding = this.req.header('content-encoding')
-    const jsonIdentityRedactionApplied = isAuditSessionIdentityJsonRequest(contentType, this.req.body)
-    const redactedBody = redactAuditSessionIdentityRequestBodyResult({
-      body: this.req.body,
-      rawBody,
-      contentType,
-      contentEncoding
-    })
     this.clientRequestPayloadCaptured = true
-    if (redactedBody.omittedForSafety) {
-      this.addPayload({
-        partType: 'client_request',
-        headers: requestHeadersToObject(this.req),
-        body: redactedBody.body,
-        rawBodySizeBytes: rawBody?.byteLength,
-        bodySha256: rawBody ? createHash('sha256').update(rawBody).digest('hex') : undefined,
-        captureStatus: 'dropped',
-        contentType,
-        contentEncoding: undefined
-      })
-      return
-    }
     this.addPayload({
       partType: 'client_request',
       headers: requestHeadersToObject(this.req),
-      body: redactedBody.body,
+      body: rawBody,
       rawBodySizeBytes: rawBody?.byteLength,
       bodySha256: rawBody ? createHash('sha256').update(rawBody).digest('hex') : undefined,
       contentType,
-      contentEncoding: jsonIdentityRedactionApplied ? undefined : contentEncoding
+      contentEncoding
     })
   }
 
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
-    const preparedPayload = redactAuditPayloadSessionIdentity(payload)
+    const preparedPayload = payload
     if (!shouldOffloadAuditPayloadRetention()) {
       summarizeAuditPayloadForLimit(preparedPayload, this.problemFullBodyLimitBytes)
     }
@@ -743,32 +700,6 @@ export class AuditCaptureContext {
     }
     return this.successHotRetentionEnabled ? 'success_hot_full_retention' : 'success_metadata_only'
   }
-}
-
-function redactAuditPayloadSessionIdentity(
-  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>
-): Omit<AuditLogPayloadInput, 'sequenceIndex'> {
-  if (payload.body === undefined || !isAuditSessionIdentityStructuredPayload(payload.contentType, undefined)) {
-    return payload
-  }
-  const rawBody = bodyToBuffer(payload.body)
-  const result = redactAuditSessionIdentityRequestBodyResult({
-    rawBody,
-    contentType: payload.contentType,
-    contentEncoding: payload.contentEncoding
-  })
-  return {
-    ...payload,
-    body: result.body,
-    bodySha256: payload.bodySha256 ?? createHash('sha256').update(rawBody).digest('hex'),
-    rawBodySizeBytes: payload.rawBodySizeBytes ?? rawBody.byteLength,
-    captureStatus: result.omittedForSafety ? 'dropped' : payload.captureStatus,
-    contentEncoding: undefined
-  }
-}
-
-function sanitizeOptionalDiagnosticMessage(value: string | undefined): string | undefined {
-  return value
 }
 
 function auditModelAccounting(
@@ -872,17 +803,19 @@ function requestHeadersToObject(req: Request): Record<string, string | string[]>
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(req.headers)) {
     if (value === undefined) continue
-    if (isUncapturedHeaderName(name)) continue
-    output[name] = sanitizeHeaderValue(name, Array.isArray(value) ? value : String(value))
+    output[name] = Array.isArray(value) ? value.map(String) : String(value)
   }
   return output
 }
 
-function normalizeSafeHeaders(headers: Record<string, string | string[]> | Headers): Record<string, string | string[]> {
+function normalizeAuditHeaders(headers: Record<string, string | string[]> | Headers): Record<string, string | string[]> {
   if (headers instanceof Headers) {
-    return headersToSafeObject(headers)
+    return headersToObject(headers)
   }
-  return sanitizeHeaderRecord(headers)
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [
+    name,
+    Array.isArray(value) ? value.map(String) : String(value)
+  ]))
 }
 
 function headerValue(headers: Record<string, string | string[]> | Headers | undefined, name: string): string | undefined {

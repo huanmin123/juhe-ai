@@ -26,24 +26,24 @@ export function useAuditLogModeBridge(input: {
   resetFilters: () => void
   resetHotSearch: () => void
   searchHotAuditLogs: () => void | Promise<void>
+  sessionIdFilter: Ref<string>
   tablePagination: Ref<TablePaginationState>
-  traceIdFilter: Ref<string>
   viewMode: Ref<AuditLogViewMode>
   advancedFilterCount: Ref<number>
 }) {
   const toolbarKeyword = computed({
-    get: () => input.viewMode.value === 'search' ? input.hotSearchKeywordFilter.value : input.traceIdFilter.value,
+    get: () => input.viewMode.value === 'search' ? input.hotSearchKeywordFilter.value : input.sessionIdFilter.value,
     set: (value: string) => {
       if (input.viewMode.value === 'search') {
         input.hotSearchKeywordFilter.value = value
       } else {
-        input.traceIdFilter.value = value
+        input.sessionIdFilter.value = value
       }
     }
   })
   const toolbarSearchPlaceholder = computed(() => input.viewMode.value === 'search'
     ? '搜索最近1小时审计原始请求'
-    : '搜索 traceId')
+    : '输入完整会话 ID，精确查找全部请求')
   const toolbarFilterTitle = computed(() => input.viewMode.value === 'search' ? '最近内容搜索' : '审计筛选')
   const toolbarActiveFilterCount = computed(() => input.viewMode.value === 'search' ? input.hotSearchActiveFilterCount.value : input.activeFilterCount.value)
   const toolbarAdvancedFilterCount = computed(() => input.viewMode.value === 'search' ? 0 : input.advancedFilterCount.value)

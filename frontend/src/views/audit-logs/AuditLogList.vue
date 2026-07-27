@@ -24,22 +24,17 @@
         <span class="trace-cell mono-cell">{{ record.traceId }}</span>
       </template>
       <template v-else-if="column.key === 'session'">
-        <div v-if="record.conversationKey" class="session-cell">
-          <a-tooltip :title="`完整会话 Key：${record.conversationKey}`">
-            <a-button class="session-key-button mono-cell" type="link" @click="emit('filter-conversation', record.conversationKey)">
-              {{ formatConversationKeyPreview(record.conversationKey) }}
+        <div v-if="record.sessionId" class="session-cell">
+          <a-tooltip :title="`完整会话 ID：${record.sessionId}`">
+            <a-button class="session-key-button mono-cell" type="link" @click="emit('filter-session', record.sessionId)">
+              {{ formatSessionIdPreview(record.sessionId) }}
             </a-button>
           </a-tooltip>
           <div class="session-cell-meta">
-            <a-tag :color="sessionResolutionColor(record.sessionResolution)">{{ sessionResolutionText(record.sessionResolution) }}</a-tag>
-            <span v-if="record.sessionSource">{{ record.sessionSource }}</span>
-            <a-tag v-if="record.identityConflict" color="red">冲突</a-tag>
+            <a-tag>{{ sessionClientTypeText(record.sessionClientType) }}</a-tag>
           </div>
         </div>
-        <span v-else class="session-cell-meta">
-          <a-tag :color="sessionResolutionColor(record.sessionResolution)">{{ sessionResolutionText(record.sessionResolution) }}</a-tag>
-          <span v-if="record.sessionSource">{{ record.sessionSource }}</span>
-        </span>
+        <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'outcome'">
         <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
@@ -108,17 +103,17 @@
             <strong class="mono-cell">{{ record.traceId }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>会话</span>
+            <span>会话 ID</span>
             <a-button
-              v-if="record.conversationKey"
+              v-if="record.sessionId"
               class="session-key-button mono-cell"
               type="link"
-              @click="emit('filter-conversation', record.conversationKey)"
+              @click="emit('filter-session', record.sessionId)"
             >
-              {{ formatConversationKeyPreview(record.conversationKey) }}
+              {{ formatSessionIdPreview(record.sessionId) }}
             </a-button>
-            <strong v-else>{{ sessionResolutionText(record.sessionResolution) }}</strong>
-            <small v-if="record.sessionSource">{{ record.sessionSource }} · {{ sessionResolutionText(record.sessionResolution) }}</small>
+            <strong v-else>-</strong>
+            <small v-if="record.sessionClientType">{{ sessionClientTypeText(record.sessionClientType) }}</small>
           </div>
           <div class="mobile-list-meta-item">
             <span>AI账户</span>
@@ -151,13 +146,12 @@ import type { AuditLogListItem } from '@/types/domain'
 import {
   displayAuditGroupName,
   displayName,
-  formatConversationKeyPreview,
+  formatSessionIdPreview,
   formatDateTime,
   formatDuration,
   outcomeColor,
   outcomeText,
-  sessionResolutionColor,
-  sessionResolutionText,
+  sessionClientTypeText,
   statusColor,
   trafficSourceColor,
   trafficSourceText
@@ -182,7 +176,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
   (event: 'detail', record: AuditLogListItem): void
-  (event: 'filter-conversation', conversationKey: string): void
+  (event: 'filter-session', sessionId: string): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()

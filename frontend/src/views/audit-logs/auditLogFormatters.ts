@@ -39,10 +39,10 @@ export function trafficSourceText(value: AuditTrafficSource): string {
     gateway: '网关请求',
     manual_account_test: 'AI账户测试',
     account_health_check: '健康检查',
-    runtime_recovery_probe: '运行态恢复探针',
-    cooldown_retest: '恢复探活',
-    hybrid_scoring: '混合评分',
-    hybrid_quality_scoring: '混合质量评分'
+    runtime_recovery_probe: '快速恢复检测',
+    cooldown_retest: '冷却账户复测',
+    hybrid_scoring: '混合路由选型',
+    hybrid_quality_scoring: '回答质量复核'
   }[value] ?? '网关请求'
 }
 
@@ -89,42 +89,17 @@ export function formatHashPreview(value?: string): string {
   return value.length > 8 ? `${value.slice(0, 4)}....${value.slice(-4)}` : value
 }
 
-export function formatConversationKeyPreview(value?: string): string {
+export function formatSessionIdPreview(value?: string): string {
   if (!value) return '-'
   return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
 }
 
-export function sessionResolutionText(value?: string): string {
+export function sessionClientTypeText(value?: string): string {
   return {
-    official: '官方会话',
-    continuation: '续链恢复',
-    thread_fallback: '线程兜底',
-    missing: '未识别',
-    conflict: '身份冲突',
-    invalid: '无效标识'
+    codex: 'Codex',
+    claude_code: 'Claude Code',
+    'claude-code': 'Claude Code'
   }[value || ''] ?? (value || '未识别')
-}
-
-export function sessionResolutionColor(value?: string): string | undefined {
-  if (value === 'official') return 'green'
-  if (value === 'continuation') return 'blue'
-  if (value === 'thread_fallback') return 'gold'
-  if (value === 'conflict' || value === 'invalid') return 'red'
-  return undefined
-}
-
-export function sessionConfidenceText(value?: string): string {
-  return {
-    authoritative: '权威',
-    derived: '推导',
-    compatibility: '兼容'
-  }[value || ''] ?? (value || '-')
-}
-
-export function identityConflictText(value?: boolean): string {
-  if (value === true) return '是'
-  if (value === false) return '否'
-  return '-'
 }
 
 export function compressionText(rawBytes: number, compressedBytes: number): string {

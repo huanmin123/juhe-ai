@@ -142,6 +142,20 @@ export async function readPerformanceProcessEventLoopSamples(): Promise<ProcessE
   }
 }
 
+export async function readPerformanceProcessMetricsRegistryTimeMs(): Promise<number> {
+  if (!performanceRegistryEnabled()) throw new Error('高性能进程指标注册表未启用')
+  const redisUrl = runtimeConfig.redis.cacheUrl
+  if (!redisUrl) throw new Error('高性能进程指标注册表缺少 Redis URL')
+  try {
+    return await withTimeout(readRegistryTimeMs(redisUrl), commandTimeoutMs, '高性能进程指标 Redis 时间读取超时')
+  } catch (error) {
+    if (isRecoverableRedisClientError(error) || error instanceof PerformanceRegistryCommandTimeoutError) {
+      dropRegistryClient()
+    }
+    throw error
+  }
+}
+
 async function publishCurrentProcessMetrics(): Promise<void> {
   if (publishInFlight) return
   const redisUrl = runtimeConfig.redis.cacheUrl
@@ -180,6 +194,17 @@ async function writeRegistrySample(redisUrl: string, sample: ProcessEventLoopSam
 async function readRegistry(redisUrl: string): Promise<ProcessEventLoopSample[]> {
   const client = await getRegistryClient(redisUrl)
   return await readPerformanceProcessMetricsRegistrySamples(client)
+}
+
+async function readRegistryTimeMs(redisUrl: string): Promise<number> {
+  const client = await getRegistryClient(redisUrl)
+  const value = await client.sendCommand(['TIME'])
+  if (!Array.isArray(value) || value.length < 2) throw new Error('Redis TIME 返回格式无效')
+  const seconds = Number(value[0])
+  const microseconds = Number(value[1])
+  const observedAtMs = seconds * 1_000 + Math.floor(microseconds / 1_000)
+  if (!Number.isSafeInteger(observedAtMs) || observedAtMs <= 0) throw new Error('Redis TIME 返回时间无效')
+  return observedAtMs
 }
 
 export async function writePerformanceProcessMetricsRegistrySample(

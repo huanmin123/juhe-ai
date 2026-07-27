@@ -11,7 +11,7 @@ export const auditOutcomeOptions = [
 
 export const auditLogColumns = [
   { title: 'traceId', key: 'traceId', width: 250 },
-  { title: '会话', key: 'session', width: 250 },
+  { title: '会话 ID', key: 'session', width: 250 },
   { title: '结果', key: 'outcome', width: 120 },
   { title: '状态码', key: 'status', width: 90 },
   { title: '来源', key: 'trafficSource', width: 100 },

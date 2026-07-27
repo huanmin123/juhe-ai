@@ -25,6 +25,7 @@ import {
   buildAuditLogFilters,
   errorGroupDefaultPageSize,
   errorGroupMaxPageSize,
+  normalizeAuditLogPage,
   normalizePage,
   normalizePageSize
 } from './audit-log-list-query.js'
@@ -49,7 +50,7 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-r
 export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {
   const filters = buildAuditLogFilters(options)
   const pageSize = normalizePageSize(options.pageSize, auditLogDefaultPageSize, auditLogMaxPageSize)
-  const page = normalizePage(options.page, pageSize)
+  const page = normalizeAuditLogPage(options.page, pageSize, options.sessionId)
   const offset = (page - 1) * pageSize
   const database = getDatasetDatabase()
   const rows = database
@@ -224,6 +225,7 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
   const groupNames = loadGroupNameMap(attemptRows.map((attempt) => String(attempt.group_id ?? '')).filter(Boolean))
   return {
     ...auditLogSummaryFromRow(namedRow, systemAccountNames),
+    conversationKey: optionalString(namedRow.conversation_key),
     attempts: attemptRows.map((attempt) => auditLogAttemptFromRow(attempt, accountNames, groupNames)),
     errorGroup: errorGroupId ? getAuditErrorGroupById(errorGroupId) : undefined,
     payloads: payloadRows.map(auditLogPayloadSummaryFromRow)
@@ -263,6 +265,7 @@ export async function getAuditLogDetailAsync(id: string): Promise<AuditLogDetail
   const groupNames = namesFromRows(attemptRows, 'group_id', 'group_name')
   return {
     ...auditLogSummaryFromRow(row, systemAccountNamesFromRows([row])),
+    conversationKey: optionalString(row.conversation_key),
     attempts: attemptRows.map((attempt) => auditLogAttemptFromRow(attempt, accountNames, groupNames)),
     errorGroup: errorGroupId ? await getAuditErrorGroupByIdAsync(client, errorGroupId) : undefined,
     payloads: payloadRows.map(auditLogPayloadSummaryFromRow)
@@ -365,7 +368,7 @@ function assertAuditPayloadSqliteOnly(operation: string): void {
 async function listAuditLogsWithClientAsync(client: DatabaseClient, options: AuditLogListOptions = {}): Promise<AuditLogListResult> {
   const filters = buildAuditLogFilters(options)
   const pageSize = normalizePageSize(options.pageSize, auditLogDefaultPageSize, auditLogMaxPageSize)
-  const page = normalizePage(options.page, pageSize)
+  const page = normalizeAuditLogPage(options.page, pageSize, options.sessionId)
   const offset = (page - 1) * pageSize
   const rows = await client.query<AuditLogRow>(`
     SELECT ${auditLogListSelectColumns('al')}, ${auditLogListNameColumns()}

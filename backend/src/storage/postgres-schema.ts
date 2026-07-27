@@ -76,15 +76,8 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   },
   ...[
     ['conversation_key', 'text'],
-    ['session_namespace', 'text'],
-    ['session_source', 'text'],
-    ['session_resolution', 'text'],
-    ['session_confidence', 'text'],
-    ['thread_key', 'text'],
-    ['turn_key', 'text'],
-    ['agent_key', 'text'],
-    ['parent_response_key', 'text'],
-    ['identity_conflict', 'integer']
+    ['session_id', 'text'],
+    ['session_client_type', 'text']
   ].map(([columnName, columnType]) => ({
     schemaName: 'juhe_dataset' as const,
     source: 'audit-log-session-identity-pg-columns',
@@ -93,12 +86,27 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
   {
     schemaName: 'juhe_dataset',
     source: 'audit-log-session-identity-pg-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_conversation_created ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id) WHERE conversation_key IS NOT NULL'
+    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created ON audit_logs(session_id, created_at, id, session_client_type) WHERE session_id IS NOT NULL'
   },
   {
     schemaName: 'juhe_dataset',
     source: 'audit-log-session-identity-pg-indexes',
-    sql: 'CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_thread_created ON audit_logs(system_account_id, api_key_id, thread_key, created_at, id) WHERE thread_key IS NOT NULL'
+    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_session_created'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-session-identity-pg-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-session-identity-pg-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_conversation_created'
+  },
+  {
+    schemaName: 'juhe_dataset',
+    source: 'audit-log-session-identity-pg-indexes',
+    sql: 'DROP INDEX IF EXISTS idx_audit_logs_system_api_key_thread_created'
   },
   {
     schemaName: 'juhe_stats',

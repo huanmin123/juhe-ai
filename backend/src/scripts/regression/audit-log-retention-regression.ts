@@ -69,7 +69,7 @@ try {
   auditQueue.flushAllAuditLogQueue()
   assert.equal(repositories.listAuditLogs({ traceId: sampledTraceId }).total, 1, '命中 10% 稳定采样的成功请求应写入 audit_logs')
 
-  const sensitiveHeaderTraceId = 'trace-sensitive-header-redaction'
+  const sensitiveHeaderTraceId = 'trace-sensitive-header-raw-audit'
   finalizeSensitiveHeaderAudit(sensitiveHeaderTraceId)
   auditQueue.flushAllAuditLogQueue()
   const sensitiveHeaderAuditId = repositories.listAuditLogs({ traceId: sensitiveHeaderTraceId }).items[0]?.id ?? ''
@@ -82,7 +82,7 @@ try {
   assert.equal(sensitiveHeaderSerializedDetail.includes('token=%5Bredacted%5D'), false, '审计 attempt upstreamUrl 不应写入脱敏占位')
   const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
   const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
-  assertAllAbsent(sensitiveHeaderSerialized, [
+  for (const marker of [
     'Bearer client-secret-token',
     'Bearer upstream-secret-token',
     'session-secret-cookie',
@@ -91,16 +91,23 @@ try {
     'upstream-x-api-key-secret',
     'audit-google-key-secret',
     'upstream-google-key-secret',
-    'sk-account-secret'
-  ], '审计 payload header 不应保留敏感原文')
-  assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload header 应写入脱敏占位')
+    'sk-account-secret',
+    'raw-client-session-id',
+    'raw-client-turn-state',
+    'raw-body-session-id',
+    'raw-upstream-session-id',
+    'raw-response-session-id'
+  ]) {
+    assert(sensitiveHeaderSerialized.includes(marker), `原始审计 payload 应保留原文：${marker}`)
+  }
+  assert.equal(sensitiveHeaderSerialized.includes('[redacted]'), false, '原始审计 payload 不应写入脱敏占位')
 
-  const proxyCredentialTraceId = 'trace-proxy-credential-redaction'
+  const proxyCredentialTraceId = 'trace-proxy-credential-raw'
   finalizeProxyCredentialAudit(proxyCredentialTraceId)
   auditQueue.flushAllAuditLogQueue()
   const proxyCredentialAuditId = repositories.listAuditLogs({ traceId: proxyCredentialTraceId }).items[0]?.id ?? ''
   const proxyCredentialDetail = repositories.getAuditLogDetail(proxyCredentialAuditId)
-  assert(proxyCredentialDetail, '代理凭据脱敏审计事件应写入详情')
+  assert(proxyCredentialDetail, '代理凭据原文审计事件应写入详情')
   const proxyCredentialRow = databaseModule.getDatasetDatabase()
     .prepare('SELECT proxy_url FROM audit_log_attempts WHERE audit_log_id = ?')
     .get(proxyCredentialAuditId) as { proxy_url?: string } | undefined
@@ -165,7 +172,7 @@ try {
     requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
     responseSnapshot: sensitiveUsageRecord?.responseSnapshot
   })
-  assertAllAbsent(sensitiveUsageSerialized, [
+  assertAllPresent(sensitiveUsageSerialized, [
     'usage-client-token',
     'usage-api-key-secret',
     'usage-openai-api-key-secret',
@@ -175,13 +182,13 @@ try {
     'usage-last-upstream-token',
     'usage-proxy-token',
     'usage-last-upstream-google-key',
-  ], '使用记录 header snapshot 不应保留敏感原文')
+  ], '使用记录 header snapshot 应保留原文')
   assertAllPresent(sensitiveUsageSerialized, [
     'usage-query-token',
     'usage-upstream-query-key'
   ], '使用记录 URL 查询参数仍按原文保留')
   assert(sensitiveUsageSerialized.includes('safe=ok'), '使用记录请求 snapshot 应保留安全查询参数')
-  assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
+  assert.equal(sensitiveUsageSerialized.includes('[redacted]'), false, '使用记录 header snapshot 不应写入脱敏占位')
 
   const overflowTraceId = 'trace-overflow-retained'
   finalizeOverflowFailedRequest(overflowTraceId)
@@ -307,7 +314,7 @@ try {
   assert(typeof largeFailedSummary.headBase64 === 'string' && largeFailedSummary.headBase64.length > 0, '摘要 JSON 应保留头部窗口')
   assert(typeof largeFailedSummary.tailBase64 === 'string' && largeFailedSummary.tailBase64.length > 0, '摘要 JSON 应保留尾部窗口')
   assert((largeFailedPayloadDetail?.bodyTotalBytes ?? 0) < largeFailedRequestBody.byteLength, '摘要 blob 不应保存完整失败大 body')
-  assert(JSON.stringify(largeFailedSummary.json ?? {}).includes('model'), '摘要 JSON 应包含 JSON 结构信息')
+  assert.equal(largeFailedSummary.json, undefined, '审计摘要不应为了展示解析原始 JSON Body')
 
   const largeSuccessTraceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-large-success-summary')
   finalizeSuccessfulRequestWithBody(largeSuccessTraceId, largeSuccessRequestBody)
@@ -740,11 +747,17 @@ function finalizeOverflowFailedRequest(traceId: string): void {
 function finalizeSensitiveHeaderAudit(traceId: string): void {
   const capture = auditCapture.createAuditCapture({
     req: auditRequest(
-      undefined,
+      Buffer.from(JSON.stringify({
+        model: 'gpt-5.4-mini',
+        input: 'hello',
+        session_id: 'raw-body-session-id'
+      }), 'utf8'),
       {
         authorization: 'Bearer client-secret-token',
         cookie: 'session=session-secret-cookie',
         'x-goog-api-key': 'audit-google-key-secret',
+        'session-id': 'raw-client-session-id',
+        'x-codex-turn-state': 'raw-client-turn-state',
         'content-type': 'application/json'
       },
       '/v1/responses?token=audit-query-token&safe=ok'
@@ -781,7 +794,7 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
       'openai-api-key': 'sk-account-secret',
       'content-type': 'application/json'
     }),
-    body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' })
+    body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello', session_id: 'raw-upstream-session-id' })
   })
   capture.completeAttempt(attemptId, {
     success: false,
@@ -790,7 +803,7 @@ function finalizeSensitiveHeaderAudit(traceId: string): void {
       'set-cookie': 'upstream-set-cookie-secret',
       'content-type': 'application/json'
     }),
-    responseBody: JSON.stringify({ error: 'upstream failed' }),
+    responseBody: JSON.stringify({ error: 'upstream failed', session_id: 'raw-response-session-id' }),
     errorPhase: 'upstream_response',
     errorMessage: '上游失败'
   })

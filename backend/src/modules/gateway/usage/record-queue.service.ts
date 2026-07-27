@@ -17,7 +17,6 @@ import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js
 import { runRedisEnqueueWithBoundedRetry } from '../../../shared/redis-enqueue-retry.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
-import { sanitizeHeaderRecord } from '../upstream/headers.js'
 import {
   getUsageRecordSpoolRuntime,
   persistUsageRecordToSpool,
@@ -583,10 +582,10 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   const normalized: UsageRecordInput = {
     ...input,
     id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
-    errorCode: sanitizeUsageRecordErrorMessage(input.errorCode),
-    errorMessage: sanitizeUsageRecordErrorMessage(input.errorMessage),
-    requestSnapshot: sanitizeUsageRecordSnapshot(input.requestSnapshot),
-    responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    requestSnapshot: boundUsageRecordSnapshot(input.requestSnapshot),
+    responseSnapshot: boundUsageRecordSnapshot(input.responseSnapshot),
     createdAt
   }
   const accountId = normalizedUsageScopeValue(input.accountId)
@@ -749,11 +748,11 @@ export function setDbServiceUsageRecordLocalWriteAllowedForTest(value: boolean):
   allowDbServiceLocalUsageRecordWriteForTest = value
 }
 
-function sanitizeUsageRecordSnapshot(value: unknown): unknown {
+function boundUsageRecordSnapshot(value: unknown): unknown {
   if (value === undefined || value === null) {
     return undefined
   }
-  return sanitizeSnapshotValue(value, {
+  return boundSnapshotValue(value, {
     depth: 0,
     bytes: 0,
     truncated: false,
@@ -761,17 +760,13 @@ function sanitizeUsageRecordSnapshot(value: unknown): unknown {
   })
 }
 
-function sanitizeUsageRecordErrorMessage(value: string | undefined): string | undefined {
-  return value
-}
-
-function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext): unknown {
+function boundSnapshotValue(value: unknown, context: SnapshotBoundContext): unknown {
   if (context.bytes >= usageSnapshotMaxBytes) {
     context.truncated = true
     return '[truncated]'
   }
   if (typeof value === 'string') {
-    return sanitizeSnapshotString(value, context)
+    return boundSnapshotString(value, context)
   }
   if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
     context.bytes += 8
@@ -786,10 +781,10 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
     }
   }
   if (value instanceof Date) {
-    return sanitizeSnapshotString(value.toISOString(), context)
+    return boundSnapshotString(value.toISOString(), context)
   }
   if (typeof value !== 'object') {
-    return sanitizeSnapshotString(String(value), context)
+    return boundSnapshotString(String(value), context)
   }
   if (context.seen.has(value)) {
     return '[circular]'
@@ -803,7 +798,7 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
     const items: unknown[] = []
     for (let index = 0; index < value.length && index < usageSnapshotMaxArrayItems; index += 1) {
       context.depth += 1
-      items.push(sanitizeSnapshotValue(value[index], context))
+      items.push(boundSnapshotValue(value[index], context))
       context.depth -= 1
       if (context.bytes >= usageSnapshotMaxBytes) break
     }
@@ -827,7 +822,7 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
     }
     context.bytes += boundedStringByteLength(key, usageSnapshotMaxBytes - context.bytes) + 4
     context.depth += 1
-    output[key] = sanitizeSnapshotValue(sanitizeSnapshotField(key, record[key]), context)
+    output[key] = boundSnapshotValue(record[key], context)
     context.depth -= 1
     visitedKeys += 1
     if (context.bytes >= usageSnapshotMaxBytes) break
@@ -838,7 +833,7 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
   return output
 }
 
-function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext): string {
+function boundSnapshotString(value: string, context: SnapshotBoundContext): string {
   const remaining = Math.max(0, usageSnapshotMaxBytes - context.bytes)
   const limit = Math.min(usageSnapshotMaxStringBytes, remaining)
   const bytes = boundedStringByteLength(value, limit + 1)
@@ -854,22 +849,7 @@ function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext)
   return `${truncated}${suffix}`
 }
 
-function sanitizeSnapshotField(key: string, value: unknown): unknown {
-  if (isHeaderSnapshotField(key, value)) {
-    return sanitizeHeaderRecord(value as Record<string, string | string[]>)
-  }
-  return value
-}
-
-function isHeaderSnapshotField(key: string, value: unknown): boolean {
-  return key.toLowerCase() === 'headers'
-    && typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && !Buffer.isBuffer(value)
-}
-
-interface SnapshotSanitizeContext {
+interface SnapshotBoundContext {
   depth: number
   bytes: number
   truncated: boolean

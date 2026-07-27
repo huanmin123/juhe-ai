@@ -5,6 +5,7 @@ import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   canCreateOAuthAccount,
+  canManageNativeOAuthAccount,
   isGatewayTestableAccountProfile
 } from './accountProviderCapabilities'
 import {
@@ -274,7 +275,7 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
 }
 
 export function canManageOAuthAccount(account: AccountSummary): boolean {
-  return canUseAccountActions(account) && account.type === 'oauth' && canCreateOAuthAccount({ profile: account })
+  return canUseAccountActions(account) && account.type === 'oauth' && canManageNativeOAuthAccount({ profile: account })
 }
 
 export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {

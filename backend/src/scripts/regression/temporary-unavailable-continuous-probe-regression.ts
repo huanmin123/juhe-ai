@@ -39,13 +39,13 @@ assert.match(accountReadSource, /source_temporary_unavailable_continuous_probe_e
 assert.match(accountSummarySource, /source_accounts\.temporary_unavailable_continuous_probe_enabled AS source_temporary_unavailable_continuous_probe_enabled/, 'PostgreSQL 授权账户列表必须投影来源持续恢复探活开关')
 assert.match(
   cooldownSource,
-  /clauses\.push\('AND cooldown_retest_observation_started_at = \?'\)/,
+  /`AND \$\{targetAlias\}\.cooldown_retest_observation_started_at = \?`/,
   '冷却复测期望状态构造器必须生成观察代次保护条件'
 )
 assert.equal(
-  [...cooldownSource.matchAll(/const expectedState = cooldownRetestExpectedStateGuard\(input\)/g)].length,
-  4,
-  'SQLite 与 PostgreSQL 的成功、失败写回都必须复用观察代次保护构造器'
+  [...cooldownSource.matchAll(/const expectedState = cooldownRetestExpectedStateGuard\(input, \{/g)].length,
+  6,
+  'SQLite 与 PostgreSQL 的成功、失败和中性顺延写回都必须复用观察代次保护构造器'
 )
 assert.match(
   repositoriesSource,

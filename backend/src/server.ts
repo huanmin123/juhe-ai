@@ -202,6 +202,7 @@ mountAccountHealthCheckDispatchBridge(app, {
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
   const workerProcesses = getBackgroundWorkerSupervisorRuntime()
+  const dbService = getDbServiceState()
   const workerTopologyReady = workerProcesses.length === 0 || workerProcesses.every((processRuntime) => processRuntime.ready)
   const topologyGatesHealth = runtimeConfig.runtimeMode === 'performance'
     && runtimeConfig.performanceNodeRole === 'control'
@@ -211,6 +212,8 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
     runtimeMode: runtimeConfig.runtimeMode,
     nodeRole: runtimeConfig.performanceNodeRole,
     instanceId: runtimeConfig.instanceId,
+    processPid: process.pid,
+    dbServicePid: dbService.pid,
     workerProcesses,
     workerTopologyReady
   })

@@ -116,7 +116,7 @@ const detailOpen = computed({
 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const rangeOptions = [
-  { label: '最近 24 小时', value: 24 },
+  { label: '最近一天', value: 24 },
   { label: '最近 7 天', value: 7 * 24 },
   { label: '最近 14 天', value: 14 * 24 },
   { label: '最近 31 天', value: 31 * 24 }

@@ -99,14 +99,13 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   const database = getDatasetDatabase()
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
-      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_namespace, session_source,
-      session_resolution, session_confidence, thread_key, turn_key, agent_key, parent_response_key, identity_conflict,
+      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_id, session_client_type,
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -164,15 +163,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         input.systemAccountId ?? null,
         input.apiKeyId ?? null,
         input.conversationKey ?? null,
-        input.sessionNamespace ?? null,
-        input.sessionSource ?? null,
-        input.sessionResolution ?? null,
-        input.sessionConfidence ?? null,
-        input.threadKey ?? null,
-        input.turnKey ?? null,
-        input.agentKey ?? null,
-        input.parentResponseKey ?? null,
-        input.identityConflict === undefined ? null : input.identityConflict ? 1 : 0,
+        input.sessionId ?? null,
+        input.sessionClientType ?? null,
         input.groupId ?? null,
         input.accountId ?? null,
         input.providerCode ?? null,
@@ -344,14 +336,13 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
 
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
-      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_namespace, session_source,
-      session_resolution, session_confidence, thread_key, turn_key, agent_key, parent_response_key, identity_conflict,
+      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_id, session_client_type,
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -389,15 +380,8 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         input.systemAccountId ?? null,
         input.apiKeyId ?? null,
         input.conversationKey ?? null,
-        input.sessionNamespace ?? null,
-        input.sessionSource ?? null,
-        input.sessionResolution ?? null,
-        input.sessionConfidence ?? null,
-        input.threadKey ?? null,
-        input.turnKey ?? null,
-        input.agentKey ?? null,
-        input.parentResponseKey ?? null,
-        input.identityConflict === undefined ? null : input.identityConflict ? 1 : 0,
+        input.sessionId ?? null,
+        input.sessionClientType ?? null,
         input.groupId ?? null,
         input.accountId ?? null,
         input.providerCode ?? null,
@@ -717,14 +701,13 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
   const trafficSource = normalizeAuditTrafficSource(input.trafficSource)
   const result = await client.execute(`
     INSERT INTO juhe_dataset.audit_logs (
-      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_namespace, session_source,
-      session_resolution, session_confidence, thread_key, turn_key, agent_key, parent_response_key, identity_conflict,
+      id, trace_id, traffic_source, system_account_id, api_key_id, conversation_key, session_id, session_client_type,
       group_id, account_id, provider_code, method, path, query_string,
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `, [
     id,
@@ -733,15 +716,8 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
     input.systemAccountId ?? null,
     input.apiKeyId ?? null,
     input.conversationKey ?? null,
-    input.sessionNamespace ?? null,
-    input.sessionSource ?? null,
-    input.sessionResolution ?? null,
-    input.sessionConfidence ?? null,
-    input.threadKey ?? null,
-    input.turnKey ?? null,
-    input.agentKey ?? null,
-    input.parentResponseKey ?? null,
-    input.identityConflict === undefined ? null : input.identityConflict ? 1 : 0,
+    input.sessionId ?? null,
+    input.sessionClientType ?? null,
     input.groupId ?? null,
     input.accountId ?? null,
     input.providerCode ?? null,

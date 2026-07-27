@@ -1850,11 +1850,6 @@ export async function handleOpenAIGatewayRequest(
           downstreamCommitState: currentPreflight.downstreamCommitState
         }
         await applyHandledUpstreamRoutingEffects(handledResponseFinalizationInput)
-        if (handledResponse.protocolValidatedSuccess === true) {
-          await confirmHalfOpenSuccess()
-          await confirmSameAccountApiKeyFailures()
-        }
-        await releaseHalfOpenLease()
         releaseAccountSlot()
         const httpCompletedAtMs = await httpCompletion.wait()
         await finalizeHandledUpstreamResponse({
@@ -1862,6 +1857,11 @@ export async function handleOpenAIGatewayRequest(
           completedAtMs: httpCompletedAtMs,
           routingEffectsApplied: true
         })
+        if (handledResponse.protocolValidatedSuccess === true) {
+          await confirmHalfOpenSuccess()
+          await confirmSameAccountApiKeyFailures()
+        }
+        await releaseHalfOpenLease()
         return
       } catch (error) {
         attemptErrorEscaped = true

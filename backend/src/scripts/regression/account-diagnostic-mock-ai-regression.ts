@@ -172,6 +172,8 @@ function createMockAccount(
     type: 'api_key',
     groupId,
     status: 'active',
+    supportedModels: ['gpt-5.2'],
+    healthCheckModel: 'gpt-5.2',
     healthCheckEndpointMode: 'responses_sse',
     credentials: {
       api_key: `sk-${label}`,
@@ -212,8 +214,6 @@ function createMockAIUpstream(): http.Server {
     })
     req.on('end', () => {
       if (req.method === 'GET' && url.pathname === '/v1/models') {
-        const key = upstreamKey(req.headers.authorization)
-        incrementHit(key)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2', object: 'model' }] }))
         return

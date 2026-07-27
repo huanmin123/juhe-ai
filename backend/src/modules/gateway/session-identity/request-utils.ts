@@ -34,18 +34,3 @@ export function gatewaySessionHeaderValues(request: GatewaySessionIdentityReques
   const value = request.header?.(name)
   return typeof value === 'string' ? [value] : []
 }
-
-export function gatewaySessionObject(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
-export function parseGatewaySessionJsonObject(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  try {
-    return gatewaySessionObject(JSON.parse(value))
-  } catch {
-    return undefined
-  }
-}

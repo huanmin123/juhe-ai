@@ -9,6 +9,7 @@ import { groupsApi, myGroupsApi } from './domains/groups'
 import { ipStatsApi } from './domains/ipStats'
 import { auditLogsApi, myOperationLogsApi, operationLogsApi, publicApiLogsApi, runtimeLogsApi } from './domains/logs'
 import { modelChecksApi, myModelChecksApi } from './domains/modelChecks'
+import { anthropicOAuthApi, myAnthropicOAuthApi } from './domains/anthropicOAuth'
 import { myOpenaiOAuthApi, openaiOAuthApi } from './domains/openaiOAuth'
 import { providersApi } from './domains/providers'
 import { proxiesApi } from './domains/proxies'
@@ -44,6 +45,8 @@ export const api = {
   myApiKeys: myApiKeysApi,
   routeStrategies: routeStrategiesApi,
   myRouteStrategies: myRouteStrategiesApi,
+  anthropicOAuth: anthropicOAuthApi,
+  myAnthropicOAuth: myAnthropicOAuthApi,
   openaiOAuth: openaiOAuthApi,
   myOpenaiOAuth: myOpenaiOAuthApi,
   proxies: proxiesApi,

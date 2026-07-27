@@ -6,16 +6,16 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-usage-snapshot-sanitize-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-usage-snapshot-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 
 runtimeConfig.processRole = 'worker'
 runtimeConfig.workerRole = 'ingest-worker'
-runtimeConfig.databasePath = join(tempRoot, 'usage-snapshot-sanitize.sqlite3')
+runtimeConfig.databasePath = join(tempRoot, 'usage-snapshot-boundary.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.usageShardRoot = join(tempRoot, 'usage-shards')
 runtimeConfig.usageShardCount = 1
-runtimeConfig.secret = 'usage-snapshot-sanitize-secret'
+runtimeConfig.secret = 'usage-snapshot-boundary-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
@@ -37,7 +37,7 @@ try {
   usageRecordQueue.clearUsageRecordQueueForTest()
   const snapshot = buildTrapSnapshot()
   usageRecordQueue.enqueueUsageRecordsLocal([{
-    traceId: 'trace-usage-snapshot-sanitize-boundary',
+    traceId: 'trace-usage-snapshot-boundary',
     trafficSource: 'gateway',
     systemAccountId: 'sys_admin',
     endpoint: 'POST /v1/responses',
@@ -113,7 +113,7 @@ try {
   usageRecordQueue.clearUsageRecordQueueForTest()
 
   const createdAt = '2000-01-01T00:00:00.000Z'
-  const recordId = usageRecordShards.generateUsageRecordId(createdAt, 'sanitize-test')
+  const recordId = usageRecordShards.generateUsageRecordId(createdAt, 'boundary-test')
   usageRecordQueue.enqueueUsageRecordsLocal([{
     id: recordId,
     traceId: 'trace-usage-snapshot-sensitive-boundary',
@@ -178,13 +178,11 @@ try {
     'response-body-client-secret',
     'sk-response-body-secret-token',
     'response-error-id-token',
-    'sk-response-error-secret-token'
-  ], '使用记录落库内容应保留原文')
-  assertAllAbsent(detailText, [
+    'sk-response-error-secret-token',
     'request-header-secret',
     'response-cookie-secret'
-  ], '使用记录 header snapshot 不应保留敏感原文')
-  assert(detailText.includes('[redacted]'), '使用记录 header snapshot 应写入脱敏占位')
+  ], '使用记录落库内容应保留原文')
+  assert.equal(detailText.includes('[redacted]'), false, '使用记录 snapshot 不应写入脱敏占位')
   assert(String(detail.responseSnapshot?.upstreamUrl ?? '').includes('safe=ok'), 'URL 安全查询参数应保留')
   assert(String(detail.requestSnapshot?.bodyText ?? '').includes('"safe":"ok"'), 'bodyText 中安全字段应保留')
 
@@ -206,7 +204,7 @@ function buildTrapSnapshot(): Record<string, string> {
   Object.defineProperty(snapshot, 'field_80_trap', {
     enumerable: true,
     get() {
-      throw new Error('usage snapshot 清洗不应读取超过字段上限后的属性')
+      throw new Error('usage snapshot 容量约束不应读取超过字段上限后的属性')
     }
   })
   return snapshot
@@ -215,11 +213,5 @@ function buildTrapSnapshot(): Record<string, string> {
 function assertAllPresent(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
     assert(text.includes(marker), `${message}：${marker}`)
-  }
-}
-
-function assertAllAbsent(text: string, markers: string[], message: string): void {
-  for (const marker of markers) {
-    assert(!text.includes(marker), `${message}：${marker}`)
   }
 }

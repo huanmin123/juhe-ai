@@ -14,9 +14,8 @@ export const auditLogMaxListWindowRows = 1001
 // wider projection below; list callers never need payload/error body columns.
 export function auditLogListSelectColumns(alias: string): string {
   return [
-    'id', 'trace_id', 'conversation_key', 'session_namespace', 'session_source',
-    'session_resolution', 'session_confidence', 'thread_key', 'turn_key', 'agent_key',
-    'parent_response_key', 'identity_conflict', 'traffic_source', 'system_account_id', 'api_key_id',
+    'id', 'trace_id', 'session_id', 'session_client_type',
+    'traffic_source', 'system_account_id', 'api_key_id',
     'group_id', 'account_id', 'method', 'path', 'model', 'upstream_model',
     'model_mapping_applied', 'stream', 'audit_outcome', 'success',
     'final_status_code', 'duration_ms', 'http_duration_ms', 'created_at'
@@ -28,7 +27,8 @@ export function buildAuditLogFilters(options: AuditLogListOptions): { clause: st
   const params: AuditLogFilterValue[] = []
 
   pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
-  pushExactFilter(clauses, params, 'al.conversation_key', options.conversationKey)
+  pushExactFilter(clauses, params, 'al.session_id', options.sessionId)
+  pushExactFilter(clauses, params, 'al.session_client_type', options.sessionClientType)
   pushPathExactFilter(clauses, params, 'al.path', options.path)
   pushExactFilter(clauses, params, 'al.model', options.model)
   pushPrefixFilter(clauses, params, 'al.client_ip', options.clientIp)
@@ -135,6 +135,15 @@ export function normalizePage(value: unknown, pageSize: number): number {
   return typeof value === 'number' && Number.isInteger(value)
     ? Math.min(maxPage, Math.max(1, value))
     : 1
+}
+
+export function normalizeAuditLogPage(value: unknown, pageSize: number, sessionId?: string): number {
+  if (sessionId?.trim()) {
+    return typeof value === 'number' && Number.isInteger(value)
+      ? Math.max(1, value)
+      : 1
+  }
+  return normalizePage(value, pageSize)
 }
 
 export function normalizePageSize(value: unknown, fallback: number, max: number): number {

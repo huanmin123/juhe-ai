@@ -20,7 +20,8 @@
           v-model:system-account-selection="systemAccountSelection"
           v-model:account-id="accountIdFilter"
           v-model:account-selection="accountSelection"
-          v-model:conversation-key="conversationKeyFilter"
+          v-model:session-client-type="sessionClientTypeFilter"
+          v-model:trace-id="traceIdFilter"
           v-model:path="pathFilter"
           v-model:status-code="statusCodeFilter"
           mode="advanced"
@@ -56,7 +57,8 @@
           v-model:system-account-selection="systemAccountSelection"
           v-model:account-id="accountIdFilter"
           v-model:account-selection="accountSelection"
-          v-model:conversation-key="conversationKeyFilter"
+          v-model:session-client-type="sessionClientTypeFilter"
+          v-model:trace-id="traceIdFilter"
           v-model:path="pathFilter"
           v-model:status-code="statusCodeFilter"
           mode="mobile"
@@ -87,7 +89,7 @@
       :empty-description="auditEmptyDescription"
       @change="handleCurrentTableChange"
       @detail="openDetail"
-      @filter-conversation="filterConversation"
+      @filter-session="filterSession"
       @mobile-load-more="loadMoreCurrentMobileRecords"
       @mobile-refresh="refreshCurrentMobileRecords"
     />
@@ -185,11 +187,12 @@ const pageSize = 100
 type AuditLogsPageState = {
   accountIdFilter: string
   accountSelection?: AccountSelection
-  conversationKeyFilter: string
   hotSearchKeywordFilter: string
   outcomeFilter: AuditOutcome | 'all'
   pagination: { current: number; pageSize: number }
   pathFilter: string
+  sessionClientTypeFilter: string
+  sessionIdFilter: string
   statusCodeFilter: string
   systemAccountFilter: string
   systemAccountSelection?: PrincipalSelection
@@ -200,11 +203,12 @@ type AuditLogsPageState = {
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   accountIdFilter: '',
   accountSelection: undefined,
-  conversationKeyFilter: '',
   hotSearchKeywordFilter: '',
   outcomeFilter: 'all',
   pagination: { current: 1, pageSize },
   pathFilter: '',
+  sessionClientTypeFilter: '',
+  sessionIdFilter: '',
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
@@ -212,7 +216,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   trafficSourceFilter: 'all',
   viewMode: 'list'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 9 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 10 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -224,9 +228,10 @@ const effectiveInitialPageState: AuditLogsPageState = initialTraceId
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
 const accountIdFilter = ref(effectiveInitialPageState.accountIdFilter)
 const accountSelection = ref<AccountSelection | undefined>(effectiveInitialPageState.accountSelection)
-const conversationKeyFilter = ref(effectiveInitialPageState.conversationKeyFilter)
 const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
 const pathFilter = ref(effectiveInitialPageState.pathFilter)
+const sessionClientTypeFilter = ref(effectiveInitialPageState.sessionClientTypeFilter)
+const sessionIdFilter = ref(effectiveInitialPageState.sessionIdFilter)
 const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
 const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
@@ -301,10 +306,10 @@ const trafficSourceOptions = [
   { label: '网关请求', value: 'gateway' },
   { label: 'AI账户测试', value: 'manual_account_test' },
   { label: '健康检查', value: 'account_health_check' },
-  { label: '运行态恢复探针', value: 'runtime_recovery_probe' },
-  { label: '恢复探活', value: 'cooldown_retest' },
-  { label: '混合评分', value: 'hybrid_scoring' },
-  { label: '混合质量评分', value: 'hybrid_quality_scoring' }
+  { label: '快速恢复检测', value: 'runtime_recovery_probe' },
+  { label: '冷却账户复测', value: 'cooldown_retest' },
+  { label: '混合路由选型', value: 'hybrid_scoring' },
+  { label: '回答质量复核', value: 'hybrid_quality_scoring' }
 ] satisfies Array<{ label: string; value: AuditTrafficSource | 'all' }>
 const {
   managedColumns,
@@ -317,9 +322,10 @@ const {
 })
 const currentFilterValues = computed(() => ({
   accountIdFilter: accountIdFilter.value,
-  conversationKeyFilter: conversationKeyFilter.value,
   outcomeFilter: outcomeFilter.value,
   pathFilter: pathFilter.value,
+  sessionClientTypeFilter: sessionClientTypeFilter.value,
+  sessionIdFilter: sessionIdFilter.value,
   statusCodeFilter: statusCodeFilter.value,
   systemAccountFilter: systemAccountFilter.value,
   traceIdFilter: traceIdFilter.value,
@@ -345,13 +351,11 @@ function applyFilters(): void {
   void loadData()
 }
 
-function filterConversation(conversationKey: string): void {
-  const normalizedConversationKey = conversationKey.trim()
-  if (!normalizedConversationKey) return
+function filterSession(sessionId: string): void {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) return
   clearRouteTraceIdForManualState()
-  traceIdFilter.value = ''
-  conversationKeyFilter.value = normalizedConversationKey
-  viewMode.value = 'list'
+  applyPageState({ ...defaultAuditLogsPageState(), sessionIdFilter: normalizedSessionId })
   resetPagination()
   void loadData()
 }
@@ -363,9 +367,10 @@ function applyPageState(state: AuditLogsPageState): void {
   systemAccountSelection.value = state.systemAccountSelection
   accountIdFilter.value = state.accountIdFilter
   accountSelection.value = state.accountSelection
-  conversationKeyFilter.value = state.conversationKeyFilter
   outcomeFilter.value = state.outcomeFilter
   pathFilter.value = state.pathFilter
+  sessionClientTypeFilter.value = state.sessionClientTypeFilter
+  sessionIdFilter.value = state.sessionIdFilter
   statusCodeFilter.value = state.statusCodeFilter
   trafficSourceFilter.value = state.trafficSourceFilter
   viewMode.value = state.viewMode === 'search' ? 'search' : 'list'
@@ -401,10 +406,11 @@ function resetFilters(): void {
   traceIdFilter.value = defaults.traceIdFilter
   accountIdFilter.value = defaults.accountIdFilter
   accountSelection.value = defaults.accountSelection
-  conversationKeyFilter.value = defaults.conversationKeyFilter
   resetAccountOptionsSearch()
   outcomeFilter.value = defaults.outcomeFilter
   pathFilter.value = defaults.pathFilter
+  sessionClientTypeFilter.value = defaults.sessionClientTypeFilter
+  sessionIdFilter.value = defaults.sessionIdFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountSelection.value = defaults.systemAccountSelection
@@ -433,11 +439,12 @@ function snapshotPageState(): AuditLogsPageState {
   return {
     accountIdFilter: accountIdFilter.value,
     accountSelection: accountSelection.value,
-    conversationKeyFilter: conversationKeyFilter.value,
     hotSearchKeywordFilter: hotSearchKeywordFilter.value,
     outcomeFilter: outcomeFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     pathFilter: pathFilter.value,
+    sessionClientTypeFilter: sessionClientTypeFilter.value,
+    sessionIdFilter: sessionIdFilter.value,
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountSelection: systemAccountSelection.value,
@@ -496,8 +503,8 @@ const {
   resetFilters,
   resetHotSearch,
   searchHotAuditLogs,
+  sessionIdFilter,
   tablePagination,
-  traceIdFilter,
   viewMode
 })
 

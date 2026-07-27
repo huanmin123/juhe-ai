@@ -126,10 +126,10 @@ export function trafficSourceText(record: UsageRecordSummary): string {
     gateway: '网关请求',
     manual_account_test: '账号测试',
     account_health_check: '健康检查',
-    runtime_recovery_probe: '运行态恢复探针',
-    cooldown_retest: '恢复探活',
-    hybrid_scoring: '混合评分',
-    hybrid_quality_scoring: '混合质量评分'
+    runtime_recovery_probe: '快速恢复检测',
+    cooldown_retest: '冷却账户复测',
+    hybrid_scoring: '混合路由选型',
+    hybrid_quality_scoring: '回答质量复核'
   }[record.trafficSource] ?? '网关请求'
 }
 

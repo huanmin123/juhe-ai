@@ -55,15 +55,8 @@ export interface AuditLogInput {
   id?: string
   traceId: string
   conversationKey?: string
-  sessionNamespace?: string
-  sessionSource?: string
-  sessionResolution?: string
-  sessionConfidence?: string
-  threadKey?: string
-  turnKey?: string
-  agentKey?: string
-  parentResponseKey?: string
-  identityConflict?: boolean
+  sessionId?: string
+  sessionClientType?: string
   trafficSource?: AuditTrafficSource
   systemAccountId?: string
   apiKeyId?: string
@@ -106,16 +99,8 @@ export interface AuditLogInput {
 export interface AuditLogSummary {
   id: string
   traceId: string
-  conversationKey?: string
-  sessionNamespace?: string
-  sessionSource?: string
-  sessionResolution?: string
-  sessionConfidence?: string
-  threadKey?: string
-  turnKey?: string
-  agentKey?: string
-  parentResponseKey?: string
-  identityConflict?: boolean
+  sessionId?: string
+  sessionClientType?: string
   trafficSource: AuditTrafficSource
   systemAccountId?: string
   systemAccountName?: string
@@ -164,9 +149,7 @@ export interface AuditLogSummary {
 }
 
 export type AuditLogListItem = Pick<AuditLogSummary,
-  | 'id' | 'traceId' | 'conversationKey'
-  | 'sessionNamespace' | 'sessionSource' | 'sessionResolution' | 'sessionConfidence'
-  | 'threadKey' | 'turnKey' | 'agentKey' | 'parentResponseKey' | 'identityConflict'
+  | 'id' | 'traceId' | 'sessionId' | 'sessionClientType'
   | 'trafficSource'
   | 'systemAccountId' | 'systemAccountName'
   | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
@@ -223,6 +206,7 @@ export interface AuditLogPayloadSummary {
 }
 
 export interface AuditLogDetail extends AuditLogSummary {
+  conversationKey?: string
   attempts: AuditLogAttemptSummary[]
   errorGroup?: AuditErrorGroupSummary
   payloads: AuditLogPayloadSummary[]
@@ -252,7 +236,8 @@ export interface AuditLogListOptions {
   page?: number
   pageSize?: number
   traceId?: string
-  conversationKey?: string
+  sessionId?: string
+  sessionClientType?: string
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string

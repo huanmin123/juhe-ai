@@ -10,7 +10,7 @@ import { isAuditLogInput } from '../../modules/audit-logs/audit-log-queue.servic
 import { prepareAuditLogsForBoundedTransport } from '../../modules/background/background-ipc-audit-trim.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
-import { buildAuditLogFilters } from '../../storage/audit-log-list-query.js'
+import { buildAuditLogFilters, normalizeAuditLogPage } from '../../storage/audit-log-list-query.js'
 import { collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
 import type { AuditLogInput } from '../../storage/repositories.js'
 import { applyDatasetSchema } from '../../storage/schema/dataset-schema.js'
@@ -34,111 +34,155 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 const conversationKey = `hmac-sha256-v1:${'a'.repeat(64)}`
+const sessionId = '0190fa10-2a8c-7c52-b6a4-4e15e31a58d0'
 
 try {
   const first = auditLog('audit-session-1', 'trace-session-1', '2026-07-27T00:00:00.000Z', {
     conversationKey,
-    sessionNamespace: 'openai.codex',
-    sessionSource: 'header:session-id',
-    sessionResolution: 'official',
-    sessionConfidence: 'authoritative',
-    threadKey: `hmac-sha256-v1:${'b'.repeat(64)}`,
-    turnKey: `hmac-sha256-v1:${'c'.repeat(64)}`,
-    agentKey: `hmac-sha256-v1:${'d'.repeat(64)}`,
-    parentResponseKey: `hmac-sha256-v1:${'e'.repeat(64)}`,
-    identityConflict: false
+    sessionId,
+    sessionClientType: 'codex'
   })
   const second = auditLog('audit-session-2', 'trace-session-2', '2026-07-27T00:00:01.000Z', {
     conversationKey,
-    sessionNamespace: 'openai.codex',
-    sessionSource: 'body:client_metadata.x-codex-turn-metadata.session_id',
-    sessionResolution: 'official',
-    sessionConfidence: 'authoritative',
-    identityConflict: true
+    sessionId,
+    sessionClientType: 'codex'
   })
-  const historical = auditLog('audit-session-history', 'trace-session-history', '2026-07-27T00:00:02.000Z')
+  const otherClient = auditLog('audit-session-other-client', 'trace-session-other-client', '2026-07-27T00:00:02.000Z', {
+    sessionId,
+    sessionClientType: 'claude_code'
+  })
+  const historical = auditLog('audit-session-history', 'trace-session-history', '2026-07-27T00:00:03.000Z')
 
-  repositories.createAuditLogsBatch([first, second, historical])
+  repositories.createAuditLogsBatch([first, second, otherClient, historical])
 
   const result = repositories.listAuditLogs({
-    conversationKey,
+    sessionId,
+    sessionClientType: 'codex',
     systemAccountId: 'sys-session',
     apiKeyId: 'key-session'
   })
-  assert.equal(result.items.length, 2, 'conversationKey 精确筛选应返回同会话的两次请求')
+  assert.equal(result.items.length, 2, '同一客户端 sessionId 的多次请求必须全部返回，不能受唯一约束限制')
   assert.deepEqual(result.items.map((item) => item.traceId).sort(), ['trace-session-1', 'trace-session-2'])
-  assert(result.items.every((item) => item.conversationKey === conversationKey), '列表 DTO 应返回统一 conversationKey')
-  assert.equal(result.items.find((item) => item.traceId === 'trace-session-1')?.identityConflict, false, '可空冲突字段必须保留显式 false')
-  assert.equal(result.items.find((item) => item.traceId === 'trace-session-2')?.identityConflict, true, '冲突请求必须映射为 true')
+  assert(result.items.every((item) => item.sessionId === sessionId), '列表 DTO 应返回原始 sessionId')
+  assert(result.items.every((item) => item.sessionClientType === 'codex'), '列表 DTO 应返回 sessionClientType')
+  assert(result.items.every((item) => !('conversationKey' in item)), '列表 DTO 不应暴露内部 conversationKey')
+
+  const sessionOnlyResult = repositories.listAuditLogs({ sessionId })
+  assert.equal(sessionOnlyResult.items.length, 3, '仅按 sessionId 搜索时应返回所有匹配客户端记录')
+  assert.equal(normalizeAuditLogPage(11, 100), 10, '普通审计宽查询必须保留 1001 行窗口保护')
+  assert.equal(normalizeAuditLogPage(11, 100, sessionId), 11, '完整 sessionId 精确查询必须允许继续分页')
+
+  const longSessionId = 'audit-session-with-more-than-one-thousand-requests'
+  repositories.createAuditLogsBatch(Array.from({ length: 1005 }, (_, index) => {
+    const sequence = String(index).padStart(4, '0')
+    return auditLog(
+      `audit-long-session-${sequence}`,
+      `trace-long-session-${sequence}`,
+      `2026-07-28T00:${String(Math.floor(index / 60) % 60).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+      { sessionId: longSessionId, sessionClientType: 'codex' }
+    )
+  }))
+  const longSessionLastPage = repositories.listAuditLogs({
+    sessionId: longSessionId,
+    page: 11,
+    pageSize: 100
+  })
+  assert.equal(longSessionLastPage.page, 11, 'sessionId 精确查询不能被普通列表的 1001 行窗口压回旧页码')
+  assert.equal(longSessionLastPage.items.length, 5, '超过 1000 次请求的会话必须能继续翻页读取全部历史')
+  assert.equal(longSessionLastPage.hasMore, false)
+  assert(longSessionLastPage.items.every((item) => item.sessionId === longSessionId))
 
   const detail = repositories.getAuditLogDetail('audit-session-1')
   assert(detail, '会话审计详情应可读取')
-  assert.equal(detail.sessionNamespace, 'openai.codex')
-  assert.equal(detail.threadKey, first.threadKey)
-  assert.equal(detail.turnKey, first.turnKey)
-  assert.equal(detail.agentKey, first.agentKey)
-  assert.equal(detail.parentResponseKey, first.parentResponseKey)
+  assert.equal(detail.sessionId, sessionId)
+  assert.equal(detail.sessionClientType, 'codex')
+  assert.equal(detail.conversationKey, conversationKey)
 
   const historicalDetail = repositories.getAuditLogDetail('audit-session-history')
   assert(historicalDetail, '历史空会话审计应可读取')
-  assert.equal(historicalDetail.conversationKey, undefined, '历史记录不应伪造 conversationKey')
-  assert.equal(historicalDetail.identityConflict, undefined, '历史记录的可空冲突字段应保持空值')
+  assert.equal(historicalDetail.sessionId, undefined, '历史记录不应伪造 sessionId')
+  assert.equal(historicalDetail.sessionClientType, undefined, '历史记录不应伪造 sessionClientType')
 
-  const filters = buildAuditLogFilters({ conversationKey })
-  assert.match(filters.clause, /al\.conversation_key = \?/, 'conversationKey 必须使用精确等值查询')
-  assert.doesNotMatch(filters.clause, /LIKE|>=|</i, 'conversationKey 不得使用前缀或范围查询')
-  assert.deepEqual(filters.params, [conversationKey])
+  const filters = buildAuditLogFilters({ sessionId, sessionClientType: 'codex' })
+  assert.match(filters.clause, /al\.session_id = \?/, 'sessionId 必须使用精确等值查询')
+  assert.match(filters.clause, /al\.session_client_type = \?/, 'sessionClientType 必须使用精确等值查询')
+  assert.doesNotMatch(filters.clause, /LIKE|>=|</i, '会话筛选不得使用前缀或范围查询')
+  assert.deepEqual(filters.params, [sessionId, 'codex'])
 
   const database = databaseModule.getDatasetDatabase()
-  const stored = database.prepare(`
-    SELECT conversation_key, session_namespace, session_source, session_resolution, session_confidence,
-      thread_key, turn_key, agent_key, parent_response_key, identity_conflict
-    FROM audit_logs WHERE id = ?
-  `).get(first.id!) as Record<string, unknown>
-  assert.equal(stored.conversation_key, conversationKey)
-  assert.equal(stored.identity_conflict, 0)
+  const storedRows = database.prepare(`
+    SELECT conversation_key, session_id, session_client_type
+    FROM audit_logs
+    WHERE session_id = ? AND session_client_type = ?
+    ORDER BY created_at ASC
+  `).all(sessionId, 'codex') as Array<Record<string, unknown>>
+  assert.equal(storedRows.length, 2, '数据库必须允许同一个 session_id 写入多条审计日志')
+  assert.equal(storedRows[0]?.conversation_key, conversationKey)
 
-  const indexes = database.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_logs'")
-    .all() as Array<{ name?: string; sql?: string }>
-  assert(indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_conversation_created' && /WHERE conversation_key IS NOT NULL/i.test(index.sql ?? '')), 'SQLite 应创建 scoped conversation partial index')
-  assert(indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_thread_created' && /WHERE thread_key IS NOT NULL/i.test(index.sql ?? '')), 'SQLite 应创建 scoped thread partial index')
+  const indexes = database.prepare("PRAGMA index_list('audit_logs')")
+    .all() as Array<{ name?: string; unique?: number }>
+  const sessionIndex = indexes.find((index) => index.name === 'idx_audit_logs_session_created')
+  assert(sessionIndex, 'SQLite 应创建全局 session 复合索引')
+  assert.equal(sessionIndex.unique, 0, '全局 session 复合索引绝不能是 UNIQUE')
+  const sessionIndexSql = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get('idx_audit_logs_session_created') as { sql?: string } | undefined
+  assert.match(
+    sessionIndexSql?.sql ?? '',
+    /ON audit_logs\s*\(session_id, created_at, id, session_client_type\)/i,
+    'SQLite 全局 session 索引列顺序必须覆盖会话、客户端类型与分页排序'
+  )
+  assert.doesNotMatch(sessionIndexSql?.sql ?? '', /CREATE\s+UNIQUE\s+INDEX/i, 'SQLite session 索引不得唯一')
+
   const queryPlan = database.prepare(`
     EXPLAIN QUERY PLAN
     SELECT id FROM audit_logs
-    WHERE system_account_id = ? AND api_key_id = ? AND conversation_key = ?
+    WHERE session_id = ? AND session_client_type = ?
     ORDER BY created_at DESC, id DESC LIMIT 101
-  `).all('sys-session', 'key-session', conversationKey) as Array<{ detail?: string }>
-  assert(queryPlan.some((row) => /idx_audit_logs_system_api_key_conversation_created/i.test(row.detail ?? '')), 'SQLite conversation 查询应命中 scoped 复合索引')
-  assert(!queryPlan.some((row) => /USE TEMP B-TREE/i.test(row.detail ?? '')), 'SQLite conversation 查询不应建立临时排序')
-
+  `).all(sessionId, 'codex') as Array<{ detail?: string }>
+  assert(queryPlan.some((row) => /idx_audit_logs_session_created/i.test(row.detail ?? '')), 'SQLite 全局 session 查询应命中全局复合索引')
+  assert(!queryPlan.some((row) => /USE TEMP B-TREE/i.test(row.detail ?? '')), 'SQLite 全局 session 查询不应建立临时排序')
+  const sessionOnlyQueryPlan = database.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT id FROM audit_logs
+    WHERE session_id = ?
+    ORDER BY created_at DESC, id DESC LIMIT 101
+  `).all(sessionId) as Array<{ detail?: string }>
+  assert(
+    sessionOnlyQueryPlan.some((row) => /idx_audit_logs_session_created/i.test(row.detail ?? '')),
+    '只传 sessionId 的管理端主搜索也应使用全局 session 复合索引定位记录'
+  )
+  assert(!sessionOnlyQueryPlan.some((row) => /USE TEMP B-TREE/i.test(row.detail ?? '')), '只传 sessionId 的管理端主搜索不应建立临时排序')
   const postgresStatements = collectPostgresSchemaStatements().filter((statement) => statement.schemaName === 'juhe_dataset')
   const postgresAuditTable = postgresStatements.find((statement) => /^CREATE TABLE IF NOT EXISTS audit_logs\b/i.test(statement.sql))?.sql ?? ''
-  assert.match(postgresAuditTable, /conversation_key text/i, 'PostgreSQL audit_logs schema 应包含 conversation_key')
-  assert.match(postgresAuditTable, /identity_conflict integer/i, 'PostgreSQL audit_logs schema 应包含可空 identity_conflict')
-  assert(postgresStatements.some((statement) => /idx_audit_logs_system_api_key_conversation_created/i.test(statement.sql)), 'PostgreSQL schema 应包含 conversation 复合索引')
-  assert(postgresStatements.some((statement) => /idx_audit_logs_system_api_key_thread_created/i.test(statement.sql)), 'PostgreSQL schema 应包含 thread 复合索引')
+  assert.match(postgresAuditTable, /conversation_key text/i, 'PostgreSQL audit_logs schema 应保留内部 conversation_key')
+  assert.match(postgresAuditTable, /session_id text/i, 'PostgreSQL audit_logs schema 应包含 session_id')
+  assert.match(postgresAuditTable, /session_client_type text/i, 'PostgreSQL audit_logs schema 应包含 session_client_type')
+  const postgresSessionIndex = postgresStatements.find((statement) => /CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created/i.test(statement.sql))
+  assert(postgresSessionIndex, 'PostgreSQL schema 应包含全局 session 复合索引')
+  assert.doesNotMatch(postgresSessionIndex.sql, /CREATE\s+UNIQUE\s+INDEX/i, 'PostgreSQL 全局 session 索引不得唯一')
+  assert.match(postgresSessionIndex.sql, /\(session_id, created_at, id, session_client_type\)/i)
+  assert(postgresStatements.some((statement) => /DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created/i.test(statement.sql)), 'PostgreSQL 迁移必须删除旧的 API Key 前导 session 索引')
   const postgresIdentityAlterIndexes = postgresStatements
     .map((statement, index) => ({ statement, index }))
     .filter(({ statement }) => statement.source === 'audit-log-session-identity-pg-columns')
-  assert.equal(postgresIdentityAlterIndexes.length, 10, 'PostgreSQL 既有 audit_logs 应补齐 10 个会话身份字段')
-  const postgresIdentityIndexIndexes = postgresStatements
+  assert.equal(postgresIdentityAlterIndexes.length, 3, 'PostgreSQL 既有 audit_logs 只补 conversationKey 与两个 session 字段')
+  const postgresIdentityCreateIndexIndexes = postgresStatements
     .map((statement, index) => ({ statement, index }))
-    .filter(({ statement }) => statement.source === 'audit-log-session-identity-pg-indexes')
-  assert.equal(postgresIdentityIndexIndexes.length, 2, 'PostgreSQL 应在补列后创建两个会话身份索引')
-  assert(!postgresStatements.some((statement) => statement.source === 'dataset' && /idx_audit_logs_system_api_key_(?:conversation|thread)_created/i.test(statement.sql)), 'PostgreSQL 基础 schema 不应在补列前创建会话身份索引')
+    .filter(({ statement }) => /CREATE INDEX IF NOT EXISTS idx_audit_logs_(?:system_)?session_created/i.test(statement.sql))
   assert(
-    Math.max(...postgresIdentityAlterIndexes.map(({ index }) => index)) < Math.min(...postgresIdentityIndexIndexes.map(({ index }) => index)),
-    'PostgreSQL 会话身份 ALTER 必须先于依赖新列的索引'
+    Math.max(...postgresIdentityAlterIndexes.map(({ index }) => index)) < Math.min(...postgresIdentityCreateIndexIndexes.map(({ index }) => index)),
+    'PostgreSQL 会话字段 ALTER 必须先于依赖新列的索引'
   )
 
   const decoded = decodeAuditLogStreamPayload(encodeAuditLogStreamPayload(first))
   assertSessionIdentity(decoded, first, 'Redis Stream codec')
   assertSessionIdentity(buildAuditLogTransportCapacityFallback(first), first, '容量降级')
   assertSessionIdentity(prepareAuditLogsForBoundedTransport([first])[0]!, first, 'IPC 有界传输')
-  assert.equal(isAuditLogInput(first), true, '带会话元数据的审计输入应通过队列校验')
-  assert.equal(isAuditLogInput({ ...first, identityConflict: 'false' }), false, '队列应拒绝非法 identityConflict 类型')
+  assert.equal(isAuditLogInput(first), true, '带 session 字段的审计输入应通过队列校验')
+  assert.equal(isAuditLogInput({ ...first, sessionId: 123 }), false, '队列应拒绝非字符串 sessionId')
+  assert.equal(isAuditLogInput({ ...first, sessionClientType: false }), false, '队列应拒绝非字符串 sessionClientType')
 
-  console.log('审计会话串联回归通过：SQLite/PG schema、写读、精确筛选及队列传输均保留统一会话字段')
+  console.log('审计 session_id 串联回归通过：SQLite/PG schema、重复写入、精确筛选及队列传输均保留客户端会话字段')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
@@ -151,10 +195,7 @@ function auditLog(
   id: string,
   traceId: string,
   createdAt: string,
-  identity: Partial<Pick<AuditLogInput,
-    'conversationKey' | 'sessionNamespace' | 'sessionSource' | 'sessionResolution' | 'sessionConfidence'
-    | 'threadKey' | 'turnKey' | 'agentKey' | 'parentResponseKey' | 'identityConflict'
-  >> = {}
+  identity: Partial<Pick<AuditLogInput, 'conversationKey' | 'sessionId' | 'sessionClientType'>> = {}
 ): AuditLogInput {
   return {
     id,
@@ -185,10 +226,7 @@ function auditLog(
 }
 
 function assertSessionIdentity(actual: AuditLogInput, expected: AuditLogInput, label: string): void {
-  for (const key of [
-    'conversationKey', 'sessionNamespace', 'sessionSource', 'sessionResolution', 'sessionConfidence',
-    'threadKey', 'turnKey', 'agentKey', 'parentResponseKey', 'identityConflict'
-  ] as const) {
+  for (const key of ['conversationKey', 'sessionId', 'sessionClientType'] as const) {
     assert.equal(actual[key], expected[key], `${label} 应保留 ${key}`)
   }
 }
@@ -211,6 +249,15 @@ function assertLegacySqliteAuditLogUpgrade(): void {
       );
     `)
     applyDatasetSchema(database)
+    database.exec(`
+      DROP INDEX IF EXISTS idx_audit_logs_session_created;
+      CREATE INDEX idx_audit_logs_system_api_key_session_created
+        ON audit_logs(system_account_id, api_key_id, session_id, session_client_type, created_at, id)
+        WHERE session_id IS NOT NULL;
+      CREATE INDEX idx_audit_logs_system_api_key_conversation_created
+        ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id)
+        WHERE conversation_key IS NOT NULL;
+    `)
     applyDatasetSchema(database)
 
     const columns = new Set(
@@ -218,19 +265,16 @@ function assertLegacySqliteAuditLogUpgrade(): void {
         .map((column) => column.name)
         .filter((name): name is string => Boolean(name))
     )
-    for (const column of [
-      'conversation_key', 'session_namespace', 'session_source', 'session_resolution', 'session_confidence',
-      'thread_key', 'turn_key', 'agent_key', 'parent_response_key', 'identity_conflict'
-    ]) {
+    for (const column of ['conversation_key', 'session_id', 'session_client_type']) {
       assert(columns.has(column), `SQLite 旧表升级后应包含 ${column}`)
     }
-    const indexes = new Set(
-      (database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'audit_logs'").all() as Array<{ name?: string }>)
-        .map((index) => index.name)
-        .filter((name): name is string => Boolean(name))
-    )
-    assert(indexes.has('idx_audit_logs_system_api_key_conversation_created'), 'SQLite 旧表升级后应创建 conversation 索引')
-    assert(indexes.has('idx_audit_logs_system_api_key_thread_created'), 'SQLite 旧表升级后应创建 thread 索引')
+    const indexes = database.prepare("PRAGMA index_list('audit_logs')")
+      .all() as Array<{ name?: string; unique?: number }>
+    assert(!indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_conversation_created'), 'SQLite 旧表升级后不应保留内部 conversation 查询索引')
+    assert(!indexes.some((index) => index.name === 'idx_audit_logs_system_api_key_session_created'), 'SQLite 旧表升级后不应保留 API Key 前导的旧 session 索引')
+    const sessionIndex = indexes.find((index) => index.name === 'idx_audit_logs_session_created')
+    assert(sessionIndex, 'SQLite 旧表升级后应创建全局 session 索引')
+    assert.equal(sessionIndex.unique, 0, 'SQLite 旧表升级后的全局 session 索引不得唯一')
   } finally {
     database.close()
   }

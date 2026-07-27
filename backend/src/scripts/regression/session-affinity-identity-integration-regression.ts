@@ -1,6 +1,8 @@
 import { strict as assert } from 'node:assert'
 import type { Request } from 'express'
 
+import { runtimeConfig } from '../../config/runtime.js'
+import type { RedisCommandClient } from '../../shared/redis-client.js'
 import type { ApiKeyHybridRoutingConfig } from '../../domain/types.js'
 import {
   clearHybridRouteAffinityForTest,
@@ -12,7 +14,8 @@ import {
 import {
   claimOpenAIAccountForSessionAsync,
   forgetOpenAIAccountForSession,
-  resolveOpenAIGatewaySessionAffinityKey
+  resolveOpenAIGatewaySessionAffinityKey,
+  setOpenAISessionAffinityRedisClientForTest
 } from '../../modules/gateway/runtime/session-affinity.service.js'
 
 const scope = {
@@ -41,10 +44,70 @@ const hybridConfig: ApiKeyHybridRoutingConfig = {
 
 async function main(): Promise<void> {
   testCanonicalIdentityScopesNormalAffinity()
+  testClientSpecificAffinityNamespaces()
   testHintsDoNotCreateFormalAffinity()
   testHybridAffinityConsumesCachedCanonicalIdentity()
   await testConcurrentClaimHasOneWinner()
+  await testRedisConcurrentClaimHasOneWinner()
   console.log('session affinity identity integration regression: passed')
+}
+
+async function testRedisConcurrentClaimHasOneWinner(): Promise<void> {
+  const originalCacheDriver = runtimeConfig.cacheDriver
+  const client = new AtomicSessionAffinityRedisClient()
+  runtimeConfig.cacheDriver = 'redis'
+  setOpenAISessionAffinityRedisClientForTest(client)
+  try {
+    const identity = resolveGatewaySessionIdentity(sessionRequest('redis-concurrent-session'), scope)
+    const affinityKey = resolveOpenAIGatewaySessionAffinityKey(identity, {
+      systemAccountId: scope.systemAccountId,
+      apiKeyId: scope.apiKeyId,
+      routeStrategyId: 'route-a',
+      groupId: 'group-a'
+    })
+    assert(affinityKey)
+    const affinityScope = {
+      systemAccountId: scope.systemAccountId,
+      apiKeyId: scope.apiKeyId,
+      groupId: 'group-a'
+    }
+    const winners = await Promise.all([
+      claimOpenAIAccountForSessionAsync(affinityKey, 'redis-account-a', affinityScope),
+      claimOpenAIAccountForSessionAsync(affinityKey, 'redis-account-b', affinityScope),
+      claimOpenAIAccountForSessionAsync(affinityKey, 'redis-account-c', affinityScope)
+    ])
+    assert.equal(new Set(winners).size, 1, 'Redis CAS 并发首写必须只产生一个粘黏账号')
+    assert(client.bindingCompareSetCalls >= 3, '回归必须真实经过 Redis Lua CAS 首写竞争路径')
+  } finally {
+    setOpenAISessionAffinityRedisClientForTest(undefined)
+    runtimeConfig.cacheDriver = originalCacheDriver
+  }
+}
+
+function testClientSpecificAffinityNamespaces(): void {
+  const rawSessionId = 'shared-raw-session'
+  const codexIdentity = resolveGatewaySessionIdentity(sessionRequest(rawSessionId), scope)
+  const claudeRequest = {
+    method: 'POST',
+    originalUrl: '/v1/messages',
+    headers: { 'x-claude-code-session-id': rawSessionId },
+    body: {}
+  } as unknown as Request
+  const claudeIdentity = resolveGatewaySessionIdentity(claudeRequest, {
+    ...scope,
+    clientProfile: 'claude_code'
+  })
+  const keyScope = {
+    systemAccountId: scope.systemAccountId,
+    apiKeyId: scope.apiKeyId,
+    routeStrategyId: 'route-a',
+    groupId: 'group-a'
+  }
+  const codexKey = resolveOpenAIGatewaySessionAffinityKey(codexIdentity, keyScope)
+  const claudeKey = resolveOpenAIGatewaySessionAffinityKey(claudeIdentity, keyScope)
+  assert(codexKey)
+  assert(claudeKey)
+  assert.notEqual(codexKey, claudeKey, '不同客户端必须使用隔离的会话 namespace，不能共享粘黏槽')
 }
 
 function testCanonicalIdentityScopesNormalAffinity(): void {
@@ -165,6 +228,48 @@ function sessionRequest(sessionId: string): Request {
       return headers[name.toLowerCase()]
     }
   } as unknown as Request
+}
+
+class AtomicSessionAffinityRedisClient implements RedisCommandClient {
+  private readonly values = new Map<string, string>()
+  isOpen = true
+  isReady = true
+  bindingCompareSetCalls = 0
+
+  async connect(): Promise<void> {}
+  async get(key: string): Promise<string | null> {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    return this.values.get(key) ?? null
+  }
+  async set(key: string, value: string): Promise<string> {
+    this.values.set(key, value)
+    return 'OK'
+  }
+  async del(key: string): Promise<number> {
+    return this.values.delete(key) ? 1 : 0
+  }
+  async eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<number> {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const key = options.keys[0]!
+    if (script.includes('old_index_count')) {
+      this.bindingCompareSetCalls += 1
+      const current = this.values.get(key)
+      const expected = options.arguments[0]!
+      if ((expected === '' && current !== undefined) || (expected !== '' && current !== expected)) return 0
+      this.values.set(key, options.arguments[1]!)
+      return 1
+    }
+    if (script.includes("redis.call('DEL', KEYS[1])")) {
+      if (this.values.get(key) !== options.arguments[0]) return 0
+      this.values.delete(key)
+      return 1
+    }
+    return this.values.get(key) === options.arguments[0] ? 1 : 0
+  }
+  async sendCommand(): Promise<unknown> { return undefined }
+  async quit(): Promise<void> {}
+  destroy(): void {}
+  on(): this { return this }
 }
 
 void main()

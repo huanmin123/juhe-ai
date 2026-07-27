@@ -7,11 +7,7 @@ import {
 import { getGatewayRequestBodyState } from '../request/body.js'
 import { normalizeUsageServiceTier, type UsageServiceTier } from './service-tier.js'
 import { normalizeUsageReasoningEffort, type UsageReasoningEffort } from './reasoning-effort.js'
-import {
-  headersToSafeObject,
-  sanitizeHeaderRecord,
-  sanitizeStringHeaderRecord
-} from '../upstream/headers.js'
+import { headersToObject } from '../upstream/headers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
 import type { CodexResponsesGuardUsageSummary } from '../codex-responses/response-guard.js'
 
@@ -63,7 +59,7 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
       getGatewayRequestBodyState(req)?.reasoningEffort
         ?? requestedReasoningEffortFromBody(req.body)
     ),
-    headers: sanitizeRequestHeaders(req.headers)
+    headers: requestHeadersToObject(req.headers)
   }
   const bodySummary = buildGatewayRequestBodySummary(req)
   if (bodySummary) {
@@ -84,13 +80,13 @@ function requestedReasoningEffortFromBody(body: unknown): unknown {
   return record.reasoning_effort
 }
 
-export function sanitizeRequestHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {
+export function requestHeadersToObject(headers: IncomingHttpHeaders): Record<string, string | string[]> {
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(headers)) {
     if (value === undefined) continue
-    output[name] = value
+    output[name] = Array.isArray(value) ? value.map(String) : String(value)
   }
-  return sanitizeHeaderRecord(output)
+  return output
 }
 
 export function buildUsageResponseSnapshot(input: {
@@ -107,8 +103,8 @@ export function buildUsageResponseSnapshot(input: {
     upstreamUrl: input.upstreamUrl,
     statusCode: input.statusCode,
     headers: input.headers instanceof Headers
-      ? headersToSafeObject(input.headers)
-      : input.headers ? sanitizeStringHeaderRecord(input.headers) : undefined,
+      ? headersToObject(input.headers)
+      : input.headers ? { ...input.headers } : undefined,
     bodyText: input.bodyText,
     bodyOmission: input.bodyOmission,
     errorMessage: input.errorMessage,
@@ -138,7 +134,7 @@ export function buildGatewayErrorResponseSnapshot(
       accountName: lastAttempt.accountName,
       upstreamUrl: lastAttempt.upstreamUrl,
       statusCode: lastAttempt.status,
-      headers: lastAttempt.responseHeaders ? sanitizeStringHeaderRecord(lastAttempt.responseHeaders) : undefined,
+      headers: lastAttempt.responseHeaders ? { ...lastAttempt.responseHeaders } : undefined,
       bodyText: lastAttempt.responseBodyText,
       errorMessage: lastAttempt.message
     }

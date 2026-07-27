@@ -88,6 +88,17 @@ export function canCreateOAuthAccount(input: {
     && accountProviderProtocolKind(input.profile ?? input.provider) === 'openai_v1'
 }
 
+export function canManageNativeOAuthAccount(input: {
+  provider?: ProviderDefinition
+  profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
+}): boolean {
+  return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
+    && (
+      canCreateOAuthAccount(input)
+      || accountProviderProtocolKind(input.profile ?? input.provider) === 'anthropic_v1'
+    )
+}
+
 export function supportsOAuthAccountType(input: {
   provider?: ProviderDefinition
   profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike

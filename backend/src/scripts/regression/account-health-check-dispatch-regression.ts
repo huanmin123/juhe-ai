@@ -14,10 +14,13 @@ import { dispatchRequestFailureAccountHealthCheck } from '../../modules/gateway/
 
 const originalProcessRole = runtimeConfig.processRole
 const originalSend = process.send
+const originalDateNow = Date.now
 const messages: unknown[] = []
+let nowMs = originalDateNow()
 
 try {
   runtimeConfig.processRole = 'db-service'
+  Date.now = () => nowMs
   process.send = ((message: unknown, ...args: unknown[]) => {
     messages.push(message)
     const callback = args.find((item): item is (error: Error | null) => void => typeof item === 'function')
@@ -45,6 +48,10 @@ try {
   const requestFailureMessageCount = messages.length
   assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '本地投递端必须在 worker 前执行请求失败冷却')
   assert.equal(messages.length, requestFailureMessageCount, '冷却中的请求失败不得重复写入 worker IPC')
+  nowMs += 5 * 60_000 - 1
+  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), false, '请求失败探针在 5 分钟边界前必须继续限流')
+  nowMs += 1
+  assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'request_failure'), true, '请求失败探针满 5 分钟后必须允许下一轮确认')
   assert.equal(dispatchAccountHealthCheck('acc_request_failed', 'configuration'), true, '请求失败冷却不得阻止更高优先级配置复检')
 
   const gatewayRequest = {} as Parameters<typeof dispatchRequestFailureAccountHealthCheck>[0]
@@ -126,7 +133,7 @@ try {
     requestFailureDispatchSource.includes("trafficSource !== 'gateway'"),
     '人工测试和后台探针失败不得递归投递请求失败确认'
   )
-  assert(healthCheckServiceSource.includes('requestFailureHealthCheckCooldownMs = 10 * 60_000'), '请求失败健康检查必须按账户限频')
+  assert(healthCheckServiceSource.includes('requestFailureHealthCheckCooldownMs = 5 * 60_000'), '请求失败健康检查必须按账户执行 5 分钟限频')
   assert(healthCheckServiceSource.includes("failureThreshold: effectiveReason === 'request_failure' ? 1 : settings.failureThreshold"), '请求失败后的独立确认失败必须立即阻止继续调度')
   assert(requestFailureDispatchSource.includes('requestFailureHealthCheckDispatched'), '单个真实请求最多只能触发一个账户独立检查')
   assert(nonStreamInspectionSource.includes('dispatchRequestFailureAccountHealthCheck(input.req, input.usageContext.trafficSource, input.account.id)'), '完整 2xx JSON 协议失败必须投递独立账户可用性确认')
@@ -147,4 +154,5 @@ try {
 } finally {
   runtimeConfig.processRole = originalProcessRole
   process.send = originalSend
+  Date.now = originalDateNow
 }

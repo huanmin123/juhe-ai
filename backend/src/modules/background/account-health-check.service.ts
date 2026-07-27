@@ -32,7 +32,7 @@ interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
 }
 
 const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check', [], 0)
-const requestFailureHealthCheckCooldownMs = 10 * 60_000
+const requestFailureHealthCheckCooldownMs = 5 * 60_000
 const recentRequestFailureHealthChecks = new Map<string, number>()
 let lastRequestFailureHealthCheckCleanupAt = 0
 

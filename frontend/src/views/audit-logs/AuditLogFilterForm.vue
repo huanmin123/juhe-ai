@@ -38,8 +38,17 @@
     <a-form-item label="接口路径">
       <a-input v-model:value="pathValue" allow-clear placeholder="/v1/responses" @press-enter="handleAdvancedApply" />
     </a-form-item>
-    <a-form-item label="会话 Key">
-      <a-input v-model:value="conversationKeyValue" allow-clear placeholder="完整 conversationKey（精确匹配）" @press-enter="handleAdvancedApply" />
+    <a-form-item label="traceId">
+      <a-input v-model:value="traceIdValue" allow-clear placeholder="完整 traceId（精确匹配）" @press-enter="handleAdvancedApply" />
+    </a-form-item>
+    <a-form-item label="客户端类型">
+      <a-select
+        v-model:value="sessionClientTypeValue"
+        allow-clear
+        :options="sessionClientTypeOptions"
+        placeholder="全部客户端"
+        @change="handleAdvancedApply"
+      />
     </a-form-item>
     <a-form-item label="状态码">
       <a-input v-model:value="statusCodeValue" allow-clear placeholder="401 / 503" @press-enter="handleAdvancedApply" />
@@ -81,7 +90,8 @@ const props = withDefaults(defineProps<{
   accountSelection?: AccountSelection
   accountOptions: AccountOptionSummary[]
   accountOptionsLoading?: boolean
-  conversationKey: string
+  sessionClientType: string
+  traceId: string
   path: string
   statusCode: string
 }>(), {
@@ -99,7 +109,8 @@ const emit = defineEmits<{
   (event: 'update:systemAccountSelection', value: PrincipalSelection | undefined): void
   (event: 'update:accountId', value: string): void
   (event: 'update:accountSelection', value: AccountSelection | undefined): void
-  (event: 'update:conversationKey', value: string): void
+  (event: 'update:sessionClientType', value: string): void
+  (event: 'update:traceId', value: string): void
   (event: 'update:path', value: string): void
   (event: 'update:statusCode', value: string): void
   (event: 'apply'): void
@@ -133,9 +144,17 @@ const accountSelectionValue = computed({
   get: () => props.accountSelection,
   set: (value) => emit('update:accountSelection', value)
 })
-const conversationKeyValue = computed({
-  get: () => props.conversationKey,
-  set: (value) => emit('update:conversationKey', value)
+const sessionClientTypeOptions = [
+  { label: 'Codex', value: 'codex' },
+  { label: 'Claude Code', value: 'claude_code' }
+]
+const sessionClientTypeValue = computed({
+  get: () => props.sessionClientType,
+  set: (value) => emit('update:sessionClientType', value ?? '')
+})
+const traceIdValue = computed({
+  get: () => props.traceId,
+  set: (value) => emit('update:traceId', value)
 })
 const pathValue = computed({
   get: () => props.path,

@@ -180,7 +180,8 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
     traceId: optionalQueryText(query.traceId),
-    conversationKey: optionalQueryText(query.conversationKey),
+    sessionId: optionalQueryText(query.sessionId),
+    sessionClientType: optionalQueryText(query.sessionClientType),
     errorGroupId: optionalQueryText(query.errorGroupId),
     outcome: typeof query.outcome === 'string' && auditOutcomes.has(query.outcome as AuditOutcome | 'all')
       ? query.outcome as AuditOutcome | 'all'

@@ -1,6 +1,8 @@
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
+import { stripCodexResponsesScopedHeaders } from '../../../gateway/upstream/header-policy.js'
+
 import type {
   AccountModelMappingSourceEndpointFamily,
   AccountSupportedEndpointMode,
@@ -13,15 +15,11 @@ import {
   OPENAI_RESPONSES_FAMILY
 } from '../../../../domain/provider-protocol.js'
 import { openAIEndpointFamilyFromPath } from '../../../../domain/openai-endpoint-modes.js'
-import {
-  getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
-  type GatewayRawBodyRequest
-} from '../../../gateway/request/body.js'
+import { getGatewayRequestBodyState } from '../../../gateway/request/body.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
@@ -439,14 +437,7 @@ export function openAIToAnthropicBridgeUpstreamModel(
 export function prepareOpenAIToAnthropicBridgeHeaders(headers: Headers, req: Request): void {
   headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
   headers.set('content-type', 'application/json')
-  headers.delete('openai-beta')
-  headers.delete('originator')
-  headers.delete('session-id')
-  headers.delete('thread-id')
-  headers.delete('x-client-request-id')
-  headers.delete('x-codex-beta-features')
-  headers.delete('x-codex-turn-metadata')
-  headers.delete('x-codex-window-id')
+  stripCodexResponsesScopedHeaders(headers)
 }
 
 export function setOpenAIToAnthropicBridgeFileResolverForTest(
@@ -6119,25 +6110,14 @@ async function readJsonBody(body: AsyncIterable<Uint8Array>): Promise<unknown> {
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
-  if (isPlainObject(req.body)) {
-    return { ...req.body }
-  }
-  const requestWithBody = req as GatewayRawBodyRequest
-  if (requestWithBody.gatewayParsedJsonBodyAvailable && isPlainObject(requestWithBody.gatewayParsedJsonBody)) {
-    return { ...requestWithBody.gatewayParsedJsonBody }
-  }
-  const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
-  }
-  const rawBody = requestWithBody.rawBody
-  if (!rawBody || rawBody.length === 0) {
-    return {}
-  }
   try {
-    const parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
+    if (parsed === undefined) {
+      if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+        throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
+      }
+      return {}
+    }
     if (!isPlainObject(parsed)) {
       throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
     }

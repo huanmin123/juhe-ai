@@ -4,9 +4,8 @@ import { auditLogListSelectColumns } from '../../storage/audit-log-list-query.js
 import { auditLogListItemFromRow } from '../../storage/audit-log-mappers.js'
 
 const expectedColumns = [
-  'id', 'trace_id', 'conversation_key', 'session_namespace', 'session_source',
-  'session_resolution', 'session_confidence', 'thread_key', 'turn_key', 'agent_key',
-  'parent_response_key', 'identity_conflict', 'traffic_source', 'system_account_id', 'api_key_id',
+  'id', 'trace_id', 'session_id', 'session_client_type',
+  'traffic_source', 'system_account_id', 'api_key_id',
   'group_id', 'account_id', 'method', 'path', 'model', 'upstream_model',
   'model_mapping_applied', 'stream', 'audit_outcome', 'success',
   'final_status_code', 'duration_ms', 'http_duration_ms', 'created_at'
@@ -21,16 +20,8 @@ assert.deepEqual(
 const item = auditLogListItemFromRow({
   id: 'audit-1',
   trace_id: 'trace-1',
-  conversation_key: 'conversation-key-1',
-  session_namespace: 'openai.codex',
-  session_source: 'header:session-id',
-  session_resolution: 'official',
-  session_confidence: 'authoritative',
-  thread_key: 'thread-key-1',
-  turn_key: 'turn-key-1',
-  agent_key: 'agent-key-1',
-  parent_response_key: 'response-key-1',
-  identity_conflict: 0,
+  session_id: 'session-1',
+  session_client_type: 'codex',
   traffic_source: 'gateway',
   system_account_id: 'system-1',
   api_key_id: 'key-1',
@@ -58,9 +49,8 @@ const item = auditLogListItemFromRow({
 }, new Map([['system-1', 'System 1']]))
 
 assert.deepEqual(Object.keys(item), [
-  'id', 'traceId', 'conversationKey', 'sessionNamespace', 'sessionSource',
-  'sessionResolution', 'sessionConfidence', 'threadKey', 'turnKey', 'agentKey',
-  'parentResponseKey', 'identityConflict', 'trafficSource', 'systemAccountId', 'systemAccountName',
+  'id', 'traceId', 'sessionId', 'sessionClientType',
+  'trafficSource', 'systemAccountId', 'systemAccountName',
   'apiKeyId', 'apiKeyName', 'groupId', 'groupName', 'accountId', 'accountName',
   'method', 'path', 'model', 'upstreamModel', 'modelMappingApplied', 'stream',
   'auditOutcome', 'success', 'finalStatusCode', 'durationMs', 'httpDurationMs',

@@ -101,6 +101,10 @@ export function gatewayProtocolClientErrorProtocolForNativeRequest(req: Request)
 }
 
 export function isGatewayProtocolNativeRequest(req: Request, protocolCode: string): boolean {
+  const endpoint = req.originalUrl || req.path || ''
+  if (isOpenAIProtocolRequestPath(endpoint)) {
+    return protocolCode === openAIV1ProtocolDriver.protocolCode
+  }
   return gatewayProtocolDrivers.some((driver) =>
     driver.protocolCode === protocolCode
     && driver.isNativeRequest?.(req) === true

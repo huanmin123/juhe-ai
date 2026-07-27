@@ -116,15 +116,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           system_account_id TEXT,
           api_key_id TEXT,
           conversation_key TEXT,
-          session_namespace TEXT,
-          session_source TEXT,
-          session_resolution TEXT,
-          session_confidence TEXT,
-          thread_key TEXT,
-          turn_key TEXT,
-          agent_key TEXT,
-          parent_response_key TEXT,
-          identity_conflict INTEGER,
+          session_id TEXT,
+          session_client_type TEXT,
           group_id TEXT,
           account_id TEXT,
           provider_code TEXT,
@@ -591,13 +584,14 @@ export function applyDatasetSchema(database: DatabaseSync): void {
   `)
   if (ensureAuditLogSessionIdentityColumns(database)) {
     database.exec(`
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_conversation_created
-        ON audit_logs(system_account_id, api_key_id, conversation_key, created_at, id)
-        WHERE conversation_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_session_created
+        ON audit_logs(session_id, created_at, id, session_client_type)
+        WHERE session_id IS NOT NULL;
 
-      CREATE INDEX IF NOT EXISTS idx_audit_logs_system_api_key_thread_created
-        ON audit_logs(system_account_id, api_key_id, thread_key, created_at, id)
-        WHERE thread_key IS NOT NULL;
+      DROP INDEX IF EXISTS idx_audit_logs_system_session_created;
+      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_session_created;
+      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_conversation_created;
+      DROP INDEX IF EXISTS idx_audit_logs_system_api_key_thread_created;
     `)
   }
   database.exec(`
@@ -615,15 +609,8 @@ function ensureAuditLogSessionIdentityColumns(database: DatabaseSync): boolean {
   )
   const requiredColumns = [
     ['conversation_key', 'TEXT'],
-    ['session_namespace', 'TEXT'],
-    ['session_source', 'TEXT'],
-    ['session_resolution', 'TEXT'],
-    ['session_confidence', 'TEXT'],
-    ['thread_key', 'TEXT'],
-    ['turn_key', 'TEXT'],
-    ['agent_key', 'TEXT'],
-    ['parent_response_key', 'TEXT'],
-    ['identity_conflict', 'INTEGER']
+    ['session_id', 'TEXT'],
+    ['session_client_type', 'TEXT']
   ] as const
 
   for (const [name, type] of requiredColumns) {

@@ -1861,14 +1861,7 @@ function bindAuditSessionIdentity(
   auditCapture.bindContext({
     sessionId: sessionIdentity.sessionId,
     sessionClientType: clientProfile,
-    conversationKey: sessionIdentity.conversationKey,
-    sessionNamespace: sessionIdentity.semanticNamespace,
-    sessionSource: sessionIdentity.source
-      ? `${sessionIdentity.source.location}:${sessionIdentity.source.path}`
-      : undefined,
-    sessionResolution: sessionIdentity.resolution,
-    sessionConfidence: sessionIdentity.confidence,
-    identityConflict: sessionIdentity.status === 'conflict' || sessionIdentity.conflicts.length > 0
+    conversationKey: sessionIdentity.conversationKey
   })
 }
 

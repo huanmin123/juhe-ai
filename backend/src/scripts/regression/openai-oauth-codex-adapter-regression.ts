@@ -178,6 +178,8 @@ async function testResponsesBodyNormalization(): Promise<void> {
     tool_choice: { type: 'web_search_preview_2025_03_11' },
     service_tier: 'auto'
   }, {
+    'session-id': 'client-session',
+    'thread-id': 'client-conversation',
     session_id: 'client-session',
     conversation_id: 'client-conversation',
     'content-type': 'application/json; charset=utf-8',
@@ -489,7 +491,7 @@ async function testMediumBodyDeferredMiddlewareToOAuthNormalizer(): Promise<void
   if (import.meta.url.endsWith('.ts')) {
     const jsonParserSource = readFileSync(new URL('../../modules/gateway/request/json-parser.ts', import.meta.url), 'utf8')
     assert.match(jsonParserSource, /currentModulePath\.endsWith\('\.ts'\)/, 'tsx 回归运行时必须显式使用内联 fallback')
-    assert.match(jsonParserSource, /enqueueGatewayJsonWorkerJob<NormalizedCodexBody>/, '编译后的生产运行时必须把 OAuth 规范化提交给 JSON worker')
+    assert.match(jsonParserSource, /parseGatewayRequestJsonBody/, '编译后的生产运行时必须通过请求级解析器复用 JSON 结果')
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   } else {
     const originalJsonParse = JSON.parse
@@ -633,6 +635,9 @@ function testApiKeyPassthroughUnchanged(): void {
     'openai-api-key': 'sk-client-openai-api-key',
     'x-api-key': 'sk-client-x-api-key',
     'x-goog-api-key': 'sk-client-google-api-key',
+    'x-oai-attestation': 'api-key-must-not-forward-attestation',
+    'x-openai-subagent': 'api-key-must-not-forward-internal-client-header',
+    originator: 'codex_cli_rs',
     'api-key': 'sk-client-api-key',
     cookie: 'secret=value'
   })
@@ -651,6 +656,8 @@ function testApiKeyPassthroughUnchanged(): void {
   assert.equal(headers.get('openai-api-key'), null)
   assert.equal(headers.get('x-api-key'), null)
   assert.equal(headers.get('x-goog-api-key'), null)
+  assert.equal(headers.get('x-oai-attestation'), null)
+  assert.equal(headers.get('x-openai-subagent'), null)
   assert.equal(headers.get('api-key'), null)
   assert.equal(headers.get('cookie'), null)
 }

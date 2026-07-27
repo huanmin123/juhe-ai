@@ -10,28 +10,12 @@
       <template v-if="detail">
         <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
           <a-descriptions-item label="traceId">{{ detail.traceId }}</a-descriptions-item>
-          <a-descriptions-item label="会话归一化">
-            <a-tag :color="sessionResolutionColor(detail.sessionResolution)">{{ sessionResolutionText(detail.sessionResolution) }}</a-tag>
-            <a-tag v-if="detail.identityConflict" color="red">身份冲突</a-tag>
+          <a-descriptions-item label="客户端类型">{{ sessionClientTypeText(detail.sessionClientType) }}</a-descriptions-item>
+          <a-descriptions-item label="会话 ID" :span="2">
+            <span class="identity-key">{{ detail.sessionId ?? '-' }}</span>
           </a-descriptions-item>
-          <a-descriptions-item label="会话 Key" :span="2">
-            <span class="identity-key">{{ detail.conversationKey ?? '-' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="会话命名空间">{{ detail.sessionNamespace ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="识别来源">{{ detail.sessionSource ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="解析置信度">{{ sessionConfidenceText(detail.sessionConfidence) }}</a-descriptions-item>
-          <a-descriptions-item label="身份冲突">{{ identityConflictText(detail.identityConflict) }}</a-descriptions-item>
-          <a-descriptions-item label="线程 Key" :span="2">
-            <span class="identity-key">{{ detail.threadKey ?? '-' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="轮次 Key" :span="2">
-            <span class="identity-key">{{ detail.turnKey ?? '-' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="Agent Key" :span="2">
-            <span class="identity-key">{{ detail.agentKey ?? '-' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="父响应 Key" :span="2">
-            <span class="identity-key">{{ detail.parentResponseKey ?? '-' }}</span>
+          <a-descriptions-item v-if="detail.conversationKey" label="内部会话 Key" :span="2">
+            <span class="identity-key">{{ detail.conversationKey }}</span>
           </a-descriptions-item>
           <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
           <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
@@ -197,13 +181,10 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
-  identityConflictText,
   outcomeText,
   payloadPartText,
   prettyJson,
-  sessionConfidenceText,
-  sessionResolutionColor,
-  sessionResolutionText,
+  sessionClientTypeText,
   trafficSourceText
 } from './auditLogFormatters'
 import {

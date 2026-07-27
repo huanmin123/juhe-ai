@@ -223,6 +223,11 @@ export interface OpenAIAuthURLResult {
   sessionId: string
 }
 
+export interface OAuthAuthURLResult {
+  authUrl: string
+  sessionId: string
+}
+
 export interface ProxyProfileSummary {
   id: string
   name: string

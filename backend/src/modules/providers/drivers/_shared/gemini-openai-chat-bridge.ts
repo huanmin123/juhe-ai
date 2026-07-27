@@ -1,6 +1,8 @@
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
+import { stripGeminiGenerateContentScopedHeaders } from '../../../gateway/upstream/header-policy.js'
+
 import type { AccountSupportedEndpointMode } from '../../../../domain/types.js'
 import {
   geminiEndpointFamilyFromPath
@@ -9,14 +11,10 @@ import {
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 } from '../../../../domain/provider-protocol.js'
-import {
-  getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
-  type GatewayRawBodyRequest
-} from '../../../gateway/request/body.js'
+import { getGatewayRequestBodyState } from '../../../gateway/request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
 import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
@@ -75,8 +73,7 @@ export function prepareGeminiGenerateContentChatBridgeHeaders(headers: Headers, 
   headers.set('accept', isGeminiGenerateContentStreamRequest(req) ? 'text/event-stream' : 'application/json')
   headers.set('content-type', 'application/json')
   headers.delete('content-length')
-  headers.delete('x-goog-api-client')
-  headers.delete('x-goog-api-key')
+  stripGeminiGenerateContentScopedHeaders(headers)
 }
 
 export async function buildGeminiGenerateContentChatBridgeBody(
@@ -128,29 +125,9 @@ function geminiGenerateContentEndpointFamily(req: Request): typeof GEMINI_GENERA
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
-  if (isPlainObject(req.body)) {
-    return { ...req.body }
-  }
-  const requestWithBody = req as GatewayRawBodyRequest
-  if (requestWithBody.gatewayParsedJsonBodyAvailable && isPlainObject(requestWithBody.gatewayParsedJsonBody)) {
-    return { ...requestWithBody.gatewayParsedJsonBody }
-  }
-  const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new GatewayRequestValidationError(
-      'Gemini GenerateContent 到 Chat Completions 桥接要求请求体是有效 JSON 对象',
-      'invalid_gemini_chat_bridge_json_body'
-    )
-  }
-  const rawBody = requestWithBody.rawBody
-  if (!rawBody || rawBody.length === 0) {
-    return {}
-  }
   let parsed: unknown
   try {
-    parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new GatewayRequestValidationError(
@@ -163,6 +140,15 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
       'Gemini GenerateContent 到 Chat Completions 桥接要求请求体是有效 JSON 对象',
       'invalid_gemini_chat_bridge_json_body'
     )
+  }
+  if (parsed === undefined) {
+    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+      throw new GatewayRequestValidationError(
+        'Gemini GenerateContent 到 Chat Completions 桥接要求请求体是有效 JSON 对象',
+        'invalid_gemini_chat_bridge_json_body'
+      )
+    }
+    return {}
   }
   if (!isPlainObject(parsed)) {
     throw new GatewayRequestValidationError(

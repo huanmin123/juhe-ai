@@ -1,16 +1,14 @@
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
+import { stripCodexResponsesScopedHeaders } from '../../../gateway/upstream/header-policy.js'
+
 import type { AccountSupportedEndpointMode, ClientCompatibilityCapability } from '../../../../domain/types.js'
-import {
-  getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
-  type GatewayRawBodyRequest
-} from '../../../gateway/request/body.js'
+import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../../gateway/request/body.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
 import { requestStream } from '../../../gateway/request/metadata.js'
 import {
@@ -273,14 +271,7 @@ export async function buildCodexResponsesChatBridgeBody(
 export function prepareCodexResponsesChatBridgeHeaders(headers: Headers): void {
   headers.set('accept', 'text/event-stream')
   headers.set('content-type', 'application/json')
-  headers.delete('openai-beta')
-  headers.delete('originator')
-  headers.delete('session-id')
-  headers.delete('thread-id')
-  headers.delete('x-client-request-id')
-  headers.delete('x-codex-beta-features')
-  headers.delete('x-codex-turn-metadata')
-  headers.delete('x-codex-window-id')
+  stripCodexResponsesScopedHeaders(headers)
 }
 
 export function transformCodexResponsesChatBridgeUpstreamResponse(
@@ -346,29 +337,9 @@ export function isOpenAIResponsesCompactPostRequest(req: Request): boolean {
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
-  if (isPlainObject(req.body)) {
-    return { ...req.body }
-  }
-  const requestWithBody = req as GatewayRawBodyRequest
-  if (requestWithBody.gatewayParsedJsonBodyAvailable && isPlainObject(requestWithBody.gatewayParsedJsonBody)) {
-    return { ...requestWithBody.gatewayParsedJsonBody }
-  }
-  const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new GatewayRequestValidationError(
-      'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
-      'invalid_codex_bridge_json_body'
-    )
-  }
-  const rawBody = requestWithBody.rawBody
-  if (!rawBody || rawBody.length === 0) {
-    return {}
-  }
   let parsed: unknown
   try {
-    parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new GatewayRequestValidationError(
@@ -381,6 +352,15 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
       'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
       'invalid_codex_bridge_json_body'
     )
+  }
+  if (parsed === undefined) {
+    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+      throw new GatewayRequestValidationError(
+        'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
+        'invalid_codex_bridge_json_body'
+      )
+    }
+    return {}
   }
   if (!isPlainObject(parsed)) {
     throw new GatewayRequestValidationError(

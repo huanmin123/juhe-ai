@@ -1,7 +1,7 @@
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
-import type { AccountSummary, OpenAIAuthURLResult, ProviderDefinition } from '@/types/domain'
+import type { AccountSummary, OAuthAuthURLResult, ProviderDefinition } from '@/types/domain'
 import { ref, type ComputedRef, type Ref } from 'vue'
 
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
@@ -63,7 +63,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const { submitAction, submittingRef } = useSubmitAction('accounts')
   const saving = submittingRef('accounts.save')
   const authLoading = ref(false)
-  const authResult = ref<OpenAIAuthURLResult>()
+  const authResult = ref<OAuthAuthURLResult>()
 
   const saveAccount = submitAction('accounts.save', async () => {
     if (options.editingAuthorizedAccount.value) {
@@ -114,7 +114,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         }
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
       } else if (options.form.type === 'oauth') {
-        const created = usesManagedOAuthCreateFlow(options.form, options.providers.value)
+        const created = usesManagedOAuthCreateFlow(options.form, options.providers.value) && options.form.oauthMode !== 'access_token'
           ? await createOAuthAccountFromUnifiedForm()
           : await createApiKeyAccount(payload)
         message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
@@ -139,7 +139,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
     authLoading.value = true
     try {
-      authResult.value = options.isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
+      authResult.value = await requestManagedOAuthAuthUrl(options.form, options.providers.value, options.isManagementView.value)
       message.success('授权链接已生成')
     } catch (error) {
       console.error(error)
@@ -288,18 +288,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     })
 
     if (options.form.oauthMode === 'manual') {
-      if (options.isManagementView.value) {
-        return await api.openaiOAuth.createFromCode(payload, options.createScopeParams.value)
-      } else {
-        return await api.myOpenaiOAuth.createFromCode(payload)
-      }
+      return await createManagedOAuthAccountFromCode(options.form, options.providers.value, payload, options.createScopeParams.value, options.isManagementView.value)
+    }
+    if (options.form.oauthMode === 'refresh_token') {
+      return await createManagedOAuthAccountFromRefreshToken(options.form, options.providers.value, payload, options.createScopeParams.value, options.isManagementView.value)
     }
 
-    if (options.isManagementView.value) {
-      return await api.openaiOAuth.createFromRefreshToken(payload, options.createScopeParams.value)
-    } else {
-      return await api.myOpenaiOAuth.createFromRefreshToken(payload)
-    }
+    throw new Error('当前授权方式不应走托管 OAuth 创建流程')
   }
 
   async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountSummary> {
@@ -420,13 +415,73 @@ function buildBasicEditCredentialsPatch(form: AccountFormModel, currentCredentia
 }
 
 function usesManagedOAuthCreateFlow(form: AccountFormModel, providers: readonly ProviderDefinition[]): boolean {
-  return canCreateOAuthAccount(
-    providers.length
-      ? resolveFormProviderProfile(form, [...providers])
-      : resolveFormProviderProfile(form)
-  )
+  const providerProfile = providers.length
+    ? resolveFormProviderProfile(form, [...providers])
+    : resolveFormProviderProfile(form)
+  return canCreateOAuthAccount(providerProfile) || isAnthropicManagedOAuthProviderProfile(providerProfile)
 }
 
 function credentialText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function isAnthropicManagedOAuthProviderProfile(input: { provider?: ProviderDefinition; profile?: ProviderDefinition['protocolProfiles'][number] }): boolean {
+  return input.profile?.providerCode === 'anthropic'
+    && input.profile?.protocolCode === 'anthropic'
+    && input.profile?.protocolVersion === 'v1'
+    && input.profile?.accountTypes.includes('oauth') === true
+}
+
+async function requestManagedOAuthAuthUrl(
+  form: AccountFormModel,
+  providers: readonly ProviderDefinition[],
+  isManagementView: boolean
+): Promise<OAuthAuthURLResult> {
+  const providerProfile = providers.length
+    ? resolveFormProviderProfile(form, [...providers])
+    : resolveFormProviderProfile(form)
+  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
+    return isManagementView ? api.anthropicOAuth.authUrl({}) : api.myAnthropicOAuth.authUrl({})
+  }
+  return isManagementView ? api.openaiOAuth.authUrl({}) : api.myOpenaiOAuth.authUrl({})
+}
+
+async function createManagedOAuthAccountFromCode(
+  form: AccountFormModel,
+  providers: readonly ProviderDefinition[],
+  payload: Record<string, unknown>,
+  scopeParams: AccountScopeParams,
+  isManagementView: boolean
+): Promise<AccountSummary> {
+  const providerProfile = providers.length
+    ? resolveFormProviderProfile(form, [...providers])
+    : resolveFormProviderProfile(form)
+  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
+    return isManagementView
+      ? api.anthropicOAuth.createFromCode(payload, scopeParams)
+      : api.myAnthropicOAuth.createFromCode(payload)
+  }
+  return isManagementView
+    ? api.openaiOAuth.createFromCode(payload, scopeParams)
+    : api.myOpenaiOAuth.createFromCode(payload)
+}
+
+async function createManagedOAuthAccountFromRefreshToken(
+  form: AccountFormModel,
+  providers: readonly ProviderDefinition[],
+  payload: Record<string, unknown>,
+  scopeParams: AccountScopeParams,
+  isManagementView: boolean
+): Promise<AccountSummary> {
+  const providerProfile = providers.length
+    ? resolveFormProviderProfile(form, [...providers])
+    : resolveFormProviderProfile(form)
+  if (isAnthropicManagedOAuthProviderProfile(providerProfile)) {
+    return isManagementView
+      ? api.anthropicOAuth.createFromRefreshToken(payload, scopeParams)
+      : api.myAnthropicOAuth.createFromRefreshToken(payload)
+  }
+  return isManagementView
+    ? api.openaiOAuth.createFromRefreshToken(payload, scopeParams)
+    : api.myOpenaiOAuth.createFromRefreshToken(payload)
 }

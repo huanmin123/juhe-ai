@@ -13,6 +13,8 @@ LOG_WORKERS=2
 INGRESS_PORT=3000
 NGINX_CONFIG=
 NODE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+VERIFIED_HEALTH_JSON=
+VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
 
 usage() {
   cat <<'EOF'
@@ -293,7 +295,10 @@ wait_for_health() {
       && health_identity_matches "$health_json" "$name" "$role" \
       && curl -fsS --max-time 2 "http://127.0.0.1:$port/__aisys__/api/health" >/dev/null; then
       consecutive=$((consecutive + 1))
-      [ "$consecutive" -ge 3 ] && return 0
+      if [ "$consecutive" -ge 3 ]; then
+        VERIFIED_HEALTH_JSON="$health_json"
+        return 0
+      fi
     else
       consecutive=0
     fi
@@ -306,7 +311,8 @@ wait_for_health() {
 
 wait_for_metrics_registry() {
   name="$1"
-  set -- node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --timeout-ms 15000
+  observed_after_ms="$2"
+  set -- node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --timeout-ms 30000 --observed-after-ms "$observed_after_ms"
   if [ "$name" = control-1 ]; then
     set -- "$@" --role "control:$name" --role "db-service:$name"
     index=1
@@ -322,19 +328,70 @@ wait_for_metrics_registry() {
   else
     set -- "$@" --role "gateway:$name" --role "db-service:$name"
   fi
+  current_role_pid_lines="$(metrics_registry_role_pids "$VERIFIED_HEALTH_JSON")"
+  role_pid_lines="$current_role_pid_lines"
+  if [ "$name" = control-1 ] && [ -n "$VERIFIED_GATEWAY_METRICS_ROLE_PIDS" ]; then
+    role_pid_lines="$VERIFIED_GATEWAY_METRICS_ROLE_PIDS
+$current_role_pid_lines"
+  fi
+  [ -n "$role_pid_lines" ] || { echo "$name health topology did not provide metrics PIDs" >&2; return 1; }
+  while IFS= read -r role_pid; do
+    [ -n "$role_pid" ] || continue
+    set -- "$@" --role-pid "$role_pid"
+  done <<EOF
+$role_pid_lines
+EOF
+  if ! NODE_ENV=production \
+    JUHE_AI_RUNTIME_MODE=performance \
+    JUHE_AI_PERFORMANCE_NODE_ROLE=control \
+    JUHE_AI_PROCESS_ROLE=server \
+    JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
+    JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
+    JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
+    JUHE_AI_LOG_WORKER_REPLICAS="$LOG_WORKERS" \
+    JUHE_AI_STATS_WORKER_REPLICAS=1 \
+    JUHE_AI_OPS_WORKER_REPLICAS=1 \
+    JUHE_AI_LOG_FILE_ENABLED=false \
+    JUHE_AI_LOG_CONSOLE_ENABLED=false \
+    "$@"; then
+    return 1
+  fi
+  if [ "$name" != control-1 ]; then
+    if [ -n "$VERIFIED_GATEWAY_METRICS_ROLE_PIDS" ]; then
+      VERIFIED_GATEWAY_METRICS_ROLE_PIDS="$VERIFIED_GATEWAY_METRICS_ROLE_PIDS
+$current_role_pid_lines"
+    else
+      VERIFIED_GATEWAY_METRICS_ROLE_PIDS="$current_role_pid_lines"
+    fi
+  fi
+}
+
+metrics_registry_role_pids() {
+  node -e '
+    const health = JSON.parse(process.argv[1])
+    const mappings = []
+    const add = (role, pid) => {
+      if (typeof role !== "string" || !role || !Number.isSafeInteger(pid) || pid <= 1) process.exit(2)
+      mappings.push(`${role}=${pid}`)
+    }
+    add(`${health.nodeRole}:${health.instanceId}`, health.processPid)
+    add(`db-service:${health.instanceId}`, health.dbServicePid)
+    for (const worker of health.workerProcesses ?? []) {
+      add(`${worker.role}:${worker.replicaIndex + 1}`, worker.pid)
+    }
+    process.stdout.write(mappings.join("\n"))
+  ' "$1"
+}
+
+performance_metrics_registry_time_ms() {
   NODE_ENV=production \
   JUHE_AI_RUNTIME_MODE=performance \
   JUHE_AI_PERFORMANCE_NODE_ROLE=control \
   JUHE_AI_PROCESS_ROLE=server \
   JUHE_AI_INSTANCE_ID=metrics-registry-preflight \
-  JUHE_AI_GATEWAY_REPLICAS="$GATEWAY_COUNT" \
-  JUHE_AI_USAGE_WORKER_REPLICAS="$USAGE_WORKERS" \
-  JUHE_AI_LOG_WORKER_REPLICAS="$LOG_WORKERS" \
-  JUHE_AI_STATS_WORKER_REPLICAS=1 \
-  JUHE_AI_OPS_WORKER_REPLICAS=1 \
   JUHE_AI_LOG_FILE_ENABLED=false \
   JUHE_AI_LOG_CONSOLE_ENABLED=false \
-  "$@"
+  node "$CURRENT_DIR/backend/dist/scripts/preflight/check-performance-process-metrics-registry.js" --print-redis-time-ms
 }
 
 health_identity_matches() {
@@ -392,10 +449,11 @@ for name in $(activation_service_names); do
   mv -f -- "$STAGE_DIR/$name.sh" "$run_script"
   mv -f -- "$STAGE_DIR/$name.plist" "$plist"
   launchctl bootout "$DOMAIN" "$plist" >/dev/null 2>&1 || true
+  metrics_fence_ms="$(performance_metrics_registry_time_ms)"
   launchctl bootstrap "$DOMAIN" "$plist"
   launchctl kickstart -k "$DOMAIN/$(service_label "$name")"
   wait_for_health "$name"
-  wait_for_metrics_registry "$name"
+  wait_for_metrics_registry "$name" "$metrics_fence_ms"
 done
 for name in $(service_names); do wait_for_health "$name"; done
 

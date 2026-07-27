@@ -827,15 +827,8 @@ export function isAuditLogInput(value: unknown): value is AuditLogInput {
   const record = value as Record<string, unknown>
   return typeof record.traceId === 'string'
     && optionalAuditLogString(record.conversationKey)
-    && optionalAuditLogString(record.sessionNamespace)
-    && optionalAuditLogString(record.sessionSource)
-    && optionalAuditLogString(record.sessionResolution)
-    && optionalAuditLogString(record.sessionConfidence)
-    && optionalAuditLogString(record.threadKey)
-    && optionalAuditLogString(record.turnKey)
-    && optionalAuditLogString(record.agentKey)
-    && optionalAuditLogString(record.parentResponseKey)
-    && (record.identityConflict === undefined || typeof record.identityConflict === 'boolean')
+    && optionalAuditLogString(record.sessionId)
+    && optionalAuditLogString(record.sessionClientType)
     && typeof record.method === 'string'
     && typeof record.path === 'string'
     && typeof record.auditOutcome === 'string'

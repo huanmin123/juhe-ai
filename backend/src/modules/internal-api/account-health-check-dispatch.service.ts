@@ -9,7 +9,7 @@ import {
 
 const accountHealthCheckDispatchPath = '/v1/account-health-check/dispatch'
 const accountHealthCheckDispatchTimeoutMs = 2_000
-const requestFailureDispatchCooldownMs = 10 * 60_000
+const requestFailureDispatchCooldownMs = 5 * 60_000
 const requestFailureDispatchInFlight = new Set<string>()
 const requestFailureDispatchAcceptedAt = new Map<string, number>()
 let missingGatewayDispatchTargetLogged = false

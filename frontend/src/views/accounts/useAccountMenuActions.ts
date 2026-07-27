@@ -3,6 +3,7 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
+import { isAnthropicProtocolProfile } from '@/shared/providerProtocol'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
@@ -38,7 +39,13 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
     try {
       const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-      if (options.isManagementView.value) {
+      if (isAnthropicProtocolProfile(account)) {
+        if (options.isManagementView.value) {
+          await api.anthropicOAuth.refreshToken(account.id, scopeParams)
+        } else {
+          await api.myAnthropicOAuth.refreshToken(account.id)
+        }
+      } else if (options.isManagementView.value) {
         await api.openaiOAuth.refreshToken(account.id, scopeParams)
       } else {
         await api.myOpenaiOAuth.refreshToken(account.id)

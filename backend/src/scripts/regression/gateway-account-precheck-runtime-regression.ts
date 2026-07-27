@@ -1144,6 +1144,7 @@ function createGatewayAccount(name: string, errorHandlingRules: AccountErrorHand
       base_url: 'https://api.openai.com/v1',
       error_handling_rules: errorHandlingRules
     },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     schedulable: true
   }, adminAccess)

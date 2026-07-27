@@ -30,6 +30,7 @@ import {
   skipAccountForFailedProxyDispatch
 } from './account-preparation.js'
 import {
+  shouldRecordAbortedUpstreamAttempt,
   throwIfRequestAborted
 } from './helpers.js'
 import {
@@ -108,6 +109,7 @@ import {
 import { normalRouteFirstByteDeadlineAppliesToLane } from '../policy/speed-first-lane.js'
 import type { FirstByteDeadlineDecisionInput, FirstByteDeadlineAction, FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
+import { getGatewaySessionIdentity } from '../session-identity/index.js'
 
 /**
  * Owns the optional speed-first reservation for exactly one physical upstream
@@ -1153,6 +1155,29 @@ export async function fetchFirstAvailableUpstream(
                     cutoverReservation
                   )
                 }
+                if (signal?.aborted && shouldRecordAbortedUpstreamAttempt(error)) {
+                  await handleUpstreamRequestError({
+                    req,
+                    usageContext,
+                    auditCapture,
+                    auditAttemptId,
+                    account,
+                    upstreamUrl,
+                    attemptStartedAt,
+                    attemptIndex,
+                    auditAttemptIndex,
+                    settings,
+                    sessionAffinityKey,
+                    signal,
+                    lastAttempt,
+                    failedProxyDispatchKeys,
+                    error,
+                    clientIpAccountAvoidanceTracker,
+                    accountStateMutationEnabled: automaticAccountStateMutationAllowed,
+                    retrySameAccount: false
+                  })
+                  throw error
+                }
                 if (!provenStartedTransportFailure) {
                   const message = error instanceof Error ? error.message : String(error)
                   auditCapture.completeAttempt(auditAttemptId, {
@@ -2081,45 +2106,16 @@ export function gatewayForegroundAccountCircuitFailureEvidenceKey(
 }
 
 function explicitAccountCircuitSessionIdentity(req: Request): { source: string; value: string } | undefined {
-  for (const name of accountCircuitSessionHeaderNames) {
-    const value = stringValue(req.header(name))
-    if (value) return { source: `header:${name}`, value }
-  }
-  for (const path of accountCircuitSessionBodyPaths) {
-    const value = stringValue(valueAtPath(req.body, path))
-    if (value) return { source: `body:${path.join('.')}`, value }
-  }
-  return undefined
-}
-
-function valueAtPath(value: unknown, path: readonly string[]): unknown {
-  let current = value
-  for (const key of path) {
-    if (typeof current !== 'object' || current === null) return undefined
-    current = (current as Record<string, unknown>)[key]
-  }
-  return current
+  const identity = getGatewaySessionIdentity(req)
+  const value = stringValue(identity?.sessionId)
+  return value
+    ? { source: identity?.semanticNamespace ?? 'gateway_session', value }
+    : undefined
 }
 
 function accountCircuitEvidenceDigest(value: object): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
-
-const accountCircuitSessionHeaderNames = [
-  'session_id',
-  'session-id',
-  'x-session-id',
-  'conversation_id',
-  'conversation-id',
-  'x-conversation-id'
-] as const
-
-const accountCircuitSessionBodyPaths = [
-  ['session_id'],
-  ['conversation_id'],
-  ['metadata', 'session_id'],
-  ['metadata', 'conversation_id']
-] as const
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''

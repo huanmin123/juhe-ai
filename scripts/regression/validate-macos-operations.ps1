@@ -48,8 +48,14 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'activation_service_names', 'wait_for_health', 'wait_for_metrics_registry', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'activation_service_names', 'wait_for_health', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+$serverSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'backend\src\server.ts')
+foreach ($contract in @('processPid: process.pid', 'dbServicePid: dbService.pid', 'workerProcesses')) {
+  if (-not $serverSource.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Server health topology identity contract missing: $contract"
+  }
 }
 foreach ($contract in @(
   'proxy_set_header X-Real-IP $http_x_real_ip;',
@@ -79,10 +85,30 @@ $activationHealthCheck = $performanceInstaller.IndexOf('  wait_for_health "$name
 $activationRegistryCheck = $performanceInstaller.IndexOf('  wait_for_metrics_registry "$name"', $activationHealthCheck, [StringComparison]::Ordinal)
 $activationControlLast = $performanceInstaller.IndexOf("  printf '%s\n' control-1", $activationFunctionStart, [StringComparison]::Ordinal)
 $activationLoopEnd = $performanceInstaller.IndexOf("`ndone", $activationRegistryCheck, [StringComparison]::Ordinal)
+$activationFence = $performanceInstaller.IndexOf('  metrics_fence_ms="$(performance_metrics_registry_time_ms)"', $activationLoopStart, [StringComparison]::Ordinal)
+$activationBootout = $performanceInstaller.IndexOf('  launchctl bootout "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationBootstrap = $performanceInstaller.IndexOf('  launchctl bootstrap "$DOMAIN" "$plist"', $activationLoopStart, [StringComparison]::Ordinal)
 $activationKickstart = $performanceInstaller.IndexOf('  launchctl kickstart -k "$DOMAIN/$(service_label "$name")"', $activationBootstrap, [StringComparison]::Ordinal)
-if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationBootstrap -lt $activationLoopStart -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationControlLast -lt $activationFunctionStart -or $activationControlLast -gt $activationLoopStart) {
+if ($activationFunctionStart -lt 0 -or $activationFunctionEnd -lt 0 -or $activationLoopStart -lt 0 -or $activationGatewayLoop -lt 0 -or $activationGatewayLoopEnd -lt $activationGatewayLoop -or $activationControlWithinFunction -lt $activationGatewayLoopEnd -or $activationBootout -lt $activationLoopStart -or $activationFence -lt $activationBootout -or $activationBootstrap -lt $activationFence -or $activationKickstart -lt $activationBootstrap -or $activationHealthCheck -lt $activationKickstart -or $activationRegistryCheck -lt $activationHealthCheck -or $activationLoopEnd -lt $activationRegistryCheck -or $activationControlLast -lt $activationFunctionStart -or $activationControlLast -gt $activationLoopStart) {
   throw 'Performance topology must activate and verify gateway publishers before restarting control/workers'
+}
+if (-not $performanceInstaller.Contains('wait_for_metrics_registry "$name" "$metrics_fence_ms"', [StringComparison]::Ordinal)) {
+  throw 'Performance topology registry gate must require a Redis-time freshness fence captured after bootout'
+}
+if (-not $performanceInstaller.Contains('role_pid_lines="$(metrics_registry_role_pids "$VERIFIED_HEALTH_JSON")"', [StringComparison]::Ordinal) -or -not $performanceInstaller.Contains('set -- "$@" --role-pid "$role_pid"', [StringComparison]::Ordinal)) {
+  throw 'Performance topology registry gate must bind every expected role to the PID in the verified health topology'
+}
+if ($performanceInstaller.Contains('for role_pid in $(metrics_registry_role_pids', [StringComparison]::Ordinal)) {
+  throw 'Performance topology must not swallow PID mapping failures inside a for command substitution'
+}
+$metricsGateFunctionStart = $performanceInstaller.IndexOf('wait_for_metrics_registry() {', [StringComparison]::Ordinal)
+$metricsRolePidFunctionStart = $performanceInstaller.IndexOf('metrics_registry_role_pids() {', $metricsGateFunctionStart, [StringComparison]::Ordinal)
+$metricsGateFunction = $performanceInstaller.Substring($metricsGateFunctionStart, $metricsRolePidFunctionStart - $metricsGateFunctionStart)
+if ($metricsGateFunction -notmatch '(?m)^  current_role_pid_lines="\$\(metrics_registry_role_pids "\$VERIFIED_HEALTH_JSON"\)"$') {
+  throw 'Performance topology must propagate PID mapping helper failures without a fallback suffix'
+}
+if (-not $metricsGateFunction.Contains('role_pid_lines="$VERIFIED_GATEWAY_METRICS_ROLE_PIDS', [StringComparison]::Ordinal) -or $metricsGateFunction -notmatch 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS="\$VERIFIED_GATEWAY_METRICS_ROLE_PIDS\r?\n\$current_role_pid_lines"') {
+  throw 'Performance topology final control gate must reuse the verified PID mappings from every gateway activation'
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
 $performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
@@ -133,6 +159,56 @@ if ($bash) {
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --control-port 3102 --gateway-base-port 3101 --gateway-count 3 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted overlapping control and gateway ports' }
+
+    $metricsGateHarness = @'
+set -euo pipefail
+CURRENT_DIR=/tmp/juhe-ai-performance-harness
+GATEWAY_COUNT=3
+USAGE_WORKERS=2
+LOG_WORKERS=2
+VERIFIED_HEALTH_JSON=
+VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
+HARNESS_ROOT="$(mktemp -d)"
+trap 'rm -rf -- "$HARNESS_ROOT"' EXIT
+__METRICS_GATE_FUNCTION__
+metrics_registry_role_pids() {
+  case "$1" in
+    gateway-1) printf '%s\n' 'gateway:gateway-1=101' 'db-service:gateway-1=201' ;;
+    gateway-2) printf '%s\n' 'gateway:gateway-2=102' 'db-service:gateway-2=202' ;;
+    gateway-3) printf '%s\n' 'gateway:gateway-3=103' 'db-service:gateway-3=203' ;;
+    control-1) printf '%s\n' 'control:control-1=104' 'db-service:control-1=204' 'usage-worker:1=301' 'usage-worker:2=302' 'log-worker:1=401' 'log-worker:2=402' 'stats-worker:1=501' 'ops-worker:1=601' ;;
+    *) return 2 ;;
+  esac
+}
+node() { printf '%s\n' "$@" > "$HARNESS_ROOT/$VERIFIED_HEALTH_JSON.args"; }
+for instance in gateway-1 gateway-2 gateway-3 control-1; do
+  VERIFIED_HEALTH_JSON="$instance"
+  wait_for_metrics_registry "$instance" 123456789
+done
+[ "$(rg -c -- '--role-pid' "$HARNESS_ROOT/control-1.args")" -eq 14 ]
+for mapping in 'gateway:gateway-1=101' 'db-service:gateway-1=201' 'gateway:gateway-2=102' 'db-service:gateway-2=202' 'gateway:gateway-3=103' 'db-service:gateway-3=203'; do
+  rg -qx -- "$mapping" "$HARNESS_ROOT/control-1.args"
+done
+'@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction)
+    & $bash.Source -c $metricsGateHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology PID accumulation executable harness failed' }
+
+    $metricsMapperFailureHarness = @'
+set -euo pipefail
+CURRENT_DIR=/tmp/juhe-ai-performance-harness
+GATEWAY_COUNT=3
+USAGE_WORKERS=2
+LOG_WORKERS=2
+VERIFIED_HEALTH_JSON=broken
+VERIFIED_GATEWAY_METRICS_ROLE_PIDS=
+__METRICS_GATE_FUNCTION__
+metrics_registry_role_pids() { return 2; }
+node() { return 0; }
+wait_for_metrics_registry gateway-1 123456789
+'@.Replace('__METRICS_GATE_FUNCTION__', $metricsGateFunction)
+    & $bash.Source -c $metricsMapperFailureHarness 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'Performance topology PID mapper failure was swallowed by the registry gate' }
+
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai|unsafe' --label 'com.example.juhe-ai' 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'launchd installer accepted a sed-unsafe base path' }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai$(id)' --label 'com.example.juhe-ai' 2>$null

@@ -1,6 +1,11 @@
 import { StringDecoder } from 'node:string_decoder'
 import type { Request } from 'express'
 
+import {
+  stripAnthropicMessagesScopedHeaders,
+  stripCodexResponsesScopedHeaders
+} from '../../../gateway/upstream/header-policy.js'
+
 import type { AccountSupportedEndpointMode } from '../../../../domain/types.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
@@ -8,14 +13,10 @@ import {
   OPENAI_RESPONSES_FAMILY
 } from '../../../../domain/provider-protocol.js'
 import type { ResolvedOpenAIModelMapping } from '../../../gateway/protocols/openai-v1/model-mapping.js'
-import {
-  getGatewayRequestBodyState,
-  gatewayJsonBodyInlineParseMaxBytes,
-  type GatewayRawBodyRequest
-} from '../../../gateway/request/body.js'
+import { getGatewayRequestBodyState } from '../../../gateway/request/body.js'
 import {
   isGatewayJsonWorkerQueueFullError,
-  parseGatewayJsonBodyInWorker
+  parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
 import { requestStream } from '../../../gateway/request/metadata.js'
 import { GatewayAgentGuidanceResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
@@ -52,11 +53,10 @@ export function openAIOrAnthropicToGeminiNativeRequiredEndpointMode(req: Request
 export function prepareOpenAIOrAnthropicToGeminiNativeHeaders(headers: Headers, req: Request): void {
   headers.set('accept', requestStream(req) ? 'text/event-stream' : 'application/json')
   headers.set('content-type', 'application/json')
+  stripCodexResponsesScopedHeaders(headers)
+  stripAnthropicMessagesScopedHeaders(headers)
   headers.delete('content-length')
   headers.delete('authorization')
-  headers.delete('anthropic-version')
-  headers.delete('anthropic-beta')
-  headers.delete('openai-beta')
 }
 
 export async function buildOpenAIOrAnthropicToGeminiNativeBody(
@@ -101,29 +101,9 @@ export function transformGeminiNativeTargetBridgeUpstreamResponse(
 }
 
 async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promise<JsonRecord> {
-  if (isPlainObject(req.body)) {
-    return { ...req.body }
-  }
-  const requestWithBody = req as GatewayRawBodyRequest
-  if (requestWithBody.gatewayParsedJsonBodyAvailable && isPlainObject(requestWithBody.gatewayParsedJsonBody)) {
-    return { ...requestWithBody.gatewayParsedJsonBody }
-  }
-  const bodyState = getGatewayRequestBodyState(req)
-  if (bodyState?.jsonParseStatus === 'invalid_json') {
-    throw new GatewayRequestValidationError(
-      'Gemini native 目标桥接要求请求体是有效 JSON 对象',
-      'invalid_gemini_target_bridge_json_body'
-    )
-  }
-  const rawBody = requestWithBody.rawBody
-  if (!rawBody || rawBody.length === 0) {
-    return {}
-  }
   let parsed: unknown
   try {
-    parsed = rawBody.length > gatewayJsonBodyInlineParseMaxBytes
-      ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
-      : JSON.parse(rawBody.toString('utf8')) as unknown
+    parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new GatewayRequestValidationError(
@@ -136,6 +116,15 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
       'Gemini native 目标桥接要求请求体是有效 JSON 对象',
       'invalid_gemini_target_bridge_json_body'
     )
+  }
+  if (parsed === undefined) {
+    if (getGatewayRequestBodyState(req)?.jsonParseStatus === 'invalid_json') {
+      throw new GatewayRequestValidationError(
+        'Gemini native 目标桥接要求请求体是有效 JSON 对象',
+        'invalid_gemini_target_bridge_json_body'
+      )
+    }
+    return {}
   }
   if (!isPlainObject(parsed)) {
     throw new GatewayRequestValidationError(

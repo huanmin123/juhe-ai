@@ -266,7 +266,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - 后台激活、周期健康、质量失败确认、运行态恢复、账号级冷却复测和 Key 恢复探针严格使用账户 `healthCheckModel`。后台激活、周期健康和质量失败确认以受控协议诊断是否成功判断通用账户可用性；完整 HTTP 失败和 transport failure 都可以形成失败证据，但不得解释成凭据死亡、限流或封禁。运行态 transport 恢复、账号级冷却复测和 Key 恢复仍按匹配 provenance 消费 transport 结果；`probe_task_failure/stale/unknown` 不计数不改状态。用户显式 `temporary_unavailable / rate_limited` 只按其 TTL、匹配恢复动作或人工恢复清理。恢复探活使用专用 traffic source 写入明细和审计，不进入普通业务质量统计。
 - 后台激活和周期健康检查不得按完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 派生具体错误类型；协议成功可以激活/记录正向健康，协议未成功只推进通用健康失败阈值，本地配置/解密硬错误进入对应配置异常路径。
 
-账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。真实 gateway 请求的 opaque 完整失败只负责按账户去重、10 分钟限频地投递独立健康检查；通用协议成功保留账户，完整 HTTP 协议失败或 transport failure 累计通用健康失败阈值。确认过程不读取状态码/正文推断具体语义，并使用专用 traffic source，避免探针结果回灌普通账号质量统计。
+账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。真实 gateway 请求的 opaque 完整失败只负责按账户去重、5 分钟限频地投递独立健康检查；通用协议成功保留账户，完整 HTTP 协议失败或 transport failure 累计通用健康失败阈值。确认过程不读取状态码/正文推断具体语义，并使用专用 traffic source，避免探针结果回灌普通账号质量统计。
 
 ## 会话亲和调度
 

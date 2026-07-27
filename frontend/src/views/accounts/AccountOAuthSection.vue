@@ -39,6 +39,7 @@
         :auth-loading="authLoading"
         :auth-result="authResult"
         :form="form"
+        :oauth-mode-options="oauthModeOptions"
         @copy-auth-url="$emit('copy-auth-url', $event)"
         @generate-auth-url="$emit('generate-auth-url')"
         @open-auth-url="$emit('open-auth-url')"
@@ -46,34 +47,21 @@
     </template>
 
     <template v-else-if="isAnthropicOAuth">
-      <a-alert
-        class="form-alert"
-        type="info"
-        show-icon
-        message="Anthropic OAuth 使用直接录入 Bearer Token 的方式接入；请粘贴官方 OAuth / Claude Code 体系得到的 Access Token。"
+      <AccountOAuthAuthorizePanel
+        :auth-loading="authLoading"
+        :auth-result="authResult"
+        :form="form"
+        :oauth-mode-options="oauthModeOptions"
+        manual-alert-message="浏览器授权完成后会跳到官方回调页面；复制地址栏完整 URL 粘贴回来即可。"
+        manual-authorize-step-text="登录 Claude 并允许跳转"
+        refresh-token-alert-message="已有 Anthropic Refresh Token 时可直接粘贴，后端会重新换取 Access Token。"
+        access-token-alert-message="也可以直接录入已有的 Anthropic OAuth / Claude Code Access Token。"
+        access-token-placeholder="粘贴 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN"
+        optional-refresh-token-placeholder="可选；如已有 Refresh Token 一并保存"
+        @copy-auth-url="$emit('copy-auth-url', $event)"
+        @generate-auth-url="$emit('generate-auth-url')"
+        @open-auth-url="$emit('open-auth-url')"
       />
-      <a-form-item label="Access Token" required>
-        <a-textarea
-          v-model:value="form.accessToken"
-          :rows="3"
-          autocomplete="off"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="粘贴 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN"
-        />
-      </a-form-item>
-      <a-form-item label="Refresh Token">
-        <a-textarea
-          v-model:value="form.refreshToken"
-          :rows="3"
-          autocomplete="off"
-          data-lpignore="true"
-          data-1p-ignore="true"
-          data-form-type="other"
-          placeholder="可选；当前项目不主动刷新 Anthropic OAuth Token"
-        />
-      </a-form-item>
     </template>
 
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 GPT OAuth。" />
@@ -118,15 +106,16 @@
 
 <script setup lang="ts">
 import { QuestionCircleOutlined, SyncOutlined } from '@ant-design/icons-vue'
-import type { OpenAIAuthURLResult } from '@/types/domain'
+import { computed } from 'vue'
+import type { OAuthAuthURLResult } from '@/types/domain'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 
-defineProps<{
+const props = defineProps<{
   authLoading: boolean
-  authResult?: OpenAIAuthURLResult
+  authResult?: OAuthAuthURLResult
   editing: boolean
   form: AccountFormModel
   isAnthropicOAuth: boolean
@@ -139,6 +128,20 @@ defineProps<{
   protocolVersion?: string
   title: string
 }>()
+
+const oauthModeOptions = computed(() => {
+  if (props.isAnthropicOAuth) {
+    return [
+      { label: '官方 OAuth', value: 'manual' as const },
+      { label: '粘贴 Refresh Token', value: 'refresh_token' as const },
+      { label: '直接 Token', value: 'access_token' as const }
+    ]
+  }
+  return [
+    { label: '手动授权', value: 'manual' as const },
+    { label: '粘贴 Refresh Token', value: 'refresh_token' as const }
+  ]
+})
 
 defineEmits<{
   (event: 'copy-auth-url', value: string): void

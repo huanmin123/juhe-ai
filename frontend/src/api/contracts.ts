@@ -238,7 +238,8 @@ export interface AuditLogListParams extends ListParams {
   page?: number
   pageSize?: number
   traceId?: string
-  conversationKey?: string
+  sessionId?: string
+  sessionClientType?: string
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string
