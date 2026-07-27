@@ -10,7 +10,7 @@ const ALLOWED_OWNERS = new Set(['node', 'go'])
 const MIGRATION_FILENAME_PATTERN = /^([0-9]{6})_[a-z0-9_]+\.sql$/
 
 // Release packages omit the source migration catalog; the source-tree regression derives and verifies this value.
-export const CURRENT_SCHEMA_VERSION = 87
+export const CURRENT_SCHEMA_VERSION = 91
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const MAX_EXACT_ROUTES = 2048
 const LEGACY_FIELDS = ['deploymentEpoch', 'release', 'routeOwners', 'schemaVersion']
