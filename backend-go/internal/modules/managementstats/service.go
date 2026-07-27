@@ -135,13 +135,17 @@ type AccountUsageRow struct {
 
 type AccountUsageOverview struct {
 	Range                  StatsRange        `json:"range"`
-	Summary                UsageSummary      `json:"summary"`
 	Rows                   []AccountUsageRow `json:"rows"`
 	DefaultTrendAccountIDs []string          `json:"defaultTrendAccountIds"`
 	Total                  int               `json:"total"`
 	HasMore                bool              `json:"hasMore"`
 	Page                   int               `json:"page"`
 	PageSize               int               `json:"pageSize"`
+}
+
+type AccountUsageSummaryResult struct {
+	Range   StatsRange   `json:"range"`
+	Summary UsageSummary `json:"summary"`
 }
 
 type DailyUsagePoint struct {
@@ -173,6 +177,11 @@ type AccountUsageTrendOverview struct {
 }
 
 type AIPerformanceInput struct {
+	StartDate string
+	EndDate   string
+}
+
+type AIPerformanceSeriesInput struct {
 	StartDate  string
 	EndDate    string
 	AccountIDs []string
@@ -238,12 +247,16 @@ type AIPerformanceSummary struct {
 }
 
 type AIPerformanceOverview struct {
-	Range            StatsRange                   `json:"range"`
-	DefaultAccounts  []AIPerformanceAccount       `json:"defaultAccounts"`
-	SelectedAccounts []AIPerformanceAccount       `json:"selectedAccounts"`
-	Accounts         []AIPerformanceAccount       `json:"accounts"`
-	HourlySeries     []AIPerformanceAccountSeries `json:"hourlySeries"`
-	Summary          AIPerformanceSummary         `json:"summary"`
+	Range        StatsRange                   `json:"range"`
+	Accounts     []AIPerformanceAccount       `json:"accounts"`
+	HourlySeries []AIPerformanceAccountSeries `json:"hourlySeries"`
+	Summary      AIPerformanceSummary         `json:"summary"`
+}
+
+type AIPerformanceSeriesResult struct {
+	Range        StatsRange                   `json:"range"`
+	Accounts     []AIPerformanceAccount       `json:"accounts"`
+	HourlySeries []AIPerformanceAccountSeries `json:"hourlySeries"`
 }
 
 func (s *Service) AccountUsage(ctx context.Context, readScope ReadScope, input AccountUsageInput) (AccountUsageOverview, error) {
@@ -294,7 +307,30 @@ func (s *Service) AccountUsage(ctx context.Context, readScope ReadScope, input A
 	if shown := (page-1)*pageSize + len(rows); shown > total {
 		total = shown
 	}
-	return AccountUsageOverview{Range: rangeValue, Summary: usageSummary(result.Summary), Rows: rows, DefaultTrendAccountIDs: defaultIDs, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
+	return AccountUsageOverview{Range: rangeValue, Rows: rows, DefaultTrendAccountIDs: defaultIDs, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
+}
+
+func (s *Service) AccountUsageSummary(ctx context.Context, readScope ReadScope, input AccountUsageInput) (AccountUsageSummaryResult, error) {
+	if s.statsReader == nil {
+		return AccountUsageSummaryResult{}, fmt.Errorf("management stats reader is required")
+	}
+	defaultRange := rangeDefaultToday
+	if strings.TrimSpace(input.StartDate) == "" && strings.TrimSpace(input.EndDate) == "" {
+		defaultRange = rangeDefaultLast31Days
+	}
+	rangeValue, err := s.normalizeRange(ctx, input.StartDate, input.EndDate, defaultRange)
+	if err != nil {
+		return AccountUsageSummaryResult{}, err
+	}
+	scope, err := managementStatsScope(readScope)
+	if err != nil {
+		return AccountUsageSummaryResult{}, err
+	}
+	summary, err := s.statsReader.ReadManagementAccountUsageSummary(ctx, port.ManagementAccountUsageSummaryReadInput{Scope: scope, Range: port.ManagementStatsRange{StartDate: rangeValue.StartDate, EndDate: rangeValue.EndDate}})
+	if err != nil {
+		return AccountUsageSummaryResult{}, err
+	}
+	return AccountUsageSummaryResult{Range: rangeValue, Summary: usageSummary(summary)}, nil
 }
 
 func (s *Service) AccountUsageTrend(ctx context.Context, readScope ReadScope, input AccountUsageTrendInput) (AccountUsageTrendOverview, error) {
@@ -349,17 +385,38 @@ func (s *Service) AIPerformance(ctx context.Context, readScope ReadScope, input 
 	if err != nil {
 		return AIPerformanceOverview{}, err
 	}
-	result, err := s.statsReader.ReadManagementAIPerformance(ctx, port.ManagementAIPerformanceReadInput{Scope: scope, Range: port.ManagementStatsRange{StartDate: rangeValue.StartDate, EndDate: rangeValue.EndDate}, AccountIDs: uniqueStrings(input.AccountIDs, 20)})
+	result, err := s.statsReader.ReadManagementAIPerformance(ctx, port.ManagementAIPerformanceReadInput{Scope: scope, Range: port.ManagementStatsRange{StartDate: rangeValue.StartDate, EndDate: rangeValue.EndDate}})
 	if err != nil {
 		return AIPerformanceOverview{}, err
 	}
-	defaultIDs := stringSetFromAccounts(result.DefaultAccounts)
-	selectedIDs := stringSetFromAccounts(result.SelectedAccounts)
-	accounts := mergePerformanceAccounts(result.DefaultAccounts, result.SelectedAccounts, defaultIDs, selectedIDs)
-	defaultAccounts := filterPerformanceAccounts(accounts, func(account AIPerformanceAccount) bool { return account.DefaultVisible })
-	selectedAccounts := filterPerformanceAccounts(accounts, func(account AIPerformanceAccount) bool { return account.Selected })
-	hourly := make(map[string]port.ManagementAIPerformanceHourlyRow, len(result.HourlyRows))
-	for _, row := range result.HourlyRows {
+	accounts := performanceAccounts(result.Accounts, true, false)
+	series := buildPerformanceSeries(rangeValue, accounts, result.HourlyRows)
+	return AIPerformanceOverview{Range: rangeValue, Accounts: accounts, HourlySeries: series, Summary: performanceSummary(result.Summary)}, nil
+}
+
+func (s *Service) AIPerformanceSeries(ctx context.Context, readScope ReadScope, input AIPerformanceSeriesInput) (AIPerformanceSeriesResult, error) {
+	if s.statsReader == nil {
+		return AIPerformanceSeriesResult{}, fmt.Errorf("management stats reader is required")
+	}
+	rangeValue, err := s.normalizeAIPerformanceRange(ctx, input.StartDate, input.EndDate)
+	if err != nil {
+		return AIPerformanceSeriesResult{}, err
+	}
+	scope, err := managementStatsScope(readScope)
+	if err != nil {
+		return AIPerformanceSeriesResult{}, err
+	}
+	result, err := s.statsReader.ReadManagementAIPerformanceSeries(ctx, port.ManagementAIPerformanceSeriesReadInput{Scope: scope, Range: port.ManagementStatsRange{StartDate: rangeValue.StartDate, EndDate: rangeValue.EndDate}, AccountIDs: uniqueStrings(input.AccountIDs, 20)})
+	if err != nil {
+		return AIPerformanceSeriesResult{}, err
+	}
+	accounts := performanceAccounts(result.Accounts, false, true)
+	return AIPerformanceSeriesResult{Range: rangeValue, Accounts: accounts, HourlySeries: buildPerformanceSeries(rangeValue, accounts, result.HourlyRows)}, nil
+}
+
+func buildPerformanceSeries(rangeValue StatsRange, accounts []AIPerformanceAccount, rows []port.ManagementAIPerformanceHourlyRow) []AIPerformanceAccountSeries {
+	hourly := make(map[string]port.ManagementAIPerformanceHourlyRow, len(rows))
+	for _, row := range rows {
 		hourly[row.AccountID+"\n"+row.StatHour] = row
 	}
 	hours := hourBuckets(rangeValue)
@@ -372,7 +429,7 @@ func (s *Service) AIPerformance(ctx context.Context, readScope ReadScope, input 
 		}
 		series = append(series, AIPerformanceAccountSeries{AccountID: account.ID, AccountName: account.Name, ProviderCode: account.ProviderCode, SystemAccountID: account.SystemAccountID, Points: points})
 	}
-	return AIPerformanceOverview{Range: rangeValue, DefaultAccounts: defaultAccounts, SelectedAccounts: selectedAccounts, Accounts: accounts, HourlySeries: series, Summary: performanceSummary(result.Summary)}, nil
+	return series
 }
 
 func (s *Service) AIPerformanceAccounts(ctx context.Context, readScope ReadScope, input AIPerformanceAccountsInput) ([]AIPerformanceAccountOption, error) {
@@ -478,23 +535,16 @@ func usageSummary(row port.ManagementUsageAggregate) UsageSummary {
 	return UsageSummary{RequestCount: row.RequestCount, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens, CacheReadTokens: row.CacheReadTokens, CacheReadCost: row.CacheReadCostUSD, CacheWriteTokens: row.CacheWriteTokens, CacheWrite1hTokens: row.CacheWrite1hTokens, CacheWriteCost: row.CacheWriteCostUSD, ThinkingTokens: row.ThinkingTokens, InputImageTokens: row.InputImageTokens, OutputImageTokens: row.OutputImageTokens, TotalTokens: row.InputTokens + row.OutputTokens, TotalCost: row.TotalCostUSD, LastUsedAt: row.LastUsedAt}
 }
 
-func mergePerformanceAccounts(defaultRows, selectedRows []port.ManagementStatsAccount, defaultIDs, selectedIDs map[string]struct{}) []AIPerformanceAccount {
-	seen := map[string]struct{}{}
-	result := make([]AIPerformanceAccount, 0, len(defaultRows)+len(selectedRows))
-	for _, row := range append(append([]port.ManagementStatsAccount{}, defaultRows...), selectedRows...) {
-		if _, ok := seen[row.ID]; ok {
-			continue
-		}
-		seen[row.ID] = struct{}{}
-		_, isDefault := defaultIDs[row.ID]
-		_, isSelected := selectedIDs[row.ID]
-		result = append(result, performanceAccount(row, isDefault, isSelected))
-	}
-	return result
-}
-
 func performanceAccount(row port.ManagementStatsAccount, defaultVisible, selected bool) AIPerformanceAccount {
 	return AIPerformanceAccount{ID: row.ID, Name: row.Name, Status: row.Status, ProviderCode: row.ProviderCode, SystemAccountID: row.SystemAccountID, SystemAccountName: optionalString(row.SystemAccountName), OwnerSystemAccountID: optionalString(row.OwnerSystemAccountID), OwnerSystemAccountName: optionalString(row.OwnerSystemAccountName), AccessType: row.AccessType, RequestCountLast7d: row.RequestCountLast7d, Selected: selected, DefaultVisible: defaultVisible}
+}
+
+func performanceAccounts(rows []port.ManagementStatsAccount, defaultVisible, selected bool) []AIPerformanceAccount {
+	result := make([]AIPerformanceAccount, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, performanceAccount(row, defaultVisible, selected))
+	}
+	return result
 }
 
 func performancePoint(hour string, row port.ManagementAIPerformanceHourlyRow) AIPerformancePoint {
@@ -538,24 +588,6 @@ func dateBuckets(statsRange StatsRange) []string {
 	result := make([]string, 0, statsRange.Days)
 	for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
 		result = append(result, date.Format(time.DateOnly))
-	}
-	return result
-}
-
-func stringSetFromAccounts(rows []port.ManagementStatsAccount) map[string]struct{} {
-	result := make(map[string]struct{}, len(rows))
-	for _, row := range rows {
-		result[row.ID] = struct{}{}
-	}
-	return result
-}
-
-func filterPerformanceAccounts(rows []AIPerformanceAccount, keep func(AIPerformanceAccount) bool) []AIPerformanceAccount {
-	result := make([]AIPerformanceAccount, 0, len(rows))
-	for _, row := range rows {
-		if keep(row) {
-			result = append(result, row)
-		}
 	}
 	return result
 }

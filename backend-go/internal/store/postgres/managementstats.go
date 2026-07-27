@@ -102,15 +102,11 @@ func (s *Store) ReadManagementAccountUsage(ctx context.Context, input port.Manag
 		return port.ManagementAccountUsageReadResult{}, err
 	}
 	merged := mergeManagementAccountUsageRows(pageRows, selectedRows)
-	summary, err := s.readManagementAccountUsageSummary(ctx, input)
-	if err != nil {
-		return port.ManagementAccountUsageReadResult{}, err
-	}
 	defaultIDs, err := s.readManagementStatsRankIDs(ctx, input.Scope, 10)
 	if err != nil {
 		return port.ManagementAccountUsageReadResult{}, err
 	}
-	return port.ManagementAccountUsageReadResult{Rows: mapManagementAccountUsageRows(merged), Summary: summary, DefaultTrendAccountIDs: defaultIDs, PageRowCount: len(pageRows), HasMore: hasMore}, nil
+	return port.ManagementAccountUsageReadResult{Rows: mapManagementAccountUsageRows(merged), DefaultTrendAccountIDs: defaultIDs, PageRowCount: len(pageRows), HasMore: hasMore}, nil
 }
 
 func (s *Store) readManagementAccountUsageRows(ctx context.Context, input port.ManagementAccountUsageReadInput, limit, offset int, selectedIDs []string) ([]managementStatsAccountUsageRow, error) {
@@ -192,7 +188,7 @@ OFFSET $` + fmt.Sprint(offsetArg) + `::integer`
 	return result, nil
 }
 
-func (s *Store) readManagementAccountUsageSummary(ctx context.Context, input port.ManagementAccountUsageReadInput) (port.ManagementUsageAggregate, error) {
+func (s *Store) ReadManagementAccountUsageSummary(ctx context.Context, input port.ManagementAccountUsageSummaryReadInput) (port.ManagementUsageAggregate, error) {
 	scopeID := input.Scope.SystemAccountID
 	if input.Scope.ScopeType == "account" {
 		scopeID = "global"
@@ -276,17 +272,11 @@ OFFSET $7::integer`, input.Scope.SystemAccountID, input.Scope.ScopeType, ids, in
 }
 
 func (s *Store) ReadManagementAIPerformance(ctx context.Context, input port.ManagementAIPerformanceReadInput) (port.ManagementAIPerformanceReadResult, error) {
-	input.AccountIDs = boundedManagementStatsIDs(input.AccountIDs, 20)
-	defaultAccounts, err := s.readManagementStatsRankedAccounts(ctx, input.Scope, "", 10)
+	accounts, err := s.readManagementStatsRankedAccounts(ctx, input.Scope, "", 10)
 	if err != nil {
 		return port.ManagementAIPerformanceReadResult{}, err
 	}
-	selectedAccounts, err := s.readManagementStatsAccountsByIDs(ctx, input.Scope, input.AccountIDs)
-	if err != nil {
-		return port.ManagementAIPerformanceReadResult{}, err
-	}
-	allAccounts := mergeManagementStatsAccounts(defaultAccounts, selectedAccounts)
-	hourlyRows, err := s.readManagementAIPerformanceHourly(ctx, input, managementStatsAccountIDs(allAccounts))
+	hourlyRows, err := s.readManagementAIPerformanceHourly(ctx, input.Scope, input.Range, managementStatsAccountIDs(accounts))
 	if err != nil {
 		return port.ManagementAIPerformanceReadResult{}, err
 	}
@@ -294,7 +284,20 @@ func (s *Store) ReadManagementAIPerformance(ctx context.Context, input port.Mana
 	if err != nil {
 		return port.ManagementAIPerformanceReadResult{}, err
 	}
-	return port.ManagementAIPerformanceReadResult{DefaultAccounts: defaultAccounts, SelectedAccounts: selectedAccounts, HourlyRows: hourlyRows, Summary: summary}, nil
+	return port.ManagementAIPerformanceReadResult{Accounts: accounts, HourlyRows: hourlyRows, Summary: summary}, nil
+}
+
+func (s *Store) ReadManagementAIPerformanceSeries(ctx context.Context, input port.ManagementAIPerformanceSeriesReadInput) (port.ManagementAIPerformanceSeriesReadResult, error) {
+	input.AccountIDs = boundedManagementStatsIDs(input.AccountIDs, 20)
+	accounts, err := s.readManagementStatsAccountsByIDs(ctx, input.Scope, input.AccountIDs)
+	if err != nil {
+		return port.ManagementAIPerformanceSeriesReadResult{}, err
+	}
+	hourlyRows, err := s.readManagementAIPerformanceHourly(ctx, input.Scope, input.Range, managementStatsAccountIDs(accounts))
+	if err != nil {
+		return port.ManagementAIPerformanceSeriesReadResult{}, err
+	}
+	return port.ManagementAIPerformanceSeriesReadResult{Accounts: accounts, HourlyRows: hourlyRows}, nil
 }
 
 func (s *Store) ReadManagementAIPerformanceAccounts(ctx context.Context, input port.ManagementAIPerformanceAccountsReadInput) ([]port.ManagementStatsAccount, error) {
@@ -547,7 +550,7 @@ func managementStatsVisibilitySQL(scope port.ManagementStatsScope, alias string,
   )`
 }
 
-func (s *Store) readManagementAIPerformanceHourly(ctx context.Context, input port.ManagementAIPerformanceReadInput, accountIDs []string) ([]port.ManagementAIPerformanceHourlyRow, error) {
+func (s *Store) readManagementAIPerformanceHourly(ctx context.Context, scope port.ManagementStatsScope, statsRange port.ManagementStatsRange, accountIDs []string) ([]port.ManagementAIPerformanceHourlyRow, error) {
 	accountIDs = boundedManagementStatsIDs(accountIDs, 30)
 	if len(accountIDs) == 0 {
 		return []port.ManagementAIPerformanceHourlyRow{}, nil
@@ -564,7 +567,7 @@ WHERE system_account_id = $1::text
   AND stat_hour <= $5::text
 ORDER BY scope_id ASC, stat_hour ASC
 LIMIT $6::integer
-OFFSET $7::integer`, input.Scope.SystemAccountID, input.Scope.ScopeType, accountIDs, input.Range.StartDate+"T00", input.Range.EndDate+"T23", len(accountIDs)*31*24, 0)
+OFFSET $7::integer`, scope.SystemAccountID, scope.ScopeType, accountIDs, statsRange.StartDate+"T00", statsRange.EndDate+"T23", len(accountIDs)*31*24, 0)
 	if err != nil {
 		return nil, fmt.Errorf("read management ai performance hourly: %w", err)
 	}

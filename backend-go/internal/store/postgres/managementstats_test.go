@@ -50,6 +50,67 @@ func TestManagementStatsSQLReadsOnlyBoundedPreaggregates(t *testing.T) {
 	}
 }
 
+func TestManagementStatsProgressiveCatalogMigrationOwnsSchemaNotWriter(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000088_w6_progressive_stats_read_catalog.sql")
+	if err != nil {
+		t.Fatalf("read progressive stats migration: %v", err)
+	}
+	text := strings.ToLower(string(source))
+	for _, required := range []string{
+		"create table if not exists juhe_stats.usage_stats_hourly",
+		"create table if not exists juhe_stats.usage_rank_snapshots",
+		"create table if not exists juhe_stats.ai_performance_summary_windows",
+		"create table if not exists juhe_stats.usage_scope_range_windows",
+		"window_key text generated always as (start_date || ':' || end_date) stored",
+		"idx_usage_scope_range_windows_account_usage_order",
+		"idx_usage_rank_snapshots_lookup",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("progressive stats migration missing %q", required)
+		}
+	}
+	down := strings.Split(text, "-- +goose down")
+	if len(down) != 2 {
+		t.Fatalf("progressive stats migration missing Goose Down section")
+	}
+	for _, forbidden := range []string{"drop table", "delete from", "truncate", "insert into", "update "} {
+		if strings.Contains(down[1], forbidden) {
+			t.Fatalf("progressive stats Down must preserve shared Node-writer data; found %q", forbidden)
+		}
+	}
+}
+
+func TestManagementStatsProgressiveReadsStaySplit(t *testing.T) {
+	source, err := os.ReadFile("managementstats.go")
+	if err != nil {
+		t.Fatalf("read management stats store: %v", err)
+	}
+	text := string(source)
+	list := sourceFunction(t, text, "func (s *Store) ReadManagementAccountUsage(", "func (s *Store) readManagementAccountUsageRows(")
+	if strings.Contains(list, "ReadManagementAccountUsageSummary") || strings.Contains(list, "readManagementAccountUsageSummary") {
+		t.Fatal("account usage list must not execute summary query")
+	}
+	series := sourceFunction(t, text, "func (s *Store) ReadManagementAIPerformanceSeries(", "func (s *Store) ReadManagementAIPerformanceAccounts(")
+	for _, forbidden := range []string{"readManagementStatsRankedAccounts", "readManagementAIPerformanceSummary", "ai_performance_summary_windows"} {
+		if strings.Contains(series, forbidden) {
+			t.Fatalf("AI performance series must not contain %q", forbidden)
+		}
+	}
+}
+
+func sourceFunction(t *testing.T, source, startToken, endToken string) string {
+	t.Helper()
+	start := strings.Index(source, startToken)
+	if start < 0 {
+		t.Fatalf("source missing %q", startToken)
+	}
+	end := strings.Index(source[start:], endToken)
+	if end < 0 {
+		t.Fatalf("source after %q missing %q", startToken, endToken)
+	}
+	return source[start : start+end]
+}
+
 func TestManagementStatsSelectedInputsAreCappedBeforeSQL(t *testing.T) {
 	for _, test := range []struct {
 		name  string

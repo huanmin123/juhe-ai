@@ -60,10 +60,14 @@ type ManagementAccountUsageReadInput struct {
 
 type ManagementAccountUsageReadResult struct {
 	Rows                   []ManagementAccountUsageRow
-	Summary                ManagementUsageAggregate
 	DefaultTrendAccountIDs []string
 	PageRowCount           int
 	HasMore                bool
+}
+
+type ManagementAccountUsageSummaryReadInput struct {
+	Scope ManagementStatsScope
+	Range ManagementStatsRange
 }
 
 type ManagementAccountUsageDailyRow struct {
@@ -106,16 +110,25 @@ type ManagementAIPerformanceHourlyRow struct {
 }
 
 type ManagementAIPerformanceReadInput struct {
+	Scope ManagementStatsScope
+	Range ManagementStatsRange
+}
+
+type ManagementAIPerformanceReadResult struct {
+	Accounts   []ManagementStatsAccount
+	HourlyRows []ManagementAIPerformanceHourlyRow
+	Summary    ManagementAIPerformanceAggregate
+}
+
+type ManagementAIPerformanceSeriesReadInput struct {
 	Scope      ManagementStatsScope
 	Range      ManagementStatsRange
 	AccountIDs []string
 }
 
-type ManagementAIPerformanceReadResult struct {
-	DefaultAccounts  []ManagementStatsAccount
-	SelectedAccounts []ManagementStatsAccount
-	HourlyRows       []ManagementAIPerformanceHourlyRow
-	Summary          ManagementAIPerformanceAggregate
+type ManagementAIPerformanceSeriesReadResult struct {
+	Accounts   []ManagementStatsAccount
+	HourlyRows []ManagementAIPerformanceHourlyRow
 }
 
 type ManagementAIPerformanceAccountsReadInput struct {
@@ -127,7 +140,9 @@ type ManagementAIPerformanceAccountsReadInput struct {
 
 type ManagementStatsReader interface {
 	ReadManagementAccountUsage(context.Context, ManagementAccountUsageReadInput) (ManagementAccountUsageReadResult, error)
+	ReadManagementAccountUsageSummary(context.Context, ManagementAccountUsageSummaryReadInput) (ManagementUsageAggregate, error)
 	ReadManagementAccountUsageTrend(context.Context, ManagementAccountUsageTrendReadInput) (ManagementAccountUsageTrendReadResult, error)
 	ReadManagementAIPerformance(context.Context, ManagementAIPerformanceReadInput) (ManagementAIPerformanceReadResult, error)
+	ReadManagementAIPerformanceSeries(context.Context, ManagementAIPerformanceSeriesReadInput) (ManagementAIPerformanceSeriesReadResult, error)
 	ReadManagementAIPerformanceAccounts(context.Context, ManagementAIPerformanceAccountsReadInput) ([]ManagementStatsAccount, error)
 }

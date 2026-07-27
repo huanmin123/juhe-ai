@@ -9,8 +9,8 @@ import (
 )
 
 func TestCurrentSchemaVersion(t *testing.T) {
-	if CurrentSchemaVersion != 87 {
-		t.Fatalf("CurrentSchemaVersion = %d, want 87", CurrentSchemaVersion)
+	if CurrentSchemaVersion != 88 {
+		t.Fatalf("CurrentSchemaVersion = %d, want 88", CurrentSchemaVersion)
 	}
 }
 

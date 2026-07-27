@@ -117,7 +117,7 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000087_w7_model_quality_health_sync_candidate_indexes.sql",
+		Name:    "000088_w6_progressive_stats_read_catalog.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)

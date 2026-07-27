@@ -496,10 +496,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 		ManagementStatsAccountUsageHandler:                managementHandlers.StatsAccountUsageHandler,
 		ManagementMyStatsAccountUsageHandler:              managementHandlers.MyStatsAccountUsageHandler,
+		ManagementStatsAccountUsageSummaryHandler:         managementHandlers.StatsAccountUsageSummaryHandler,
+		ManagementMyStatsAccountUsageSummaryHandler:       managementHandlers.MyStatsAccountUsageSummaryHandler,
 		ManagementStatsAccountUsageTrendHandler:           managementHandlers.StatsAccountUsageTrendHandler,
 		ManagementMyStatsAccountUsageTrendHandler:         managementHandlers.MyStatsAccountUsageTrendHandler,
 		ManagementStatsAIPerformanceHandler:               managementHandlers.StatsAIPerformanceHandler,
 		ManagementMyStatsAIPerformanceHandler:             managementHandlers.MyStatsAIPerformanceHandler,
+		ManagementStatsAIPerformanceSeriesHandler:         managementHandlers.StatsAIPerformanceSeriesHandler,
+		ManagementMyStatsAIPerformanceSeriesHandler:       managementHandlers.MyStatsAIPerformanceSeriesHandler,
 		ManagementStatsAIPerformanceAccountsHandler:       managementHandlers.StatsAIPerformanceAccountsHandler,
 		ManagementMyStatsAIPerformanceAccountsHandler:     managementHandlers.MyStatsAIPerformanceAccountsHandler,
 		ManagementStatsUsageOverviewHandler:               managementHandlers.StatsUsageOverviewHandler,
@@ -755,10 +759,14 @@ type managementAPIHandlers struct {
 	MyStatsUsageWindowHandler               http.Handler
 	StatsAccountUsageHandler                http.Handler
 	MyStatsAccountUsageHandler              http.Handler
+	StatsAccountUsageSummaryHandler         http.Handler
+	MyStatsAccountUsageSummaryHandler       http.Handler
 	StatsAccountUsageTrendHandler           http.Handler
 	MyStatsAccountUsageTrendHandler         http.Handler
 	StatsAIPerformanceHandler               http.Handler
 	MyStatsAIPerformanceHandler             http.Handler
+	StatsAIPerformanceSeriesHandler         http.Handler
+	MyStatsAIPerformanceSeriesHandler       http.Handler
 	StatsAIPerformanceAccountsHandler       http.Handler
 	MyStatsAIPerformanceAccountsHandler     http.Handler
 	StatsUsageOverviewHandler               http.Handler
@@ -1312,10 +1320,14 @@ func newManagementAPIHandlerWithOperationLogSubmitter(
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 		StatsAccountUsageHandler:                httpapi.NewManagementStatsAccountUsageHandler(statsService),
 		MyStatsAccountUsageHandler:              httpapi.NewManagementMyStatsAccountUsageHandler(statsService),
+		StatsAccountUsageSummaryHandler:         httpapi.NewManagementStatsAccountUsageSummaryHandler(statsService),
+		MyStatsAccountUsageSummaryHandler:       httpapi.NewManagementMyStatsAccountUsageSummaryHandler(statsService),
 		StatsAccountUsageTrendHandler:           httpapi.NewManagementStatsAccountUsageTrendHandler(statsService),
 		MyStatsAccountUsageTrendHandler:         httpapi.NewManagementMyStatsAccountUsageTrendHandler(statsService),
 		StatsAIPerformanceHandler:               httpapi.NewManagementStatsAIPerformanceHandler(statsService),
 		MyStatsAIPerformanceHandler:             httpapi.NewManagementMyStatsAIPerformanceHandler(statsService),
+		StatsAIPerformanceSeriesHandler:         httpapi.NewManagementStatsAIPerformanceSeriesHandler(statsService),
+		MyStatsAIPerformanceSeriesHandler:       httpapi.NewManagementMyStatsAIPerformanceSeriesHandler(statsService),
 		StatsAIPerformanceAccountsHandler:       httpapi.NewManagementStatsAIPerformanceAccountsHandler(statsService),
 		MyStatsAIPerformanceAccountsHandler:     httpapi.NewManagementMyStatsAIPerformanceAccountsHandler(statsService),
 		StatsUsageOverviewHandler:               httpapi.NewManagementStatsUsageOverviewHandler(statsOverviewService),

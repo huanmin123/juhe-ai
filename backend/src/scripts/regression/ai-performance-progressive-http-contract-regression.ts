@@ -69,6 +69,7 @@ const visibleAccount = repositories.createAccount({
   name: 'AI 性能可见账号',
   type: 'api_key',
   credentials: { api_key: 'sk-ai-performance-visible', base_url: 'https://api.openai.com/v1' },
+  supportedModels: ['gpt-5.5'],
   groupId: userGroup.id
 }, userAccess)
 const hiddenAccount = repositories.createAccount({
@@ -77,6 +78,7 @@ const hiddenAccount = repositories.createAccount({
   name: 'AI 性能不可见账号',
   type: 'api_key',
   credentials: { api_key: 'sk-ai-performance-hidden', base_url: 'https://api.openai.com/v1' },
+  supportedModels: ['gpt-5.5'],
   groupId: adminGroup.id
 }, adminAccess)
 seedUserStats(visibleAccount.id)

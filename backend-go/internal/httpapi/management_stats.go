@@ -55,6 +55,14 @@ func NewManagementMyStatsAccountUsageHandler(service *managementstats.Service) h
 	return newManagementStatsAccountUsageHandler(service, managementStatsUsageWindowScopeSelf)
 }
 
+func NewManagementStatsAccountUsageSummaryHandler(service *managementstats.Service) http.Handler {
+	return newManagementStatsAccountUsageSummaryHandler(service, managementStatsUsageWindowScopeAdmin)
+}
+
+func NewManagementMyStatsAccountUsageSummaryHandler(service *managementstats.Service) http.Handler {
+	return newManagementStatsAccountUsageSummaryHandler(service, managementStatsUsageWindowScopeSelf)
+}
+
 func NewManagementStatsAccountUsageTrendHandler(service *managementstats.Service) http.Handler {
 	return newManagementStatsAccountUsageTrendHandler(service, managementStatsUsageWindowScopeAdmin)
 }
@@ -69,6 +77,14 @@ func NewManagementStatsAIPerformanceHandler(service *managementstats.Service) ht
 
 func NewManagementMyStatsAIPerformanceHandler(service *managementstats.Service) http.Handler {
 	return newManagementStatsAIPerformanceHandler(service, managementStatsUsageWindowScopeSelf)
+}
+
+func NewManagementStatsAIPerformanceSeriesHandler(service *managementstats.Service) http.Handler {
+	return newManagementStatsAIPerformanceSeriesHandler(service, managementStatsUsageWindowScopeAdmin)
+}
+
+func NewManagementMyStatsAIPerformanceSeriesHandler(service *managementstats.Service) http.Handler {
+	return newManagementStatsAIPerformanceSeriesHandler(service, managementStatsUsageWindowScopeSelf)
 }
 
 func NewManagementStatsAIPerformanceAccountsHandler(service *managementstats.Service) http.Handler {
@@ -90,11 +106,35 @@ func newManagementStatsAccountUsageHandler(service *managementstats.Service, rou
 			return
 		}
 		values := r.URL.Query()
+		if _, provided := values["includeSummary"]; provided {
+			writeMessageError(w, http.StatusBadRequest, "account-usage 列表不支持 includeSummary，请使用 /account-usage/summary")
+			return
+		}
 		result, err := service.AccountUsage(r.Context(), readScope, managementstats.AccountUsageInput{
 			Page: managementStatsOptionalInteger(values, "page"), PageSize: managementStatsOptionalInteger(values, "pageSize"),
 			Keyword: managementStatsFirstText(values, "keyword"), StartDate: managementStatsFirstText(values, "startDate"), EndDate: managementStatsFirstText(values, "endDate"),
 			AccountIDs: managementStatsIDList(values, "accountIds"),
 		})
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementStatsAccountUsageSummaryHandler(service *managementstats.Service, routeScope managementStatsUsageWindowScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readScope, ok := managementStatsReadScope(w, r, routeScope)
+		if !ok {
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		values := r.URL.Query()
+		result, err := service.AccountUsageSummary(r.Context(), readScope, managementstats.AccountUsageInput{StartDate: managementStatsFirstText(values, "startDate"), EndDate: managementStatsFirstText(values, "endDate")})
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
@@ -130,6 +170,10 @@ func newManagementStatsAIPerformanceHandler(service *managementstats.Service, ro
 			return
 		}
 		values := r.URL.Query()
+		if managementStatsHasAccountIDs(values) {
+			writeMessageError(w, http.StatusBadRequest, "AI 性能基础数据不接受 accountIds，请使用 /ai-performance/series")
+			return
+		}
 		startDate, valid := managementStatsOptionalDate(values, "startDate")
 		if !valid {
 			writeMessageError(w, http.StatusBadRequest, "开始日期格式应为 YYYY-MM-DD")
@@ -144,7 +188,42 @@ func newManagementStatsAIPerformanceHandler(service *managementstats.Service, ro
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		result, err := service.AIPerformance(r.Context(), readScope, managementstats.AIPerformanceInput{StartDate: startDate, EndDate: endDate, AccountIDs: managementStatsIDList(values, "accountIds")})
+		result, err := service.AIPerformance(r.Context(), readScope, managementstats.AIPerformanceInput{StartDate: startDate, EndDate: endDate})
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementStatsAIPerformanceSeriesHandler(service *managementstats.Service, routeScope managementStatsUsageWindowScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readScope, ok := managementStatsReadScope(w, r, routeScope)
+		if !ok {
+			return
+		}
+		values := r.URL.Query()
+		startDate, valid := managementStatsOptionalDate(values, "startDate")
+		if !valid {
+			writeMessageError(w, http.StatusBadRequest, "开始日期格式应为 YYYY-MM-DD")
+			return
+		}
+		endDate, valid := managementStatsOptionalDate(values, "endDate")
+		if !valid {
+			writeMessageError(w, http.StatusBadRequest, "结束日期格式应为 YYYY-MM-DD")
+			return
+		}
+		accountIDs, message, valid := managementStatsSeriesAccountIDs(values)
+		if !valid {
+			writeMessageError(w, http.StatusBadRequest, message)
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		result, err := service.AIPerformanceSeries(r.Context(), readScope, managementstats.AIPerformanceSeriesInput{StartDate: startDate, EndDate: endDate, AccountIDs: accountIDs})
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
@@ -259,4 +338,42 @@ func managementStatsIDList(values url.Values, key string) []string {
 		}
 	}
 	return result
+}
+
+func managementStatsHasAccountIDs(values url.Values) bool {
+	for key := range values {
+		if key == "accountIds" || strings.HasPrefix(key, "accountIds[") {
+			return true
+		}
+	}
+	return false
+}
+
+func managementStatsSeriesAccountIDs(values url.Values) ([]string, string, bool) {
+	for key := range values {
+		if strings.HasPrefix(key, "accountIds[") && key != "accountIds[]" {
+			return nil, "accountIds 仅支持重复参数 accountIds=value", false
+		}
+	}
+	rawValues := append(append([]string{}, values["accountIds"]...), values["accountIds[]"]...)
+	if len(rawValues) < 1 || len(rawValues) > 20 {
+		return nil, "accountIds 必须重复传入 1 到 20 个", false
+	}
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(rawValues))
+	for _, raw := range rawValues {
+		if strings.Contains(raw, ",") {
+			return nil, "accountIds 不接受 CSV，必须使用重复参数", false
+		}
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return nil, "accountIds 不能为空", false
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	return result, "", true
 }

@@ -107,29 +107,37 @@ func TestAccountUsageSingleDateBoundaryMatchesNodeNormalization(t *testing.T) {
 	}
 }
 
-func TestAIPerformanceCapsSelectionMergesAccountsAndFillsHourlyBuckets(t *testing.T) {
+func TestAccountUsageSummaryUsesIndependentReader(t *testing.T) {
+	reader := &managementStatsReadStub{accountSummary: port.ManagementUsageAggregate{RequestCount: 9, InputTokens: 3, OutputTokens: 4}}
+	service := readServiceForTest(reader)
+
+	got, err := service.AccountUsageSummary(context.Background(), ReadScope{ActorSystemAccountID: "sys_self"}, AccountUsageInput{StartDate: "2026-07-22", EndDate: "2026-07-22"})
+	if err != nil {
+		t.Fatalf("AccountUsageSummary() error = %v", err)
+	}
+	if len(reader.accountUsageInputs) != 0 || len(reader.accountSummaryInputs) != 1 {
+		t.Fatalf("reader calls list=%d summary=%d", len(reader.accountUsageInputs), len(reader.accountSummaryInputs))
+	}
+	if got.Summary.RequestCount != 9 || got.Summary.TotalTokens != 7 {
+		t.Fatalf("summary = %+v", got)
+	}
+}
+
+func TestAIPerformanceBaseUsesDefaultAccountsAndFillsHourlyBuckets(t *testing.T) {
 	reader := &managementStatsReadStub{
 		aiPerformance: port.ManagementAIPerformanceReadResult{
-			DefaultAccounts:  []port.ManagementStatsAccount{{ID: "acc_default", Name: "Default", ProviderCode: "openai", Status: "active", SystemAccountID: "sys_owner", OwnerSystemAccountID: "sys_owner", AccessType: "owner", RequestCountLast7d: 9}},
-			SelectedAccounts: []port.ManagementStatsAccount{{ID: "acc_selected", Name: "Selected", ProviderCode: "gpt", Status: "active", SystemAccountID: "sys_self", OwnerSystemAccountID: "sys_owner", AccessType: "authorized", RequestCountLast7d: 3}},
-			HourlyRows:       []port.ManagementAIPerformanceHourlyRow{{AccountID: "acc_default", StatHour: "2026-07-22T01", RequestCount: 2, FirstTokenMSSum: 5, FirstTokenMSCount: 2, FirstTokenMSMax: 4, DurationMSSum: 11, DurationMSCount: 2, DurationMSMax: 8}},
-			Summary:          port.ManagementAIPerformanceAggregate{RequestCount: 2, FirstTokenMSSum: 5, FirstTokenMSCount: 2, FirstTokenMSMax: 4},
+			Accounts:   []port.ManagementStatsAccount{{ID: "acc_default", Name: "Default", ProviderCode: "openai", Status: "active", SystemAccountID: "sys_owner", OwnerSystemAccountID: "sys_owner", AccessType: "owner", RequestCountLast7d: 9}},
+			HourlyRows: []port.ManagementAIPerformanceHourlyRow{{AccountID: "acc_default", StatHour: "2026-07-22T01", RequestCount: 2, FirstTokenMSSum: 5, FirstTokenMSCount: 2, FirstTokenMSMax: 4, DurationMSSum: 11, DurationMSCount: 2, DurationMSMax: 8}},
+			Summary:    port.ManagementAIPerformanceAggregate{RequestCount: 2, FirstTokenMSSum: 5, FirstTokenMSCount: 2, FirstTokenMSMax: 4},
 		},
 	}
 	service := readServiceForTest(reader)
-	ids := make([]string, 25)
-	for index := range ids {
-		ids[index] = "acc_" + string(rune('a'+index))
-	}
 
-	got, err := service.AIPerformance(context.Background(), ReadScope{ActorSystemAccountID: "sys_self"}, AIPerformanceInput{StartDate: "2026-07-22", EndDate: "2026-07-22", AccountIDs: ids})
+	got, err := service.AIPerformance(context.Background(), ReadScope{ActorSystemAccountID: "sys_self"}, AIPerformanceInput{StartDate: "2026-07-22", EndDate: "2026-07-22"})
 	if err != nil {
 		t.Fatalf("AIPerformance() error = %v", err)
 	}
-	if len(reader.aiPerformanceInputs[0].AccountIDs) != 20 {
-		t.Fatalf("selected ids = %d", len(reader.aiPerformanceInputs[0].AccountIDs))
-	}
-	if len(got.Accounts) != 2 || len(got.DefaultAccounts) != 1 || len(got.SelectedAccounts) != 1 || len(got.HourlySeries) != 2 || len(got.HourlySeries[0].Points) != 24 {
+	if len(got.Accounts) != 1 || !got.Accounts[0].DefaultVisible || got.Accounts[0].Selected || len(got.HourlySeries) != 1 || len(got.HourlySeries[0].Points) != 24 {
 		t.Fatalf("overview sizes = %+v", got)
 	}
 	point := got.HourlySeries[0].Points[1]
@@ -138,6 +146,30 @@ func TestAIPerformanceCapsSelectionMergesAccountsAndFillsHourlyBuckets(t *testin
 	}
 	if got.Summary.AverageFirstTokenMS == nil || *got.Summary.AverageFirstTokenMS != 3 {
 		t.Fatalf("summary = %+v", got.Summary)
+	}
+}
+
+func TestAIPerformanceSeriesCapsSelectionAndOmitsSummary(t *testing.T) {
+	reader := &managementStatsReadStub{aiSeries: port.ManagementAIPerformanceSeriesReadResult{Accounts: []port.ManagementStatsAccount{{ID: "acc_selected", Name: "Selected", ProviderCode: "gpt", Status: "active", SystemAccountID: "sys_self"}}}}
+	service := readServiceForTest(reader)
+	ids := make([]string, 25)
+	for index := range ids {
+		ids[index] = "acc_" + string(rune('a'+index))
+	}
+
+	got, err := service.AIPerformanceSeries(context.Background(), ReadScope{ActorSystemAccountID: "sys_self"}, AIPerformanceSeriesInput{StartDate: "2026-07-22", EndDate: "2026-07-22", AccountIDs: ids})
+	if err != nil {
+		t.Fatalf("AIPerformanceSeries() error = %v", err)
+	}
+	if len(reader.aiSeriesInputs) != 1 || len(reader.aiSeriesInputs[0].AccountIDs) != 20 || len(got.Accounts) != 1 || !got.Accounts[0].Selected || got.Accounts[0].DefaultVisible {
+		t.Fatalf("series input/result = %+v / %+v", reader.aiSeriesInputs, got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal series: %v", err)
+	}
+	if strings.Contains(string(encoded), "summary") {
+		t.Fatalf("series leaked summary: %s", encoded)
 	}
 }
 
@@ -183,14 +215,23 @@ func readServiceForTest(reader port.ManagementStatsReader) *Service {
 }
 
 type managementStatsReadStub struct {
-	accountUsage        port.ManagementAccountUsageReadResult
-	accountTrend        port.ManagementAccountUsageTrendReadResult
-	aiPerformance       port.ManagementAIPerformanceReadResult
-	aiAccounts          []port.ManagementStatsAccount
-	accountUsageInputs  []port.ManagementAccountUsageReadInput
-	accountTrendInputs  []port.ManagementAccountUsageTrendReadInput
-	aiPerformanceInputs []port.ManagementAIPerformanceReadInput
-	aiAccountInputs     []port.ManagementAIPerformanceAccountsReadInput
+	accountUsage         port.ManagementAccountUsageReadResult
+	accountSummary       port.ManagementUsageAggregate
+	accountTrend         port.ManagementAccountUsageTrendReadResult
+	aiPerformance        port.ManagementAIPerformanceReadResult
+	aiSeries             port.ManagementAIPerformanceSeriesReadResult
+	aiAccounts           []port.ManagementStatsAccount
+	accountUsageInputs   []port.ManagementAccountUsageReadInput
+	accountSummaryInputs []port.ManagementAccountUsageSummaryReadInput
+	accountTrendInputs   []port.ManagementAccountUsageTrendReadInput
+	aiPerformanceInputs  []port.ManagementAIPerformanceReadInput
+	aiSeriesInputs       []port.ManagementAIPerformanceSeriesReadInput
+	aiAccountInputs      []port.ManagementAIPerformanceAccountsReadInput
+}
+
+func (s *managementStatsReadStub) ReadManagementAccountUsageSummary(_ context.Context, input port.ManagementAccountUsageSummaryReadInput) (port.ManagementUsageAggregate, error) {
+	s.accountSummaryInputs = append(s.accountSummaryInputs, input)
+	return s.accountSummary, nil
 }
 
 func (s *managementStatsReadStub) ReadManagementAccountUsage(_ context.Context, input port.ManagementAccountUsageReadInput) (port.ManagementAccountUsageReadResult, error) {
@@ -206,6 +247,11 @@ func (s *managementStatsReadStub) ReadManagementAccountUsageTrend(_ context.Cont
 func (s *managementStatsReadStub) ReadManagementAIPerformance(_ context.Context, input port.ManagementAIPerformanceReadInput) (port.ManagementAIPerformanceReadResult, error) {
 	s.aiPerformanceInputs = append(s.aiPerformanceInputs, input)
 	return s.aiPerformance, nil
+}
+
+func (s *managementStatsReadStub) ReadManagementAIPerformanceSeries(_ context.Context, input port.ManagementAIPerformanceSeriesReadInput) (port.ManagementAIPerformanceSeriesReadResult, error) {
+	s.aiSeriesInputs = append(s.aiSeriesInputs, input)
+	return s.aiSeries, nil
 }
 
 func (s *managementStatsReadStub) ReadManagementAIPerformanceAccounts(_ context.Context, input port.ManagementAIPerformanceAccountsReadInput) ([]port.ManagementStatsAccount, error) {

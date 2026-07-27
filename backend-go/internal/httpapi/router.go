@@ -246,10 +246,14 @@ type RouterOptions struct {
 	ManagementMyStatsUsageWindowHandler               http.Handler
 	ManagementStatsAccountUsageHandler                http.Handler
 	ManagementMyStatsAccountUsageHandler              http.Handler
+	ManagementStatsAccountUsageSummaryHandler         http.Handler
+	ManagementMyStatsAccountUsageSummaryHandler       http.Handler
 	ManagementStatsAccountUsageTrendHandler           http.Handler
 	ManagementMyStatsAccountUsageTrendHandler         http.Handler
 	ManagementStatsAIPerformanceHandler               http.Handler
 	ManagementMyStatsAIPerformanceHandler             http.Handler
+	ManagementStatsAIPerformanceSeriesHandler         http.Handler
+	ManagementMyStatsAIPerformanceSeriesHandler       http.Handler
 	ManagementStatsAIPerformanceAccountsHandler       http.Handler
 	ManagementMyStatsAIPerformanceAccountsHandler     http.Handler
 	ManagementStatsUsageOverviewHandler               http.Handler
@@ -562,10 +566,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyStatsUsageWindowHandler == nil &&
 				opts.ManagementStatsAccountUsageHandler == nil &&
 				opts.ManagementMyStatsAccountUsageHandler == nil &&
+				opts.ManagementStatsAccountUsageSummaryHandler == nil &&
+				opts.ManagementMyStatsAccountUsageSummaryHandler == nil &&
 				opts.ManagementStatsAccountUsageTrendHandler == nil &&
 				opts.ManagementMyStatsAccountUsageTrendHandler == nil &&
 				opts.ManagementStatsAIPerformanceHandler == nil &&
 				opts.ManagementMyStatsAIPerformanceHandler == nil &&
+				opts.ManagementStatsAIPerformanceSeriesHandler == nil &&
+				opts.ManagementMyStatsAIPerformanceSeriesHandler == nil &&
 				opts.ManagementStatsAIPerformanceAccountsHandler == nil &&
 				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil &&
 				opts.ManagementStatsUsageOverviewHandler == nil &&
@@ -1506,6 +1514,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyStatsAccountUsageHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage", opts.ManagementMyStatsAccountUsageHandler.ServeHTTP)
 			}
+			if opts.ManagementStatsAccountUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage/summary", opts.ManagementStatsAccountUsageSummaryHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAccountUsageSummaryHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage/summary", opts.ManagementMyStatsAccountUsageSummaryHandler.ServeHTTP)
+			}
 			if opts.ManagementStatsAccountUsageTrendHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage/trend", opts.ManagementStatsAccountUsageTrendHandler.ServeHTTP)
 			}
@@ -1517,6 +1531,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyStatsAIPerformanceHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance", opts.ManagementMyStatsAIPerformanceHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAIPerformanceSeriesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance/series", opts.ManagementStatsAIPerformanceSeriesHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAIPerformanceSeriesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance/series", opts.ManagementMyStatsAIPerformanceSeriesHandler.ServeHTTP)
 			}
 			if opts.ManagementStatsAIPerformanceAccountsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance/accounts", opts.ManagementStatsAIPerformanceAccountsHandler.ServeHTTP)
@@ -1766,10 +1786,14 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyStatsUsageWindowHandler != nil ||
 		opts.ManagementStatsAccountUsageHandler != nil ||
 		opts.ManagementMyStatsAccountUsageHandler != nil ||
+		opts.ManagementStatsAccountUsageSummaryHandler != nil ||
+		opts.ManagementMyStatsAccountUsageSummaryHandler != nil ||
 		opts.ManagementStatsAccountUsageTrendHandler != nil ||
 		opts.ManagementMyStatsAccountUsageTrendHandler != nil ||
 		opts.ManagementStatsAIPerformanceHandler != nil ||
 		opts.ManagementMyStatsAIPerformanceHandler != nil ||
+		opts.ManagementStatsAIPerformanceSeriesHandler != nil ||
+		opts.ManagementMyStatsAIPerformanceSeriesHandler != nil ||
 		opts.ManagementStatsAIPerformanceAccountsHandler != nil ||
 		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil ||
 		opts.ManagementStatsUsageOverviewHandler != nil ||
