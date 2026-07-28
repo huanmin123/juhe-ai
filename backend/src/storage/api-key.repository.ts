@@ -646,6 +646,10 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
       preferredRouteStrategy?.id ?? input.routeStrategyId
     )
     record.routeStrategyId = routeStrategyId
+    const routeStrategy = apiKeyRouteStrategyReference(database, systemAccountId, routeStrategyId)
+    record.routeStrategyName = routeStrategy?.name
+    record.routeStrategyMode = routeStrategy?.mode
+    record.routeStrategyStatus = routeStrategy?.status
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
     database
@@ -1299,6 +1303,29 @@ async function apiKeyRouteStrategyReferenceAsync(
     WHERE id = ? AND system_account_id = ?
     LIMIT 1
   `, [routeStrategyId, systemAccountId])
+}
+
+function apiKeyRouteStrategyReference(
+  database: ReturnType<typeof getBusinessDatabase>,
+  systemAccountId: string,
+  routeStrategyId: string
+): {
+    id: string
+    name: string
+    mode: RouteStrategyMode
+    status: RouteStrategyStatus
+  } | undefined {
+  return database.prepare(`
+    SELECT id, name, mode, status
+    FROM route_strategies
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1
+  `).get(routeStrategyId, systemAccountId) as {
+    id: string
+    name: string
+    mode: RouteStrategyMode
+    status: RouteStrategyStatus
+  } | undefined
 }
 
 async function syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(

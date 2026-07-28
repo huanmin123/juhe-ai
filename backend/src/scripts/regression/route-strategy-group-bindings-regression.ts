@@ -85,11 +85,14 @@ try {
     }, access)
   }, /groupBindings/, 'API Key 创建不应再接受 groupBindings')
 
-  assert.throws(() => {
-    repositories.createApiKeyRecord({
-      name: '缺少策略路由回归 Key'
-    }, access)
-  }, /API Key 必须绑定策略路由/, 'API Key 创建必须显式绑定策略路由')
+  const defaultBoundApiKey = repositories.createApiKeyRecord({
+    name: '默认策略路由回归 Key'
+  }, access)
+  assert.equal(
+    defaultBoundApiKey.routeStrategyId,
+    'route_strategy_default_gpt_sys_admin',
+    'API Key 创建省略 routeStrategyId 时应绑定当前用户的默认 GPT 策略路由'
+  )
 
   assert.throws(() => {
     repositories.createRouteStrategy({
