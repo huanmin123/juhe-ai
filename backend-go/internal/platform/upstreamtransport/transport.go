@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -92,6 +93,7 @@ type Options struct {
 	ProxyURL             string
 	TLSConfig            *tls.Config
 	Transport            http.RoundTripper
+	URLPolicy            upstreamurlpolicy.Config
 }
 
 // Client owns its HTTP client and, when created without a custom transport,
@@ -101,6 +103,8 @@ type Client struct {
 	ownedTransport       *http.Transport
 	timeout              time.Duration
 	maxResponseBodyBytes int64
+	urlPolicy            upstreamurlpolicy.Config
+	customTransport      bool
 }
 
 // Result contains bounded diagnostic bytes and the transport evidence needed
@@ -146,6 +150,8 @@ func NewClient(options Options) (*Client, error) {
 		ownedTransport:       owned,
 		timeout:              timeout,
 		maxResponseBodyBytes: maxBody,
+		urlPolicy:            options.URLPolicy,
+		customTransport:      options.Transport != nil,
 	}, nil
 }
 
@@ -285,7 +291,24 @@ func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, er
 		return Result{}, failure(FailureInvalidRequest, err)
 	}
 	result := Result{AttemptURL: prepared.URL.String()}
-	response, doErr := c.httpClient.Do(prepared)
+	httpClient := c.httpClient
+	var executionTransport *http.Transport
+	if !c.customTransport {
+		plan, policyErr := upstreamurlpolicy.PrepareRequestURL(runCtx, result.AttemptURL, c.urlPolicy)
+		if policyErr != nil {
+			return result, failure(FailureInvalidRequest, errors.Join(ErrInvalidRequest, policyErr))
+		}
+		prepared.URL = plan.URL()
+		executionTransport, err = c.executionTransport(prepared, plan)
+		if err != nil {
+			return result, failure(FailureInvalidRequest, errors.Join(ErrInvalidRequest, err))
+		}
+		defer executionTransport.CloseIdleConnections()
+		copyClient := *c.httpClient
+		copyClient.Transport = recordingRoundTripper{next: executionTransport}
+		httpClient = &copyClient
+	}
+	response, doErr := httpClient.Do(prepared)
 	result.Attempted = recorder.attempted
 	if doErr != nil {
 		if recorder.responseObserved {
@@ -336,6 +359,45 @@ func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, er
 		return result, failure(FailureClose, closeErr)
 	}
 	return result, nil
+}
+
+func (c *Client) executionTransport(request *http.Request, plan *upstreamurlpolicy.DialPlan) (*http.Transport, error) {
+	if c == nil || c.ownedTransport == nil || request == nil || request.URL == nil || plan == nil {
+		return nil, ErrInvalidRequest
+	}
+	transport := c.ownedTransport.Clone()
+	if transport.Proxy == nil {
+		transport.DialContext = plan.DialContext
+		return transport, nil
+	}
+	addresses := plan.Addresses()
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("validated upstream URL has no pinned address")
+	}
+	originalHost := request.URL.Host
+	originalHostname := request.URL.Hostname()
+	port := request.URL.Port()
+	if port == "" {
+		if request.URL.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	request.URL.Host = net.JoinHostPort(addresses[0].String(), port)
+	if request.Host == "" {
+		request.Host = originalHost
+	}
+	if request.URL.Scheme == "https" {
+		transport.TLSClientConfig = cloneTLSConfig(transport.TLSClientConfig)
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		if strings.TrimSpace(transport.TLSClientConfig.ServerName) == "" {
+			transport.TLSClientConfig.ServerName = originalHostname
+		}
+	}
+	return transport, nil
 }
 
 func validateRequest(request *http.Request) error {

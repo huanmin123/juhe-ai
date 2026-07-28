@@ -61,7 +61,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       res.status(403).json({ message: '缺少系统账户上下文' })
       return
     }
-    const account = await findAccountManualTestCapabilitiesContextAsync(req.params.id, requestAccess)
+    const account = await findAccountManualTestCapabilitiesContextAsync(req.params.id, req.params.modelId, requestAccess)
     if (!account) {
       res.status(404).json({ message: '账户不存在' })
       return

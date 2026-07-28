@@ -8,7 +8,10 @@ import type {
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { loadModelMappingsByAccountIds, loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
+import {
+  loadModelMappingsForAccountModel,
+  loadModelMappingsForAccountModelAsync
+} from './account-model-mappings.repository.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -58,14 +61,15 @@ export async function findAccountManualTestListContextAsync(
 
 export async function findAccountManualTestCapabilitiesContextAsync(
   accountId: string,
+  modelId: string,
   access?: AccessScope
 ): Promise<AccountManualTestCapabilitiesContext | undefined> {
   const row = await findVisibleAccountManualTestContextRowAsync(accountId, access, true)
   if (!row?.credentials_encrypted) return undefined
   const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
   const modelMappings = runtimeConfig.databaseDriver === 'postgres'
-    ? (await loadModelMappingsByAccountIdsAsync([row.fact_account_id])).get(row.fact_account_id) ?? []
-    : loadModelMappingsByAccountIds([row.fact_account_id]).get(row.fact_account_id) ?? []
+    ? await loadModelMappingsForAccountModelAsync(row.fact_account_id, modelId)
+    : loadModelMappingsForAccountModel(row.fact_account_id, modelId)
   return {
     ...accountManualTestListContextFromRow(row),
     healthCheckEndpointMode: row.health_check_endpoint_mode,

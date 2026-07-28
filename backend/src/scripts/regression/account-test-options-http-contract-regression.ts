@@ -395,7 +395,9 @@ function assertCapabilitiesQueryBoundary(sqlList: string[], label: string): void
   assert.match(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型能力必须只为 supported_endpoint_modes 读取单行密文`)
   assert.doesNotMatch(contextQueries[0] ?? '', /SELECT\s+\*/i, `${label}模型能力不得构造完整账户摘要`)
   const mappingQueries = sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql))
-  assert.equal(mappingQueries.length, 1, `${label}模型能力只能定点读取一次当前账户映射`)
+  assert.equal(mappingQueries.length, 1, `${label}模型能力只能定点读取一次当前账户当前模型映射`)
+  assert.match(mappingQueries[0] ?? '', /WHERE\s+account_id\s*=\s*\?\s+AND\s+source_model\s*=\s*\?/i, `${label}模型映射查询必须同时按 accountId 和 modelId 过滤`)
+  assert.doesNotMatch(mappingQueries[0] ?? '', /account_id\s+IN\s*\(/i, `${label}模型能力不得复用账户批量映射查询`)
   assertLightweightCatalogQueries(sqlList, label, true)
 }
 

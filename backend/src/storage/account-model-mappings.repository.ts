@@ -186,16 +186,45 @@ export async function loadModelMappingsByAccountIdsAsync(accountIds: string[]): 
   return accountModelMappingsFromRows(rows)
 }
 
+export function loadModelMappingsForAccountModel(accountIdInput: string, sourceModelInput: string): AccountModelMapping[] {
+  const accountId = accountIdInput.trim()
+  const sourceModel = sourceModelInput.trim()
+  if (!accountId || !sourceModel) return []
+
+  const database = getBusinessDatabase()
+  const rows = database.prepare(`
+    SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
+    FROM account_model_mappings
+    WHERE account_id = ?
+      AND source_model = ?
+    ORDER BY source_endpoint_family ASC
+  `).all(accountId, sourceModel) as unknown as AccountModelMappingRow[]
+  return rows.map(accountModelMappingFromRow)
+}
+
+export async function loadModelMappingsForAccountModelAsync(accountIdInput: string, sourceModelInput: string): Promise<AccountModelMapping[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadModelMappingsForAccountModel(accountIdInput, sourceModelInput)
+  }
+  const accountId = accountIdInput.trim()
+  const sourceModel = sourceModelInput.trim()
+  if (!accountId || !sourceModel) return []
+
+  const client = await getAccountModelMappingsDatabaseClient()
+  const rows = await client.query<AccountModelMappingRow>(`
+    SELECT account_id, source_model, source_endpoint_family, upstream_model, upstream_endpoint_family, enabled
+    FROM ${accountModelMappingsTable(client)}
+    WHERE account_id = ?
+      AND source_model = ?
+    ORDER BY source_endpoint_family ASC
+  `, [accountId, sourceModel])
+  return rows.map(accountModelMappingFromRow)
+}
+
 function accountModelMappingsFromRows(rows: AccountModelMappingRow[]): Map<string, AccountModelMapping[]> {
   const output = new Map<string, AccountModelMapping[]>()
   for (const row of rows) {
-    const mapping: AccountModelMapping = {
-      sourceModel: row.source_model,
-      sourceEndpointFamily: row.source_endpoint_family,
-      upstreamModel: row.upstream_model,
-      upstreamEndpointFamily: row.upstream_endpoint_family,
-      enabled: row.enabled === 1
-    }
+    const mapping = accountModelMappingFromRow(row)
     const mappings = output.get(row.account_id)
     if (mappings) {
       mappings.push(mapping)
@@ -204,6 +233,16 @@ function accountModelMappingsFromRows(rows: AccountModelMappingRow[]): Map<strin
     }
   }
   return output
+}
+
+function accountModelMappingFromRow(row: AccountModelMappingRow): AccountModelMapping {
+  return {
+    sourceModel: row.source_model,
+    sourceEndpointFamily: row.source_endpoint_family,
+    upstreamModel: row.upstream_model,
+    upstreamEndpointFamily: row.upstream_endpoint_family,
+    enabled: row.enabled === 1
+  }
 }
 
 function sourceEndpointFamilyValue(value: unknown): AccountModelMappingSourceEndpointFamily {
