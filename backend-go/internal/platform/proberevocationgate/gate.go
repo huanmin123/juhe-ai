@@ -92,6 +92,12 @@ type Protector interface {
 	Protect(context.Context, FinalReload, SendRequest) error
 }
 
+// ConnectionPool is the narrow pgx pool surface required by the gate. Store
+// adapters can expose this without leaking their underlying pool instance.
+type ConnectionPool interface {
+	Acquire(context.Context) (*pgxpool.Conn, error)
+}
+
 type Options struct {
 	// HoldTimeout bounds lock acquisition and cancels final reload or request
 	// writing. The lock is not released until a synchronous callback returns;
@@ -111,7 +117,7 @@ type Guard struct {
 	retryMaxDelay  time.Duration
 }
 
-func New(pool *pgxpool.Pool, options Options) (*Guard, error) {
+func New(pool ConnectionPool, options Options) (*Guard, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("%w: PostgreSQL pool is required", ErrInvalidOptions)
 	}
@@ -379,7 +385,7 @@ type connectionAcquirer interface {
 	Acquire(context.Context) (dedicatedConnection, error)
 }
 
-type pgxPoolAcquirer struct{ pool *pgxpool.Pool }
+type pgxPoolAcquirer struct{ pool ConnectionPool }
 
 func (a pgxPoolAcquirer) Acquire(ctx context.Context) (dedicatedConnection, error) {
 	connection, err := a.pool.Acquire(ctx)

@@ -43,6 +43,21 @@ func TestLoadReadsUpstreamBaseURLPrivateAllowlistFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestAllowPrivateUpstreamBaseURLsIsExplicitAndForbiddenInProduction(t *testing.T) {
+	t.Setenv("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS", "true")
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if !cfg.AllowPrivateUpstreamBaseURLs {
+		t.Fatal("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS was not loaded")
+	}
+	cfg.Env = "production"
+	if err := validateUpstreamBaseURLPrivateAllowlist(cfg); err == nil || !strings.Contains(err.Error(), "只能用于") {
+		t.Fatalf("production private upstream override error = %v", err)
+	}
+}
+
 func TestLoadReadsBoundedRuntimeLogGrepConfiguration(t *testing.T) {
 	t.Setenv("JUHE_AI_LOG_DIR", "D:/juhe/logs")
 	t.Setenv("JUHE_AI_LOG_FILE_ENABLED", "false")

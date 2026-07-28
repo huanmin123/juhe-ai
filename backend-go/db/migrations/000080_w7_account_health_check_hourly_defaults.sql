@@ -5,16 +5,16 @@ WITH legacy_defaults AS (
   WHERE key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes')
   GROUP BY system_account_id
   HAVING COUNT(*) FILTER (
-    WHERE key = 'accountHealthCheckIntervalHours' AND value_json = '12'::jsonb
+    WHERE key = 'accountHealthCheckIntervalHours' AND value_json = '12'
   ) = 1
      AND COUNT(*) FILTER (
-       WHERE key = 'accountHealthCheckJitterMinutes' AND value_json = '120'::jsonb
+       WHERE key = 'accountHealthCheckJitterMinutes' AND value_json = '120'
      ) = 1
 ), updated_settings AS (
   UPDATE juhe_business.system_settings AS settings
   SET value_json = CASE settings.key
-        WHEN 'accountHealthCheckIntervalHours' THEN '1'::jsonb
-        WHEN 'accountHealthCheckJitterMinutes' THEN '10'::jsonb
+        WHEN 'accountHealthCheckIntervalHours' THEN '1'
+        WHEN 'accountHealthCheckJitterMinutes' THEN '10'
       END,
       updated_at = now()
   FROM legacy_defaults
@@ -55,16 +55,16 @@ WITH hourly_defaults AS (
   WHERE key IN ('accountHealthCheckIntervalHours', 'accountHealthCheckJitterMinutes')
   GROUP BY system_account_id
   HAVING COUNT(*) FILTER (
-    WHERE key = 'accountHealthCheckIntervalHours' AND value_json = '1'::jsonb
+    WHERE key = 'accountHealthCheckIntervalHours' AND value_json = '1'
   ) = 1
      AND COUNT(*) FILTER (
-       WHERE key = 'accountHealthCheckJitterMinutes' AND value_json = '10'::jsonb
+       WHERE key = 'accountHealthCheckJitterMinutes' AND value_json = '10'
      ) = 1
 )
 UPDATE juhe_business.system_settings AS settings
 SET value_json = CASE settings.key
-      WHEN 'accountHealthCheckIntervalHours' THEN '12'::jsonb
-      WHEN 'accountHealthCheckJitterMinutes' THEN '120'::jsonb
+      WHEN 'accountHealthCheckIntervalHours' THEN '12'
+      WHEN 'accountHealthCheckJitterMinutes' THEN '120'
     END,
     updated_at = now()
 FROM hourly_defaults

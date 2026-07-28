@@ -19,7 +19,8 @@ func TestRevocationGuardTransportRunsFenceInsideGuardAndReleasesAtWrite(t *testi
 		t.Fatal(err)
 	}
 
-	result, err := (RevocationGuardTransport{Next: next, Guard: guard}).ExecuteWithFence(t.Context(), request, func(context.Context) error {
+	transport := RevocationGuardTransport{Next: next, Guard: guard}
+	result, err := transport.ExecuteWithFence(t.Context(), request, func(context.Context) error {
 		sequence = append(sequence, "reload")
 		return nil
 	})
@@ -40,6 +41,10 @@ func TestRevocationGuardTransportRunsFenceInsideGuardAndReleasesAtWrite(t *testi
 	}
 	if next.fenceWasSet {
 		t.Fatal("wrapped transport received the final reload fence a second time")
+	}
+	transport.CloseIdleConnections()
+	if !next.closed {
+		t.Fatal("wrapped transport idle connections were not closed")
 	}
 }
 
@@ -81,7 +86,10 @@ type revocationTransportStub struct {
 	err         error
 	calls       int
 	fenceWasSet bool
+	closed      bool
 }
+
+func (t *revocationTransportStub) CloseIdleConnections() { t.closed = true }
 
 func (t *revocationTransportStub) ExecuteWithFence(ctx context.Context, _ *http.Request, fence func(context.Context) error) (upstreamtransport.Result, error) {
 	t.calls++

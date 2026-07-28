@@ -46,4 +46,10 @@ func (t RevocationGuardTransport) ExecuteWithFence(
 	return result, executeErr
 }
 
+func (t RevocationGuardTransport) CloseIdleConnections() {
+	if closer, ok := t.Next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 var _ AttemptTransport = RevocationGuardTransport{}

@@ -221,6 +221,7 @@ func newWorkerCommandRunEWithGatePolicy(
 		if err != nil {
 			return err
 		}
+		cfg.WorkerName = cmd.Name()
 		var logger *slog.Logger
 		var loggerRuntime *logging.Runtime
 		if deps.newLoggerRuntime != nil {

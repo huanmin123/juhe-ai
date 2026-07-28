@@ -1,6 +1,7 @@
 package accountprobe
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -68,8 +69,73 @@ func (f APIKeyExecutionFence) Recheck(ctx context.Context) error {
 	}
 	if currentAttempt.Method() != f.Attempt.Method() || currentAttempt.URL() != f.Attempt.URL() ||
 		currentAttempt.KeyFingerprint() != f.Attempt.KeyFingerprint() || currentAttempt.KeyIndex() != f.Attempt.KeyIndex() ||
-		!sameHeader(currentAttempt.Header(), f.Attempt.Header()) {
+		!sameHeader(currentAttempt.Header(), f.Attempt.Header()) || !bytes.Equal(currentAttempt.Body(), f.Attempt.Body()) {
 		return fmt.Errorf("account probe execution fence request or credential changed")
+	}
+	return nil
+}
+
+type OAuthExecutionFence struct {
+	Reloader  OAuthCandidateReloader
+	Current   CooldownCandidateReader
+	LoadInput LoadInput
+	Expected  port.CooldownAccountRetestCandidate
+	Candidate gatewaycandidatewindow.Candidate
+	Prepared  PreparedRequest
+	Attempt   OAuthAttempt
+	Fallback  bool
+	Now       func() time.Time
+}
+
+func (f OAuthExecutionFence) Recheck(ctx context.Context) error {
+	if f.Reloader == nil || f.Current == nil {
+		return fmt.Errorf("OAuth account probe execution fence candidate readers are required")
+	}
+	now := time.Now()
+	if f.Now != nil {
+		now = f.Now()
+	}
+	input := f.LoadInput
+	input.Now = now.UTC()
+	currentCooldown, found, err := f.Current.FindDueCooldownAccountRetest(ctx, f.Expected.ID, input.Now)
+	if err != nil {
+		return fmt.Errorf("reload OAuth cooldown account probe execution fence: %w", err)
+	}
+	if !found || !sameCooldownCandidate(f.Expected, currentCooldown) {
+		return fmt.Errorf("OAuth account probe execution fence cooldown generation changed")
+	}
+	snapshot, found, err := f.Reloader.ReloadOAuthProbeCandidate(ctx, input)
+	if err != nil {
+		return fmt.Errorf("reload OAuth account probe execution fence: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("OAuth account probe execution fence target is no longer available")
+	}
+	if ShouldRefreshOAuth(snapshot.Credentials(), now.UTC()) {
+		return fmt.Errorf("OAuth account probe execution fence credentials require refresh")
+	}
+	current := snapshot.Candidate()
+	if err := verifyCooldownCandidateVersion(f.Expected, current); err != nil {
+		return err
+	}
+	if !sameExecutionCandidate(f.Candidate, current) {
+		return fmt.Errorf("OAuth account probe execution fence candidate changed")
+	}
+	currentAttempt, err := PrepareOAuthAttempt(current, f.Prepared)
+	if err != nil {
+		return fmt.Errorf("rebuild OAuth account probe execution fence attempt: %w", err)
+	}
+	if f.Fallback {
+		var ok bool
+		currentAttempt, ok = currentAttempt.XAIModelFallback(http.StatusForbidden, []byte("access denied"), false)
+		if !ok {
+			return fmt.Errorf("rebuild OAuth account probe execution fence fallback: request is no longer eligible")
+		}
+	}
+	if currentAttempt.Method() != f.Attempt.Method() || currentAttempt.URL() != f.Attempt.URL() ||
+		currentAttempt.EvidenceMode() != f.Attempt.EvidenceMode() ||
+		!sameHeader(currentAttempt.Header(), f.Attempt.Header()) || !bytes.Equal(currentAttempt.Body(), f.Attempt.Body()) {
+		return fmt.Errorf("OAuth account probe execution fence request or credential changed")
 	}
 	return nil
 }

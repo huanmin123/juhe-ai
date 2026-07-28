@@ -12,6 +12,7 @@ import {
   OwnerManifestValidationError,
   readMigrationCatalogSchemaVersion,
   resolveRouteOwner,
+  resolveWorkerOwner,
   validateOwnerManifest
 } from './validate-owner-manifest.mjs'
 
@@ -64,9 +65,22 @@ const valid = {
   ]
 }
 
+const validV3 = {
+  ...valid,
+  schemaVersion: 3,
+  workerAllowlist: [
+    { job: 'cooldown-account-retest', owner: 'go', rollbackOwner: 'node' }
+  ]
+}
+
 // Schema v1 remains structurally valid during the manifest format transition.
 validateOwnerManifest(legacy)
 validateOwnerManifest(valid)
+validateOwnerManifest(validV3)
+validateOwnerManifest(currentManifest)
+assert.equal(currentManifest.schemaVersion, 3)
+assert.deepEqual(currentManifest.workerAllowlist, [])
+assertAllRoutesOwnedBy(currentManifest, 'node')
 assert.equal(CURRENT_SCHEMA_VERSION, currentMigrationVersion)
 assert.equal(currentGoCatalogVersion, currentMigrationVersion)
 assert.equal(CURRENT_SCHEMA_VERSION, currentGoCatalogVersion)
@@ -94,6 +108,11 @@ for (const { relativePath, source } of startupScripts) {
     false,
     `${relativePath} must use the validator current schema version instead of a duplicated literal`
   )
+  assert.match(
+    source,
+    /JUHE_AI_OWNER_MANIFEST_PATH/u,
+    `${relativePath} must pass the absolute validated owner manifest path to Node workers`
+  )
 }
 assertRequiredOwners(valid, { management: 'node', gateway: 'node' })
 assert.throws(() => assertRequiredOwners(valid, { management: 'go' }), OwnerManifestValidationError)
@@ -109,6 +128,11 @@ assert.equal(resolveRouteOwner(valid, { surface: 'management', method: 'GET', pa
 assert.equal(resolveRouteOwner(valid, { surface: 'management', method: 'PATCH', path: '/__aisys__/api/accounts/a-1' }), 'node')
 assert.equal(resolveRouteOwner(valid, { surface: 'gateway', method: 'POST', path: '/v1/responses' }), 'go')
 assert.equal(resolveRouteOwner(valid, { surface: 'gateway', method: 'POST', path: '/v1/responses/' }), 'node')
+assert.equal(resolveWorkerOwner(legacy, 'cooldown-account-retest'), 'node')
+assert.equal(resolveWorkerOwner(valid, 'cooldown-account-retest'), 'node')
+assert.equal(resolveWorkerOwner(validV3, 'cooldown-account-retest'), 'go')
+assert.equal(resolveWorkerOwner(validV3, 'usage-sync'), 'node')
+assert.throws(() => resolveWorkerOwner(validV3, 'Invalid_Job'), /kebab-case/)
 
 const headOnly = {
   ...valid,
@@ -177,6 +201,10 @@ assertAllRoutesOwnedBy({
   ...valid,
   routeAllowlist: valid.routeAllowlist.map(route => ({ ...route, owner: 'node', rollbackOwner: 'go' }))
 }, 'node')
+assert.throws(() => assertAllRoutesOwnedBy({
+  ...validV3,
+  routeAllowlist: validV3.routeAllowlist.map(route => ({ ...route, owner: 'node', rollbackOwner: 'go' }))
+}, 'node'), /workerAllowlist\[0\].*go/)
 
 const rollback = createRollbackManifest(valid, 'rollback-2026-07-22-001')
 assert.equal(rollback.deploymentEpoch, 'rollback-2026-07-22-001')
@@ -185,6 +213,10 @@ assert.deepEqual(rollback.rollbackRouteOwners, valid.routeOwners)
 assert.equal(rollback.routeAllowlist[0].owner, 'node')
 assert.equal(rollback.routeAllowlist[0].rollbackOwner, 'go')
 assert.equal(resolveRouteOwner(rollback, { surface: 'management', method: 'GET', path: '/__aisys__/api/accounts/a-1' }), 'node')
+const rollbackV3 = createRollbackManifest(validV3, 'rollback-2026-07-22-002')
+assert.equal(rollbackV3.workerAllowlist[0].owner, 'node')
+assert.equal(rollbackV3.workerAllowlist[0].rollbackOwner, 'go')
+assert.equal(resolveWorkerOwner(rollbackV3, 'cooldown-account-retest'), 'node')
 assert.throws(() => createRollbackManifest(legacy, 'rollback-legacy'), /schemaVersion 2/)
 assert.throws(() => createRollbackManifest(valid, valid.deploymentEpoch), /different/)
 
@@ -195,8 +227,33 @@ for (const invalid of [
   { ...legacy, routeOwners: { ...legacy.routeOwners, management: 'python' } },
   { ...legacy, routeOwners: { management: 'node' } },
   { ...legacy, routeAllowlist: [] },
+  { ...valid, workerAllowlist: [] },
   { ...valid, rollbackRouteOwners: { management: 'node' } },
-  { ...valid, routeAllowlist: 'not-an-array' }
+  { ...valid, routeAllowlist: 'not-an-array' },
+  { ...valid, schemaVersion: 3 },
+  { ...validV3, workerAllowlist: 'not-an-array' },
+  { ...validV3, workerAllowlist: [{ job: 'Invalid_Job', owner: 'go', rollbackOwner: 'node' }] },
+  { ...validV3, workerAllowlist: [{ job: 'usage-sync', owner: 'go', rollbackOwner: 'go' }] },
+  { ...validV3, workerAllowlist: [{ job: 'usage-sync', owner: 'rust', rollbackOwner: 'node' }] },
+  {
+    ...validV3,
+    workerAllowlist: [
+      { job: 'usage-sync', owner: 'go', rollbackOwner: 'node' },
+      { job: 'usage-sync', owner: 'node', rollbackOwner: 'go' }
+    ]
+  },
+  {
+    ...validV3,
+    workerAllowlist: [{ job: 'usage-sync', owner: 'go', rollbackOwner: 'node', extra: true }]
+  },
+  {
+    ...validV3,
+    workerAllowlist: Array.from({ length: 257 }, (_, index) => ({
+      job: `job-${index}`,
+      owner: 'go',
+      rollbackOwner: 'node'
+    }))
+  }
 ]) {
   assert.throws(() => validateOwnerManifest(invalid), OwnerManifestValidationError)
 }

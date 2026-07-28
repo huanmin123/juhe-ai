@@ -33,6 +33,7 @@ type Config struct {
 	Secret                             string        `env:"JUHE_AI_SECRET"`
 	NodeInternalBaseURL                string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
 	UpstreamBaseURLPrivateAllowlist    []string      `env:"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST" envSeparator:","`
+	AllowPrivateUpstreamBaseURLs       bool          `env:"JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS" envDefault:"false"`
 	NodeInternalRequestTimeout         time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
@@ -59,6 +60,7 @@ type Config struct {
 	OwnerManifestPath                  string        `env:"JUHE_AI_OWNER_MANIFEST_PATH"`
 	GoWorkerExclusiveOwner             bool          `env:"JUHE_AI_GO_WORKER_EXCLUSIVE_OWNER" envDefault:"false"`
 	LegacyNodeWorkerDrained            bool          `env:"JUHE_AI_LEGACY_NODE_WORKER_DRAINED" envDefault:"false"`
+	WorkerName                         string        `env:"-"`
 }
 
 type TrustProxyConfig struct {
@@ -236,6 +238,9 @@ func (cfg Config) Validate() error {
 }
 
 func validateUpstreamBaseURLPrivateAllowlist(cfg Config) error {
+	if cfg.AllowPrivateUpstreamBaseURLs && strings.EqualFold(strings.TrimSpace(cfg.Env), "production") {
+		return fmt.Errorf("JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS 只能用于本地开发或回归测试，生产环境不能启用")
+	}
 	for _, value := range cfg.UpstreamBaseURLPrivateAllowlist {
 		if _, err := normalizeUpstreamBaseURLPrivateOrigin(value); err != nil {
 			return fmt.Errorf("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST 配置无效: %w", err)

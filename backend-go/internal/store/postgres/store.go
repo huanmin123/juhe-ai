@@ -54,6 +54,13 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Acquire exposes only the dedicated-connection operation required by
+// execution-time PostgreSQL guards. Callers must release the returned
+// connection through its normal pgxpool lifecycle.
+func (s *Store) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	return s.pool.Acquire(ctx)
+}
+
 func (s *Store) ListBaselineSchemas(ctx context.Context, names []string) ([]string, error) {
 	return s.queries().ListBaselineSchemas(ctx, names)
 }

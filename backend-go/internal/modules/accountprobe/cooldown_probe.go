@@ -3,6 +3,7 @@ package accountprobe
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -18,10 +19,21 @@ type CandidateTransportFactory interface {
 	New(gatewaycandidatewindow.Candidate) (AttemptTransport, error)
 }
 
+type OAuthProbeSnapshotRuntime interface {
+	OAuthCandidateReloader
+	Snapshot(gatewaycandidatewindow.Candidate) (OAuthProbeCandidateSnapshot, error)
+}
+
+type OAuthProbeCoordinator interface {
+	Coordinate(context.Context, OAuthCoordinationInput) OAuthCoordinationResult
+}
+
 type CooldownProbe struct {
 	Loader           ExactCandidateLoader
 	Current          CooldownCandidateReader
 	TransportFactory CandidateTransportFactory
+	OAuthSnapshots   OAuthProbeSnapshotRuntime
+	OAuthCoordinator OAuthProbeCoordinator
 	Prompt           string
 	WorkingDirectory string
 	Now              func() time.Time
@@ -66,8 +78,10 @@ func (p CooldownProbe) Probe(ctx context.Context, target port.CooldownAccountRet
 		return taskFailure(fmt.Errorf("account probe target is no longer available"))
 	}
 	identity := gatewaycandidatewindow.EffectiveAccountIdentity(candidate)
-	if !strings.EqualFold(identity.Type, "api_key") {
-		return taskFailure(fmt.Errorf("native OAuth account probe is not configured for %q", identity.Type))
+	isAPIKey := strings.EqualFold(identity.Type, "api_key")
+	isOAuth := strings.EqualFold(identity.Type, "oauth") || strings.EqualFold(identity.Type, "google_oauth")
+	if !isAPIKey && !isOAuth {
+		return taskFailure(fmt.Errorf("unsupported account probe identity type %q", identity.Type))
 	}
 	workingDirectory := strings.TrimSpace(p.WorkingDirectory)
 	if workingDirectory == "" {
@@ -76,17 +90,67 @@ func (p CooldownProbe) Probe(ctx context.Context, target port.CooldownAccountRet
 			return taskFailure(fmt.Errorf("resolve account probe working directory: %w", err))
 		}
 	}
+	clientCompatibility := gatewaycandidatewindow.EffectiveClientCompatibility(candidate)
+	if isOAuth && (strings.EqualFold(identity.ProviderCode, "openai") || strings.EqualFold(identity.ProviderCode, "gpt")) {
+		clientCompatibility = "codex_responses"
+	}
 	prepared, err := PrepareRequest(candidate, RequestInput{
 		Mode: mode, Model: target.HealthCheckModel, Prompt: p.Prompt,
-		ClientCompatibility: gatewaycandidatewindow.EffectiveClientCompatibility(candidate),
+		OAuth:               isOAuth,
+		ClientCompatibility: clientCompatibility,
 		SessionID:           uuid.NewString(), Today: now.UTC().Format(time.DateOnly), WorkingDirectory: workingDirectory,
 	})
 	if err != nil {
 		return taskFailure(err)
 	}
-	attempt, err := PrepareAPIKeyAttempt(candidate, prepared, now)
-	if err != nil {
-		return taskFailure(err)
+	var attempt HTTPAttempt
+	evidenceMode := mode
+	var fence func(context.Context) error
+	var oauthAttempt OAuthAttempt
+	if isAPIKey {
+		apiKeyAttempt, prepareErr := PrepareAPIKeyAttempt(candidate, prepared, now)
+		if prepareErr != nil {
+			return taskFailure(prepareErr)
+		}
+		attempt = apiKeyAttempt
+		fence = (APIKeyExecutionFence{
+			Loader: p.Loader, Current: p.Current, LoadInput: loadInput, Expected: target,
+			Candidate: candidate, Prepared: prepared, Attempt: apiKeyAttempt, Now: p.Now,
+		}).Recheck
+	} else {
+		if p.OAuthSnapshots == nil || p.OAuthCoordinator == nil {
+			return taskFailure(fmt.Errorf("native OAuth account probe dependencies are required"))
+		}
+		snapshot, snapshotErr := p.OAuthSnapshots.Snapshot(candidate)
+		if snapshotErr != nil {
+			return taskFailure(snapshotErr)
+		}
+		coordination := p.OAuthCoordinator.Coordinate(ctx, OAuthCoordinationInput{
+			Snapshot: snapshot, Prepared: prepared, Reload: loadInput, Now: now.UTC(),
+		})
+		switch coordination.Disposition() {
+		case OAuthCoordinationReady:
+			var ok bool
+			oauthAttempt, ok = coordination.Attempt()
+			if !ok {
+				return taskFailure(fmt.Errorf("OAuth probe coordinator did not return a ready attempt"))
+			}
+		case OAuthCoordinationReschedule:
+			return taskFailure(fmt.Errorf("OAuth probe credentials changed; defer to a current cooldown task"))
+		case OAuthCoordinationTaskFailure:
+			if coordination.Err() != nil {
+				return taskFailure(coordination.Err())
+			}
+			return taskFailure(fmt.Errorf("OAuth probe coordination failed"))
+		default:
+			return taskFailure(fmt.Errorf("OAuth probe coordinator returned an invalid disposition"))
+		}
+		attempt = oauthAttempt
+		evidenceMode = oauthAttempt.EvidenceMode()
+		fence = (OAuthExecutionFence{
+			Reloader: p.OAuthSnapshots, Current: p.Current, LoadInput: loadInput, Expected: target,
+			Candidate: candidate, Prepared: prepared, Attempt: oauthAttempt, Now: p.Now,
+		}).Recheck
 	}
 	transport, err := p.TransportFactory.New(candidate)
 	if err != nil {
@@ -95,11 +159,19 @@ func (p CooldownProbe) Probe(ctx context.Context, target port.CooldownAccountRet
 	if closer, ok := transport.(interface{ CloseIdleConnections() }); ok {
 		defer closer.CloseIdleConnections()
 	}
-	fence := APIKeyExecutionFence{
-		Loader: p.Loader, Current: p.Current, LoadInput: loadInput, Expected: target,
-		Candidate: candidate, Prepared: prepared, Attempt: attempt, Now: p.Now,
+	outcome, transportResult, executeErr := (Executor{Transport: transport, Fence: fence}).ExecuteAttempt(ctx, evidenceMode, attempt)
+	if isOAuth {
+		if fallback, ok := oauthAttempt.XAIModelFallback(transportResult.StatusCode, transportResult.Body, transportResult.BodyTruncated); ok {
+			fallbackFence := (OAuthExecutionFence{
+				Reloader: p.OAuthSnapshots, Current: p.Current, LoadInput: loadInput, Expected: target,
+				Candidate: candidate, Prepared: prepared, Attempt: fallback, Fallback: true, Now: p.Now,
+			}).Recheck
+			fallbackOutcome, fallbackResult, fallbackErr := (Executor{Transport: transport, Fence: fallbackFence}).ExecuteAttempt(ctx, fallback.EvidenceMode(), fallback)
+			if fallbackResult.StatusCode >= http.StatusOK && fallbackResult.StatusCode < http.StatusMultipleChoices {
+				outcome, transportResult, executeErr = fallbackOutcome, fallbackResult, fallbackErr
+			}
+		}
 	}
-	outcome, transportResult, executeErr := (Executor{Transport: transport, Fence: fence.Recheck}).Execute(ctx, mode, attempt)
 	result := port.CooldownAccountRetestProbeResult{
 		Outcome: string(outcome), StatusCode: transportResult.StatusCode, TraceID: traceID,
 	}

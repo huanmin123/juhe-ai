@@ -104,6 +104,38 @@ func TestAPIKeyExecutionFenceRequiresMatchingAuthorizedSourceRevision(t *testing
 	}
 }
 
+func TestOAuthExecutionFenceDefersWhenCredentialEntersRefreshWindow(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	expected, candidate := cooldownProbeOAuthFixtures(now, "gpt")
+	values := map[string]any{"access_token": "token", "refresh_token": "refresh", "expires_at": now.Add(time.Hour).Format(time.RFC3339)}
+	snapshot, err := NewOAuthProbeCandidateSnapshot(candidate, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareRequest(candidate, RequestInput{
+		Mode: ModeResponsesJSON, Model: "model", OAuth: true, ClientCompatibility: "codex_responses",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := PrepareOAuthAttempt(snapshot.Candidate(), prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &oauthProbeSnapshotRuntimeStub{
+		candidate: candidate,
+		values:    map[string]any{"access_token": "token", "refresh_token": "refresh", "expires_at": now.Add(30 * time.Second).Format(time.RFC3339)},
+	}
+	fence := OAuthExecutionFence{
+		Reloader: runtime, Current: &cooldownCandidateReaderStub{candidate: expected, found: true},
+		LoadInput: LoadInput{AccountID: expected.ID, GroupID: expected.GroupID, SystemAccountID: expected.SystemAccountID, RequestedModel: expected.HealthCheckModel, EndpointFamily: "responses"},
+		Expected:  expected, Candidate: candidate, Prepared: prepared, Attempt: attempt, Now: func() time.Time { return now },
+	}
+	if err := fence.Recheck(t.Context()); err == nil || !strings.Contains(err.Error(), "require refresh") {
+		t.Fatalf("Recheck() error = %v", err)
+	}
+}
+
 func cloneExecutionCandidate(value gatewaycandidatewindow.Candidate) gatewaycandidatewindow.Candidate {
 	clone := value
 	clone.APIKeyRuntime = append([]gatewaycandidatewindow.APIKeyRuntime(nil), value.APIKeyRuntime...)

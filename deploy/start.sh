@@ -131,6 +131,7 @@ echo "The Web/API process will supervise separate background worker and DB servi
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
 OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
 if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = "true" ]; then
+  OWNER_MANIFEST_PATH="$APP_DIR/deploy/owner-manifest.json"
   MANIFEST_EPOCH="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)")"
   if [ -z "$MANIFEST_EPOCH" ]; then
     echo "Unable to read deploy/owner-manifest.json deploymentEpoch." >&2
@@ -152,6 +153,8 @@ if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = "true" ]; then
   fi
   NODE_VERSION="$(node -p "require('./package.json').version")"
   node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" deploy/owner-manifest.json
+  export JUHE_AI_OWNER_MANIFEST_PATH="$OWNER_MANIFEST_PATH"
+  export JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH="$OWNER_LOCK_EPOCH"
   exec node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js
 fi
 exec node backend/dist/server.js

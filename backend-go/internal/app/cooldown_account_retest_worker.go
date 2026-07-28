@@ -65,6 +65,7 @@ type cooldownAccountRetestQueueInspector interface {
 
 type cooldownAccountRetestWorkerDependencies struct {
 	openStore         func(context.Context, string) (cooldownAccountRetestRuntimeStore, error)
+	buildProbe        func(context.Context, config.Config, *slog.Logger, cooldownAccountRetestRuntimeStore) (module.Probe, func(), error)
 	newQueueClient    func(queue.RedisOptions) cooldownAccountRetestQueueClient
 	newQueueInspector func(queue.RedisOptions) cooldownAccountRetestQueueInspector
 	runConsumer       func(context.Context, worker.CooldownAccountRetestConsumerOptions) error
@@ -75,6 +76,7 @@ func defaultCooldownAccountRetestWorkerDependencies() cooldownAccountRetestWorke
 		openStore: func(ctx context.Context, rawURL string) (cooldownAccountRetestRuntimeStore, error) {
 			return postgresstore.Open(ctx, rawURL)
 		},
+		buildProbe: newNativeCooldownAccountRetestProbe,
 		newQueueClient: func(opts queue.RedisOptions) cooldownAccountRetestQueueClient {
 			return queue.NewClient(opts)
 		},
@@ -107,7 +109,7 @@ func runCooldownAccountRetestWorker(
 	if !cfg.OwnerLockEnabled || strings.TrimSpace(cfg.OwnerLockRole) != "worker" {
 		return fmt.Errorf("Go 账户级冷却复测 worker 必须通过 worker owner lock 启动")
 	}
-	if opts.Probe == nil {
+	if opts.Probe == nil && deps.buildProbe == nil {
 		return module.ErrProbeNotConfigured
 	}
 	if strings.TrimSpace(cfg.PostgresURL) == "" {
@@ -149,6 +151,20 @@ func runCooldownAccountRetestWorker(
 	if err != nil {
 		return fmt.Errorf("ping cooldown account retest PostgreSQL: %w", err)
 	}
+	probe := opts.Probe
+	if probe == nil {
+		var closeProbe func()
+		probe, closeProbe, err = deps.buildProbe(ctx, cfg, logger, store)
+		if err != nil {
+			return fmt.Errorf("build native cooldown account retest probe: %w", err)
+		}
+		if probe == nil {
+			return module.ErrProbeNotConfigured
+		}
+		if closeProbe != nil {
+			defer closeProbe()
+		}
+	}
 
 	redisOptions, err := queue.ParseRedisURL(cfg.RedisQueueURL)
 	if err != nil {
@@ -177,7 +193,7 @@ func runCooldownAccountRetestWorker(
 	consumerOptions := worker.CooldownAccountRetestConsumerOptions{
 		Redis: redisOptions,
 		Processor: module.Processor{
-			Store: store, Outcomes: outcomes, Probe: opts.Probe,
+			Store: store, Outcomes: outcomes, Probe: probe,
 			Quota: module.QuotaEligibility{Subjects: store, Costs: store, Timezones: store},
 		},
 		ShutdownTimeout: cfg.ShutdownTimeout,

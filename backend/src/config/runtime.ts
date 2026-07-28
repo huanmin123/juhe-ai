@@ -57,6 +57,8 @@ export interface RuntimeConfig {
   }
   ownerLock: {
     enabled: boolean
+    manifestPath?: string
+    deploymentEpoch?: string
   }
   postgres: {
     url?: string
@@ -361,7 +363,9 @@ export const runtimeConfig: RuntimeConfig = {
     )
   },
   ownerLock: {
-    enabled: parseOwnerLockEnabled(rawStringConfig('JUHE_AI_OWNER_LOCK_ENABLED'))
+    enabled: parseOwnerLockEnabled(rawStringConfig('JUHE_AI_OWNER_LOCK_ENABLED')),
+    manifestPath: optionalStringConfig('JUHE_AI_OWNER_MANIFEST_PATH'),
+    deploymentEpoch: optionalStringConfig('JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH')
   },
   postgres: {
     url: configuredPostgresUrl,

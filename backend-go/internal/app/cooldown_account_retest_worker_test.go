@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -79,6 +80,52 @@ func TestRunCooldownAccountRetestWorkerDefaultsOutcomesToRuntimeStore(t *testing
 	}
 	if captured != runtimeStore {
 		t.Fatalf("processor outcomes = %T %p, want runtime store %p", captured, captured, runtimeStore)
+	}
+}
+
+func TestRunCooldownAccountRetestWorkerBuildsAndClosesNativeProbeWhenNotInjected(t *testing.T) {
+	runtimeStore := &cooldownAccountRetestOutcomeRuntimeStoreStub{
+		cooldownAccountRetestRuntimeStoreStub: &cooldownAccountRetestRuntimeStoreStub{},
+	}
+	probe := cooldownAccountRetestProbeStub{}
+	consumerErr := errors.New("consumer stopped")
+	buildCalls := 0
+	closed := false
+	var captured module.Probe
+	deps := cooldownAccountRetestWorkerTestDependencies(runtimeStore, func(_ context.Context, opts worker.CooldownAccountRetestConsumerOptions) error {
+		captured = opts.Processor.Probe
+		return consumerErr
+	})
+	deps.buildProbe = func(context.Context, config.Config, *slog.Logger, cooldownAccountRetestRuntimeStore) (module.Probe, func(), error) {
+		buildCalls++
+		return probe, func() { closed = true }, nil
+	}
+	err := runCooldownAccountRetestWorker(t.Context(), cooldownAccountRetestWorkerTestConfig(), nil, CooldownAccountRetestWorkerOptions{}, deps)
+	if !errors.Is(err, consumerErr) || buildCalls != 1 || captured == nil || !closed {
+		t.Fatalf("error=%v builds=%d captured=%T closed=%v", err, buildCalls, captured, closed)
+	}
+}
+
+func TestCooldownProbeStateRedisNamespaceMatchesNodeRuntimeStateKeys(t *testing.T) {
+	if got := cooldownProbeStateRedisNamespace(" deployment "); got != "juhe-ai:deployment:state" {
+		t.Fatalf("state Redis namespace = %q", got)
+	}
+	if got := cooldownProbeStateRedisNamespace(" "); got != "" {
+		t.Fatalf("empty state Redis namespace = %q", got)
+	}
+}
+
+func TestCooldownProbeSecretValidatesEffectiveLengthWithoutChangingCodecBytes(t *testing.T) {
+	const raw = "  12345678901234567890123456789012  "
+	secret, err := cooldownProbeSecret(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != raw {
+		t.Fatalf("cooldown probe secret bytes changed: got %q", secret)
+	}
+	if _, err := cooldownProbeSecret("  short  "); err == nil {
+		t.Fatal("short effective secret was accepted")
 	}
 }
 

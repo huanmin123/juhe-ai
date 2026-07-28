@@ -21,6 +21,22 @@ type TransportFactory struct {
 	URLPolicy            upstreamurlpolicy.Config
 }
 
+type RevocationGuardTransportFactory struct {
+	Next  CandidateTransportFactory
+	Guard RevocationProtector
+}
+
+func (f RevocationGuardTransportFactory) New(candidate gatewaycandidatewindow.Candidate) (AttemptTransport, error) {
+	if f.Next == nil || f.Guard == nil {
+		return nil, fmt.Errorf("account probe guarded transport factory dependencies are required")
+	}
+	next, err := f.Next.New(candidate)
+	if err != nil {
+		return nil, err
+	}
+	return RevocationGuardTransport{Next: next, Guard: f.Guard}, nil
+}
+
 func (f TransportFactory) New(candidate gatewaycandidatewindow.Candidate) (AttemptTransport, error) {
 	proxyURL, err := candidateProxyURL(candidate.Proxy)
 	if err != nil {
@@ -69,3 +85,5 @@ func candidateProxyURL(proxy *gatewaycandidatewindow.ProxyRuntime) (string, erro
 var _ interface {
 	New(gatewaycandidatewindow.Candidate) (AttemptTransport, error)
 } = TransportFactory{}
+
+var _ CandidateTransportFactory = RevocationGuardTransportFactory{}

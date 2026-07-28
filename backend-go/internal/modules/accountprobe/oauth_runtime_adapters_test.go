@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	"juhe-ai/backend-go/internal/platform/upstreamtransport"
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -84,15 +86,117 @@ func TestOAuthRefreshTransportExecutorRequiresCompleteFraming(t *testing.T) {
 	transport := &oauthRuntimeTransportStub{result: upstreamtransport.Result{
 		StatusCode: 200, FramingComplete: true, Body: []byte(`{"access_token":"next","expires_in":3600}`),
 	}}
-	executor := OAuthRefreshTransportExecutor{Factory: oauthRuntimeTransportFactory{transport: transport}}
-	response, err := executor.ExecuteOAuthRefresh(t.Context(), gatewaycandidatewindow.Candidate{}, request)
+	executor := OAuthRefreshTransportExecutor{Factory: oauthRuntimeTransportFactory{transport: transport}, Guard: &revocationProtectorStub{}}
+	ctx := withOAuthHTTPExecutionFence(t.Context(), allowOAuthHTTPExecution)
+	response, err := executor.ExecuteOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, request)
 	if err != nil || response.StatusCode() != 200 || !strings.Contains(string(response.Body()), "next") {
 		t.Fatalf("response=%v error=%v", response.StatusCode(), err)
 	}
 	transport.result.FramingComplete = false
 	transport.err = errors.New("read failed")
-	if _, err := executor.ExecuteOAuthRefresh(t.Context(), gatewaycandidatewindow.Candidate{}, request); err == nil {
+	if _, err := executor.ExecuteOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, request); err == nil {
 		t.Fatal("incomplete OAuth refresh framing was accepted")
+	}
+}
+
+func TestOAuthRefreshTransportExecutorAppliesRequestTimeoutAndBodyBound(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			select {
+			case <-request.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				_, _ = writer.Write([]byte(`{"access_token":"late"}`))
+			}
+		}))
+		defer server.Close()
+		request := OAuthRefreshRequest{provider: OAuthOpenAI, url: server.URL, header: make(http.Header), body: []byte(`{}`), timeout: 20 * time.Millisecond}
+		executor := OAuthRefreshTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}, Guard: &revocationProtectorStub{}}
+		ctx := withOAuthHTTPExecutionFence(t.Context(), allowOAuthHTTPExecution)
+		if _, err := executor.ExecuteOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, request); err == nil {
+			t.Fatal("OAuth refresh request timeout was ignored")
+		}
+	})
+
+	t.Run("body bound", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = writer.Write([]byte(strings.Repeat("x", oauthResponseMaxSize+1)))
+		}))
+		defer server.Close()
+		request := OAuthRefreshRequest{provider: OAuthOpenAI, url: server.URL, header: make(http.Header), body: []byte(`{}`), timeout: time.Second}
+		executor := OAuthRefreshTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}, Guard: &revocationProtectorStub{}}
+		ctx := withOAuthHTTPExecutionFence(t.Context(), allowOAuthHTTPExecution)
+		response, err := executor.ExecuteOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, request)
+		if err != nil || !response.Truncated() || len(response.Body()) != oauthResponseMaxSize {
+			t.Fatalf("response=%v truncated=%v bytes=%d error=%v", response.StatusCode(), response.Truncated(), len(response.Body()), err)
+		}
+	})
+}
+
+func TestGeminiOAuthEnrichmentTransportExecutorUsesBoundedURLPolicyTransport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("request method=%q authorization=%q", request.Method, request.Header.Get("Authorization"))
+		}
+		_, _ = writer.Write([]byte(`{"project":"project"}`))
+	}))
+	defer server.Close()
+	request := GeminiOAuthEnrichmentHTTPRequest{
+		method: http.MethodPost, url: server.URL, header: http.Header{"Authorization": []string{"Bearer secret"}},
+		body: []byte(`{}`), timeout: time.Second,
+	}
+	executor := GeminiOAuthEnrichmentTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}, Guard: &revocationProtectorStub{}}
+	ctx := withOAuthHTTPExecutionFence(t.Context(), allowOAuthHTTPExecution)
+	response, err := executor.ExecuteGeminiOAuthEnrichment(ctx, request)
+	if err != nil || response.StatusCode() != http.StatusOK || string(response.Body()) != `{"project":"project"}` {
+		t.Fatalf("response=%d body=%q error=%v", response.StatusCode(), response.Body(), err)
+	}
+}
+
+func TestOAuthRefreshTransportExecutorRejectsBeforeUpstreamWrite(t *testing.T) {
+	request, err := BuildOAuthRefreshRequest(mustOAuthCredentials(t, OAuthOpenAI, map[string]any{
+		"access_token": "old", "refresh_token": "refresh",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withOAuthHTTPExecutionFence(t.Context(), func(context.Context) error { return errors.New("revoked") })
+	transport := &oauthRuntimeTransportStub{}
+	executor := OAuthRefreshTransportExecutor{
+		Factory: oauthRuntimeTransportFactory{transport: transport}, Guard: &revocationProtectorStub{},
+	}
+	if _, err := executor.ExecuteOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, request); err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("ExecuteOAuthRefresh() error = %v", err)
+	}
+	if transport.calls != 0 {
+		t.Fatalf("upstream transport calls = %d, want 0", transport.calls)
+	}
+}
+
+func TestGeminiOAuthEnrichmentTransportExecutorRejectsBeforeUpstreamWrite(t *testing.T) {
+	request := GeminiOAuthEnrichmentHTTPRequest{
+		method: http.MethodGet, url: "https://example.invalid", header: make(http.Header), timeout: time.Second,
+	}
+	executor := GeminiOAuthEnrichmentTransportExecutor{Guard: &revocationProtectorStub{}}
+	ctx := withOAuthHTTPExecutionFence(t.Context(), func(context.Context) error { return errors.New("credential drift") })
+	if _, err := executor.ExecuteGeminiOAuthEnrichment(ctx, request); err == nil || !strings.Contains(err.Error(), "credential drift") {
+		t.Fatalf("ExecuteGeminiOAuthEnrichment() error = %v", err)
+	}
+}
+
+func TestOAuthGeminiRefreshEnricherPropagatesExecutionFence(t *testing.T) {
+	executor := &oauthRuntimeGeminiContextExecutor{}
+	enricher := OAuthGeminiRefreshEnricher{Enricher: NewGeminiOAuthEnricher(executor)}
+	ctx := withOAuthHTTPExecutionFence(t.Context(), allowOAuthHTTPExecution)
+	result, err := enricher.EnrichOAuthRefresh(ctx, gatewaycandidatewindow.Candidate{}, OAuthRefreshResult{
+		provider: OAuthGemini,
+		values:   map[string]any{"access_token": "secret", "oauth_type": "code_assist"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.values["project_id"] != "project" || executor.calls != 1 || executor.fence == nil {
+		t.Fatalf("project=%v calls=%d fence=%v", result.values["project_id"], executor.calls, executor.fence != nil)
 	}
 }
 
@@ -147,13 +251,34 @@ func (f oauthRuntimeTransportFactory) New(gatewaycandidatewindow.Candidate) (Att
 type oauthRuntimeTransportStub struct {
 	result upstreamtransport.Result
 	err    error
+	calls  int
 }
 
 func (s *oauthRuntimeTransportStub) ExecuteWithFence(_ context.Context, request *http.Request, fence func(context.Context) error) (upstreamtransport.Result, error) {
+	s.calls++
 	if request.Method != http.MethodPost || fence != nil {
 		return upstreamtransport.Result{}, errors.New("unexpected OAuth refresh transport request")
 	}
 	return s.result, s.err
+}
+
+func allowOAuthHTTPExecution(context.Context) error { return nil }
+
+type oauthRuntimeGeminiContextExecutor struct {
+	calls int
+	fence OAuthHTTPExecutionFence
+}
+
+func (e *oauthRuntimeGeminiContextExecutor) ExecuteGeminiOAuthEnrichment(
+	ctx context.Context,
+	_ GeminiOAuthEnrichmentHTTPRequest,
+) (GeminiOAuthEnrichmentHTTPResponse, error) {
+	e.calls++
+	e.fence = oauthHTTPExecutionFenceFromContext(ctx)
+	return NewGeminiOAuthEnrichmentHTTPResponse(http.StatusOK, []byte(`{
+		"currentTier":{"id":"standard-tier"},
+		"cloudaicompanionProject":"project"
+	}`), false), nil
 }
 
 func mustOAuthCredentials(t *testing.T, provider OAuthProvider, values map[string]any) OAuthCredentials {
