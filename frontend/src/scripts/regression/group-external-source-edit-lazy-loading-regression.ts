@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS,
-  DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES
+  DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES,
+  buildSourcePatch,
+  createSourceFormFromRecord
 } from '../../views/external-integration-sources/externalSourceFormModel'
 
 function sourceBetween(source: string, start: string, end: string): string {
@@ -26,7 +28,8 @@ assert.doesNotMatch(groupCreateSource, /loadGroupOptions|groupsApi\.(?:detail|op
 
 const groupEditSource = sourceBetween(groupsViewSource, 'function openEdit', 'const saveGroup')
 assert.match(groupEditSource, /if \(group\.groupType !== 'high_concurrency'\)[\s\S]*applyGroupToForm\(group\)[\s\S]*modalOpen\.value = true[\s\S]*return/, '普通分组编辑必须直接使用列表行，不得读取详情')
-assert.match(groupEditSource, /groupsApi\.detail\(group\.id/, '仅高并发分组因列表不含完整调度策略而读取唯一必要详情')
+assert.match(groupEditSource, /groupsApi\.editBasicDetail\(group\.id/, '仅高并发分组读取专用编辑投影，不得读取完整分组摘要')
+assert.doesNotMatch(groupEditSource, /groupsApi\.detail\(group\.id/, '编辑分组不得读取包含用量、账户 ID 和授权详情的完整摘要')
 assert.match(groupEditSource, /applyGroupToForm\(detail\)/, '编辑分组必须使用必要详情填充表单')
 assert.doesNotMatch(groupEditSource, /loadGroupOptions/, '打开编辑分组弹窗不得预取供应商候选')
 assert.match(groupEditSource, /requestId !== groupEditRequestId/, '分组编辑详情迟到响应不得打开旧弹窗')
@@ -60,6 +63,22 @@ assert.match(externalSourceFormSource, /DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIO
 assert.equal(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.length, 16, '本地 scope 标签字典必须覆盖 Node 的 16 个公开接口 scope')
 assert.equal(new Set(DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS.map((item) => item.value)).size, 16, '本地 scope 标签字典不得包含重复值')
 assert.deepEqual(DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES, ['juhe_ai_public:group_list:read'], '新增来源默认 scope 必须与完整标签字典独立维护')
+const externalSourceRecord = {
+  id: 'extsrc_1',
+  name: '外部来源',
+  status: 'active' as const,
+  scopes: ['juhe_ai_public:group_list:read'],
+  rateLimits: [{ windowSeconds: 60, maxRequests: 10 }],
+  notes: '原备注',
+  isBuiltIn: false
+}
+assert.deepEqual(buildSourcePatch(createSourceFormFromRecord(externalSourceRecord), externalSourceRecord), {}, '未修改表单不得生成 PATCH 字段')
+const changedExternalSourceForm = createSourceFormFromRecord(externalSourceRecord)
+changedExternalSourceForm.notes = '新备注'
+assert.deepEqual(buildSourcePatch(changedExternalSourceForm, externalSourceRecord), { notes: '新备注' }, '编辑保存只应发送实际修改字段')
+const externalSourceSaveSource = sourceBetween(externalSourcesViewSource, 'async function saveSource', 'function addRateLimit')
+assert.match(externalSourceSaveSource, /buildSourcePatch\(sourceForm, original\)/, '外部来源编辑保存必须按列表快照构造差异 PATCH')
+assert.match(externalSourceSaveSource, /if \(!Object\.keys\(payload\)\.length\)[\s\S]*return/, '未修改外部来源不得发送 PATCH')
 const externalListLoadSource = sourceBetween(externalSourcesViewSource, 'async function loadData', 'function isCurrentListRequest')
 assert.match(externalListLoadSource, /requestId = \+\+listRequestId[\s\S]*requestSignature = JSON\.stringify\(params\)/, '外部来源列表必须为每次筛选、翻页和刷新绑定请求代次与参数签名')
 assert.match(externalListLoadSource, /isCurrentListRequest\(requestId, requestSignature\)/, '外部来源列表写回和错误提示必须拒绝迟到响应')

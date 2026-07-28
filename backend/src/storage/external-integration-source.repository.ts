@@ -472,21 +472,10 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   if (isBuiltInExternalIntegrationTestSourceId(id)) {
     assertBuiltInSourceUpdateInput(input)
   }
-  const nextName = input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-  if (nextName !== existing.name) {
-    ensureSourceNameAvailable(nextName, id)
-  }
-  const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status) : normalizeSourceStatusInput(input.status)
-  const nextScopes = input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes)
-  const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
-  const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
-  const nextNotes = input.notes === undefined ? existing.notes : normalizeNullableText(input.notes)
-  getBusinessDatabase().prepare(`
-    UPDATE external_integration_sources
-    SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
-    WHERE id = ?
-  `).run(nextName, nextStatus, nextScopes, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id)
-  if (!isBuiltInExternalIntegrationTestSourceId(id)) {
+  const update = buildExternalIntegrationSourceUpdate(input, existing)
+  if (update.nameChanged) ensureSourceNameAvailable(update.name, id)
+  executeExternalIntegrationSourceUpdate(getBusinessDatabase(), id, update.columns)
+  if (!isBuiltInExternalIntegrationTestSourceId(id) && update.syncTokenState) {
     syncExternalIntegrationSourceTokenState(id)
   }
   return requiredSourceRecord(id)
@@ -506,25 +495,63 @@ export async function updateExternalIntegrationSourceAsync(id: string, input: Ex
     if (isBuiltInExternalIntegrationTestSourceId(id)) {
       assertBuiltInSourceUpdateInput(input)
     }
-    const nextName = input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统名称不能为空')
-    if (nextName !== existing.name) {
-      await ensureSourceNameAvailableAsync(tx, nextName, id)
-    }
-    const nextStatus = input.status === undefined ? normalizeSourceStatus(existing.status) : normalizeSourceStatusInput(input.status)
-    const nextScopes = input.scopes === undefined ? existing.scopes_json : encodeScopes(input.scopes)
-    const nextRateLimits = input.rateLimits === undefined ? existing.rate_limits_json : encodeRateLimits(input.rateLimits)
-    const nextExpiresAt = input.expiresAt === undefined ? existing.expires_at : normalizeNullableIso(input.expiresAt)
-    const nextNotes = input.notes === undefined ? existing.notes : normalizeNullableText(input.notes)
-    await tx.execute(`
-      UPDATE ${externalIntegrationSourceBusinessTable(tx, 'external_integration_sources')}
-      SET name = ?, status = ?, scopes_json = ?, rate_limits_json = ?, expires_at = ?, notes = ?, updated_at = ?
-      WHERE id = ?
-    `, [nextName, nextStatus, nextScopes, nextRateLimits, nextExpiresAt, nextNotes, nowIso(), id])
-    if (!isBuiltInExternalIntegrationTestSourceId(id)) {
+    const update = buildExternalIntegrationSourceUpdate(input, existing)
+    if (update.nameChanged) await ensureSourceNameAvailableAsync(tx, update.name, id)
+    await executeExternalIntegrationSourceUpdateAsync(tx, id, update.columns)
+    if (!isBuiltInExternalIntegrationTestSourceId(id) && update.syncTokenState) {
       await syncExternalIntegrationSourceTokenStateAsync(id, tx)
     }
     return requiredSourceRecordAsync(tx, id)
   })
+}
+
+interface ExternalIntegrationSourceUpdateColumn {
+  column: 'name' | 'status' | 'scopes_json' | 'rate_limits_json' | 'expires_at' | 'notes'
+  value: string | null
+}
+
+function buildExternalIntegrationSourceUpdate(
+  input: ExternalIntegrationSourceUpdateInput,
+  existing: ExternalIntegrationSourceRow
+): { columns: ExternalIntegrationSourceUpdateColumn[]; name: string; nameChanged: boolean; syncTokenState: boolean } {
+  const columns: ExternalIntegrationSourceUpdateColumn[] = []
+  const name = input.name === undefined ? existing.name : normalizeNameOrThrow(input.name, '来源系统名称不能为空')
+  if (input.name !== undefined) columns.push({ column: 'name', value: name })
+  if (input.status !== undefined) columns.push({ column: 'status', value: normalizeSourceStatusInput(input.status) })
+  if (input.scopes !== undefined) columns.push({ column: 'scopes_json', value: encodeScopes(input.scopes) })
+  if (input.rateLimits !== undefined) columns.push({ column: 'rate_limits_json', value: encodeRateLimits(input.rateLimits) })
+  if (input.expiresAt !== undefined) columns.push({ column: 'expires_at', value: normalizeNullableIso(input.expiresAt) })
+  if (input.notes !== undefined) columns.push({ column: 'notes', value: normalizeNullableText(input.notes) })
+  return {
+    columns,
+    name,
+    nameChanged: input.name !== undefined && name !== existing.name,
+    syncTokenState: input.name !== undefined || input.status !== undefined || input.scopes !== undefined || input.expiresAt !== undefined
+  }
+}
+
+function executeExternalIntegrationSourceUpdate(
+  database: ReturnType<typeof getBusinessDatabase>,
+  id: string,
+  columns: ExternalIntegrationSourceUpdateColumn[]
+): void {
+  if (!columns.length) return
+  const assignments = columns.map(({ column }) => `${column} = ?`)
+  database.prepare(`UPDATE external_integration_sources SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`)
+    .run(...columns.map(({ value }) => value), nowIso(), id)
+}
+
+async function executeExternalIntegrationSourceUpdateAsync(
+  client: DatabaseClient,
+  id: string,
+  columns: ExternalIntegrationSourceUpdateColumn[]
+): Promise<void> {
+  if (!columns.length) return
+  const assignments = columns.map(({ column }) => `${column} = ?`)
+  await client.execute(
+    `UPDATE ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`,
+    [...columns.map(({ value }) => value), nowIso(), id]
+  )
 }
 
 export function deleteExternalIntegrationSource(id: string): boolean {

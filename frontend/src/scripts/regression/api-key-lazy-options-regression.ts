@@ -64,9 +64,8 @@ for (const [label, source] of [['新建', openCreateSource], ['编辑', openEdit
   assert.match(source, /modalOpen\.value = true/, `${label}弹窗必须同步打开`)
 }
 assert.doesNotMatch(openEditSource, /loadUserReferenceData|prewarmCreateDefaultRouteStrategy/, '编辑弹窗不需要补发默认引用预热')
-assert.match(openCreateSource, /cachedDefaultRouteStrategy\(\)/, '新建弹窗只允许同步读取共享默认策略缓存')
-assert.match(openCreateSource, /if \(!defaultStrategy\) prewarmCreateDefaultRouteStrategy\(\)/, '缓存缺失时可在弹窗已打开后异步重试默认引用预热')
-assert.doesNotMatch(openCreateSource, /await\s+prewarmCreateDefaultRouteStrategy/, '引用预热重试不得阻塞新建弹窗')
+assert.match(openCreateSource, /cachedDefaultRouteStrategy\(createScopeParams\)/, '新建弹窗只允许按打开时 owner scope 同步读取共享默认策略缓存')
+assert.doesNotMatch(apiKeyModalSource, /loadUserReferenceData|prewarmCreateDefaultRouteStrategy/, '缓存缺失时弹窗也不得补发共享引用/bootstrap 请求')
 assert.match(openEditSource, /routeStrategy:\s*apiKeyRouteStrategySelection\(apiKey\)/, '编辑弹窗必须从列表行注入当前已选策略')
 
 const modalDropdownSource = sourceBetween(

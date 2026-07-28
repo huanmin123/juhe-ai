@@ -178,21 +178,31 @@ try {
     '其他用户不能读取账户高级编辑投影'
   )
 
-  const authorizedInstance = await repositories.createAccountAsync({
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: '高级编辑授权实例边界',
-    type: 'api_key',
-    credentials: { api_key: 'sk-account-advanced-instance', base_url: 'https://api.openai.com/v1' },
-    supportedModels: ['gpt-5.4-mini'],
-    healthCheckModel: 'gpt-5.4-mini',
-    healthCheckEndpointMode: 'responses_sse',
-    groupId: group.id,
+  const grantee = repositories.createSystemAccount({
+    username: 'account_advanced_grantee',
+    displayName: '高级编辑授权用户',
+    password: 'password',
+    role: 'user',
     status: 'active',
-    skipInitialHealthCheck: true
+    mustChangePassword: false
+  })
+  const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const granteeGroup = repositories.createGroup({
+    name: '高级编辑授权目标分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, granteeAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: account.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    targetGroupId: granteeGroup.id,
+    remark: '高级编辑窄投影授权实例边界'
   }, access)
-  database.prepare('UPDATE accounts SET authorization_instance_source_account_id = ? WHERE id = ?')
-    .run(account.id, authorizedInstance.id)
+  const authorizedInstance = repositories.listAccounts(granteeAccess)
+    .find((item) => item.authorizationInstanceSourceAccountId === account.id)
+  assert(authorizedInstance, '账户授权应创建被授权者作用域内的实例账户')
   const authorizedDetail = await advancedRepository.findAccountAdvancedDetailAsync(authorizedInstance.id, access)
   assert(authorizedDetail, '授权实例应返回独立的只读高级投影')
   assert.equal(authorizedDetail.accessType, 'authorized')

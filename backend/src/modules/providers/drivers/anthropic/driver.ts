@@ -38,6 +38,7 @@ import { openAICompatibleComputerExecutorForGatewayRequest } from '../../../open
 import { openAICompatibleImageGenerationExecutorForGatewayRequest } from '../../../openai-compatible-images/image-generation-executor.js'
 import { openAICompatibleFileSearchExecutorForGatewayRequest } from '../../../openai-compatible-vector-stores/file-search-executor.js'
 import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
+import { copyOfficialOAuthClientRequestHeaders } from '../../../gateway/upstream/header-policy.js'
 import {
   buildUpstreamRequestBody,
   copySafeUpstreamRequestHeaders,
@@ -142,7 +143,9 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (!supportsAnthropicCredentialDispatch(account)) {
       throw new Error('Anthropic 当前仅支持 API Key 或 OAuth Access Token 账户')
     }
-    const headers = copySafeUpstreamRequestHeaders(req.headers)
+    const headers = account.providerCode === ANTHROPIC_PROVIDER_CODE && account.type === 'oauth'
+      ? copyOfficialOAuthClientRequestHeaders(req.headers, 'anthropic_claude_code')
+      : copySafeUpstreamRequestHeaders(req.headers)
     applyAnthropicUpstreamAuthHeaders(headers, account)
     headers.set('anthropic-version', anthropicVersionHeader(req))
     const betaHeader = anthropicBetaHeader(req, account)

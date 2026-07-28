@@ -102,10 +102,17 @@ const frontendDomainSource = readFileSync(new URL('../../types/domain/usage-stat
 const statsRoutesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
 const dbServiceTypesSource = readFileSync(new URL('../../../../backend/src/modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
 const mockBackgroundRuntimeSource = readFileSync(new URL('../../../../backend/src/modules/stats/mock-background-runtime.ts', import.meta.url), 'utf8')
+const loadPageDataStart = systemMetricsViewSource.indexOf('function loadPageData(')
+const loadPageDataEnd = systemMetricsViewSource.indexOf('async function loadRuntimeData', loadPageDataStart)
+const loadPageDataSource = loadPageDataStart >= 0 && loadPageDataEnd > loadPageDataStart
+  ? systemMetricsViewSource.slice(loadPageDataStart, loadPageDataEnd)
+  : ''
 assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
 assert.match(statsApiSource, /systemMetricsRuntime:[\s\S]*\/stats\/system-metrics\/runtime/, '后台运行态必须使用独立 API')
 assert.match(systemMetricsViewSource, /void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '运行态卡片加载不得阻塞趋势首屏')
-assert.match(systemMetricsViewSource, /function loadPageData\(\)[\s\S]*void loadUsageStatsWindow\(\)[\s\S]*return loadData\(\)/, '窗口配置不得阻塞趋势业务请求')
+assert(loadPageDataSource.includes('void loadUsageStatsWindow('), '页面加载必须并行启动窗口配置请求')
+assert(!loadPageDataSource.includes('await loadUsageStatsWindow('), '窗口配置不得阻塞趋势业务请求')
+assert(loadPageDataSource.indexOf('void loadUsageStatsWindow(') < loadPageDataSource.indexOf('return loadData()'), '趋势请求必须在窗口配置请求启动后立即返回')
 assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
 assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
 assert.match(

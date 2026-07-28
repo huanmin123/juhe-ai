@@ -423,7 +423,7 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     const updatedAccount = await runWithProviderOAuthRefreshLock(
       XAI_PROVIDER_CODE,
       account.id,
-      async () => {
+      async (lockSignal, assertLockOwned) => {
         const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
         if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
         if (oauthTokensChanged(account.credentials, current.credentials)
@@ -435,8 +435,10 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
         const tokenInfo = await refreshGrokAuthToken({
           refreshToken: currentRefreshToken,
           clientId: stringCredential(current.credentials, 'client_id'),
-          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+          signal: lockSignal
         })
+        await assertLockOwned()
         return await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
       },
       { signal: abortController.signal }
@@ -472,7 +474,7 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -482,8 +484,10 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
         sessionId: parsed.data.sessionId,
         callbackUrl: parsed.data.callbackUrl,
         ownerSystemAccountId: requestAccess?.systemAccountId,
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
         return {
@@ -517,7 +521,7 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -526,8 +530,10 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
       const tokenInfo = await refreshGrokAuthToken({
         refreshToken: parsed.data.refreshToken,
         clientId: stringCredential(current.credentials, 'client_id'),
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, {
           refreshToken: parsed.data.refreshToken

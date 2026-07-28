@@ -29,6 +29,10 @@ type CacheInvalidationMetadata = {
 }
 type CacheInvalidationHandler = (metadata?: CacheInvalidationMetadata) => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
+type GatewayApiKeyValidationServerInvalidator = (
+  apiKeyId: string,
+  keyHashes: readonly string[]
+) => Promise<void>
 type GatewayCacheInvalidationTopic =
   | 'gateway_runtime_cache'
   | 'gateway_api_key_validation_cache'
@@ -60,6 +64,7 @@ const lastSeenGatewayCacheInvalidationVersions = new Map<GatewayCacheInvalidatio
 const deferredGatewayCacheInvalidationTopics = new Set<GatewayCacheInvalidationTopic>()
 let lastGatewayCacheInvalidationSyncAt = 0
 let gatewayCacheInvalidationSyncPromise: Promise<void> | undefined
+let gatewayApiKeyValidationServerInvalidator: GatewayApiKeyValidationServerInvalidator | undefined
 
 export function registerGatewayRuntimeCacheInvalidator(handler: GatewayRuntimeCacheInvalidationHandler): () => void {
   gatewayRuntimeCacheInvalidators.add(handler)
@@ -88,6 +93,17 @@ export function registerApiKeyQuotaCacheInvalidator(handler: ApiKeyQuotaInvalida
   apiKeyQuotaCacheInvalidators.add(handler)
   return () => {
     apiKeyQuotaCacheInvalidators.delete(handler)
+  }
+}
+
+export function registerGatewayApiKeyValidationServerInvalidator(
+  handler: GatewayApiKeyValidationServerInvalidator
+): () => void {
+  gatewayApiKeyValidationServerInvalidator = handler
+  return () => {
+    if (gatewayApiKeyValidationServerInvalidator === handler) {
+      gatewayApiKeyValidationServerInvalidator = undefined
+    }
   }
 }
 
@@ -140,8 +156,35 @@ export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
   } catch (error) {
     errors.push(error)
   }
+  if (
+    runtimeConfig.runtimeStateDriver !== 'redis'
+    && runtimeConfig.processRole === 'db-service'
+    && gatewayApiKeyValidationServerInvalidator
+  ) {
+    try {
+      await gatewayApiKeyValidationServerInvalidator(apiKeyId, keyHashes)
+    } catch (error) {
+      errors.push(error)
+    }
+  }
   if (errors.length > 0) {
     throw new AggregateError(errors, `gateway_api_key_validation_cache 失效存在 ${errors.length} 个失败`)
+  }
+}
+
+export async function applyGatewayApiKeyValidationCacheInvalidationFromIpcAsync(
+  apiKeyId: string,
+  keyHashes: readonly string[] = []
+): Promise<void> {
+  const applied = await runCacheInvalidatorsAsync(
+    'gateway_api_key_validation_cache',
+    'api_key_ipc_invalidation',
+    gatewayApiKeyValidationCacheInvalidators,
+    (handler) => handler(apiKeyId, { source: 'local', keyHashes }),
+    { apiKeyId }
+  )
+  if (!applied) {
+    throw new Error('gateway_api_key_validation_cache server IPC 失效未完成')
   }
 }
 

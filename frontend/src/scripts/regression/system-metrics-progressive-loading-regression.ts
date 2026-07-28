@@ -8,6 +8,11 @@ const view = readFileSync(resolve(sourceRoot, 'views/stats/SystemMetricsStatsVie
 const card = readFileSync(resolve(sourceRoot, 'views/stats/StatsChartCard.vue'), 'utf8')
 const api = readFileSync(resolve(sourceRoot, 'api/domains/stats.ts'), 'utf8')
 const route = readFileSync(resolve(workspaceRoot, 'backend/src/modules/stats/stats.routes.ts'), 'utf8')
+const loadPageDataStart = view.indexOf('function loadPageData(')
+const loadPageDataEnd = view.indexOf('async function loadRuntimeData', loadPageDataStart)
+const loadPageDataSource = loadPageDataStart >= 0 && loadPageDataEnd > loadPageDataStart
+  ? view.slice(loadPageDataStart, loadPageDataEnd)
+  : ''
 
 if (!api.includes("systemMetricsTrend: ") || !api.includes("'/stats/system-metrics/trend'")) throw new Error('system metrics trend API must use a dedicated endpoint')
 if (!route.includes("statsRouter.get('/system-metrics/trend'")) throw new Error('system metrics trend route missing')
@@ -16,7 +21,8 @@ if (view.includes('Promise.all([\n      api.stats.systemMetrics(')) throw new Er
 if (!view.includes(':error="trendError"') || !view.includes(':on-retry="loadData"')) throw new Error('trend cards must expose retry state')
 if (!view.includes(':error="runtimeError"') || !view.includes(':on-retry="loadRuntimeData"')) throw new Error('runtime cards must expose retry state')
 if (!view.includes('onActivated(() =>') || !view.includes('needsReloadOnActivate')) throw new Error('KeepAlive activation must reload stale system metrics')
-if (!view.includes('void loadUsageStatsWindow().then')) throw new Error('initial page load must start usage-window independently')
+if (!loadPageDataSource.includes('void loadUsageStatsWindow(') || loadPageDataSource.includes('await loadUsageStatsWindow(')) throw new Error('initial page load must start usage-window independently')
+if (loadPageDataSource.indexOf('void loadUsageStatsWindow(') >= loadPageDataSource.indexOf('return loadData()')) throw new Error('usage-window loading must not delay the trend request')
 if (card.includes('<a-alert')) throw new Error('chart cards must not expose loading failures as page banners')
 
 console.log('system metrics progressive loading regression passed')

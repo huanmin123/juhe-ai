@@ -23,6 +23,7 @@ import {
 } from './accountEndpointModes'
 import { effectiveAccountTestClientCompatibility } from './accountProviderCapabilities'
 import { accountGptRequestOverridesForForm } from './accountGptRequestOverrides'
+import { inferGeminiOAuthType } from './geminiOAuthType'
 
 export class AccountEditFormLoadError extends Error {
   readonly cause: unknown
@@ -131,7 +132,7 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     googleClientId: asString(credentials.client_id) ?? '',
     googleClientSecret: asString(credentials.client_secret) ?? '',
     googleQuotaProjectId: asString(credentials.quota_project_id) ?? '',
-    oauthType: googleOAuthType(credentials.oauth_type),
+    oauthType: inferGeminiOAuthType(credentials),
     tierId: asString(credentials.tier_id) ?? '',
     projectId: asString(credentials.project_id) ?? '',
     supportedModels: [...(account.supportedModels ?? [])],
@@ -140,11 +141,6 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     tags: accountTagNames(account.tags),
     notes: account.notes ?? ''
   }
-}
-
-function googleOAuthType(value: unknown): AccountFormModel['oauthType'] {
-  if (value === 'code_assist' || value === 'google_one' || value === 'ai_studio') return value
-  return 'code_assist'
 }
 
 export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {

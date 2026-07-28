@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -29,6 +30,21 @@ const geminiCliEndpointModes = ['generate_content_json', 'generate_content_sse']
 const sessionTtlMs = 30 * 60 * 1000
 const gibibyte = 1024 ** 3
 const tebibyte = 1024 * gibibyte
+
+export interface GeminiOAuthProbeBaseUrlsForTest {
+  cloudCodeBaseUrl?: string
+  cloudResourceManagerBaseUrl?: string
+  googleApisBaseUrl?: string
+}
+
+const geminiOAuthProbeBaseUrlsForTest = new AsyncLocalStorage<GeminiOAuthProbeBaseUrlsForTest>()
+
+export async function runWithGeminiOAuthProbeBaseUrlsForTest<T>(
+  baseUrls: GeminiOAuthProbeBaseUrlsForTest,
+  task: () => Promise<T>
+): Promise<T> {
+  return await geminiOAuthProbeBaseUrlsForTest.run(Object.freeze({ ...baseUrls }), task)
+}
 
 export interface GeminiOAuthSession {
   state: string
@@ -617,6 +633,7 @@ async function detectCodeAssistProjectAndTier(
   preferredTierId?: string
 ): Promise<{ projectId?: string; tierId?: string }> {
   let load: Record<string, unknown> = {}
+  let loadError: unknown
   try {
     load = await requestGeminiJson({
       url: `${GEMINI_CLI_DEFAULT_BASE_URL}/v1internal:loadCodeAssist`,
@@ -626,10 +643,8 @@ async function detectCodeAssistProjectAndTier(
       proxyUrl,
       signal
     })
-  } catch {
-    const projectId = await fetchResourceManagerProject(accessToken, proxyUrl, signal)
-    if (projectId) return { projectId, tierId: canonicalGeminiTierId('code_assist', preferredTierId) }
-    // A new user may not have a loadCodeAssist record yet; onboarding remains valid.
+  } catch (error) {
+    loadError = error
   }
 
   const projectId = codeAssistProjectId(load)
@@ -637,9 +652,11 @@ async function detectCodeAssistProjectAndTier(
   if (projectId) return { projectId, tierId }
 
   const registered = Boolean(codeAssistTierId(load))
-  const fallbackProject = await fetchResourceManagerProject(accessToken, proxyUrl, signal)
-  if (fallbackProject) return { projectId: fallbackProject, tierId }
-  if (registered) return { tierId }
+  if (registered) {
+    const fallbackProject = await fetchResourceManagerProject(accessToken, proxyUrl, signal)
+    if (fallbackProject) return { projectId: fallbackProject, tierId }
+    throw new Error(`Gemini Code Assist 已注册档位 ${tierId}，但未找到 project_id，请在授权表单中提供 GCP Project ID`)
+  }
 
   try {
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -665,7 +682,12 @@ async function detectCodeAssistProjectAndTier(
     if (fallbackProject) return { projectId: fallbackProject, tierId }
     throw onboardError
   }
-  return { projectId: await fetchResourceManagerProject(accessToken, proxyUrl, signal), tierId }
+  const fallbackProject = await fetchResourceManagerProject(accessToken, proxyUrl, signal)
+  if (fallbackProject) return { projectId: fallbackProject, tierId }
+  if (loadError instanceof Error) {
+    throw new Error(`Gemini loadCodeAssist 失败且 onboardUser 未返回 project_id：${loadError.message}`, { cause: loadError })
+  }
+  throw new Error('Gemini onboardUser 未返回 project_id')
 }
 
 async function fetchResourceManagerProject(
@@ -722,7 +744,7 @@ async function requestGeminiJson(input: {
   signal?: AbortSignal
 }): Promise<Record<string, unknown>> {
   if (input.signal?.aborted) throw new Error('请求已取消')
-  const response = await requestUpstream(input.url, {
+  const response = await requestUpstream(geminiOAuthProbeUrl(input.url), {
     method: input.method,
     headers: new Headers({
       accept: 'application/json',
@@ -742,6 +764,24 @@ async function requestGeminiJson(input: {
     throw new Error(`Gemini OAuth 上游探测失败：HTTP ${response.status}${body.bodyText ? `，${sanitizeGeminiOAuthErrorMessage(body.bodyText)}` : ''}`)
   }
   return parseJsonRecord(body.bodyText)
+}
+
+function geminiOAuthProbeUrl(url: string): string {
+  const overrides = geminiOAuthProbeBaseUrlsForTest.getStore()
+  if (!overrides) return url
+  const parsed = new URL(url)
+  const overrideBaseUrl = parsed.origin === GEMINI_CLI_DEFAULT_BASE_URL
+    ? overrides.cloudCodeBaseUrl
+    : parsed.origin === 'https://cloudresourcemanager.googleapis.com'
+      ? overrides.cloudResourceManagerBaseUrl
+      : parsed.origin === 'https://www.googleapis.com'
+        ? overrides.googleApisBaseUrl
+        : undefined
+  if (!overrideBaseUrl) return url
+  const target = new URL(overrideBaseUrl)
+  target.pathname = `${target.pathname.replace(/\/$/u, '')}${parsed.pathname}`
+  target.search = parsed.search
+  return target.toString()
 }
 
 function extractCodeAndState(callbackUrl: string): { code: string; state: string } {

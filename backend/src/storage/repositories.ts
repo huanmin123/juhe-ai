@@ -130,6 +130,7 @@ import {
   listGroupsPageAsync
 } from './group-summary.repository.js'
 export {
+  findGroupEditDetailAsync,
   findGroupSummary,
   findGroupSummaryAsync,
   findGroupSummaryInClientAsync,
@@ -3775,8 +3776,6 @@ export {
   recordAccountRuntimeSuccessObservationAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
-  updateAuthorizedAccountBindingDispatch,
-  updateAuthorizedAccountBindingDispatchAsync,
   type AccountFailureStateClearResult,
   type AccountForceActivateResult,
   type AccountPrecheckMutationGuard,
@@ -3786,6 +3785,14 @@ export {
   type AccountRuntimeSuccessObservationResult,
   type AuthorizedAccountBindingRuntimeTarget
 } from './account-runtime-mutation.repository.js'
+
+export {
+  updateAuthorizedAccountBindingDispatchAsync,
+  AuthorizedAccountDispatchRevisionConflictError,
+  type AuthorizedAccountDispatchInput,
+  type AuthorizedAccountDispatchMutationPatch,
+  type AuthorizedAccountDispatchMutationResult
+} from './account-authorized-dispatch.repository.js'
 
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()

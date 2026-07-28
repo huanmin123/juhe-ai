@@ -8,6 +8,7 @@ import { validateAccountSaveForm } from '../../views/accounts/accountSavePayload
 import { validateBasicEditCredentialFields } from '../../views/accounts/useAccountEditSaveFlow'
 import { managedOAuthProviderKind } from '../../views/accounts/accountProviderCapabilities'
 import { normalizeGrokSsoTokens } from '../../views/accounts/grokSsoTokens'
+import { inferGeminiOAuthType } from '../../views/accounts/geminiOAuthType'
 
 const gpt = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')
 const openAICompatible = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')
@@ -72,6 +73,15 @@ Object.assign(managedGoogleForm, {
 })
 assert.equal(managedOAuthProviderKind({ provider: gemini, profile: geminiProfile }), 'gemini')
 assert.equal(managedGoogleForm.oauthType, 'code_assist', 'Gemini OAuth 静态 fallback 默认应跟随后端 Code Assist 默认模式')
+assert.equal(inferGeminiOAuthType({
+  client_id: 'legacy-ai-studio-client.apps.googleusercontent.com',
+  base_url: 'https://generativelanguage.googleapis.com'
+}), 'ai_studio', '缺 oauth_type 的旧 AI Studio 账户必须按自建 client/base URL 恢复模式')
+assert.equal(inferGeminiOAuthType({
+  client_id: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+  project_id: 'legacy-code-assist-project',
+  base_url: 'https://cloudcode-pa.googleapis.com'
+}), 'code_assist', '缺 oauth_type 的旧 Code Assist 账户必须按 project/base URL 恢复模式')
 assert.equal(validateAccountSaveForm({
   form: managedGoogleForm,
   hasAuthSession: false,

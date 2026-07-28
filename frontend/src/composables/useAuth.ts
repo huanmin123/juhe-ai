@@ -33,8 +33,7 @@ export async function loadCurrentUser(force = false): Promise<CurrentUserSummary
   try {
     const user = await api.auth.me()
     if (requestVersion !== authStateVersion || loadGeneration !== authLoadGeneration) return currentUser.value
-    currentUser.value = user
-    authChecked.value = true
+    applyCurrentUser(user)
     return currentUser.value
   } catch (error: unknown) {
     if (requestVersion !== authStateVersion || loadGeneration !== authLoadGeneration) return currentUser.value
@@ -57,17 +56,18 @@ export async function login(payload: { username: string; password: string; captc
   const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.login(payload)
   if (operationVersion === authStateVersion) {
-    currentUser.value = user
-    authChecked.value = true
+    applyCurrentUser(user)
   }
   return user
 }
 
 export async function logout(): Promise<void> {
   const systemAccountId = currentUser.value?.id
-  advanceAuthStateVersion()
+  const operationVersion = advanceAuthStateVersion()
   await api.auth.logout()
+  if (operationVersion !== authStateVersion) return
   await clearCurrentAccountChatState(systemAccountId)
+  if (operationVersion !== authStateVersion) return
   clearAuthState()
 }
 
@@ -87,25 +87,39 @@ export async function clearCurrentAccountChatState(systemAccountId = currentUser
 export async function changePassword(payload: { oldPassword?: string; newPassword: string }): Promise<CurrentUserSummary> {
   const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.changePassword(payload)
-  if (operationVersion === authStateVersion) currentUser.value = user
+  if (operationVersion === authStateVersion) applyCurrentUser(user)
   return user
 }
 
 export async function updateProfile(payload: { displayName: string }): Promise<CurrentUserSummary> {
   const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.updateProfile(payload)
-  if (operationVersion === authStateVersion) currentUser.value = user
+  if (operationVersion === authStateVersion) applyCurrentUser(user)
   return user
 }
 
 export function clearAuthState(): void {
   advanceAuthStateVersion()
+  if (currentUser.value) authRevision.value += 1
   currentUser.value = undefined
+  authChecked.value = true
+}
+
+function applyCurrentUser(user: CurrentUserSummary): void {
+  const previous = currentUser.value
+  if (
+    !previous
+    || previous.id !== user.id
+    || previous.role !== user.role
+    || previous.mustChangePassword !== user.mustChangePassword
+  ) {
+    authRevision.value += 1
+  }
+  currentUser.value = user
   authChecked.value = true
 }
 
 function advanceAuthStateVersion(): number {
   authStateVersion += 1
-  authRevision.value += 1
   return authStateVersion
 }

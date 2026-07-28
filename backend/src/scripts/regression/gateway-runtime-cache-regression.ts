@@ -363,6 +363,7 @@ function seedGatewayRuntime(): {
       api_key: 'sk-runtime-cache-account',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active',
     concurrencyLimit: 20,
@@ -380,6 +381,7 @@ function seedGatewayRuntime(): {
       account_id: 'acct_runtime_cache_oauth',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active',
     concurrencyLimit: 20,
@@ -441,6 +443,7 @@ function seedGatewayRuntime(): {
       api_key: 'sk-runtime-cache-authorized-group',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: authorizedGroup.id,
     status: 'active',
     concurrencyLimit: 20,
@@ -467,6 +470,7 @@ function seedGatewayRuntime(): {
       api_key: 'sk-runtime-cache-account-scheduled',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: accountScheduledGroup.id,
     status: 'active',
     concurrencyLimit: 20,
@@ -499,6 +503,7 @@ function seedGatewayRuntime(): {
       api_key: 'sk-runtime-cache-account-expiring',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: accountExpiringGroup.id,
     status: 'active',
     concurrencyLimit: 20,
@@ -529,6 +534,7 @@ function seedGatewayRuntime(): {
         api_key: `sk-runtime-cache-multi-account-scheduled-${index + 1}`,
         base_url: 'https://api.openai.com/v1'
       },
+      supportedModels: ['gpt-5.5'],
       groupId,
       status: 'active',
       concurrencyLimit: 20,

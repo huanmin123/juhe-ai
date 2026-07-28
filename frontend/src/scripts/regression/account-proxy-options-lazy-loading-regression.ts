@@ -64,6 +64,7 @@ async function main() {
     await verifyFailureCanRetry()
     await verifyLateResponsesCannotWin()
     await verifySearchCanRevisitAnInvalidatedKey()
+    await verifyClosingDropdownCancelsDeferredSearch()
     console.log('账户代理 options 按需加载回归通过')
   } finally {
     mutableApi.proxies.options = originalOptions
@@ -155,6 +156,21 @@ async function verifySearchCanRevisitAnInvalidatedKey(): Promise<void> {
   calls[0].resolve([option('stale-alpha-proxy')])
   await firstAlpha
   assert.deepEqual(harness.proxies.value.map((item) => item.id), ['fresh-alpha-proxy'])
+}
+
+async function verifyClosingDropdownCancelsDeferredSearch(): Promise<void> {
+  let calls = 0
+  mutableApi.proxies.options = async () => {
+    calls += 1
+    return [option('unexpected-proxy')]
+  }
+  setCurrentUser('closed-dropdown-user')
+  const harness = createHarness()
+  harness.handleSearch('deferred')
+  harness.handleDropdown(false)
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(calls, 0, '关闭代理下拉后不得让已排队搜索继续发请求')
+  assert.equal(harness.loading.value, false, '关闭代理下拉后不得残留 loading')
 }
 
 void main().catch((error) => {

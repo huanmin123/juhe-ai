@@ -21,7 +21,7 @@
 - 后台兜底探针：扫描 due 的探针任务，补偿漏调度、进程重启和无新请求场景。本地运行态由 Web / Redis runtime state 探针恢复，已落库冷却态由 ops-worker 冷却复测恢复。
 - 真实请求形成完整 framing：只记录本次业务事实，并可清理本请求或当前来源范围内的 transport 局部回避；不能直接清理、降级或恢复共享 phase。精确 scope 的 phase 只由匹配 `scopeId + generation` 的 intent owner 推进；legacy、用户显式策略或未来专属 account-global owner 的账户状态只由各自匹配 provenance 的后台任务或明确人工动作恢复。
 - 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、独立后台探针结果及正向 observation fence；较旧负向结果不得覆盖 claim 后出现的同 scope 成功。
-- 共享最小请求执行器承载两类互斥配方：账户激活、周期哨兵和真正账户全局状态恢复固定使用账户保存的 `healthCheckModel`；`protocol_model / model_capability` 子 scope 恢复必须使用失败 attempt 已持久化的最终上游模型、endpoint、lane、转换路径和凭据作用域。两类探针都禁止复用用户 payload，也禁止在执行时从历史测试或默认模型猜测配方。
+- 共享最小请求执行器承载三类互斥配方：`pending_test` 激活使用 ready Catalog 的持久 activation selection，`healthCheckModel` 只作为候选优先级；周期哨兵和真正账户全局状态恢复固定使用账户保存的 `healthCheckModel`；`protocol_model / model_capability` 子 scope 恢复必须使用失败 attempt 已持久化的最终上游模型、endpoint、lane、转换路径和凭据作用域。三类探针都禁止复用用户 payload，也禁止在执行时从历史测试或目录默认猜测配方。
 - 人工测试是独立诊断流量，成功或失败都不清理、确认、升级或恢复本设计中的任何运行态和持久态。
 
 ## 状态分层
@@ -149,11 +149,11 @@ claimedPositiveObservationVersion
 - standalone 和 performance 都通过同一 `scopeId` admission / durable intent 保证跨实例单飞；generation 只由 admission winner 原子分配，唯一身份和结果 fencing 固定为 `scopeId + generation`。performance 不允许多个 server 对同 generation 短暂重复执行。物理相同的授权实例任务另由 PhysicalProbeExecutionKey 合并，但逻辑 intent 仍分别写回自己的 scope。
 - 后台状态机内部生成的相同或更早 `dueAt` 意图按 scopeId + generation 合并；普通请求只能 nomination，只有 durable accepted 才创建 `recovery_wait`，不能合并失败计数、改写 generation、刷新 TTL 或推迟已有任务。
 - 每个**逻辑 intent** 都持久化 `scopeId + generation`；共享物理调用的 Asynq 信封只携带 `physicalExecutionId`，worker 必须从 PostgreSQL 读取 claim 前冻结的 member 集合，不能从任务参数重建逻辑 scope。结果 fanout 前逐 member 校验 scope、generation、route / attempt definition revisions、owner provenance、logical fencing 和 delivery lease；账户双 revision 变化但 scope definition 未变时允许 carry-forward，旧 definition 结果只能 stale。transport owner 的独立探针形成 `framing_complete_neutral` 时只能推进匹配 transport scope；它不能恢复 execution capability、legacy / 专属 account-global、用户显式账户状态或 Key 状态。
-- 同 `scopeId` 的 finalizer 形成 `protocolValidatedSuccess` 时，每次先进入 Redis scope `CapabilityPositiveObservationGate`，完整协议以主设计第 9.1 节为准：admission 与 physical claim 都先持久化 gate reservation、再发布 marker、最后提交 ledger；claim 必须推进 claimGateEpoch，保证 claim 前 S1 和 claim 后 S2 使用不同 positiveFenceKey。Redis winner 只有经过 `reserved -> durable_spooled` 才能让后续 success coalesced；reserve 后崩溃可 lease takeover，Redis miss / 对账未知走 durable fallback。gateway 在释放 request tracker 前 fsync release 外 spool；control owner在 PostgreSQL scope 事务以 positiveFenceKey 条件唯一收敛 fallback，只有一个 committed observation 递增 `positiveObservationVersion`。`capability_unavailable` fanout 还要求当前 version 等于 claim 冻结值；claim 后 committed success 使 intent `superseded_by_newer_success` 并写 durable verification due。quarantine / hold 激活会推进 positive gate resolution epoch，下一次真实成功不能被旧 winner 吞掉。任何未终态 handoff 令精确 evidence unconfirmed，不能只记日志、等待下一次请求。
+- 同 `scopeId` 的 finalizer 形成 `protocolValidatedSuccess` 时，每次先进入 Redis scope `CapabilityPositiveObservationGate`，完整协议以主设计第 9.1 节为准：admission 与 physical claim 都先持久化 gate reservation、再发布 marker、最后提交 ledger；claim 必须推进 claimGateEpoch，保证 claim 前 S1 和 claim 后 S2 使用不同 positiveFenceKey。Redis winner 只有经过 `reserved -> durable_spooled` 才能让后续 success coalesced；reserve 后崩溃可 lease takeover，Redis miss / 对账未知走 durable fallback。gateway 在释放 request tracker 前 fsync release 外 spool；control owner 在 PostgreSQL scope 事务以 positiveFenceKey 条件唯一收敛 fallback，只有一个 committed observation 递增 `positiveObservationVersion`。`capability_unavailable` fanout 还要求当前 version 等于 claim 冻结值；claim 后 committed success 使 intent `superseded_by_newer_success` 并写 durable verification due。quarantine / hold 激活会推进 positive gate resolution epoch，下一次真实成功不能被旧 winner 吞掉。任何未终态 handoff 令精确 evidence unconfirmed，不能只记日志、等待下一次请求。
 - half_open 首次成功、recovering 中间成功及 task failure 耗尽都必须在 incident / intent 事务内同时更新 recoverySuccessCount、nextVerificationAt、durable due 和 control outbox；首次成功至少 30 秒后安排第二次验证，第二次成功才 available。task failure 不增加能力退避，但必须按 infrastructure retry backoff 继续 due，不能让 recovering 永久悬挂或依赖新流量。
 - 调度时间必须带 jitter，避免大批账号在同一秒同时探测。
 - 有 PostgreSQL durable global / per-account reservation、每 credentialSourceAccountId 自动物理探针 5 分钟启动门禁，以及 provider / proxy / Base URL 维度的有界容量。预算不足时原子推进 durable due，不把账号升级为更重状态；Redis 只加速读取，进程重启或多节点不能绕过门禁。所有者显式生产重检可绕过自动 5 分钟间隔，但仍受 running=1、命令限频、成本和 global budget。
-- 后台 sweep 周期性读取 due 索引补偿漏调度；performance 模式的 due 索引必须在 Redis 中，不能只存在于某个 Web 进程的 timer。
+- control scheduler 周期性读取 PostgreSQL durable due ledger 补偿漏调度；performance 模式可用 Redis sorted set 加速候选定位，但 Redis 只是由 outbox 重建的索引，miss 时必须回到数据库 sweep，不能只存在于 Redis 或某个 Web 进程的 timer。
 - legacy / 专属 account-global 恢复任务不携带失败请求的 model、endpoint、stream、payload 或失败形态摘要，并必须保存不可变 owner provenance；请求派生 transport / model_capability 任务必须携带非敏感的精确 Attempt 描述和 ProbeRecipe，但同样不得携带用户 payload、正文或具体错误语义。
 
 建议探针分级：
@@ -208,11 +208,11 @@ performance 模式默认可能有多个 server 节点，同一精确 scope 的�
 系统账户检查探针、模型子 scope 探针与人工测试复用最小请求构造和网关链路，但不复用人工测试会话或状态策略：
 
 - 底层入口使用纯结果执行器 `executeAccountProbe()`。
-- `pending_test` 激活读取 `healthCheckModel` 并拥有账户准入状态；active 周期哨兵也读取该配置，但只拥有解析后的哨兵精确 Route / Attempt 能力。未来真正 account-global owner 必须先独立注册专属 provenance，当前默认不存在。所有请求派生 transport / model_capability scope 都读取持久 ProbeRecipe，并用当前 route planner 重新解析、核对最终 Attempt 描述。
+- `pending_test` 激活 owner 从当前 ready Catalog / credential baseline 建立持久 activation selection，按稳定 Route / credential 顺序轮转免费 execution Attempt，`healthCheckModel` 对应 Route 只优先；任一当前 definition / binding 成功可完成账户准入，单项失败只更新精确能力。active 周期哨兵读取 `healthCheckModel`，但只拥有解析后的哨兵精确 Route / Attempt 能力。未来真正 account-global owner 必须先独立注册专属 provenance，当前默认不存在。所有请求派生 transport / model_capability scope 都读取持久 ProbeRecipe，并用当前 route planner 重新解析、核对最终 Attempt 描述。
 - 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint；模型子 scope 禁止回退到账户哨兵。
 - 探针链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
 - 探针使用 `traffic_source = runtime_recovery_probe`；执行器不自行修改状态，由 intent owner 根据 `purpose + scopeId + generation + owner provenance` 决定是否推进匹配 scope。
-- 检查模型缺失、不可见、不属于支持模型或请求形态不匹配时，记录“检查模型配置异常”并停止本轮，不猜测其他模型，也不把该配置错误升级为账户不可用。
+- active 哨兵或真正 account-global 任务的检查模型缺失、不可见、不属于支持模型或请求形态不匹配时，记录“检查模型配置异常”并停止本轮，不猜测其他模型，也不把该配置错误升级为账户不可用。activation item 自身不合法时按 unknown / stale 安全终结并继续 selection；只有本地可证明且覆盖全部 Route / credential 的共用配置错误，才交给专属 account-global configuration owner。
 
 明确禁止：
 
@@ -235,7 +235,7 @@ performance 模式默认可能有多个 server 节点，同一精确 scope 的�
 
 1. 扫描 due 的精确 `recovery_wait`、系统自动失败观察、运行态降级、精确 `precheck_pending` 和 legacy / 专属 owner 持久冷却态；不接管用户显式策略 TTL。
 2. 多个 Web 节点必须通过 durable logical intent、physical execution / member、claim 和 PhysicalProbeExecutionKey 单飞；逻辑唯一身份固定为 `scopeId + generation`，物理唯一身份固定为 `physicalExecutionId`。真实结果先持久化为不可变 result，再由可重领且不重发上游的 fanout delivery lease 逐 member 回写；每次回写校验 route / attempt definition revisions、owner provenance、logical fencing 和正向 observation fence，账户 publication revision 仅作来源解释，不能用允许短暂重复执行替代一致性。
-3. pending_test 激活、周期哨兵和真正 account-global 任务才使用 `healthCheckModel`；请求派生子 scope 使用持久 ProbeRecipe 和当前 route planner 解析出的精确 model / endpoint，二者均不从历史测试或目录默认猜测。
+3. pending_test 激活使用持久 Catalog activation selection，`healthCheckModel` 只影响候选优先级；周期哨兵和真正 account-global 任务使用 `healthCheckModel`；请求派生子 scope 使用持久 ProbeRecipe 和当前 route planner 解析出的精确 model / endpoint。三类任务都不从历史测试或目录默认猜测。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计或账号质量统计。
 6. `framing_complete_neutral` 对 transport 只形成 framing 完整观察，对精确 execution capability 可以形成通用 unavailable；两者必须分别持 matching scope lease 并 fenced 提交。精确 `runtime_degraded` 只由自己的 ProbeRecipe owner 推进；ops-worker 对 legacy / 专属 account-global 冷却态和父 account 恢复只有形成匹配 provenance 的 `complete_success` 才能改变其 owner 状态。用户显式策略状态不被无关探针成功清理。

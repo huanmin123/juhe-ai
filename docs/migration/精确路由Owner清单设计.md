@@ -52,10 +52,60 @@ schema v1 的结构仍可被当前校验器识别，但发布 schema 仍必须�
 当前实现仍是 schema v2；能力健康 v2 不能直接把生产 manifest 替换成 v3，因为旧 v2-only validator 会把未知字段拒绝并造成所有 owner 无法启动。完整 bootstrap 固定为：
 
 1. 先在仍 active 的 v2 epoch 发布一个**行为不变**的兼容 release。它继续只写 v2 manifest，但 validator / startup preflight 能严格读取 v2 和 v3，能够验证下述 v3 字段，并有 v2 -> v3 -> v2 golden tests；该 release 的 digest 与部署证据先落库。
-2. 只有全部生产 owner 都运行兼容 release 后，协调器才能创建 schema v3 prepared manifest。v3 在 v2 字段外增加 `contractVersions(capability/sentinelWatermark/stats/capabilityHandoff)`、各 contract 的 `minReader/minWriter`、`targetDeploymentEpoch`、`targetEpochMode=active|prepared`、进程角色 / shard owner / expected gateway-host producer inventory 摘要、Goose catalog digest、完整 manifest digest，以及 `capabilityCohort`。`capabilityHandoff` 必须引用唯一版本化 schema，完整固定 spool record、checksum、business receipt、candidate receipt、delivery resolution、ACK cursor、producer registry / watermark、replay lease fencing、producer epoch policy、record / tail quarantine、scope / account / global evidence hold / barrier、quarantine artifact、evidence artifact manifest、backup barrier / evidence、account physical probe gate、probe due、activation selection 和最大兼容 replay version；不得由各 runbook 手抄子集。gateway、每 host replay / quarantine owner、control / due / activation owner、backup coordinator 任一不兼容都拒绝 ready。`capabilityCohort` 固定声明 `policyVersion`、`hashAlgorithm=sha256`、`hashSeedId`、`keySource=accountRuntimeKey`、`allowedBasisPoints=[0,100,500,2500,10000]`、`initialMutationBasisPoints=0`、`denySafetyProjection=true`、控制组行为、类型化 threshold policy digest 和 epoch-fenced `stateRef`；mutation cohort 降为 0 时 deny-only 仍应用既有 blocked / hold。这些字段全部进入 manifest digest，未知值 fail-closed。
-3. prepared 进程只允许隔离 namespace 的只读 smoke、shadow rebuild 和无副作用校验；数据库拒绝其业务 mutation，对外 listener 也不得接生产流量。激活时先冻结旧 ingress，再 CAS active epoch；目标 gateway、每 host replay、control、Asynq、stats、API 必须从 prepared 晋升 / 重启为 active mode，并把 active epoch / manifest、outbox barrier、producer inventory / replay lease和 role-ready proof 写入 activation barrier。全部期望角色 ready 后才切代理；prepared ready 不能冒充 active ready，角色失败时保持流量冻结并生成新 rollback epoch。
-4. v3 初次激活固定为 cohort `0`。`stateRef` 指向 PostgreSQL 中以 `deploymentEpoch + cohortRevision` 唯一的 append-only cohort state；协调器只能把当前 active epoch CAS 到 manifest 允许的相邻档位，记录 `enabledBasisPoints`、证据 digest、操作者、时间和 previous revision。gateway 只接受 manifest digest、active epoch 和 cohort state digest 同时匹配的快照。这样 1% / 5% / 25% / 100% 晋级不会伪装成新的 owner epoch，但每次变化仍可审计、可回退且不能修改 hash seed。
-5. v3 激活和完整回滚都创建新的 deployment epoch。回滚候选不能只是交换 `owner/rollbackOwner`；必须重新计算 contract 版本、目标 schema、进程 owner、before-image 和 digest，并经协调器 CAS 激活。cohort 阈值触发只回退 cohort revision；只有 listener / 数据契约故障才进入完整新 epoch 回滚。
+2. 只有全部生产 owner 都运行兼容 release 后，协调器才能创建 schema v3 prepared manifest。v3 的 canonical **被签名 payload** 顶层结构固定如下；字段只能使用 `contractVersions.*`，禁止再出现 `contracts.*`、单一 `producerSetDigest` 或 runbook 自定义别名：
+
+```text
+schemaVersion = 3
+deploymentEpoch
+targetDeploymentEpoch
+targetEpochMode = prepared | active
+release
+routeOwners
+rollbackRouteOwners
+routeAllowlist
+contractVersions:
+  capability = { version, minReader, minWriter }
+  sentinelWatermark = { version, minReader, minWriter }
+  stats = { version, minReader, minWriter }
+  capabilityHandoff = {
+    version, minReader, minWriter,
+    spoolRecordVersion, checksumVersion, receiptSchemaVersion,
+    quarantineSchemaVersion, healthHoldSchemaVersion,
+    deliveryResolutionVersion, ackCursorVersion,
+    producerRegistrySchemaVersion, producerWatermarkSchemaVersion,
+    producerInventoryCertificateSchemaVersion,
+    replayLeaseFencingVersion, producerEpochPolicyVersion,
+    replicationReceiptSchemaVersion,
+    accountPhysicalProbeGateSchemaVersion, probeDueSchemaVersion,
+    activationSelectionSchemaVersion, accountHoldSchemaVersion,
+    globalBarrierSchemaVersion, tailQuarantineFormatVersion,
+    quarantineArtifactFormatVersion, artifactArchiveManifestVersion,
+    evidenceArtifactManifestVersion, canonicalManifestEnvelopeVersion,
+    backupBarrierSchemaVersion, backupEvidenceVersion,
+    maxReplayRecordVersion
+  }
+roleTopology
+sourceProducerInventoryCertificateDigest
+targetProducerInventoryCertificateDigest
+sourceProducerSetDigest
+targetProducerSetDigest
+gooseCatalogDigest
+capabilityCohort
+```
+
+`deploymentEpoch` 是该 manifest 的 epoch 身份，`targetDeploymentEpoch` 必须与它精确相等；`targetEpochMode` 约束同一 release 进程是无副作用 prepared 还是生产 active。`roleTopology` 固定每类进程、host / shard owner 和 fencing 域。`sourceProducerSetDigest` 绑定当前正在承接流量、待 drain 的完整 producer set；`targetProducerSetDigest` 绑定已注册并 fsync、状态仅为 `active_target_pending` 的目标 producer set；二者不得合并为一个摘要。source / target certificate digest 分别把两个 set 绑定到连续签名 inventory 证书链；manifest 不包含运行期会变化的 expected inventory revision。
+
+每个 active epoch 另有 append-only `deployment_producer_inventory_certificates` 和单行 active pointer。证书固定 `deploymentEpoch / inventoryRevision / previousCertificateDigest / ownerManifestDigest / producerSetDigest / producerEntriesDigest / expectedHostSetDigest / replicationPolicyDigest / reason / issuedAt`，revision 连续、previous digest 不断链，第一张 target certificate 必须等于 manifest 的 `targetProducerInventoryCertificateDigest`。备份恢复、扩缩容或 producer 重启先把新 epoch 注册为 `active_target_pending`，再由 coordinator 校验 registry set / role / replication proof，并原子 CAS 新 certificate pointer 后转 active；旧证书和 sealed producer 不能再次授权 append。所有 activation / backup / rollback / stop barrier 冻结 `inventoryRevision + certificateDigest`，冻结后集合或 pointer 变化即失败。
+
+`capabilityHandoff.receiptSchemaVersion` 的唯一 schema 必须同时覆盖 business、candidate 和 delivery receipt，并完整固定 spool / checksum、delivery resolution、ACK、producer registry / watermark / seal、replay fencing、producer epoch policy、record / tail quarantine、scope / account hold / global barrier、quarantine artifact、内容寻址 artifact archive、backup barrier / evidence、account physical 5 分钟 gate、probe due、activation selection、跨故障域 replication policy / receipt 和最大兼容 replay version；不得由各 runbook 手抄子集。gateway、每 host replay / quarantine owner、control / due / activation owner、backup coordinator 任一不兼容都拒绝 ready。
+
+`capabilityCohort` 固定声明 `policyVersion`、`hashAlgorithm=sha256`、`hashSeedId`、`keySource=accountRuntimeKey`、`allowedBasisPoints=[0,100,500,2500,10000]`、`initialMutationBasisPoints=0`、`denySafetyProjection=true`、`allowedControlModes=[live_same_window,frozen_previous_cohort_baseline]`、类型化 threshold policy digest 和 epoch-fenced `stateRef`。1% / 5% / 25% 只允许 `live_same_window`；100% 必须引用已通过并冻结的 25% 基线，使用 `frozen_previous_cohort_baseline`，同时继续检查绝对 SLO 与 hard invariant。mutation cohort 降为 0 时 deny-only 仍应用既有 blocked / hold。
+
+payload 使用 RFC 8785 canonical JSON 后计算 SHA-256。`manifestDigest` **不属于被摘要 payload**，只保存在 PostgreSQL epoch 行和外层签名 envelope，避免自引用。envelope 固定 `purpose / canonicalization=RFC8785 / digestAlgorithm=SHA-256 / signatureAlgorithm=Ed25519 / manifestDigest / keyId / trustRootId / environmentId / deploymentEpoch / barrierId / releaseDigest / issuedAt / expiresAt / sequence / signature`；签名覆盖域分隔符、digest 与除 signature 外全部 envelope metadata。purpose 只允许 `owner_activation / producer_inventory / runtime_authorization / backup_evidence / rollback_evidence / restore_authorization`。validator 必须检查 purpose、信任根、key 轮换 / 吊销、环境与 epoch、单调 sequence 和有效期，拒绝跨 purpose、旧 epoch或旧 sequence 重放。所有 payload 字段都进入 digest，未知字段或未知值 fail-closed。短期 owner activation envelope 过期后不能继续用来启动进程；每次启动、重启或重新 ready 都要求新鲜 runtime authorization，绑定 manifestDigest、当前 active inventory certificate digest、release 和 role / shard。长期 backup / rollback 内容证明即使 envelope 到期也不被改写，但实际恢复 / 回滚另需新鲜 restore authorization。
+
+3. prepared 进程只允许隔离 namespace 的只读 smoke、shadow rebuild 和无副作用校验；数据库拒绝其业务 mutation，对外 listener 也不得接生产流量。prepared target producer 必须先把 metadata / initial sequence 写到 release 外并 fsync，再以 `active_target_pending` 注册到 `targetProducerSetDigest`，并签发与 manifest 锚点一致的首张 target inventory certificate，不得产生 delivery、业务副作用或生产流量。激活协调器写入 `ingress_frozen` 时同时 fence 新 ingress、command 创建、due claim、admission 和 probe scheduling，冻结 source active inventory certificate pointer，只允许冻结前已 accepted 的 request finalizer、outbox / projector、replay 与 result-ready fanout 继续收敛；随后才 seal / drain certificate 对应的 `sourceProducerSetDigest`，证明连续 watermark、ACK、跨故障域 replica receipt 和无 lost / unknown tail。source drain certificate 成立后才能在同一事务 CAS active epoch 与 target inventory pointer；目标 gateway、每 host replay、control、Asynq、stats、API 再凭新鲜 runtime authorization 从 prepared 晋升 / 重启为 active mode，目标 producer 由 `active_target_pending` CAS 为 active，并把 active epoch / manifest、outbox barrier、两个 producer certificate / set digest、replay lease 和 role-ready proof 写入 activation barrier。全部期望角色 ready 后才切代理；target producer 不得被误 seal。角色失败时保持流量冻结并生成新 rollback epoch。
+4. v3 初次激活固定为 cohort `0`。`stateRef` 指向 PostgreSQL 中以 `deploymentEpoch + cohortRevision` 唯一的 append-only cohort state；晋级只能按 `0 -> 100 -> 500 -> 2500 -> 10000` 相邻 CAS。普通 SLO 退化只降一档；数据完整性、安全、签名、producer / replica barrier 失败可从任意档直接 CAS 到 0。每次记录 `enabledBasisPoints`、`controlMode`、证据 digest、操作者、时间和 previous revision；gateway 只接受 manifest digest、active epoch 和 cohort state digest 同时匹配的快照。这样 1% / 5% / 25% / 100% 晋级不会伪装成新的 owner epoch，但每次变化仍可审计、可回退且不能修改 hash seed。
+5. v3 激活和完整回滚都创建新的 deployment epoch。回滚候选不能只是交换 `owner/rollbackOwner`；必须重新计算 contract 版本、目标 schema、进程 owner、source / target producer certificate 与 set、before-image、payload digest 和签名 envelope，并经协调器 CAS 激活。回滚 / 备份先 fence 新工作并冻结 current certificate，但冻结前已 accepted 的 finalizer、replay、fanout 和 projector 必须继续到 drain certificate；backup / rollback / stop 只 seal 该 certificate 的 current producer set。备份发布后不得重新打开已 sealed producer epoch；每个 gateway 创建并 fsync 新 producer epoch、以 `active_target_pending` 注册并取得 replay lease / role-ready proof，协调器签发 previous digest 连续的新 inventory certificate，并在 set / policy / signature 全部匹配后 CAS active pointer，随后才解除 mutation / ingress fence；任一验证失败都保持冻结。普通 cohort 阈值只按上一条规则降低 cohort revision；listener / 数据契约故障进入完整新 epoch 回滚。
 
 在 v3 validator、schema、命令与测试真正实现前，本节只是 capability v2 的阻断设计，不把当前 manifest 误报为已升级。v2-only Node 二进制不是有效的 v3 rollback artifact。
 
@@ -118,4 +168,4 @@ node scripts/validate-owner-manifest.mjs --print-rollback=rollback-2026-07-22-00
 
 `scripts/validate-owner-manifest.test.mjs` 覆盖 v1 结构兼容、v2 空/非空 allowlist、当前 Goose schema、粗粒度回退、普通模板与 Gemini action 模板命中、未知 method、unsafe wildcard、编码/非规范路径、surface 越界、owner 非法、重复/相交模板、GET/HEAD 精确匹配、全 Node 断言和自动回滚往返。
 
-v3/v4 实现时必须另增 dual-read bootstrap、cohort policy / stateRef、相邻档位 CAS、v3 rollback artifact、pure-Go release target、v4 双向回滚和拒绝未知字段的 golden tests；这些测试不存在或未通过时，v3 capability 激活与 W11 Node 删除分别保持阻断。
+v3 实现时必须另增：v2/v3 dual-read bootstrap；canonical payload 顶层字段完整性；拒绝 `contracts.*`、单一 `producerSetDigest`、payload 内自引用 `manifestDigest` 和未知字段；RFC 8785 digest golden vector；Ed25519 purpose / trust root / key rotation / revoke / expiry / sequence replay；过期 activation 与新鲜 runtime authorization；producer inventory 首张 anchor、连续 revision / previous digest、registry set / active pointer CAS、sealed epoch 不可 reopen；source sealed + target `active_target_pending` 的 activation transition；backup / rollback / stop 只 seal current certificate set；replica ACK gap；artifact bytes 缺失 / digest / length / schema / signed location remap；1% / 5% / 25% live control、100% frozen 25% baseline；相邻晋级、普通一档降级和 hard failure 任意档直降 0。v4 另覆盖 pure-Go release target 和双向回滚。上述测试不存在或未通过时，v3 capability 激活与 W11 Node 删除分别保持阻断。

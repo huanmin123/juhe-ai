@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
+import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -38,6 +39,16 @@ interface AccountListLoadOptions extends Record<string, unknown> {
   skipOptions?: boolean
 }
 
+interface ProviderDefinitionRequest {
+  requestId: number
+  promise: Promise<ProviderDefinition | undefined>
+}
+
+interface AccountOptionsRequest {
+  requestId: number
+  promise: Promise<void>
+}
+
 const defaultAccountsPageState = (): AccountsPageState => ({
   filters: { keyword: '', providerCode: 'all', type: 'all', groupId: '', group: undefined, tagIds: [], status: [], systemAccountId: allSystemAccountsValue, systemAccount: undefined },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
@@ -50,9 +61,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   rememberGroupSelection(initialPageState.filters.group)
   rememberPrincipalSelection(initialPageState.filters.systemAccount)
   const providers = ref<ProviderDefinition[]>([])
+  const providerDefinitions = ref<ProviderDefinition[]>([])
+  const providerDefinitionsLoading = ref(false)
+  const providerDefinitionsLoaded = ref(false)
+  const providerDefinitionsScopeKey = ref('')
+  const providerDefinitionsInFlight = new Map<string, ProviderDefinitionRequest>()
+  let providerDefinitionsRequestId = 0
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
-  const accountOptionsInFlight = new Map<string, Promise<void>>()
+  const accountOptionsInFlight = new Map<string, AccountOptionsRequest>()
+  let accountOptionsRequestId = 0
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   const {
@@ -229,45 +247,138 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   async function loadAccountOptions(systemAccountId: string | undefined, force = false): Promise<void> {
-    const scopeKey = options.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
+    const scopeKey = accountProviderScopeKey(systemAccountId)
     if (!force && accountOptionsLoaded.value && accountOptionsScopeKey.value === scopeKey) {
       return
     }
-    const currentScopeKey = () => options.isManagementView.value
-      ? `management:${accountScopeParams.value?.systemAccountId ?? 'all'}`
-      : 'self'
     const existingRequest = !force ? accountOptionsInFlight.get(scopeKey) : undefined
-    if (existingRequest) {
-      return existingRequest
+    if (existingRequest?.requestId === accountOptionsRequestId) return existingRequest.promise
+
+    if (accountOptionsScopeKey.value !== scopeKey) {
+      providers.value = []
+      accountOptionsLoaded.value = false
+      accountOptionsScopeKey.value = ''
     }
 
-    const requestRef: { current?: Promise<void> } = {}
+    const requestId = ++accountOptionsRequestId
     const request = (async () => {
       let providerApplied = false
-      await loadProviderOptionsResource({
-        apply: (nextProviders) => {
-          if (currentScopeKey() !== scopeKey) return
-          providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-          providerApplied = true
-        },
-        force,
-        includeDefinitions: true,
-        isManagementView: options.isManagementView.value,
-        systemAccountId
-      })
-      if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
-        return
+      try {
+        await loadProviderOptionsResource({
+          apply: (nextProviders) => {
+            if (!isCurrentAccountOptionsRequest(requestId, scopeKey)) return
+            providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+            providerApplied = true
+          },
+          force,
+          includeDefinitions: false,
+          isCurrent: () => isCurrentAccountOptionsRequest(requestId, scopeKey),
+          isManagementView: options.isManagementView.value,
+          systemAccountId
+        })
+        if (!isCurrentAccountOptionsRequest(requestId, scopeKey)) return
+        accountOptionsLoaded.value = providerApplied
+        accountOptionsScopeKey.value = providerApplied ? scopeKey : ''
+      } catch (error) {
+        if (!isCurrentAccountOptionsRequest(requestId, scopeKey)) return
+        throw error
       }
-      accountOptionsLoaded.value = providerApplied
-      accountOptionsScopeKey.value = providerApplied ? scopeKey : ''
     })().finally(() => {
-      if (accountOptionsInFlight.get(scopeKey) === requestRef.current) {
-        accountOptionsInFlight.delete(scopeKey)
-      }
+      const activeRequest = accountOptionsInFlight.get(scopeKey)
+      if (activeRequest?.requestId === requestId) accountOptionsInFlight.delete(scopeKey)
     })
-    requestRef.current = request
-    accountOptionsInFlight.set(scopeKey, request)
+    accountOptionsInFlight.set(scopeKey, { requestId, promise: request })
     return request
+  }
+
+  async function ensureProviderDefinition(
+    providerCode: string,
+    systemAccountId?: string,
+    force = false
+  ): Promise<ProviderDefinition | undefined> {
+    const code = providerCode.trim()
+    if (!code) return undefined
+    const usesCurrentListScope = options.isManagementView.value && systemAccountId === undefined
+    const targetSystemAccountId = options.isManagementView.value
+      ? systemAccountId ?? accountScopeParams.value?.systemAccountId
+      : undefined
+    const scopeKey = accountProviderScopeKey(targetSystemAccountId)
+    const requestKey = JSON.stringify([scopeKey, code])
+    const listScopeAnchorKey = usesCurrentListScope ? currentAccountProviderScopeKey() : undefined
+    if (!force && providerDefinitionsScopeKey.value === scopeKey) {
+      const cached = providerDefinitions.value.find((provider) => provider.code === code)
+      if (cached) return cached
+    }
+    const existingRequest = !force ? providerDefinitionsInFlight.get(requestKey) : undefined
+    if (existingRequest?.requestId === providerDefinitionsRequestId) return existingRequest.promise
+
+    if (providerDefinitionsScopeKey.value !== scopeKey) {
+      providerDefinitions.value = []
+      providerDefinitionsLoaded.value = false
+      providerDefinitionsScopeKey.value = ''
+    }
+    const requestId = ++providerDefinitionsRequestId
+    providerDefinitionsLoading.value = true
+    const request = (async () => {
+      try {
+        const definition = await api.providers.detail(
+          code,
+          options.isManagementView.value && targetSystemAccountId
+            ? { systemAccountId: targetSystemAccountId }
+            : undefined
+        )
+        if (!isCurrentProviderDefinitionsRequest(requestId, scopeKey, targetSystemAccountId, listScopeAnchorKey)) return undefined
+        providerDefinitions.value = [
+          ...providerDefinitions.value.filter((provider) => provider.code !== definition.code),
+          definition
+        ]
+        providerDefinitionsLoaded.value = true
+        providerDefinitionsScopeKey.value = scopeKey
+        return definition
+      } catch (error) {
+        if (!isCurrentProviderDefinitionsRequest(requestId, scopeKey, targetSystemAccountId, listScopeAnchorKey)) return undefined
+        throw error
+      } finally {
+        const activeRequest = providerDefinitionsInFlight.get(requestKey)
+        if (activeRequest?.requestId === requestId) providerDefinitionsInFlight.delete(requestKey)
+        if (requestId === providerDefinitionsRequestId) providerDefinitionsLoading.value = false
+      }
+    })()
+    providerDefinitionsInFlight.set(requestKey, { requestId, promise: request })
+    return request
+  }
+
+  function isCurrentAccountOptionsRequest(requestId: number, scopeKey: string): boolean {
+    return requestId === accountOptionsRequestId && scopeKey === currentAccountProviderScopeKey()
+  }
+
+  function isCurrentProviderDefinitionsRequest(
+    requestId: number,
+    scopeKey: string,
+    systemAccountId: string | undefined,
+    listScopeAnchorKey?: string
+  ): boolean {
+    return requestId === providerDefinitionsRequestId
+      && scopeKey === accountProviderScopeKey(systemAccountId)
+      && (!listScopeAnchorKey || listScopeAnchorKey === currentAccountProviderScopeKey())
+  }
+
+  function currentAccountProviderScopeKey(): string {
+    const systemAccountId = options.isManagementView.value
+      ? accountScopeParams.value?.systemAccountId
+      : undefined
+    return accountProviderScopeKey(systemAccountId)
+  }
+
+  function accountProviderScopeKey(systemAccountId: string | undefined): string {
+    const viewer = authState.currentUser.value
+    return JSON.stringify([
+      authState.revision.value,
+      viewer?.id ?? 'anonymous',
+      viewer?.role ?? 'anonymous',
+      options.isManagementView.value ? 'management' : 'self',
+      options.isManagementView.value ? systemAccountId ?? 'all' : 'self'
+    ])
   }
 
   function accountListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }): AccountListParams {
@@ -293,6 +404,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loading,
     accounts,
     providers,
+    providerDefinitions,
+    providerDefinitionsLoading,
+    providerDefinitionsLoaded,
     systemAccounts,
     filters,
     accountSorts,
@@ -312,6 +426,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     refreshMobileAccounts,
     loadData,
     loadAccountOptions,
+    ensureProviderDefinition,
     refreshData,
     applyFilters,
     handleAccountTableChangeAndLoad,

@@ -25,9 +25,9 @@ assertFunctionUsesReverseIndex(gatewayApiKeyRepositorySource, 'invalidateGateway
 assert(gatewayApiKeyRepositorySource.includes('dispose: (entry, keyHash)'), '网关 API Key 校验缓存应在 LRU 逐出时同步反向索引')
 assert(gatewayApiKeyRepositorySource.includes('createSharedJsonCache<GatewayApiKeyCacheEntry>'), '网关 API Key 校验缓存应声明 Redis JSON 共享缓存')
 assert(gatewayApiKeyRepositorySource.includes('createProcessLocalResourceCache<string, GatewayApiKeyCacheEntry>'), '网关 API Key 校验应保留进程内只读热路径')
-assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'syncGatewayCacheInvalidationsFromRuntimeState()', '网关 API Key 异步校验应先同步 Redis runtime state 失效版本')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'syncGatewayCacheInvalidationsFromRuntimeState({ force: true })', '网关 API Key 异步校验应先强制同步 Redis runtime state 失效版本')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'gatewayApiKeyProcessCache.get(keyHash)', '网关 API Key 异步校验应先读取进程内热缓存')
-assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'void syncGatewayCacheInvalidationsFromRuntimeState()', 'API Key 进程内命中时失效版本同步不得阻塞模型目录响应')
+assertFunctionExcludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'void syncGatewayCacheInvalidationsFromRuntimeState()', 'API Key 进程内命中前不能把失效版本同步放到后台')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'getGatewayApiKeySharedCacheEntry(keyHash)', '网关 API Key 异步校验应读取 Redis 共享缓存')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'setGatewayApiKeyCacheEntryAsync(keyHash', '网关 API Key 异步校验 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'clearGatewayApiKeyValidationCache', 'clearGatewayApiKeySharedCache()', '网关 API Key 校验全量失效应清理 Redis 共享缓存命名空间')
@@ -144,7 +144,6 @@ interface CacheDeclaration {
 
 const localOnlyAppCacheReasons = new Map<string, string>([
   ['gateway:client-ip-policy-by-ip', 'per-IP derived lookup over the Redis-backed policy entries'],
-  ['gateway:runtime', 'large gateway runtime snapshot invalidated by runtime-state versioning'],
   ['gateway:openai-accounts', 'contains upstream account secrets and must stay process-local'],
   ['gateway:openai-session-affinity', 'session affinity uses local reverse indexes for migration'],
   ['gateway:openai-traffic-migration-preference', 'short-lived local preference coupled to session affinity migration'],

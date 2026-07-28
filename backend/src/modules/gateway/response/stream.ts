@@ -259,7 +259,10 @@ export async function pipeUpstreamStream(
         ? {
             transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
               const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
-              if (result.outcome === 'blocked' && result.retryable) {
+              if (
+                (result.outcome === 'blocked' && result.retryable)
+                || result.outcome === 'late_violation'
+              ) {
                 return { intercepted: codexResponsesProtocolDecision(result, false) }
               }
               const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
@@ -274,7 +277,11 @@ export async function pipeUpstreamStream(
         ? {
             transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
               const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
-              if (result.outcome !== 'repairable' && result.outcome !== 'blocked') return undefined
+              if (
+                result.outcome !== 'repairable'
+                && result.outcome !== 'blocked'
+                && result.outcome !== 'late_violation'
+              ) return undefined
               return { intercepted: codexResponsesProtocolDecision(result, true) }
             }
           }
@@ -1553,6 +1560,7 @@ function codexResponsesProtocolDecision(
 ): ResponseInspectionDecision {
   const codes = [...new Set(result.issues.map((issue) => issue.code))]
   const detail = codes.length > 0 ? `：${codes.join(', ')}` : ''
+  const canSwitchAccount = !result.commit.semanticCommitted
   return {
     reason: 'configured_response_policy',
     action: 'replace_with_failure',
@@ -1572,8 +1580,8 @@ function codexResponsesProtocolDecision(
     policyProtocolCode: 'openai_v1',
     executionMode: 'intercept',
     dataHandling: 'replace_with_failure',
-    retryEnabled: true,
-    accountSwitch: 'request_next_account',
+    retryEnabled: canSwitchAccount,
+    accountSwitch: canSwitchAccount ? 'request_next_account' : 'none',
     accountState: strict ? 'runtime_avoidance' : 'none'
   }
 }

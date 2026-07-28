@@ -10,7 +10,7 @@
 
 - 只服务 `backend/src/scripts/regression/`，监听 `127.0.0.1` 随机端口，测试结束后关闭。
 - 生产常量继续指向真实供应商，不新增可在生产运行时覆盖 OAuth endpoint 的环境变量。
-- OAuth service 通过可恢复的测试 transport 注入把真实 endpoint 请求转送到本地模拟器；默认 transport 不变。
+- OAuth service 通过可恢复的测试 transport 注入把真实 endpoint 请求转送到本地模拟器；Gemini OAuth 探测和 Code Assist 首请求通过 `AsyncLocalStorage` 测试作用域映射到本地地址；默认生产 endpoint 与 transport 不变。
 - 模拟器只生成测试 JWT、授权码和 Refresh Token，不读取或写入真实凭据。
 - 不把 xAI CLI 订阅 OAuth 描述为公共开发者 API 的通用 OAuth；测试只固定参考仓库已实现的 CLI 链路。
 
@@ -20,10 +20,10 @@
 | --- | --- | --- |
 | OpenAI | browser authorization code + PKCE；refresh 使用 form，scope 为 `openid profile email`；账号 ID 从 ID/Access Token 按字段回退 | JSON refresh、缺 scope、PKCE 不匹配、缺 `chatgpt_account_id` |
 | Anthropic | `platform.claude.com` callback/token 链；JSON token body；支持 URL、query、裸 code 与 `code#state` 粘贴 | redirect 不匹配、state/PKCE 不匹配、错误 token body |
-| Gemini | Google OAuth form；PKCE；内置 CLI client；Code Assist onboarding；刷新有界重试 | client/redirect 不匹配、错误编码、无界重试 |
+| Gemini | Google OAuth form；PKCE；AI Studio 自建 client；Code Assist/Google One 内置 CLI client；Code Assist `loadCodeAssist`、Resource Manager 与 `onboardUser`；刷新有界重试 | client/client secret/redirect/scope 不匹配、跨 client 使用 Refresh Token、错误编码、无界重试 |
 | Grok | xAI PKCE form；CLI proxy 请求只对精确主机增加 xAI CLI 身份头；精确 `Access denied` 403 对可重放请求回退官方 API，且仅采用 2xx | 缺 PKCE、错误 client、对非 CLI host 泄漏 CLI 身份头、其他 403 被错误回退 |
 
-OpenAI 官方文档当前可确认浏览器登录、凭据缓存和会话自动刷新，但未公开浏览器 OAuth 的完整线级 token 契约。线级字段以 sub2api、CLIProxyAPI 和 new-api 的一致实现为回归基线，不能标成 OpenAI 公开 API 承诺。
+[OpenAI Codex Authentication 官方文档](https://learn.chatgpt.com/docs/auth)当前可确认浏览器登录后回传凭据、本地凭据缓存/存储和会话使用中自动刷新，但未公开浏览器 OAuth 的完整线级 token 契约。线级字段以 sub2api、CLIProxyAPI 和 new-api 的一致实现为回归基线，不能标成 OpenAI 公开 API 承诺。
 
 ## 4. 测试场景
 
@@ -38,6 +38,7 @@ OpenAI 官方文档当前可确认浏览器登录、凭据缓存和会话自动�
 7. 验证供应商运行时专属 Header 与 base URL 约束。
 8. 验证 Gemini 网关刷新使用跨进程共享锁、CAS、旋转 Refresh Token 持久化，并复用 service 的退避重试与旧 client fallback。
 9. 验证 Anthropic、Gemini、Grok 手动刷新只更新凭据，不清除限流、临时不可用或其他无匹配 provenance 的业务状态。
+10. Gemini AI Studio、Code Assist、Google One 分别完成 authorize、HTTP token exchange、轮换刷新、系统 API 落库与首次请求；Code Assist 新用户必须真实经过本地 `loadCodeAssist -> onboardUser`，Resource Manager 只作为已注册无项目或 onboarding 失败后的 fallback；legacy client fallback 必须先由 mock 拒绝内置 client，再由 Refresh Token 原签发 client 成功。
 
 ## 5. 完成标准
 

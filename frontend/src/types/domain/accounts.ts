@@ -941,6 +941,11 @@ export interface GroupListItem extends Omit<
   canReturn: boolean
 }
 
+export type GroupEditDetail = Pick<
+  GroupSummary,
+  'id' | 'systemAccountId' | 'name' | 'providerCode' | 'description' | 'enabled' | 'isDefault' | 'groupType' | 'schedulingPolicy' | 'accessType'
+>
+
 export interface GroupListResult {
   items: GroupListItem[]
   generatedAt: string

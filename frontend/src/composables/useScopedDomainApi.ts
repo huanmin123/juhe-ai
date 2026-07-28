@@ -72,6 +72,9 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     detail: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.detail(id, params)
       : api.myGroups.detail(id),
+    editBasicDetail: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.editBasicDetail(id, params)
+      : api.myGroups.editBasicDetail(id),
     options: (params?: GroupOptionParams) => isManagementView.value
       ? api.groups.options(params)
       : api.myGroups.options(params),

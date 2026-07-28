@@ -44,6 +44,8 @@ assert.equal(await stateStore.getJson('counter'), 2)
 
 assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-a' }), true)
 assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-b' }), false)
+assert.equal(await stateStore.renewLock('lock', { ttlMs: 1000, token: 'token-b' }), false)
+assert.equal(await stateStore.renewLock('lock', { ttlMs: 1000, token: 'token-a' }), true)
 await stateStore.releaseLock('lock', 'token-b')
 assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-b' }), false)
 await stateStore.releaseLock('lock', 'token-a')

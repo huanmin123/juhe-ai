@@ -381,7 +381,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     return
   }
   try {
-    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableOpenAIOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('OpenAI OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -393,8 +393,10 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
         code,
         state,
         ownerSystemAccountId: requestAccess?.systemAccountId,
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateOpenAIOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
         return {
@@ -427,7 +429,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     return
   }
   try {
-    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableOpenAIOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('OpenAI OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -436,8 +438,10 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
       const tokenInfo = await refreshOpenAIOAuthToken({
         refreshToken: parsed.data.refreshToken,
         clientId: parsed.data.clientId ?? stringCredential(current.credentials, 'client_id'),
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateOpenAIOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
         return {

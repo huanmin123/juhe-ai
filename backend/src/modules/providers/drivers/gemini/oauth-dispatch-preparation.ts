@@ -40,6 +40,7 @@ export interface GeminiOAuthDispatchPreparationDependencies {
     baseUrl?: string
     scope?: string
     proxyUrl?: string
+    signal?: AbortSignal
   }): Promise<GeminiOAuthTokenInfo>
   persistCredentials(
     accountId: string,
@@ -76,7 +77,9 @@ export async function prepareGeminiAccountBeforeDispatch(
   const refresh = runWithProviderOAuthRefreshLock(
     GEMINI_PROVIDER_CODE,
     sourceAccountId,
-    async () => await refreshAndPersistGeminiOAuthAccount(account, sourceAccountId, dependencies)
+    async (lockSignal, assertLockOwned) => await refreshAndPersistGeminiOAuthAccount(
+      account, sourceAccountId, dependencies, lockSignal, assertLockOwned
+    )
   )
   geminiOAuthRefreshes.set(sourceAccountId, refresh)
   void refresh.finally(() => {
@@ -102,7 +105,9 @@ export function shouldRefreshGeminiOAuthCredentials(
 async function refreshAndPersistGeminiOAuthAccount(
   dispatchAccount: DispatchAccountSecret,
   sourceAccountId: string,
-  dependencies: GeminiOAuthDispatchPreparationDependencies
+  dependencies: GeminiOAuthDispatchPreparationDependencies,
+  signal?: AbortSignal,
+  assertLockOwned?: () => Promise<void>
 ): Promise<DispatchAccountSecret> {
   const source = await dependencies.loadAccount(sourceAccountId)
   if (!source || source.providerCode !== GEMINI_PROVIDER_CODE || source.type !== 'google_oauth') {
@@ -124,7 +129,8 @@ async function refreshAndPersistGeminiOAuthAccount(
     quotaProjectId: stringCredential(currentCredentials, 'quota_project_id'),
     baseUrl: stringCredential(currentCredentials, 'base_url'),
     scope: stringCredential(currentCredentials, 'scope'),
-    proxyUrl: dispatchAccount.proxyUrl
+    proxyUrl: dispatchAccount.proxyUrl,
+    signal
   })
   let candidate = source
   let lastConflict: AccountConfigRevisionConflictError | undefined
@@ -143,6 +149,7 @@ async function refreshAndPersistGeminiOAuthAccount(
     }
     assertSafeUpstreamBaseUrl(stringCredential(credentials, 'base_url') || dispatchAccount.baseUrl)
     try {
+      await assertLockOwned?.()
       const updated = await dependencies.persistCredentials(
         sourceAccountId,
         credentials,
@@ -191,7 +198,12 @@ function dispatchAccountWithCredentials(
 
 function accountOAuthType(credentials: Record<string, unknown>): GeminiOAuthType {
   const value = stringCredential(credentials, 'oauth_type')
-  return value === 'google_one' || value === 'ai_studio' ? value : 'code_assist'
+  if (value === 'code_assist' || value === 'google_one' || value === 'ai_studio') return value
+  const baseUrl = stringCredential(credentials, 'base_url')
+  if (baseUrl?.includes('generativelanguage.googleapis.com')) return 'ai_studio'
+  if (stringCredential(credentials, 'project_id') || baseUrl?.includes('cloudcode-pa.googleapis.com')) return 'code_assist'
+  const clientId = stringCredential(credentials, 'client_id')
+  return clientId && clientId !== '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com' ? 'ai_studio' : 'code_assist'
 }
 
 async function waitForRefresh(

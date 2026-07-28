@@ -127,6 +127,31 @@ func TestFilterModelCandidatesReportsMissingModelForEveryInvalidConstraint(t *te
 	}
 }
 
+func TestResolveEffectiveModelAllowsDirectWithoutFamilyButRequiresExactCase(t *testing.T) {
+	item := candidate("direct", readyCapability(), []string{"GPT-5"})
+	resolution, ok := ResolveEffectiveModel(item, " GPT-5 ", "")
+	if !ok || resolution.MappingApplied || resolution.UpstreamModel != "GPT-5" || resolution.UpstreamEndpointFamily != "" {
+		t.Fatalf("resolution = %+v, ok=%v", resolution, ok)
+	}
+	if _, ok := ResolveEffectiveModel(item, "gpt-5", EndpointFamilyResponses); ok {
+		t.Fatal("case-insensitive model unexpectedly matched")
+	}
+}
+
+func TestResolveEffectiveModelReturnsMappedFamilyAndSource(t *testing.T) {
+	item := candidate("mapped", readyCapability(), []string{"gpt-upstream"})
+	item.ProviderCode = "hybrid"
+	item.ModelMappings = []ModelMapping{{
+		SourceModel: "gpt-client", SourceEndpointFamily: EndpointFamilyResponses,
+		UpstreamModel: "gpt-upstream", UpstreamEndpointFamily: EndpointFamilyMessages,
+		RuntimeSource: "runtime", Enabled: true,
+	}}
+	resolution, ok := ResolveEffectiveModel(item, "gpt-client", EndpointFamilyResponses)
+	if !ok || !resolution.MappingApplied || resolution.UpstreamModel != "gpt-upstream" || resolution.UpstreamEndpointFamily != EndpointFamilyMessages || resolution.MappingSource != "runtime" {
+		t.Fatalf("resolution = %+v, ok=%v", resolution, ok)
+	}
+}
+
 func candidate(id string, capability Capability, models []string) Candidate {
 	return Candidate{ID: id, Capability: capability, SupportedModels: models}
 }

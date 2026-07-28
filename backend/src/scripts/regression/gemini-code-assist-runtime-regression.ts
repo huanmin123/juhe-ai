@@ -14,6 +14,7 @@ import {
   GEMINI_CLI_USER_AGENT,
   GEMINI_CODE_ASSIST_STREAM_URL,
   buildGeminiCodeAssistRequestParts,
+  runWithGeminiCodeAssistBaseUrlForTest,
   geminiOAuthRuntimeMode
 } from '../../modules/providers/drivers/gemini/code-assist-runtime.js'
 import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
@@ -42,6 +43,18 @@ const streamRequest = geminiRequest('/v1beta/models/gemini-3.1-pro-preview:strea
 })
 assert.equal(geminiProviderDriver.accountSupportsRequest(streamRequest, codeAssistAccount), true)
 assert.deepEqual(geminiProviderDriver.buildUpstreamUrls(codeAssistAccount, streamRequest), [GEMINI_CODE_ASSIST_STREAM_URL])
+await runWithGeminiCodeAssistBaseUrlForTest('http://127.0.0.1:45678/gemini', async () => {
+  assert.deepEqual(
+    geminiProviderDriver.buildUpstreamUrls(codeAssistAccount, streamRequest),
+    ['http://127.0.0.1:45678/gemini/v1internal:streamGenerateContent?alt=sse'],
+    'Code Assist 测试作用域必须只在当前异步上下文映射 URL'
+  )
+})
+assert.deepEqual(
+  geminiProviderDriver.buildUpstreamUrls(codeAssistAccount, streamRequest),
+  [GEMINI_CODE_ASSIST_STREAM_URL],
+  'Code Assist 测试作用域退出后必须恢复官方 URL'
+)
 
 const streamParts = await geminiProviderDriver.buildUpstreamRequestParts(streamRequest, codeAssistAccount, {
   systemAccountId: 'sys',

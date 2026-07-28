@@ -188,6 +188,7 @@ async function testResponsesBodyNormalization(): Promise<void> {
     'thread-id': 'client-conversation',
     session_id: 'client-session',
     conversation_id: 'client-conversation',
+    'x-custom-header': 'must-not-reach-oauth-upstream',
     'content-type': 'application/json; charset=utf-8',
     cookie: 'secret=value',
     'x-forwarded-for': '127.0.0.1',
@@ -232,8 +233,9 @@ async function testResponsesBodyNormalization(): Promise<void> {
   assert.equal(parts.headers.get('version'), null)
   assert.equal(typeof parts.headers.get('session-id'), 'string')
   assert.equal(typeof parts.headers.get('thread-id'), 'string')
-  assert.equal(parts.headers.get('session_id'), 'client-session')
-  assert.equal(parts.headers.get('conversation_id'), 'client-conversation')
+  assert.equal(parts.headers.get('session_id'), null, 'OAuth Codex 只允许官方 session-id')
+  assert.equal(parts.headers.get('conversation_id'), null, 'OAuth Codex 只允许官方 thread-id')
+  assert.equal(parts.headers.get('x-custom-header'), null, 'OAuth Codex 不得透传任意客户端 Header')
 }
 
 async function testMatureCodexOAuthCompatibilityFields(): Promise<void> {

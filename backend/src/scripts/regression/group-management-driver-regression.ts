@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -93,6 +93,25 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
   assert.equal(created.name, name, '异步创建分组应返回名称')
   assert.equal(created.providerCode, 'gpt', '异步创建分组应保留供应商')
   assert.equal(created.groupType, 'high_concurrency', '异步创建分组应保存高并发类型')
+
+  const editDetail = await repositories.findGroupEditDetailAsync(created.id, adminAccess)
+  assert(editDetail, '分组编辑投影应能读取新建分组')
+  assert.deepEqual(
+    Object.keys(editDetail).sort(),
+    ['accessType', 'description', 'enabled', 'groupType', 'id', 'isDefault', 'name', 'providerCode', 'schedulingPolicy', 'systemAccountId'],
+    '分组编辑投影只能返回表单所需字段'
+  )
+  assert.equal(editDetail.schedulingPolicy?.maxQueueWaitMs, 30_000, '高并发分组编辑投影应返回调度策略')
+  const groupSummarySource = readFileSync(resolve('src/storage/group-summary.repository.ts'), 'utf8')
+  const editProjectionSource = groupSummarySource.slice(
+    groupSummarySource.indexOf('export async function findGroupEditDetailAsync'),
+    groupSummarySource.indexOf('export function buildGroupOptionSummaries')
+  )
+  assert.doesNotMatch(
+    editProjectionSource,
+    /buildGroupSummaries|loadGroupAccountIds|loadGroupUsage|loadAccountCurrentConcurrency|authorizationLimits|permissions/,
+    '分组编辑投影不得加载账户 ID、并发、用量、授权额度或权限摘要'
+  )
 
   const page = await repositories.listGroupsPageAsync(adminAccess, { keyword: name, page: 1, pageSize: 20 })
   assert.ok(page.items.some((item) => item.id === created.id), '异步分组列表应能按名称查到新分组')

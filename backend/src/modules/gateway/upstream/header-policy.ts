@@ -16,6 +16,7 @@ export const codexResponsesScopedHeaderNames = [
   'originator',
   'session-id',
   'thread-id',
+  'version',
   'x-client-request-id',
   'x-oai-attestation',
   'x-openai-internal-codex-responses-lite',
@@ -67,6 +68,85 @@ export const geminiGenerateContentScopedHeaderNames = [
   'x-vertex-ai-llm-request-type',
   'x-vertex-ai-llm-shared-request-type'
 ] as const
+
+export type OfficialOAuthClientHeaderProfile =
+  | 'openai_codex'
+  | 'anthropic_claude_code'
+  | 'gemini_cli'
+  | 'xai_grok'
+
+type IncomingHeaderMap = Record<string, string | string[] | undefined>
+
+const commonOfficialOAuthHeaderNames = new Set([
+  'accept',
+  'accept-language',
+  'content-type',
+  'idempotency-key',
+  'user-agent'
+])
+
+const openAIOAuthCodexHeaderNames = new Set<string>([
+  ...codexResponsesScopedHeaderNames,
+  'x-codex-turn-state'
+])
+
+const anthropicOAuthClaudeCodeHeaderNames = new Set<string>([
+  'anthropic-beta',
+  'anthropic-dangerous-direct-browser-access',
+  'anthropic-version',
+  'x-app',
+  'x-claude-code-agent-id',
+  'x-claude-code-session-id'
+])
+
+const geminiOAuthCliHeaderNames = new Set<string>([
+  'api-revision',
+  'x-gemini-api-privileged-user-id',
+  'x-goog-api-client',
+  'x-vertex-ai-llm-request-type',
+  'x-vertex-ai-llm-shared-request-type'
+])
+
+const xaiOAuthGrokHeaderNames = new Set<string>([
+  'x-grok-client-version',
+  'x-xai-token-auth'
+])
+
+/**
+ * Official subscription/OAuth adapters use a positive client-header policy.
+ * API-key adapters intentionally keep using the generic safe passthrough policy.
+ */
+export function copyOfficialOAuthClientRequestHeaders(
+  inputHeaders: IncomingHeaderMap,
+  profile: OfficialOAuthClientHeaderProfile
+): Headers {
+  const output = new Headers()
+  for (const [name, value] of Object.entries(inputHeaders)) {
+    if (value === undefined || !isAllowedOfficialOAuthClientHeader(name, profile)) continue
+    output.set(name, Array.isArray(value) ? value.join(', ') : value)
+  }
+  return output
+}
+
+function isAllowedOfficialOAuthClientHeader(
+  name: string,
+  profile: OfficialOAuthClientHeaderProfile
+): boolean {
+  const normalized = normalizeHeaderName(name)
+  if (commonOfficialOAuthHeaderNames.has(normalized)) return true
+  switch (profile) {
+    case 'openai_codex':
+      return openAIOAuthCodexHeaderNames.has(normalized) || normalized.startsWith('x-codex-')
+    case 'anthropic_claude_code':
+      return anthropicOAuthClaudeCodeHeaderNames.has(normalized)
+        || normalized.startsWith('x-claude-code-')
+        || normalized.startsWith('x-stainless-')
+    case 'gemini_cli':
+      return geminiOAuthCliHeaderNames.has(normalized)
+    case 'xai_grok':
+      return xaiOAuthGrokHeaderNames.has(normalized)
+  }
+}
 
 const geminiGenerateContentScopedHeaderNameSet = new Set<string>(geminiGenerateContentScopedHeaderNames)
 const geminiGenerateContentScopedHeaderPrefixes = ['x-gemini-', 'x-goog-', 'x-vertex-ai-'] as const

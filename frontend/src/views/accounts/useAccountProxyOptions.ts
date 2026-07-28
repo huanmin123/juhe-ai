@@ -79,7 +79,12 @@ export function useAccountProxyOptions(config: UseAccountProxyOptionsConfig = {}
   }
 
   function handleDropdown(open: boolean): void {
-    if (open) void load()
+    if (open) {
+      void load()
+      return
+    }
+    invalidateInFlightRequest()
+    clearSearchTimer()
   }
 
   function handleSearch(value: string): void {

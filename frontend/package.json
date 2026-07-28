@@ -143,6 +143,7 @@
     "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts",
     "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts --cleanup-only",
     "test:account-proxy-options-lazy-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-proxy-options-lazy-loading-regression.ts",
+    "test:account-provider-definitions-lazy-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-provider-definitions-lazy-loading-regression.ts",
     "test:public-api-log-page-window": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/public-api-log-page-window-regression.ts",
     "test:operation-log-default-window": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/operation-log-default-window-regression.ts"
   },

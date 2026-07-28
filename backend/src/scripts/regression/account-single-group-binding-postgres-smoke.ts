@@ -20,11 +20,15 @@ interface GroupResponse {
   providerCode: string
 }
 
-interface AccountResponse {
+interface AccountCreateResponse {
   id: string
-  name: string
   status: string
-  boundGroupId?: string
+}
+
+interface AccountMutationResponse {
+  id: string
+  configRevision: number
+  changedFields: string[]
 }
 
 const marker = `account_single_group_pg_smoke_${Date.now()}_${Math.random().toString(16).slice(2)}`
@@ -57,7 +61,7 @@ try {
   }, cookie, 201)
   createdGroupIds.push(groupB.id)
 
-  const createdAccount = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', {
+  const createdAccount = await postEnvelope<AccountCreateResponse>(baseUrl, '/__aisys__/api/accounts', {
     name: accountName,
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -72,16 +76,19 @@ try {
     healthCheckModel: 'gpt-5-mini'
   }, cookie, 201)
   createdAccountIds.push(createdAccount.id)
-  assert.equal(createdAccount.boundGroupId, groupA.id, 'PG smoke 新建账户应先绑定 A 分组')
+  assert.deepEqual(Object.keys(createdAccount).sort(), ['id', 'status'], 'PG smoke 创建账户响应必须保持最小字段')
+  const initialBinding = await readAccountBinding(createdAccount.id)
+  assert.equal(initialBinding.boundGroupId, groupA.id, 'PG smoke 新建账户应先绑定 A 分组')
 
-  const rebound = await postEnvelope<AccountResponse>(
+  const rebound = await postEnvelope<AccountMutationResponse>(
     baseUrl,
     `/__aisys__/api/accounts/${createdAccount.id}/group`,
-    { groupId: groupB.id },
+    { groupId: groupB.id, expectedConfigRevision: 1 },
     cookie
   )
   assert.equal(rebound.id, createdAccount.id, '单独绑定分组响应应返回原账户')
-  assert.equal(rebound.boundGroupId, groupB.id, '单独绑定分组响应应返回 B 分组')
+  assert.equal(rebound.configRevision, 2, '单独绑定分组必须推进配置版本')
+  assert.deepEqual(rebound.changedFields, ['groupId'], '单独绑定分组响应只能返回实际变化字段')
 
   const binding = await readAccountBinding(createdAccount.id)
   assert.equal(binding.account?.name, accountName, 'PG 应能查回 smoke 账户')

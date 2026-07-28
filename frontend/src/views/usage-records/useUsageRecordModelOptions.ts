@@ -33,9 +33,10 @@ export function useUsageRecordModelOptions(options: UseUsageRecordModelOptionsOp
 
     const generation = requestGeneration + 1
     requestGeneration = generation
+    const refreshCurrentSearch = force || keyword.trim().length > 0
     const promise = (async () => {
       await resource.loadModelOptions({
-        force,
+        force: refreshCurrentSearch,
         ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
         limit: modelOptionLimit,
         selectedIds: selectedModelIds()
@@ -54,7 +55,7 @@ export function useUsageRecordModelOptions(options: UseUsageRecordModelOptionsOp
 
   async function handleDropdown(open: boolean): Promise<void> {
     if (!open) return
-    await loadIfNeeded()
+    await loadIfNeeded('', true)
   }
 
   function handleSearch(value: string): Promise<void> {

@@ -49,6 +49,25 @@ assert.equal(changedIdDelta.outcome, 'blocked')
 assert.equal(changedIdDelta.issue?.code, 'event_item_id_inconsistent')
 assert.equal(changedIdGuard.identityFor(responseResourceId, 0)?.itemId, 'ctc_stream_0')
 
+const exposedWrongIdGuard = createCodexResponsesStreamContractState({
+  provenance: 'raw_upstream',
+  repairItemIds: true,
+  createItemId: ({ prefix }) => `${prefix}_must_not_be_created`
+})
+assert.equal(exposedWrongIdGuard.consume({
+  responseResourceId,
+  event: outputItemEvent('added', 0, customToolItem({ id: 'item_exposed_before_guard' }))
+}, { allowNewRepair: false }).outcome, 'repairable')
+const exposedWrongIdDone = exposedWrongIdGuard.consume({
+  responseResourceId,
+  event: outputItemEvent('done', 0, customToolItem({
+    id: 'item_exposed_before_guard',
+    input: '{"path":"README.md"}'
+  }))
+}, { allowNewRepair: true })
+assert.equal(exposedWrongIdDone.outcome, 'repairable')
+assert.deepEqual(exposedWrongIdDone.repairs, [], '已暴露 identity 后续不得重新创建客户端 ID 映射')
+
 const changedTypeGuard = guardWithAdded()
 const changedTypeDone = changedTypeGuard.consume({
   responseResourceId,

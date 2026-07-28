@@ -8,6 +8,7 @@ import { authUrl, buildReauthorizePayload, openAIOAuthClientPayload, validateRea
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
 import { canManageOAuthAccount } from './accountRules'
+import { inferGeminiOAuthType } from './geminiOAuthType'
 
 interface UseAccountReauthorizeOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -73,7 +74,7 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
     reauthorizeForm.googleClientId = credentialText(detail.credentials.client_id)
     reauthorizeForm.googleClientSecret = credentialText(detail.credentials.client_secret)
     reauthorizeForm.googleQuotaProjectId = credentialText(detail.credentials.quota_project_id)
-    reauthorizeForm.oauthType = googleOAuthType(detail.credentials.oauth_type)
+    reauthorizeForm.oauthType = inferGeminiOAuthType(detail.credentials)
     reauthorizeForm.tierId = credentialText(detail.credentials.tier_id) || defaultGeminiTierId(reauthorizeForm.oauthType)
     reauthorizeForm.projectId = credentialText(detail.credentials.project_id)
     reauthorizeForm.baseUrl = credentialText(detail.credentials.base_url)
@@ -187,11 +188,6 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
 
 function credentialText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function googleOAuthType(value: unknown): AccountOAuthAuthorizeForm['oauthType'] {
-  if (value === 'code_assist' || value === 'google_one' || value === 'ai_studio') return value
-  return 'code_assist'
 }
 
 function defaultGeminiTierId(oauthType: AccountOAuthAuthorizeForm['oauthType']): string {

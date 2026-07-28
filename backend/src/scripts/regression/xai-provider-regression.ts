@@ -34,7 +34,7 @@ import {
   type XaiOAuthDispatchPreparationDependencies
 } from '../../modules/providers/drivers/xai/oauth-dispatch-preparation.js'
 import { applyGrokAccessDeniedFallback } from '../../modules/providers/drivers/xai/grok-access-denied-fallback.js'
-import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
+import { UpstreamRequestTimeoutError, type GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-xai-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -353,6 +353,62 @@ const rejectedFallbackResult = await applyGrokAccessDeniedFallback({
 assert.equal(rejectedFallbackResult.usedFallback, false, '官方端点非 2xx 时必须保留 CLI proxy 原响应')
 assert.equal(rejectedFallbackResult.response.status, 403)
 assert.equal(await bodyText(rejectedFallbackResult.response), '{"error":"Access denied"}')
+
+let hangingBodyClosed = false
+const hangingBody: AsyncIterable<Uint8Array> = {
+  [Symbol.asyncIterator]() {
+    return {
+      next: async () => await new Promise<IteratorResult<Uint8Array>>(() => undefined),
+      return: async () => {
+        hangingBodyClosed = true
+        return { done: true, value: undefined }
+      }
+    }
+  }
+}
+await assert.rejects(applyGrokAccessDeniedFallback({
+  upstreamUrl: 'https://cli-chat-proxy.grok.com/v1/responses',
+  headers: oauthRequestParts.headers,
+  body: oauthRequestParts.body,
+  response: { ...gatewayResponse(403, ''), body: hangingBody },
+  bodyInspectionTimeoutMs: 20,
+  async requestFallback() {
+    throw new Error('正文检查超时后不得触发 fallback')
+  }
+}), UpstreamRequestTimeoutError, 'Grok 403 正文不结束时必须受有界期限保护')
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert.equal(hangingBodyClosed, true, 'Grok 403 正文检查超时后必须主动关闭上游迭代器')
+
+let slowDripBodyClosed = false
+let slowDripChunks = 0
+const slowDripBody: AsyncIterable<Uint8Array> = {
+  [Symbol.asyncIterator]() {
+    return {
+      next: async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 12))
+        slowDripChunks += 1
+        return { done: false, value: Buffer.from('x') }
+      },
+      return: async () => {
+        slowDripBodyClosed = true
+        return { done: true, value: undefined }
+      }
+    }
+  }
+}
+await assert.rejects(applyGrokAccessDeniedFallback({
+  upstreamUrl: 'https://cli-chat-proxy.grok.com/v1/responses',
+  headers: oauthRequestParts.headers,
+  body: oauthRequestParts.body,
+  response: { ...gatewayResponse(403, ''), body: slowDripBody },
+  bodyInspectionTimeoutMs: 30,
+  async requestFallback() {
+    throw new Error('慢滴正文超过总预算后不得触发 fallback')
+  }
+}), UpstreamRequestTimeoutError, 'Grok 403 慢滴正文必须共享总检查期限，不能按 chunk 重置计时')
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert(slowDripChunks >= 2, '慢滴回归必须证明多个 chunk 均在单次 idle timeout 内到达')
+assert.equal(slowDripBodyClosed, true, 'Grok 403 慢滴正文超时后必须主动关闭上游迭代器')
 
 const xaiGroup = repositories.createGroup({
   providerCode: XAI_PROVIDER_CODE,

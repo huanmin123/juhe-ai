@@ -32,6 +32,7 @@ export interface AnthropicOAuthDispatchPreparationDependencies {
     refreshToken: string
     clientId?: string
     proxyUrl?: string
+    signal?: AbortSignal
   }): Promise<AnthropicOAuthTokenInfo>
   persistCredentials(
     accountId: string,
@@ -70,7 +71,9 @@ export async function prepareAnthropicAccountBeforeDispatch(
   const refresh = runWithProviderOAuthRefreshLock(
     ANTHROPIC_PROVIDER_CODE,
     sourceAccountId,
-    async () => await refreshAndPersistAnthropicOAuthAccount(account, sourceAccountId, dependencies)
+    async (lockSignal, assertLockOwned) => await refreshAndPersistAnthropicOAuthAccount(
+      account, sourceAccountId, dependencies, lockSignal, assertLockOwned
+    )
   )
   anthropicOAuthRefreshes.set(sourceAccountId, refresh)
   void refresh.finally(() => {
@@ -96,7 +99,9 @@ export function shouldRefreshAnthropicOAuthCredentials(
 async function refreshAndPersistAnthropicOAuthAccount(
   dispatchAccount: DispatchAccountSecret,
   sourceAccountId: string,
-  dependencies: AnthropicOAuthDispatchPreparationDependencies
+  dependencies: AnthropicOAuthDispatchPreparationDependencies,
+  signal?: AbortSignal,
+  assertLockOwned?: () => Promise<void>
 ): Promise<DispatchAccountSecret> {
   const source = await dependencies.loadAccount(sourceAccountId)
   if (!source || source.providerCode !== ANTHROPIC_PROVIDER_CODE || source.type !== 'oauth') {
@@ -111,7 +116,8 @@ async function refreshAndPersistAnthropicOAuthAccount(
   const tokenInfo = await dependencies.refreshToken({
     refreshToken,
     clientId: stringCredential(currentCredentials, 'client_id'),
-    proxyUrl: dispatchAccount.proxyUrl
+    proxyUrl: dispatchAccount.proxyUrl,
+    signal
   })
   let candidate = source
   let lastConflict: AccountConfigRevisionConflictError | undefined
@@ -124,6 +130,7 @@ async function refreshAndPersistAnthropicOAuthAccount(
       base_url: baseUrl
     }
     try {
+      await assertLockOwned?.()
       const updated = await dependencies.persistCredentials(
         sourceAccountId,
         credentials,

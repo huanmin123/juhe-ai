@@ -13,6 +13,8 @@ Docker 镜像使用当前 `backend/dist`、`frontend/dist` 和后端生产依赖
 
 默认 standalone 模式不需要 Nginx、Redis、PostgreSQL 或额外 worker 容器。如果需要 PostgreSQL + Redis 高性能模式，使用 `docker/compose.performance.yml`，并先阅读 [高性能模式部署指南](高性能模式部署指南.md)。
 
+当前两份 Compose 都只覆盖 capability v1 / legacy 进程拓扑，不是 capability v2 runbook。active deployment contract 为 capability v2 时，启动 preflight 必须拒绝直接使用本文的单主进程拓扑；只有 Docker 专用 runbook 已明确 gateway、每 host replay / quarantine、control / due / activation、Asynq、stats、coordinator 的副本、持久卷、epoch / lease 域、readyz 和启停顺序，并通过 sealed-producer drain 演练后，manifest 才可允许 v2。不能把“容器 health=200”当成这些角色已 ready。
+
 Docker 容器访问宿主机 sing-box 代理时，Host 不是统一写法：
 
 - Windows / macOS Docker Desktop：通常使用 `host.docker.internal:7890`。
@@ -176,11 +178,15 @@ Compose `restart: unless-stopped` 负责容器进程退出后的恢复；Docker 
 
 ## 8. 停止和清理
 
-停止容器：
+停止 capability v1 / legacy 容器：
 
 ```bash
 docker compose down
 ```
+
+active deployment contract 为 capability v2 时，应先由实现后的 deployment coordinator 冻结 ingress 和 current producer inventory certificate revision / digest，drain 已接受请求 / finalizer，逐个 seal certificate 对应 producer 并证明 active pointer 未变化、`controlResolved=producerAck=finalSequence`、unacked=0、无 unknown tail / lost / global barrier；replay / quarantine owner 必须在 ingress 停止后继续运行到 drain certificate 签发。Docker 专用 coordinator / runbook 尚未实现或未演练时，v2 保持禁止启用，不能手工按猜测顺序停容器。
+
+包装入口无法拦截已经持有 Docker socket、宿主机服务控制权或 root 权限的人直接执行 `docker compose down`。v2 生产必须把这些权限只授予 deployment coordinator 专用身份，普通发布 / 运维身份不得直连 socket 或拥有等价 sudo；wrapper 只在该基础设施 ACL 内校验签名 drain certificate。直接 kill、Docker daemon restart、宿主机崩溃或绕过 coordinator 的停止都属于 unclean shutdown；下次启动必须保持 ingress 与 capability writer fail-closed，完成 deployment epoch、producer inventory certificate revision / digest / chain / active pointer、registry set、producer epoch / finalSequence、barrier、replica ACK 和 spool / replay 水位对账，取得新鲜 runtime authorization并签发 reconciliation certificate 后才允许接流，不能以容器重新 healthy 或过期 activation envelope 代替恢复证明。
 
 停止并删除本次 volume：
 
@@ -188,4 +194,4 @@ docker compose down
 docker compose down -v
 ```
 
-`down -v` 只适合临时验证后清理，生产环境不要执行。
+`down -v` 只适合 capability v1 的临时验证后清理，生产环境不要执行；capability v2 manifest 必须声明无条件拒绝该命令，备份存在也不构成删除 volume 的授权。真正的删除门禁还必须由 Docker authorization / socket proxy、宿主机权限与独立存储 IAM 实现，把 volume delete 权限保留给单独审计的 break-glass 身份；仅靠 wrapper 或 manifest 不能约束原始 Docker socket 持有者。

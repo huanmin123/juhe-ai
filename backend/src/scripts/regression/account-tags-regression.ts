@@ -79,8 +79,9 @@ function assertAccountTagsRouteBoundary(): void {
   assert(tagsRouteSource.includes('AccountTagInUseError'), '账户标签子路由必须保留绑定标签删除约束错误处理')
   assert(tagsRouteSource.includes('listAccountTagsAsync'), '账户标签列表路由必须使用 async repository')
   assert(tagsRouteSource.includes('deleteAccountTagAsync'), '账户标签删除路由必须使用 async repository')
-  assert(tagsRouteSource.includes('updateAccountTagsAsync'), '账户标签更新路由必须使用 async repository')
-  assert(tagsRouteSource.includes('findAccountSummaryAsync'), '账户标签更新后的账户摘要读取必须使用 async repository')
+  assert(tagsRouteSource.includes('patchAccountManagementAsync'), '账户标签更新路由必须复用字段级 CAS writer')
+  assert(!tagsRouteSource.includes('updateAccountTagsAsync'), '账户标签更新路由不得绕过统一 revision PATCH')
+  assert(!tagsRouteSource.includes('findAccountSummaryAsync'), '账户标签更新前后不得读取完整账户摘要')
   assert(tagsRouteSource.includes('runLoggedOperationAsync'), '账户标签更新操作日志必须使用 async 包裹')
   assert(!/import \{[^}]*\blistAccountTags\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(tagsRouteSource), '账户标签子路由不能重新导入同步 listAccountTags')
   assert(!/import \{[^}]*\bdeleteAccountTag\b[^}]*\} from '..\/..\/storage\/repositories\.js'/.test(tagsRouteSource), '账户标签子路由不能重新导入同步 deleteAccountTag')
@@ -117,6 +118,8 @@ try {
     name: '标签回归账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-regression', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: group.id,
     tags: ['主力', 'API', 'api', ' 主力 ']
   }, access)
@@ -126,6 +129,8 @@ try {
     name: '标签未命中账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-unmatched', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
 
@@ -370,7 +375,8 @@ async function assertHiddenAuthorizationInstanceTagsNotMutated(baseUrl: string):
   )
 
   const status = await patchStatus(baseUrl, `/__aisys__/api/my-accounts/${authorizedAccount.id}/tags`, sessionCookie(grantee.id), {
-    tags: ['隐藏写入']
+    tags: ['隐藏写入'],
+    expectedConfigRevision: 1
   })
   assert.equal(status, 404, '不可见授权实例标签更新应返回 404')
   assert.equal(

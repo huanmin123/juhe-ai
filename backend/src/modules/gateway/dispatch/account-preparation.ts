@@ -39,6 +39,10 @@ import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-hi
 import { codexResponsesContractRevision } from '../codex-responses/contract-registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
+import {
+  gatewaySerializedJsonObject,
+  serializeGatewayJsonObject
+} from '../request/serialized-json-body.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -262,14 +266,17 @@ export async function buildPreparedUpstreamRequestParts(
 ): Promise<PreparedUpstreamRequestParts> {
   try {
     prepareCodexResponsesContextForAccount(req, account)
+    sanitizeCodexResponsesHistoryForAccount(req, account, context)
     const parts = await buildGatewayUpstreamRequestParts(req, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId
     }, signal, context)
-    const metadata = preparedUpstreamBodyMetadata(req, parts.body)
+    const body = sanitizePreparedCodexResponsesHistoryForAccount(req, account, parts.body, context)
+    const metadata = preparedUpstreamBodyMetadata(req, body)
     return {
       ...parts,
+      body,
       effectiveServiceTier: metadata?.serviceTier ?? 'default',
       effectiveReasoningEffort: metadata?.reasoningEffort
     }
@@ -316,6 +323,44 @@ function sanitizeCodexResponsesHistoryForAccount(
     ...body,
     input: result.items
   })
+}
+
+export function sanitizePreparedCodexResponsesHistoryForAccount(
+  req: Request,
+  account: UpstreamAccount,
+  body: Buffer | string | undefined,
+  context: ProviderGatewayRequestContext | undefined
+): Buffer | string | undefined {
+  if (body === undefined) return undefined
+  if (context?.requestClientCompatibility !== 'codex_responses') return body
+  if (gatewayRequestEndpointFamily(req) !== 'responses') return body
+  const parsed = serializedGatewayJsonObject(body)
+  if (!parsed || !Array.isArray(parsed.input)) return body
+  const result = sanitizeCodexResponseHistoryItems(parsed.input, {
+    store: false,
+    targetScopeKey: `account:${account.id}`,
+    targetPersistenceScope: 'none',
+    contractRevision: codexResponsesContractRevision
+  })
+  if (!result.changed) return body
+  const sanitized = {
+    ...parsed,
+    input: result.items
+  }
+  return Buffer.isBuffer(body)
+    ? serializeGatewayJsonObject(sanitized)
+    : JSON.stringify(sanitized)
+}
+
+function serializedGatewayJsonObject(body: Buffer | string): Record<string, unknown> | undefined {
+  const structured = gatewaySerializedJsonObject(body)
+  if (structured) return structured
+  try {
+    const parsed: unknown = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : body)
+    return isPlainObject(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function gatewayJsonObjectBody(req: Request): Record<string, unknown> | undefined {

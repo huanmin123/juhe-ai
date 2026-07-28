@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
 
-import { deriveOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
 import { accountCircuitCredentialOwnerIdentity } from '../domain/account-circuit-owner.js'
 import { resolveHealthCheckEndpointMode } from '../domain/account-health-check-endpoint-mode.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
@@ -43,7 +42,7 @@ import { changedCredentialPatchFields } from '../modules/accounts/account-update
 import { clearNormalRouteLatencyDegradationForAccountBindingAsync } from '../modules/gateway/runtime/normal-route-latency-degradation.service.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { type AccessScope } from './access-scope.js'
+import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson,
@@ -237,8 +236,13 @@ export async function patchAccountManagementAsync(
   let outcome: AccountPatchTransactionResult | undefined
   try {
     outcome = await client.transaction(async (tx) => {
-      const row = await loadAccountPatchRowForUpdate(tx, accountId, input)
+      const row = await loadAccountPatchRowForUpdate(tx, accountId, input, access)
       if (!row || !canManageResourceOwner(row.system_account_id, access)) return undefined
+      const now = nowIso()
+      if ((row.authorization_instance_source_account_id || row.authorization_instance_authorization_id)
+        && !(await authorizedInstanceIsActiveInClient(tx, row, now))) {
+        return undefined
+      }
       const currentRevision = integerValue(row.config_revision)
       if (currentRevision !== expectedConfigRevision) {
         throw new AccountManagementPatchRevisionConflictError(accountId, expectedConfigRevision, currentRevision)
@@ -248,7 +252,7 @@ export async function patchAccountManagementAsync(
         row,
         input,
         access,
-        now: nowIso(),
+        now,
         nowMs: Date.now()
       }
       return input.clearFailureState === true
@@ -299,7 +303,7 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   const currentCredentials = row.credentials_encrypted
     ? decryptJson<Record<string, unknown>>(row.credentials_encrypted)
     : {}
-  const nextClientCompatibility = deriveOpenAIAccountClientCompatibility(row.provider_code, row.type, protocolProfileFromRow(row))
+  const nextClientCompatibility = row.client_compatibility
   const credentialPatch = credentialsRecordValue(input.credentialsPatch)
   const legacyCredentials = credentialsRecordValue(input.credentials)
   const hasCredentialInput = Boolean(credentialPatch || legacyCredentials)
@@ -478,40 +482,46 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = normalizedAccountStatusInput(input.status, row.status)
   assertStatusMutationAllowed(row.status, requestedStatus, hasStatusInput)
-  const expiredByPackage = isAccountExpired(nextExpiresAt, nowMs)
+  const expiresAtChanged = currentExpiresAt !== nextExpiresAt
+  const expiredByPackage = expiresAtChanged && isAccountExpired(nextExpiresAt, nowMs)
   const scheduledStatus = expiredByPackage
     ? 'disabled'
-    : hasScheduleInput
+    : scheduleChanged
       ? accountStatusForScheduleMutation({ requestedStatus, schedule: nextSchedule, now: new Date(nowMs) })
       : requestedStatus
   const nextStatus = connectionChanged && scheduledStatus !== 'disabled' ? 'pending_test' : scheduledStatus
+  const statusChanged = row.status !== nextStatus
 
-  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', databaseBoolean(row.schedulable), '账户是否参与调度')
-  const nextSchedulable = expiredByPackage || accountStatusForcesSchedulableOff(nextStatus)
+  const currentSchedulable = databaseBoolean(row.schedulable)
+  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', currentSchedulable, '账户是否参与调度')
+  const nextSchedulable = expiredByPackage || (statusChanged && accountStatusForcesSchedulableOff(nextStatus))
     ? false
-    : hasStatusInput && nextStatus !== 'disabled'
+    : statusChanged && nextStatus !== 'disabled'
       ? true
       : requestedSchedulable
   setColumn('status', row.status, nextStatus)
-  setColumn('schedulable', databaseBoolean(row.schedulable), nextSchedulable, nextSchedulable ? 1 : 0)
+  setColumn('schedulable', currentSchedulable, nextSchedulable, nextSchedulable ? 1 : 0)
   addChange('status', row.status, nextStatus)
-  addChange('schedulable', databaseBoolean(row.schedulable), nextSchedulable)
+  addChange('schedulable', currentSchedulable, nextSchedulable)
 
-  const runtimeState = nextRuntimeState(row, {
-    nextStatus,
-    hasStatusInput,
-    connectionChanged,
-    expiredByPackage,
-    nowMs
-  })
-  const columnsBeforeRuntimeState = mainColumns.size
-  applyRuntimeStateColumns(mainColumns, row, runtimeState)
-  const derivedRuntimeStateChanged = mainColumns.size > columnsBeforeRuntimeState
-  if (derivedRuntimeStateChanged
-    && !changedFields.has('status')
-    && !changedFields.has('schedulable')) {
-    changedFields.add('runtimeState')
-    changes.push({ field: 'runtimeState', before: '需归一化', after: '已归一化' })
+  const runtimeStateMayChange = statusChanged || connectionChanged || expiredByPackage
+  if (runtimeStateMayChange) {
+    const runtimeState = nextRuntimeState(row, {
+      nextStatus,
+      hasStatusInput: statusChanged,
+      connectionChanged,
+      expiredByPackage,
+      nowMs
+    })
+    const columnsBeforeRuntimeState = mainColumns.size
+    applyRuntimeStateColumns(mainColumns, row, runtimeState)
+    const derivedRuntimeStateChanged = mainColumns.size > columnsBeforeRuntimeState
+    if (derivedRuntimeStateChanged
+      && !changedFields.has('status')
+      && !changedFields.has('schedulable')) {
+      changedFields.add('runtimeState')
+      changes.push({ field: 'runtimeState', before: '需归一化', after: '已归一化' })
+    }
   }
 
   const currentContinuousProbe = databaseBoolean(row.temporary_unavailable_continuous_probe_enabled, true)
@@ -803,23 +813,6 @@ async function patchAuthorizedAccountLocalInTransaction(
   if (!row.authorization_instance_source_account_id || !row.authorization_instance_authorization_id) {
     throw new Error('账户授权已失效')
   }
-  const activeAuthorization = await client.one<{ id: string }>(`
-    SELECT id
-    FROM ${patchTable(client, 'resource_authorizations')}
-    WHERE id = ?
-      AND resource_type = 'account'
-      AND resource_id = ?
-      AND grantee_system_account_id = ?
-      AND status = 'active'
-      AND (expires_at IS NULL OR expires_at > ?)
-    LIMIT 1${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
-  `, [
-    row.authorization_instance_authorization_id,
-    row.authorization_instance_source_account_id,
-    row.system_account_id,
-    now
-  ])
-  if (!activeAuthorization) throw new Error('账户授权已失效')
 
   const changes: AccountManagementPatchChange[] = []
   const changedFields = new Set<string>()
@@ -1033,32 +1026,163 @@ async function patchAccountFailureStateInTransaction(context: PatchContext): Pro
 async function loadAccountPatchRowForUpdate(
   client: DatabaseClient,
   id: string,
-  input: AccountManagementPatchInput
+  input: AccountManagementPatchInput,
+  access?: AccessScope
 ): Promise<AccountPatchRow | undefined> {
-  const credentialProjection = accountManagementPatchNeedsCredentials(input) ? ', credentials_encrypted' : ''
+  const scopedOwnerId = manageableSystemAccountId(access)
+  if (!scopedOwnerId && !canAccessAll(access)) return undefined
+  const columns = accountManagementPatchProjection(input)
+    .map((column) => client.dialect.quoteIdentifier(column))
+    .join(', ')
+  const ownerScopeClause = scopedOwnerId
+    ? ` AND ${client.dialect.quoteIdentifier('system_account_id')} = ?`
+    : ''
   return client.one<AccountPatchRow>(`
-    SELECT id, config_revision, system_account_id,
-      provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, notes, type, status${credentialProjection}, proxy_profile_id,
-      concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-      client_compatibility, schedulable,
-      availability_schedule_json, availability_schedule_next_check_at, account_expires_at,
-      cooldown_until, last_error_code, last_error_message, last_error_trace_id,
-      cooldown_retest_failure_count, cooldown_retest_observation_started_at,
-      cooldown_retest_generation, cooldown_retest_last_at, cooldown_retest_last_status_code,
-      temporary_unavailable_continuous_probe_enabled,
-      health_check_model, health_check_endpoint_mode,
-      last_health_check_at, next_health_check_at, last_health_success_at,
-      health_check_failure_count, health_check_failure_started_at,
-      last_health_check_status_code, last_health_check_error_code,
-      last_health_check_error_message, last_health_check_trace_id,
-      stream_failure_count, stream_failure_window_started_at,
-      authorization_instance_source_account_id, authorization_instance_authorization_id,
-      balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    SELECT ${columns}
     FROM ${patchTable(client, 'accounts')}
     WHERE id = ?
-      AND deleted_at IS NULL${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
-  `, [id])
+      AND deleted_at IS NULL${ownerScopeClause}${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, scopedOwnerId ? [id, scopedOwnerId] : [id])
+}
+
+function accountManagementPatchProjection(input: AccountManagementPatchInput): string[] {
+  const columns = new Set<string>([
+    'id',
+    'config_revision',
+    'system_account_id',
+    'name',
+    'status',
+    'authorization_instance_source_account_id',
+    'authorization_instance_authorization_id'
+  ])
+  const add = (...values: string[]): void => {
+    for (const value of values) columns.add(value)
+  }
+  const addRuntimeState = (): void => add(
+    'cooldown_until',
+    'last_error_code',
+    'last_error_message',
+    'last_error_trace_id',
+    'cooldown_retest_failure_count',
+    'cooldown_retest_observation_started_at',
+    'cooldown_retest_generation',
+    'cooldown_retest_last_at',
+    'cooldown_retest_last_status_code'
+  )
+  const addHealthState = (): void => add(
+    'last_health_check_at',
+    'next_health_check_at',
+    'last_health_success_at',
+    'health_check_failure_count',
+    'health_check_failure_started_at',
+    'last_health_check_status_code',
+    'last_health_check_error_code',
+    'last_health_check_error_message',
+    'last_health_check_trace_id'
+  )
+
+  if (input.clearFailureState === true) {
+    add('schedulable', 'account_expires_at', 'stream_failure_count', 'stream_failure_window_started_at')
+    addRuntimeState()
+    addHealthState()
+    return [...columns]
+  }
+
+  if (hasOwnInput(input, 'notes')) add('notes')
+  if (hasOwnInput(input, 'concurrencyLimit')) add('concurrency_limit')
+  if (hasOwnInput(input, 'availabilitySchedule')) {
+    add('availability_schedule_json', 'availability_schedule_next_check_at', 'schedulable')
+    addRuntimeState()
+  }
+  if (hasOwnInput(input, 'accountExpiresAt')) {
+    add('account_expires_at', 'schedulable')
+    addRuntimeState()
+  }
+  if (hasOwnInput(input, 'status')) {
+    add('schedulable')
+    addRuntimeState()
+  }
+  if (hasOwnInput(input, 'schedulable')) add('schedulable')
+  if (hasOwnInput(input, 'temporaryUnavailableContinuousProbeEnabled')) {
+    add('temporary_unavailable_continuous_probe_enabled')
+    addRuntimeState()
+  }
+
+  const dispatchRelevant = [
+    'priority',
+    'superPriorityEnabled',
+    'fallbackEnabled',
+    'groupId'
+  ].some((field) => hasOwnInput(input, field))
+  if (dispatchRelevant) add('priority', 'super_priority_enabled', 'fallback_enabled')
+  if (hasOwnInput(input, 'groupId')) add('provider_code')
+
+  const modelRelevant = [
+    'supportedModels',
+    'healthCheckModel',
+    'healthCheckEndpointMode',
+    'modelMappings',
+    'credentials',
+    'credentialsPatch'
+  ].some((field) => hasOwnInput(input, field))
+  if (accountManagementPatchNeedsCredentials(input)) {
+    add(
+      'provider_code',
+      'provider_protocol_profile_id',
+      'protocol_code',
+      'protocol_version',
+      'type',
+      'credentials_encrypted',
+      'client_compatibility',
+      'proxy_profile_id'
+    )
+  }
+  if (modelRelevant) add('health_check_model', 'health_check_endpoint_mode', 'next_health_check_at')
+
+  const connectionRelevant = ['credentials', 'credentialsPatch', 'proxyProfileId']
+    .some((field) => hasOwnInput(input, field))
+  if (connectionRelevant) {
+    add('schedulable')
+    addRuntimeState()
+    addHealthState()
+  }
+
+  const balanceRelevant = [
+    'balanceQueryEnabled',
+    'balanceQueryConfig',
+    'credentials',
+    'credentialsPatch',
+    'proxyProfileId'
+  ].some((field) => hasOwnInput(input, field))
+  if (balanceRelevant) {
+    add('balance_query_enabled', 'balance_query_config_json', 'balance_query_next_refresh_at')
+  }
+  return [...columns]
+}
+
+async function authorizedInstanceIsActiveInClient(
+  client: DatabaseClient,
+  row: AccountPatchRow,
+  now: string
+): Promise<boolean> {
+  if (!row.authorization_instance_source_account_id || !row.authorization_instance_authorization_id) return false
+  const authorization = await client.one<{ id: string }>(`
+    SELECT id
+    FROM ${patchTable(client, 'resource_authorizations')}
+    WHERE id = ?
+      AND resource_type = 'account'
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+      AND status = 'active'
+      AND (expires_at IS NULL OR expires_at > ?)
+    LIMIT 1${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, [
+    row.authorization_instance_authorization_id,
+    row.authorization_instance_source_account_id,
+    row.system_account_id,
+    now
+  ])
+  return Boolean(authorization)
 }
 
 function accountManagementPatchNeedsCredentials(input: AccountManagementPatchInput): boolean {

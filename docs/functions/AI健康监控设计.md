@@ -223,7 +223,7 @@ semantics_version = 2
 
 逻辑身份覆盖 `stats_contract_epoch_id + system_account_id + account_runtime_key + route_scope_id + route_membership_incarnation + route_definition_revision + effective_dispatch_revision + capability_universe_revision + segment_start_at`；物理唯一键追加 `aggregation_version`，并用与稀疏事实相同的 `superseded_at_aggregation_version` 支持短期 as-of 读取。同一 Route definition 在同一读取快照中的区间不得重叠，全部时间区间使用 `[segment_start_at, segment_end_at)`；`segment_end_at` 为空表示该快照中的当前开放区间。配置 staging diff 只为 added / changed Route 建立 unknown 初始区间；unchanged Route 沿用原 routeMembershipIncarnation / routeDefinitionRevision 的开放区间，并由新 publication member 引用，removed 封闭旧区间并保留 tombstone。删除后原样 re-add 必须获得新 incarnation，不能接纳删除前迟到事件。此后仅在 Route 聚合、capability 可调度性、soft-block、凭据 / evidence 计数、账户级 `data_status` 或时间驱动的证据有效性变化时封闭旧区间并建立新区间。账户级 `data_status != ready` 时 `route_aggregate` 与 `capability_schedulable` 均为 null；scope-local evidence unconfirmed 只进入 Attempt / Route 计数，不把 data_status 改成 unconfirmed。一个长期不变化的 Route 只保留一个跨小时区间，不产生 744 份重复快照。
 
-`account_capability_health_deadlines` 持久化正向证据过期和 soft avoid 到期，唯一身份为 `stats_contract_epoch_id + account_runtime_key + scope_id + routeDefinitionRevision + attemptDefinitionRevision + membership incarnations + deadline_kind + deadline_at + scope_policy_revision`；账户 publication 双 revision只作 provenance。deadline owner 按 epoch + partition 持租约；到期时在 PostgreSQL 事务中再次校验 Attempt 当前 definition / incarnation / deadline，锁定分区 sequence，写入具有确定性 event ID 的 `positive_evidence_expired` 或 `soft_avoid_elapsed` durable stats outbox 事件，事件的 `observed_at / state_effective_at` 都固定为权威 `deadline_at`。stale deadline 只终结自身，不改变 Route。deadline 在事件已连续 ingest 并完成 publication 前不得按 TTL 删除；进程崩溃后按 due cursor 补跑，因此没有新 circuit 事件时也会推进状态区间和 publication。
+`account_capability_health_deadlines` 持久化正向证据过期和 soft avoid 到期，唯一身份为 `stats_contract_epoch_id + account_runtime_key + scope_id + routeDefinitionRevision + attemptDefinitionRevision + membership incarnations + deadline_kind + deadline_at + scope_policy_revision`；账户 publication 双 revision 只作 provenance。deadline owner 按 epoch + partition 持租约；到期时在 PostgreSQL 事务中再次校验 Attempt 当前 definition / incarnation / deadline，锁定分区 sequence，写入具有确定性 event ID 的 `positive_evidence_expired` 或 `soft_avoid_elapsed` durable stats outbox 事件，事件的 `observed_at / state_effective_at` 都固定为权威 `deadline_at`。stale deadline 只终结自身，不改变 Route。deadline 在事件已连续 ingest 并完成 publication 前不得按 TTL 删除；进程崩溃后按 due cursor 补跑，因此没有新 circuit 事件时也会推进状态区间和 publication。
 
 ### 5.4 Route 事件预聚合
 
@@ -258,6 +258,7 @@ scoped_unconfirmed_attempt_count
 scoped_unconfirmed_route_count
 has_scoped_unconfirmed
 data_status
+data_status_reason
 aggregate
 last_observed_at
 aggregation_version
@@ -271,7 +272,7 @@ semantics_version = 2
 
 每个 revision 段的评价边界固定为 `summary_evaluation_end_at = min(stat_hour_end, revision_active_until, current_hour_history_generated_at)`，不存在的上界忽略；摘要取该 revision 段内、有效时间严格小于该半开边界的最后 Route 状态。已结束旧 revision 因此在自己的 `revision_active_until` 前评价，不要求覆盖整个小时结束时刻。已完成小时的 `displaySegment` 选择 `revision_active_from < stat_hour_end AND (revision_active_until IS NULL OR revision_active_until >= stat_hour_end)` 的段；当前小时把 `stat_hour_end` 换成 `historyGeneratedAt`。恰在边界开始的新 revision 属于下一个评价区间，不能抢占前一小时的 displaySegment。revision 子资源返回 `summaryEvaluationEndAt`，使旧桶的 aggregate 可解释。
 
-`data_status` 与管理 API 统一使用 `ready / unconfirmed / rebuilding`，并保存同一受限 `data_status_reason` 枚举。只有 account-wide hold、Catalog / credential baseline 缺口、整个账户 projection gap 或 deployment-wide barrier 才能令账户 data_status unconfirmed；已知 scope 的 handoff delivery / quarantine / fanout hold 只更新 Attempt evidence 与上述 scoped-unconfirmed 计数，顶层仍 ready。producer gap 若 affected set 已精确解析同样不得升级整账户；无法确定账户 affected set 才由全局 barrier 让所有 capability fail-closed。后两种 data status 只说明投影尚不能给出权威账户结论，不属于 unknown 能力状态；统计 API 不暴露 producer、分区、spool 路径或内部 backlog 明细。
+`data_status` 与管理 API 统一使用 `ready / unconfirmed / rebuilding`，并保存同一受限 `data_status_reason=null|deployment_capability_barrier|observation_handoff_unconfirmed|projection_gap|capacity_exceeded|catalog_unconfirmed|credential_baseline_unconfirmed|rebuild_in_progress` 枚举。active deployment-wide barrier 固定映射为 `deployment_capability_barrier` 并拥有最高优先级，使所有账户 current / 小时摘要 fail-closed；barrier 解除后只恢复各账户原有原因，不批量写 healthy。除此以外，只有 account-wide hold、Catalog / credential baseline 缺口、整个账户 projection gap 或 rebuild 才能令账户 data_status unconfirmed / rebuilding；已知 scope 的 handoff delivery / quarantine / fanout hold 只更新 Attempt evidence 与上述 scoped-unconfirmed 计数，顶层仍 ready。producer gap 若 affected set 已精确解析同样不得升级整账户；无法确定账户 affected set 才由全局 barrier 让所有 capability fail-closed。这些 data status 只说明投影尚不能给出权威账户结论，不属于 unknown 能力状态；统计 API 不暴露 producer、分区、spool 路径或内部 backlog 明细。
 
 ### 5.6 原子发布清单
 
@@ -415,7 +416,7 @@ capability
 
 账户 cursor purpose 固定为 `account_health_list`，绑定 `accountListSnapshotRef`、limit 和最后一个冻结排序 tuple。第一页与后续页都从 manifest 指定的同一版本读取账户身份、按 v1 cutoff 选择的哨兵小时 version 和截至同一 stats cutoff 的 v2 小时 pointer；排序 publication 或 v1 / v2 current pointer 后续变化不影响旧快照。每个返回行再按其 runtime identity 批量水合**请求时最新** capability current view，并签发不绑定 current version 的短期 `capabilityCurrentRef`；control 状态在两页之间变化可以让 current 不同，但不会改变冻结排序、重复或漏掉账户。cursor 格式、签名、purpose、limit 或 filter 不匹配返回 `400 invalid_cursor`；快照过期或历史依赖版本已合法清理返回 `409 stale_view`；权限已撤销或跨 viewer 复用返回 `404`。刷新创建新快照，不能把旧 cursor 拼到新响应。
 
-`capability.current` 每次从最新 control-plane view 读取，不从最近小时 publication 或 accountListSnapshotRef 反推。若最新 Catalog / credential baseline 或账户级 current pointer 未 ready，或存在 account-wide hold / global barrier，必须返回 `dataStatus=unconfirmed` 和原因，不能回退到列表签发时的旧 healthy / schedulable summary；已知 scope 的 handoff / projection hold 则返回最新 Route / Attempt 的 `evidenceDataStatus=unconfirmed`、scoped counts 和精确不可调度结论，不能笼统提升账户 dataStatus。`historyGeneratedAt / historyStale` 只描述 stats 历史投影；页面不能用历史 aggregate 覆盖实时 Key owner / effective schedulable 结论，也不能把当前 Key 冷却回写到历史能力颜色。`statsContractEpochId` 标识本响应的历史投影 epoch；v2 尚未启用时 capability 为 null，不补造全绿小时点。时间范围跨过切换点时，切换前小时仍返回槽位，但 `semanticsAvailable=false`、`displaySegment=null`、`revisionSegmentCount=0`；切换后已启用但账户级 projection 未确认 / 重建中时返回对应 `dataStatus`，aggregate=null，页面不能回退成 unknown 或 healthy。
+`capability.current` 每次从最新 control-plane view 读取，不从最近小时 publication 或 accountListSnapshotRef 反推。若 active deployment-wide barrier 存在，必须优先返回 `dataStatus=unconfirmed + dataStatusReason=deployment_capability_barrier`；若最新 Catalog / credential baseline 或账户级 current pointer 未 ready，或存在 account-wide hold，则返回对应 unconfirmed / rebuilding 原因，均不能回退到列表签发时的旧 healthy / schedulable summary。已知 scope 的 handoff / projection hold 则返回最新 Route / Attempt 的 `evidenceDataStatus=unconfirmed`、scoped counts 和精确不可调度结论，不能笼统提升账户 dataStatus。`historyGeneratedAt / historyStale` 只描述 stats 历史投影；页面不能用历史 aggregate 覆盖实时 Key owner / effective schedulable 结论，也不能把当前 Key 冷却回写到历史能力颜色。`statsContractEpochId` 标识本响应的历史投影 epoch；v2 尚未启用时 capability 为 null，不补造全绿小时点。时间范围跨过切换点时，切换前小时仍返回槽位，但 `semanticsAvailable=false`、`displaySegment=null`、`revisionSegmentCount=0`；切换后已启用但账户级 projection 未确认 / 重建中时返回对应 `dataStatus`，aggregate=null，页面不能回退成 unknown 或 healthy。
 
 可见行 current 使用独立批量刷新资源：
 
@@ -546,6 +547,7 @@ Mockdata 必须通过真实事件 / 聚合 owner 生成：
 - A 可用、B 阻断的多模型账户。
 - Key-1 + B 阻断、Key-2 + B 可用的多 Key 账户。
 - 授权实例凭据拓扑隐藏、零 Route、零凭据 unknown、纯 SUSPECT、blocked + unknown、投影 unconfirmed / rebuilding 的样本。
+- active deployment-wide barrier 的样本：所有账户 current / 小时摘要均为 `unconfirmed + deployment_capability_barrier`，解除后恢复各自原状态而不是全量 healthy。
 - 单 Route 同时 blocked + 未到期 SUSPECT，aggregate 为 partially unavailable 但 capability / effective schedulable 均为 0 的样本。
 - 切换日前只有 v1、切换日后 v2 聚合滞后、同小时多 revision、旧 revision 在半小时结束、繁忙当前小时连续 publication、事件已过期的样本。
 - stats epoch 重分区、outbox gap、ingest ACK 丢失、无新事件 deadline 到期、跨整点崩溃追赶和 7 天迟到边界样本。

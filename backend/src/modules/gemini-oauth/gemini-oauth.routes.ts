@@ -421,7 +421,7 @@ geminiOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     const updatedAccount = await runWithProviderOAuthRefreshLock(
       GEMINI_PROVIDER_CODE,
       account.id,
-      async () => {
+      async (lockSignal, assertLockOwned) => {
         const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
         if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
         if (oauthTokensChanged(account.credentials, current.credentials)
@@ -440,8 +440,10 @@ geminiOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
           quotaProjectId: stringCredential(current.credentials, 'quota_project_id'),
           baseUrl: stringCredential(current.credentials, 'base_url'),
           scope: stringCredential(current.credentials, 'scope'),
-          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+          signal: lockSignal
         })
+        await assertLockOwned()
         return await updateGeminiOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
       },
       { signal: abortController.signal }
@@ -486,7 +488,7 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -503,8 +505,10 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
         quotaProjectId: parsed.data.quotaProjectId,
         baseUrl: parsed.data.baseUrl,
         ownerSystemAccountId: requestAccess?.systemAccountId,
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
         return {
@@ -538,7 +542,7 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -554,8 +558,10 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
         quotaProjectId: parsed.data.quotaProjectId ?? stringCredential(current.credentials, 'quota_project_id'),
         baseUrl: parsed.data.baseUrl ?? stringCredential(current.credentials, 'base_url'),
         scope: stringCredential(current.credentials, 'scope'),
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
         return {

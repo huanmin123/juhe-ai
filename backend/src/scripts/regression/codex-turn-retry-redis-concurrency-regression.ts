@@ -152,6 +152,7 @@ class ContendedRuntimeStateStore implements RuntimeStateStore {
   async delete(): Promise<void> {}
   async incr(): Promise<number> { return 0 }
   async acquireLock(): Promise<boolean> { return false }
+  async renewLock(): Promise<boolean> { return false }
   async releaseLock(): Promise<void> {}
 }
 

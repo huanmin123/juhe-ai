@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
@@ -44,6 +44,15 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   let searchTimer: ReturnType<typeof window.setTimeout> | undefined
   let lastMissingNoticeKey = ''
 
+  watch(
+    currentCatalogScopeKey,
+    (nextScopeKey, previousScopeKey) => {
+      if (nextScopeKey === previousScopeKey) return
+      resetOptions()
+    },
+    { flush: 'sync' }
+  )
+
   async function load(
     nextKeyword = keyword.value,
     force = false,
@@ -62,9 +71,10 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
 
     const requestKeyword = normalizeOptionKeyword(nextKeyword)
+    const managementView = config.isManagementView()
+    const requestCatalogScopeKey = catalogScopeKey(managementView, scope)
     const requestKey = JSON.stringify([
-      config.isManagementView() ? `management:${scope.systemAccountId ?? 'all'}` : 'self',
-      scope.providerCode ?? '',
+      requestCatalogScopeKey,
       requestKeyword ?? '',
       scope.selectedIds
     ])
@@ -76,16 +86,21 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        const isManagementView = config.isManagementView()
-        let nextGroups = isManagementView
+        let nextGroups = managementView
           ? await api.groups.options(groupOptionParams(scope, requestKeyword, limit))
           : await api.myGroups.options(groupOptionParams(scope, requestKeyword, limit))
-        nextGroups = await ensureSelectedGroupOptions(nextGroups, scope)
+        if (!isCurrentRequest(currentRequestId, requestCatalogScopeKey, scopeOverride)) return
+        nextGroups = await ensureSelectedGroupOptions(
+          nextGroups,
+          scope,
+          managementView,
+          () => isCurrentRequest(currentRequestId, requestCatalogScopeKey, scopeOverride)
+        )
+        if (!isCurrentRequest(currentRequestId, requestCatalogScopeKey, scopeOverride)) return
         rememberGroupLabels(nextGroups)
-        if (currentRequestId !== requestId) return
         groups.value = nextGroups
       } catch (error) {
-        if (currentRequestId !== requestId) return
+        if (!isCurrentRequest(currentRequestId, requestCatalogScopeKey, scopeOverride)) return
         console.error(error)
         message.error(config.errorMessage ?? '加载分组选项失败')
       } finally {
@@ -104,7 +119,9 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   function handleDropdown(open: boolean): void {
     if (open) {
       void load()
+      return
     }
+    clearSearchTimer()
   }
 
   function handleSearch(value: string): void {
@@ -128,13 +145,31 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
   }
 
-  async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scope: Required<AccountGroupOptionsScope>): Promise<GroupOptionSummary[]> {
+  function resetOptions(): void {
+    requestId += 1
+    clearSearchTimer()
+    groups.value = []
+    keyword.value = ''
+    loading.value = false
+    loadingKey = undefined
+    loadingPromise = undefined
+    lastMissingNoticeKey = ''
+  }
+
+  async function ensureSelectedGroupOptions(
+    nextGroups: GroupOptionSummary[],
+    scope: Required<AccountGroupOptionsScope>,
+    managementView: boolean,
+    isCurrent: () => boolean
+  ): Promise<GroupOptionSummary[]> {
     const missingIds = scope.selectedIds.filter((id): id is string => Boolean(id && !nextGroups.some((group) => group.id === id)))
     if (!missingIds.length) return nextGroups
+    if (!isCurrent()) return nextGroups
     try {
-      const selectedGroups = config.isManagementView()
+      const selectedGroups = managementView
         ? await api.groups.options(groupOptionParams(scope, undefined, limit, missingIds))
         : await api.myGroups.options(groupOptionParams(scope, undefined, limit, missingIds))
+      if (!isCurrent()) return nextGroups
       const foundIds = new Set(selectedGroups.map((group) => group.id))
       const invalidSelectedIds = missingIds.filter((id) => !foundIds.has(id))
       handleMissingSelectedIds(invalidSelectedIds)
@@ -176,7 +211,20 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
   }
 
-  onBeforeUnmount(clearSearchTimer)
+  function currentCatalogScopeKey(): string {
+    return catalogScopeKey(config.isManagementView(), normalizedScope())
+  }
+
+  function isCurrentRequest(
+    currentRequestId: number,
+    requestCatalogScopeKey: string,
+    scopeOverride?: Partial<AccountGroupOptionsScope>
+  ): boolean {
+    return currentRequestId === requestId
+      && (scopeOverride !== undefined || requestCatalogScopeKey === currentCatalogScopeKey())
+  }
+
+  onBeforeUnmount(resetOptions)
 
   return {
     clearSearchTimer,
@@ -186,8 +234,16 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     keyword,
     load,
     loading,
+    reset: resetOptions,
     resetSearch
   }
+}
+
+function catalogScopeKey(isManagementView: boolean, scope: Required<AccountGroupOptionsScope>): string {
+  return JSON.stringify([
+    isManagementView ? `management:${scope.systemAccountId || 'all'}` : 'self',
+    scope.providerCode
+  ])
 }
 
 function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: string | undefined, limit: number, ids?: string[]) {

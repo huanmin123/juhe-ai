@@ -9,16 +9,40 @@ import {
 } from '../../modules/providers/drivers/_shared/oauth-refresh-lock.js'
 
 class TestLockStore implements RuntimeStateStore {
-  private readonly locks = new Map<string, string>()
+  private readonly locks = new Map<string, { token: string; expiresAt: number }>()
+  renewCalls = 0
 
   async acquireLock(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
-    if (this.locks.has(key)) return false
-    this.locks.set(key, options.token)
+    const current = this.freshLock(key)
+    if (current) return false
+    this.locks.set(key, { token: options.token, expiresAt: Date.now() + options.ttlMs })
+    return true
+  }
+
+  async renewLock(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+    this.renewCalls += 1
+    const current = this.freshLock(key)
+    if (current?.token !== options.token) return false
+    current.expiresAt = Date.now() + options.ttlMs
     return true
   }
 
   async releaseLock(key: string, token: string): Promise<void> {
-    if (this.locks.get(key) === token) this.locks.delete(key)
+    if (this.freshLock(key)?.token === token) this.locks.delete(key)
+  }
+
+  replaceLock(key: string, token: string, ttlMs: number): void {
+    this.locks.set(key, { token, expiresAt: Date.now() + ttlMs })
+  }
+
+  private freshLock(key: string): { token: string; expiresAt: number } | undefined {
+    const current = this.locks.get(key)
+    if (!current) return undefined
+    if (current.expiresAt <= Date.now()) {
+      this.locks.delete(key)
+      return undefined
+    }
+    return current
   }
 
   async getJson<T>(): Promise<T | undefined> { return undefined }
@@ -91,6 +115,30 @@ await assert.rejects(
   /task failed/u
 )
 assert.equal(await store.acquireLock('anthropic:release-on-error', { ttlMs: 1_000, token: 'probe' }), true, '任务失败也必须释放刷新锁')
+
+let releaseLongTask: (() => void) | undefined
+const longTaskGate = new Promise<void>((resolve) => { releaseLongTask = resolve })
+const longTask = runWithProviderOAuthRefreshLock('gemini', 'renewed-account', async () => {
+  await longTaskGate
+  return 'renewed'
+}, { lockStore: store, lockTtlMs: 60, waitMs: 1_000, retryMs: 5 })
+await waitUntil(() => store.renewCalls >= 2)
+assert.equal(
+  await store.acquireLock('gemini:renewed-account', { ttlMs: 60, token: 'competing-holder' }),
+  false,
+  '刷新任务跨过初始 TTL 后仍必须由持有者续租保持互斥'
+)
+releaseLongTask?.()
+assert.equal(await longTask, 'renewed')
+
+const lostLockTask = runWithProviderOAuthRefreshLock('xai', 'lost-account', async (signal) => {
+  await new Promise<void>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+}, { lockStore: store, lockTtlMs: 60, waitMs: 1_000, retryMs: 5 })
+await delay(10)
+store.replaceLock('xai:lost-account', 'replacement-holder', 1_000)
+await assert.rejects(lostLockTask, /刷新锁已丢失/u, '锁所有权丢失必须中止临界区任务，不能继续写回 token')
 
 console.log('provider OAuth refresh lock regression passed')
 

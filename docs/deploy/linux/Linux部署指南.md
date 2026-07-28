@@ -33,6 +33,8 @@ curl -I https://registry.npmjs.org/ || true
 - 如果服务器无法直连 npm、Docker Hub 或上游模型 API，先配置系统代理或 sing-box。
 - 生产上只对公网开放 `80/443`；不要把 PostgreSQL、Redis、DB service、sing-box 或 juhe-ai `3000` 端口暴露到公网。
 
+本文当前只覆盖 capability v1 / legacy 的单主进程 systemd 拓扑，不是 capability v2 runbook。active deployment contract 为 capability v2 时，启动、停止、`systemctl restart` 和 release 切换入口都必须 fail-closed；只有 Linux 专用 unit / coordinator 已分别监管 gateway、每 host replay / quarantine、control / due / activation、Asynq、stats，声明持久卷、epoch / lease 域、readyz、producer seal 和最长 drain，并完成 ingress 停止后 replay 继续到 drain certificate 的演练，manifest 才可允许 v2。不得把本文旧 unit 或 HTTP 200 冒充 v2 角色 ready 证明。
+
 ## 3. 发布包部署
 
 ```bash

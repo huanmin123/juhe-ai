@@ -32,6 +32,7 @@ export interface XaiOAuthDispatchPreparationDependencies {
     refreshToken: string
     clientId?: string
     proxyUrl?: string
+    signal?: AbortSignal
   }): Promise<GrokOAuthTokenInfo>
   persistCredentials(
     accountId: string,
@@ -68,7 +69,9 @@ export async function prepareXaiAccountBeforeDispatch(
   const refresh = runWithProviderOAuthRefreshLock(
     XAI_PROVIDER_CODE,
     sourceAccountId,
-    async () => await refreshAndPersistGrokOAuthAccount(account, sourceAccountId, dependencies)
+    async (lockSignal, assertLockOwned) => await refreshAndPersistGrokOAuthAccount(
+      account, sourceAccountId, dependencies, lockSignal, assertLockOwned
+    )
   )
   grokOAuthRefreshes.set(sourceAccountId, refresh)
   void refresh.finally(() => {
@@ -94,7 +97,9 @@ export function shouldRefreshGrokOAuthCredentials(
 async function refreshAndPersistGrokOAuthAccount(
   dispatchAccount: DispatchAccountSecret,
   sourceAccountId: string,
-  dependencies: XaiOAuthDispatchPreparationDependencies
+  dependencies: XaiOAuthDispatchPreparationDependencies,
+  signal?: AbortSignal,
+  assertLockOwned?: () => Promise<void>
 ): Promise<DispatchAccountSecret> {
   const source = await dependencies.loadAccount(sourceAccountId)
   if (!source || source.providerCode !== XAI_PROVIDER_CODE || source.type !== 'oauth') {
@@ -109,7 +114,8 @@ async function refreshAndPersistGrokOAuthAccount(
   const tokenInfo = await dependencies.refreshToken({
     refreshToken,
     clientId: stringCredential(currentCredentials, 'client_id'),
-    proxyUrl: dispatchAccount.proxyUrl
+    proxyUrl: dispatchAccount.proxyUrl,
+    signal
   })
   let candidate = source
   let lastConflict: AccountConfigRevisionConflictError | undefined
@@ -122,6 +128,7 @@ async function refreshAndPersistGrokOAuthAccount(
       base_url: baseUrl
     }
     try {
+      await assertLockOwned?.()
       const updated = await dependencies.persistCredentials(
         sourceAccountId,
         credentials,

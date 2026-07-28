@@ -198,11 +198,17 @@ export class CodexResponsesResponseGuard {
 
   inspectParsedSse(input: CodexStreamContractInput): CodexResponsesGuardSseResult {
     const result = this.#streamState.consume(input, {
-      allowNewRepair: !this.#downstreamCommitState.semanticCommitted
+      // Global semantic commit controls whole-attempt retry, not whether a
+      // newly observed output identity may receive a safe wire ID before that
+      // identity itself is exposed. The stream state refuses to create a new
+      // mapping for identities it has already observed without one.
+      allowNewRepair: true
     })
     this.#recordDiagnostics(result.issues)
     const bounded = boundedIssues(result.issues)
-    const outcome = outcomeAtCommitBoundary(result.outcome, this.#downstreamCommitState)
+    const outcome = result.repairs.length > 0
+      ? result.outcome
+      : outcomeAtCommitBoundary(result.outcome, this.#downstreamCommitState)
     return {
       ...this.#baseResult(
         outcome,

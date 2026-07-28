@@ -57,16 +57,17 @@ assert.doesNotMatch(
   /listProviderModelCatalogAsync|accountManualTestEndpointModesForModel/,
   '模型列表不得克隆完整目录或使用完整目录计算请求形态'
 )
-assert.match(listOptionsFunctionSource, /testEndpointModes:[\s\S]*accountManualTestEndpointModesForTargetModelAsync/, '模型列表必须随选项返回账户与模型能力交集')
+assert.doesNotMatch(listOptionsFunctionSource, /testEndpointModes|supportedApiProtocols|accountManualTestEndpointModesForTargetModelAsync/, '批量模型选项只能返回 id/name，不得提前计算协议能力')
+assert.match(listOptionsFunctionSource, /return options\.map\(\(option\) => \(\{[\s\S]*id: option\.id,[\s\S]*name: option\.name[\s\S]*\}\)\)/, '批量模型选项必须严格投影为 id/name')
 assert.match(
   dispatchRoutes,
   /router\.get\('\/:id\/test-options\/models\/:modelId'/,
-  '兼容能力端点必须保留，供服务端校验和旧客户端使用'
+  '请求形态下拉必须使用当前模型的定点能力端点'
 )
 assert.match(
   dispatchRoutes,
-  /findAccountManualTestCapabilitiesContextAsync\(req\.params\.id, requestAccess\)/,
-  '模型能力端点必须读取单行最小账户能力上下文'
+  /findAccountManualTestCapabilitiesContextAsync\(req\.params\.id, req\.params\.modelId, requestAccess\)/,
+  '模型能力端点必须按当前 modelId 读取单行最小账户能力上下文'
 )
 assert.match(
   dispatchRoutes,
@@ -167,16 +168,16 @@ assert.match(
   /loadTestModelOptions/,
   '列表测试弹窗必须提供候选模型按需加载入口'
 )
-assert.match(
+assert.doesNotMatch(
   section(accountTestModal, 'function openTestModal', 'function openDraftTestModal'),
   /loadTestModelOptions\(account\)/,
-  '打开列表测试弹窗时必须一次加载带协议能力的候选模型列表'
+  '打开列表测试弹窗不得加载模型候选'
 )
-assert.doesNotMatch(accountTestModels, /testModelCapabilities\(/, '模型切换不得再发起独立能力请求')
+assert.match(accountTestModels, /loadTestEndpointModeOptions[\s\S]*testModelCapabilities\(/, '请求形态下拉必须只读取当前模型能力')
 assert.match(
   accountTestModalComponent,
-  /@dropdown-visible-change/,
-  '候选模型列表必须由模型选择器展开交互触发'
+  /@dropdown-visible-change="\$emit\('load-model-options', \$event\)"[\s\S]*@dropdown-visible-change="\$emit\('load-endpoint-mode-options', \$event\)"/,
+  '模型与请求形态必须分别由各自下拉的真实展开事件触发'
 )
 assert.match(
   accountTestModels,

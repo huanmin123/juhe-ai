@@ -8,7 +8,7 @@ import { buildAccountSavePayload, buildAccountUpdatePayload } from '../../views/
 const form = defaultAccountForm('gpt', 'api_key')
 assert.equal(form.temporaryUnavailableContinuousProbeEnabled, true, '新账户持续恢复探活必须默认开启')
 assert.equal(form.privilege, 'normal', '新账户特权必须默认正常')
-assert.equal(form.status, 'active', '新账户状态必须默认正常')
+assert.equal(form.status, 'pending_test', '新账户状态必须默认待检查，由后台激活检查成功后再转为正常')
 form.name = '有界探活表单回归'
 form.groupId = 'grp-test'
 form.apiKey = 'sk-test'

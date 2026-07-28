@@ -195,7 +195,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 
 ## 当前接口入口
 
-> 状态闭环：`pending_test` 只有后台激活检查的 `complete_success` 可以激活；`framing_complete_neutral` 与 `transport_incomplete` 都是激活失败，`probe_task_failure / stale / unknown` 中性。active 周期哨兵只更新精确 Route / Attempt，不消费账户失败阈值，也不写整号 `temporary_unavailable`。
+> 状态闭环：`pending_test` 只有当前 Catalog activation selection 中 definition / binding 匹配的 `complete_success` 可以激活；`framing_complete_neutral` 与 `transport_incomplete` 都只阻断对应精确 Attempt，selection 继续后续候选，`probe_task_failure / stale / unknown` 中性并有界重排。active 周期哨兵也只更新精确 Route / Attempt，不消费账户失败阈值，也不写整号 `temporary_unavailable`。
 
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
 - OpenAI 兼容 / GPT 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。账户和测试相关 DTO 返回 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion`，用于账户类型、表单默认值和运行时诊断；分组 DTO 不返回这些协议档案字段。
@@ -256,7 +256,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 授权码和 Refresh Token 重新授权复用同一账户级 OAuth 刷新锁；锁内重新读取凭据，写回使用 `config_revision` CAS。等待锁期间 token 已变化时返回冲突，不用旧页面快照覆盖新 token。真正的重新授权不受旧 `error` 状态门禁阻断；成功后按统一恢复边界清除可恢复失败态并回到待检查，不覆盖账户到期或显式错误策略保护。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 GPT OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`pending_test`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做本地 token 生命周期保活，成功时不恢复普通冷却状态、不清理无关错误；失败按本地授权维护任务退避并记录有界诊断，不得从 token endpoint 的 HTTP status/body 推断凭据失效，更不得因任意刷新异常自动写 `status = error`。只有本地可验证的凭据缺失、解密失败或用户明确重新授权流程进入独立授权维护路径；手动停用和用户显式状态不会被后台刷新覆盖。
-- 待检查账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、手动启用、人工账户测试和“恢复正常”都不能把 `pending_test` 直接改成 `active`。新建、导入和关键连接配置编辑后的账户只能由后台激活检查 `complete_success` 转为正常；“重新检查”只重置窗口并重新投递激活任务。
+- 待检查账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、手动启用、人工账户测试和“恢复正常”都不能把 `pending_test` 直接改成 `active`。新建、导入和关键连接配置编辑后的账户只能由当前 Catalog activation selection 中 definition / binding 匹配的 `complete_success` 转为正常；“重新检查”只把旧 selection 置 stale，并按当前 publication 重建或唤醒唯一 selection。
 - 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求返回的 Codex rate-limit 响应头被动更新。账户人工测试不更新生产额度快照。测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 临近过期时，真实网关请求会按 5 秒硬阻塞阈值和 60 秒后台预热阈值处理。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
@@ -265,8 +265,8 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - OAuth token 刷新、人工测试和后台系统检查都优先使用账户绑定代理；没有绑定代理时默认直连。账户创建、导入和离线修复不得自动绑定本机固定端口代理，代理必须由用户显式配置。
 - 人工测试复用受控的真实 OpenAI 网关请求执行器并写入使用记录与审计，不能在测试服务里单独直连上游。新增和编辑表单测试固定使用当前表单 `healthCheckModel`，不提供临时模型下拉；列表单项测试打开时按需调用 `test-options`，候选来自账户供应商、协议档案和所有者作用域可见的启用文本模型目录，不受 `supportedModels` 限制，默认选中账户检查模型。完整诊断在网关为普通客户端改写失败响应时，测试结果的 `responseText`、`responseHeaders`、`message` 和 `errorCode` 仍优先使用最后一次真实上游尝试的有界原始诊断，不能把网关生成的 `upstream_retryable_error` 当成上游返回展示；未捕获上游正文时才保留下游兜底响应。人工测试不保存本次模型，不追加支持模型，也不更新 OAuth 生产额度快照。
 - 人工测试成功或失败都不修改账户、授权实例、来源账户、账户内 Key、健康事实、状态、调度、冷却、最近错误、代理桶、客户端 IP / Codex turn 回避或会话亲和。每次单账户测试使用独立 `testSessionId`；账户 A 与账户 B 可并行启动，停止操作只取消当前会话。账户页面不提供多账户批量测试。
-- 后台任务按 owner 分配配方：`pending_test` 激活、active 周期哨兵和未来真正账户全局 owner 使用 `healthCheckModel`；请求失败 / 质量确认和 `protocol_model / model_capability` 恢复使用失败 Attempt 的持久 ProbeRecipe；账号冷却和 Key 恢复只消费各自匹配 provenance，不得借模型哨兵恢复。active 周期哨兵和精确能力探针的完整 HTTP / transport 失败只推进该 Route / Attempt，不写整号状态。`probe_task_failure / stale / unknown` 不计数不改状态，所有专用 traffic source 都不得回灌 Collector 或普通业务质量。
-- 后台检查不得按完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 派生具体错误类型。`pending_test` 的 `complete_success` 激活账户，`framing_complete_neutral` 与 `transport_incomplete` 推进激活失败窗口，`probe_task_failure / stale / unknown` 中性；active 的同类结果只形成精确 execution 结论，本地配置 / 解密硬错误进入对应 owner 路径。
+- 后台任务按 owner 分配配方：`pending_test` 激活使用 ready Catalog 的持久 activation selection，`healthCheckModel` 只影响免费 execution Attempt 的候选优先级；active 周期哨兵和未来真正账户全局 owner 使用 `healthCheckModel`；请求失败 / 质量确认和 `protocol_model / model_capability` 恢复使用失败 Attempt 的持久 ProbeRecipe；账号冷却和 Key 恢复只消费各自匹配 provenance，不得借模型哨兵恢复。active 周期哨兵和精确能力探针的完整 HTTP / transport 失败只推进该 Route / Attempt，不写整号状态。`probe_task_failure / stale / unknown` 不计数不改能力状态，所有专用 traffic source 都不得回灌 Collector 或普通业务质量。
+- 后台检查不得按完整 `4xx/5xx`、错误正文或 `2xx-invalid-body` 派生具体错误类型。activation item 的 `complete_success` 在 current definition / binding 下完成激活；`framing_complete_neutral` 与 `transport_incomplete` 只推进该精确 Attempt，selection 继续后续候选，连续 24 小时无成功只产生 `owner_action_required` 告警；`probe_task_failure / stale / unknown` 中性并由 selection owner 有界重排。active 的同类结果也只形成精确 execution 结论，本地配置 / 解密硬错误进入对应 owner 路径。
 - active 精确 Attempt 的真实业务 `protocolValidatedSuccess` 只写正向 observation 并递增 `positiveObservationVersion`，不能直接终结 active intent。探针 claim 保存当时版本；claim 后出现的新成功会让迟到负向 outcome 变为 `superseded_by_newer_success`，不得阻断。当前 intent 终态后写 durable due，后续独立验证使用新 generation / TaskID。
 
 账号质量主动探测指为排序或展示而主动测速；这类能力仍不恢复。真实 gateway 请求的 opaque 完整失败由请求终态按最终 Attempt `scopeId` nomination，durable accepted 后同 scope 5 分钟冷却且每请求最多一个 intent；独立探针只推进精确能力，不累计账户健康阈值。确认过程不读取状态码 / 正文推断具体语义，并使用专用 traffic source，避免探针结果递归触发或回灌普通账号质量统计。
@@ -320,7 +320,7 @@ GPT OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括�
 
 迁移流量用于人工处理上游返回状态码正常但内容异常、自动响应检查或账户错误处理策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态。默认“不影响原账户”，也可由用户明确把原账户改为临时不可调用或停用；动作只影响后续请求，不打断当前流式连接。
 
-`待检查` 是新建账户的默认隔离状态，不能参与调度；人工测试成功或失败都不能激活。后台激活检查只有 `complete_success` 可以退出 `pending_test`；`framing_complete_neutral` 与 `transport_incomplete` 都增加激活失败计数并固定每 1 小时复检，从首次激活失败起满 24 小时后的再次独立失败才转为 `error`；`probe_task_failure / stale / unknown` 不推进窗口。已有激活失败事实的待检查账户提供“重新检查”，先清空窗口并立即重新投递。手动启用只针对真正已停用账户；所有非停用自有账户都允许人工停用，停用态不能被测试、冷却复测、OAuth 刷新或异步错误处理自动恢复。
+`待检查` 是新建账户的默认隔离状态，不能参与调度；人工测试成功或失败都不能激活。后台先为 ready Catalog / credential baseline 建立唯一持久 activation selection，`healthCheckModel` 只优先，随后按 Route / credential 稳定轮转无需额外成本授权的 execution Attempt。只有 current definition / binding 的 `complete_success` 可以退出 `pending_test`；`framing_complete_neutral` 与 `transport_incomplete` 只阻断对应精确 Attempt，后续候选继续按统一 admission、每物理账户 5 分钟启动门禁和预算执行。连续 24 小时无成功只产生 `activation_unconfirmed / owner_action_required`，不转整号 `error`；`probe_task_failure / stale / unknown` 不改能力状态并有界重排。“重新检查”只将旧 selection 置 stale 并按当前 publication 重建，不能清理精确 incident 或制造并行任务。手动启用只针对真正已停用账户；所有非停用自有账户都允许人工停用，停用态不能被测试、冷却复测、OAuth 刷新或异步错误处理自动恢复。
 
 时间计划边界和人工启停写同一个 `status`；计划只接管 `active / disabled`，不能覆盖 `pending_test`、`error`、`rate_limited` 或 `temporary_unavailable`。用户显式限流 / 临时不可调用只由 TTL、匹配来源动作或人工恢复清理。后台冷却复测仍按自身 provenance 运行：`complete_success` 只恢复匹配来源，framing 中性只顺延，只有 `transport_incomplete` 推进对应 transport 观察和长期终态。`error` 页面显示异常类型与摘要；异常恢复只重置为不可调度的 `pending_test` 并立即检查。授权额度耗尽只改变授权关系展示和网关响应，不改变物理账户状态；账户套餐到期、授权到期和稳定授权失效继续使用各自展示。
 

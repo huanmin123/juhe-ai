@@ -57,6 +57,18 @@ type ModelMapping struct {
 	RuntimeSource          string         `json:"runtimeSource,omitempty"`
 }
 
+// ModelResolution is the exact runtime model/family decision for one
+// candidate. A changed endpoint family still requires the caller to run the
+// matching protocol bridge; this value never authorizes a model-only rewrite.
+type ModelResolution struct {
+	RequestedModel         string         `json:"requestedModel"`
+	UpstreamModel          string         `json:"upstreamModel"`
+	SourceEndpointFamily   EndpointFamily `json:"sourceEndpointFamily"`
+	UpstreamEndpointFamily EndpointFamily `json:"upstreamEndpointFamily"`
+	MappingApplied         bool           `json:"mappingApplied"`
+	MappingSource          string         `json:"mappingSource,omitempty"`
+}
+
 type Candidate struct {
 	ID                        string         `json:"id"`
 	ProviderCode              string         `json:"providerCode"`
@@ -173,7 +185,7 @@ func FilterModelCandidates(candidates []Candidate, requestedModel string, source
 			direct = append(direct, candidate)
 			continue
 		}
-		if mapping, ok := resolveModelMapping(candidate, model, sourceEndpointFamily); ok && containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
+		if mapping, ok := ResolveModelMapping(candidate, model, sourceEndpointFamily); ok && containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
 			result.MappingMatchedCount++
 			ranks[candidate.ID] = ModelPriorityMapping
 			mapped = append(mapped, candidate)
@@ -208,7 +220,10 @@ func capabilitySupportsRequest(capability Capability, request CapabilityRequest)
 	return compatibility == "" || containsExact(capability.ClientCompatibilities, compatibility)
 }
 
-func resolveModelMapping(candidate Candidate, model string, source EndpointFamily) (ModelMapping, bool) {
+// ResolveModelMapping applies the same exact-match and conversion rules used
+// by candidate filtering. Model names are case-sensitive by contract.
+func ResolveModelMapping(candidate Candidate, requestedModel string, source EndpointFamily) (ModelMapping, bool) {
+	model := strings.TrimSpace(requestedModel)
 	if model == "" || !isMappingSourceFamily(source) {
 		return ModelMapping{}, false
 	}
@@ -227,6 +242,37 @@ func resolveModelMapping(candidate Candidate, model string, source EndpointFamil
 		return mapping, true
 	}
 	return ModelMapping{}, false
+}
+
+// ResolveEffectiveModel returns a direct or mapped runtime target only when
+// the candidate's declared supported-model constraint proves it is usable.
+func ResolveEffectiveModel(candidate Candidate, requestedModel string, source EndpointFamily) (ModelResolution, bool) {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || len(candidate.SupportedModels) == 0 {
+		return ModelResolution{}, false
+	}
+	if containsExact(candidate.SupportedModels, model) {
+		return ModelResolution{
+			RequestedModel: model, UpstreamModel: model,
+			SourceEndpointFamily: source, UpstreamEndpointFamily: source,
+		}, true
+	}
+	if !isMappingSourceFamily(source) {
+		return ModelResolution{}, false
+	}
+	mapping, ok := ResolveModelMapping(candidate, model, source)
+	if !ok || !containsExact(candidate.SupportedModels, mapping.UpstreamModel) {
+		return ModelResolution{}, false
+	}
+	sourceName := strings.TrimSpace(mapping.RuntimeSource)
+	if sourceName == "" {
+		sourceName = "account"
+	}
+	return ModelResolution{
+		RequestedModel: model, UpstreamModel: mapping.UpstreamModel,
+		SourceEndpointFamily: source, UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
+		MappingApplied: true, MappingSource: sourceName,
+	}, true
 }
 
 func mappingRuntimeConversionSupported(mapping ModelMapping, candidate Candidate) bool {

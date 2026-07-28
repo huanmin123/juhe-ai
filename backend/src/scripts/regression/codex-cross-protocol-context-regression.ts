@@ -12,9 +12,13 @@ import {
   prepareCodexResponsesCompactDispatchForAccounts,
   setCodexResponsesContextStateForRequest
 } from '../../modules/gateway/codex-responses/chat-bridge-state.js'
-import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
+import {
+  buildPreparedUpstreamRequestParts,
+  sanitizePreparedCodexResponsesHistoryForAccount
+} from '../../modules/gateway/dispatch/account-preparation.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import { serializeGatewayJsonObject } from '../../modules/gateway/request/serialized-json-body.js'
 
 const model = 'gpt-5.5'
 const summary = 'Earlier turns established the deployment constraints.'
@@ -124,6 +128,64 @@ assert.deepEqual((nativeBody.input as unknown[]).find((item) => (
 assert.match(JSON.stringify(nativeBody), /native-upstream-encrypted-content/)
 assert.doesNotMatch(JSON.stringify(nativeBody), /juhecmp\.v[12]/)
 assert.equal(codexResponsesChatBridgeCompletionHandlerForRequest(req, nativeAccount), undefined)
+
+const pollutedHistoryItem = {
+  type: 'custom_tool_call',
+  id: 'item_e559868101db735391af3de4',
+  call_id: 'call_polluted_history',
+  name: 'exec',
+  input: '{"command":"Get-Content package.json"}',
+  status: 'completed'
+}
+const pollutedReq = request({
+  model,
+  stream: true,
+  store: false,
+  input: [pollutedHistoryItem]
+})
+const sanitizedParts = await buildPreparedUpstreamRequestParts(
+  pollutedReq,
+  nativeAccount,
+  usageContext,
+  undefined,
+  { requestClientCompatibility: 'codex_responses' }
+)
+const sanitizedBody = jsonBody(sanitizedParts.body)
+const sanitizedItem = (sanitizedBody.input as Array<Record<string, unknown>>)[0]!
+assert.equal(Object.hasOwn(sanitizedItem, 'id'), false, '账户派发前必须剥离可重放历史中的不可信 item ID')
+assert.equal(sanitizedItem.call_id, pollutedHistoryItem.call_id)
+assert.equal(sanitizedItem.input, pollutedHistoryItem.input)
+assert.equal(pollutedHistoryItem.id, 'item_e559868101db735391af3de4', '请求清理不得原地修改客户端对象')
+
+const adapterPollutedBody = serializeGatewayJsonObject({
+  model,
+  stream: true,
+  store: false,
+  input: [{ ...pollutedHistoryItem, id: 'item_adapter_reintroduced' }]
+})
+const finalSanitizedBody = sanitizePreparedCodexResponsesHistoryForAccount(
+  pollutedReq,
+  nativeAccount,
+  adapterPollutedBody,
+  { requestClientCompatibility: 'codex_responses' }
+)
+const finalSanitizedItem = (jsonBody(finalSanitizedBody).input as Array<Record<string, unknown>>)[0]!
+assert.equal(Object.hasOwn(finalSanitizedItem, 'id'), false, 'adapter 后最终 outbound body 必须再次清理不可信 ID')
+
+const oauthStylePollutedBody = JSON.stringify({
+  model,
+  stream: true,
+  store: false,
+  input: [{ ...pollutedHistoryItem, id: 'item_oauth_adapter_reintroduced' }]
+})
+const oauthStyleSanitizedBody = sanitizePreparedCodexResponsesHistoryForAccount(
+  pollutedReq,
+  nativeAccount,
+  oauthStylePollutedBody,
+  { requestClientCompatibility: 'codex_responses' }
+)
+const oauthStyleSanitizedItem = (jsonBody(oauthStyleSanitizedBody).input as Array<Record<string, unknown>>)[0]!
+assert.equal(Object.hasOwn(oauthStyleSanitizedItem, 'id'), false, '字符串 outbound body 也必须清理不可信 ID')
 
 replaceGatewayJsonBody(req, {
   ...(req.body as Record<string, unknown>),

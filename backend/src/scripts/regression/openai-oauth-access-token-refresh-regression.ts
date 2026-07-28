@@ -35,6 +35,7 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const refreshedByToken = new Set<string>()
 let observedClientAbortSignal: AbortSignal | undefined
+let observedClientAbortSignalWasAborted: boolean | undefined
 let oauthGroupId = ''
 
 async function main(): Promise<void> {
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
     oauthGroupId = group.id
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId, signal }) => {
       observedClientAbortSignal = signal
+      observedClientAbortSignalWasAborted = signal?.aborted
       refreshedByToken.add(refreshToken)
       return {
         accessToken: `access-refreshed-${refreshToken}`,
@@ -119,12 +121,18 @@ async function main(): Promise<void> {
     const clientAbortController = new AbortController()
     clientAbortController.abort()
     observedClientAbortSignal = undefined
+    observedClientAbortSignalWasAborted = undefined
     await oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(manualRefreshAccount, {
       force: true,
       persistMode: 'sync',
       signal: clientAbortController.signal
     })
-    assert(observedClientAbortSignal === undefined, '客户端断开信号不得取消已开始的 OAuth token 刷新')
+    assert(
+      observedClientAbortSignal !== undefined
+      && observedClientAbortSignal !== clientAbortController.signal
+      && observedClientAbortSignalWasAborted === false,
+      '客户端断开信号不得取消已开始的 OAuth token 刷新，但刷新必须继续响应 lease 丢失信号'
+    )
 
     const explicitCooldownAccounts = [
       {
@@ -313,6 +321,7 @@ async function main(): Promise<void> {
 
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId, signal }) => {
       observedClientAbortSignal = signal
+      observedClientAbortSignalWasAborted = signal?.aborted
       refreshedByToken.add(refreshToken)
       return {
         accessToken: `access-refreshed-${refreshToken}`,
@@ -413,6 +422,7 @@ async function main(): Promise<void> {
       type: 'oauth',
       credentials: {
         access_token: 'access-without-refresh-token',
+        account_id: 'missing-refresh-token-account',
         expires_at: new Date(Date.now() - 60_000).toISOString(),
         client_id: 'test-client',
         base_url: 'https://api.openai.com/v1'
@@ -1178,6 +1188,7 @@ function oauthCredentials(refreshToken: string, expiresAt: string, accessToken =
     refresh_token: refreshToken,
     expires_at: expiresAt,
     client_id: 'test-client',
+    account_id: `account-${refreshToken}`,
     base_url: 'https://api.openai.com/v1'
   }
   if (accessToken) {

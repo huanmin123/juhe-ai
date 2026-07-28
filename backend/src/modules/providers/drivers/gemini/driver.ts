@@ -41,6 +41,7 @@ import {
 } from '../../../gateway/request/json-parser.js'
 import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { copyOfficialOAuthClientRequestHeaders } from '../../../gateway/upstream/header-policy.js'
 import {
   buildUpstreamRequestBody,
   copySafeUpstreamRequestHeaders,
@@ -54,8 +55,8 @@ import {
 } from '../_shared/openai-anthropic-gemini-native-bridge.js'
 import { prepareGeminiAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 import {
-  GEMINI_CODE_ASSIST_STREAM_URL,
   buildGeminiCodeAssistRequestParts,
+  geminiCodeAssistStreamUrl,
   geminiCodeAssistProjectId,
   transformGeminiCodeAssistUpstreamResponse,
   usesGeminiCodeAssistRuntime
@@ -121,7 +122,7 @@ export const geminiProviderDriver: ProviderDriver = {
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
     if (usesGeminiCodeAssistRuntime(account)) {
-      return isGeminiCodeAssistGenerationRequest(req, mapping) ? [GEMINI_CODE_ASSIST_STREAM_URL] : []
+      return isGeminiCodeAssistGenerationRequest(req, mapping) ? [geminiCodeAssistStreamUrl()] : []
     }
     if (isOpenAIOrAnthropicToGeminiGenerateContentModelMapping(mapping) || isGeminiNativeGenerateContentModelMapping(mapping)) {
       return [buildGeminiUpstreamUrl(account.baseUrl, geminiGenerateContentModelMappedUpstreamPathAndQuery(req, mapping))]
@@ -160,7 +161,9 @@ export const geminiProviderDriver: ProviderDriver = {
         body: preparedBody
       })
     }
-    const headers = copySafeUpstreamRequestHeaders(req.headers)
+    const headers = account.type === 'google_oauth'
+      ? copyOfficialOAuthClientRequestHeaders(req.headers, 'gemini_cli')
+      : copySafeUpstreamRequestHeaders(req.headers)
     if (account.type === 'google_oauth') {
       headers.delete('x-goog-api-key')
       headers.set('authorization', `Bearer ${account.apiKey}`)

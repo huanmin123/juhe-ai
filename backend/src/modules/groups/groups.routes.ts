@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -81,6 +81,24 @@ groupsRouter.get('/account-options', async (req, res, next) => {
     const query = parseGroupOptionListOptions(req.query)
     const options = await listAccountGroupOptionsAsync(access, query)
     res.json(ok(options))
+  } catch (error) {
+    next(error)
+  }
+})
+
+groupsRouter.get('/:id/edit-basic', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    const group = await findGroupEditDetailAsync(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!group) {
+      res.status(404).json({ message: '分组不存在' })
+      return
+    }
+    res.json(ok(group))
   } catch (error) {
     next(error)
   }

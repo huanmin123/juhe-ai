@@ -226,7 +226,13 @@ try {
   const editDetail = wireValue(editCapture.value)
   assert(editDetail, 'edit-basic 应返回固定夹具账户')
   assert.deepEqual(Object.keys(editDetail).sort(), expectedEditBasicKeys, 'edit-basic 必须保持精确字段白名单')
-  assert.deepEqual(Object.keys(editDetail.credentials).sort(), ['api_key', 'base_url'])
+  assert.deepEqual(Object.keys(editDetail.credentials).sort(), [
+    'api_key',
+    'base_url',
+    'codex_responses_safe_repair_enabled',
+    'codex_responses_strict_intercept_enabled',
+    'supported_endpoint_modes'
+  ])
   assert.deepEqual(editDetail.supportedModels, ['gpt-5.4-mini'])
   assert.deepEqual(Object.keys(editDetail.tags[0] ?? {}).sort(), ['id', 'name'])
   assert.equal(queryCalls(editCapture.calls, 'business').length, expectedEditBusinessQueries)

@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { ref, type ComputedRef } from 'vue'
+import { ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountTagSummary } from '@/types/domain'
@@ -21,8 +21,18 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
   let requestToken = 0
   let deleteRequestToken = 0
 
+  watch(
+    currentAccountTagOptionsScopeKey,
+    (nextScopeKey, previousScopeKey) => {
+      if (nextScopeKey === previousScopeKey) return
+      resetAccountTagOptions()
+    },
+    { flush: 'sync' }
+  )
+
   async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
-    const scopeKey = accountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
+    const managementView = options.isManagementView.value
+    const scopeKey = accountTagOptionsScopeKey(managementView, scopeParams)
     if (!scopeKey) {
       resetAccountTagOptions()
       return
@@ -31,14 +41,14 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     const currentRequestToken = ++requestToken
     accountTagOptionsLoading.value = true
     try {
-      const result = options.isManagementView.value
+      const result = managementView
         ? await api.accounts.tags(scopeParams)
         : await api.myAccounts.tags()
-      if (currentRequestToken !== requestToken) return
+      if (!isCurrentRequest(currentRequestToken, scopeKey)) return
       accountTagOptions.value = result
       loadedScopeKey.value = scopeKey
     } catch (error) {
-      if (currentRequestToken !== requestToken) return
+      if (!isCurrentRequest(currentRequestToken, scopeKey)) return
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '加载账户标签失败'))
     } finally {
@@ -57,10 +67,11 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     }
     const currentDeleteRequestToken = ++deleteRequestToken
     const scopeKey = loadedScopeKey.value
+    const scopeParams = options.accountTagOperationScopeParams()
+    const managementView = options.isManagementView.value
     deletingAccountTagId.value = tagId
     try {
-      const scopeParams = options.accountTagOperationScopeParams()
-      if (options.isManagementView.value) {
+      if (managementView) {
         await api.accounts.deleteTag(tagId, scopeParams)
       } else {
         await api.myAccounts.deleteTag(tagId)
@@ -85,6 +96,19 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     accountTagOptions.value = []
     loadedScopeKey.value = ''
     accountTagOptionsLoading.value = false
+    deletingAccountTagId.value = undefined
+  }
+
+  function isCurrentRequest(currentRequestToken: number, scopeKey: string): boolean {
+    return currentRequestToken === requestToken
+      && scopeKey === currentAccountTagOptionsScopeKey()
+  }
+
+  function currentAccountTagOptionsScopeKey(): string | undefined {
+    return accountTagOptionsScopeKey(
+      options.isManagementView.value,
+      options.accountTagOperationScopeParams()
+    )
   }
 
   function isCurrentDeleteRequest(
@@ -93,6 +117,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
   ): boolean {
     return currentDeleteRequestToken === deleteRequestToken
       && scopeKey === loadedScopeKey.value
+      && scopeKey === currentAccountTagOptionsScopeKey()
   }
 
   return {
@@ -100,7 +125,8 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     accountTagOptionsLoading,
     deleteAccountTag,
     deletingAccountTagId,
-    loadAccountTagOptions
+    loadAccountTagOptions,
+    resetAccountTagOptions
   }
 }
 

@@ -181,6 +181,19 @@ assert.match(modalSource, /mappingUpstreamModelOptionsFor\(mapping\)/, '批量�
 assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
 assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')
 assert.doesNotMatch(modalSource, /advancedDetail\(/, '批量编辑不得逐账户读取高级详情')
+const modalOpenWatchSource = modalSource.slice(
+  modalSource.indexOf('watch(open,'),
+  modalSource.indexOf('async function loadContext')
+)
+assert.doesNotMatch(modalOpenWatchSource, /loadModelOptions\(/, '打开批量编辑弹窗不得预取模型候选')
+assert.match(
+  modalSource.slice(
+    modalSource.indexOf('function handleMappingModelOptionsOpen'),
+    modalSource.indexOf('function handleMappingModelOptionsSearch')
+  ),
+  /if \(nextOpen\) void loadModelOptions\(loadToken\)/,
+  '批量编辑模型候选必须仅在用户展开模型下拉后加载'
+)
 assert.match(formSource, /configRevision/, '批量编辑请求必须使用乐观版本')
 assert.match(accountsViewSource, /@edit="openBatchEdit"/, '账户列表批量工具栏应接入批量编辑入口')
 assert.match(accountsViewSource, /AccountBatchDisableConfirmModal/, '批量停用必须使用独立二次确认弹窗')

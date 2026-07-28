@@ -89,10 +89,11 @@ func TestLoadDropsRestrictedModelAndAcceptsVerifiedNonIdentityMapping(t *testing
 			Candidate: Candidate{
 				SupportedModels: []string{"gpt-5-upstream"},
 				ModelMappings: []ModelMapping{{
-					Enabled:              true,
-					SourceModel:          "gpt-5",
-					SourceEndpointFamily: "responses",
-					UpstreamModel:        "gpt-5-upstream",
+					Enabled:                true,
+					SourceModel:            "gpt-5",
+					SourceEndpointFamily:   "responses",
+					UpstreamModel:          "gpt-5-upstream",
+					UpstreamEndpointFamily: "responses",
 				}},
 			},
 		},

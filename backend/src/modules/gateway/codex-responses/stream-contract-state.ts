@@ -262,7 +262,7 @@ export class CodexResponsesStreamContractState {
       && issues.some((value) => value.repairLevel === 'R0')
     ) {
       const clientItemId = previous?.clientItemId
-        ?? (this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
+        ?? (!previous && this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
       if (clientItemId) {
         this.#eventRepairs.push({
           outputIndex,
@@ -366,7 +366,7 @@ export class CodexResponsesStreamContractState {
       && issues.some((value) => value.repairLevel === 'R0')
     ) {
       clientItemId = clientItemId
-        ?? (this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
+        ?? (!previous && this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
       if (clientItemId) {
         this.#eventRepairs.push({
           outputIndex,
@@ -520,14 +520,20 @@ function eventStage(eventType: string): CodexResponseItemEventStage | undefined 
   if (eventType === 'response.output_item.added') return 'added'
   if (eventType === 'response.output_item.done') return 'done'
   if (eventType.startsWith('response.') && eventType.endsWith('.delta')) return 'delta'
+  if (eventType.endsWith('.done') && deltaItemType(eventType)) return 'delta'
   return undefined
 }
 
 function deltaItemType(eventType: string): string | undefined {
-  if (eventType === 'response.output_text.delta') return 'message'
-  if (eventType === 'response.function_call_arguments.delta') return 'function_call'
-  if (eventType === 'response.custom_tool_call_input.delta') return 'custom_tool_call'
-  if (eventType === 'response.reasoning_summary_text.delta' || eventType === 'response.reasoning_text.delta') return 'reasoning'
+  if (eventType === 'response.output_text.delta' || eventType === 'response.output_text.done') return 'message'
+  if (eventType === 'response.function_call_arguments.delta' || eventType === 'response.function_call_arguments.done') return 'function_call'
+  if (eventType === 'response.custom_tool_call_input.delta' || eventType === 'response.custom_tool_call_input.done') return 'custom_tool_call'
+  if (
+    eventType === 'response.reasoning_summary_text.delta'
+    || eventType === 'response.reasoning_summary_text.done'
+    || eventType === 'response.reasoning_text.delta'
+    || eventType === 'response.reasoning_text.done'
+  ) return 'reasoning'
   return undefined
 }
 

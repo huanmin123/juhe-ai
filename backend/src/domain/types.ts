@@ -1573,6 +1573,20 @@ export interface GroupListItem extends Omit<GroupSummary, 'accountIds' | 'schedu
   }
 }
 
+/** Exact projection consumed by the group edit form. */
+export interface GroupEditDetail {
+  id: string
+  systemAccountId?: string
+  name: string
+  providerCode: ProviderCode
+  description?: string
+  enabled: boolean
+  isDefault: boolean
+  groupType: GroupType
+  schedulingPolicy?: GroupSchedulingPolicy
+  accessType: ResourceAccessType
+}
+
 export interface GroupListResult {
   items: GroupSummary[]
   total: number

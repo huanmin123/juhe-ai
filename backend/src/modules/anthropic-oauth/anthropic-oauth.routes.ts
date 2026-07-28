@@ -344,7 +344,7 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     const updatedAccount = await runWithProviderOAuthRefreshLock(
       ANTHROPIC_PROVIDER_CODE,
       account.id,
-      async () => {
+      async (lockSignal, assertLockOwned) => {
         const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
         if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
         if (oauthTokensChanged(account.credentials, current.credentials)
@@ -356,8 +356,10 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
         const tokenInfo = await refreshAnthropicAuthToken({
           refreshToken: currentRefreshToken,
           clientId: stringCredential(current.credentials, 'client_id'),
-          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+          signal: lockSignal
         })
+        await assertLockOwned()
         return await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
       },
       { signal: abortController.signal }
@@ -402,7 +404,7 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -412,8 +414,10 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
         sessionId: parsed.data.sessionId,
         callbackUrl: parsed.data.callbackUrl,
         ownerSystemAccountId: requestAccess?.systemAccountId,
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
         return {
@@ -447,7 +451,7 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
   }
 
   try {
-    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async () => {
+    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
       const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
       if (oauthTokensChanged(account.credentials, current.credentials)) {
@@ -456,8 +460,10 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
       const tokenInfo = await refreshAnthropicAuthToken({
         refreshToken: parsed.data.refreshToken,
         clientId: stringCredential(current.credentials, 'client_id'),
-        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined,
+        signal: lockSignal
       })
+      await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
         const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
         return {

@@ -240,7 +240,8 @@ function assertSourceBoundaries(): void {
   assertIncludes(authorizationActionsSource, 'await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))', '管理侧授权回收必须带资源 owner 作用域')
   assertIncludes(authorizationActionsSource, 'await api.myAuthorizations.returnAuthorization(item.id)', '个人侧授权归还必须走 my-authorizations return')
   assertIncludes(authorizationActionsSource, 'await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))', '管理侧授权状态更新必须带资源 owner 作用域')
-  assertIncludes(authorizationActionsSource, 'await api.authorizations.detail(item.id, authorizationOperationScopeParams(item))', '管理侧打开有效期弹窗必须按 grant ID 带 owner 读取详情')
+  assertIncludes(authorizationActionsSource, 'const resourceOwnerSystemAccountId = item.resourceOwnerSystemAccountId', '管理侧打开有效期弹窗必须在异步请求前固定资源 owner')
+  assertIncludes(authorizationActionsSource, 'await api.authorizations.detail(item.id, resourceOwnerSystemAccountId ? { systemAccountId: resourceOwnerSystemAccountId } : undefined)', '管理侧打开有效期弹窗必须按 grant ID 与点击瞬间的 owner 读取详情')
   assertIncludes(authorizationActionsSource, 'await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))', '管理侧有效期更新必须走专用 expire 路径并带 owner 作用域')
   assertIncludes(authorizationActionsSource, 'return { systemAccountId: item.resourceOwnerSystemAccountId }', '授权操作作用域必须来自资源归属系统账户')
 

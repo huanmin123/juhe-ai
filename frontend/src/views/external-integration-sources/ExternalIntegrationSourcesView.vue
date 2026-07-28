@@ -100,6 +100,7 @@ import ExternalIntegrationSourceList from './ExternalIntegrationSourceList.vue'
 import { resolvePublicApiBaseUrl } from './externalSourceApiDocs'
 import {
   buildSourcePayload,
+  buildSourcePatch,
   createDefaultRateLimit,
   createEmptySourceForm,
   createSourceFormFromRecord,
@@ -139,6 +140,7 @@ const publicApiBaseUrl = computed(() => resolvePublicApiBaseUrl())
 const sourceModalOpen = ref(false)
 const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
+const editingSourceSnapshot = ref<ExternalIntegrationSourceListItem>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
 const availableScopeOptions = computed(() => {
   const optionsByValue = new Map(scopeOptions.value.map((option) => [option.value, option]))
@@ -316,6 +318,7 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
 
 function openCreateSource(): void {
   editingSourceId.value = undefined
+  editingSourceSnapshot.value = undefined
   clearCreatedToken()
   Object.assign(sourceForm, createEmptySourceForm())
   sourceModalOpen.value = true
@@ -330,6 +333,7 @@ function openEditSource(record: ExternalIntegrationSourceListItem): void {
     return
   }
   editingSourceId.value = record.id
+  editingSourceSnapshot.value = record
   clearCreatedToken()
   Object.assign(sourceForm, nextForm)
   sourceModalOpen.value = true
@@ -342,12 +346,22 @@ async function saveSource(): Promise<void> {
   }
   sourceSaving.value = true
   try {
-    const payload = buildSourcePayload(sourceForm)
     if (editingSourceId.value) {
+      const original = editingSourceSnapshot.value
+      if (!original || original.id !== editingSourceId.value) {
+        throw new Error('来源授权编辑快照已失效，请关闭弹窗后重试')
+      }
+      const payload = buildSourcePatch(sourceForm, original)
+      if (!Object.keys(payload).length) {
+        message.info('未检测到来源授权修改')
+        sourceModalOpen.value = false
+        return
+      }
       await api.externalIntegrationSources.update(editingSourceId.value, payload)
       message.success('来源授权已更新')
       sourceModalOpen.value = false
     } else {
+      const payload = buildSourcePayload(sourceForm)
       const result = await api.externalIntegrationSources.create(payload)
       sourceModalOpen.value = false
       showCreatedToken(result.token.token)

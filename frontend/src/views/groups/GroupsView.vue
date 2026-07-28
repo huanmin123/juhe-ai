@@ -423,7 +423,7 @@ async function openEdit(group: GroupListItem) {
   const authRevision = authState.revision.value
   const pageSystemAccountId = groupScopeParams.value?.systemAccountId
   try {
-    const detail = await groupsApi.detail(group.id, groupOperationScopeParams(group))
+    const detail = await groupsApi.editBasicDetail(group.id, groupOperationScopeParams(group))
     if (requestId !== groupEditRequestId
       || managementView !== isManagementView.value
       || authRevision !== authState.revision.value

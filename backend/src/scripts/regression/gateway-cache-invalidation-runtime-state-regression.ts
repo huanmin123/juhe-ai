@@ -61,6 +61,11 @@ for (const functionName of [
 ]) {
   assertFunctionCallsRuntimeStateSync(runtimeCacheSource, functionName)
 }
+assert.match(
+  sourceFunctionBlock(runtimeCacheSource, 'function syncGatewayCacheInvalidationsBestEffort'),
+  /await syncGatewayCacheInvalidationsFromRuntimeState\(\)/,
+  '网关缓存同步 helper 必须读取 runtime state 失效版本'
+)
 
 assertFunctionCallsRuntimeStateSync(apiKeyQuotaSource, 'checkGatewayApiKeyQuotaAsync')
 assertFunctionCallsRuntimeStateSync(authorizationQuotaSource, 'checkGatewayAuthorizationQuotaAsync')
@@ -458,7 +463,11 @@ function assertFunctionCallsRuntimeStateSync(source: string, functionName: strin
   const candidates = [nextExport, nextFunction].filter((index) => index > start)
   const end = candidates.length ? Math.min(...candidates) : source.length
   const block = source.slice(start, end)
-  assert.match(block, /await syncGatewayCacheInvalidationsFromRuntimeState\(\)/, `${functionName} 应先同步 runtime state 缓存失效版本`)
+  assert.match(
+    block,
+    /await (?:syncGatewayCacheInvalidationsBestEffort|syncGatewayCacheInvalidationsFromRuntimeState)\(\)/,
+    `${functionName} 应先同步 runtime state 缓存失效版本`
+  )
 }
 
 function assertGatewayRuntimeInvalidationClearsSettingsByReason(source: string): void {

@@ -102,6 +102,11 @@ interface AccountSummary {
   authorizationInstanceSourceAccountSchedulable?: boolean
   authorizationInstanceSourceAccountAvailabilitySchedule?: Record<string, unknown>
   authorizationInstanceSourceAccountExpiresAt?: string
+  availabilitySchedule?: Record<string, unknown>
+  accountExpiresAt?: string
+  modelMappings?: Array<Record<string, unknown>>
+  temporaryUnavailableContinuousProbeEnabled?: boolean
+  balanceQueryEnabled?: boolean
   boundGroupId?: string
   credentials?: Record<string, unknown>
 }
@@ -425,22 +430,17 @@ async function main(): Promise<void> {
     )
     const userAAuthorizedAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}/advanced`, seed.userACookie)
     assert(userAAuthorizedAccountDetail.accessType === 'authorized', '用户 A 应能打开自己的授权实例详情')
-    assert(userAAuthorizedAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '授权实例详情应返回来源账户公开 Base URL')
-    assert(userAAuthorizedAccountDetail.concurrencyLimit === 3, '授权实例详情应只读展示来源账户并发上限')
     assert(userAAuthorizedAccountDetail.proxyProfileId === seed.userBProxyId, '授权实例详情应只读展示来源账户代理配置')
-    assert(userAAuthorizedAccountDetail.supportedModels?.includes('gpt-5.5'), '授权实例详情应只读展示来源账户模型限制')
+    assert(Array.isArray(userAAuthorizedAccountDetail.modelMappings), '授权实例高级详情应返回来源账户模型映射')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountStatus === 'active', '授权实例详情应返回来源账户状态')
     assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountSchedulable === true, '授权实例详情应返回来源账户调度开关')
-    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountExpiresAt === '2027-12-31T00:00:00.000Z', '授权实例详情应返回来源账户到期时间')
-    assert(userAAuthorizedAccountDetail.authorizationInstanceSourceAccountAvailabilitySchedule?.enabled === true, '授权实例详情应返回来源账户时间计划')
-    const authorizedDetailCredentials = userAAuthorizedAccountDetail.credentials ?? {}
-    const authorizedDetailSecretJson = JSON.stringify(authorizedDetailCredentials)
-    for (const secretKey of ['api_key', 'access_token', 'refresh_token', 'id_token']) {
-      assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, secretKey), `授权实例详情不应返回敏感凭据字段 ${secretKey}`)
+    assert(userAAuthorizedAccountDetail.accountExpiresAt === '2027-12-31T00:00:00.000Z', '授权实例详情应返回来源账户到期时间')
+    assert(userAAuthorizedAccountDetail.availabilitySchedule?.enabled === true, '授权实例详情应返回来源账户时间计划')
+    assert(userAAuthorizedAccountDetail.balanceQueryEnabled === false, '授权实例不得继承来源账户余额查询写配置')
+    for (const forbiddenField of ['credentials', 'concurrencyLimit', 'supportedModels', 'todayUsage', 'usage', 'permissions']) {
+      assert(!Object.prototype.hasOwnProperty.call(userAAuthorizedAccountDetail, forbiddenField), `授权实例高级详情不得返回 ${forbiddenField}`)
     }
-    assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
-    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回来源账户错误处理策略')
-    assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'stream_intercept_rules'), '授权实例详情不应返回旧账户 stream_intercept_rules')
+    assert(!JSON.stringify(userAAuthorizedAccountDetail).includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
     await assertStatus(
       `${baseUrl}/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}/api-key-runtime`,
       seed.userACookie,

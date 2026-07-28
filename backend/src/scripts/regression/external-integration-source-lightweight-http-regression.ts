@@ -60,6 +60,9 @@ try {
   const updated = await request<{ id: string }>(baseUrl, `/${sourceId}`, 'PATCH', { status: 'disabled' }, 200)
   assert.deepEqual(Object.keys(updated).sort(), ['id'], '更新响应只应确认受影响资源 id')
   assert.equal(updated.id, sourceId)
+  const patchedSource = await request<{ status: string; notes?: string }>(baseUrl, `/${sourceId}`, 'GET', undefined, 200)
+  assert.equal(patchedSource.status, 'disabled', 'PATCH 应更新指定字段')
+  assert.equal(patchedSource.notes, '详情字段不应跟随 mutation 返回', '单字段 PATCH 不得覆盖无关字段')
 
   const tokenCreated = await request<{ token: { token: string } }>(baseUrl, `/${sourceId}/tokens`, 'POST', {
     name: '轻量响应新增 Token',

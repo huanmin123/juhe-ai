@@ -16,7 +16,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-response-redaction-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'db-service'
+runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -47,6 +47,32 @@ interface AccountResponse {
   modelMappings?: unknown[]
   apiKeyRuntimeDetails?: unknown[]
   runtimeAvailability?: Record<string, unknown>
+}
+
+interface AccountEditBasicResponse extends AccountResponse {
+  configRevision: number
+  credentials: Record<string, unknown>
+  supportedModels: string[]
+}
+
+interface AccountAdvancedResponse {
+  id: string
+  configRevision: number
+  accessType: 'owner' | 'authorized'
+  modelMappings: unknown[]
+  temporaryUnavailableContinuousProbeEnabled: boolean
+  balanceQueryEnabled: boolean
+}
+
+interface AccountCreateResponse {
+  id: string
+  status: string
+}
+
+interface AccountMutationResponse {
+  id: string
+  configRevision: number
+  changedFields: string[]
 }
 
 interface AccountApiKeyRuntimeResponse {
@@ -149,7 +175,7 @@ try {
   })
   assertNoInternalRuntimeLeak(sanitizedSynthetic, '账户响应 sanitizer')
 
-  const editBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/edit-basic`, seed.adminCookie)
+  const editBasicDetail = await getEnvelope<AccountEditBasicResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/edit-basic`, seed.adminCookie)
   assert(editBasicDetail.credentials, '账户编辑首屏详情应返回基础凭据字段')
   assert.equal(editBasicDetail.credentials.api_key, 'sk-redaction-existing-api-key', '账户编辑首屏详情应返回完整 API Key 供用户查看和修改')
   assert.equal(editBasicDetail.credentials.base_url, 'https://api.openai.com/v1', '账户编辑首屏详情应返回 Base URL')
@@ -157,7 +183,27 @@ try {
   assert(Array.isArray(editBasicDetail.supportedModels) && editBasicDetail.supportedModels.length > 0, '账户编辑首屏详情应返回支持模型')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'modelMappings'), false, '账户编辑首屏详情不应返回模型映射')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'apiKeyRuntimeDetails'), false, '账户编辑首屏详情不应返回 API Key 运行明细')
-  assertNoForbiddenCredentialKeysExcept(editBasicDetail, '账户编辑首屏详情响应', new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights']))
+  assert.deepEqual(editBasicDetail.credentials.error_handling_rules, [{
+    enabled: true,
+    name: '响应脱敏账户错误处理',
+    priority: 10,
+    status_codes: [429],
+    action: 'temp_unschedulable'
+  }], '账户编辑首屏应直接返回基础表单维护的错误策略')
+  assert.deepEqual(editBasicDetail.credentials.response_inspection_rules, [{
+    enabled: true,
+    name: '响应脱敏账户响应检查',
+    priority: 11,
+    match: {
+      outputTextIncludes: ['响应污染']
+    },
+    action: 'retry_next_account'
+  }], '账户编辑首屏应直接返回基础表单维护的响应检查策略')
+  assertNoForbiddenCredentialKeysExcept(
+    editBasicDetail,
+    '账户编辑首屏详情响应',
+    new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights', 'error_handling_rules', 'response_inspection_rules'])
+  )
 
   const batchEditContext = await postEnvelope<AccountResponse[]>(baseUrl, '/__aisys__/api/accounts/batch-edit-context', seed.adminCookie, {
     accountIds: [seed.apiKeyAccountId, seed.multiApiKeyAccountId]
@@ -182,7 +228,7 @@ try {
     assert.equal(batchEditContextText.includes(secret), false, `批量编辑上下文响应不应包含密钥原文 ${secret}`)
   }
 
-  const multiKeyEditBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/edit-basic`, seed.adminCookie)
+  const multiKeyEditBasicDetail = await getEnvelope<AccountEditBasicResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/edit-basic`, seed.adminCookie)
   assert(multiKeyEditBasicDetail.credentials, '账户编辑首屏详情应返回多 API Key 凭据')
   assert.deepEqual(multiKeyEditBasicDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '账户编辑首屏详情应返回完整多 API Key 列表供用户查看和修改')
   assert.equal(multiKeyEditBasicDetail.credentials.api_key_strategy, 'weighted_round_robin', '账户编辑首屏详情应返回多 API Key 调度策略')
@@ -204,32 +250,25 @@ try {
     assert.equal(Object.prototype.hasOwnProperty.call(item, 'apiKey'), false, '账户 API Key 运行明细不得返回 API Key 明文')
   }
 
-  const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
-  assert(detail.credentials, '账户高级详情应返回编辑凭据')
-  assert.equal(detail.credentials.base_url, 'https://api.openai.com/v1', '详情响应应保留前端编辑需要的 Base URL')
-  assert.deepEqual(detail.credentials.error_handling_rules, [{
-    enabled: true,
-    name: '响应脱敏账户错误处理',
-    priority: 10,
-    status_codes: [429],
-    action: 'temp_unschedulable'
-  }], '详情响应应返回账户级错误处理策略供编辑弹窗维护')
-  assert.deepEqual(detail.credentials.response_inspection_rules, [{
-    enabled: true,
-    name: '响应脱敏账户响应检查',
-    priority: 11,
-    match: {
-      outputTextIncludes: ['响应污染']
-    },
-    action: 'retry_next_account'
-  }], '详情响应应返回账户级响应检查策略供编辑弹窗维护')
-  assert.equal(detail.credentials.api_key, 'sk-redaction-existing-api-key', '详情响应应返回完整 API Key 供编辑弹窗查看')
+  const detail = await getEnvelope<AccountAdvancedResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
+  assert.deepEqual(Object.keys(detail).sort(), [
+    'accessType',
+    'balanceQueryEnabled',
+    'configRevision',
+    'id',
+    'modelMappings',
+    'temporaryUnavailableContinuousProbeEnabled'
+  ].sort(), '高级详情只能返回高级表单使用的窄字段')
+  assert.equal(detail.accessType, 'owner')
+  assertNoCredentialLeak(detail, '账户高级详情响应')
 
-  const multiKeyDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/advanced`, seed.adminCookie)
-  assert(multiKeyDetail.credentials, '账户高级详情应返回多 API Key 凭据')
-  assert.deepEqual(multiKeyDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '详情响应应返回完整多 API Key 列表供编辑弹窗查看')
+  const multiKeyDetail = await getEnvelope<AccountAdvancedResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/advanced`, seed.adminCookie)
+  for (const forbiddenField of ['credentials', 'supportedModels', 'tags', 'runtimeAvailability', 'usage', 'todayUsage', 'permissions']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(multiKeyDetail, forbiddenField), false, `多 Key 高级详情不得混入 ${forbiddenField}`)
+  }
+  assertNoCredentialLeak(multiKeyDetail, '多 API Key 账户高级详情响应')
 
-  const created = await postEnvelope<AccountResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
+  const created = await postEnvelope<AccountCreateResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '响应脱敏新建账号',
@@ -238,49 +277,57 @@ try {
       api_key: 'sk-redaction-created-api-key',
       base_url: 'https://api.openai.com/v1'
     },
-    groupId: seed.groupAId
+    supportedModels: ['gpt-5.4-mini'],
+    healthCheckModel: 'gpt-5.4-mini',
+    groupId: seed.groupAId,
+    status: 'disabled'
   })
-  assert(created.credentials, '账户创建响应应返回公开凭据字段')
-  assert(created.credentials, '创建响应应返回编辑凭据')
-  assert.equal(created.credentials.base_url, 'https://api.openai.com/v1', '创建响应应保留 Base URL')
+  assert.deepEqual(Object.keys(created).sort(), ['id', 'status'], '账户创建响应只应返回后续定位所需的 id 与 status')
+  assert.equal(created.status, 'disabled')
   assertNoCredentialLeak(created, '账户创建响应')
 
-  const updatedApiKey = await patchEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie, {
+  const updatedApiKey = await patchEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie, {
+    expectedConfigRevision: editBasicDetail.configRevision,
     name: '响应脱敏 API Key 已更新',
-    credentials: {
-      base_url: 'https://api.openai.com/v1'
-    },
-    groupId: seed.groupAId
+    notes: '只修改名称和备注'
   })
+  assert.deepEqual(Object.keys(updatedApiKey).sort(), ['changedFields', 'configRevision', 'id'], '账户 PATCH 响应只能返回变更定位字段')
+  assert.deepEqual(updatedApiKey.changedFields, ['name', 'notes'], '账户 PATCH 只应声明实际变更字段')
   assertNoCredentialLeak(updatedApiKey, 'API Key 编辑响应')
-  assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.credentials.api_key, 'sk-redaction-existing-api-key', 'API Key 编辑留空时应保留原密钥')
+  assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.credentials.api_key, 'sk-redaction-existing-api-key', '只改名称和备注时不应覆盖 API Key')
 
-  const replacedMultiApiKey = await patchEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}`, seed.adminCookie, {
+  const replacedMultiApiKey = await patchEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}`, seed.adminCookie, {
+    expectedConfigRevision: multiKeyEditBasicDetail.configRevision,
     name: '响应脱敏多 Key 已改单 Key',
-    credentials: {
+    credentialsPatch: {
       api_key: 'sk-redaction-single-replacement',
-      base_url: 'https://api.openai.com/v1'
-    },
-    groupId: seed.groupAId
+      api_keys: null,
+      api_key_strategy: null,
+      api_key_weights: null
+    }
   })
+  assert.deepEqual(Object.keys(replacedMultiApiKey).sort(), ['changedFields', 'configRevision', 'id'], '凭据 PATCH 也只能返回变更定位字段')
+  assert(replacedMultiApiKey.changedFields.includes('credentials.api_key'), '凭据 PATCH 应声明实际变化的 API Key 字段')
+  assert(replacedMultiApiKey.changedFields.includes('credentials.api_keys'), '多 Key 改单 Key 应声明删除 api_keys')
   assertNoCredentialLeak(replacedMultiApiKey, '多 API Key 改单 API Key 编辑响应')
   const latestMultiApiKey = repositories.findAccountForTest(seed.multiApiKeyAccountId)
   assert.equal(latestMultiApiKey?.credentials.api_key, 'sk-redaction-single-replacement', '多 API Key 改单 API Key 时应保存新的单 Key')
   assert.equal(Array.isArray(latestMultiApiKey?.credentials.api_keys), false, '多 API Key 改单 API Key 时不应保留旧 api_keys 数组')
 
-  const updatedOAuth = await patchEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.oauthAccountId}`, seed.adminCookie, {
+  const oauthEditBasicDetail = await getEnvelope<AccountEditBasicResponse>(baseUrl, `/__aisys__/api/accounts/${seed.oauthAccountId}/edit-basic`, seed.adminCookie)
+  const updatedOAuth = await patchEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.oauthAccountId}`, seed.adminCookie, {
+    expectedConfigRevision: oauthEditBasicDetail.configRevision,
     name: '响应脱敏 OAuth 已更新',
-    credentials: {
-      base_url: 'https://api.openai.com/v1'
-    },
-    groupId: seed.groupAId
+    notes: 'OAuth 只改备注'
   })
+  assert.deepEqual(Object.keys(updatedOAuth).sort(), ['changedFields', 'configRevision', 'id'], 'OAuth PATCH 响应也必须保持窄字段')
   assertNoCredentialLeak(updatedOAuth, 'OAuth 编辑响应')
   const latestOAuth = repositories.findAccountForTest(seed.oauthAccountId)
   assert.equal(latestOAuth?.credentials.access_token, 'oauth-redaction-access-token', 'OAuth 编辑留空时应保留原 access_token')
   assert.equal(latestOAuth?.credentials.refresh_token, 'oauth-redaction-refresh-token', 'OAuth 编辑留空时应保留原 refresh_token')
   assert.equal(latestOAuth?.credentials.id_token, 'oauth-redaction-id-token', 'OAuth 编辑留空时应保留原 id_token')
 
+  runtimeConfig.processRole = 'db-service'
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
     assert.equal(refreshToken, 'oauth-redaction-refresh-token', 'OAuth 刷新路由应使用原 refresh_token 换取新令牌')
     assert.equal(clientId, 'oauth-redaction-client', 'OAuth 刷新路由应沿用账号 client_id')
@@ -303,11 +350,23 @@ try {
   assert.equal(refreshedOAuth.credentials.expires_at, '2027-01-02T00:00:00.000Z', 'OAuth 刷新响应应保留前端需要展示的过期时间')
   assert.equal(refreshedOAuth.credentials.base_url, 'https://api.openai.com/v1', 'OAuth 刷新响应应保留 Base URL')
   assertNoCredentialLeak(refreshedOAuth, 'OAuth 刷新响应')
+  runtimeConfig.processRole = 'worker'
 
-  const rebound = await postEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/group`, seed.adminCookie, {
-    groupId: seed.groupBId
+  const rebound = await postEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/group`, seed.adminCookie, {
+    groupId: seed.groupBId,
+    expectedConfigRevision: updatedApiKey.configRevision
   })
+  assert.deepEqual(Object.keys(rebound).sort(), ['changedFields', 'configRevision', 'id'], '绑定分组响应只能返回变更定位字段')
+  assert.deepEqual(rebound.changedFields, ['groupId'])
   assertNoCredentialLeak(rebound, '账户绑定分组响应')
+
+  const retagged = await patchEnvelope<AccountMutationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/tags`, seed.adminCookie, {
+    tags: ['响应脱敏标签'],
+    expectedConfigRevision: rebound.configRevision
+  })
+  assert.deepEqual(Object.keys(retagged).sort(), ['changedFields', 'configRevision', 'id'], '更新标签响应只能返回变更定位字段')
+  assert.deepEqual(retagged.changedFields, ['tags'])
+  assertNoCredentialLeak(retagged, '账户标签响应')
 
   const migration = await postEnvelope<TrafficMigrationResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/traffic-migration`, seed.adminCookie, {
     targetAccountId: seed.targetAccountId,
@@ -317,7 +376,7 @@ try {
   assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.status, 'active', '不影响原账户迁移不应修改源账户状态')
   assertOAuthRoutesUseAccountResponseSanitizer()
 
-  console.log('AI 账户响应凭据边界回归通过：详情按权限返回明文凭据，列表、创建、编辑、绑定分组和迁移响应仍不返回明文凭据，编辑留空保留原凭据')
+  console.log('AI 账户响应凭据边界回归通过：列表和高级详情保持窄投影，基础编辑只返回表单凭据，创建与字段级 PATCH/分组/标签只返回变更定位字段')
 } finally {
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
   await closeServer(server)
@@ -376,6 +435,7 @@ function seedData(): {
         action: 'retry_next_account'
       }]
     },
+    supportedModels: ['gpt-5.4-mini'],
     status: 'active',
     groupId: groupA.id
   }, access)
@@ -396,6 +456,7 @@ function seedData(): {
       plan_type: 'plus',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     status: 'active',
     groupId: groupA.id
   }, access)
@@ -411,6 +472,7 @@ function seedData(): {
       api_key_weights: [2, 1],
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     status: 'active',
     groupId: groupA.id
   }, access)
@@ -423,6 +485,7 @@ function seedData(): {
       api_key: 'sk-redaction-target-api-key',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     status: 'active',
     groupId: groupB.id
   }, access)

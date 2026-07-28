@@ -19,6 +19,7 @@ export interface RuntimeStateStore {
   delete(key: RuntimeStateKey): Promise<void>
   incr(key: RuntimeStateKey, options: { ttlMs: number; max?: number }): Promise<number>
   acquireLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean>
+  renewLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean>
   releaseLock(key: RuntimeStateKey, token: string): Promise<void>
 }
 
@@ -117,6 +118,13 @@ class MemoryRuntimeStateStore implements RuntimeStateStore {
       value: options.token,
       expiresAt: expiresAtFromTtl(options.ttlMs)
     })
+    return true
+  }
+
+  async renewLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean> {
+    const entry = this.getFreshEntry(key)
+    if (!entry || entry.value !== options.token) return false
+    entry.expiresAt = expiresAtFromTtl(options.ttlMs)
     return true
   }
 
@@ -246,6 +254,14 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
     return result === 'OK'
   }
 
+  async renewLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean> {
+    const result = await this.run('运行态锁续租', (client) => client.eval(renewLockScript, {
+      keys: [this.redisKey(key)],
+      arguments: [options.token, String(normalizeTtlMs(options.ttlMs))]
+    }))
+    return numericRedisResult(result) === 1
+  }
+
   async releaseLock(key: RuntimeStateKey, token: string): Promise<void> {
     await this.run('运行态锁释放', (client) => client.eval(releaseLockScript, {
       keys: [this.redisKey(key)],
@@ -309,6 +325,14 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
 return 0
+`
+
+const renewLockScript = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
 `
 
 function sanitizeRedisKeyPart(value: string): string {

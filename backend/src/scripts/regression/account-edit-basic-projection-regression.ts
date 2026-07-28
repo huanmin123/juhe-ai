@@ -112,7 +112,16 @@ try {
     'tags',
     'type'
   ].sort(), 'edit-basic 必须使用独立字段白名单')
-  assert.deepEqual(Object.keys(detail.credentials).sort(), ['api_key', 'base_url'])
+  const expectedEditableCredentialKeys = [
+    'api_key',
+    'base_url',
+    'codex_responses_safe_repair_enabled',
+    'codex_responses_strict_intercept_enabled',
+    'reasoning_effort_override',
+    'service_tier_override',
+    'supported_endpoint_modes'
+  ].sort()
+  assert.deepEqual(Object.keys(detail.credentials).sort(), expectedEditableCredentialKeys)
   assert.deepEqual(detail.supportedModels, ['gpt-5.4-mini'])
   assert.deepEqual(detail.tags.map((tag) => tag.name), ['基础标签'])
   assert.equal(capturedSql.length, 3, `edit-basic 应固定为主投影、已选模型和标签三条查询，实际 ${capturedSql.length} 条`)
@@ -145,7 +154,10 @@ try {
   const payload = await response.json() as { data?: Record<string, unknown> }
   assert(payload.data, 'edit-basic HTTP 响应应包含 data')
   assert.deepEqual(Object.keys(payload.data).sort(), Object.keys(detail).sort(), 'HTTP 层不得在窄投影上重新拼接字段')
-  assert.deepEqual(Object.keys(payload.data.credentials as Record<string, unknown>).sort(), ['api_key', 'base_url'])
+  assert.deepEqual(
+    Object.keys(payload.data.credentials as Record<string, unknown>).sort(),
+    expectedEditableCredentialKeys
+  )
 
   const otherOwner = repositories.createSystemAccount({
     username: 'account_edit_basic_other_owner',

@@ -1,9 +1,9 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountDraftTestAccountPayload } from '@/api/client'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
-import { getCachedUserReferenceData, loadUserReferenceData } from '@/composables/useUserReferenceData'
+import { getCachedUserReferenceData } from '@/composables/useUserReferenceData'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
@@ -86,10 +86,11 @@ interface UseAccountEditFormOptions {
   groupIdForAccount: (accountId: string) => string | undefined
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
-  loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
+  ensureProviderDefinition: (providerCode: string, systemAccountId?: string, force?: boolean) => Promise<ProviderDefinition | undefined>
   loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: Partial<AccountGroupOptionsScope>, loadOptions?: AccountGroupOptionsLoadOptions) => Promise<void>
   loadData: () => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
+  providerDefinitions: ReadonlyValue<ProviderDefinition[]>
   providers: ReadonlyValue<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
@@ -133,6 +134,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const {
     loading: allProviderModelsLoading,
     loadModelOptions: loadAllProviderModelOptions,
+    resetModelOptions: resetAllProviderModelOptions,
     selectOptions: mappingSourceModelOptions
   } = useProviderModelSelectOptions({
     protocol: 'openai',
@@ -171,7 +173,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountTagOptionsLoading,
     deleteAccountTag,
     deletingAccountTagId,
-    loadAccountTagOptions
+    loadAccountTagOptions,
+    resetAccountTagOptions
   } = useAccountEditTagOptions({
     accountTagOperationScopeParams,
     extractApiErrorMessage: options.extractApiErrorMessage,
@@ -185,7 +188,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   })
 
   const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
-  const availableProviders = computed(() => options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS)
+  const availableProviders = computed(() => mergeAccountProviderDefinitions(
+    options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS,
+    options.providerDefinitions.value
+  ))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value
     ? selectedProvider.value.protocolProfiles.find((profile) => profile.id === form.providerProtocolProfileId)
@@ -304,9 +310,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingAccountAdvancedDetail.value = undefined
     clearDraftApiKeyTestSnapshot()
     Object.assign(form, defaultForm(providerCode, type))
-    resetProviderModelOptions()
-    resetAnthropicProviderModelOptions()
-    resetGeminiProviderModelOptions()
+    resetDeferredAccountOptionState()
     ensureDefaultGroupSelected(form.providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     accountResponseInspectionRules.value = loadAccountResponseInspectionRules()
@@ -414,12 +418,20 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     editingAccountAdvancedDetail.value = undefined
+    resetDeferredAccountOptionState()
   }
 
   function selectProvider(providerCode: string) {
     if (editingId.value || form.providerCode === providerCode) return
+    const requestToken = formOpenRequestToken
+    const systemAccountId = createScopeParams.value?.systemAccountId
     resetForm(providerCode, '')
     applyCachedDefaultGroup(providerCode)
+    void options.ensureProviderDefinition(providerCode, systemAccountId).catch((error) => {
+      if (!isCurrentFormOpenRequest(requestToken) || !modalOpen.value || form.providerCode !== providerCode) return
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载供应商账户类型失败'))
+    })
   }
 
   function selectAccountType(type: AccountType) {
@@ -473,22 +485,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ?.defaultGroup
     if (!defaultGroup) {
       ensureDefaultGroupSelected(providerCode)
-      void loadUserReferenceData(referenceParams).then((loadedReferenceData) => {
-        const loadedDefaultGroup = loadedReferenceData?.providerDefaults
-          .find((item) => item.providerCode === providerCode)
-          ?.defaultGroup
-        if (
-          !loadedDefaultGroup
-          || !modalOpen.value
-          || editingId.value
-          || form.providerCode !== providerCode
-          || form.groupId
-        ) {
-          return
-        }
-        setFormGroup({ id: loadedDefaultGroup.id, name: loadedDefaultGroup.name })
-        rememberGroupLabel(loadedDefaultGroup.id, loadedDefaultGroup.name)
-      }).catch(() => undefined)
       return
     }
     setFormGroup({ id: defaultGroup.id, name: defaultGroup.name })
@@ -514,6 +510,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountApiKeyRuntimeLoading.value = false
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
+    resetDeferredAccountOptionState()
 
     if (isAuthorizedAccount(account)) {
       accountEditDetailLoading.value = true
@@ -777,6 +774,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingBasicBaseline.value = undefined
     editingAdvancedBaseline.value = undefined
     editingAccountAdvancedDetail.value = undefined
+    resetDeferredAccountOptionState()
     const cloneScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (options.isManagementView.value && !cloneScopeParams?.systemAccountId) {
       message.warning('无法确定克隆目标系统账户，请先筛选目标系统账户后再克隆')
@@ -908,11 +906,24 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     return requestToken === formOpenRequestToken
   }
 
+  function resetDeferredAccountOptionState(): void {
+    resetProviderModelOptions()
+    resetAllProviderModelOptions()
+    resetAnthropicProviderModelOptions()
+    resetGeminiProviderModelOptions()
+    resetAccountTagOptions()
+  }
+
   function openAuthUrl() {
     const url = authUrl(authResult.value?.authUrl)
     if (!url) return
     window.open(url, '_blank', 'noopener,noreferrer')
   }
+
+  onBeforeUnmount(() => {
+    nextFormOpenRequestToken()
+    resetDeferredAccountOptionState()
+  })
 
   return {
     accountAdvancedDetailLoaded,
@@ -1053,6 +1064,27 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return undefined
     }
   }
+}
+
+function mergeAccountProviderDefinitions(
+  providerOptions: ProviderDefinition[],
+  loadedDefinitions: ProviderDefinition[]
+): ProviderDefinition[] {
+  const definitionsByCode = new Map<string, ProviderDefinition>()
+  for (const provider of [...FALLBACK_PROVIDERS, ...loadedDefinitions]) {
+    definitionsByCode.set(provider.code, provider)
+  }
+  return providerOptions.map((provider) => {
+    const definition = definitionsByCode.get(provider.code)
+    if (!definition) return provider
+    return {
+      ...definition,
+      id: provider.id,
+      code: provider.code,
+      name: provider.name,
+      enabled: provider.enabled
+    }
+  })
 }
 
 function authorizedAccountBasicDetail(

@@ -194,6 +194,11 @@ try {
       /\b(?:credentials_encrypted|credential_mask|supported_models|model_mappings|account_api_key_runtime_states)\b/i,
       'AI 账户管理列表 SQL 不得读取凭据、模型全集、模型映射或 API Key 运行态明细'
     )
+    assert.doesNotMatch(
+      call.sql,
+      /\b(?:last_health_check_at|next_health_check_at|last_health_success_at|health_check_failure_count|health_check_failure_started_at|last_health_check_status_code|last_health_check_error_code|last_health_check_error_message|last_health_check_trace_id|cooldown_retest_failure_count|cooldown_retest_observation_started_at|cooldown_retest_last_at|cooldown_retest_last_status_code|stream_failure_count|stream_failure_window_started_at|authorization_limits_json)\b/i,
+      'AI 账户管理列表 SQL 不得读取仅供探针、运行诊断或授权详情使用的字段'
+    )
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
     assert(!/\baccount_rows\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把备注字段放进通用关键词 WHERE')
     assert(!/\bCOALESCE\s*\(\s*bound_groups\.name\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描分组名称')

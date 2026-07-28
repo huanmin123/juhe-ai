@@ -22,20 +22,21 @@ export function useAccountEditGroupOptions(config: UseAccountEditGroupOptionsCon
   })
 
   function setEditGroupOptionScope(scope: AccountGroupOptionsScope): void {
-    const providerChanged = (optionScope.value.providerCode ?? '') !== (scope.providerCode ?? '')
-    const systemAccountChanged = (optionScope.value.systemAccountId ?? '') !== (scope.systemAccountId ?? '')
     optionScope.value = {
       providerCode: scope.providerCode,
       systemAccountId: scope.systemAccountId,
       selectedIds: scope.selectedIds
     }
-    if (providerChanged || systemAccountChanged) {
-      groupOptions.resetSearch()
-    }
+  }
+
+  function resetEditGroupOptions(): void {
+    optionScope.value = {}
+    groupOptions.reset()
   }
 
   return {
     ...groupOptions,
+    resetEditGroupOptions,
     setEditGroupOptionScope
   }
 }

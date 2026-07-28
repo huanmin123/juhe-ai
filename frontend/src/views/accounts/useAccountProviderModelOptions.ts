@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { ref, type ComputedRef } from 'vue'
+import { ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
@@ -44,6 +44,15 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
 
+  watch(
+    currentProviderModelCatalogScopeKey,
+    (nextScopeKey, previousScopeKey) => {
+      if (nextScopeKey === previousScopeKey) return
+      resetProviderModelOptions()
+    },
+    { flush: 'sync' }
+  )
+
   function resetProviderModelOptions(): void {
     latestRequestId += 1
     providerModelOptions.value = []
@@ -60,7 +69,15 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     }
     const selectedIds = normalizedSelectedModelIds(request.selectedIds)
     const keyword = request.keyword?.trim() || undefined
-    const requestKey = providerModelRequestKey(code, keyword, selectedIds)
+    const scopeParams = options.modelScopeParams.value
+      ? { ...options.modelScopeParams.value }
+      : undefined
+    const requestCatalogScopeKey = providerModelCatalogScopeKey(
+      options.isManagementView.value,
+      scopeParams,
+      code
+    )
+    const requestKey = providerModelRequestKey(requestCatalogScopeKey, keyword, selectedIds)
     if (loadingKey === requestKey && loadingPromise) return loadingPromise
 
     const requestId = latestRequestId + 1
@@ -68,18 +85,15 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     loadingKey = undefined
     loadingPromise = undefined
     providerModelOptions.value = []
-    const scopeParams = options.modelScopeParams.value
-      ? { ...options.modelScopeParams.value }
-      : undefined
     providerModelsLoading.value = true
     const promise = (async () => {
       try {
         const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword)
-        if (isCurrentRequest(requestId, code)) {
+        if (isCurrentRequest(requestId, requestCatalogScopeKey)) {
           providerModelOptions.value = modelOptions
         }
       } catch (error) {
-        if (!isCurrentRequest(requestId, code)) return
+        if (!isCurrentRequest(requestId, requestCatalogScopeKey)) return
         console.error(error)
         message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
       } finally {
@@ -95,21 +109,25 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     return promise
   }
 
-  function providerModelRequestKey(providerCode: string, keyword?: string, selectedIds: string[] = []): string {
+  function providerModelRequestKey(catalogScopeKey: string, keyword?: string, selectedIds: string[] = []): string {
     return JSON.stringify([
-      options.isManagementView.value ? 'management' : 'self',
-      options.modelScopeParams.value?.systemAccountId ?? '',
-      providerCode,
+      catalogScopeKey,
       keyword ?? '',
       selectedIds
     ])
   }
 
-  function isCurrentRequest(requestId: number, providerCode: string): boolean {
-    const currentProviderCode = options.currentProviderCode().trim()
+  function currentProviderModelCatalogScopeKey(): string {
+    return providerModelCatalogScopeKey(
+      options.isManagementView.value,
+      options.modelScopeParams.value,
+      options.currentProviderCode()
+    )
+  }
+
+  function isCurrentRequest(requestId: number, requestCatalogScopeKey: string): boolean {
     return requestId === latestRequestId
-      && Boolean(currentProviderCode)
-      && currentProviderCode === providerCode
+      && requestCatalogScopeKey === currentProviderModelCatalogScopeKey()
   }
 
   function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
@@ -122,6 +140,18 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading,
     resetProviderModelOptions
   }
+}
+
+function providerModelCatalogScopeKey(
+  isManagementView: boolean,
+  scopeParams: AccountScopeParams | undefined,
+  providerCode: string
+): string {
+  return JSON.stringify([
+    isManagementView ? 'management' : 'self',
+    scopeParams?.systemAccountId?.trim() ?? '',
+    providerCode.trim()
+  ])
 }
 
 async function loadAccountModelOptions(

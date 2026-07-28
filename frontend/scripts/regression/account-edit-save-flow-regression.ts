@@ -28,6 +28,10 @@ const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
 const editFormSource = readSource('src/views/accounts/useAccountEditForm.ts')
+const editGroupOptionsSource = readSource('src/views/accounts/useAccountEditGroupOptions.ts')
+const groupOptionsSource = readSource('src/views/accounts/useAccountGroupOptions.ts')
+const tagOptionsSource = readSource('src/views/accounts/useAccountEditTagOptions.ts')
+const providerModelOptionsSource = readSource('src/views/accounts/useAccountProviderModelOptions.ts')
 const savePayloadSource = readSource('src/views/accounts/accountSavePayload.ts')
 const draftTestPayloadSource = readSource('src/views/accounts/accountDraftTestPayload.ts')
 const testModalSource = readSource('src/views/accounts/useAccountTestModal.ts')
@@ -70,8 +74,9 @@ for (const [flow, source] of [
   )
 }
 assert.match(editOpenSource, /'edit-basic'/, '普通编辑弹窗首开只允许请求 edit-basic')
-assert.match(cachedDefaultGroupSource, /void loadUserReferenceData\(referenceParams\)/, '默认分组缓存缺失时应允许后续非阻塞重试')
-assert.doesNotMatch(cachedDefaultGroupSource, /await\s+loadUserReferenceData/, '默认分组引用重试不得阻塞弹窗')
+assert.match(cachedDefaultGroupSource, /getCachedUserReferenceData\(referenceParams\)/, '新增表单应直接读取登录后预热的默认分组缓存')
+assert.doesNotMatch(cachedDefaultGroupSource, /loadUserReferenceData|api\./, '默认分组缓存缺失时弹窗不得补发网络请求')
+assert.match(cachedDefaultGroupSource, /if \(!defaultGroup\)[\s\S]*ensureDefaultGroupSelected\(providerCode\)[\s\S]*return/, '缓存未到时只能复用已加载本地选项并允许创建端省略 groupId')
 assert.match(editFormSource, /accounts: ReadonlyValue<AccountListItem\[\]>/, '编辑表单只能把账户列表当作展示 DTO 使用')
 assert.match(
   editFormSource,
@@ -84,6 +89,41 @@ assert.match(
   'edit-basic 请求必须返回专用基础详情 DTO'
 )
 assert.match(editFormSource, /function handleAccountTagOptionsDropdown\(open: boolean\)[\s\S]*?if \(open\) void loadAccountTagOptions/, '标签候选只能在展开下拉后加载')
+assert.match(
+  groupOptionsSource,
+  /watch\(\s*currentCatalogScopeKey[\s\S]*?resetOptions\(\)[\s\S]*?flush: 'sync'/,
+  '分组候选必须在 provider 或 owner scope 切换的同步时刻失效'
+)
+assert.match(
+  groupOptionsSource,
+  /function isCurrentRequest\([\s\S]*?requestCatalogScopeKey === currentCatalogScopeKey\(\)/,
+  '分组候选响应写回前必须复核当前 provider 与 owner scope'
+)
+assert.match(groupOptionsSource, /function handleDropdown\(open: boolean\)[\s\S]*?clearSearchTimer\(\)/, '关闭分组下拉必须清理搜索定时器')
+assert.match(groupOptionsSource, /onBeforeUnmount\(resetOptions\)/, '卸载分组选项组合函数时必须失效请求并清理定时器')
+assert.match(editGroupOptionsSource, /function resetEditGroupOptions\(\)[\s\S]*?groupOptions\.reset\(\)/, '账户编辑关闭时必须可清空分组候选')
+assert.match(accountsViewSource, /watch\(modalOpen[\s\S]*?clearAccountModelOptionsSearchTimer\(\)[\s\S]*?resetEditGroupOptions\(\)/, '账户编辑关闭时必须清理模型搜索和分组选项状态')
+assert.match(
+  tagOptionsSource,
+  /watch\(\s*currentAccountTagOptionsScopeKey[\s\S]*?resetAccountTagOptions\(\)[\s\S]*?flush: 'sync'/,
+  '标签候选必须在 owner scope 切换的同步时刻失效'
+)
+assert.match(tagOptionsSource, /scopeKey === currentAccountTagOptionsScopeKey\(\)/, '标签候选和删除响应写回前必须复核当前 owner scope')
+assert.match(
+  providerModelOptionsSource,
+  /watch\(\s*currentProviderModelCatalogScopeKey[\s\S]*?resetProviderModelOptions\(\)[\s\S]*?flush: 'sync'/,
+  '供应商模型候选必须在 provider 或 owner scope 切换的同步时刻失效'
+)
+assert.match(
+  providerModelOptionsSource,
+  /requestCatalogScopeKey === currentProviderModelCatalogScopeKey\(\)/,
+  '供应商模型响应写回前必须复核当前 provider 与 owner scope'
+)
+assert.match(
+  editFormSource,
+  /function resetDeferredAccountOptionState\(\)[\s\S]*?resetProviderModelOptions\(\)[\s\S]*?resetAllProviderModelOptions\(\)[\s\S]*?resetAccountTagOptions\(\)/,
+  '关闭或切换账户表单必须清空所有模型候选和标签候选'
+)
 assert.match(tagSelectSource, /@dropdown-visible-change="\$emit\('dropdown-visible-change', \$event\)"/, '标签选择器必须透传下拉展开事件')
 assert.match(apiKeySectionSource, /@dropdown-visible-change="\$emit\('model-options-open', \$event\)"/, 'API Key 支持模型下拉必须发出按需加载事件')
 assert.match(editModalSource, /<AccountApiKeySection[\s\S]*?@model-options-open="\$emit\('model-options-open', \$event\)"[\s\S]*?@model-options-search="\$emit\('model-options-search', \$event\)"/, '账户弹窗必须把 API Key 模型展开和搜索事件传到页面加载器')
@@ -192,8 +232,8 @@ assert.match(
 )
 assert.match(
   accountsViewSource,
-  /onBeforeUnmount\(cancelAccountModelCatalogSync\)/,
-  '离开账户页面时必须清理上游模型同步请求与延迟任务'
+  /onBeforeUnmount\(\(\) => \{[\s\S]*?clearAccountModelOptionsSearchTimer\(\)[\s\S]*?cancelAccountModelCatalogSync\(\)/,
+  '离开账户页面时必须清理模型候选延迟任务与上游模型同步请求'
 )
 for (const [sectionName, source] of [['API Key', apiKeySectionSource], ['OAuth', oauthSectionSource]] as const) {
   assert.doesNotMatch(source, /<a-form-item required tooltip=/, `${sectionName} 支持模型说明不得由表单标签尾部自动渲染`)

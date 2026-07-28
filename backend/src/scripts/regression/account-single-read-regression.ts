@@ -24,9 +24,9 @@ const [databaseModule, repositories] = await Promise.all([
 ])
 
 const accountGroupBindingRoutesSource = readFileSync(resolve('src/modules/accounts/account-group-binding.routes.ts'), 'utf8')
-assert.match(accountGroupBindingRoutesSource, /findAccountForTestAsync/, '账户单独绑定分组路由必须使用 async 账户读取')
-assert.match(accountGroupBindingRoutesSource, /setAccountGroupAsync/, '账户单独绑定分组路由必须使用 async 分组绑定写入')
+assert.match(accountGroupBindingRoutesSource, /patchAccountManagementAsync/, '账户单独绑定分组路由必须复用窄字段级 PATCH')
 assert.match(accountGroupBindingRoutesSource, /runLoggedOperationAsync/, '账户单独绑定分组路由必须使用 async 操作日志包裹')
+assert.doesNotMatch(accountGroupBindingRoutesSource, /findAccountForTestAsync|findAccountSummaryAsync/, '账户单独绑定分组路由不应为日志或校验额外物化完整账户摘要')
 assert.doesNotMatch(accountGroupBindingRoutesSource, /import \{[^}]*\bsetAccountGroup\b[^}]*\} from '..\/..\/storage\/repositories\.js'/, '账户单独绑定分组路由不能重新导入同步 setAccountGroup')
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -49,6 +49,7 @@ try {
         api_key: `sk-account-single-read-${index}`,
         base_url: 'https://api.openai.com/v1'
       },
+      supportedModels: ['gpt-5.4-mini'],
       groupId: group.id,
       status: 'disabled'
     }, access)
@@ -75,6 +76,7 @@ try {
       api_key: 'sk-account-single-read-invalid-date',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     groupId: group.id,
     accountExpiresAt: 'not-a-date'
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时非法到期时间不应被静默当作未设置')
@@ -87,6 +89,7 @@ try {
       api_key: 'sk-account-single-read-invalid-calendar-date',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     groupId: group.id,
     accountExpiresAt: '2026-02-31T00:00:00'
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时不存在的日历日期不应被 Date 自动修正')
@@ -99,6 +102,7 @@ try {
       api_key: 'sk-account-single-read-invalid-schedulable',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
     groupId: group.id,
     schedulable: 'false'
   }, access), /账户是否参与调度必须是布尔值/, '创建账户时字符串布尔不应被兼容为调度开关')

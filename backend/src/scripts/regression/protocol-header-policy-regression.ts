@@ -3,10 +3,12 @@ import { strict as assert } from 'node:assert'
 import {
   anthropicMessagesScopedHeaderNames,
   codexResponsesScopedHeaderNames,
+  copyOfficialOAuthClientRequestHeaders,
   geminiGenerateContentScopedHeaderNames,
   isAnthropicMessagesScopedHeaderName,
   isCodexResponsesScopedHeaderName
 } from '../../modules/gateway/upstream/header-policy.js'
+import { copySafeUpstreamRequestHeaders } from '../../modules/gateway/upstream/request.js'
 import { prepareAnthropicMessagesChatBridgeHeaders } from '../../modules/providers/drivers/_shared/anthropic-openai-chat-bridge.js'
 import { prepareCodexResponsesChatBridgeHeaders } from '../../modules/providers/drivers/_shared/codex-responses-chat-bridge.js'
 import { prepareGeminiGenerateContentChatBridgeHeaders } from '../../modules/providers/drivers/_shared/gemini-openai-chat-bridge.js'
@@ -19,7 +21,76 @@ function main(): void {
   testAnthropicProtocolHeadersAreRemovedFromChatBridge()
   testGeminiProtocolHeadersAreRemovedFromChatBridge()
   testSourceProtocolHeadersAreRemovedFromGeminiBridge()
+  testOfficialOAuthHeaderAllowlistsAreClientSpecific()
+  testApiKeyHeadersKeepGenericSafePassthrough()
   console.log('protocol header policy regression: passed')
+}
+
+function testOfficialOAuthHeaderAllowlistsAreClientSpecific(): void {
+  const common = {
+    accept: 'text/event-stream',
+    authorization: 'Bearer client-secret',
+    'x-api-key': 'client-api-key',
+    'x-custom-header': 'custom-value',
+    'x-forwarded-for': '203.0.113.8'
+  }
+
+  const codex = copyOfficialOAuthClientRequestHeaders({
+    ...common,
+    'session-id': 'codex-session',
+    'x-codex-turn-metadata': '{"turn_id":"turn-1"}',
+    'x-oai-attestation': 'attestation'
+  }, 'openai_codex')
+  assert.equal(codex.get('session-id'), 'codex-session')
+  assert.equal(codex.get('x-codex-turn-metadata'), '{"turn_id":"turn-1"}')
+  assert.equal(codex.get('x-oai-attestation'), 'attestation')
+  assertOAuthClientHeadersDoNotLeakGenericInput(codex)
+
+  const claude = copyOfficialOAuthClientRequestHeaders({
+    ...common,
+    'x-claude-code-session-id': 'claude-session',
+    'x-stainless-runtime': 'node'
+  }, 'anthropic_claude_code')
+  assert.equal(claude.get('x-claude-code-session-id'), 'claude-session')
+  assert.equal(claude.get('x-stainless-runtime'), 'node')
+  assertOAuthClientHeadersDoNotLeakGenericInput(claude)
+
+  const gemini = copyOfficialOAuthClientRequestHeaders({
+    ...common,
+    'x-gemini-api-privileged-user-id': 'installation-id',
+    'x-goog-api-client': 'gl-node/22'
+  }, 'gemini_cli')
+  assert.equal(gemini.get('x-gemini-api-privileged-user-id'), 'installation-id')
+  assert.equal(gemini.get('x-goog-api-client'), 'gl-node/22')
+  assertOAuthClientHeadersDoNotLeakGenericInput(gemini)
+
+  const grok = copyOfficialOAuthClientRequestHeaders({
+    ...common,
+    'x-grok-client-version': '0.2.93',
+    'x-xai-token-auth': 'xai-grok-cli'
+  }, 'xai_grok')
+  assert.equal(grok.get('x-grok-client-version'), '0.2.93')
+  assert.equal(grok.get('x-xai-token-auth'), 'xai-grok-cli')
+  assertOAuthClientHeadersDoNotLeakGenericInput(grok)
+}
+
+function assertOAuthClientHeadersDoNotLeakGenericInput(headers: Headers): void {
+  assert.equal(headers.get('accept'), 'text/event-stream')
+  assert.equal(headers.get('authorization'), null)
+  assert.equal(headers.get('x-api-key'), null)
+  assert.equal(headers.get('x-custom-header'), null)
+  assert.equal(headers.get('x-forwarded-for'), null)
+}
+
+function testApiKeyHeadersKeepGenericSafePassthrough(): void {
+  const headers = copySafeUpstreamRequestHeaders({
+    authorization: 'Bearer downstream-key',
+    'x-api-key': 'downstream-key',
+    'x-custom-header': 'custom-value'
+  })
+  assert.equal(headers.get('authorization'), null)
+  assert.equal(headers.get('x-api-key'), null)
+  assert.equal(headers.get('x-custom-header'), 'custom-value')
 }
 
 function testCodexProtocolHeadersAreRemovedFromChatBridge(): void {

@@ -1299,6 +1299,17 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'db_service_gateway_api_key_cache_invalidation_response'
+    requestId: string
+    ok: true
+  }
+  | {
+    type: 'db_service_gateway_api_key_cache_invalidation_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -1343,6 +1354,12 @@ export type DbServiceChildMessage =
   }
   | {
     type: 'gateway_runtime_cache_invalidate'
+  }
+  | {
+    type: 'db_service_gateway_api_key_cache_invalidation_request'
+    requestId: string
+    apiKeyId: string
+    keyHashes: string[]
   }
   | {
     type: 'authorization_quota_cache_invalidate'

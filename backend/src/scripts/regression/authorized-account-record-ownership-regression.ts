@@ -53,7 +53,14 @@ interface ApiEnvelope<T> {
 interface AccountSummary {
   id: string
   name: string
+  configRevision?: number
   authorizationInstanceSourceAccountId?: string
+}
+
+interface AccountMutationResult {
+  id: string
+  configRevision: number
+  changedFields: string[]
 }
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -103,6 +110,8 @@ try {
     name: '记录归属来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-record-ownership', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -115,13 +124,17 @@ try {
   }, ownerAccess)
 
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
-  const boundAccount = await postEnvelope<AccountSummary>(
+  const boundAccount = await postEnvelope<AccountMutationResult>(
     baseUrl,
     `/__aisys__/api/my-accounts/${granteeAccount.id}/group`,
     sessionCookie(grantee.id),
-    { groupId: granteeTargetGroup.id }
+    {
+      groupId: granteeTargetGroup.id,
+      expectedConfigRevision: granteeAccount.configRevision ?? 1
+    }
   )
   assert.equal(boundAccount.id, granteeAccount.id, '被授权人应能绑定自己的授权实例到账户池分组')
+  assert.deepEqual(boundAccount.changedFields, ['groupId'], '授权实例绑定分组响应只返回实际变化字段')
 
   flushAllOperationLogQueue()
 

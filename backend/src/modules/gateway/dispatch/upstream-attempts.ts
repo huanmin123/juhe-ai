@@ -104,6 +104,7 @@ export async function performUpstreamRequestAttempt(
       headers,
       body: upstreamBody,
       response,
+      signal,
       requestFallback: async (fallbackUrl, fallbackHeaders) => await requestUpstream(fallbackUrl, {
         method: req.method,
         headers: fallbackHeaders,

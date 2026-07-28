@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import {
@@ -8,6 +10,17 @@ import {
 export const GEMINI_CODE_ASSIST_BASE_URL = 'https://cloudcode-pa.googleapis.com'
 export const GEMINI_CODE_ASSIST_STREAM_URL = `${GEMINI_CODE_ASSIST_BASE_URL}/v1internal:streamGenerateContent?alt=sse`
 export const GEMINI_CLI_USER_AGENT = 'GeminiCLI/0.1.5 (Windows; AMD64)'
+
+const geminiCodeAssistBaseUrlForTest = new AsyncLocalStorage<string>()
+
+export async function runWithGeminiCodeAssistBaseUrlForTest<T>(baseUrl: string, task: () => Promise<T>): Promise<T> {
+  return await geminiCodeAssistBaseUrlForTest.run(baseUrl, task)
+}
+
+export function geminiCodeAssistStreamUrl(): string {
+  const baseUrl = geminiCodeAssistBaseUrlForTest.getStore()?.replace(/\/$/u, '') || GEMINI_CODE_ASSIST_BASE_URL
+  return `${baseUrl}/v1internal:streamGenerateContent?alt=sse`
+}
 
 export type GeminiOAuthRuntimeMode = 'ai_studio' | 'code_assist' | 'google_one'
 

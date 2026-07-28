@@ -5,7 +5,8 @@
     width="760px"
     :confirm-loading="apiKeySaving"
     :ok-button-props="{ type: 'primary', disabled: apiKeySaving }"
-    @cancel="clearRouteStrategyOptionsSearchTimer"
+    @after-close="handleModalAfterClose"
+    @cancel="handleModalCancel"
     @ok="saveApiKey"
   >
     <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
@@ -52,11 +53,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
-import { getCachedUserReferenceData, loadUserReferenceData } from '@/composables/useUserReferenceData'
+import { getCachedUserReferenceData } from '@/composables/useUserReferenceData'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
@@ -99,6 +100,14 @@ interface CreatedKeyPayload {
   message: string
 }
 
+interface ApiKeyEditModalSession {
+  generation: number
+  isManagementView: boolean
+  parentScopeKey: string
+  routeStrategyOptionsScopeKey: string
+  systemAccountId?: string
+}
+
 const props = defineProps<{
   apiKeysApi: Pick<ScopedApiKeysApi, 'create' | 'update'>
   routeStrategiesApi: Pick<ScopedRouteStrategiesApi, 'options'>
@@ -117,7 +126,6 @@ const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingIsDefault = ref(false)
 const editingNameLocked = ref(false)
-const editingSystemAccountId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
@@ -130,6 +138,8 @@ let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let editingBaseline: ApiKeyEditableSnapshot | undefined
 let editingRevision: string | undefined
+let modalSessionGeneration = 0
+const activeModalSession = shallowRef<ApiKeyEditModalSession>()
 
 const form = reactive({
   name: '',
@@ -142,23 +152,26 @@ const form = reactive({
   availabilitySchedule: createApiKeyTimeScheduleForm()
 })
 const visibleRouteStrategyOptions = computed(() => (
-  routeStrategyOptionsScopeKey.value === currentRouteStrategyOptionsScopeKey()
+  activeModalSession.value
+  && modalOpen.value
+  && routeStrategyOptionsScopeKey.value === activeModalSession.value.routeStrategyOptionsScopeKey
     ? routeStrategyOptionsRaw.value
     : []
 ))
 
 function openCreate() {
-  if (props.isManagementView && !props.scopeParams?.systemAccountId) {
+  const createScopeParams = normalizedScopeParams(props.scopeParams)
+  if (props.isManagementView && !createScopeParams?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建 API Key')
     return
   }
-  const defaultStrategy = cachedDefaultRouteStrategy()
+  const defaultStrategy = cachedDefaultRouteStrategy(createScopeParams)
   editingId.value = undefined
   editingIsDefault.value = false
   editingNameLocked.value = false
-  editingSystemAccountId.value = undefined
   editingRevision = undefined
   routeStrategyTouched.value = false
+  beginModalSession(createScopeParams)
   Object.assign(form, {
     name: '',
     routeStrategyId: defaultStrategy?.id ?? '',
@@ -171,7 +184,6 @@ function openCreate() {
   })
   editingBaseline = undefined
   modalOpen.value = true
-  if (!defaultStrategy) prewarmCreateDefaultRouteStrategy()
 }
 
 function openEdit(apiKey: ApiKeySummary) {
@@ -194,9 +206,9 @@ function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
   editingIsDefault.value = apiKey.isDefault === true && apiKey.purpose !== 'chat'
   editingNameLocked.value = apiKey.isDefault === true || apiKey.purpose === 'chat'
-  editingSystemAccountId.value = editScopeParams?.systemAccountId
   editingRevision = apiKey.revision
   routeStrategyTouched.value = false
+  beginModalSession(editScopeParams)
   Object.assign(form, {
     name: apiKey.name,
     routeStrategyId: apiKey.routeStrategyId,
@@ -213,12 +225,17 @@ function openEdit(apiKey: ApiKeySummary) {
 
 function apiKeyOperationScopeParams(apiKey?: Pick<ApiKeySummary, 'systemAccountId'>): ApiKeyScopeParams {
   const systemAccountId = apiKey?.systemAccountId?.trim()
-    || editingSystemAccountId.value
-    || props.scopeParams?.systemAccountId
+    || props.scopeParams?.systemAccountId?.trim()
   return systemAccountId ? { systemAccountId } : undefined
 }
 
 const saveApiKey = submitAction('api_keys.save', async () => {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) {
+    message.error('API Key 弹窗作用域已变化，请重新打开后再保存')
+    return
+  }
+  const operationScopeParams = modalSessionScopeParams(modalSession)
   if (!form.name.trim()) {
     message.warning('请填写名称')
     return
@@ -249,7 +266,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       const result = await props.apiKeysApi.update(targetId, {
         expectedRevision: editingRevision,
         ...patch
-      }, apiKeyOperationScopeParams())
+      }, operationScopeParams)
       emit('updated', result)
       message.success('API Key 已更新')
     } else {
@@ -263,7 +280,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
         description: snapshot.description,
         quotaLimits: snapshot.quotaLimits,
         availabilitySchedule: snapshot.availabilitySchedule
-      }, props.scopeParams)
+      }, operationScopeParams)
       emit('created', {
         key: result.key,
         title: 'API Key 已创建',
@@ -305,10 +322,10 @@ function currentApiKeyEditableSnapshot(
   }
 }
 
-function cachedDefaultRouteStrategy(): RouteStrategySelection | undefined {
+function cachedDefaultRouteStrategy(scopeParams: ApiKeyScopeParams | undefined): RouteStrategySelection | undefined {
   const reference = getCachedUserReferenceData({
     viewScope: props.isManagementView ? 'admin' : 'self',
-    systemAccountId: props.scopeParams?.systemAccountId
+    systemAccountId: scopeParams?.systemAccountId
   })?.preferredDefaultRouteStrategy
   if (!reference || reference.status !== 'active') return undefined
   return {
@@ -317,41 +334,14 @@ function cachedDefaultRouteStrategy(): RouteStrategySelection | undefined {
   }
 }
 
-function prewarmCreateDefaultRouteStrategy(): void {
-  const params = {
-    viewScope: props.isManagementView ? 'admin' as const : 'self' as const,
-    systemAccountId: props.scopeParams?.systemAccountId
-  }
-  void loadUserReferenceData(params).then((referenceData) => {
-    const reference = referenceData?.preferredDefaultRouteStrategy
-    if (
-      !reference
-      || reference.status !== 'active'
-      || !modalOpen.value
-      || editingId.value
-      || routeStrategyTouched.value
-      || form.routeStrategyId
-    ) {
-      return
-    }
-    form.routeStrategyId = reference.id
-    form.routeStrategy = { ...reference, isDefault: true }
-  }).catch(() => undefined)
-}
-
 async function loadRouteStrategyOptions(keyword = '') {
-  const operationScopeParams = apiKeyOperationScopeParams()
-  if (props.isManagementView && !operationScopeParams?.systemAccountId) {
-    routeStrategyOptionsRequestToken += 1
-    routeStrategyOptionsLoadingKey = undefined
-    routeStrategyOptionsLoadingPromise = undefined
-    routeStrategyOptionsRaw.value = []
-    routeStrategyOptionsLoading.value = false
-    return
-  }
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
+  const operationScopeParams = modalSessionScopeParams(modalSession)
+  if (modalSession.isManagementView && !operationScopeParams?.systemAccountId) return
   const requestKeyword = keyword.trim() || undefined
-  const requestScopeKey = routeStrategyOptionsCatalogScopeKey(operationScopeParams?.systemAccountId)
-  const requestKey = routeStrategyOptionsRequestKey(operationScopeParams?.systemAccountId, requestKeyword)
+  const requestScopeKey = modalSession.routeStrategyOptionsScopeKey
+  const requestKey = routeStrategyOptionsRequestKey(modalSession, requestKeyword)
   if (routeStrategyOptionsLoadingKey === requestKey && routeStrategyOptionsLoadingPromise) {
     return routeStrategyOptionsLoadingPromise
   }
@@ -367,16 +357,17 @@ async function loadRouteStrategyOptions(keyword = '') {
           routeStrategyOptionsScopeKey.value = requestScopeKey
         },
         isCurrent: () => requestToken === routeStrategyOptionsRequestToken
-          && requestScopeKey === currentRouteStrategyOptionsScopeKey(),
-        isManagementView: props.isManagementView,
+          && isCurrentModalSession(modalSession)
+          && requestScopeKey === modalSession.routeStrategyOptionsScopeKey,
+        isManagementView: modalSession.isManagementView,
         keyword: requestKeyword,
         systemAccountId: operationScopeParams?.systemAccountId
       })
     } catch (error) {
-      if (requestToken !== routeStrategyOptionsRequestToken) return
+      if (requestToken !== routeStrategyOptionsRequestToken || !isCurrentModalSession(modalSession)) return
       message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
     } finally {
-      if (routeStrategyOptionsLoadingKey === requestKey) {
+      if (requestToken === routeStrategyOptionsRequestToken && routeStrategyOptionsLoadingKey === requestKey) {
         routeStrategyOptionsLoadingKey = undefined
         routeStrategyOptionsLoadingPromise = undefined
       }
@@ -388,19 +379,15 @@ async function loadRouteStrategyOptions(keyword = '') {
   return routeStrategyOptionsLoadingPromise
 }
 
-function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined): string {
+function routeStrategyOptionsRequestKey(modalSession: ApiKeyEditModalSession, keyword: string | undefined): string {
   return JSON.stringify([
-    routeStrategyOptionsCatalogScopeKey(systemAccountId),
+    modalSession.routeStrategyOptionsScopeKey,
     keyword ?? ''
   ])
 }
 
-function currentRouteStrategyOptionsScopeKey(): string {
-  return routeStrategyOptionsCatalogScopeKey(apiKeyOperationScopeParams()?.systemAccountId)
-}
-
-function routeStrategyOptionsCatalogScopeKey(systemAccountId: string | undefined): string {
-  return props.isManagementView ? `management:${systemAccountId ?? ''}` : 'self'
+function routeStrategyOptionsCatalogScopeKey(isManagementView: boolean, systemAccountId: string | undefined): string {
+  return isManagementView ? `management:${systemAccountId ?? ''}` : 'self'
 }
 
 function handleRouteStrategyDropdown(open: boolean) {
@@ -412,9 +399,12 @@ function markRouteStrategyTouched(): void {
 }
 
 function handleRouteStrategySearch(value: string) {
+  const modalSession = activeModalSession.value
+  if (!modalSession || !isCurrentModalSession(modalSession)) return
   clearRouteStrategyOptionsSearchTimer()
   routeStrategyOptionsSearchTimer = window.setTimeout(() => {
     routeStrategyOptionsSearchTimer = undefined
+    if (!isCurrentModalSession(modalSession)) return
     void loadRouteStrategyOptions(value)
   }, 250)
 }
@@ -424,6 +414,60 @@ function clearRouteStrategyOptionsSearchTimer() {
     window.clearTimeout(routeStrategyOptionsSearchTimer)
     routeStrategyOptionsSearchTimer = undefined
   }
+}
+
+function beginModalSession(scopeParams: ApiKeyScopeParams | undefined): void {
+  invalidateModalSession({ clearOptions: true })
+  const systemAccountId = scopeParams?.systemAccountId?.trim() || undefined
+  activeModalSession.value = {
+    generation: ++modalSessionGeneration,
+    isManagementView: props.isManagementView,
+    parentScopeKey: currentParentScopeKey(),
+    routeStrategyOptionsScopeKey: routeStrategyOptionsCatalogScopeKey(props.isManagementView, systemAccountId),
+    systemAccountId
+  }
+}
+
+function invalidateModalSession(options: { clearOptions?: boolean } = {}): void {
+  modalSessionGeneration += 1
+  activeModalSession.value = undefined
+  routeStrategyOptionsRequestToken += 1
+  routeStrategyOptionsLoadingKey = undefined
+  routeStrategyOptionsLoadingPromise = undefined
+  routeStrategyOptionsLoading.value = false
+  clearRouteStrategyOptionsSearchTimer()
+  if (options.clearOptions) {
+    routeStrategyOptionsRaw.value = []
+    routeStrategyOptionsScopeKey.value = ''
+  }
+}
+
+function isCurrentModalSession(modalSession: ApiKeyEditModalSession): boolean {
+  return modalOpen.value
+    && activeModalSession.value === modalSession
+    && modalSession.generation === modalSessionGeneration
+    && modalSession.parentScopeKey === currentParentScopeKey()
+}
+
+function modalSessionScopeParams(modalSession: ApiKeyEditModalSession): ApiKeyScopeParams | undefined {
+  return modalSession.systemAccountId ? { systemAccountId: modalSession.systemAccountId } : undefined
+}
+
+function normalizedScopeParams(scopeParams: ApiKeyScopeParams | undefined): ApiKeyScopeParams | undefined {
+  const systemAccountId = scopeParams?.systemAccountId?.trim()
+  return systemAccountId ? { systemAccountId } : undefined
+}
+
+function currentParentScopeKey(): string {
+  return routeStrategyOptionsCatalogScopeKey(props.isManagementView, props.scopeParams?.systemAccountId?.trim())
+}
+
+function handleModalCancel(): void {
+  invalidateModalSession({ clearOptions: true })
+}
+
+function handleModalAfterClose(): void {
+  if (!modalOpen.value) invalidateModalSession({ clearOptions: true })
 }
 
 function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelection | undefined {
@@ -439,9 +483,13 @@ function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelec
   }
 }
 
-onBeforeUnmount(() => {
-  clearRouteStrategyOptionsSearchTimer()
+watch(currentParentScopeKey, (nextScopeKey, previousScopeKey) => {
+  if (nextScopeKey === previousScopeKey) return
+  invalidateModalSession({ clearOptions: true })
+  modalOpen.value = false
 })
+
+onBeforeUnmount(() => invalidateModalSession({ clearOptions: true }))
 
 defineExpose({ openCreate, openEdit })
 </script>

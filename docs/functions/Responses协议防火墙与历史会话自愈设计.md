@@ -54,6 +54,11 @@ ID 工厂接收目标 item contract，而不是先生成一种 ID 再修改前�
 
 ### 4.2 请求历史
 
+请求历史必须经过两个检查点：
+
+1. 账户适配前检查解析后的客户端 body，防止历史响应中的上游资源 ID 被直接重放到另一个账户。
+2. 账户适配完成后检查最终 outbound body，防止 OAuth normalizer、协议桥接器或后续适配代码重新引入不可信 ID。序列化器已绑定结构化 JSON 时直接复用对象；只有字符串或未绑定 Buffer 才做一次兜底解析。
+
 历史 sanitizer 采用 copy-on-write：
 
 - 合法 item 和未触碰的根对象保持引用复用。
@@ -61,11 +66,13 @@ ID 工厂接收目标 item contract，而不是先生成一种 ID 再修改前�
 - 无法确定 item 类型、重复 ID、禁止携带 ID、`store=false` 下不可恢复的远程 `rs_*` 等内容，移入受控的历史降级路径，并记录原因。
 - 任何替换都建立 `upstreamItemId -> clientItemId` 映射，后续流事件、done 事件和 completed 输出必须复用同一个客户端 ID。
 
-历史清理不改变用户可理解的对话文本、工具参数和顺序；它只改变协议身份字段或删除无法安全解释的历史 item。删除历史 item 会记录计数和规则，不静默发生。
+目标账户不承诺持久化上游资源时，可完整重放的历史 item 删除 `id`，由目标上游重新分配资源身份；`call_id`、工具名、工具参数、文本和顺序保持不变。无法完整重放的 item 才进入受控降级路径，并记录计数和规则，不静默发生。
 
 ### 4.3 流式响应
 
-流状态保存 response scope、output index、item type、upstream ID、client ID、call ID 和阶段。收到 `response.completed` 后进入终态，后续事件一律 `event_after_response_completed`。安全修复只允许在语义提交前为新 identity 生成 ID；语义提交后只能继续已有映射，不能为新错误 ID 创造新客户端身份。
+流状态保存 response scope、output index、item type、upstream ID、client ID、call ID 和阶段。收到 `response.completed` 后进入终态，后续事件一律 `event_after_response_completed`。
+
+“整条响应是否已语义提交”和“某个 item identity 是否已暴露”是两个不同边界：整条响应已提交后不得切换账户或拼接另一条响应，但之后首次出现且尚未写给客户端的错误 identity，仍可建立确定性 ID 映射并在其 `added`、`delta`、`done` 与 completed output 中持续复用。某个 identity 一旦曾在没有映射的情况下暴露，后续事件不得再为它补建映射，否则同一客户端可见 identity 会中途变化。
 
 SSE 修复必须改写实际下游事件，包括 `item.id`、`item_id` 和 `response.output[].id`，而不是只在审计中报告修复。JSON 修复必须以修复后的 body 写出并更新 `Content-Length`。
 
@@ -102,6 +109,8 @@ SSE 修复必须改写实际下游事件，包括 `item.id`、`item_id` 和 `res
 
 同一请求内使用 inspection fingerprint（协议、body hash/事件序号、转换 checkpoint）避免重复深扫。已由上游转换器确认并带有同版本 guard stamp 的片段可跳过重复检查，但任何跨 checkpoint、跨账户重试或 body 改写都必须重新检查。性能门禁要求 off 为零 guard，JSON/SSE 时间复杂度近似 O(n)，以及固定上限下的内存增长证据。
 
+请求双检查点不等于固定双解析：解析态清理直接复用网关 body；原生序列化 Buffer 通过结构化对象绑定走零额外 JSON 解析；只有适配器返回字符串或未知 Buffer 时才执行最终兜底解析。响应流继续按事件增量检查，不等待整条流缓冲。
+
 ## 8. 可观测性和账户状态
 
 使用记录状态颜色：
@@ -114,7 +123,7 @@ SSE 修复必须改写实际下游事件，包括 `item.id`、`item_id` 和 `res
 
 ## 9. 失败安全原则
 
-- 不在语义提交后重写已经发送给客户端的内容。
+- 不重写已经发送给客户端的内容；语义提交后只允许修复尚未暴露的新 identity，不允许换号或拼接另一响应。
 - 不把无法解析等同于上游污染。
 - 不因单个错误 ID 无限生成新 ID；修复预算和序号有上限。
 - guard 异常必须显式记录并遵循当前模式：shadow 透传，safe repair 回退原响应，strict intercept 只在确定违规时阻断。

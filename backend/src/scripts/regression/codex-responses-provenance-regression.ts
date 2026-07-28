@@ -438,13 +438,23 @@ const safeStreamResponse = {
 }
 async function* safeStreamUpstream(): AsyncIterable<Uint8Array> {
   const badItem = { id: 'fc_wrong_stream', type: 'custom_tool_call', call_id: 'call_safe', name: 'apply_patch', input: '' }
-  const events = [
+  const committedEvents = [
     { type: 'response.created', response: { id: 'resp_safe_stream', object: 'response', output: [] } },
-    { type: 'response.output_item.added', output_index: 0, item: badItem },
-    { type: 'response.output_item.done', output_index: 0, item: { ...badItem, input: '{}' } },
-    { type: 'response.completed', response: { id: 'resp_safe_stream', object: 'response', output: [{ ...badItem, input: '{}' }] } }
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'rs_safe_stream', type: 'reasoning', summary: [], status: 'in_progress' } },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'rs_safe_stream', type: 'reasoning', summary: [], status: 'completed' } }
   ]
-  yield Buffer.from(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), 'utf8')
+  yield Buffer.from(committedEvents.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), 'utf8')
+  const lateItemEvents = [
+    { type: 'response.output_item.added', output_index: 1, item: badItem },
+    { type: 'response.custom_tool_call_input.delta', output_index: 1, item_id: badItem.id, call_id: badItem.call_id, delta: '{}' },
+    { type: 'response.custom_tool_call_input.done', output_index: 1, item_id: badItem.id, call_id: badItem.call_id, input: '{}' },
+    { type: 'response.output_item.done', output_index: 1, item: { ...badItem, input: '{}' } },
+    { type: 'response.completed', response: { id: 'resp_safe_stream', object: 'response', output: [
+      { id: 'rs_safe_stream', type: 'reasoning', summary: [], status: 'completed' },
+      { ...badItem, input: '{}' }
+    ] } }
+  ]
+  yield Buffer.from(lateItemEvents.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), 'utf8')
 }
 const safeStreamResult = await pipeUpstreamStream(
   safeStreamUpstream(),
@@ -470,7 +480,7 @@ const safeStreamText = Buffer.concat(safeStreamChunks).toString('utf8')
 assert.equal(safeStreamResult.completed, true)
 assert.equal(safeStreamResult.codexResponsesGuard?.outcome, 'repaired_safe')
 assert.match(safeStreamText, /ctc_stream_repaired/)
-assert.equal(safeStreamText.includes('fc_wrong_stream'), false, 'safe_repair 必须把 added/done/completed 的错误 ID 一致改写到 wire')
+assert.equal(safeStreamText.includes('fc_wrong_stream'), false, 'safe_repair 必须在 reasoning 已提交后继续一致改写 added/delta/done/completed 的新错误 ID')
 assert.deepEqual(safeStreamResult.codexResponsesGuard?.repairRuleIds, ['codex.r0.response.replace_stream_item_id'])
 
 const strictStreamCommitState = new GatewayDownstreamCommitState()

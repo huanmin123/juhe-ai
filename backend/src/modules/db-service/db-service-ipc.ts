@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
+import {
+  applyGatewayApiKeyValidationCacheInvalidationFromIpcAsync,
+  registerAuthorizationQuotaCacheInvalidator,
+  registerGatewayApiKeyValidationServerInvalidator
+} from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { getRequestId, getTraceId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
@@ -89,6 +93,7 @@ let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, Pendin
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingDatasetWriteRequest>()
+let pendingGatewayApiKeyCacheInvalidationRequests = new Map<string, PendingRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
@@ -129,6 +134,8 @@ interface PendingDatasetWriteRequest {
   timeout: NodeJS.Timeout
   createdAt: number
 }
+
+registerGatewayApiKeyValidationServerInvalidator(requestServerGatewayApiKeyCacheInvalidationAsync)
 
 export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
   dbServiceProcess = child
@@ -581,6 +588,18 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     return true
   }
 
+  if (record.type === 'db_service_gateway_api_key_cache_invalidation_response' && typeof record.requestId === 'string') {
+    finishGatewayApiKeyCacheInvalidationRequest(record.requestId, record.ok === true
+      ? { ok: true }
+      : {
+          ok: false,
+          errorMessage: typeof record.errorMessage === 'string'
+            ? record.errorMessage
+            : 'server API Key validation cache 失效失败'
+        })
+    return true
+  }
+
   if (record.type !== 'db_service_server_runtime_response' || typeof record.requestId !== 'string') {
     return false
   }
@@ -667,6 +686,20 @@ function handleDbServiceMessage(message: unknown): void {
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole === 'server') {
         void clearServerGatewayRuntimeCache()
+      }
+      break
+    case 'db_service_gateway_api_key_cache_invalidation_request':
+      if (
+        runtimeConfig.processRole === 'server'
+        && typeof record.requestId === 'string'
+        && typeof record.apiKeyId === 'string'
+        && Array.isArray(record.keyHashes)
+      ) {
+        void respondToGatewayApiKeyCacheInvalidationRequest(
+          record.requestId,
+          record.apiKeyId,
+          record.keyHashes.filter((value): value is string => typeof value === 'string')
+        )
       }
       break
     case 'authorization_quota_cache_invalidate':
@@ -780,6 +813,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingStatsWriteRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingGatewayApiKeyCacheInvalidationRequests) {
+    clearTimeout(pending.timeout)
+    pending.reject(error)
+    pendingGatewayApiKeyCacheInvalidationRequests.delete(requestId)
   }
 }
 
@@ -933,6 +971,70 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
   clearTimeout(pending.timeout)
   pendingServerRuntimeRequests.delete(requestId)
   pending.resolve(snapshot)
+}
+
+async function requestServerGatewayApiKeyCacheInvalidationAsync(
+  apiKeyId: string,
+  keyHashes: readonly string[]
+): Promise<void> {
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) return
+  const requestId = randomUUID()
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingGatewayApiKeyCacheInvalidationRequests.get(requestId)
+      if (!pending) return
+      pendingGatewayApiKeyCacheInvalidationRequests.delete(requestId)
+      pending.reject(new Error('server API Key validation cache 失效确认超时'))
+    }, invalidateTimeoutMs)
+    pendingGatewayApiKeyCacheInvalidationRequests.set(requestId, { resolve: () => resolve(), reject, timeout })
+    sendDbServiceChildMessage({
+      type: 'db_service_gateway_api_key_cache_invalidation_request',
+      requestId,
+      apiKeyId,
+      keyHashes: [...keyHashes]
+    }, () => {
+      finishGatewayApiKeyCacheInvalidationRequest(requestId, {
+        ok: false,
+        errorMessage: 'DB service 无法向 server 发布 API Key validation cache 失效'
+      })
+    })
+  })
+}
+
+function finishGatewayApiKeyCacheInvalidationRequest(
+  requestId: string,
+  response: { ok: true } | { ok: false; errorMessage: string }
+): void {
+  const pending = pendingGatewayApiKeyCacheInvalidationRequests.get(requestId)
+  if (!pending) return
+  clearTimeout(pending.timeout)
+  pendingGatewayApiKeyCacheInvalidationRequests.delete(requestId)
+  if (response.ok) pending.resolve(undefined)
+  else pending.reject(new Error(response.errorMessage))
+}
+
+async function respondToGatewayApiKeyCacheInvalidationRequest(
+  requestId: string,
+  apiKeyId: string,
+  keyHashes: readonly string[]
+): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) return
+  try {
+    await applyGatewayApiKeyValidationCacheInvalidationFromIpcAsync(apiKeyId, keyHashes)
+    sendToDbServiceProcess(child, {
+      type: 'db_service_gateway_api_key_cache_invalidation_response',
+      requestId,
+      ok: true
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'db_service_gateway_api_key_cache_invalidation_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
 }
 
 function finishServerAccountRuntimeClearRequest(

@@ -139,6 +139,8 @@ async function verifyRuntimeStateStore(): Promise<void> {
 
   assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-a' }), true)
   assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-b' }), false)
+  assert.equal(await stateStore.renewLock('lock', { ttlMs: 1000, token: 'token-b' }), false, '错误 token 不得续租 Redis lock')
+  assert.equal(await stateStore.renewLock('lock', { ttlMs: 1000, token: 'token-a' }), true, '持有者必须能原子续租 Redis lock')
   await stateStore.releaseLock('lock', 'token-b')
   assert.equal(await stateStore.acquireLock('lock', { ttlMs: 1000, token: 'token-b' }), false, '错误 token 不应释放 Redis lock')
   await stateStore.releaseLock('lock', 'token-a')

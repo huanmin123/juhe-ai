@@ -1,14 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto'
 
 import type { AccountSummary } from '../../domain/types.js'
-import { isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createAppCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
-import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
   clearAccountFailureState,
@@ -28,6 +27,10 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceOpenAIOAuthRefreshAccount, DbServiceOperation, DbServiceOperationResult } from '../db-service/db-service-types.js'
 import { requestBackgroundWorkerDbService } from '../background/background-ipc.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
+import {
+  ProviderOAuthRefreshLockBusyError,
+  runWithProviderOAuthRefreshLock
+} from '../providers/drivers/_shared/oauth-refresh-lock.js'
 import {
   buildOpenAIOAuthCredentials,
   refreshOpenAIOAuthToken,
@@ -95,11 +98,8 @@ export class OpenAIOAuthRefreshLocalConfigurationError extends Error {
 }
 
 const refreshFailureStateByAccountId = new Map<string, OpenAIOAuthRefreshFailureState>()
-const refreshQueueByAccountId = new Map<string, Promise<void>>()
 const recentRefreshTtlMs = 30_000
 const openAIOAuthRefreshFailureStateTtlMs = 7 * 24 * 60 * 60 * 1000
-const openAIOAuthRefreshLockTtlMs = 90_000
-const openAIOAuthRefreshLockWaitMs = 30_000
 const openAIOAuthRefreshBatchConcurrency = 4
 const openAIOAuthRefreshStartAdmissionBudgetMs = 55_000
 const openAIOAuthRefreshBackoffReadConcurrency = 4
@@ -132,13 +132,6 @@ type OpenAIOAuthAccountRefreshCallOptions = {
   restoreFailureState?: boolean
   lockMode?: 'wait' | 'skip'
   onLockAcquired?: () => void
-}
-
-class OpenAIOAuthRefreshLockBusyError extends Error {
-  constructor() {
-    super('OpenAI OAuth 账户正在其他节点刷新')
-    this.name = 'OpenAIOAuthRefreshLockBusyError'
-  }
 }
 
 type OpenAIOAuthRefreshLocalConfigurationMarker = {
@@ -199,14 +192,19 @@ export async function refreshOpenAIOAuthAccountAccessToken(
   }
   return runWithAccountRefreshLock(
     account.id,
-    () => refreshOpenAIOAuthAccountAccessTokenLocked(account, options),
+    (lockSignal, assertLockOwned) => refreshOpenAIOAuthAccountAccessTokenLocked(
+      account,
+      { ...options, signal: lockSignal },
+      assertLockOwned
+    ),
     options.lockMode === 'skip' ? options : { ...options, signal: undefined }
   )
 }
 
 async function refreshOpenAIOAuthAccountAccessTokenLocked(
   account: RefreshableOpenAIOAuthAccount,
-  options: OpenAIOAuthAccountRefreshCallOptions
+  options: OpenAIOAuthAccountRefreshCallOptions,
+  assertLockOwned: () => Promise<void>
 ): Promise<AccountSummary | RefreshedOpenAIOAuthAccount> {
   const persistMode = effectivePersistMode(options)
   const recent = readRecentOpenAIOAuthRefresh(account, options, persistMode)
@@ -246,12 +244,14 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       const tokenInfo = await openAIOAuthTokenRefresher({
         refreshToken,
         clientId: stringCredential(credentials, 'client_id'),
-        proxyUrl: resolveRefreshProxyUrlOrThrow(current, persistMode)
+        proxyUrl: resolveRefreshProxyUrlOrThrow(current, persistMode),
+        signal: options.signal
       })
       const nextCredentials = {
         ...credentials,
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
+      await assertLockOwned()
       if (persistMode === 'db-service') {
         const updated = await persistOpenAIOAuthCredentialsViaDbService(
           current.id,
@@ -443,7 +443,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
       if (options.signal?.aborted && !countedAsStarted) {
         return
       }
-      if (error instanceof OpenAIOAuthRefreshLockBusyError) {
+      if (error instanceof ProviderOAuthRefreshLockBusyError) {
         result.skippedLocked += 1
         return
       }
@@ -847,69 +847,14 @@ async function restoreOpenAIOAuthTokenRefreshFailureIfRecovered(account: Account
 
 async function runWithAccountRefreshLock<T>(
   accountId: string,
-  task: () => Promise<T>,
+  task: (signal: AbortSignal, assertLockOwned: () => Promise<void>) => Promise<T>,
   options: Pick<OpenAIOAuthAccountRefreshCallOptions, 'lockMode' | 'onLockAcquired' | 'signal'> = {}
 ): Promise<T> {
-  options.signal?.throwIfAborted()
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    return runWithRedisAccountRefreshLock(accountId, task, options)
-  }
-  if (options.lockMode === 'skip' && refreshQueueByAccountId.has(accountId)) {
-    throw new OpenAIOAuthRefreshLockBusyError()
-  }
-  const previous = refreshQueueByAccountId.get(accountId) ?? Promise.resolve()
-  const ready = previous.catch(() => undefined)
-  let release: () => void = () => {}
-  const current = ready.then(() => new Promise<void>((resolve) => {
-    release = resolve
-  }))
-  refreshQueueByAccountId.set(accountId, current)
-  await ready
-  try {
-    options.signal?.throwIfAborted()
-    options.onLockAcquired?.()
-    return await task()
-  } finally {
-    release()
-    if (refreshQueueByAccountId.get(accountId) === current) {
-      refreshQueueByAccountId.delete(accountId)
-    }
-  }
-}
-
-async function runWithRedisAccountRefreshLock<T>(
-  accountId: string,
-  task: () => Promise<T>,
-  options: Pick<OpenAIOAuthAccountRefreshCallOptions, 'lockMode' | 'onLockAcquired' | 'signal'>
-): Promise<T> {
-  const lockStore = createRuntimeStateStore('openai-oauth:refresh-locks')
-  const token = randomBytes(16).toString('hex')
-  const deadline = Date.now() + openAIOAuthRefreshLockWaitMs
-  while (true) {
-    options.signal?.throwIfAborted()
-    if (await lockStore.acquireLock(accountId, { ttlMs: openAIOAuthRefreshLockTtlMs, token })) {
-      break
-    }
-    if (options.lockMode === 'skip') {
-      throw new OpenAIOAuthRefreshLockBusyError()
-    }
-    if (Date.now() >= deadline) {
-      throw new Error('OpenAI OAuth 账户正在其他节点刷新，请稍后重试')
-    }
-    await delay(250)
-  }
-  try {
-    options.signal?.throwIfAborted()
-    options.onLockAcquired?.()
-    return await task()
-  } finally {
-    await lockStore.releaseLock(accountId, token).catch((error) => {
-      logger.error(errorLogFields(error, {
-        event: 'openai_oauth_access_token_refresh_lock_release_failed',
-        accountId
-      }), 'OpenAI OAuth Redis 刷新锁释放失败')
-    })
-  }
+  return await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, accountId, task, {
+    signal: options.signal,
+    failIfLocked: options.lockMode === 'skip',
+    onLockAcquired: options.onLockAcquired
+  })
 }
 
 function finalizeSuccessfulTokenRefresh(account: OpenAIOAuthRefreshAccount, options: OpenAIOAuthAccountRefreshCallOptions = {}): AccountSummary | RefreshedOpenAIOAuthAccount {

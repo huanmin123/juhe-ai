@@ -17,6 +17,7 @@ import {
 } from '../../views/accounts/accountModelMappingProtocolMatrix'
 
 const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
+const accountsViewSource = readFileSync(new URL('../../views/accounts/AccountsView.vue', import.meta.url), 'utf8')
 const accountApiKeySectionSource = readFileSync(new URL('../../views/accounts/AccountApiKeySection.vue', import.meta.url), 'utf8')
 const accountEditFormSource = readFileSync(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url), 'utf8')
 const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')
@@ -107,6 +108,16 @@ assertNotIncludes(
   '切换供应商时不得在用户展开模型控件前预加载模型目录'
 )
 assertIncludes(accountEditFormSource, 'async function loadCurrentProviderModelOptions', '账户表单必须保留模型控件交互时的按需加载入口')
+assertMatch(
+  accountsViewSource,
+  /function handleAccountModelOptionsOpen\(open: boolean\)[\s\S]*?if \(!open\) \{[\s\S]*?clearAccountModelOptionsSearchTimer\(\)/,
+  '关闭模型下拉必须清理尚未触发的搜索请求'
+)
+assertMatch(
+  accountsViewSource,
+  /watch\(modalOpen, \(open\) => \{[\s\S]*?clearAccountModelOptionsSearchTimer\(\)[\s\S]*?cancelAccountModelCatalogSync\(\)/,
+  '关闭账户弹窗必须同时失效搜索定时器和模型目录同步'
+)
 assertIncludes(
   accountEditModalSource,
   "credentialItem('supported_endpoint_modes', '上游接口能力'",

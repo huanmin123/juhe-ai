@@ -89,6 +89,7 @@ const listSource = source('../../views/audit-logs/AuditLogList.vue')
 const viewSource = source('../../views/audit-logs/AuditLogsView.vue')
 const detailSource = source('../../views/audit-logs/AuditLogDetailDrawer.vue')
 const filterFormSource = source('../../views/audit-logs/AuditLogFilterForm.vue')
+const globalStyleSource = source('../../styles/global.css')
 
 assert(listSource.includes("column.key === 'session'"), '审计列表必须提供会话列')
 assert(listSource.includes("emit('filter-session', record.sessionId)"), '会话 ID 必须可以一键精确筛选')
@@ -102,6 +103,7 @@ assert(filterFormSource.includes("{ label: 'Claude Code', value: 'claude_code' }
 assert(detailSource.includes('label="会话 ID"'), '审计详情必须显示会话 ID')
 assert(detailSource.includes('label="客户端类型"'), '审计详情必须显示客户端类型')
 assert(detailSource.includes('label="内部会话 Key"'), 'conversationKey 只能作为内部诊断字段展示')
+assert(/\.page-empty-card\s*\{[\s\S]*?flex-direction:\s*column/.test(globalStyleSource), '移动端长空状态必须纵向排列，不能让插图把说明挤成窄列')
 for (const removedField of ['线程 Key', '轮次 Key', 'Agent Key', '父响应 Key', '会话归一化']) {
   assert(!detailSource.includes(removedField), `审计详情不得继续展示${removedField}`)
 }

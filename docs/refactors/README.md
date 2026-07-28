@@ -1,6 +1,6 @@
 # 重构案例库
 
-- [REFACTOR-0004](重构-0004-管理接口场景DTO与字段级写入.md)：把 Node 管理列表、编辑、options、runtime、secret 和 mutation 从共享宽 Summary 拆为场景 DTO 与字段级写命令。
+- [REFACTOR-0004](重构-0004-管理接口场景DTO与字段级写入.md)：把 Node 管理列表、编辑、options、runtime、secret 和 mutation 从共享宽 Summary 拆为场景 DTO 与字段级写命令；Vue 配套按需消费，Go 未触碰。
 
 > 面向 AI 和维护者。
 > 这里记录每次有复用价值的重构设计、拆分过程、验证结果和复盘，用来沉淀可参考的历史案例。

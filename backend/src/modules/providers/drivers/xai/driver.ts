@@ -23,6 +23,7 @@ import {
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import { buildUpstreamUrls, splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
+import { copyOfficialOAuthClientRequestHeaders } from '../../../gateway/upstream/header-policy.js'
 import {
   buildUpstreamHeaders,
   buildUpstreamRequestBody,
@@ -82,7 +83,10 @@ export const xaiProviderDriver: ProviderDriver = {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
-    const headers = buildUpstreamHeaders(req.headers, account)
+    const headers = account.type === 'oauth'
+      ? copyOfficialOAuthClientRequestHeaders(req.headers, 'xai_grok')
+      : buildUpstreamHeaders(req.headers, account)
+    if (account.type === 'oauth') headers.set('authorization', `Bearer ${account.apiKey}`)
     if (account.type === 'oauth') {
       if (isGrokCliProxyBaseUrl(account.baseUrl)) {
         headers.set('user-agent', 'xai-grok-workspace/0.2.93')

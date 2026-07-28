@@ -1,6 +1,6 @@
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountGroupOptionSummary, GroupAuthorizationOption, GroupListItem, GroupListPageResult, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSelectOption, GroupSummary, GroupType, ResourceAuthorizationSourceSummary } from '../domain/types.js'
+import type { AccountGroupOptionSummary, GroupAuthorizationOption, GroupEditDetail, GroupListItem, GroupListPageResult, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSelectOption, GroupSummary, GroupType, ResourceAuthorizationSourceSummary } from '../domain/types.js'
 import { includeSystemAccountFields, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationSourcesByAuthorizationIdsAsync } from './authorization-read-loaders.js'
 import { groupAccountStatsFromRow } from './group-account-stats.mapper.js'
@@ -353,6 +353,24 @@ export async function findGroupSummaryAsync(id: string, access?: AccessScope): P
   }
   const row = await findGroupRowForAccessAsync(access, id)
   return row ? (await buildGroupSummariesAsync([row], access))[0] : undefined
+}
+
+export async function findGroupEditDetailAsync(id: string, access?: AccessScope): Promise<GroupEditDetail | undefined> {
+  const row = await findGroupRowForAccessAsync(access, id)
+  if (!row) return undefined
+  const authorized = row.access_type === 'authorized'
+  return {
+    id: row.id,
+    systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
+    name: row.name,
+    providerCode: row.provider_code,
+    description: row.description ?? undefined,
+    enabled: Number(row.enabled) === 1,
+    isDefault: authorized ? false : Number(row.is_default) === 1,
+    groupType: groupTypeFromRow(row),
+    schedulingPolicy: groupSchedulingPolicyFromRow(row),
+    accessType: row.access_type ?? 'owner'
+  }
 }
 
 export async function findGroupSummaryInClientAsync(client: DatabaseClient, id: string, access?: AccessScope): Promise<GroupSummary | undefined> {

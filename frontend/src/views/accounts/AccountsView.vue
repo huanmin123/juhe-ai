@@ -368,6 +368,7 @@ const {
   loading,
   accounts,
   providers,
+  providerDefinitions,
   systemAccounts,
   filters,
   accountSorts,
@@ -384,7 +385,7 @@ const {
   handleSystemAccountOptionsSearch,
   loadMoreMobileAccounts,
   refreshMobileAccounts: refreshMobileAccountList,
-  loadAccountOptions: loadAccountAuxiliaryOptions,
+  ensureProviderDefinition,
   loadData: loadAccountListData,
   refreshData: refreshAccountList,
   applyFilters,
@@ -686,6 +687,7 @@ const {
   handleSearch: handleGroupOptionsSearch,
   load: loadGroupOptions,
   loading: groupOptionsLoading,
+  resetEditGroupOptions,
   resetSearch: resetGroupOptionsSearch,
   setEditGroupOptionScope
 } = useAccountEditGroupOptions({
@@ -761,9 +763,10 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
-  loadAccountOptions: loadAccountAuxiliaryOptions,
+  ensureProviderDefinition,
   loadGroupOptions,
   loadData,
+  providerDefinitions,
   providers,
   draftApiKeyTestSnapshot,
   systemAccountSelection: computed(() => filters.systemAccount),
@@ -771,7 +774,11 @@ const {
 })
 
 function handleAccountModelOptionsOpen(open: boolean): void {
-  if (open) void loadCurrentProviderModelOptions()
+  if (!open) {
+    clearAccountModelOptionsSearchTimer()
+    return
+  }
+  void loadCurrentProviderModelOptions()
 }
 
 let modelCatalogSyncController: AbortController | undefined
@@ -851,11 +858,16 @@ async function refreshAccountModelCatalog(): Promise<void> {
   }
 }
 
-onBeforeUnmount(cancelAccountModelCatalogSync)
-
 let accountModelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearAccountModelOptionsSearchTimer(): void {
+  if (!accountModelOptionsSearchTimer) return
+  clearTimeout(accountModelOptionsSearchTimer)
+  accountModelOptionsSearchTimer = undefined
+}
+
 function handleAccountModelOptionsSearch(value: string): void {
-  if (accountModelOptionsSearchTimer) clearTimeout(accountModelOptionsSearchTimer)
+  clearAccountModelOptionsSearchTimer()
   accountModelOptionsSearchTimer = setTimeout(() => {
     accountModelOptionsSearchTimer = undefined
     void loadCurrentProviderModelOptions(value)
@@ -863,16 +875,32 @@ function handleAccountModelOptionsSearch(value: string): void {
 }
 
 function handleMappingModelOptionsOpen(protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void {
-  if (open) void loadMappingSourceModelOptions(protocol)
+  if (!open) {
+    clearAccountModelOptionsSearchTimer()
+    return
+  }
+  void loadMappingSourceModelOptions(protocol)
 }
 
 function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gemini', value: string): void {
-  if (accountModelOptionsSearchTimer) clearTimeout(accountModelOptionsSearchTimer)
+  clearAccountModelOptionsSearchTimer()
   accountModelOptionsSearchTimer = setTimeout(() => {
     accountModelOptionsSearchTimer = undefined
     void loadMappingSourceModelOptions(protocol, value)
   }, 250)
 }
+
+watch(modalOpen, (open) => {
+  if (open) return
+  clearAccountModelOptionsSearchTimer()
+  cancelAccountModelCatalogSync()
+  resetEditGroupOptions()
+})
+
+onBeforeUnmount(() => {
+  clearAccountModelOptionsSearchTimer()
+  cancelAccountModelCatalogSync()
+})
 
 watch(
   [

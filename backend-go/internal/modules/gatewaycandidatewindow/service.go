@@ -291,58 +291,20 @@ func effectiveQuality(candidate Candidate) *int64 {
 }
 
 func modelRank(candidate Candidate, model, endpointFamily string) int {
-	if len(candidate.SupportedModels) == 0 || strings.TrimSpace(model) == "" {
+	resolution, ok := ResolveEffectiveModel(candidate, model, endpointFamily)
+	if !ok {
 		return 3
 	}
-	for _, supported := range candidate.SupportedModels {
-		if strings.EqualFold(strings.TrimSpace(supported), model) {
-			return 0
-		}
-	}
-	for _, mapping := range candidate.ModelMappings {
-		if !mapping.Enabled {
-			continue
-		}
-		provider := candidate.Projection.ProviderCode
-		if candidate.Projection.ResourceProviderCode != "" {
-			provider = candidate.Projection.ResourceProviderCode
-		}
-		if mapping.ProviderCode != "" && !strings.EqualFold(strings.TrimSpace(mapping.ProviderCode), provider) {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(mapping.SourceModel), model) {
-			continue
-		}
-		family := strings.TrimSpace(mapping.SourceEndpointFamily)
-		if endpointFamily == "" || !strings.EqualFold(family, endpointFamily) {
-			continue
-		}
-		upstream := strings.TrimSpace(mapping.UpstreamModel)
-		upstreamFamily := strings.TrimSpace(mapping.UpstreamEndpointFamily)
-		if upstream == "" || (strings.EqualFold(upstream, model) && strings.EqualFold(upstreamFamily, family)) {
-			continue
-		}
-		if len(candidate.SupportedModels) > 0 && !supportsModel(candidate.SupportedModels, upstream) {
-			continue
-		}
+	if resolution.MappingApplied {
 		return 1
 	}
-	return 3
+	return 0
 }
 
 // CandidateSupportsRequest revalidates hydrated model facts immediately before
 // a caller builds an upstream attempt. It is not an authorization lease.
 func CandidateSupportsRequest(candidate Candidate, model, endpointFamily string) bool {
 	return modelRank(candidate, strings.TrimSpace(model), strings.TrimSpace(endpointFamily)) < 3
-}
-
-func supportsModel(models []string, wanted string) bool {
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model), wanted) {
-			return true
-		}
-	}
-	return false
 }
 
 func compareQuality(left, right *int64) int {

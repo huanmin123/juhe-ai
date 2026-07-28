@@ -104,7 +104,65 @@ try {
   assert.doesNotMatch(notesUpdate, /credentials_encrypted|status\s*=|name\s*=|concurrency_limit\s*=/i)
   assert.equal(relationDml(notesPatch.dml).length, 0, '备注 PATCH 不得重写模型、标签或分组关系')
   assert.doesNotMatch(notesPatch.sql.join('\n'), /\bcredentials_encrypted\b/i, '备注 PATCH 不得读取或解密账户凭据')
+  assert.doesNotMatch(
+    notesPatch.sql.join('\n'),
+    /\b(?:account_expires_at|availability_schedule_json|cooldown_until|last_error_code|health_check_model|balance_query_enabled|concurrency_limit|priority|proxy_profile_id)\b/i,
+    '备注 PATCH 只能读取定位、版本、归属、响应摘要与备注字段'
+  )
   assert.equal(notesPatch.result.healthCheckRequired, false, '备注 PATCH 不得触发健康检查')
+
+  const scopedOwner = repositories.createSystemAccount({
+    username: 'patchscopedowner',
+    displayName: 'PATCH归属用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const scopedIntruder = repositories.createSystemAccount({
+    username: 'patchscopedintruder',
+    displayName: 'PATCH越权用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const scopedOwnerAccess = { systemAccountId: scopedOwner.id, role: 'user' as const }
+  const scopedIntruderAccess = { systemAccountId: scopedIntruder.id, role: 'user' as const }
+  const scopedGroup = repositories.createGroup({
+    providerCode: 'gpt',
+    name: 'PATCH归属分组',
+    enabled: true
+  }, scopedOwnerAccess)
+  const scopedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'PATCH归属账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-management-patch-owner-scope',
+      base_url: 'https://api.openai.com/v1'
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId: scopedGroup.id,
+    status: 'active',
+    skipInitialHealthCheck: true
+  }, scopedOwnerAccess)
+  const deniedCrossOwnerPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(
+    scopedAccount.id,
+    { expectedConfigRevision: 1, notes: '越权备注' },
+    scopedIntruderAccess
+  ))
+  assert.equal(deniedCrossOwnerPatch.result, undefined, '跨用户 PATCH 必须按不可见资源处理')
+  assert.deepEqual(deniedCrossOwnerPatch.dml, [], '跨用户 PATCH 不得执行任何业务 DML')
+  const deniedSelect = deniedCrossOwnerPatch.sql.find((sql) => /^SELECT\b/i.test(sql))
+  assert(deniedSelect, '跨用户 PATCH 必须执行受限定位查询')
+  assert.match(
+    deniedSelect,
+    /WHERE id = \? AND deleted_at IS NULL AND "?system_account_id"? = \?/i,
+    'owner 条件必须进入锁行查询，不能先按 id 锁行再做内存校验'
+  )
 
   const stale = await captureBusinessDml(() => assert.rejects(
     patchRepository.patchAccountManagementAsync(account.id, {
@@ -220,48 +278,69 @@ try {
 
   database.prepare(`
     UPDATE accounts
-    SET cooldown_until = ?,
+    SET account_expires_at = ?,
+        cooldown_until = ?,
         last_error_code = 'stale_runtime',
         last_error_message = '待归一化运行态'
     WHERE id = ?
-  `).run(new Date(Date.now() + 60_000).toISOString(), oauthAccount.id)
+  `).run(
+    new Date(Date.now() - 60_000).toISOString(),
+    new Date(Date.now() + 60_000).toISOString(),
+    oauthAccount.id
+  )
   const gatewayInvalidationReasons: string[] = []
   const unregisterGatewayInvalidation = registerGatewayRuntimeCacheInvalidator((reason) => {
     gatewayInvalidationReasons.push(reason)
   })
-  const runtimeNormalization = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
-    expectedConfigRevision: 3,
-    status: 'active'
-  }, access)).finally(unregisterGatewayInvalidation)
-  assert(runtimeNormalization.result)
-  assert.equal(runtimeNormalization.result.configRevision, 4)
-  assert.deepEqual(runtimeNormalization.result.changedFields, ['runtimeState'])
-  assert.equal(runtimeNormalization.result.healthCheckRequired, false)
-  const runtimeUpdate = requiredAccountUpdate(runtimeNormalization.dml)
-  assert.match(runtimeUpdate, /"cooldown_until"\s*=\s*\?/i)
-  assert.match(runtimeUpdate, /"last_error_code"\s*=\s*\?/i)
-  assert.match(runtimeUpdate, /"last_error_message"\s*=\s*\?/i)
-  assert.doesNotMatch(runtimeUpdate, /"status"\s*=\s*\?/i, '同状态 PATCH 不得重写 status')
-  assert.equal(relationDml(runtimeNormalization.dml).length, 0, '运行态归一化不得重写关系表')
-  assert(
-    runtimeNormalization.dml.some((sql) => /^INSERT INTO "?group_account_stats_dirty"?/i.test(sql)),
-    '运行态归一化必须标记分组统计过期'
-  )
-  assert.deepEqual(gatewayInvalidationReasons, ['account_management_patch'], '运行态归一化必须失效网关运行时')
-  const normalizedRuntimeRow = database.prepare(`
-    SELECT cooldown_until, last_error_code, last_error_message, config_revision
+  try {
+    const sameStatus = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+      expectedConfigRevision: 3,
+      status: 'active'
+    }, access))
+    assert(sameStatus.result)
+    assert.equal(sameStatus.result.configRevision, 3)
+    assert.deepEqual(sameStatus.result.changedFields, [])
+    assert.deepEqual(sameStatus.dml, [], '同值 status PATCH 不得借机清理运行态或推进版本')
+
+    const unrelatedExpiredPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+      expectedConfigRevision: 3,
+      notes: '只修改已过期账户备注'
+    }, access))
+    assert(unrelatedExpiredPatch.result)
+    assert.equal(unrelatedExpiredPatch.result.configRevision, 4)
+    assert.deepEqual(unrelatedExpiredPatch.result.changedFields, ['notes'])
+    const unrelatedUpdate = requiredAccountUpdate(unrelatedExpiredPatch.dml)
+    assert.match(unrelatedUpdate, /"notes"\s*=\s*\?/i)
+    assert.doesNotMatch(
+      unrelatedUpdate,
+      /"(?:account_expires_at|status|schedulable|cooldown_until|last_error_code|last_error_message)"\s*=/i,
+      '未提交到期或状态字段时不得隐式归一化账户状态'
+    )
+  } finally {
+    unregisterGatewayInvalidation()
+  }
+  assert.deepEqual(gatewayInvalidationReasons, [], '同值状态和备注 PATCH 不得失效网关运行时')
+  const preservedRuntimeRow = database.prepare(`
+    SELECT account_expires_at, status, schedulable, cooldown_until,
+      last_error_code, last_error_message, config_revision
     FROM accounts
     WHERE id = ?
   `).get(oauthAccount.id) as unknown as {
+    account_expires_at: string | null
+    status: string
+    schedulable: number
     cooldown_until: string | null
     last_error_code: string | null
     last_error_message: string | null
     config_revision: number
   }
-  assert.equal(normalizedRuntimeRow.cooldown_until, null)
-  assert.equal(normalizedRuntimeRow.last_error_code, null)
-  assert.equal(normalizedRuntimeRow.last_error_message, null)
-  assert.equal(normalizedRuntimeRow.config_revision, 4)
+  assert(preservedRuntimeRow.account_expires_at, '回归账户必须保留已过期时间')
+  assert.equal(preservedRuntimeRow.status, 'active')
+  assert.equal(preservedRuntimeRow.schedulable, 1)
+  assert(preservedRuntimeRow.cooldown_until, '同值状态不得清空 cooldown')
+  assert.equal(preservedRuntimeRow.last_error_code, 'stale_runtime')
+  assert.equal(preservedRuntimeRow.last_error_message, '待归一化运行态')
+  assert.equal(preservedRuntimeRow.config_revision, 4)
 
   const app = express()
   app.use(express.json())
@@ -322,7 +401,7 @@ try {
 
   const authorizationOwner = repositories.createSystemAccount({
     username: 'patchauthowner',
-    displayName: '授权 PATCH 来源用户',
+    displayName: '授权PATCH来源用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -330,7 +409,7 @@ try {
   })
   const authorizationGrantee = repositories.createSystemAccount({
     username: 'patchauthgrantee',
-    displayName: '授权 PATCH 被授权用户',
+    displayName: '授权PATCH被授权用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -379,6 +458,14 @@ try {
   const authorizationInstance = repositories.listAccounts(authorizationGranteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === authorizationSourceAccount.id)
   assert(authorizationInstance, '账户授权应创建被授权者本地实例')
+  const sourceControlledAuthorizedPatch = await captureBusinessDml(() => assert.rejects(
+    patchRepository.patchAccountManagementAsync(authorizationInstance.id, {
+      expectedConfigRevision: authorizationInstance.configRevision ?? 1,
+      notes: '不得覆盖来源字段'
+    }, authorizationGranteeAccess),
+    /授权账户配置由来源账户控制/
+  ))
+  assert.deepEqual(sourceControlledAuthorizedPatch.dml, [], '授权实例来源字段必须在任何业务写入前拒绝')
   const authorizedLocalPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(
     authorizationInstance.id,
     {
@@ -397,18 +484,26 @@ try {
   assert(authorizedLocalPatch.dml.some((sql) => /account_tag_bindings/i.test(sql)), '授权本地标签变化必须只更新标签关系')
   assert.doesNotMatch(authorizedLocalPatch.sql.join('\n'), /credentials_encrypted/i, '授权本地 PATCH 不得读取来源或实例凭据')
 
+  const authorizationInstanceRow = database.prepare(`
+    SELECT authorization_instance_authorization_id
+    FROM accounts
+    WHERE id = ?
+  `).get(authorizationInstance.id) as unknown as { authorization_instance_authorization_id?: string }
+  assert(authorizationInstanceRow.authorization_instance_authorization_id, '授权实例必须保留授权记录 ID')
   database.prepare(`
     UPDATE resource_authorizations
     SET status = 'revoked', updated_at = ?
     WHERE id = ?
-  `).run(new Date().toISOString(), authorization.id)
-  const revokedAuthorizationPatch = await captureBusinessDml(() => assert.rejects(
-    patchRepository.patchAccountManagementAsync(authorizationInstance.id, {
+  `).run(new Date().toISOString(), authorizationInstanceRow.authorization_instance_authorization_id)
+  const revokedAuthorizationPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(
+    authorizationInstance.id,
+    {
       expectedConfigRevision: authorizedLocalPatch.result?.configRevision ?? 2,
       tags: ['不得写入']
-    }, authorizationGranteeAccess),
-    /账户授权已失效/
+    },
+    authorizationGranteeAccess
   ))
+  assert.equal(revokedAuthorizationPatch.result, undefined, '失效授权实例必须按不可见资源处理')
   assert.deepEqual(revokedAuthorizationPatch.dml, [], '失效授权必须在任何业务写入前拒绝本地 PATCH')
 
   database.prepare(`
@@ -452,13 +547,15 @@ try {
     WHERE id = ?
   `).run(oauthAccount.id, account.id)
   try {
-    const sourceMarkedAuthorizationPatch = await captureBusinessDml(() => assert.rejects(
-      patchRepository.patchAccountManagementAsync(account.id, {
+    const sourceMarkedAuthorizationPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(
+      account.id,
+      {
         expectedConfigRevision: 6,
         notes: '授权实例不得按 owner 更新'
-      }, access),
-      /授权账户配置由来源账户控制/
+      },
+      access
     ))
+    assert.equal(sourceMarkedAuthorizationPatch.result, undefined, '缺少有效授权记录的实例标记必须按不可见资源处理')
     assert.deepEqual(sourceMarkedAuthorizationPatch.dml, [], '仅 source_account_id 标记的授权实例也不得执行 owner PATCH DML')
     assert.equal(accountRow(account.id).config_revision, 6)
     assert.equal(accountRow(account.id).notes, 'HTTP 最小响应验证')
