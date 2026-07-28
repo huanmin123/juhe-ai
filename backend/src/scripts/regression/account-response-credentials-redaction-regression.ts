@@ -130,13 +130,10 @@ try {
     assert.equal(Object.prototype.hasOwnProperty.call(account, 'apiKeyRuntimeDetails'), false, '账户列表响应不应返回 API Key 运行明细')
   }
 
-  const basicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
-  assertNoInternalRuntimeLeak(basicDetail, '账户基础详情响应')
-  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'credentials'), false, '账户基础详情不应返回 credentials 字段')
-  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'supportedModels'), false, '账户基础详情不应返回 supportedModels 字段')
-  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'modelMappings'), false, '账户基础详情不应返回 modelMappings 字段')
-  assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'apiKeyRuntimeDetails'), false, '账户基础详情不应返回 API Key 运行明细')
-  assertNoCredentialLeak(basicDetail, '账户基础详情响应')
+  const legacyDetail = await fetch(`${baseUrl}/__aisys__/api/accounts/${seed.apiKeyAccountId}`, {
+    headers: { cookie: seed.adminCookie }
+  })
+  assert.equal(legacyDetail.status, 404, '无场景的 legacy 账户详情入口应已移除')
 
   const unsafeRuntime = publicAccountRuntimeAvailability({
     status: 'precheck_pending',

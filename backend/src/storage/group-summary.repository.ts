@@ -1,6 +1,6 @@
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountGroupOptionSummary, GroupAuthorizationOption, GroupEditDetail, GroupListItem, GroupListPageResult, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSelectOption, GroupSummary, GroupType, ResourceAuthorizationSourceSummary } from '../domain/types.js'
+import type { AccountGroupOptionSummary, GroupAuthorizationOption, GroupEditDetail, GroupListItem, GroupListPageResult, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSelectOption, GroupSummary, GroupType, ResourceAuthorizationSourceSummary, RouteStrategyGroupOption } from '../domain/types.js'
 import { includeSystemAccountFields, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationSourcesByAuthorizationIdsAsync } from './authorization-read-loaders.js'
 import { groupAccountStatsFromRow } from './group-account-stats.mapper.js'
@@ -19,6 +19,7 @@ import {
   listGroupRowsForAccessAsync,
   listGroupRowsPageForAccess,
   listGroupRowsPageForAccessAsync,
+  listRouteStrategyGroupOptionRowsForAccessAsync,
   loadGroupAuthorizationUsageSummaries,
   loadGroupAuthorizationUsageSummariesAsync,
   type GroupListOptions,
@@ -256,6 +257,16 @@ export async function listGroupSelectOptionsAsync(access?: AccessScope, options?
     ? await listGroupOptionRowsForAccessAsync(access, options)
     : listGroupOptionRowsForAccess(access, options)
   return rows.map(groupSelectOptionFromRow)
+}
+
+export async function listRouteStrategyGroupOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<RouteStrategyGroupOption[]> {
+  const rows = await listRouteStrategyGroupOptionRowsForAccessAsync(access, options)
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    providerCode: row.provider_code,
+    enabled: row.enabled === true || Number(row.enabled) === 1
+  }))
 }
 
 export function listGroupAuthorizationOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupAuthorizationOption[] {

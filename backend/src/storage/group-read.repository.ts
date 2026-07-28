@@ -36,6 +36,13 @@ export interface GroupRowsPage {
   pageSize: number
 }
 
+export interface RouteStrategyGroupOptionRow {
+  id: string
+  name: string
+  provider_code: string
+  enabled: number | boolean
+}
+
 interface NormalizedGroupListOptions {
   ids: string[]
   keyword?: string
@@ -108,6 +115,18 @@ export async function listGroupOptionRowsForAccessInClientAsync(
     ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
     : undefined
   return (await queryGroupRowsForAccessInClientAsync(client, access, pagination, listOptions)).rows
+}
+
+export async function listRouteStrategyGroupOptionRowsForAccessAsync(
+  access?: AccessScope,
+  options?: GroupOptionListOptions
+): Promise<RouteStrategyGroupOptionRow[]> {
+  const listOptions = normalizeGroupOptionListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  const client = await getGroupReadDatabaseClient()
+  return queryRouteStrategyGroupOptionRowsForAccessInClientAsync(client, access, pagination, listOptions)
 }
 
 export async function listGroupRowsPageForAccessAsync(access: AccessScope | undefined, options?: GroupListOptions): Promise<GroupRowsPage> {
@@ -267,6 +286,74 @@ async function queryGroupRowsForAccessInClientAsync(
     ${pageClause}
   `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId, ...outerFilter.params, ...pageParams])
   return { rows }
+}
+
+async function queryRouteStrategyGroupOptionRowsForAccessInClientAsync(
+  client: DatabaseClient,
+  access?: AccessScope,
+  pagination?: { limit: number; offset: number },
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }
+): Promise<RouteStrategyGroupOptionRow[]> {
+  const groupsTable = groupTable(client, 'groups')
+  const resourceAuthorizationsTable = groupTable(client, 'resource_authorizations')
+  const groupAuthorizationSettingsTable = groupTable(client, 'group_authorization_settings')
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  const orderClause = groupOrderClause(options.preferDefault)
+  const directFilter = buildGroupFilterForClient(client, 'groups', options)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return client.query<RouteStrategyGroupOptionRow>(`
+      SELECT groups.id, groups.name, groups.provider_code, groups.enabled
+      FROM ${groupsTable} groups
+      ${whereClause(directFilter.clauses)}
+      ${orderClause}
+      ${pageClause}
+    `, [...directFilter.params, ...pageParams])
+  }
+  if (!viewerSystemAccountId) {
+    throw new Error('缺少系统账户上下文')
+  }
+  if (options.manageableOnly) {
+    const ownerFilter = buildGroupFilterForClient(client, 'groups', options, ['groups.system_account_id = ?'], [ownerSystemAccountId ?? viewerSystemAccountId])
+    return client.query<RouteStrategyGroupOptionRow>(`
+      SELECT groups.id, groups.name, groups.provider_code, groups.enabled
+      FROM ${groupsTable} groups
+      ${whereClause(ownerFilter.clauses)}
+      ${orderClause}
+      ${pageClause}
+    `, [...ownerFilter.params, ...pageParams])
+  }
+  const outerFilter = buildGroupFilterForClient(client, undefined, options)
+  return client.query<RouteStrategyGroupOptionRow>(`
+    SELECT id, name, provider_code, enabled FROM (
+      SELECT groups.id, groups.name, groups.provider_code, groups.enabled, groups.is_default, groups.updated_at
+      FROM ${groupsTable} groups
+      WHERE groups.system_account_id = ?
+      UNION ALL
+      SELECT
+        groups.id,
+        groups.name,
+        groups.provider_code,
+        CASE WHEN groups.enabled = 1 THEN COALESCE(authorization_settings.enabled, 1) ELSE 0 END AS enabled,
+        groups.is_default,
+        COALESCE(authorization_settings.updated_at, groups.updated_at) AS updated_at
+      FROM ${resourceAuthorizationsTable} ra
+      INNER JOIN ${groupsTable} groups ON groups.id = ra.resource_id
+      LEFT JOIN ${groupAuthorizationSettingsTable} authorization_settings
+        ON authorization_settings.authorization_id = ra.id
+        AND authorization_settings.system_account_id = ra.grantee_system_account_id
+        AND authorization_settings.group_id = ra.resource_id
+      WHERE ra.resource_type = 'group'
+        AND ra.grantee_system_account_id = ?
+        AND ra.status IN ('active', 'paused', 'expired')
+        AND groups.system_account_id <> ?
+    ) group_rows
+    ${whereClause(outerFilter.clauses)}
+    ${orderClause}
+    ${pageClause}
+  `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId, ...outerFilter.params, ...pageParams])
 }
 
 export function findGroupRowForAccess(access: AccessScope | undefined, groupId: string): GroupListRow | undefined {

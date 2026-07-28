@@ -1608,6 +1608,11 @@ export interface GroupSelectOption {
   name: string
 }
 
+export interface RouteStrategyGroupOption extends GroupSelectOption {
+  providerCode: string
+  enabled: boolean
+}
+
 export interface GroupAuthorizationOption extends GroupSelectOption {
   canAuthorize: boolean
 }

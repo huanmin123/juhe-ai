@@ -94,7 +94,7 @@ func BuildRequest(input RequestInput) (RequestSpec, error) {
 			body["max_output_tokens"] = 1
 			body["store"] = false
 		}
-		if stream && strings.EqualFold(strings.TrimSpace(input.ClientCompatibility), "codex_responses") {
+		if (stream || input.OAuth) && strings.EqualFold(strings.TrimSpace(input.ClientCompatibility), "codex_responses") {
 			body["store"] = false
 			body["include"] = []string{"reasoning.encrypted_content"}
 			normalizeCodexResponsesRequest(header, body, input.Model)

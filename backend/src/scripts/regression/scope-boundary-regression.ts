@@ -376,8 +376,12 @@ async function main(): Promise<void> {
     assert(userAAuthorizedAccount.proxyProfileId === seed.userBProxyId, '用户 A 的授权实例应从来源账户补齐代理配置')
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
-    const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
-    assert(!userAOwnAccountDetail.credentials, '用户 A 的普通账户详情不应返回凭据')
+    await assertStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/${seed.userAAccountId}`,
+      seed.userACookie,
+      404,
+      '用户 A 的 legacy 账户详情入口应已移除'
+    )
     const userAOwnAccountEditDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}/edit-basic`, seed.userACookie)
     assert(userAOwnAccountEditDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能从编辑详情读取非敏感 Base URL')
     assert(userAOwnAccountEditDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 自有账户编辑详情应返回明文 API Key')

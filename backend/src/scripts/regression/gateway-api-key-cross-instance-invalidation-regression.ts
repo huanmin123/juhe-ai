@@ -12,6 +12,8 @@ const repositorySource = readFileSync(new URL('../../storage/gateway-api-key.rep
 const invalidationSource = readFileSync(new URL('../../shared/gateway-cache-invalidation.ts', import.meta.url), 'utf8')
 const dbServiceIpcSource = readFileSync(new URL('../../modules/db-service/db-service-ipc.ts', import.meta.url), 'utf8')
 const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
+const runtimeCacheSource = readFileSync(new URL('../../modules/gateway/runtime/runtime-cache.service.ts', import.meta.url), 'utf8')
+const preAuthSource = readFileSync(new URL('../../modules/gateway/request/pre-auth.ts', import.meta.url), 'utf8')
 const body = functionBody(repositorySource, 'validateGatewayApiKeyAsync')
 const synchronization = body.indexOf("await syncGatewayCacheInvalidationsFromRuntimeState({ force: true })")
 const processCacheRead = body.indexOf('gatewayApiKeyProcessCache.get(keyHash)')
@@ -84,6 +86,20 @@ assert.match(dbServiceIpcSource, /db_service_gateway_api_key_cache_invalidation_
 assert(dbServiceIpcSource.includes('await applyGatewayApiKeyValidationCacheInvalidationFromIpcAsync(apiKeyId, keyHashes)'), 'server 回执前必须完成本地 API Key 校验和运行时缓存清理')
 assert.match(dbServiceTypesSource, /type: 'db_service_gateway_api_key_cache_invalidation_request'/, 'IPC 类型必须声明 API Key 缓存失效请求')
 assert.match(dbServiceTypesSource, /type: 'db_service_gateway_api_key_cache_invalidation_response'/, 'IPC 类型必须声明 API Key 缓存失效回执')
+
+const runtimeReadBody = functionBody(runtimeCacheSource, 'readCachedGatewayRuntimeAsync')
+const runtimeSynchronization = runtimeReadBody.indexOf("await syncGatewayCacheInvalidationsFromRuntimeState({ force: true })")
+const runtimeProcessCacheRead = runtimeReadBody.indexOf('gatewayRuntimeCache.get(cacheKey)')
+assert(runtimeSynchronization >= 0, '普通网关鉴权也必须强制同步 Redis API Key 失效版本')
+assert(runtimeProcessCacheRead > runtimeSynchronization, '普通网关鉴权必须先同步失效版本，再信任 runtime 快照')
+assert.doesNotMatch(runtimeReadBody, /syncGatewayCacheInvalidationsBestEffort/, '普通网关鉴权不得吞掉 Redis 同步失败并继续放行旧 runtime')
+assert.match(functionBody(preAuthSource, 'resolveGatewayRuntimeAsync'), /await readCachedGatewayRuntimeAsync\(gatewayApiKey\)/, '普通 pre-auth 必须走受严格失效同步保护的 runtime 读取')
+assert.doesNotMatch(runtimeCacheSource, /gatewayRuntimeKeyGenerationCache/, '运行时旧读围栏不得依赖可淘汰的 per-key LRU marker')
+assert.match(
+  functionBody(runtimeCacheSource, 'invalidateGatewayRuntimeCacheByApiKeyId'),
+  /gatewayApiKeyRuntimeCacheGeneration \+= 1[\s\S]*pendingGatewayRuntimeLoads\.delete\(cacheKey\)/,
+  '定点 API Key 失效必须先推进不可淘汰 epoch，再删除目标 pending load'
+)
 
 await assertIpcInvalidationAwaitsHandlers()
 await assertMemoryRuntimeStateCrossProcessInvalidation()

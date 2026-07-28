@@ -12,6 +12,8 @@ import (
 
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/platform/upstreamtransport"
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -76,22 +78,28 @@ func (r RedisOAuthRefreshLockRunner) WithOAuthRefreshLock(
 	})
 }
 
-type OAuthRefreshTransportExecutor struct{ Factory CandidateTransportFactory }
+type OAuthRefreshTransportExecutor struct {
+	Factory   CandidateTransportFactory
+	URLPolicy upstreamurlpolicy.Config
+}
 
 func (e OAuthRefreshTransportExecutor) ExecuteOAuthRefresh(
 	ctx context.Context,
 	candidate gatewaycandidatewindow.Candidate,
 	request OAuthRefreshRequest,
 ) (OAuthRefreshHTTPResponse, error) {
-	if e.Factory == nil {
-		return OAuthRefreshHTTPResponse{}, fmt.Errorf("OAuth refresh transport factory is required")
-	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, request.URL(), bytes.NewReader(request.Body()))
 	if err != nil {
 		return OAuthRefreshHTTPResponse{}, fmt.Errorf("build OAuth refresh request: %w", err)
 	}
 	httpRequest.Header = request.Header()
-	transport, err := e.Factory.New(candidate)
+	factory := e.Factory
+	if factory == nil {
+		factory = TransportFactory{
+			Timeout: request.Timeout(), MaxResponseBodyBytes: int64(request.MaxResponseBytes()), URLPolicy: e.URLPolicy,
+		}
+	}
+	transport, err := factory.New(candidate)
 	if err != nil {
 		return OAuthRefreshHTTPResponse{}, err
 	}
@@ -176,6 +184,37 @@ func (a OAuthCredentialCASAdapter) CompareAndSwapOAuthProbeCredentials(
 
 type OAuthGeminiRefreshEnricher struct{ Enricher *GeminiOAuthEnricher }
 
+type GeminiOAuthEnrichmentTransportExecutor struct {
+	URLPolicy upstreamurlpolicy.Config
+}
+
+func (e GeminiOAuthEnrichmentTransportExecutor) ExecuteGeminiOAuthEnrichment(
+	ctx context.Context,
+	request GeminiOAuthEnrichmentHTTPRequest,
+) (GeminiOAuthEnrichmentHTTPResponse, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, request.Method(), request.URL(), bytes.NewReader(request.Body()))
+	if err != nil {
+		return GeminiOAuthEnrichmentHTTPResponse{}, fmt.Errorf("build Gemini OAuth enrichment request: %w", err)
+	}
+	httpRequest.Header = request.Header()
+	transport, err := upstreamtransport.NewClient(upstreamtransport.Options{
+		Timeout: request.Timeout(), MaxResponseBodyBytes: int64(request.MaxResponseBytes()),
+		ProxyURL: request.ProxyURL(), URLPolicy: e.URLPolicy,
+	})
+	if err != nil {
+		return GeminiOAuthEnrichmentHTTPResponse{}, fmt.Errorf("create Gemini OAuth enrichment transport: %w", err)
+	}
+	defer transport.CloseIdleConnections()
+	result, executeErr := transport.ExecuteWithFence(ctx, httpRequest, nil)
+	if !result.FramingComplete {
+		if executeErr == nil {
+			executeErr = fmt.Errorf("Gemini OAuth enrichment response framing is incomplete")
+		}
+		return GeminiOAuthEnrichmentHTTPResponse{}, executeErr
+	}
+	return NewGeminiOAuthEnrichmentHTTPResponse(result.StatusCode, result.Body, result.BodyTruncated), nil
+}
+
 func (e OAuthGeminiRefreshEnricher) EnrichOAuthRefresh(
 	ctx context.Context,
 	candidate gatewaycandidatewindow.Candidate,
@@ -235,3 +274,4 @@ var _ OAuthRefreshLockRunner = RedisOAuthRefreshLockRunner{}
 var _ OAuthRefreshHTTPExecutor = OAuthRefreshTransportExecutor{}
 var _ OAuthCredentialCAS = OAuthCredentialCASAdapter{}
 var _ OAuthRefreshEnricher = OAuthGeminiRefreshEnricher{}
+var _ GeminiOAuthEnrichmentHTTPExecutor = GeminiOAuthEnrichmentTransportExecutor{}

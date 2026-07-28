@@ -6,7 +6,6 @@ import type {
   AccountCreateResult,
   AccountEditBasicDetail,
   AccountListItem,
-  AccountSummary,
   OAuthAuthURLResult,
   ProviderDefinition
 } from '@/types/domain'
@@ -344,7 +343,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     options.modalOpen.value = false
   }
 
-  async function createOAuthAccountFromUnifiedForm(): Promise<AccountSummary> {
+  async function createOAuthAccountFromUnifiedForm(): Promise<AccountCreateResult> {
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
       editingId: options.editingId.value,
@@ -496,7 +495,7 @@ async function createManagedOAuthAccountFromCode(
   payload: Record<string, unknown>,
   scopeParams: AccountScopeParams,
   isManagementView: boolean
-): Promise<AccountSummary> {
+): Promise<AccountCreateResult> {
   const providerKind = resolveManagedOAuthProvider(form, providers)
   if (providerKind === 'anthropic') {
     return isManagementView
@@ -525,7 +524,7 @@ async function createManagedOAuthAccountFromRefreshToken(
   payload: Record<string, unknown>,
   scopeParams: AccountScopeParams,
   isManagementView: boolean
-): Promise<AccountSummary> {
+): Promise<AccountCreateResult> {
   const providerKind = resolveManagedOAuthProvider(form, providers)
   if (providerKind === 'anthropic') {
     return isManagementView

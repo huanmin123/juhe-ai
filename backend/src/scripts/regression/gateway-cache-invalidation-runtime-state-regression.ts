@@ -56,11 +56,16 @@ for (const functionName of [
   'listCachedOpenAIAccountsForGroupAsync',
   'listCachedProviderModelCatalogAsync',
   'resolveCachedProviderModelRouteAsync',
-  'listCachedActiveResponseInspectionPoliciesAsync',
-  'readCachedGatewayRuntimeAsync'
+  'listCachedActiveResponseInspectionPoliciesAsync'
 ]) {
   assertFunctionCallsRuntimeStateSync(runtimeCacheSource, functionName)
 }
+const gatewayRuntimeReadBlock = sourceFunctionBlock(runtimeCacheSource, 'export async function readCachedGatewayRuntimeAsync')
+const forcedApiKeyRuntimeSync = gatewayRuntimeReadBlock.indexOf('await syncGatewayCacheInvalidationsFromRuntimeState({ force: true })')
+const gatewayRuntimeCacheRead = gatewayRuntimeReadBlock.indexOf('gatewayRuntimeCache.get(cacheKey)')
+assert(forcedApiKeyRuntimeSync >= 0, 'API Key 运行时鉴权必须强制同步 Redis 失效版本')
+assert(gatewayRuntimeCacheRead > forcedApiKeyRuntimeSync, 'API Key 运行时鉴权必须先同步失效版本，再信任本地 runtime cache')
+assert.doesNotMatch(gatewayRuntimeReadBlock, /syncGatewayCacheInvalidationsBestEffort/, 'API Key 运行时鉴权不得吞掉 Redis 同步失败后继续使用旧快照')
 assert.match(
   sourceFunctionBlock(runtimeCacheSource, 'function syncGatewayCacheInvalidationsBestEffort'),
   /await syncGatewayCacheInvalidationsFromRuntimeState\(\)/,

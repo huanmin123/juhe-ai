@@ -5,6 +5,7 @@
 
 ## 文档索引
 
+- [Codex Reasoning 完整性检测源码审计报告（2026-07-28）](CodexReasoning完整性检测源码审计报告-2026-07-28.md)：核对 reasoning item、summary、encrypted content、SSE 终态与 juhe-ai 缺口，区分确定协议失败、合法不可见和语义启发式异常。
 - [Codex Responses 双向协议防护验证报告（2026-07-28）](CodexResponses双向协议防护验证报告-2026-07-28.md)：记录目标生产会话的请求/响应 ID 污染证据、双检查点和 identity 暴露边界修复，以及 JSON/SSE 性能门禁。
 - [performance 进程指标活跃索引修复验证报告（2026-07-27）](performance进程指标活跃索引修复验证报告-2026-07-27.md)：记录生产漏采根因、Redis 活跃索引与部署 freshness fence、真实 Redis/PostgreSQL 验证，以及当前不扩容 Gateway 的证据边界。
 - [全链路请求性能审计报告（2026-07-26）](全链路请求性能审计报告-2026-07-26.md)：记录 Node 用户请求限制的纯内存热路径、Redis 后台协调、100 万次基准、到期语义和本轮不扩大的既有全链路性能边界。

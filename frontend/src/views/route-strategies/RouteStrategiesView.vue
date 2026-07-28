@@ -499,7 +499,7 @@ import type {
   ApiKeyHybridQualityInspectionUnavailableAction,
   ApiKeyHybridQualityPreference,
   ApiKeyHybridRoutingConfig,
-  GroupOptionSummary,
+  RouteStrategyGroupOption,
   RouteStrategyEditBasicDetail,
   RouteStrategyNormalRoutingConfig,
   RouteStrategyNormalSchedulingPreference,
@@ -604,7 +604,7 @@ const items = ref<RouteStrategyListItem[]>([])
 const total = ref(0)
 const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
-const groupOptionsRaw = ref<GroupOptionSummary[]>([])
+const groupOptionsRaw = ref<RouteStrategyGroupOption[]>([])
 const groupOptionsLoading = ref(false)
 const groupOptionsLoaded = ref(false)
 let groupOptionsRequestToken = 0
@@ -1373,15 +1373,15 @@ function createBindingRow(
   }
 }
 
-function selectedGroupOptionsFromBindings(bindings: RouteStrategyGroupBindingSummary[]): GroupOptionSummary[] {
-  const selectedGroups = new Map<string, GroupOptionSummary>()
+function selectedGroupOptionsFromBindings(bindings: RouteStrategyGroupBindingSummary[]): RouteStrategyGroupOption[] {
+  const selectedGroups = new Map<string, RouteStrategyGroupOption>()
   for (const binding of bindings) {
     const id = binding.groupId.trim()
     if (!id) continue
     selectedGroups.set(id, {
       id,
       name: binding.groupName?.trim() || id,
-      providerCode: binding.providerCode?.trim() || undefined,
+      providerCode: binding.providerCode?.trim() || '',
       enabled: binding.groupEnabled
     })
   }
@@ -1433,6 +1433,7 @@ async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
         systemAccountId: operationScopeParams?.systemAccountId,
         keyword,
         selectedIds: normalizedSelectedIds,
+        selectedOptions: groupOptionsRaw.value,
         isCurrent: () => requestToken === groupOptionsRequestToken,
         apply: (groups) => {
           const currentSelectedIds = new Set(form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))

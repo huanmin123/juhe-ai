@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	"juhe-ai/backend-go/internal/platform/upstreamtransport"
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -93,6 +95,57 @@ func TestOAuthRefreshTransportExecutorRequiresCompleteFraming(t *testing.T) {
 	transport.err = errors.New("read failed")
 	if _, err := executor.ExecuteOAuthRefresh(t.Context(), gatewaycandidatewindow.Candidate{}, request); err == nil {
 		t.Fatal("incomplete OAuth refresh framing was accepted")
+	}
+}
+
+func TestOAuthRefreshTransportExecutorAppliesRequestTimeoutAndBodyBound(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			select {
+			case <-request.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+				_, _ = writer.Write([]byte(`{"access_token":"late"}`))
+			}
+		}))
+		defer server.Close()
+		request := OAuthRefreshRequest{provider: OAuthOpenAI, url: server.URL, header: make(http.Header), body: []byte(`{}`), timeout: 20 * time.Millisecond}
+		executor := OAuthRefreshTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}}
+		if _, err := executor.ExecuteOAuthRefresh(t.Context(), gatewaycandidatewindow.Candidate{}, request); err == nil {
+			t.Fatal("OAuth refresh request timeout was ignored")
+		}
+	})
+
+	t.Run("body bound", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = writer.Write([]byte(strings.Repeat("x", oauthResponseMaxSize+1)))
+		}))
+		defer server.Close()
+		request := OAuthRefreshRequest{provider: OAuthOpenAI, url: server.URL, header: make(http.Header), body: []byte(`{}`), timeout: time.Second}
+		executor := OAuthRefreshTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}}
+		response, err := executor.ExecuteOAuthRefresh(t.Context(), gatewaycandidatewindow.Candidate{}, request)
+		if err != nil || !response.Truncated() || len(response.Body()) != oauthResponseMaxSize {
+			t.Fatalf("response=%v truncated=%v bytes=%d error=%v", response.StatusCode(), response.Truncated(), len(response.Body()), err)
+		}
+	})
+}
+
+func TestGeminiOAuthEnrichmentTransportExecutorUsesBoundedURLPolicyTransport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("request method=%q authorization=%q", request.Method, request.Header.Get("Authorization"))
+		}
+		_, _ = writer.Write([]byte(`{"project":"project"}`))
+	}))
+	defer server.Close()
+	request := GeminiOAuthEnrichmentHTTPRequest{
+		method: http.MethodPost, url: server.URL, header: http.Header{"Authorization": []string{"Bearer secret"}},
+		body: []byte(`{}`), timeout: time.Second,
+	}
+	executor := GeminiOAuthEnrichmentTransportExecutor{URLPolicy: upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{server.URL}}}
+	response, err := executor.ExecuteGeminiOAuthEnrichment(t.Context(), request)
+	if err != nil || response.StatusCode() != http.StatusOK || string(response.Body()) != `{"project":"project"}` {
+		t.Fatalf("response=%d body=%q error=%v", response.StatusCode(), response.Body(), err)
 	}
 }
 

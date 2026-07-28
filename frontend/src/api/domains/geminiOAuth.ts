@@ -1,4 +1,4 @@
-import type { AccountSummary, AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
+import type { AccountCreateResult, AccountSummary, AccountSupportedEndpointMode, OAuthAuthURLResult } from '@/types/domain'
 import type { ListParams } from '../contracts'
 import { http, unwrap } from '../http'
 
@@ -20,8 +20,8 @@ export interface GeminiOAuthCapabilities {
 export const geminiOAuthApi = {
   capabilities: () => unwrap<GeminiOAuthCapabilities>(http.get('/gemini-oauth/capabilities')),
   authUrl: (payload: Record<string, unknown>) => unwrap<OAuthAuthURLResult>(http.post('/gemini-oauth/auth-url', payload)),
-  createFromCode: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/gemini-oauth/create-from-code', payload, { params })),
-  createFromRefreshToken: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/gemini-oauth/create-from-refresh-token', payload, { params })),
+  createFromCode: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/gemini-oauth/create-from-code', payload, { params })),
+  createFromRefreshToken: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountCreateResult>(http.post('/gemini-oauth/create-from-refresh-token', payload, { params })),
   refreshToken: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.post(`/gemini-oauth/accounts/${id}/refresh-token`, {}, { params, timeout: 130000 })),
   reauthorizeFromCode: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post(`/gemini-oauth/accounts/${id}/reauthorize-from-code`, payload, { params })),
   reauthorizeFromRefreshToken: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post(`/gemini-oauth/accounts/${id}/reauthorize-from-refresh-token`, payload, { params }))
@@ -30,8 +30,8 @@ export const geminiOAuthApi = {
 export const myGeminiOAuthApi = {
   capabilities: () => unwrap<GeminiOAuthCapabilities>(http.get('/my-gemini-oauth/capabilities')),
   authUrl: (payload: Record<string, unknown>) => unwrap<OAuthAuthURLResult>(http.post('/my-gemini-oauth/auth-url', payload)),
-  createFromCode: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-gemini-oauth/create-from-code', payload)),
-  createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-gemini-oauth/create-from-refresh-token', payload)),
+  createFromCode: (payload: Record<string, unknown>) => unwrap<AccountCreateResult>(http.post('/my-gemini-oauth/create-from-code', payload)),
+  createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountCreateResult>(http.post('/my-gemini-oauth/create-from-refresh-token', payload)),
   refreshToken: (id: string) => unwrap<AccountSummary>(http.post(`/my-gemini-oauth/accounts/${id}/refresh-token`, {}, { timeout: 130000 })),
   reauthorizeFromCode: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post(`/my-gemini-oauth/accounts/${id}/reauthorize-from-code`, payload)),
   reauthorizeFromRefreshToken: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post(`/my-gemini-oauth/accounts/${id}/reauthorize-from-refresh-token`, payload))
