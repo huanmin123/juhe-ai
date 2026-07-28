@@ -21,7 +21,10 @@ import {
   createModelCheckToolCallingRequest
 } from '../../modules/model-checks/model-checks.payloads.js'
 import { longContextProbeDefinitions, longContextProbeDefinitionsForModel } from '../../modules/model-checks/model-checks.probes.js'
-import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
+import {
+  isSuccessfulModelCheckProbeResponse,
+  parseModelCheckProbeResponse
+} from '../../modules/model-checks/model-checks-response-parsing.js'
 import {
   defaultModel,
   defaultProfile,
@@ -179,6 +182,14 @@ assert.equal(directJsonParseCount, 1, '模型检测 JSON 的输出、模型、�
 
 for (const fixture of [
   {
+    protocol: 'openai_responses' as const,
+    path: '/v1/responses',
+    bodyText: '\uFEFFx-vendor-field: ignored\r\nevent: response.completed\r\ndata: {"type":"response.completed",\r\ndata: "response":{"model":"gpt-5.6-sol","output_text":"OK","usage":{"total_tokens":2}}}',
+    expectedModel: 'gpt-5.6-sol',
+    expectedUsageKey: 'total_tokens',
+    expectedUsage: 2
+  },
+  {
     protocol: 'openai_chat' as const,
     path: '/v1/chat/completions',
     bodyText: 'event: chunk\r\ndata: {"model":"glm-5.2",\r\ndata: "choices":[{"delta":{"content":"OK"}}],"usage":{"total_tokens":3}}',
@@ -214,6 +225,65 @@ for (const fixture of [
   assert.equal(parsed.model, fixture.expectedModel, `${fixture.protocol} 必须从同一 parsed context 提取 model`)
   assert.equal(parsed.usage?.[fixture.expectedUsageKey], fixture.expectedUsage, `${fixture.protocol} 必须从同一 parsed context 提取 usage`)
   assert.equal(parseCount, fixture.protocol === 'anthropic_messages' ? 2 : 1, `${fixture.protocol} 每个 SSE data payload 只能解析一次`)
+}
+
+for (const fixture of [
+  {
+    protocol: 'openai_responses' as const,
+    path: '/v1/responses',
+    bodyText: 'event: response.failed\r\ndata: {"type":"response.failed","response":{"error":{"code":"overloaded","message":"openai failed"}}}',
+    expectedMessage: 'openai failed'
+  },
+  {
+    protocol: 'anthropic_messages' as const,
+    path: '/v1/messages',
+    bodyText: 'event: error\r\ndata: {"type":"error","error":{"type":"overloaded_error","message":"anthropic failed"}}',
+    expectedMessage: 'anthropic failed'
+  },
+  {
+    protocol: 'gemini_native' as const,
+    path: '/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse',
+    bodyText: 'data: {"error":{"status":"RESOURCE_EXHAUSTED","message":"gemini failed"}}',
+    expectedMessage: 'gemini failed'
+  }
+]) {
+  let parseCount = 0
+  const parsed = parseModelCheckProbeResponse({
+    protocol: fixture.protocol,
+    path: fixture.path,
+    bodyText: fixture.bodyText,
+    parseOptions: { onJsonParseAttempt: () => { parseCount += 1 } }
+  })
+  assert.equal(parsed.errorMessage, fixture.expectedMessage, `${fixture.protocol} 必须保留协议错误消息语义`)
+  assert.equal(parsed.streamFailureMessage, fixture.expectedMessage, `${fixture.protocol} 必须把 SSE error 标记为流式失败`)
+  assert.equal(parseCount, 1, `${fixture.protocol} 错误消息与流失败判定必须共享一次 payload 解析`)
+}
+
+for (const fixture of [
+  {
+    protocol: 'openai_responses' as const,
+    path: '/v1/responses',
+    bodyText: '{"error":{"code":"invalid_request","message":"openai json failed"}}'
+  },
+  {
+    protocol: 'anthropic_messages' as const,
+    path: '/v1/messages',
+    bodyText: '{"type":"error","error":{"type":"invalid_request_error","message":"anthropic json failed"}}'
+  },
+  {
+    protocol: 'gemini_native' as const,
+    path: '/v1beta/models/gemini-3.5-flash:generateContent',
+    bodyText: '{"error":{"status":"INVALID_ARGUMENT","message":"gemini json failed"}}'
+  }
+]) {
+  let parseCount = 0
+  const parsed = parseModelCheckProbeResponse({
+    ...fixture,
+    parseOptions: { onJsonParseAttempt: () => { parseCount += 1 } }
+  })
+  assert.equal(Boolean(parsed.errorMessage), true, `${fixture.protocol} 必须识别 HTTP 200 JSON error`)
+  assert.equal(isSuccessfulModelCheckProbeResponse(200, parsed), false, `${fixture.protocol} HTTP 200 error payload 不得判定探针成功`)
+  assert.equal(parseCount, 1, `${fixture.protocol} HTTP 200 JSON error 只允许解析一次`)
 }
 
 const chatToolRequest = createModelCheckToolCallingRequest('openai_chat', 'glm-5.2')

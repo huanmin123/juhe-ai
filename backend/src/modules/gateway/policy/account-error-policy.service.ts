@@ -158,6 +158,8 @@ export function applyAccountErrorHandling(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
     traceId?: string
     observedAt?: string
     dispatchRevision?: number
@@ -192,6 +194,8 @@ export async function applyAccountErrorHandlingAsync(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
     traceId?: string
     observedAt?: string
     dispatchRevision?: number
@@ -225,16 +229,21 @@ export function decideAccountErrorPolicy(
   statusCode: number,
   headers: Headers,
   body: Buffer,
-  settings: GatewaySettings
+  settings: GatewaySettings,
+  bodyFacts?: {
+    bodyText: string
+    errorPayload: Record<string, unknown>
+  }
 ): AccountErrorPolicyDecision | undefined {
   if (statusCode >= 200 && statusCode <= 299) return undefined
   const rules = normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
     .filter((rule) => rule.enabled)
     .sort((left, right) => left.priority - right.priority)
-  const payload = accountErrorPolicyPayload(body.toString('utf8'), headers, account)
+  const bodyText = bodyFacts?.bodyText ?? body.toString('utf8')
+  const payload = bodyFacts?.errorPayload ?? accountErrorPolicyPayload(bodyText, headers, account)
   const errorCode = stringValue(payload.code).toLowerCase()
   const errorType = stringValue(payload.type).toLowerCase()
-  const searchableText = body.toString('utf8').toLowerCase()
+  const searchableText = bodyText.toLowerCase()
   const rule = rules.find((candidate) => accountErrorRuleMatches(candidate, statusCode, errorCode, errorType, searchableText))
   if (!rule) return undefined
   if (rule.action === 'retry_next') return { action: 'retry_next', ruleName: rule.name }
@@ -309,6 +318,8 @@ function applyExplicitAccountErrorPolicyDecision(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
     traceId?: string
     observedAt?: string
     dispatchRevision?: number
@@ -361,6 +372,8 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
     traceId?: string
     observedAt?: string
     dispatchRevision?: number
@@ -413,12 +426,17 @@ function explicitAccountErrorPolicyReason(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
   },
   decision: AccountErrorPolicyDecision
 ): string {
   const bodyText = input.bodyText ?? input.errorMessage ?? ''
   const statusCode = input.statusCode
-  const upstreamSummary = accountErrorPolicyUpstreamSummary(account, bodyText, normalizeHeadersInput(input.headers))
+  const upstreamSummary = input.upstreamErrorSummaryResolved === true
+    ? input.upstreamErrorSummary
+    : input.upstreamErrorSummary
+      ?? accountErrorPolicyUpstreamSummary(account, bodyText, normalizeHeadersInput(input.headers))
   const failure = statusCode === undefined
     ? genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
     : genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
@@ -488,22 +506,21 @@ export function parseErrorPayload(
   return parseGatewayProtocolErrorPayload(profile, text, headers)
 }
 
+export function accountErrorPayloadSummary(errorPayload: Record<string, unknown>): string | undefined {
+  const parts: string[] = []
+  const code = stringValue(errorPayload.code)
+  const message = stringValue(errorPayload.message)
+  if (code) parts.push(sanitizeDiagnosticPayload(code))
+  if (message && message !== code) parts.push(sanitizeDiagnosticPayload(message))
+  return parts.length > 0 ? parts.join('；') : undefined
+}
+
 function accountErrorPolicyUpstreamSummary(
   profile: { protocolCode?: string; protocolVersion?: string } | undefined,
   bodyText: string,
   headers: Headers
 ): string | undefined {
-  const errorPayload = parseErrorPayload(bodyText, headers, profile)
-  const parts: string[] = []
-  const code = stringValue(errorPayload.code)
-  const message = stringValue(errorPayload.message)
-  if (code) {
-    parts.push(sanitizeDiagnosticPayload(code))
-  }
-  if (message && message !== code) {
-    parts.push(sanitizeDiagnosticPayload(message))
-  }
-  return parts.length > 0 ? parts.join('；') : undefined
+  return accountErrorPayloadSummary(parseErrorPayload(bodyText, headers, profile))
 }
 
 function stringValue(value: unknown): string {

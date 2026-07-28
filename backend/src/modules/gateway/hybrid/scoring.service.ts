@@ -16,7 +16,9 @@ import {
 } from '../request/body.js'
 import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
+import { serializeGatewayJsonObject } from '../request/serialized-json-body.js'
 import { getGatewaySessionIdentity } from '../session-identity/index.js'
+import type { GatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
 import {
   dispatchHybridAuxiliaryChatCompletion,
@@ -75,7 +77,7 @@ export async function scoreHybridGatewayRequest(input: {
 }): Promise<HybridScoringResult> {
   const startedAt = Date.now()
   try {
-    const body = await parseHybridRequestBody(input.req, input.config.scoringTimeoutMs, input.signal)
+    const body = await parseHybridRequestBody(input.req, input.signal)
     const context = buildHybridScoringContext(input.req, body)
     const cacheKey = buildHybridScoringCacheKey({
       req: input.req,
@@ -147,7 +149,7 @@ export async function scoreHybridGatewayRequest(input: {
     try {
       let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
       try {
-        parsed = parseHybridScoringResponse(dispatch.responseBody)
+        parsed = parseHybridScoringResponse(dispatch.parsedResponseBody)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         await finishDispatch({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
@@ -263,7 +265,7 @@ export async function getHybridScoringSharedCacheEntryForTest(cacheKey: string):
   return await getHybridScoringSharedCacheEntry(cacheKey)
 }
 
-async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
+async function parseHybridRequestBody(req: Request, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
   const request = req as GatewayRawBodyRequest
   if (typeof request.body === 'object' && request.body !== null && !Array.isArray(request.body)) {
     return request.body as Record<string, unknown>
@@ -282,7 +284,7 @@ async function parseHybridRequestBody(req: Request, timeoutMs: number, signal?: 
   if (request.rawBody.length > hybridScoringRawBodyParseMaxBytes) {
     return undefined
   }
-  const parsed = await parseGatewayRequestJsonBody(req, timeoutMs, signal)
+  const parsed = await parseGatewayRequestJsonBody(req, undefined, signal)
   return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
     ? parsed as Record<string, unknown>
     : undefined
@@ -335,7 +337,7 @@ function buildHybridScoringRequestBody(
 }
 
 function createHybridScoringGatewayRequest(body: Record<string, unknown>): Request {
-  const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  const rawBody = serializeGatewayJsonObject(body)
   const headers: Record<string, string> = {
     accept: 'application/json',
     'content-type': 'application/json',
@@ -567,8 +569,11 @@ function clearHybridScoringSharedCache(): void {
   )
 }
 
-function parseHybridScoringResponse(body: Buffer): { level: number; confidence?: number; factors?: string[]; reason?: string } {
-  const response = JSON.parse(body.toString('utf8')) as {
+function parseHybridScoringResponse(body: GatewayNonStreamJsonBody): { level: number; confidence?: number; factors?: string[]; reason?: string } {
+  if (body.status !== 'valid' || typeof body.value !== 'object' || body.value === null || Array.isArray(body.value)) {
+    throw new Error('混合评分模型未返回合法 JSON')
+  }
+  const response = body.value as {
     choices?: Array<{
       finish_reason?: unknown
       message?: {

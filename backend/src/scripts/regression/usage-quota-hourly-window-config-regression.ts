@@ -141,7 +141,8 @@ function assertSourceGuards(): void {
   assert.match(configSource, /maxRequestQuotaHourlyWindowHours/, '额度小时窗口配置读取必须绑定合法小时上限')
 
   const apiKeySource = readSource('storage/api-key.repository.ts')
-  assert.match(apiKeySource, /syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync\(tx,/, 'PG API Key 写额度必须在业务事务内同步 scope 绑定并标脏')
+  assert.match(apiKeySource, /syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync\(tx,/, 'API Key 写额度必须在业务事务内调用双驱动 scope 绑定 helper')
+  assert.match(apiKeySource, /client\.driver === 'postgres'[\s\S]*syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync\(client,/, 'PG API Key scope 绑定 helper 必须委托高性能事务实现并标脏')
 
   const authorizationWriteSource = readSource('storage/resource-authorization-write-state.repository.ts')
   assert.match(authorizationWriteSource, /syncResourceAuthorizationRequestQuotaHourlyWindowScopeBindings\(/, 'SQLite 授权写入必须同步 active scope 绑定')

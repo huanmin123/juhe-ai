@@ -15,11 +15,11 @@ import {
 } from '../../request/body.js'
 import {
   estimateTokenCountFromText,
+  parseOpenAIStreamEventData,
   type ParsedOpenAIStreamEvent
 } from '../openai-v1/stream-events.js'
 import {
-  extractAnthropicStreamEventError,
-  parseAnthropicSseEventText
+  extractAnthropicStreamEventError
 } from './response-semantics.js'
 import {
   extractAnthropicUsage
@@ -116,6 +116,7 @@ export function inspectAnthropicStreamText(text: string): AnthropicStreamInspect
 }
 
 export class AnthropicStreamInspector {
+  private parsedEventObserver: ((event: ParsedOpenAIStreamEvent) => void) | undefined
   private inspection: AnthropicStreamInspection = {
     terminalReceived: false,
     failedReceived: false,
@@ -134,6 +135,10 @@ export class AnthropicStreamInspector {
   private dataBytes = 0
   private pendingLine = ''
   private pendingEventSummaries: AnthropicStreamEventSummary[] = []
+
+  setParsedEventObserver(observer: ((event: ParsedOpenAIStreamEvent) => void) | undefined): void {
+    this.parsedEventObserver = observer
+  }
 
   pushChunk(chunk: Buffer | Uint8Array | string, _options: { lightweightImageStream?: boolean } = {}): AnthropicStreamInspection {
     const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
@@ -230,13 +235,15 @@ export class AnthropicStreamInspector {
       return
     }
     const eventName = this.eventName
+    const dataText = this.dataLines.join('\n').trim()
     const rawText = `${eventName ? `event: ${eventName}\n` : ''}${this.dataLines.map((line) => `data: ${line}`).join('\n')}\n\n`
-    const event = parseAnthropicSseEventText(rawText)
+    const event = parseOpenAIStreamEventData(dataText, eventName, rawText, this.dataBytes)
     this.inspectParsedEvent(event, this.dataBytes, eventName)
     this.resetEvent()
   }
 
   private inspectParsedEvent(event: ParsedOpenAIStreamEvent, dataBytes: number, fallbackEventName = ''): void {
+    this.parsedEventObserver?.(event)
     const eventType = event.eventType || event.eventName || fallbackEventName || 'message'
     const data = event.data
     const summary = this.classifyEvent(eventType, event.eventName || fallbackEventName, data, event.dataParseError, dataBytes)

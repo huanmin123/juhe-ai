@@ -70,12 +70,14 @@
       :max-queue-wait-seconds="formMaxQueueWaitSeconds"
       :provider-locked="providerLocked"
       :provider-options="providerOptions"
+      :provider-options-loading="groupOptionsLoading"
       :saving="groupSaving"
       :show-target-alert="!editingId && isManagementView"
       :target-system-account-label="targetSystemAccountLabel"
       :title="groupModalTitle"
       @client-ip-concurrency-limit-change="setFormClientIpConcurrencyLimit"
       @max-queue-wait-seconds-change="setFormMaxQueueWaitSeconds"
+      @provider-dropdown-visible-change="handleProviderOptionsDropdown"
       @save="saveGroup"
     />
 
@@ -84,7 +86,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -103,7 +105,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { GroupSummary, ProviderDefinition } from '@/types/domain'
+import type { GroupListItem, ProviderDefinition } from '@/types/domain'
 import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
   groupStats
@@ -136,6 +138,11 @@ const providers = ref<ProviderDefinition[]>([])
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+const groupOptionsLoading = ref(false)
+let groupOptionsRequestId = 0
+let groupOptionsLoadingKey: string | undefined
+let groupOptionsLoadingPromise: Promise<void> | undefined
+let groupEditRequestId = 0
 const groupPageEpoch = ref(0)
 const groupPageActive = ref(true)
 let hasActivated = false
@@ -180,7 +187,7 @@ const {
   refreshMobile: refreshMobileGroupsData,
   resetPagination,
   updateItems: updateGroupItems
-} = useResponsivePagedList<GroupSummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<GroupListItem, { forceOptions?: boolean }>({
   pageSize: groupsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -229,6 +236,8 @@ const groupScopeParams = computed(() => {
 onDeactivated(() => {
   groupPageActive.value = false
   groupPageEpoch.value += 1
+  groupEditRequestId += 1
+  invalidateGroupOptions()
 })
 
 onActivated(() => {
@@ -242,9 +251,24 @@ onActivated(() => {
 })
 
 watch(authState.revision, () => {
+  groupEditRequestId += 1
+  invalidateGroupOptions()
   if (groupPageActive.value) void loadData({ quiet: true })
 })
-const providerOptions = computed(() => groupsProviderOptions(availableProviders.value))
+onBeforeUnmount(() => {
+  groupEditRequestId += 1
+  invalidateGroupOptions()
+})
+const providerOptions = computed(() => {
+  const options = groupsProviderOptions(availableProviders.value)
+  const selectedCode = form.providerCode.trim()
+  if (!selectedCode || options.some((option) => option.value === selectedCode)) return options
+  const selectedName = providerDisplayName(selectedCode, availableProviders.value)
+  return [
+    ...options,
+    { label: selectedName === '未知供应商' ? selectedCode : selectedName, value: selectedCode, disabled: false }
+  ]
+})
 const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
 const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
 const groupModalTitle = computed(() => {
@@ -269,7 +293,7 @@ function providerName(providerCode?: string) {
   return providerDisplayName(providerCode, availableProviders.value)
 }
 
-function handleGroupAction(key: string, group: GroupSummary) {
+function handleGroupAction(key: string, group: GroupListItem) {
   if (key === 'edit') {
     void openEdit(group)
     return
@@ -283,7 +307,7 @@ function handleGroupAction(key: string, group: GroupSummary) {
   }
 }
 
-function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' | 'accessType'>): { systemAccountId: string } | undefined {
+function groupOperationScopeParams(group?: Pick<GroupListItem, 'systemAccountId' | 'accessType'>): { systemAccountId: string } | undefined {
   const systemAccountId = group?.accessType === 'authorized'
     ? groupScopeParams.value?.systemAccountId
     : group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
@@ -291,21 +315,54 @@ function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' 
 }
 
 async function loadGroupOptions(force = false): Promise<void> {
-  const scopeKey = isManagementView.value ? 'management' : 'self'
+  const scopeKey = `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`
   if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
     return
   }
+  if (!force && groupOptionsLoadingKey === scopeKey && groupOptionsLoadingPromise) return groupOptionsLoadingPromise
 
-  const providerList = await loadProviderOptionsResource({
-    apply: (nextProviders) => {
-      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-    },
-    force,
-    isManagementView: isManagementView.value
-  })
-  providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
-  groupOptionsLoaded.value = true
-  groupOptionsScopeKey.value = scopeKey
+  const requestId = ++groupOptionsRequestId
+  groupOptionsLoading.value = true
+  const request = (async () => {
+    try {
+      const providerList = await loadProviderOptionsResource({
+        force,
+        isCurrent: () => requestId === groupOptionsRequestId && scopeKey === `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`,
+        isManagementView: isManagementView.value
+      })
+      if (requestId !== groupOptionsRequestId || scopeKey !== `${isManagementView.value ? 'management' : 'self'}:${authState.revision.value}`) return
+      providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
+      groupOptionsLoaded.value = true
+      groupOptionsScopeKey.value = scopeKey
+    } catch (error) {
+      if (requestId !== groupOptionsRequestId) return
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载供应商选项失败，请重试'))
+    } finally {
+      if (requestId === groupOptionsRequestId) {
+        groupOptionsLoading.value = false
+        groupOptionsLoadingKey = undefined
+        groupOptionsLoadingPromise = undefined
+      }
+    }
+  })()
+  groupOptionsLoadingKey = scopeKey
+  groupOptionsLoadingPromise = request
+  return request
+}
+
+function invalidateGroupOptions(): void {
+  groupOptionsRequestId += 1
+  groupOptionsLoadingKey = undefined
+  groupOptionsLoadingPromise = undefined
+  groupOptionsLoading.value = false
+  groupOptionsLoaded.value = false
+  groupOptionsScopeKey.value = ''
+  providers.value = []
+}
+
+function handleProviderOptionsDropdown(open: boolean): void {
+  if (open) void loadGroupOptions()
 }
 
 function refreshGroups() {
@@ -320,6 +377,7 @@ function refreshMobileGroups() {
 }
 
 function handleSystemAccountFilterChange() {
+  groupEditRequestId += 1
   if (isAllGroupsSystemAccountFilter(systemAccountFilter.value)) {
     systemAccountFilterSelection.value = undefined
   }
@@ -329,6 +387,7 @@ function handleSystemAccountFilterChange() {
 }
 
 function resetFilters() {
+  groupEditRequestId += 1
   systemAccountFilter.value = defaultGroupsPageState().systemAccountFilter
   systemAccountFilterSelection.value = undefined
   resetSystemAccountOptionsSearch()
@@ -342,34 +401,43 @@ function openCreate() {
     message.warning('请先在右侧选择目标系统账户，再创建分组')
     return
   }
+  groupEditRequestId += 1
   editingId.value = undefined
-  void loadGroupOptions()
   resetGroupFormForCreate()
   modalOpen.value = true
 }
 
-async function openEdit(group: GroupSummary) {
+async function openEdit(group: GroupListItem) {
   if (!canEditGroup(group)) {
     message.warning(group.isDefault ? '默认分组不允许编辑' : '当前分组不能编辑')
     return
   }
-  void loadGroupOptions()
-  let detail: GroupSummary
-  try {
-    detail = await groupsApi.detail(group.id, groupOperationScopeParams(group))
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载分组详情失败'))
+  const requestId = ++groupEditRequestId
+  if (group.groupType !== 'high_concurrency') {
+    applyGroupToForm(group)
+    editingId.value = group.id
+    modalOpen.value = true
     return
   }
+  const managementView = isManagementView.value
+  const authRevision = authState.revision.value
+  const pageSystemAccountId = groupScopeParams.value?.systemAccountId
   try {
+    const detail = await groupsApi.detail(group.id, groupOperationScopeParams(group))
+    if (requestId !== groupEditRequestId
+      || managementView !== isManagementView.value
+      || authRevision !== authState.revision.value
+      || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
     applyGroupToForm(detail)
+    editingId.value = group.id
+    modalOpen.value = true
   } catch (error) {
-    message.error(extractApiErrorMessage(error, '分组调度策略数据异常，请清理后再编辑'))
-    return
+    if (requestId !== groupEditRequestId
+      || managementView !== isManagementView.value
+      || authRevision !== authState.revision.value
+      || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
+    message.error(extractApiErrorMessage(error, '加载分组编辑信息失败'))
   }
-  editingId.value = group.id
-  modalOpen.value = true
 }
 
 const saveGroup = submitAction('groups.save', async () => {
@@ -387,7 +455,14 @@ const saveGroup = submitAction('groups.save', async () => {
       const targetGroup = groups.value.find((item) => item.id === targetId)
       const payload = groupFormPayload(targetGroup)
       const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(targetGroup))
-      updateGroupItems((item) => item.id === targetId, () => updated)
+      updateGroupItems((item) => item.id === targetId, (item) => ({
+        ...item,
+        name: updated.name,
+        providerCode: updated.providerCode,
+        description: updated.description,
+        enabled: updated.enabled,
+        groupType: updated.groupType
+      }))
       message.success(isAuthorizedGroup(updated) ? '授权分组使用配置已更新' : '分组已更新')
       void loadData({ quiet: true })
     } else {

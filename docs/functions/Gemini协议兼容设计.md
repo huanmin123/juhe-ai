@@ -11,6 +11,7 @@
 
 - Gemini native 是独立协议 `gemini/v1beta`，使用自己的请求体、路径模型、SSE chunk、usage 和错误结构；Interactions 是同一协议下独立的 `interactions` endpoint family，不复用 GenerateContent 语义。
 - Gemini 官方 OpenAI compatibility 是 OpenAI Chat Completions 兼容入口，在本项目中落为 `profile_gemini_openai_chat_v1beta`，不是本项目自研协议转换。
+- Gemini Google OAuth 分为 `code_assist`、`google_one`、`ai_studio` 三种上游账户模式。`code_assist` / `google_one` 使用 Code Assist runtime，只承接 GenerateContent JSON / SSE；`ai_studio` 继续使用 Gemini native runtime，并保留该档案声明的原生端点能力。
 - OpenAI Chat / Responses 和 Anthropic Messages 如需桥接到 Gemini native 生成类上游，必须命中混合供应商账户；混合账户右侧只暴露 `generate_content`，运行时按下游请求是否流式动态选择 `:generateContent` 或 `:streamGenerateContent?alt=sse`。
 - Gemini native `generateContent` / `streamGenerateContent` 可以作为混合供应商账户的下游来源，桥接到 OpenAI Chat Completions 上游；下游响应仍渲染为 Gemini JSON / SSE。
 - Gemini native `generateContent` / `streamGenerateContent` 也可以通过混合供应商账户桥接到 Anthropic Messages 上游；下游响应仍渲染为 Gemini JSON / SSE，不合成 Anthropic 响应给 Gemini 客户端。
@@ -276,7 +277,8 @@ endpointFamilies = [chat_completions]
 | `GOOGLE_GENAI_API_VERSION=v1beta` | 支持 | 本地和上游版本一致 |
 | `GEMINI_API_KEY_AUTH_MECHANISM=bearer` | 支持 | 本地认证读取 `Authorization` |
 | 默认 `x-goog-api-key` | 支持 | 本地认证读取 `x-goog-api-key` |
-| Google 登录 / OAuth | 不支持 | 走 Code Assist 内部接口，不是 Gemini API Key native |
+| 项目托管的 Google OAuth 上游账户 | 支持 | `code_assist` / `google_one` 走 Code Assist runtime；`ai_studio` 走 Gemini native runtime |
+| `gemini-cli` 自己完成 Google 登录后再指向本项目 | 不支持 | CLI 本地登录态不会自动变成本项目管理的上游账户；应在管理页面完成对应 OAuth 授权 |
 | Vertex AI | 不支持 | 后续单独供应商档案 |
 | `--output-format json` | 支持 | 非流式 E2E |
 | `--output-format stream-json` | 支持 | 流式 E2E |
@@ -354,7 +356,8 @@ endpointFamilies = [chat_completions]
 ## 非目标
 
 - 不实现无映射的自动跨协议转换；OpenAI / Anthropic 到 Gemini native、Gemini native 到 OpenAI / Anthropic 都只能通过 混合供应商账户触发。
-- 不实现 Gemini OAuth、Code Assist、Vertex AI 或 Workspace 账号。
+- 不把 `gemini-cli` 本地 Google 登录态导入为项目账户；项目只管理通过站内授权创建的 `code_assist`、`google_one`、`ai_studio` OAuth 账户。
+- 不实现 Vertex AI 或 Workspace 账号。
 - 不实现 Live API WebSocket 代理。
 - 不让 Gemini native 直连账号进入 OpenAI Chat / Responses 调度。
 - 不让 OpenAI Chat 账号在没有显式 `generate_content|stream_generate_content -> chat_completions` 映射时进入 Gemini native 调度。
@@ -371,4 +374,4 @@ endpointFamilies = [chat_completions]
 - usage 是否使用 `usage_semantic = gemini`。
 - OpenAI / Anthropic 到 Gemini native 是否只通过 混合供应商账户中的 `chat_completions|responses|messages -> generate_content` 规则触发。
 - Gemini native 到 Chat / Anthropic Messages 是否只通过 混合供应商账户触发，并保持下游 Gemini JSON / SSE 形态。
-- `gemini-cli` 真实验证是否使用 `GOOGLE_GEMINI_BASE_URL`，而不是 Google 登录。
+- `gemini-cli` 网关 E2E 是否使用 `GOOGLE_GEMINI_BASE_URL` 和本地 API Key；项目托管的 Google OAuth 是否由管理页面独立完成，未混用 CLI 本地登录态。

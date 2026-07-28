@@ -31,25 +31,6 @@ export function resolveAccountTestResponseDiagnostics(input: {
   }
 }
 
-export function redactAccountTestImageResponse(input: string | DiagnosticResponseContext): unknown {
-  const context = diagnosticResponseContext(input)
-  return context.json === undefined ? { response: '已省略' } : redactImageFields(context.json)
-}
-
-function redactImageFields(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactImageFields)
-  if (!value || typeof value !== 'object') return value
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-    key,
-    isImageResponseField(key) ? '已省略' : redactImageFields(item)
-  ]))
-}
-
-function isImageResponseField(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
-  return normalized === 'b64json' || normalized === 'url' || normalized === 'imageurl'
-}
-
 export function parseAccountTestUpstreamErrorCode(input: string | DiagnosticResponseContext): string | undefined {
   const context = diagnosticResponseContext(input)
   for (const payload of context.payloads) {

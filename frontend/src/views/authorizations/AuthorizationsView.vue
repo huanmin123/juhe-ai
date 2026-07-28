@@ -71,6 +71,7 @@
       :form="createForm"
       :excluded-grantee-ids="createExcludedGranteeIds"
       :has-grantee-options="hasCreateGranteeOptions"
+      :grantee-options-loaded="createGranteeOptionsLoaded"
       :is-management-view="isManagementView"
       :owner-users="createOwnerUsers"
       :owner-users-loading="createOwnerUsersLoading"
@@ -192,6 +193,14 @@ const helpOpen = ref(false)
 const expireModalOpen = ref(false)
 const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const authorizationRequestContext = computed(() => JSON.stringify([
+  authState.revision.value,
+  authState.currentUser.value?.id ?? '',
+  authState.currentUser.value?.role ?? '',
+  String(route.name ?? ''),
+  String(route.meta.viewScope ?? ''),
+  isManagementView.value ? 'management' : 'self'
+]))
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
 
@@ -267,6 +276,8 @@ const {
   createResourceOptionsLoading,
   createGranteeOptionsLoading,
   createTargetGroupOptionsLoading,
+  createGranteeOptionsLoaded,
+  createTargetGroupOptionsLoaded,
   filterResourceOptionsLoading,
   filterTeamOptionsLoading,
   filterUserOptionsLoading,
@@ -296,14 +307,18 @@ const {
   clearCreateGranteeSearchTimer,
   clearFilterResourceSearchTimer,
   resetCreateOptionSearchState,
+  resetCreateResourceOptions,
+  resetCreateGranteeOptions,
   resetCreateTargetGroupState,
   resetFilterResource,
   resetFilterResourceOptions,
   resetFilterOptionLists,
   resetFilterOptionSearchState: resetRemoteFilterOptionSearchState
 } = useAuthorizationOptionState({
+  authorizationRequestContext,
   createExcludedGranteeIds,
   createForm,
+  createModalOpen,
   filters,
   isManagementView,
   selectedFilterOwnerSystemAccountId
@@ -363,7 +378,10 @@ const createTargetGroupPlaceholder = computed(() => authorizationCreateTargetGro
   resourceId: createForm.resourceId,
   granteeId: createForm.granteeId
 }))
-const createTargetGroupTip = computed(() => authorizationCreateTargetGroupTip(createTargetGroups.value.length))
+const createTargetGroupTip = computed(() => authorizationCreateTargetGroupTip(
+  createTargetGroups.value.length,
+  createTargetGroupOptionsLoaded.value
+))
 const authorizationListFilterValues = () => createAuthorizationListFilterValues(filters)
 const authorizationListFilterContext = () => createAuthorizationListFilterContext({
   filters,
@@ -408,8 +426,10 @@ const {
   authorizationCreating,
   confirmExpireChange,
   createAuthorization,
-  handleActionMenuClick
+  handleActionMenuClick,
+  invalidateExpireDetailRequest
 } = useAuthorizationActions({
+  authorizationRequestContext,
   createAuthorizationScopeParams,
   createExcludedGranteeIds,
   createForm,
@@ -446,27 +466,44 @@ const {
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
+  resetCreateGranteeOptions()
   resetCreateTargetGroupState()
   createGranteeSearchKeyword.value = ''
   clearCreateGranteeSearchTimer()
-  void loadCreateGranteeOptions()
+})
+
+watch(createModalOpen, (open) => {
+  if (!open) resetCreateOptionSearchState()
+})
+
+watch(expireModalOpen, (open) => {
+  if (open) return
+  invalidateExpireDetailRequest()
+  expireAuthorization.value = undefined
+})
+
+watch(authorizationRequestContext, () => {
+  resetCreateOptionSearchState()
+  invalidateExpireDetailRequest()
+  createModalOpen.value = false
+  expireModalOpen.value = false
+  expireAuthorization.value = undefined
 })
 
 watch(() => createForm.resourceType, () => {
   createForm.resourceId = ''
   createForm.resourceAccount = undefined
   createForm.resourceGroup = undefined
+  resetCreateResourceOptions()
   resetCreateTargetGroupState()
   createResourceSearchKeyword.value = ''
   clearCreateResourceSearchTimer()
-  void loadCreateResourceOptions()
 })
 
 watch(
   () => [createForm.resourceType, createForm.granteeType, createForm.granteeId, selectedCreateAccount.value?.providerCode, selectedCreateAccount.value?.id] as const,
   () => {
     resetCreateTargetGroupState()
-    void loadCreateTargetGroupOptions()
   }
 )
 
@@ -499,16 +536,14 @@ function openCreateModal() {
   })
   resetCreateOptionSearchState()
   createModalOpen.value = true
-  void loadCreateOwnerOptions()
-  void loadCreateResourceOptions()
-  void loadCreateGranteeOptions()
-  void loadCreateTargetGroupOptions()
 }
 
 function handleCreateOwnerChange() {
   createForm.resourceId = ''
   createForm.resourceAccount = undefined
   createForm.resourceGroup = undefined
+  resetCreateResourceOptions()
+  resetCreateGranteeOptions()
   resetCreateTargetGroupState()
   createResourceSearchKeyword.value = ''
   createGranteeSearchKeyword.value = ''
@@ -517,8 +552,6 @@ function handleCreateOwnerChange() {
   if (createForm.granteeType === 'system_account' && createForm.granteeId === createForm.ownerSystemAccountId) {
     createForm.granteeId = ''
   }
-  void loadCreateResourceOptions()
-  void loadCreateGranteeOptions()
 }
 
 function handleCreateOwnerDropdown(open: boolean) {
@@ -596,13 +629,10 @@ function handleFilterOwnerChange() {
     filters.resourceOwnerSystemAccount = undefined
   }
   resetFilterOwnerSearch()
-  if (filters.resourceType === 'group') {
-    resetFilterResource()
-  }
+  resetFilterResource()
   filterResourceSearchKeyword.value = ''
   clearFilterResourceSearchTimer()
   resetFilterResourceOptions()
-  void loadFilterResourceOptions()
   refreshData()
 }
 
@@ -610,7 +640,7 @@ function handleResourceTypeChange() {
   resetFilterResource()
   filterResourceSearchKeyword.value = ''
   clearFilterResourceSearchTimer()
-  void loadFilterResourceOptions()
+  resetFilterResourceOptions()
   refreshData()
 }
 
@@ -631,6 +661,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   resetCreateOptionSearchState()
   resetFilterOptionSearchState()
+  invalidateExpireDetailRequest()
 })
 
 function applyRouteFilters() {

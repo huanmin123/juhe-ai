@@ -1,9 +1,11 @@
 import {
-  parseDiagnosticResponseContext,
+  diagnosticResponseContextFromGatewayResponse,
   type DiagnosticResponseContext,
   type DiagnosticResponseParseOptions,
   type DiagnosticSseEvent
 } from '../gateway/diagnostics/diagnostic-response-context.js'
+import type { GatewayNonStreamJsonBody } from '../gateway/response/non-stream-json-body.js'
+import type { ParsedOpenAIStreamEvent } from '../gateway/protocols/openai-v1/stream-events.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
 import { recordValue, textValue } from './model-checks-parsing.js'
 
@@ -17,13 +19,30 @@ export interface ParsedModelCheckProbeResponse {
   streamFailureMessage?: string
 }
 
+export function isSuccessfulModelCheckProbeResponse(
+  statusCode: number,
+  parsed: Pick<ParsedModelCheckProbeResponse, 'errorMessage' | 'streamFailureMessage'>
+): boolean {
+  return statusCode >= 200
+    && statusCode < 300
+    && !parsed.errorMessage
+    && !parsed.streamFailureMessage
+}
+
 export function parseModelCheckProbeResponse(input: {
   bodyText: string
   protocol: ModelCheckProbeProtocol
   path: string
   parseOptions?: DiagnosticResponseParseOptions
+  parsedNonStreamJsonBody?: GatewayNonStreamJsonBody
+  parsedStreamEvents?: readonly ParsedOpenAIStreamEvent[]
 }): ParsedModelCheckProbeResponse {
-  const context = parseDiagnosticResponseContext(input.bodyText, input.parseOptions)
+  const context = diagnosticResponseContextFromGatewayResponse(
+    input.bodyText,
+    input.parsedNonStreamJsonBody,
+    input.parsedStreamEvents,
+    input.parseOptions
+  )
   if (input.protocol === 'openai_responses') return parseOpenAIResponsesProbeResponse(context)
   if (input.protocol === 'openai_chat') return parseOpenAIChatProbeResponse(context)
   if (input.protocol === 'anthropic_messages') return parseAnthropicMessagesProbeResponse(context)
@@ -169,7 +188,7 @@ function parseUpstreamMessage(context: DiagnosticResponseContext): string | unde
 
 function parseAnthropicMessage(context: DiagnosticResponseContext): string | undefined {
   for (const payload of context.payloads) {
-    const message = textValue(recordValue(payload.error)?.message) ?? textValue(payload.message)
+    const message = parseAnthropicPayloadMessage(payload)
     if (message) return message
   }
   return undefined
@@ -198,7 +217,11 @@ function parseOpenAIStreamFailureMessage(context: DiagnosticResponseContext): st
 
 function parseAnthropicStreamFailureMessage(context: DiagnosticResponseContext): string | undefined {
   const event = context.events.find((item) => item.event === 'error')
-  return event ? parseAnthropicMessage({ ...context, payloads: event.json ? [event.json] : [] }) ?? 'Anthropic 流式响应失败' : undefined
+  return event ? parseAnthropicPayloadMessage(event.json) ?? 'Anthropic 流式响应失败' : undefined
+}
+
+function parseAnthropicPayloadMessage(payload: Record<string, unknown> | undefined): string | undefined {
+  return textValue(recordValue(payload?.error)?.message) ?? textValue(payload?.message)
 }
 
 function parseGenericStreamFailureMessage(events: readonly DiagnosticSseEvent[]): string | undefined {

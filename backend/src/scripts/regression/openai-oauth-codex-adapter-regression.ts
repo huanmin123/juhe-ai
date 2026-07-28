@@ -6,7 +6,8 @@ import type { Request } from 'express'
 import {
   buildOpenAIOAuthCodexRequestParts,
   isolateOpenAIOAuthCodexSessionId,
-  OpenAIOAuthCodexAdapterError
+  OpenAIOAuthCodexAdapterError,
+  setOpenAIOAuthCodexNormalizationObserverForTest
 } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
 import {
   buildUpstreamRequestBody,
@@ -17,11 +18,13 @@ import {
   gatewayJsonBodyInlineParseMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   getGatewayRequestBodyState,
+  isGatewayScannedJsonBody,
   type GatewayRawBodyRequest
 } from '../../modules/gateway/request/body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import {
   parseGatewayJsonBodyInWorker,
+  setGatewayRequestJsonMaterializationObserverForTest,
   stopGatewayJsonParseWorker
 } from '../../modules/gateway/request/json-parser.js'
 import {
@@ -48,6 +51,7 @@ const identity = {
 
 async function main(): Promise<void> {
   await testResponsesBodyNormalization()
+  await testMatureCodexOAuthCompatibilityFields()
   await testCompactBodyNormalization()
   await testOAuthAccountRequestOverrides()
   await testOAuthCompactRequestOverrides()
@@ -62,6 +66,7 @@ async function main(): Promise<void> {
   await testMediumBodyDeferredMiddlewareToOAuthNormalizer()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testLargeBodyParsesOnceAcrossAccountSwitches()
+  await testOAuthAccountOverrideErrorIsAccountScoped()
   await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
@@ -216,17 +221,45 @@ async function testResponsesBodyNormalization(): Promise<void> {
   assert.equal(body.conversation_id, undefined)
   assert.equal(typeof body.prompt_cache_key, 'string')
 
+  assert.equal(parts.headers.get('authorization'), 'Bearer oauth-access-token', 'OAuth 绑定后的首次请求必须使用 access_token')
+  assert.equal(parts.headers.get('chatgpt-account-id'), 'chatgpt-account', 'OAuth 绑定后的首次请求必须携带 ChatGPT account id')
   assert.equal(parts.headers.get('content-type'), 'application/json')
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
   assert.equal(parts.headers.get('cookie'), null)
   assert.equal(parts.headers.get('x-forwarded-for'), null)
   assert.equal(parts.headers.get('user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
   assert.equal(parts.headers.get('version'), null)
-  assert.equal(parts.headers.get('openai-beta'), null)
   assert.equal(typeof parts.headers.get('session-id'), 'string')
   assert.equal(typeof parts.headers.get('thread-id'), 'string')
   assert.equal(parts.headers.get('session_id'), 'client-session')
   assert.equal(parts.headers.get('conversation_id'), 'client-conversation')
+}
+
+async function testMatureCodexOAuthCompatibilityFields(): Promise<void> {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.6-sol',
+    instructions: 'existing instruction',
+    input: [{ role: 'system', content: [{ type: 'input_text', text: 'system instruction' }] }],
+    reasoning: { effort: 'high' },
+    include: ['message.output_text'],
+    functions: [{ name: 'lookup', description: 'lookup data', parameters: { type: 'object' } }],
+    function_call: { name: 'lookup' }
+  })
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const body = parseBody(parts.body)
+  const normalizedInput = body.input as Array<Record<string, unknown>>
+
+  assert.equal(body.instructions, 'system instruction\n\nexisting instruction')
+  assert.equal(normalizedInput[0]?.role, 'developer')
+  assert.deepEqual(body.include, ['message.output_text', 'reasoning.encrypted_content'])
+  assert.deepEqual(body.tools, [{
+    type: 'function',
+    function: { name: 'lookup', description: 'lookup data', parameters: { type: 'object' } }
+  }])
+  assert.deepEqual(body.tool_choice, { type: 'function', name: 'lookup' })
+  assert.equal(body.functions, undefined)
+  assert.equal(body.function_call, undefined)
 }
 
 async function testCompactBodyNormalization(): Promise<void> {
@@ -279,7 +312,7 @@ async function testHeaderAllowlistAndDefaults(): Promise<void> {
 
   assert.equal(parts.headers.get('authorization'), 'Bearer oauth-access-token')
   assert.equal(parts.headers.get('chatgpt-account-id'), 'chatgpt-account')
-  assert.equal(parts.headers.get('content-type'), 'application/json; charset=utf-8')
+  assert.equal(parts.headers.get('content-type'), 'application/json')
   assert.equal(parts.headers.get('accept'), 'application/json')
   assert.equal(parts.headers.get('accept-language'), 'zh-CN,zh;q=0.9')
   assert.equal(parts.headers.get('originator'), 'codex_vscode')
@@ -308,7 +341,7 @@ async function testOldCodexHeadersAreRaisedToCompatibilityFloor(): Promise<void>
   assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
   assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
   assert.equal(parts.headers.get('version'), '0.125.0')
-  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
   assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), null)
 }
 
@@ -486,7 +519,7 @@ async function testMediumBodyDeferredMiddlewareToOAuthNormalizer(): Promise<void
 
   assert.equal(nextCalled, true)
   assert.equal(req.body, undefined)
-  assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(isGatewayScannedJsonBody(req), true)
   assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
 
   if (import.meta.url.endsWith('.ts')) {
@@ -543,7 +576,7 @@ async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
 
   assert.equal(nextCalled, true)
   assert.equal(req.body, undefined)
-  assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(isGatewayScannedJsonBody(req), true)
   assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
   assert.equal(getGatewayRequestBodyState(req)?.stream, false)
   assert.equal(getGatewayRequestBodyState(req)?.imageGeneration, false)
@@ -566,13 +599,15 @@ async function testLargeBodyParsesOnceAcrossAccountSwitches(): Promise<void> {
   }
   const rawBodyText = JSON.stringify(requestBody)
   const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, rawBodyText)
-  const originalJsonParse = JSON.parse
-  let parseCount = 0
+  let materializationCount = 0
+  let normalizationCount = 0
   try {
-    JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
-      parseCount += 1
-      return originalJsonParse(...args)
-    }) as typeof JSON.parse
+    setGatewayRequestJsonMaterializationObserverForTest(() => {
+      materializationCount += 1
+    })
+    setOpenAIOAuthCodexNormalizationObserverForTest(() => {
+      normalizationCount += 1
+    })
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
       ...account,
@@ -580,15 +615,43 @@ async function testLargeBodyParsesOnceAcrossAccountSwitches(): Promise<void> {
       apiKey: 'oauth-access-token-switched'
     }, identity)
   } finally {
-    JSON.parse = originalJsonParse
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+    setOpenAIOAuthCodexNormalizationObserverForTest(undefined)
   }
-  assert.equal(parseCount, 1, '同一大请求跨 OAuth 账户切换时只能完整解析一次')
+  assert.equal(materializationCount, 1, '同一大请求跨 OAuth 账户切换时只能完整解析一次')
+  assert.equal(normalizationCount, 1, '等价 OAuth 账户切换时不得重复 structured clone 大请求对象')
   assert.ok(req.gatewayParsedJsonBodyAvailable, '请求级解析结果必须供后续账户 attempt 复用')
 
   const parserSource = readFileSync(new URL('../../modules/gateway/request/json-parser.ts', import.meta.url), 'utf8')
   const adapterSource = readFileSync(new URL('../../modules/gateway/adapters/gpt-codex/oauth-adapter.ts', import.meta.url), 'utf8')
   assert.match(parserSource, /normalize_openai_oauth_codex_parsed_body/, '生产 worker 必须支持已解析对象的 OAuth 规范化任务')
   assert.match(adapterSource, /normalizeOpenAIOAuthCodexParsedBodyInWorker/, '大 Body OAuth adapter 必须把遍历和 stringify 下沉到 worker')
+}
+
+async function testOAuthAccountOverrideErrorIsAccountScoped(): Promise<void> {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: 'hello'
+  })
+  await assert.rejects(
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+      ...account,
+      credentials: {
+        ...account.credentials,
+        service_tier_override: 'invalid value'
+      }
+    }, identity, undefined, {
+      requestOverrideModelCapabilities: {
+        supportedServiceTiers: ['priority'],
+        supportedReasoningEfforts: ['high']
+      }
+    }),
+    (error: unknown) => {
+      assert(error instanceof OpenAIOAuthCodexAdapterError)
+      assert.equal(error.accountScoped, true, '账户覆盖配置错误必须允许调度继续下一账户')
+      return true
+    }
+  )
 }
 
 async function testRequiredBodyFieldRejection(): Promise<void> {

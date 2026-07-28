@@ -20,6 +20,7 @@ import {
 import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
 import { prepareAnthropicMessagesBodyForAttempt } from '../upstream/body-preparation.js'
+import { applyGrokAccessDeniedFallback } from '../../providers/drivers/xai/grok-access-denied-fallback.js'
 
 const primaryStartedGatewayTransportErrors = new WeakSet<object>()
 
@@ -98,6 +99,34 @@ export async function performUpstreamRequestAttempt(
       signal,
       transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })
+    const fallbackResult = await applyGrokAccessDeniedFallback({
+      upstreamUrl,
+      headers,
+      body: upstreamBody,
+      response,
+      requestFallback: async (fallbackUrl, fallbackHeaders) => await requestUpstream(fallbackUrl, {
+        method: req.method,
+        headers: fallbackHeaders,
+        body: upstreamBody,
+        proxyUrl: account.proxyUrl,
+        timeoutMs: socketTimeoutMs,
+        requestTimeoutMs,
+        firstByteDeadlineMs,
+        firstByteDeadlineTransport: isEffectiveOpenAIStreamRequest(req, account) ? 'stream' : 'non_stream',
+        onFirstByteDeadline,
+        signal,
+        transport: upstreamTransportForAttempt(fallbackHeaders, fallbackUrl)
+      })
+    })
+    response = fallbackResult.response
+    if (fallbackResult.usedFallback) {
+      getRequestLogger().warn({
+        event: 'grok_cli_access_denied_api_fallback_succeeded',
+        accountId: account.id,
+        method: req.method,
+        path: new URL(upstreamUrl).pathname
+      }, 'Grok CLI 代理拒绝访问，已改用官方 API')
+    }
     logRequestStage('upstream.fetch_headers', {
       accountId: account.id,
       providerCode: account.providerCode,

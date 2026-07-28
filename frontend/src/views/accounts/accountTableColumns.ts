@@ -1,6 +1,6 @@
 import type { AccountListSortField, AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort, TableSortOrder } from '@/components/responsiveDataListSorting'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 
 export type AccountTableSortOrderResolver = (field: AccountListSortField) => TableSortOrder
 
@@ -76,7 +76,6 @@ const accountSortFields: AccountListSortField[] = [
   'priority',
   'superPriority',
   'fallback',
-  'qualityScore',
   'name',
   'type',
   'providerCode',
@@ -101,4 +100,4 @@ export function accountTableScrollY(): string {
   return 'calc(100dvh - 286px)'
 }
 
-export type AccountTableRecord = AccountSummary
+export type AccountTableRecord = AccountListItem

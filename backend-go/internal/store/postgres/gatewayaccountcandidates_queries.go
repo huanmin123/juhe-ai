@@ -210,10 +210,11 @@ WHERE group_accounts.group_id = $1::text
     )
   )
   AND model_ranking.model_rank < 3
+  AND ($11::text = '' OR group_accounts.account_id = $11::text)
 ORDER BY model_ranking.model_rank ASC,
   group_accounts.local_fallback_enabled ASC,
   group_accounts.local_super_priority_enabled DESC,
   group_accounts.local_priority ASC,
   group_accounts.created_at ASC,
   group_accounts.account_id ASC
-LIMIT $11`
+LIMIT $12`

@@ -1,5 +1,3 @@
-import type { AccountUsageSummary } from './usage-stats'
-
 export interface RequestQuotaLimit {
   enabled: boolean
   /** USD cost quota. */
@@ -176,8 +174,15 @@ export interface ApiKeyAvailabilitySchedule {
   exceptions?: ApiKeyAvailabilityScheduleException[]
 }
 
+export interface ApiKeyUsageListSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
 export interface ApiKeySummary {
   id: string
+  revision: string
   systemAccountId?: string
   systemAccountName?: string
   name: string
@@ -194,7 +199,7 @@ export interface ApiKeySummary {
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   availabilitySchedule?: ApiKeyAvailabilitySchedule
-  usage: AccountUsageSummary
+  usage: ApiKeyUsageListSummary
 }
 
 export interface ApiKeyListResult {
@@ -205,9 +210,35 @@ export interface ApiKeyListResult {
   pageSize: number
 }
 
-export interface CreatedApiKey extends ApiKeySummary {
+export interface CreatedApiKey {
+  id: string
   key: string
-  usageAvailable?: boolean
+  keyPrefix: string
+  keySuffix: string
+  revision: string
+}
+
+export interface ApiKeyMutationRowPatch {
+  revision: string
+  name?: string
+  description?: string | null
+  keyPrefix?: string
+  keySuffix?: string
+  status?: 'active' | 'disabled'
+  routeStrategyId?: string
+  routeStrategyName?: string
+  routeStrategyMode?: RouteStrategyMode
+  routeStrategyStatus?: RouteStrategyStatus
+  expiresAt?: string | null
+  quotaLimits?: ApiKeyQuotaLimits
+  availabilitySchedule?: ApiKeyAvailabilitySchedule | null
+}
+
+export interface ApiKeyMutationResult {
+  id: string
+  revision: string
+  changedFields: string[]
+  rowPatch: ApiKeyMutationRowPatch
 }
 
 export interface ApiKeySecretResult {

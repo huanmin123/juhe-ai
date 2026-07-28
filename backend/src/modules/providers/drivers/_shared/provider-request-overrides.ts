@@ -1,5 +1,6 @@
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { resolveGptRequestOverrideModelCapabilities } from '../gpt/request-override-capabilities.js'
 import { parseAccountRequestOverrideBody } from '../gpt/request-override-body.js'
 import {
@@ -28,8 +29,12 @@ export async function applyProviderAccountRequestOverridesToBody(
     throw normalizeOverrideError(error)
   }
   if (!overrides.serviceTier && !overrides.reasoningEffort) return body
-  const parsed = await parseAccountRequestOverrideBody(body, input.signal)
-  const model = input.upstreamModel ?? (typeof parsed.model === 'string' ? parsed.model : undefined)
+  let parsed: Record<string, unknown> | undefined
+  let model = input.upstreamModel
+  if (!model && !input.modelCapabilities) {
+    parsed = await parseAccountRequestOverrideBody(body, input.signal)
+    model = typeof parsed.model === 'string' ? parsed.model : undefined
+  }
   let effective
   try {
     const capabilities = input.modelCapabilities
@@ -38,6 +43,8 @@ export async function applyProviderAccountRequestOverridesToBody(
   } catch (error) {
     throw normalizeOverrideError(error)
   }
+  if (!effective.serviceTier && !effective.reasoningEffort) return body
+  parsed ??= await parseAccountRequestOverrideBody(body, input.signal)
 
   const output = { ...parsed }
   if (input.wireFormat === 'openai_chat' || input.wireFormat === 'openai_responses') {
@@ -72,8 +79,9 @@ export async function applyProviderAccountRequestOverridesToBody(
       }
     }
   }
-  const serialized = JSON.stringify(output)
-  return typeof body === 'string' ? serialized : Buffer.from(serialized, 'utf8')
+  return typeof body === 'string'
+    ? JSON.stringify(output)
+    : serializeGatewayJsonObject(output)
 }
 
 function normalizeOverrideError(error: unknown): unknown {

@@ -1,5 +1,5 @@
 import { formatCompactUsageAmount, formatRequestCountTag, formatUsd } from '@/shared/formatters'
-import type { AccountUsageSummary, ApiKeyAvailabilitySchedule, ApiKeySummary, RouteStrategyMode } from '@/types/domain'
+import type { ApiKeyAvailabilitySchedule, ApiKeySummary, ApiKeyUsageListSummary, RouteStrategyMode } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import { timeScheduleSummary, timeScheduleTagColor } from '@/views/shared/timeSchedule'
 
@@ -73,6 +73,6 @@ export function apiKeySystemAccountText(apiKey: ApiKeySummary): string {
   return systemAccountDisplayText(apiKey)
 }
 
-export function formatUsageSummary(usage: AccountUsageSummary): string {
+export function formatUsageSummary(usage: ApiKeyUsageListSummary): string {
   return `${formatRequestCountTag(usage.requestCount)} / ${formatCompactUsageAmount(usage.totalTokens)} / ${formatUsd(usage.totalCost)}`
 }

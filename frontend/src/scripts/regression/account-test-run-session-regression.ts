@@ -42,9 +42,9 @@ assert.equal(accountARaw.includes('secret-request-body'), false, 'sessionStorage
 assert.equal(accountARaw.includes('secret-response-body'), false, 'sessionStorage 快照不得保存人工测试响应正文')
 assert.equal(accountARaw.includes('x-secret-header'), false, 'sessionStorage 快照不得保存人工测试响应 Header')
 assert.deepEqual(
-  readAccountTestRunSession(false, accountA.id)?.testingAccount.credentials,
-  {},
-  '恢复账户只保留展示和轮询字段，不恢复凭据'
+  'credentials' in (readAccountTestRunSession(false, accountA.id)?.testingAccount ?? {}),
+  false,
+  '恢复账户只保留列表展示和轮询字段，不伪造凭据字段'
 )
 assert.equal(
   readAccountTestRunSession(false, accountA.id)?.testingAccount.healthCheckEndpointMode,

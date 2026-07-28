@@ -4,7 +4,7 @@ import { computed, createSSRApp, h } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 import { api } from '@/api/client'
-import type { AccountTestOptions } from '@/api/domains/accounts'
+import type { AccountTestModelCapabilities, AccountTestOptions } from '@/api/domains/accounts'
 import { authState } from '@/composables/useAuth'
 import type { AccountSummary } from '@/types/domain'
 import { useAccountTestModal } from '@/views/accounts/useAccountTestModal'
@@ -46,9 +46,11 @@ async function verifyManagementLazyLoading(): Promise<void> {
   api.accounts.testModelCapabilities = async (accountId, modelId, params) => {
     capabilitiesCalls += 1
     assert.equal(accountId, account.id)
-    assert.equal(modelId, account.healthCheckModel)
+    assert.ok([account.healthCheckModel, 'vendor/model-two'].includes(modelId))
     assert.equal(params?.systemAccountId, scopeParams.systemAccountId)
-    return modelCapabilities(modelId, ['responses_json', 'responses_sse'])
+    return modelCapabilities(modelId, modelId === account.healthCheckModel
+      ? ['responses_json', 'responses_sse']
+      : ['chat_json'])
   }
 
   const modal = await createModalHarness({
@@ -80,18 +82,32 @@ async function verifyManagementLazyLoading(): Promise<void> {
   assert.equal(optionsCalls, 1, '管理端重复展开已加载的模型选择器不得重复请求')
 
   modal.updateAccountTestModel('vendor/model-two')
-  assert.equal(modal.testForm.testEndpointMode, 'chat_json', '切换模型必须直接使用现有选项中的请求形态')
+  assert.equal(modal.testForm.testEndpointMode, 'account_default', '切换模型必须清空前一模型的请求形态')
   await modal.loadAccountTestEndpointModeOptions(true)
-  assert.equal(capabilitiesCalls, 1, '模型选项已经携带请求形态时不得追加单模型能力请求')
+  assert.equal(capabilitiesCalls, 2, '展开新模型的请求形态下拉必须定点读取该模型能力')
+  assert.deepEqual(modal.testEndpointModes.value, ['chat_json'])
+  modal.updateAccountTestModel(account.healthCheckModel)
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 2, '同一账户版本与模型的能力结果必须复用会话缓存')
   await modal.loadAccountTestModelOptions(true, '模型二')
   assert.equal(optionsCalls, 2, '搜索模型时应按关键词重新请求候选列表')
   assert.deepEqual(optionQueries[1], {
     keyword: '模型二',
     limit: 50,
-    selectedIds: [account.healthCheckModel, 'vendor/model-two']
-  }, '模型搜索必须同时保留账户检查模型和当前选中模型')
+    selectedIds: [account.healthCheckModel]
+  }, '模型搜索必须保留账户默认检查模型和当前选中模型')
   await modal.loadAccountTestModelOptions(true, '模型二')
   assert.equal(optionsCalls, 2, '相同关键词与选中模型的重复搜索应复用缓存')
+
+  modal.closeTestModal()
+  await modal.openTestModal(account)
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 2, '重开同一账户版本的测试弹窗必须复用能力会话缓存')
+  const revisedAccount = { ...account, configRevision: (account.configRevision ?? 0) + 1 }
+  modal.closeTestModal()
+  await modal.openTestModal(revisedAccount)
+  await modal.loadAccountTestEndpointModeOptions(true)
+  assert.equal(capabilitiesCalls, 3, '账户版本变化后必须重新读取当前模型能力')
 }
 
 async function verifySelfLazyLoading(): Promise<void> {
@@ -109,8 +125,10 @@ async function verifySelfLazyLoading(): Promise<void> {
   api.myAccounts.testModelCapabilities = async (accountId, modelId) => {
     capabilitiesCalls += 1
     assert.equal(accountId, account.id)
-    assert.equal(modelId, account.healthCheckModel)
-    return modelCapabilities(modelId, ['responses_json', 'responses_sse'])
+    assert.ok([account.healthCheckModel, 'vendor/model-two'].includes(modelId))
+    return modelCapabilities(modelId, modelId === account.healthCheckModel
+      ? ['responses_json', 'responses_sse']
+      : ['chat_json'])
   }
 
   const modal = await createModalHarness({
@@ -133,9 +151,9 @@ async function verifySelfLazyLoading(): Promise<void> {
   }, '个人端首次展开也必须使用轻量查询参数')
 
   modal.updateAccountTestModel('vendor/model-two')
-  assert.equal(modal.testForm.testEndpointMode, 'chat_json', '个人端切换模型不得发起第二次请求')
+  assert.equal(modal.testForm.testEndpointMode, 'account_default', '个人端切换模型必须清空前一模型请求形态')
   await modal.loadAccountTestEndpointModeOptions(true)
-  assert.equal(capabilitiesCalls, 1, '个人端已加载模型选项时不得重复请求能力详情')
+  assert.equal(capabilitiesCalls, 2, '个人端展开新模型请求形态时必须读取定点能力详情')
 }
 
 async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
@@ -230,27 +248,23 @@ async function verifyPendingCapabilitiesAbortOnModelSwitch(): Promise<void> {
   assert.equal(pendingSignal?.aborted, true, '切换模型必须取消旧模型能力请求')
   assert.equal(modal.testEndpointModesLoading.value, false, '切换模型后不得遗留旧能力请求的加载态')
   assert.equal(modal.testForm.model, 'vendor/model-two', '旧模型能力响应不得覆盖新模型')
-  assert.equal(modal.testForm.testEndpointMode, 'chat_json', '切换模型后必须立即使用候选项携带的请求形态')
+  assert.equal(modal.testForm.testEndpointMode, 'account_default', '切换模型后不得保留候选目录以外的能力状态')
 }
 
 function testOptions(): AccountTestOptions {
   return [
     {
       id: 'vendor/model-one',
-      name: '模型一',
-      supportedApiProtocols: ['responses'],
-      testEndpointModes: ['responses_sse']
+      name: '模型一'
     },
     {
       id: 'vendor/model-two',
-      name: '模型二',
-      supportedApiProtocols: ['chat_completions'],
-      testEndpointModes: ['chat_json']
+      name: '模型二'
     }
   ]
 }
 
-function modelCapabilities(model: string, testEndpointModes: AccountTestOptions[number]['testEndpointModes']): AccountTestOptions[number] {
+function modelCapabilities(model: string, testEndpointModes: AccountTestModelCapabilities['testEndpointModes']): AccountTestModelCapabilities {
   return {
     id: model,
     name: model,

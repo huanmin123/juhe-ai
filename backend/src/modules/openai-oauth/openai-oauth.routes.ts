@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { GPT_VENDOR_CODE, isGptVendorCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -15,6 +15,7 @@ import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules 
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -24,7 +25,7 @@ import {
   type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
-import { isManagedOpenAIOAuthRefreshErrorCode, isOpenAIOAuthRefreshLocalConfigurationError, openAIOAuthRefreshManagedErrorCodes, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
+import { isManagedOpenAIOAuthRefreshErrorCode, isOpenAIOAuthRefreshLocalConfigurationError, refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -73,6 +74,7 @@ const createFromCodeSchema = z.object({
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
+  clientId: z.string().trim().min(1).optional(),
   providerProtocolProfileId: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
   groupId: z.string().optional(),
@@ -100,7 +102,8 @@ const reauthorizeFromCodeSchema = z.object({
 }).strict()
 
 const reauthorizeFromRefreshTokenSchema = z.object({
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1),
+  clientId: z.string().trim().min(1).optional()
 }).strict()
 
 function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined): boolean {
@@ -228,6 +231,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name')),
     refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken')),
+    clientId: normalizedText(bodyField(req, 'clientId')),
     status: 'pending_test'
   })
 }), async (req, res) => {
@@ -267,6 +271,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
     })
     const tokenInfo = await refreshOpenAIOAuthToken({
       refreshToken: parsed.data.refreshToken,
+      clientId: parsed.data.clientId,
       proxyUrl: await resolveProxyUrlForProfileAsync(parsed.data.proxyProfileId)
     })
     const account = await runLoggedOperationAsync(async () => {
@@ -375,27 +380,29 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
-  if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
-    return
-  }
-
   try {
-    const { code, state } = extractCodeAndState(parsed.data)
-    const tokenInfo = await exchangeOpenAIAuthCode({
-      sessionId: parsed.data.sessionId,
-      code,
-      state,
-      ownerSystemAccountId: requestAccess?.systemAccountId,
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateOpenAIOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async () => {
+      const current = await findEditableOpenAIOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('OpenAI OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const { code, state } = extractCodeAndState(parsed.data)
+      const tokenInfo = await exchangeOpenAIAuthCode({
+        sessionId: parsed.data.sessionId,
+        code,
+        state,
+        ownerSystemAccountId: requestAccess?.systemAccountId,
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateOpenAIOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth 重新授权失败')
@@ -419,24 +426,26 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
-  if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
-    return
-  }
-
   try {
-    const tokenInfo = await refreshOpenAIOAuthToken({
-      refreshToken: parsed.data.refreshToken,
-      clientId: stringCredential(account.credentials, 'client_id'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, account.id, async () => {
+      const current = await findEditableOpenAIOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('OpenAI OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await refreshOpenAIOAuthToken({
+        refreshToken: parsed.data.refreshToken,
+        clientId: parsed.data.clientId ?? stringCredential(current.credentials, 'client_id'),
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateOpenAIOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI 刷新令牌重新授权失败')
@@ -538,16 +547,16 @@ async function updateOpenAIOAuthAccountCredentials(
   const credentials = buildReauthorizedOpenAIOAuthCredentials(account.credentials, tokenInfo, fallback)
   const updated = await updateAccountAsync(account.id, {
     credentials
-  }, access)
+  }, access, {
+    expectedConfigRevision: account.configRevision ?? 1
+  })
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  if (updated.status === 'error' && isManagedOpenAIOAuthRefreshErrorCode(updated.lastErrorCode)) {
-    return await clearAccountFailureStateAsync(account.id, access, {
-      expectedLastErrorCodes: openAIOAuthRefreshManagedErrorCodes
-    }) ?? updated
-  }
-  return updated
+  if (updated.status !== 'error' || !updated.lastErrorCode) return updated
+  return await clearAccountFailureStateAsync(account.id, access, {
+    expectedLastErrorCodes: [updated.lastErrorCode]
+  }) ?? updated
 }
 
 export function buildReauthorizedOpenAIOAuthCredentials(
@@ -582,7 +591,13 @@ function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
 }
 
 function isOAuthBusinessConflictError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('已存在')
+  return error instanceof AccountConfigRevisionConflictError
+    || (error instanceof Error && error.message.includes('已存在'))
+}
+
+function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
+    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }
 
 function buildOAuthCreateLog(

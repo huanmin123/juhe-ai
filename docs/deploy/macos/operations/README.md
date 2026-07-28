@@ -8,7 +8,7 @@
 - `install-performance-topology.sh`：仅用于高性能模式，在同一台 macOS 上安装一个 control、默认 3 个 gateway，以及由 control 看护的 Usage 2 / Log 2 / Stats 1 / Ops 1 worker；逐节点健康后还必须看到 Redis freshness fence 之后、且 PID 属于本次健康拓扑的新指标样本，才原子切换已被 Nginx 主配置 include 的配置文件，失败恢复 launchd 和 Nginx。
 - `manage-sing-box.sh`：只接管已证明为 loopback、唯一且由 `sing-box` 持有的监听，并通过实际 SOCKS5 代理探测；也可显式选择 Homebrew service 或 user launchd。
 - `diagnose-proxy-dns.sh`：只读检查 DNS、监听端口、launchd 状态和直连/代理连通性。
-- `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口。
+- `temporary-cutover.sh`：在已经准备好的主服务与临时服务之间调用环境私有 switch adapter，切换失败自动回滚入口；只适用于未启用 capability v2 的旧入口切换。
 - `install-redis-role-services.sh`：默认 dry-run，按 cache/state/queue 角色渲染独立 Redis 配置与 system LaunchDaemon；apply 使用 bootout、端口释放、原子替换、bootstrap、kickstart 和失败恢复。
 - `verify-redis-role-isolation.sh`：只读验证 main `6379/6380/6381` 或 temporary `16379/16380/16381` 的三个 URL、PID、launchd job、PING、AOF/RDB 和淘汰策略，不输出密码。
 - `templates/`：无用户、域名、IP、密钥或生产路径的 plist 模板。
@@ -22,6 +22,7 @@
 - `install-launchd-service.sh --apply` 必须显式传 `--health-port` 或 loopback `--health-base-url`；加载后在有界窗口内连续确认 `/__aisys__/health` 与 `/__aisys__/api/health`，失败会恢复旧定义和 loaded 状态。
 - `manage-sing-box.sh` 的 `launchd` 更新在 bootstrap、kickstart、监听身份或代理探测失败时恢复旧 plist 与原 loaded 状态；`existing` 不会因为任意进程占用端口就接管。
 - `temporary-cutover.sh` 不复制数据库、不生成临时 env、不停止主服务或临时服务。环境私有流程先完成资源隔离与候选启动，再使用本脚本切流；切流成功后也保留源服务，确认稳定后才显式清理。
+- capability v2 启用后禁止用 `temporary-cutover.sh` takeover / switchback 作为生产切换或回滚。v2 必须先执行 ingress fence、请求 / finalizer / handoff drain、数据库 deployment epoch CAS 和 manifest digest 校验，再原子切入口；旧脚本没有这些 barrier，即使双 health 都是 200 也不得放行。
 - Redis 角色安装器不接受共享 host:port，不执行运行时参数热改；持久化和角色变化必须通过配置文件与 launchd 有界替换。temporary 必须使用独立三实例，不能只换 namespace 后复用生产 PID。
 - apply 前必须保留当前可用入口和回滚目标，并先证明回滚目标当前确实是入口。主服务和临时服务必须使用不同 PID、端口和实际 release 目录，并同时通过 `/__aisys__/health`、`/__aisys__/api/health`。入口证明依赖 switch adapter 写入的响应头，不能只凭某个 health 返回 200 放行。
 - 调用 switch adapter 前就会启用失败 trap；即使适配器已经部分改动入口后以非零状态退出，也会调用相反目标执行反向回滚并重新证明入口。

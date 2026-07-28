@@ -60,6 +60,7 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   applyOpenAIOAuthCodexSessionToBody(body, session, input.compact)
   normalizeOpenAIOAuthCodexInstructions(body)
   normalizeOpenAIOAuthCodexInput(body)
+  normalizeOpenAIOAuthCodexLegacyFunctions(body)
   normalizeOpenAIOAuthCodexTools(body)
   applyOpenAIOAuthCodexAccountRequestOverrides(body, input)
 
@@ -70,6 +71,7 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   }
 
   deleteFields(body, openAIOAuthCodexDroppedFields)
+  ensureOpenAIOAuthCodexReasoningInclude(body)
   body.store = false
   body.stream = true
   normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
@@ -91,7 +93,7 @@ function applyOpenAIOAuthCodexAccountRequestOverrides(
     })
   } catch (error) {
     if (error instanceof GptAccountRequestOverrideError) {
-      throw new OpenAIOAuthCodexAdapterError(error.message)
+      throw new OpenAIOAuthCodexAdapterError(error.message, undefined, { accountScoped: true })
     }
     throw error
   }
@@ -176,6 +178,7 @@ function normalizeOpenAIOAuthCodexInput(body: Record<string, unknown>): void {
     return
   }
 
+  const systemInstructions: string[] = []
   body.input = body.input.map((item) => {
     if (!isPlainObject(item)) {
       return item
@@ -183,11 +186,54 @@ function normalizeOpenAIOAuthCodexInput(body: Record<string, unknown>): void {
     if (item.role !== 'system') {
       return item
     }
+    const instruction = openAIOAuthCodexContentText(item.content)
+    if (instruction) systemInstructions.push(instruction)
     return {
       ...item,
       role: 'developer'
     }
   })
+  if (systemInstructions.length > 0) {
+    const existing = typeof body.instructions === 'string' ? body.instructions.trim() : ''
+    body.instructions = [...systemInstructions, ...(existing ? [existing] : [])].join('\n\n')
+  }
+}
+
+function normalizeOpenAIOAuthCodexLegacyFunctions(body: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(body, 'functions')) {
+    if (Array.isArray(body.functions)) {
+      body.tools = body.functions.map((definition) => ({ type: 'function', function: definition }))
+    }
+    delete body.functions
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'function_call')) return
+  if (typeof body.function_call === 'string') {
+    body.tool_choice = body.function_call
+  } else if (isPlainObject(body.function_call) && stringValue(body.function_call.name)) {
+    body.tool_choice = { type: 'function', name: stringValue(body.function_call.name) }
+  }
+  delete body.function_call
+}
+
+function ensureOpenAIOAuthCodexReasoningInclude(body: Record<string, unknown>): void {
+  if (!isPlainObject(body.reasoning) || Object.keys(body.reasoning).length === 0) return
+  const encryptedContent = 'reasoning.encrypted_content'
+  if (body.include === undefined || body.include === null) {
+    body.include = [encryptedContent]
+    return
+  }
+  if (Array.isArray(body.include) && !body.include.includes(encryptedContent)) {
+    body.include = [...body.include, encryptedContent]
+  }
+}
+
+function openAIOAuthCodexContentText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => isPlainObject(part) && typeof part.text === 'string' ? part.text : '')
+    .join('')
+    .trim()
 }
 
 function normalizeOpenAIOAuthCodexTools(body: Record<string, unknown>): void {

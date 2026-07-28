@@ -20,9 +20,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, accountManagementListRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/account-management-list.repository.js')
 ])
 
 try {
@@ -91,7 +92,7 @@ try {
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/\baccount_rows\.name\b/i.test(sql) && /\bFROM\s+\(/i.test(sql) && /\bORDER\s+BY\b/i.test(sql)) {
+    if (/\bWITH\s+account_rows\s+AS\s*\(/i.test(sql) && /\bORDER\s+BY\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         capturedCalls.push({ sql, params })
@@ -102,52 +103,52 @@ try {
   }) as typeof database.prepare
 
   try {
-    const nameResult = repositories.listAccountsPage(access, { keyword: '账户检索目标', page: 1, pageSize: 20 })
+    const nameResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '账户检索目标', page: 1, pageSize: 20 })
     const nameIds = nameResult.items.map((item) => item.id)
     assert(nameIds.includes(matchedByName.id), 'AI 账户搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'AI 账户搜索应命中名称前缀值')
     assert(nameIds.includes(middleNameOnly.id), 'AI 账户搜索应命中名称中间包含值')
 
-    const singleChineseResult = repositories.listAccountsPage(access, { keyword: '索', page: 1, pageSize: 20 })
+    const singleChineseResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '索', page: 1, pageSize: 20 })
     assert(singleChineseResult.items.some((item) => item.id === middleNameOnly.id), 'AI 账户搜索应支持中文单字包含值')
 
-    const doubleChineseResult = repositories.listAccountsPage(access, { keyword: '检索', page: 1, pageSize: 20 })
+    const doubleChineseResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '检索', page: 1, pageSize: 20 })
     assert(doubleChineseResult.items.some((item) => item.id === middleNameOnly.id), 'AI 账户搜索应支持中文双字包含值')
 
-    const maxLengthTailResult = repositories.listAccountsPage(access, { keyword: '末尾片段', page: 1, pageSize: 20 })
+    const maxLengthTailResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '末尾片段', page: 1, pageSize: 20 })
     assert(maxLengthTailResult.items.some((item) => item.id === maxLengthTailAccount.id), 'AI 账户搜索应命中最大长度账户名末尾片段')
 
-    const notesResult = repositories.listAccountsPage(access, { keyword: '备注前缀', page: 1, pageSize: 20 })
+    const notesResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '备注前缀', page: 1, pageSize: 20 })
     const notesIds = notesResult.items.map((item) => item.id)
     assert(!notesIds.includes(matchedByNotes.id), 'AI 账户搜索不应通过备注字段命中，避免通用关键词扫描长文本')
     assert(!notesIds.includes(middleNotesOnly.id), 'AI 账户搜索不应命中备注中间包含值')
 
-    const groupResult = repositories.listAccountsPage(access, { keyword: '账户绑定前缀', page: 1, pageSize: 20 })
+    const groupResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: '账户绑定前缀', page: 1, pageSize: 20 })
     const groupIds = groupResult.items.map((item) => item.id)
     assert(!groupIds.includes(matchedByGroup.id), 'AI 账户名称搜索不应通过绑定分组名命中')
     assert(!groupIds.includes(middleGroupOnly.id), 'AI 账户搜索不应命中绑定分组名中间包含值')
 
-    const groupFilterResult = repositories.listAccountsPage(access, { groupId: matchedGroup.id, page: 1, pageSize: 20 })
+    const groupFilterResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { groupId: matchedGroup.id, page: 1, pageSize: 20 })
     const groupFilterIds = groupFilterResult.items.map((item) => item.id)
     assert(groupFilterIds.includes(matchedByGroup.id), 'AI 账户分组筛选应命中所选分组绑定账户')
     assert(!groupFilterIds.includes(middleGroupOnly.id), 'AI 账户分组筛选不应混入其他分组绑定账户')
 
-    const idResult = repositories.listAccountsPage(access, { keyword: matchedByName.id, page: 1, pageSize: 20 })
+    const idResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: matchedByName.id, page: 1, pageSize: 20 })
     assert(!idResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应支持账户 ID 定位')
 
-    const providerResult = repositories.listAccountsPage(access, { keyword: 'openai', page: 1, pageSize: 20 })
+    const providerResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: 'openai', page: 1, pageSize: 20 })
     assert(!providerResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应通过供应商编码命中')
 
-    const typeResult = repositories.listAccountsPage(access, { keyword: 'api_key', page: 1, pageSize: 20 })
+    const typeResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: 'api_key', page: 1, pageSize: 20 })
     assert(!typeResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应通过账户类型命中')
 
-    const wildcardResult = repositories.listAccountsPage(access, { keyword: 'percent%', page: 1, pageSize: 20 })
+    const wildcardResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { keyword: 'percent%', page: 1, pageSize: 20 })
     const wildcardIds = wildcardResult.items.map((item) => item.id)
     assert(wildcardIds.includes(wildcardLiteral.id), 'AI 账户搜索应把 % 当作字面量前缀处理')
     assert(!wildcardIds.includes(wildcardNeighbor.id), 'AI 账户搜索不应把用户输入的 % 当作 LIKE 通配符')
 
     const multiStatusCapturedStart = capturedCalls.length
-    const multiStatusResult = repositories.listAccountsPage(access, { status: 'disabled,error', page: 1, pageSize: 20 })
+    const multiStatusResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { status: 'disabled,error', page: 1, pageSize: 20 })
     const multiStatusIds = multiStatusResult.items.map((item) => item.id)
     assert(multiStatusIds.includes(disabledStatusAccount.id), 'AI 账户列表多状态筛选应命中停用账户')
     assert(multiStatusIds.includes(errorStatusAccount.id), 'AI 账户列表多状态筛选应命中异常账户')
@@ -161,7 +162,7 @@ try {
     assert(!multiStatusOptionIds.includes(matchedByName.id), 'AI 账户 options 多状态筛选不应混入未勾选状态')
 
     const invalidNotesSortCapturedStart = capturedCalls.length
-    const invalidNotesSortResult = repositories.listAccountsPage(access, {
+    const invalidNotesSortResult = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, {
       keyword: '账户检索目标',
       sorts: [{ field: 'notes', order: 'asc' } as never],
       page: 1,
@@ -183,6 +184,16 @@ try {
     'AI 账户列表名称包含匹配应使用搜索文档字面包含确认'
   )
   for (const call of capturedCalls) {
+    assert.doesNotMatch(
+      call.sql,
+      /\b(?:accounts|source_accounts)\.\*/i,
+      'AI 账户管理列表 SQL 必须显式选择主表列，不能使用主表通配符'
+    )
+    assert.doesNotMatch(
+      call.sql,
+      /\b(?:credentials_encrypted|credential_mask|supported_models|model_mappings|account_api_key_runtime_states)\b/i,
+      'AI 账户管理列表 SQL 不得读取凭据、模型全集、模型映射或 API Key 运行态明细'
+    )
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
     assert(!/\baccount_rows\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把备注字段放进通用关键词 WHERE')
     assert(!/\bCOALESCE\s*\(\s*bound_groups\.name\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描分组名称')
@@ -223,8 +234,8 @@ try {
     assertBusinessIndexMissing(indexName)
   }
 
-  assertNoAuthorizationInstanceBackfillScan(granteeAccess, authorizedInstance.id)
-  assertExpiredAccountCleanupIsBoundedAndIndexed(access)
+  await assertNoAuthorizationInstanceBackfillScan(granteeAccess, authorizedInstance.id)
+  await assertExpiredAccountCleanupIsBoundedAndIndexed(access)
 
   console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀/索引候选包含匹配，分组使用独立筛选，请求路径不再按被授权人全量回扫授权实例或无界清理过期账号')
 } finally {
@@ -252,6 +263,7 @@ function createGuardAccount(
       api_key: apiKey,
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     notes,
     groupId,
     status
@@ -262,9 +274,8 @@ function assertAccountListRouteBoundary(): void {
   const accountsRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
   const accountListRoutesSource = readFileSync(resolve('src/modules/accounts/account-list.routes.ts'), 'utf8')
   const accountListRuntimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
-  const accountSummaryRepositorySource = readFileSync(resolve('src/storage/account-summary.repository.ts'), 'utf8')
+  const accountManagementListRepositorySource = readFileSync(resolve('src/storage/account-management-list.repository.ts'), 'utf8')
   const accountOptionsRepositorySource = readFileSync(resolve('src/storage/account-options.repository.ts'), 'utf8')
-  const accountReadRepositorySource = readFileSync(resolve('src/storage/account-read.repository.ts'), 'utf8')
   assert(
     accountsRoutesSource.includes('registerAccountListRoutes(accountsRouter)'),
     '账户主路由应注册账户列表只读子路由'
@@ -276,43 +287,39 @@ function assertAccountListRouteBoundary(): void {
   assert(
     accountListRoutesSource.includes("router.get('/',")
       && accountListRoutesSource.includes("router.get('/options'")
-      && (accountListRoutesSource.includes('listAccountsPageAsync(') || accountListRoutesSource.includes('listAccountItemsPageAsync('))
+      && accountListRoutesSource.includes('listAccountManagementItemsPageAsync(')
       && accountListRoutesSource.includes('listAccountOptionsAsync('),
-    '账户列表只读子路由应承接列表和 options 查询'
+    '账户列表只读子路由应通过独立的窄管理列表仓储承接列表，并保留独立 options 查询'
+  )
+  assert.doesNotMatch(
+    accountListRoutesSource,
+    /\b(?:listAccountItemsPageAsync|listAccountsPageAsync)\s*\(/,
+    '账户列表路由不得同时保留旧 AccountSummary 列表入口'
   )
   assert(
-    accountListRoutesSource.includes('applyServerAccountConcurrencyToAccountList')
-      && accountListRoutesSource.includes('applyAccountListRuntimeStatusFilter')
-      && accountListRoutesSource.includes('Server-Timing')
-      && accountListRoutesSource.includes('sanitizeAccountListResponse'),
-    '账户列表只读子路由应保留并发水合、运行态状态后置归类、Server-Timing 和响应脱敏'
+    accountListRoutesSource.includes('Server-Timing')
+      && !accountListRoutesSource.includes('sanitizeAccountListResponse'),
+    '账户列表只读子路由应保留 Server-Timing，显式窄 DTO 不应再经过旧的余项展开响应脱敏'
   )
-  assert.match(
-    accountListRoutesSource,
-    /accountListNeedsRuntimeStatusFilter\(listOptions\)[\s\S]*listAccountsPageWithRuntimeStatusFilter\(requestAccess, listOptions\)[\s\S]*if \(!filteredResult\) \{[\s\S]*listAccount(?:s|Items)PageAsync\(requestAccess, listOptions\)/,
-    '账户列表运行态状态过滤应先走单次运行态分页，快照不可用时才回退普通列表，避免 PG 状态过滤重复昂贵查询'
-  )
-  assert.match(
-    accountSummaryRepositorySource,
-    /loadAuthorizedAccountSummaryContextAsync\(client, authorizedRows, access, options\)/,
-    'PG 授权账户列表必须先按整页批量加载标签、名称、额度和动态装饰'
-  )
-  assert.match(
-    accountSummaryRepositorySource,
-    /authorizedContext[\s\S]*authorizedAccountSummaryFromRowAsync/,
-    'PG 授权账户逐行装配必须复用页级批量上下文，不能逐账户查询'
-  )
-  assert.match(
-    accountSummaryRepositorySource,
-    /authorizedAccountPermissions\(authorizedAccountCanReturnAuthorization\(row, options\)\)/,
-    'PG 授权账户列表必须与 SQLite 共用手工授权归还权限判定'
-  )
+  assert.match(accountManagementListRepositorySource, /export async function listAccountManagementItemsPageAsync\s*\(/, '窄管理列表仓储应暴露异步入口')
+  assert.match(accountManagementListRepositorySource, /export async function listAccountManagementItemsPageReadOnly\s*\(/, '窄管理列表仓储应暴露 SQLite 只读入口')
+  for (const [pattern, message] of [
+    [/\bAccountSummary\b/, '窄管理列表仓储不得依赖 AccountSummary'],
+    [/account-summary\.repository/, '窄管理列表仓储不得回退旧 account-summary 仓储'],
+    [/account-read\.repository/, '窄管理列表仓储不得回退旧 account-read 仓储'],
+    [/credentials_encrypted/i, '窄管理列表 SQL 不得读取加密凭据'],
+    [/credential_mask/i, '窄管理列表 SQL 不得读取凭据掩码'],
+    [/supported_models/i, '窄管理列表 SQL 不得读取支持模型全集'],
+    [/model_mappings/i, '窄管理列表 SQL 不得读取模型映射全集'],
+    [/(?:apiKeyRuntime|account_api_key_runtime_states|account-api-key-runtime-state)/i, '窄管理列表不得加载 API Key 运行态明细'],
+    [/(?:AccountUsageSummary|usage-summary-loaders|loadAccount(?:Authorization)?UsageSummar)/, '窄管理列表不得复用全量 usage loader']
+  ] as const) {
+    assert.doesNotMatch(accountManagementListRepositorySource, pattern, message)
+  }
   assert(
     accountListRuntimeStatusFilterSource.includes('export function accountListNeedsRuntimeStatusFilter')
-      && accountListRuntimeStatusFilterSource.includes('export async function listAccountsPageWithRuntimeStatusFilter')
-      && accountListRuntimeStatusFilterSource.includes('peekServerAccountRuntimeAvailabilitySnapshot')
-      && accountListRuntimeStatusFilterSource.includes('if (!runtimeAvailability) return undefined'),
-    '运行态状态过滤模块应暴露显式接管入口，并保留只用已有快照、快照不可用时回退普通列表的契约'
+      && accountListRuntimeStatusFilterSource.includes('export async function listAccountsPageWithRuntimeStatusFilter'),
+    '运行态状态过滤模块应保留显式接管入口'
   )
   assert(
     !accountListRoutesSource.includes('mutationGuard(')
@@ -321,32 +328,32 @@ function assertAccountListRouteBoundary(): void {
     '账户列表只读子路由不应引入写操作、操作日志或 mutation guard'
   )
   assert(
-    !accountSummaryRepositorySource.includes('listAccountsPageWithDerivedStatusFilter')
+    !accountManagementListRepositorySource.includes('listAccountsPageWithDerivedStatusFilter')
       && !accountOptionsRepositorySource.includes('queryAccountOptionRowsForAccessWithDerivedStatusFilter'),
     '账户列表和 options 状态归类不应通过仓储层无界翻页后过滤实现'
   )
   assert.match(
-    accountSummaryRepositorySource,
-    /accounts\.name COLLATE "C" >= \?[\s\S]+accounts\.name COLLATE "C" < \?/,
+    accountManagementListRepositorySource,
+    /account_rows\.name COLLATE "C"[\s\S]+\$\{prefixName\} >= \?[\s\S]+\$\{prefixName\} < \?/,
     'PG 自有账户列表名称前缀搜索必须使用大小写敏感 C collation 范围条件，避免 LIKE 扫描'
   )
   assert.match(
-    accountSummaryRepositorySource,
-    /accountNamePrefixUpperBound\(keywordPrefix\)/,
+    accountManagementListRepositorySource,
+    /textPrefixUpperBound\(normalized\)/,
     'PG 自有账户列表名称前缀搜索必须使用代码点上界，避免固定 \\uffff 在 PG 排序规则下失效'
   )
   assert.doesNotMatch(
-    accountSummaryRepositorySource,
+    accountManagementListRepositorySource,
     /\$\{normalizedKeywordPrefix\}\\uffff/,
     'PG 自有账户列表名称前缀搜索不能使用固定 \\uffff 上界'
   )
   assert.doesNotMatch(
-    accountSummaryRepositorySource,
+    accountManagementListRepositorySource,
     /lower\(accounts\.name\)\s+LIKE\s+lower\(\?\)/,
     'PG 自有账户列表名称前缀搜索不能回退 lower(name) LIKE lower(?)'
   )
   assert.doesNotMatch(
-    accountSummaryRepositorySource,
+    accountManagementListRepositorySource,
     /lower\(accounts\.name\)\s+>=\s+\?/,
     'PG 自有账户列表名称前缀搜索不能折叠账户名称大小写'
   )
@@ -375,16 +382,7 @@ function assertAccountListRouteBoundary(): void {
     /lower\(accounts\.name\)\s+>=\s+\?/,
     'PG 账户 options 名称前缀搜索不能折叠账户名称大小写'
   )
-  assert(
-    accountReadRepositorySource.includes('accountApiKeyPoolAllUnavailableSql')
-      && accountOptionsRepositorySource.includes('accountApiKeyPoolAllUnavailableSql'),
-    '账户列表和 options 派生状态应下推 Key 池 SQL 判断'
-  )
-  assert(
-    !accountReadRepositorySource.includes('availability_schedule_active')
-      && !accountOptionsRepositorySource.includes('availability_schedule_active'),
-    '账户列表和 options 不应再读取旧账户时间计划派生列'
-  )
+  assert(!accountManagementListRepositorySource.includes('availability_schedule_active'), '账户管理列表不应读取旧账户时间计划派生列')
 }
 
 function assertBusinessIndexExists(indexName: string): void {
@@ -428,7 +426,7 @@ function assertAccountNameSearchCandidateQueryPlan(accountId: string): void {
   assert(!details.includes('SCAN accounts'), `AI 账户名称包含候选查询不能扫描 accounts 主表，实际计划：${details}`)
 }
 
-function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: string; role: 'user' }, accountId: string): void {
+async function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: string; role: 'user' }, accountId: string): Promise<void> {
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedSql: string[] = []
@@ -444,7 +442,7 @@ function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: st
     return originalPrepare(sql)
   }) as typeof database.prepare
   try {
-    const page = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+    const page = await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { page: 1, pageSize: 20 })
     assert(page.items.some((item) => item.id === accountId), '账户列表仍应返回已物化的授权实例')
     const options = repositories.listAccountOptions(access, { limit: 20 })
     assert(options.some((item) => item.id === accountId), '账户 options 仍应返回已物化的授权实例')
@@ -456,7 +454,7 @@ function assertNoAuthorizationInstanceBackfillScan(access: { systemAccountId: st
   assert.equal(capturedSql.length, 0, `账户读取请求路径不应按被授权人全量扫描账号授权并补实例，实际 SQL：${capturedSql.join('\n')}`)
 }
 
-function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountId: string; role: 'admin' }): void {
+async function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountId: string; role: 'admin' }): Promise<void> {
   assertAccountExpirySweepQueryPlan()
   assertAccountExpirySweepQueryPlan(access.systemAccountId)
 
@@ -476,6 +474,7 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
         api_key: `sk-account-expiry-batch-guard-${index}`,
         base_url: 'https://api.openai.com/v1'
       },
+      supportedModels: ['gpt-5.5'],
       groupId: group.id,
       status: 'active'
     }, access)
@@ -504,7 +503,7 @@ function assertExpiredAccountCleanupIsBoundedAndIndexed(access: { systemAccountI
     return originalPrepare(sql)
   }) as typeof database.prepare
   try {
-    repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+    await accountManagementListRepository.listAccountManagementItemsPageReadOnly(access, { page: 1, pageSize: 20 })
     repositories.listAccountOptions(access, { limit: 20 })
     repositories.findAccountSummary(accountIds[0] ?? '', access)
   } finally {

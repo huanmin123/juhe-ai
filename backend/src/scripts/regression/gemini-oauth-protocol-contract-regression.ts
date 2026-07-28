@@ -3,6 +3,15 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GEMINI_PROTOCOL_CODE,
+  GEMINI_PROTOCOL_VERSION,
+  GEMINI_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
+import type { DispatchAccountSecret } from '../../storage/openai-account-selector.types.js'
+import { AccountConfigRevisionConflictError } from '../../storage/repositories.js'
+
+import {
   GEMINI_CLI_DEFAULT_BASE_URL,
   GEMINI_CLI_OAUTH_CLIENT_ID,
   GEMINI_CLI_OAUTH_REDIRECT_URI,
@@ -19,6 +28,10 @@ import {
   getGeminiOAuthCapabilities,
   inferGeminiGoogleOneTier
 } from '../../modules/gemini-oauth/gemini-oauth.service.js'
+import {
+  prepareGeminiAccountBeforeDispatch,
+  type GeminiOAuthDispatchPreparationDependencies
+} from '../../modules/providers/drivers/gemini/oauth-dispatch-preparation.js'
 
 assert.equal(GEMINI_OAUTH_AUTHORIZE_URL, 'https://accounts.google.com/o/oauth2/v2/auth')
 assert.equal(GEMINI_OAUTH_TOKEN_URL, 'https://oauth2.googleapis.com/token')
@@ -26,7 +39,7 @@ assert.equal(GEMINI_OAUTH_REDIRECT_URI, 'http://localhost:1455/auth/callback')
 assert.equal(GEMINI_CLI_OAUTH_REDIRECT_URI, 'https://codeassist.google.com/authcode')
 assert.equal(GEMINI_OAUTH_DEFAULT_BASE_URL, 'https://generativelanguage.googleapis.com')
 assert.equal(GEMINI_CLI_DEFAULT_BASE_URL, 'https://cloudcode-pa.googleapis.com')
-assert.match(GEMINI_GOOGLE_ONE_OAUTH_SCOPE, /drive\.metadata\.readonly/u, 'Google One 授权必须申请 Drive metadata readonly scope 才能读取 storageQuota')
+assert.equal(GEMINI_GOOGLE_ONE_OAUTH_SCOPE, GEMINI_CODE_ASSIST_OAUTH_SCOPE, '内置 Gemini CLI client 不能申请受限的 Drive scope')
 
 const authorizeUrl = new URL(buildGeminiAuthorizeUrl({
   state: 'contract-state',
@@ -133,7 +146,99 @@ assert.equal(inferGeminiGoogleOneTier(2 * tebibyte), 'google_ai_pro')
 assert.equal(inferGeminiGoogleOneTier(101 * tebibyte), 'google_ai_ultra')
 assert.equal(inferGeminiGoogleOneTier(0), 'google_one_unknown')
 
+const expiredCredentials = {
+  access_token: 'expired-gemini-access-token',
+  refresh_token: 'rotating-gemini-refresh-token',
+  client_id: GEMINI_CLI_OAUTH_CLIENT_ID,
+  client_secret: 'builtin-secret',
+  oauth_type: 'code_assist',
+  project_id: 'project-a',
+  tier_id: 'gcp_standard',
+  expires_at: '2000-01-01T00:00:00.000Z',
+  base_url: GEMINI_CLI_DEFAULT_BASE_URL,
+  metadata_marker: 'must-survive-refresh'
+}
+let releaseRefresh: (() => void) | undefined
+const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+let refreshCalls = 0
+let persistedCredentials: Record<string, unknown> | undefined
+const dependencies: GeminiOAuthDispatchPreparationDependencies = {
+  async loadAccount() {
+    return { providerCode: GEMINI_PROVIDER_CODE, type: 'google_oauth', configRevision: 7, credentials: expiredCredentials }
+  },
+  async refreshToken(input) {
+    refreshCalls += 1
+    assert.equal(input.refreshToken, 'rotating-gemini-refresh-token')
+    assert.equal(input.oauthType, 'code_assist')
+    await refreshGate
+    return {
+      accessToken: 'fresh-gemini-access-token',
+      refreshToken: 'rotated-gemini-refresh-token',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      clientId: GEMINI_CLI_OAUTH_CLIENT_ID,
+      clientSecret: 'builtin-secret',
+      oauthType: 'code_assist',
+      projectId: 'project-a',
+      tierId: 'gcp_standard',
+      baseUrl: GEMINI_CLI_DEFAULT_BASE_URL
+    }
+  },
+  async persistCredentials(_accountId, credentials, expectedConfigRevision) {
+    assert.equal(expectedConfigRevision, 7)
+    persistedCredentials = credentials
+    return { providerCode: GEMINI_PROVIDER_CODE, type: 'google_oauth', configRevision: 8, credentials }
+  }
+}
+const abortController = new AbortController()
+const firstRefresh = prepareGeminiAccountBeforeDispatch(geminiDispatchAccount('gemini-refresh-shared'), abortController.signal, dependencies)
+const secondRefresh = prepareGeminiAccountBeforeDispatch(geminiDispatchAccount('gemini-refresh-shared'), undefined, dependencies)
+abortController.abort()
+await assert.rejects(firstRefresh, /请求已取消/u, '单个下游取消只能停止自己的 Gemini token 等待')
+releaseRefresh?.()
+const refreshedDispatch = await secondRefresh
+assert.equal(refreshCalls, 1, '同一 Gemini 物理账户并发刷新必须单飞')
+assert.equal(refreshedDispatch.apiKey, 'fresh-gemini-access-token')
+assert.equal(refreshedDispatch.refreshToken, 'rotated-gemini-refresh-token')
+assert.equal(persistedCredentials?.metadata_marker, 'must-survive-refresh', 'Gemini 刷新不得丢弃扩展元数据')
+
+let conflictLoadCount = 0
+const conflictResult = await prepareGeminiAccountBeforeDispatch(geminiDispatchAccount('gemini-refresh-conflict'), undefined, {
+  async loadAccount() {
+    conflictLoadCount += 1
+    return conflictLoadCount === 1
+      ? { providerCode: GEMINI_PROVIDER_CODE, type: 'google_oauth', configRevision: 3, credentials: expiredCredentials }
+      : {
+          providerCode: GEMINI_PROVIDER_CODE,
+          type: 'google_oauth',
+          configRevision: 4,
+          credentials: {
+            ...expiredCredentials,
+            access_token: 'concurrent-gemini-access-token',
+            refresh_token: 'concurrent-gemini-refresh-token',
+            expires_at: '2099-01-01T00:00:00.000Z'
+          }
+        }
+  },
+  async refreshToken() {
+    return {
+      accessToken: 'stale-gemini-access-token',
+      clientId: GEMINI_CLI_OAUTH_CLIENT_ID,
+      clientSecret: 'builtin-secret',
+      oauthType: 'code_assist',
+      baseUrl: GEMINI_CLI_DEFAULT_BASE_URL
+    }
+  },
+  async persistCredentials() {
+    throw new AccountConfigRevisionConflictError('gemini-refresh-conflict', 3, 4)
+  }
+})
+assert.equal(conflictResult.apiKey, 'concurrent-gemini-access-token', 'CAS 冲突后必须采用数据库中胜出的 Gemini token')
+assert.equal(conflictResult.refreshToken, 'concurrent-gemini-refresh-token')
+
 const routesSource = readFileSync(resolve('src/modules/gemini-oauth/gemini-oauth.routes.ts'), 'utf8')
+const serviceSource = readFileSync(resolve('src/modules/gemini-oauth/gemini-oauth.service.ts'), 'utf8')
+assertRoute(serviceSource, 'if (hasGoogleDriveMetadataScope(tokenInfo.scope))', 'Google One 只能在历史授权明确包含 Drive scope 时探测配额')
+assertRoute(serviceSource, "if (tokenInfo.oauthType === 'code_assist') tierId = detected.tierId || tierId", 'Google One 项目探测不得覆盖用户选择的订阅档位')
 assertRoute(routesSource, "get('/capabilities'", 'Gemini OAuth 必须暴露三模式 capabilities')
 assertRoute(routesSource, "post('/auth-url'", 'Gemini OAuth 必须暴露 auth-url 接口')
 assertRoute(routesSource, "post('/create-from-code'", 'Gemini OAuth 必须暴露授权码建号接口')
@@ -144,11 +249,13 @@ assertRoute(routesSource, "post('/accounts/:id/reauthorize-from-refresh-token'",
 assertRoute(routesSource, 'oauthType: oauthTypeSchema.optional()', 'Gemini OAuth 路由必须使用 camelCase oauthType')
 assertRoute(routesSource, 'projectId: optionalTrimmedTextSchema', 'Gemini OAuth 路由必须使用 camelCase projectId')
 assertRoute(routesSource, 'tierId: optionalTrimmedTextSchema', 'Gemini OAuth 路由必须使用 camelCase tierId')
-assertRoute(routesSource, "oauthType: accountOAuthType(account.credentials)", '账户刷新必须按落库 oauth_type 选择 OAuth client')
+assertRoute(routesSource, "oauthType: accountOAuthType(current.credentials)", '账户刷新必须按锁内重读的 oauth_type 选择 OAuth client')
 assertRoute(routesSource, 'expectedConfigRevision: account.configRevision ?? 1', 'OAuth 凭据更新必须使用 config revision CAS')
 assertRoute(routesSource, 'error instanceof AccountConfigRevisionConflictError', '并发凭据更新冲突必须返回业务冲突')
-assertRoute(routesSource, "clearAccountFailureStateAsync(account.id, requestAccess) ?? updatedAccount", '刷新成功后必须清理旧失败态')
-assertRoute(routesSource, 'sanitizeAccountCredentialCarrierResponse(restoredAccount)', '刷新接口必须返回脱敏账户')
+assertRoute(routesSource, 'runWithProviderOAuthRefreshLock(', 'Gemini 手动刷新与重授权必须加入跨进程共享锁')
+assert.ok((routesSource.match(/oauthTokensChanged\(account\.credentials, current\.credentials\)/gu) ?? []).length >= 3, 'Gemini 手动刷新与两条重授权必须在锁内识别凭据变化')
+assert.equal(routesSource.includes('clearAccountFailureStateAsync'), false, 'Gemini 手动刷新不得清除限流或临时不可用等业务状态')
+assertRoute(routesSource, 'sanitizeAccountCredentialCarrierResponse(updatedAccount)', '刷新接口必须返回脱敏账户')
 
 const appSource = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
 assertRoute(appSource, '/my-gemini-oauth', '系统 API 必须挂载 my-gemini-oauth 自有入口')
@@ -160,4 +267,35 @@ console.log('Gemini OAuth 三模式协议契约回归通过：CLI client、redir
 
 function assertRoute(source: string, fragment: string, message: string): void {
   assert.equal(source.includes(fragment), true, message)
+}
+
+function geminiDispatchAccount(id: string): DispatchAccountSecret {
+  return {
+    id,
+    providerCode: GEMINI_PROVIDER_CODE,
+    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+    protocolCode: GEMINI_PROTOCOL_CODE,
+    protocolVersion: GEMINI_PROTOCOL_VERSION,
+    systemAccountId: 'system-account',
+    accountOwnerSystemAccountId: 'system-account',
+    groupOwnerSystemAccountId: 'system-account',
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    name: id,
+    type: 'google_oauth',
+    status: 'active',
+    concurrencyLimit: 1,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
+    healthCheckEndpointMode: 'generate_content_json',
+    baseUrl: GEMINI_CLI_DEFAULT_BASE_URL,
+    apiKey: 'expired-gemini-access-token',
+    refreshToken: 'rotating-gemini-refresh-token',
+    clientId: GEMINI_CLI_OAUTH_CLIENT_ID,
+    expiresAt: '2000-01-01T00:00:00.000Z',
+    streamFailureCount: 0,
+    credentials: { ...expiredCredentials }
+  }
 }

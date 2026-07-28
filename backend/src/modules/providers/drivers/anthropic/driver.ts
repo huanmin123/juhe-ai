@@ -61,8 +61,15 @@ import {
   prepareGeminiGenerateContentAnthropicMessagesBridgeHeaders,
   transformGeminiGenerateContentAnthropicMessagesBridgeUpstreamResponse
 } from '../_shared/gemini-anthropic-messages-bridge.js'
+import { prepareAnthropicAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 
 const defaultAnthropicVersion = '2023-06-01'
+const anthropicOAuthBetaHeaders = [
+  'claude-code-20250219',
+  'oauth-2025-04-20',
+  'interleaved-thinking-2025-05-14',
+  'fine-grained-tool-streaming-2025-05-14'
+] as const
 
 function anthropicEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
   const modelMapping = resolveOpenAIRequestModelMapping(req, account)
@@ -102,6 +109,9 @@ export const anthropicProviderDriver: ProviderDriver = {
       && profileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID
     )
   },
+  async prepareAccountBeforeDispatch(account, context) {
+    return await prepareAnthropicAccountBeforeDispatch(account, context.signal)
+  },
   resolveUsageModel(account, requestedModel, sourceEndpointFamily) {
     const modelMapping = resolveOpenAIAccountModelMapping(account, requestedModel, sourceEndpointFamily)
     return {
@@ -135,9 +145,12 @@ export const anthropicProviderDriver: ProviderDriver = {
     const headers = copySafeUpstreamRequestHeaders(req.headers)
     applyAnthropicUpstreamAuthHeaders(headers, account)
     headers.set('anthropic-version', anthropicVersionHeader(req))
-    const betaHeader = anthropicBetaHeader(req)
+    const betaHeader = anthropicBetaHeader(req, account)
     if (betaHeader) {
       headers.set('anthropic-beta', betaHeader)
+    }
+    if (account.providerCode === ANTHROPIC_PROVIDER_CODE && account.type === 'oauth') {
+      applyAnthropicOAuthCliIdentityHeaders(headers)
     }
     applyAnthropicClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
@@ -259,6 +272,23 @@ export const anthropicProviderDriver: ProviderDriver = {
   }
 }
 
+function applyAnthropicOAuthCliIdentityHeaders(headers: Headers): void {
+  const identityHeaders: Record<string, string> = {
+    'user-agent': 'claude-cli/2.1.161 (external, cli)',
+    'x-stainless-lang': 'js',
+    'x-stainless-package-version': '0.94.0',
+    'x-stainless-os': 'Linux',
+    'x-stainless-arch': 'arm64',
+    'x-stainless-runtime': 'node',
+    'x-stainless-runtime-version': 'v24.3.0',
+    'x-stainless-retry-count': '0',
+    'x-stainless-timeout': '600',
+    'x-app': 'cli',
+    'anthropic-dangerous-direct-browser-access': 'true'
+  }
+  for (const [name, value] of Object.entries(identityHeaders)) headers.set(name, value)
+}
+
 async function applyAnthropicOverrides(
   account: DispatchAccountSecret,
   body: Buffer | string | undefined,
@@ -324,8 +354,13 @@ function anthropicVersionHeader(req: Request): string {
     ?? defaultAnthropicVersion
 }
 
-function anthropicBetaHeader(req: Request): string | undefined {
-  const values = [headerText(req, 'anthropic-beta')]
+function anthropicBetaHeader(req: Request, account: DispatchAccountSecret): string | undefined {
+  const values = [
+    headerText(req, 'anthropic-beta'),
+    account.providerCode === ANTHROPIC_PROVIDER_CODE && account.type === 'oauth'
+      ? anthropicOAuthBetaHeaders.join(',')
+      : undefined
+  ]
   const normalized = new Map<string, string>()
   for (const value of values) {
     for (const item of splitAnthropicBetaHeader(value)) {

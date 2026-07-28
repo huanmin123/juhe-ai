@@ -165,11 +165,11 @@ assert.match(serviceSource, new RegExp(`const sessionTtlMs = ${golden.session.tt
 assert.match(serviceSource, new RegExp(`randomBytes\\(${golden.session.stateBytes}\\)\\.toString\\('hex'\\)`))
 assert.match(serviceSource, new RegExp(`randomBytes\\(${golden.session.codeVerifierBytes}\\)\\.toString\\('hex'\\)`))
 assert.match(serviceSource, new RegExp(`randomBytes\\(${golden.session.sessionIdBytes}\\)\\.toString\\('hex'\\)`))
-assert.equal(golden.session.consume, 'atomic_compare_delete_once')
+assert.equal(golden.session.consume, 'after_token_success_atomic_compare_delete_once')
 assert.equal(golden.session.ownerBound, true)
 assert.match(serviceSource, /if \(expectedOwner && actualOwner !== expectedOwner\)/)
 assert.match(serviceSource, /compareDeleteJson\(input\.sessionId, session\)/)
-assert.match(serviceSource, /const session = await consumeOpenAIOAuthSession\(input\)[\s\S]*?const tokenInfo = await requestOpenAIToken/)
+assert.match(serviceSource, /const session = await readOpenAIOAuthSession\(input\)[\s\S]*?const tokenInfo = await requestOpenAIToken[\s\S]*?compareDeleteJson\(input\.sessionId, session\)/)
 
 const codeRequest = buildOpenAIOAuthTokenHttpRequest({
   grant_type: 'authorization_code',
@@ -182,7 +182,8 @@ assert.equal(codeRequest.headers['content-type'], golden.tokenExchange.authoriza
 const refreshRequest = buildOpenAIOAuthTokenHttpRequest({
   grant_type: 'refresh_token',
   refresh_token: 'golden-refresh',
-  client_id: 'golden-client'
+  client_id: 'golden-client',
+  scope: 'openid profile email'
 })
 assert.equal(refreshRequest.headers['content-type'], golden.tokenExchange.refreshTokenContentType)
 for (const [name, value] of Object.entries(golden.tokenExchange.refreshHeaders)) {
@@ -233,11 +234,11 @@ assert.equal(golden.persistence.response, 'sanitized_account_envelope')
 assert.deepEqual(golden.persistence.reauthorize, [
   'preserve_existing_non_token_credentials',
   'overwrite_server_token_fields',
-  'update_credentials_only',
-  'clear_only_refresh_failure_state'
+  'update_credentials_with_config_revision_cas',
+  'clear_recoverable_failure_state'
 ])
 assert.match(routesSource, /return \{[\s\S]*?\.\.\.currentCredentials,[\s\S]*?\.\.\.buildOpenAIOAuthCredentials\(tokenInfo, fallback\)[\s\S]*?\}/)
-assert.match(routesSource, /updateAccountAsync\(account\.id, \{[\s\S]*?credentials[\s\S]*?\}, access\)/)
+assert.match(routesSource, /updateAccountAsync\(account\.id, \{[\s\S]*?credentials[\s\S]*?\}, access, \{[\s\S]*?expectedConfigRevision/)
 
 assert.equal(
   golden.errorStatusScope,
@@ -283,9 +284,9 @@ for (const defect of golden.knownNodeDefects) {
   assert.ok(defect.currentBehavior.trim())
   assert.ok(defect.goMigration.trim())
 }
-assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'session-consumed-before-token-success'))
+assert.ok(!golden.knownNodeDefects.some((defect) => defect.id === 'session-consumed-before-token-success'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'no-stable-machine-error-code'))
-assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'reauthorize-refresh-token-without-idempotency-or-cas'))
+assert.ok(!golden.knownNodeDefects.some((defect) => defect.id === 'reauthorize-refresh-token-without-idempotency-or-cas'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'oauth-session-plaintext-in-redis'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'redis-session-capacity-unbounded'))
 
@@ -305,12 +306,14 @@ const refreshTokenReauthorizeEnd = routesSource.indexOf('\ntype OpenAIOAuthProvi
 assert.ok(refreshTokenReauthorizeStart >= 0 && refreshTokenReauthorizeEnd > refreshTokenReauthorizeStart)
 const refreshTokenReauthorizeBlock = routesSource.slice(refreshTokenReauthorizeStart, refreshTokenReauthorizeEnd)
 assert.doesNotMatch(refreshTokenReauthorizeBlock, /mutationGuard\(/)
+assert.match(refreshTokenReauthorizeBlock, /runWithProviderOAuthRefreshLock\(GPT_VENDOR_CODE, account\.id/)
+assert.match(refreshTokenReauthorizeBlock, /oauthTokensChanged\(account\.credentials, current\.credentials\)/)
 const credentialUpdateStart = routesSource.indexOf('async function updateOpenAIOAuthAccountCredentials')
 const credentialUpdateEnd = routesSource.indexOf('\nexport function buildReauthorizedOpenAIOAuthCredentials', credentialUpdateStart)
 assert.ok(credentialUpdateStart >= 0 && credentialUpdateEnd > credentialUpdateStart)
 const credentialUpdateBlock = routesSource.slice(credentialUpdateStart, credentialUpdateEnd)
 assert.match(credentialUpdateBlock, /updateAccountAsync\(account\.id/)
-assert.doesNotMatch(credentialUpdateBlock, /configRevision|expectedRevision|ExpectedConfigRevision/)
+assert.match(credentialUpdateBlock, /expectedConfigRevision:\s*account\.configRevision \?\? 1/)
 
 console.log('OpenAI OAuth Node->Go 迁移 golden 通过：实际 HTTP、PKCE/session、token、错误、幂等与落库边界已冻结')
 

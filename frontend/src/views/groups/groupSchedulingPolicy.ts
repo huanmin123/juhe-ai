@@ -89,10 +89,11 @@ export function groupTypeColor(groupType?: GroupType): string {
   return groupType === 'high_concurrency' ? 'purple' : 'blue'
 }
 
-export function groupPolicySummary(group: GroupSummary): string {
+export function groupPolicySummary(group: Pick<GroupSummary, 'groupType'> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>): string {
   if (group.groupType !== 'high_concurrency') {
     return '个人分组保持稳定调度'
   }
+  if (!group.schedulingPolicy) return '高并发调度'
   let policy: Required<GroupSchedulingPolicy>
   try {
     policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })

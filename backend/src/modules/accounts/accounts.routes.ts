@@ -1,15 +1,18 @@
 import { Router } from 'express'
-import { isDeepStrictEqual } from 'node:util'
 
 import { type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, createAccountAsync } from '../../storage/repositories.js'
+import {
+  AccountManagementPatchRevisionConflictError,
+  patchAccountManagementAsync,
+  type AccountManagementPatchResult
+} from '../../storage/account-management-patch.repository.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import {
   createAccountTestTaskAsync,
   failAccountTestTaskAsync
@@ -25,11 +28,8 @@ import {
 import { accountResponseInspectionPolicyValidationMessage, validateAccountCredentialsResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
-import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
-import { accountBalanceQueryIdentity, normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
-import {
-  loadAccountBalanceConfigurationsByAccountIdsAsync,
-} from '../../storage/account-balance.repository.js'
+import { accountCredentialFingerprint, credentialsRecordValue } from './account-credential-update.js'
+import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
 import { resolveAccountManualTestSelectionAsync } from './account-test-options.service.js'
@@ -48,7 +48,6 @@ import { registerAccountBatchEditRoutes } from './account-batch-edit.routes.js'
 import { registerAccountBalanceRoutes } from './account-balance.routes.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
 import {
-  accountUpdateNeedsImmediateHealthCheck,
   dispatchAccountHealthCheck,
   dispatchPendingAccountHealthCheck
 } from './account-health-check-dispatch.service.js'
@@ -197,29 +196,6 @@ accountsRouter.post('/', mutationGuard({
   }
 
   const providerCode = parsed.data.providerCode
-  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
-  if (!provider) {
-    res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
-    return
-  }
-  if (!provider.enabled) {
-    res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
-    return
-  }
-  const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
-  let group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined
-  if (groupId) {
-    group = await findGroupSummaryAsync(groupId, requestAccess)
-    if (!group || group.providerCode !== providerCode) {
-      res.status(400).json(badRequest('账户分组无效'))
-      return
-    }
-  }
-  const providerProfile = provider.protocolProfiles.find((item) => item.id === parsed.data.providerProtocolProfileId)
-  if (!providerProfile || !providerProfile.accountTypes.includes(parsed.data.type)) {
-    res.status(400).json(badRequest(`供应商协议档案不支持账户类型：${parsed.data.type}`))
-    return
-  }
   try {
     await assertAccountGptRequestOverridesSupportedAsync({
       providerCode,
@@ -234,7 +210,7 @@ accountsRouter.post('/', mutationGuard({
         balanceQueryEnabled,
         balanceQueryConfig,
         providerCode,
-        providerProtocolProfileId: providerProfile.id,
+        providerProtocolProfileId: parsed.data.providerProtocolProfileId,
         status: parsed.data.status === 'disabled' ? 'disabled' : parsed.data.status === 'active' ? 'active' : 'pending_test',
         skipInitialHealthCheck: parsed.data.status === 'active'
       }, requestAccess)
@@ -277,7 +253,10 @@ accountsRouter.post('/', mutationGuard({
       }
     }, req)
     dispatchPendingAccountHealthCheck(account)
-    res.status(201).json(ok(sanitizeAccountResponse(account)))
+    res.status(201).json(ok({
+      id: account.id,
+      status: account.status
+    }))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
@@ -288,19 +267,12 @@ accountsRouter.post('/', mutationGuard({
   }
 })
 
-async function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: RequestAccessScope): Promise<void> {
-  const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
-    : undefined
+async function clearAccountGatewayRuntimeAfterRestore(
+  account: Pick<AccountManagementPatchResult, 'id' | 'authorizedBinding'>
+): Promise<void> {
   await clearServerAccountRuntimeAvailability({
     accountId: account.id,
-    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
-      ? {
-          systemAccountId,
-          groupId: account.boundGroupId,
-          accountAuthorizationId: account.accountAuthorizationId
-        }
-      : undefined
+    authorizedBinding: account.authorizedBinding
   }).catch(() => undefined)
 }
 
@@ -313,10 +285,6 @@ function isApiKeyCredentialChanged(account: AccountSummary, credentials: unknown
   const requestedCredentials = credentialsRecordValue(credentials)
   if (!requestedCredentials) return false
   return accountCredentialFingerprint(requestedCredentials) !== accountCredentialFingerprint(account.credentials)
-}
-
-function isAuthorizedAccountUpdateTarget(account: AccountSummary): boolean {
-  return account.accessType === 'authorized' || Boolean(account.accountAuthorizationId || account.authorizationInstanceSourceAccountId)
 }
 
 registerAccountAuthorizedDispatchRoutes(accountsRouter)
@@ -333,231 +301,64 @@ accountsRouter.patch('/:id', async (req, res) => {
     res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户更新参数无效'))
     return
   }
-  const body = parsed.data as Record<string, unknown>
-  const {
-    groupId: requestedGroupId,
-    clearFailureState: requestedClearFailureState,
-    balanceQueryEnabled: requestedBalanceQueryEnabled,
-    balanceQueryConfig: requestedBalanceQueryConfig,
-    ...accountUpdateInput
-  } = parsed.data
-  const existingAccount = await findAccountForTestAsync(req.params.id, requestAccess)
-  if (!existingAccount) {
-    res.status(404).json({ message: '账户不存在' })
-    return
-  }
-  if (
-    requestedClearFailureState === true
-    && existingAccount.status === 'pending_test'
-    && !isPendingHealthCheckFailure(existingAccount)
-  ) {
-    res.status(400).json(badRequest('账户正在等待首次后台健康检查，无需重新检查'))
-    return
-  }
-  if (isAuthorizedAccountUpdateTarget(existingAccount) && Object.prototype.hasOwnProperty.call(body, 'concurrencyLimit')) {
-    res.status(400).json(badRequest('授权账户并发上限由来源账户控制，不能在被授权账户上修改'))
-    return
-  }
-  const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')
-  const groupIdToBind = typeof requestedGroupId === 'string' ? requestedGroupId : undefined
-  if (hasGroupId && !groupIdToBind) {
-    res.status(400).json(badRequest('账户分组不能为空'))
-    return
-  }
-  if (hasGroupId && existingAccount.boundGroupId !== groupIdToBind) {
-    const group = await findGroupSummaryAsync(groupIdToBind as string, requestAccess)
-    if (!group || group.providerCode !== existingAccount.providerCode) {
-      res.status(400).json(badRequest('账户分组无效'))
-      return
-    }
-  }
-  const errorPolicyValidationMessage = accountErrorPolicyValidationMessage(validateAccountCredentialsErrorHandlingRules(body.credentials))
-  if (errorPolicyValidationMessage) {
-    res.status(400).json(badRequest(errorPolicyValidationMessage))
-    return
-  }
-  const responseInspectionValidationMessage = accountResponseInspectionPolicyValidationMessage(validateAccountCredentialsResponseInspectionRules(body.credentials))
-  if (responseInspectionValidationMessage) {
-    res.status(400).json(badRequest(responseInspectionValidationMessage))
-    return
-  }
-  const requestedCredentials = credentialsRecordValue(body.credentials)
-  if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
-    accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
-  }
-  const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId
   try {
-    const nextCredentials = credentialsRecordValue(accountUpdateInput.credentials) ?? existingAccount.credentials
-    const currentBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([existingAccount.id])).get(existingAccount.id)
-    const requestedNextBalanceEnabled = requestedBalanceQueryEnabled ?? currentBalance?.enabled ?? false
-    const nextBalanceConfig = requestedBalanceQueryConfig
-      ? normalizeAccountBalanceConfig(requestedBalanceQueryConfig)
-      : currentBalance?.config
-    const balanceDecision = validateAccountBalanceCapability({
-      type: existingAccount.type,
-      credentials: nextCredentials,
-      accountAuthorizationId: existingAccount.accountAuthorizationId,
-      authorizationInstanceAuthorizationId: existingAccount.authorizationInstanceSourceAccountId,
-      accessType: existingAccount.accessType
-    }, requestedNextBalanceEnabled)
-    const nextBalanceEnabled = balanceDecision.enabled
-    if (nextBalanceEnabled && !nextBalanceConfig) throw new Error('开启上游余额查询时必须选择查询类型')
-    if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined || balanceDecision.autoDisabledForMultipleApiKeys) {
-      Object.assign(accountUpdateInput, {
-        balanceQueryEnabled: nextBalanceEnabled,
-        ...(nextBalanceConfig ? { balanceQueryConfig: nextBalanceConfig } : {})
-      })
-    }
-    const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
-    await assertAccountGptRequestOverridesSupportedAsync({
-      providerCode: existingAccount.providerCode,
-      accountType: existingAccount.type,
-      credentials: nextCredentials,
-      supportedModels: Array.isArray(accountUpdateInput.supportedModels)
-        ? accountUpdateInput.supportedModels as string[]
-        : existingAccount.supportedModels ?? [],
-      systemAccountId: existingAccount.ownerSystemAccountId ?? effectiveRequestSystemAccountId(requestAccess)
-    })
     const account = await runLoggedOperationAsync(async () => {
-      let account: AccountSummary | undefined
-      if (requestedClearFailureState === true) {
-        const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess, {
-          allowPendingTestRestore: existingAccount.status === 'pending_test',
-          allowExplicitPolicyRestore: true
-        })
-        if (!restoredAccount) {
-          throw new Error('账户不存在')
-        }
-        account = restoredAccount
-      }
-      if (hasAccountUpdateInput || !canUseExistingWithoutAccountUpdate) {
-        account = await updateAccountAsync(req.params.id, accountUpdateInput, requestAccess)
-        if (!account) {
-          throw new Error('账户不存在')
-        }
-      } else if (!account) {
-        account = existingAccount
-      }
-      if (hasGroupId && account.boundGroupId !== groupIdToBind) {
-        const nextAccount = await setAccountGroupAsync(account.id, groupIdToBind as string, requestAccess)
-        if (!nextAccount) {
-          throw new Error('账户分组无效')
-        }
-        account = nextAccount
-      }
-      const finalBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([account.id])).get(account.id)
-      const balanceIdentityChanged = !isDeepStrictEqual(
-        accountBalanceQueryIdentity({
-          enabled: currentBalance?.enabled === true,
-          config: currentBalance?.config,
-          providerCode: existingAccount.providerCode,
-          accountType: existingAccount.type,
-          credentials: existingAccount.credentials,
-          proxyProfileId: existingAccount.proxyProfileId
-        }),
-        accountBalanceQueryIdentity({
-          enabled: finalBalance?.enabled === true,
-          config: finalBalance?.config,
-          providerCode: account.providerCode,
-          accountType: account.type,
-          credentials: account.credentials,
-          proxyProfileId: account.proxyProfileId
-        })
-      )
-      if (balanceIdentityChanged) {
-        cleanupAccountBalanceSnapshotAfterSave({
-          accountId: account.id,
-          configRevision: account.configRevision ?? 1,
-          reason: balanceDecision.autoDisabledForMultipleApiKeys
-            ? 'multiple_api_keys'
-            : 'balance_configuration_changed'
-        })
-      }
-      if (finalBalance) {
-        account = {
-          ...account,
-          balanceQueryEnabled: finalBalance.enabled,
-          balanceQueryConfig: finalBalance.config,
-          balanceQueryNextRefreshAt: finalBalance.nextRefreshAt
-        }
-      }
-      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      const patched = await patchAccountManagementAsync(req.params.id, parsed.data, requestAccess)
+      if (!patched) throw new Error('账户不存在')
+      const restoring = parsed.data.clearFailureState === true
+      const ownerSystemAccountId = patched.ownerSystemAccountId
       return {
-        result: account,
-        log: {
+        result: patched,
+        log: patched.changedFields.length > 0 ? {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'accounts',
-          action: requestedClearFailureState === true ? 'restore' : 'update',
-          operationKey: requestedClearFailureState === true
-            ? existingAccount.status === 'pending_test' ? 'accounts.recheck' : 'accounts.restore'
+          action: restoring ? 'restore' : 'update',
+          operationKey: restoring
+            ? patched.previousStatus === 'pending_test' ? 'accounts.recheck' : 'accounts.restore'
             : 'accounts.update',
           resourceType: 'account',
-          resourceId: account.id,
-          resourceName: account.name,
-          summary: requestedClearFailureState === true
-            ? existingAccount.status === 'pending_test' ? `重新检查 AI 账户：${account.name}` : `异常恢复 AI 账户：${account.name}`
-            : `更新 AI 账户：${account.name}`,
-          changes: [
-            ...diffSafeFields(existingAccount as unknown as Record<string, unknown>, account as unknown as Record<string, unknown>, {
-              name: '名称',
-              notes: '备注',
-              credentials: '凭据',
-              status: '状态',
-              concurrencyLimit: '并发限制',
-              priority: '优先级',
-              superPriorityEnabled: '超级优先',
-              fallbackEnabled: '降级备用',
-              clientCompatibility: '客户端兼容',
-              supportedModels: '支持模型',
-              healthCheckModel: '检查模型',
-              healthCheckEndpointMode: '检查协议',
-              temporaryUnavailableContinuousProbeEnabled: '持续恢复探活',
-              modelMappings: '模型映射',
-              tags: '标签',
-              proxyProfileId: '代理',
-              schedulable: '参与调度',
-              accountExpiresAt: '过期时间',
-              availabilitySchedule: '时间计划',
-              boundGroupId: '绑定分组',
-              cooldownUntil: '冷却结束时间',
-              lastErrorCode: '异常类型',
-              lastErrorMessage: '错误信息'
-            }),
-            safeChange(
-              'serviceTierOverride',
-              '服务等级覆盖',
-              existingAccount.credentials.service_tier_override,
-              account.credentials.service_tier_override
-            ),
-            safeChange(
-              'reasoningEffortOverride',
-              '思考级别覆盖',
-              existingAccount.credentials.reasoning_effort_override,
-              account.credentials.reasoning_effort_override
-            ),
-            ...(requestedClearFailureState === true ? [safeChange(
-              'clearFailureState',
-              existingAccount.status === 'pending_test' ? '重新检查' : '异常恢复',
-              false,
-              true
-            )] : [])
-          ],
+          resourceId: patched.id,
+          resourceName: patched.name,
+          summary: restoring
+            ? patched.previousStatus === 'pending_test' ? `重新检查 AI 账户：${patched.name}` : `异常恢复 AI 账户：${patched.name}`
+            : `更新 AI 账户：${patched.name}`,
+          changes: patched.changes.map((change) => safeChange(
+            change.field,
+            accountPatchChangeLabel(change.field),
+            change.before,
+            change.after
+          )),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
-        }
+        } : undefined
       }
     }, req)
-    if (requestedClearFailureState === true || body.status === 'active') {
-      await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
+    if (account.balanceIdentityChanged) {
+      cleanupAccountBalanceSnapshotAfterSave({
+        accountId: account.id,
+        configRevision: account.configRevision,
+        reason: account.balanceAutoDisabledForMultipleApiKeys
+          ? 'multiple_api_keys'
+          : 'balance_configuration_changed'
+      })
     }
-    if (requestedClearFailureState === true && account.status === 'pending_test') {
-      dispatchAccountHealthCheck(account.id, 'activation')
-    } else if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
-      dispatchAccountHealthCheck(account.id, 'configuration')
+    if (account.runtimeRestoreRequired) {
+      await clearAccountGatewayRuntimeAfterRestore(account)
     }
-    res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
+    if (account.healthCheckRequired && account.healthCheckReason) {
+      dispatchAccountHealthCheck(account.id, account.healthCheckReason)
+    }
+    res.json(ok({
+      id: account.id,
+      configRevision: account.configRevision,
+      changedFields: account.changedFields
+    }))
   } catch (error) {
-    if (error instanceof ProxyProfileUnavailableError) {
+    if (error instanceof AccountManagementPatchRevisionConflictError) {
+      res.status(409).json(badRequest('账户配置已被其他操作更新，请刷新后重试'))
+      return
+    }
+    if (error instanceof ProxyProfileUnavailableError || (error instanceof Error && error.name === 'ProxyProfileUnavailableError')) {
       res.status(400).json(badRequest(error.message))
       return
     }
@@ -574,10 +375,35 @@ accountsRouter.patch('/:id', async (req, res) => {
   }
 })
 
-function isPendingHealthCheckFailure(account: Pick<AccountSummary, 'status' | 'lastHealthCheckAt' | 'lastHealthCheckErrorCode' | 'lastHealthCheckErrorMessage'>): boolean {
-  return account.status === 'pending_test'
-    && Boolean(account.lastHealthCheckAt)
-    && Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
+function accountPatchChangeLabel(field: string): string {
+  const credentialField = field.startsWith('credentials.')
+  if (credentialField) return '凭据'
+  return ({
+    name: '名称',
+    notes: '备注',
+    credentials: '凭据',
+    status: '状态',
+    runtimeState: '运行状态',
+    concurrencyLimit: '并发限制',
+    priority: '优先级',
+    superPriorityEnabled: '超级优先',
+    fallbackEnabled: '降级备用',
+    clientCompatibility: '客户端兼容',
+    supportedModels: '支持模型',
+    healthCheckModel: '检查模型',
+    healthCheckEndpointMode: '检查协议',
+    temporaryUnavailableContinuousProbeEnabled: '持续恢复探活',
+    modelMappings: '模型映射',
+    tags: '标签',
+    proxyProfileId: '代理',
+    schedulable: '参与调度',
+    accountExpiresAt: '过期时间',
+    availabilitySchedule: '时间计划',
+    groupId: '绑定分组',
+    balanceQueryEnabled: '余额查询',
+    balanceQueryConfig: '余额查询配置',
+    clearFailureState: '异常恢复'
+  } as Record<string, string>)[field] ?? field
 }
 
 registerAccountTestDispatchRoutes(accountsRouter)

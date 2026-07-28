@@ -7,12 +7,12 @@ import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { buildAccountMoreActions, buildAccountRowActions, type AccountRowActionOptions } from './accountRowActions'
 
 const props = defineProps<{
-  account: AccountSummary
+  account: AccountListItem
   canClone: boolean
   canDelete: boolean
   canEdit: boolean

@@ -19,6 +19,9 @@ const credentials: GeminiGoogleOAuthCredentials = {
 }
 
 async function run(): Promise<void> {
+  const driverSource = (await import('node:fs')).readFileSync(new URL('../../modules/providers/drivers/gemini/driver.ts', import.meta.url), 'utf8')
+  assert.match(driverSource, /prepareGeminiAccountBeforeDispatch\(account, context\.signal\)/, 'Gemini driver 必须使用共享锁和持久化的 OAuth dispatch preparation')
+  assert.doesNotMatch(driverSource, /createGeminiGoogleOAuthTokenProvider\(/, 'Gemini driver 不得继续使用仅进程内 token provider')
   assert.notEqual(
     geminiGoogleOAuthProviderFingerprint({ credentials, proxyUrl: 'socks5://proxy-a.example:1080' }),
     geminiGoogleOAuthProviderFingerprint({ credentials, proxyUrl: 'socks5://proxy-b.example:1080' }),

@@ -8,6 +8,7 @@ import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
+  GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
@@ -80,6 +81,8 @@ try {
   assert.equal(defaultGroupRepository.defaultGroupIdForProviderCode(DEEPSEEK_PROVIDER_CODE, missingDefaultUserId), createdDeepSeekDefault.id, 'DeepSeek 默认分组按供应商复用')
   assert.equal(defaultGroupRepository.defaultGroupIdForProviderCode(GLM_PROVIDER_CODE, missingDefaultUserId), createdGlmDefault.id, 'GLM 默认分组按供应商复用')
 
+  await assertAccountCreateUsesDefaultGroupWhenOmitted(database, missingDefaultUserId, createdDefault.id)
+
   await assertGroupProviderCodeUsesProviderLayer()
 
   console.log('默认分组当前契约回归通过：默认分组只认 is_default，不按名称或最新分组推断')
@@ -90,6 +93,49 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+async function assertAccountCreateUsesDefaultGroupWhenOmitted(
+  database: ReturnType<typeof databaseModule.getBusinessDatabase>,
+  systemAccountId: string,
+  expectedGroupId: string
+): Promise<void> {
+  const repositories = await import('../../storage/repositories.js')
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  let defaultGroupLookupInsideTransaction = false
+  database.prepare = ((sql: string) => {
+    if (/\bFROM\s+"?groups"?\b/i.test(sql) && /\bis_default\b/i.test(sql)) {
+      defaultGroupLookupInsideTransaction ||= database.isTransaction
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  let account: Awaited<ReturnType<typeof repositories.createAccountAsync>>
+  try {
+    account = await repositories.createAccountAsync({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '省略分组自动绑定账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-default-group-omitted-create',
+        base_url: 'https://api.openai.com/v1'
+      },
+      supportedModels: ['gpt-5.4-mini'],
+      status: 'active',
+      skipInitialHealthCheck: true
+    }, { systemAccountId, role: 'user' })
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(defaultGroupLookupInsideTransaction, true, '默认分组解析必须发生在账户创建事务内')
+  const binding = database.prepare(`
+    SELECT group_id
+    FROM group_accounts
+    WHERE system_account_id = ? AND account_id = ? AND enabled = 1
+    LIMIT 1
+  `).get(systemAccountId, account.id) as { group_id?: string } | undefined
+  assert.equal(binding?.group_id, expectedGroupId, '创建账户省略 groupId 时应在写事务内绑定当前供应商默认分组')
+  assert.equal(account.boundGroupId, expectedGroupId, '创建响应应返回后端实际解析的默认分组')
 }
 
 function insertSystemAccount(database: ReturnType<typeof databaseModule.getBusinessDatabase>, id: string, username: string, now: string): void {

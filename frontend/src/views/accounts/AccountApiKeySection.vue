@@ -5,6 +5,17 @@
         <div class="api-key-label">
           <span>API Key</span>
           <div class="api-key-label-spacer"></div>
+          <a-tooltip v-if="editing && filledApiKeyCount > 1" title="加载多 Key 运行状态">
+            <a-button
+              type="text"
+              size="small"
+              :loading="apiKeyRuntimeLoading"
+              aria-label="加载多 Key 运行状态"
+              @click="$emit('load-api-key-runtime')"
+            >
+              <template #icon><ReloadOutlined /></template>
+            </a-button>
+          </a-tooltip>
           <a-button v-if="showBatchDeleteApiKeys" type="link" size="small" class="api-key-batch-delete-button" @click="batchDeleteApiKeys">
             批量删除
           </a-button>
@@ -87,6 +98,7 @@
       :tag-options="tagOptions"
       :tag-options-loading="tagOptionsLoading"
       @delete-tag="$emit('delete-tag', $event)"
+      @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
     />
     <a-form-item required>
       <template #label>
@@ -127,7 +139,7 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import { computed, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
@@ -142,6 +154,7 @@ import AccountMetaFields from './AccountMetaFields.vue'
 
 const props = defineProps<{
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
+  apiKeyRuntimeLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
   baseUrlPlaceholder: string
   deletingTagId?: string
@@ -159,9 +172,11 @@ const props = defineProps<{
 
 defineEmits<{
   (event: 'delete-tag', tagId: string): void
+  (event: 'load-api-key-runtime'): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
+  (event: 'tag-options-dropdown', open: boolean): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)

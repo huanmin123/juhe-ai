@@ -92,8 +92,10 @@ export const accountCreateSchema = z.object({
 }).strict()
 
 export const accountUpdateSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1),
   name: z.string().trim().min(1).optional(),
   credentials: z.record(z.unknown()).optional(),
+  credentialsPatch: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1).optional(),
   healthCheckEndpointMode: accountHealthCheckEndpointModeSchema.optional(),
@@ -114,7 +116,15 @@ export const accountUpdateSchema = z.object({
   temporaryUnavailableContinuousProbeEnabled: z.boolean().optional(),
   notes: z.string().optional(),
   clearFailureState: z.boolean().optional()
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (value.credentials !== undefined && value.credentialsPatch !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'credentials 与 credentialsPatch 不能同时提交',
+      path: ['credentialsPatch']
+    })
+  }
+})
 
 export const accountDraftTestAccountSchema = z.object({
   providerCode: z.string().trim().min(1),
@@ -180,11 +190,13 @@ export const accountModelCatalogRefreshSchema = z.object({
 }).strict()
 
 export const accountGroupSchema = z.object({
-  groupId: z.string().trim().min(1, '分组不能为空')
+  groupId: z.string().trim().min(1, '分组不能为空'),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 export const accountTagsUpdateSchema = z.object({
-  tags: z.array(z.string().trim()).max(24)
+  tags: z.array(z.string().trim()).max(24),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 export const accountTrafficMigrationSchema = z.object({

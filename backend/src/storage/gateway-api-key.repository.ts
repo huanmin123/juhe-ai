@@ -1,5 +1,9 @@
 import { clearSharedJsonCacheInBackground, createAppCache, createProcessLocalResourceCache, createSharedJsonCache } from '../shared/cache.js'
-import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../shared/gateway-cache-invalidation.js'
+import {
+  registerGatewayApiKeyValidationCacheInvalidator,
+  registerGatewayRuntimeCacheInvalidator,
+  syncGatewayCacheInvalidationsFromRuntimeState
+} from '../shared/gateway-cache-invalidation.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
 import {
   normalizeApiKeyGroupBindingWeight
@@ -562,6 +566,14 @@ registerGatewayRuntimeCacheInvalidator((reason) => {
   if (shouldInvalidateGatewayApiKeyProcessCache(reason)) {
     gatewayApiKeyProcessCache.clear()
   }
+})
+
+registerGatewayApiKeyValidationCacheInvalidator(async (apiKeyId, metadata) => {
+  if (metadata.source === 'local' && apiKeyId) {
+    await invalidateGatewayApiKeyCacheByIdAsync(apiKeyId)
+    return
+  }
+  await clearGatewayApiKeyValidationCacheAsync()
 })
 
 function shouldInvalidateGatewayApiKeyProcessCache(reason: string): boolean {

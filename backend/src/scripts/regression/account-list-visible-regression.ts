@@ -48,15 +48,15 @@ interface ApiEnvelope<T> {
   message?: string
 }
 
-interface AccountSummary {
+interface AccountManagementListVisibleItem {
   id: string
   ownerSystemAccountId?: string
   systemAccountId?: string
   name: string
 }
 
-interface AccountListResult {
-  items: AccountSummary[]
+interface AccountManagementListPage {
+  items: AccountManagementListVisibleItem[]
   total: number
   hasMore: boolean
   page: number
@@ -91,19 +91,19 @@ try {
   }
   const baseUrl = `http://127.0.0.1:${address.port}`
 
-  const adminAllAccounts = await getEnvelope<AccountListResult>(baseUrl, '/__aisys__/api/accounts?systemAccountId=all&page=1&pageSize=20', seed.adminCookie)
+  const adminAllAccounts = await getEnvelope<AccountManagementListPage>(baseUrl, '/__aisys__/api/accounts?systemAccountId=all&page=1&pageSize=20', seed.adminCookie)
   assert.equal(adminAllAccounts.items.some((account) => account.id === seed.userAAccountId), true, '管理员全量账户列表应包含用户 A 的种子账户')
   assert.equal(adminAllAccounts.items.some((account) => account.id === seed.userBAccountId), true, '管理员全量账户列表应包含用户 B 的种子账户')
   assert.equal(adminAllAccounts.total >= 2, true, '管理员全量账户列表总数不应为空')
 
-  const adminUserAAccounts = await getEnvelope<AccountListResult>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userAId}&page=1&pageSize=20`, seed.adminCookie)
+  const adminUserAAccounts = await getEnvelope<AccountManagementListPage>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userAId}&page=1&pageSize=20`, seed.adminCookie)
   assert.deepEqual(adminUserAAccounts.items.map((account) => account.id), [seed.userAAccountId], '管理员按系统账户筛选后应返回对应用户的种子账户')
   assert.equal(adminUserAAccounts.items.every((account) => account.ownerSystemAccountId === seed.userAId), true, '管理员筛选账户不应混入其他所有者')
 
-  const userAMyAccounts = await getEnvelope<AccountListResult>(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.userACookie)
+  const userAMyAccounts = await getEnvelope<AccountManagementListPage>(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}&page=1&pageSize=20`, seed.userACookie)
   assert.deepEqual(userAMyAccounts.items.map((account) => account.id), [seed.userAAccountId], '用户侧账户列表应固定为当前用户，不应被 systemAccountId 查询参数筛空或越权')
 
-  const outOfRangePage = await getEnvelope<AccountListResult>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userAId}&page=99&pageSize=20`, seed.adminCookie)
+  const outOfRangePage = await getEnvelope<AccountManagementListPage>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userAId}&page=99&pageSize=20`, seed.adminCookie)
   assert.equal(outOfRangePage.total, 980, '页码越界时应返回当前窗口分页上界 total，避免额外 COUNT(*)')
   assert.equal(outOfRangePage.hasMore, false, '页码越界时应明确 hasMore=false，供前端回退到第一页')
   assert.equal(outOfRangePage.items.length, 0, '页码越界契约应保持为空页，由前端根据 hasMore 回退')
@@ -155,6 +155,7 @@ function seedData(): SeedState {
     name: '账户列表可见种子 A',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-a', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     groupId: userAGroup.id
   }, userAAccess)
@@ -164,6 +165,7 @@ function seedData(): SeedState {
     name: '账户列表可见种子 B',
     type: 'api_key',
     credentials: { api_key: 'sk-account-list-visible-b', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
     status: 'active',
     groupId: userBGroup.id
   }, userBAccess)
@@ -212,17 +214,17 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
 }
 
 function assertPostgresAccountListScopeUsesManageableScope(): void {
-  const source = readFileSync(new URL('../../storage/account-summary.repository.ts', import.meta.url), 'utf8')
-  const postgresListFunction = source.match(/async function listAccountRowsPageAsync[\s\S]*?return \{ rows \}/)
-  assert(postgresListFunction, '应能定位 PostgreSQL 账户列表分页函数')
+  const source = readFileSync(new URL('../../storage/account-management-list.repository.ts', import.meta.url), 'utf8')
+  assert.match(source, /export async function listAccountManagementItemsPageAsync\s*\(/, '应能定位独立的异步账户管理列表入口')
   assert.match(
-    postgresListFunction[0],
-    /const ownerSystemAccountId = manageableSystemAccountId\(access\)/,
+    source,
+    /const scopedAccountId = manageableSystemAccountId\(access\)/,
     'PostgreSQL 管理端账户列表应使用 manageableSystemAccountId，管理员全部视图不能被当前账号收窄'
   )
   assert.doesNotMatch(
-    postgresListFunction[0],
+    source,
     /const viewerSystemAccountId = userVisibleSystemAccountId\(access\)/,
     'PostgreSQL 管理端账户列表不能使用 userVisibleSystemAccountId 作为 owner 范围'
   )
+  assert.doesNotMatch(source, /\bAccountSummary\b|account-summary\.repository|account-read\.repository/, '独立账户管理列表不得回退 AccountSummary 读取链路')
 }

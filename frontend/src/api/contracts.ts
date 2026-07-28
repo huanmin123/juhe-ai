@@ -113,7 +113,7 @@ export interface AiPerformanceAccountOptionsParams extends ListParams {
 }
 
 export type SortDirection = 'asc' | 'desc'
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 
 export interface AccountListSortParam {
   field: AccountListSortField

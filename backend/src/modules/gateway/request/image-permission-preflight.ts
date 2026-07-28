@@ -13,6 +13,7 @@ import { downgradeGatewayAutoImageGenerationToolForPermission } from './image-pe
 import {
   gatewayTextRawBodyLimitBytes,
   getGatewayRequestBodyState,
+  isGatewayScannedJsonBody,
   releaseGatewayRequestBodyInFlightBytes,
   type GatewayRawBodyRequest
 } from './body.js'
@@ -171,7 +172,8 @@ async function rejectOversizedAutoImageGenerationTextDowngrade(input: {
   const rawBody = req.rawBody
   if (
     !rawBody
-    || state?.jsonParseStatus !== 'deferred_large_json'
+    || !state
+    || !isGatewayScannedJsonBody(input.req)
     || !state.imageGeneration
     || state.imageGenerationForced
   ) {

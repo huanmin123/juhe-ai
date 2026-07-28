@@ -151,6 +151,7 @@ import {
 import {
   gatewayNonStreamJsonBodyFromValue,
   parseGatewayNonStreamJsonBody,
+  publishGatewayNonStreamJsonBody,
   type GatewayNonStreamJsonBody
 } from './non-stream-json-body.js'
 
@@ -504,7 +505,11 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   if (streamResult.bodyOmission) {
     auditCapture.omitPayloadBodies({
       label: 'stream_body_omission',
-      metadata: { ...streamResult.bodyOmission }
+      metadata: { ...streamResult.bodyOmission },
+      partTypes: ['upstream_response', 'gateway_response', 'gateway_error'],
+      alreadyOmittedPayloadCount: 2,
+      alreadyOmittedBodyBytes: streamResult.bodyOmission.totalUpstreamBytes
+        + streamResult.bodyOmission.totalResponseBytes
     })
   }
   auditCapture.completeAttempt(auditAttemptId, {
@@ -1217,15 +1222,20 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     }
     throw error
   }
-  if (!parsedJsonBody && responseBodyText !== undefined) {
-    parsedJsonBody = parseGatewayNonStreamJsonBody(responseBodyText, upstreamResponse.headers)
+  const availableJsonBodyText = responseBodyText ?? responseSemanticText ?? responseUsageText
+  if (
+    !parsedJsonBody
+    && availableJsonBodyText !== undefined
+    && (forwardedResponseSuccessful || interpretUpstreamResponseSemantics)
+  ) {
+    parsedJsonBody = parseGatewayNonStreamJsonBody(availableJsonBodyText, upstreamResponse.headers)
   }
   if (parsedJsonBody?.status === 'valid') {
     usage = forwardedResponseSuccessful
       ? parseGatewayProtocolUsageFromJsonValueForRequest(req, account, parsedJsonBody.value)
       : parseGatewayProtocolUsageFromJsonValue(account, parsedJsonBody.value)
   } else if (responseUsageText) {
-    const skipFullDocumentParse = parsedJsonBody?.status === 'invalid'
+    const skipFullDocumentParse = parsedJsonBody?.status === 'invalid' || !forwardedResponseSuccessful
     usage = forwardedResponseSuccessful
       ? parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText, skipFullDocumentParse)
       : parseGatewayProtocolUsageFromJsonTextFragment(account, responseUsageText, skipFullDocumentParse)
@@ -1267,6 +1277,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
     errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
   })
+
+  publishGatewayNonStreamJsonBody(res, parsedJsonBody)
 
   return {
     alreadyFinalized: false,

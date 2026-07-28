@@ -27,10 +27,10 @@
 </template>
 
 <script setup lang="ts">
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { accountDisplayName } from './accountBasicFormatters'
 
-defineProps<{ accounts: AccountSummary[]; loading: boolean; open: boolean }>()
+defineProps<{ accounts: AccountListItem[]; loading: boolean; open: boolean }>()
 
 const emit = defineEmits<{
   (event: 'cancel'): void

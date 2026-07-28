@@ -28,6 +28,13 @@ import {
   providerDriverForAccount,
   usageSemanticForProfile
 } from '../../modules/providers/drivers/registry.js'
+import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
+import {
+  prepareXaiAccountBeforeDispatch,
+  type XaiOAuthDispatchPreparationDependencies
+} from '../../modules/providers/drivers/xai/oauth-dispatch-preparation.js'
+import { applyGrokAccessDeniedFallback } from '../../modules/providers/drivers/xai/grok-access-denied-fallback.js'
+import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-xai-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -108,6 +115,23 @@ assert.deepEqual(
   ['responses_json', 'responses_sse'],
   'Grok OAuth 默认只应启用 Responses JSON/SSE'
 )
+const mergedOAuthCredentials = mergeAccountCredentialsForUpdate({
+  type: 'oauth',
+  credentials: {
+    ...normalizedOAuthCredentials,
+    subscription_tier: 'supergrok',
+    entitlement_status: 'active'
+  }
+} as unknown as Parameters<typeof mergeAccountCredentialsForUpdate>[0], {
+  access_token: 'xai-oauth-access-token-updated',
+  base_url: 'https://cli-chat-proxy.grok.com/v1'
+})
+assert.equal(mergedOAuthCredentials.token_type, 'Bearer', 'Grok OAuth 普通编辑必须保留 token_type')
+assert.equal(mergedOAuthCredentials.scope, 'openid offline_access grok-cli:access api:access', 'Grok OAuth 普通编辑必须保留 scope')
+assert.equal(mergedOAuthCredentials.sub, 'xai-user', 'Grok OAuth 普通编辑必须保留 sub')
+assert.equal(mergedOAuthCredentials.team_id, 'xai-team', 'Grok OAuth 普通编辑必须保留 team_id')
+assert.equal(mergedOAuthCredentials.subscription_tier, 'supergrok', 'Grok OAuth 普通编辑必须保留订阅层级')
+assert.equal(mergedOAuthCredentials.entitlement_status, 'active', 'Grok OAuth 普通编辑必须保留 entitlement 状态')
 
 const account = xaiAccount()
 assert.equal(providerDriverForAccount(account)?.id, 'xai', 'xAI 档案应由独立 xAI driver 处理')
@@ -162,6 +186,103 @@ const oauthAccount: DispatchAccountSecret = {
   refreshToken: 'xai-oauth-refresh-token',
   credentials: normalizedOAuthCredentials
 }
+let releaseOAuthRefresh: (() => void) | undefined
+const oauthRefreshGate = new Promise<void>((resolve) => { releaseOAuthRefresh = resolve })
+let oauthRefreshCalls = 0
+let persistedOAuthCredentials: Record<string, unknown> | undefined
+const oauthRefreshDependencies: XaiOAuthDispatchPreparationDependencies = {
+  async loadAccount() {
+    return {
+      providerCode: XAI_PROVIDER_CODE,
+      type: 'oauth',
+      configRevision: 5,
+      credentials: {
+        ...normalizedOAuthCredentials,
+        expires_at: '2000-01-01T00:00:00.000Z',
+        metadata_marker: 'preserved'
+      }
+    }
+  },
+  async refreshToken() {
+    oauthRefreshCalls += 1
+    await oauthRefreshGate
+    return {
+      accessToken: 'xai-oauth-access-token-refreshed',
+      refreshToken: 'xai-oauth-refresh-token-rotated',
+      clientId: 'xai-oauth-client',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      expiresIn: 21_600,
+      tokenType: 'Bearer'
+    }
+  },
+  async persistCredentials(_accountId, credentials, expectedConfigRevision) {
+    assert.equal(expectedConfigRevision, 5)
+    persistedOAuthCredentials = credentials
+    return { providerCode: XAI_PROVIDER_CODE, type: 'oauth', configRevision: 6, credentials }
+  }
+}
+const cancelledWaiter = new AbortController()
+const firstOAuthRefresh = prepareXaiAccountBeforeDispatch({
+  ...oauthAccount,
+  id: 'acc_xai_oauth_refresh_shared',
+  expiresAt: '2000-01-01T00:00:00.000Z',
+  credentials: { ...oauthAccount.credentials, expires_at: '2000-01-01T00:00:00.000Z' }
+}, cancelledWaiter.signal, oauthRefreshDependencies)
+const secondOAuthRefresh = prepareXaiAccountBeforeDispatch({
+  ...oauthAccount,
+  id: 'acc_xai_oauth_refresh_shared',
+  expiresAt: '2000-01-01T00:00:00.000Z',
+  credentials: { ...oauthAccount.credentials, expires_at: '2000-01-01T00:00:00.000Z' }
+}, undefined, oauthRefreshDependencies)
+cancelledWaiter.abort()
+await assert.rejects(firstOAuthRefresh, /请求已取消/u, '单个 Grok 请求取消不得中止共享 refresh token 轮换')
+releaseOAuthRefresh?.()
+const refreshedOAuthAccount = await secondOAuthRefresh
+assert.equal(oauthRefreshCalls, 1, '同一 Grok 物理账户的并发刷新必须单飞')
+assert.equal(refreshedOAuthAccount.apiKey, 'xai-oauth-access-token-refreshed')
+assert.equal(refreshedOAuthAccount.refreshToken, 'xai-oauth-refresh-token-rotated')
+assert.equal(persistedOAuthCredentials?.metadata_marker, 'preserved', 'Grok token rotation 不得丢弃扩展元数据')
+let xaiRebaseLoadCount = 0
+const xaiRebasePersistRevisions: number[] = []
+const rebasedOAuthAccount = await prepareXaiAccountBeforeDispatch({
+  ...oauthAccount,
+  id: 'acc_xai_oauth_refresh_rebase',
+  expiresAt: '2000-01-01T00:00:00.000Z',
+  credentials: { ...oauthAccount.credentials, expires_at: '2000-01-01T00:00:00.000Z' }
+}, undefined, {
+  async loadAccount() {
+    xaiRebaseLoadCount += 1
+    return {
+      providerCode: XAI_PROVIDER_CODE,
+      type: 'oauth',
+      configRevision: xaiRebaseLoadCount === 1 ? 20 : 21,
+      credentials: {
+        ...normalizedOAuthCredentials,
+        expires_at: '2000-01-01T00:00:00.000Z',
+        metadata_marker: xaiRebaseLoadCount === 1 ? 'before-edit' : 'after-edit'
+      }
+    }
+  },
+  async refreshToken() {
+    return {
+      accessToken: 'xai-rebased-access-token',
+      refreshToken: 'xai-rebased-refresh-token',
+      clientId: 'xai-oauth-client',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      expiresIn: 21_600,
+      tokenType: 'Bearer'
+    }
+  },
+  async persistCredentials(_accountId, credentials, expectedConfigRevision) {
+    xaiRebasePersistRevisions.push(expectedConfigRevision)
+    if (expectedConfigRevision === 20) {
+      throw new repositories.AccountConfigRevisionConflictError('acc_xai_oauth_refresh_rebase', 20, 21)
+    }
+    return { providerCode: XAI_PROVIDER_CODE, type: 'oauth', configRevision: 22, credentials }
+  }
+})
+assert.deepEqual(xaiRebasePersistRevisions, [20, 21], 'Grok 无关配置冲突后必须 rebase 并写回已轮换的 refresh token')
+assert.equal(rebasedOAuthAccount.refreshToken, 'xai-rebased-refresh-token')
 assert.equal(accountSupportsGatewayRequest(chatRequest, oauthAccount), false, 'Grok OAuth 不应承接 Chat Completions')
 assert.equal(accountSupportsGatewayRequest(responsesRequest, oauthAccount), true, 'Grok OAuth 应承接 Responses')
 assert.deepEqual(
@@ -173,8 +294,65 @@ const oauthRequestParts = await buildGatewayUpstreamRequestParts(responsesReques
   groupId: 'grp_xai'
 })
 assert.equal(oauthRequestParts.headers.get('authorization'), 'Bearer xai-oauth-access-token')
-assert.equal(oauthRequestParts.headers.get('user-agent'), 'sub2api-grok/1.0')
+assert.equal(oauthRequestParts.headers.get('user-agent'), 'xai-grok-workspace/0.2.93')
+assert.equal(oauthRequestParts.headers.get('x-xai-token-auth'), 'xai-grok-cli')
 assert.equal(oauthRequestParts.headers.get('x-grok-client-version'), '0.2.93')
+const customOAuthRequestParts = await buildGatewayUpstreamRequestParts(responsesRequest, {
+  ...oauthAccount,
+  baseUrl: 'https://api.x.ai/v1',
+  credentials: { ...oauthAccount.credentials, base_url: 'https://api.x.ai/v1' }
+}, {
+  systemAccountId: 'sys_admin',
+  groupId: 'grp_xai'
+})
+assert.equal(customOAuthRequestParts.headers.get('x-xai-token-auth'), null, '非 CLI proxy 上游不得携带 xAI CLI token 身份头')
+assert.equal(customOAuthRequestParts.headers.get('x-grok-client-version'), null, '非 CLI proxy 上游不得携带 Grok CLI version')
+assert.notEqual(customOAuthRequestParts.headers.get('user-agent'), 'xai-grok-workspace/0.2.93', 'api.x.ai 上游不得泄漏 Grok CLI User-Agent identity')
+
+let fallbackRequests = 0
+const fallbackResult = await applyGrokAccessDeniedFallback({
+  upstreamUrl: 'https://cli-chat-proxy.grok.com/v1/responses?trace=fallback',
+  headers: oauthRequestParts.headers,
+  body: oauthRequestParts.body,
+  response: gatewayResponse(403, '{"error":"Access denied"}'),
+  async requestFallback(url, headers) {
+    fallbackRequests += 1
+    assert.equal(url, 'https://api.x.ai/v1/responses?trace=fallback')
+    assert.equal(headers.get('authorization'), 'Bearer xai-oauth-access-token')
+    assert.equal(headers.get('x-xai-token-auth'), null)
+    assert.equal(headers.get('x-grok-client-version'), null)
+    assert.equal(headers.get('user-agent'), null)
+    return gatewayResponse(200, '{"id":"grok-fallback-success"}')
+  }
+})
+assert.equal(fallbackResult.usedFallback, true, 'CLI proxy 的 Access denied 403 必须精确回退官方 API')
+assert.equal(fallbackRequests, 1)
+assert.equal(await bodyText(fallbackResult.response), '{"id":"grok-fallback-success"}')
+
+const noFallbackResult = await applyGrokAccessDeniedFallback({
+  upstreamUrl: 'https://cli-chat-proxy.grok.com/v1/responses',
+  headers: oauthRequestParts.headers,
+  body: oauthRequestParts.body,
+  response: gatewayResponse(403, '{"error":"subscription required"}'),
+  async requestFallback() {
+    throw new Error('非 Access denied 403 不得回退')
+  }
+})
+assert.equal(noFallbackResult.usedFallback, false)
+assert.equal(await bodyText(noFallbackResult.response), '{"error":"subscription required"}', '不回退时必须完整保留原始 403 body')
+
+const rejectedFallbackResult = await applyGrokAccessDeniedFallback({
+  upstreamUrl: 'https://cli-chat-proxy.grok.com/v1/responses',
+  headers: oauthRequestParts.headers,
+  body: oauthRequestParts.body,
+  response: gatewayResponse(403, '{"error":"Access denied"}'),
+  async requestFallback() {
+    return gatewayResponse(403, '{"error":"official endpoint rejected"}')
+  }
+})
+assert.equal(rejectedFallbackResult.usedFallback, false, '官方端点非 2xx 时必须保留 CLI proxy 原响应')
+assert.equal(rejectedFallbackResult.response.status, 403)
+assert.equal(await bodyText(rejectedFallbackResult.response), '{"error":"Access denied"}')
 
 const xaiGroup = repositories.createGroup({
   providerCode: XAI_PROVIDER_CODE,
@@ -250,6 +428,22 @@ function xaiAccount(): DispatchAccountSecret {
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     }
   }
+}
+
+function gatewayResponse(status: number, body: string): GatewayUpstreamResponse {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: (async function* () { yield Buffer.from(body) })()
+  }
+}
+
+async function bodyText(response: GatewayUpstreamResponse): Promise<string> {
+  if (!response.body) return ''
+  const chunks: Buffer[] = []
+  for await (const chunk of response.body) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 function openAIRequest(originalUrl: string, body: Record<string, unknown>): Request {

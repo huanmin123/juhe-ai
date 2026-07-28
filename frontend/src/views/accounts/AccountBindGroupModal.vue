@@ -34,10 +34,10 @@
 <script setup lang="ts">
 import GroupSelect from '@/components/GroupSelect.vue'
 import type { GroupSelection } from '@/shared/groupLabelCache'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 
 defineProps<{
-  account?: AccountSummary
+  account?: AccountListItem
   groupId: string
   group?: GroupSelection
   groupOptions: Array<{ label: string; value: string }>

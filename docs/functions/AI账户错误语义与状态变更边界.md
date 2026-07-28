@@ -12,17 +12,17 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。受控独立探针只能推进与自身 owner、scope、generation 和 provenance 匹配的通用可用性状态：模型 / transport 子探针不得写账户 `temporary_unavailable`；只有已注册且真正与所有模型无关的 account-global owner 才有该权限，当前默认不存在。任何 owner 都不得把状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
-传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
+传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能 nomination 精确 Attempt 待确认事实；对应 transport scope 的推进必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由同 scope 后台传输探针确认。子 scope 不能升级账户级状态。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
-默认电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
+默认精确 transport 电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证该 Attempt transport 不可用，更不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
 
 用户配置的路由首字截止和传输 hard timeout 是两类事实。`normalRoutingConfig.firstByteDeadlineMs`、速度优先 cutover、墙钟 handoff 等配置截止只回答“当前请求是否继续等待/换候选”，到期结果对账户电路、Key 运行态、共享质量和恢复副作用保持中性。只有建连失败、真实读取中断，以及 `textFirstResponseTimeoutSeconds` / lane hard lifetime 等传输层 hard timeout 才能作为 transport evidence；即使请求层根据配置截止主动取消了旧 attempt，也不得把该取消反写成 transport failure。
 
 `protocol_model` 或 `model_capability` 子 incident 不得再通过“若干不同子 scope”投票升级为父 `account` 电路。别名、endpoint、lane、转换路径和同一坏模型都可能产生多个子 scope，数量不能证明仍有其他模型的整号已经死亡。子 incident 始终按自己的最终上游模型、endpoint、lane、转换路径、凭据作用域、generation 和 revision 隔离恢复。
 
-全部配置能力均不可调度时，由当前 `CapabilityScopeCatalog + Key 集合 + 子 incident` 派生 `instance_all_capabilities_unavailable` 门禁，不创建父 incident，也不写 `accounts.status`。父 `account` transport circuit 只允许由真正与模型无关、具有专属独立证明的账户全局事实 owner 建立；当前请求派生的子电路没有该证明，因此自动子级升级默认关闭。既有父 incident 的恢复只能解除父层，不能删除、关闭或重置任何子 incident。
+只有当前 `CapabilityScopeCatalog + credential membership baseline + 子 incident` 证明全部 Route 都是 confirmed blocked 时，才派生 `instance_all_capabilities_unavailable` 门禁；全部 Route 暂时 soft avoid / recovering 或凭据 baseline 未确认时使用对应中间态，不能伪装成全部确认不可用。该门禁不创建父 incident，也不写 `accounts.status`。Key owner 运行态单独派生 `all_keys_unavailable`，不进入能力颜色。父 `account` transport circuit 只允许由真正与模型无关、具有专属独立证明的账户全局事实 owner 建立；当前请求派生的子电路没有该证明，因此自动子级升级默认关闭。既有父 incident 的恢复只能解除父层，不能删除、关闭或重置任何子 incident。
 
 电路 `dispatch_revision` 只属于上游传输身份：凭据、连接地址、代理绑定、协议和客户端兼容能力变化可以推进 revision。优先级、并发数、调度状态、时间表、模型目录和用户错误策略不得借配置更新清除活动电路；旧 numeric revision、同 revision 重放和迟到探针均必须被 CAS fencing。
 
@@ -37,7 +37,7 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 任意完整 HTTP 响应可以恢复“传输是否可完成”的电路，但不能据此清除用户显式策略产生的业务状态。业务状态的恢复来源必须和其创建来源匹配，不能用另一个无 provenance 的后台任务覆盖。
 
-OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分类器。Token 端点返回任意非 `2xx`、错误正文、畸形 JSON、缺失字段，或发生网络、代理、timeout 等异常时，只能记录脱敏诊断并有界退避；不得按次数把账户写成 `error` 或永久退出刷新候选。本地可独立验证的凭据缺失、解密失败或配置无法装配可以进入各自明确的配置异常路径，但不能借远端返回内容推断账户死亡。刷新成功只能更新当前代 token，并按匹配 provenance 清理该刷新路径自己创建的状态，不能清理用户显式策略状态。
+OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分类器。Token 端点返回任意非 `2xx`、错误正文、畸形 JSON、缺失字段，或发生网络、代理、timeout 等异常时，只能记录脱敏诊断并有界退避；不得按次数把账户写成 `error` 或永久退出刷新候选。本地可独立验证的单 credential slot 缺失、解密失败或装配失败只能进入该 slot / Attempt 的配置异常路径；单 Route 的映射、endpoint 或配方错误只影响该 Route。只有结构证明某配置被全部 Route 与全部凭据强制共用、且没有可执行旁路时，专属 account-global configuration owner 才能建立整账户门禁。任何本地路径都不能借远端返回内容推断账户死亡。刷新成功只能更新当前代 token，并按匹配 provenance 清理该刷新路径自己创建的状态，不能清理用户显式策略状态。
 
 用户显式策略创建的 `temporary_unavailable`、`rate_limited` 或 `error` 必须持久保存创建来源、代次和观察边界。普通协议成功、后台健康成功、旧在途慢成功或没有匹配 provenance 的刷新成功都不得提前清除；只有 TTL 到期、同来源明确恢复动作、用户人工恢复，或该状态机文档明确授权的匹配恢复证据可以改变它。请求开始时间和完成时间都不能替代来源匹配，迟到结果必须受 generation / revision / observed-at fencing。
 

@@ -147,7 +147,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
-import type { GroupSummary } from '@/types/domain'
+import type { GroupListItem } from '@/types/domain'
 import {
   formatUsageSummary,
   groupAccountStatsTooltip,
@@ -173,7 +173,7 @@ import {
 
 defineProps<{
   columns: Array<Record<string, unknown>>
-  groups: GroupSummary[]
+  groups: GroupListItem[]
   isManagementView: boolean
   loading: boolean
   mobileHasMore: boolean
@@ -183,7 +183,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (event: 'action', key: string, group: GroupSummary): void
+  (event: 'action', key: string, group: GroupListItem): void
   (event: 'change', ...args: unknown[]): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void

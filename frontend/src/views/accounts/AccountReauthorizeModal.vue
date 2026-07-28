@@ -42,7 +42,7 @@
             <a-form-item v-if="geminiSupportsProjectId" label="GCP Project ID">
               <a-input v-model:value="form.projectId" placeholder="可选，留空由后端自动探测" />
             </a-form-item>
-            <template v-if="geminiRequiresClientCredentials && form.oauthMode === 'manual'">
+            <template v-if="geminiRequiresClientCredentials && form.oauthMode !== 'access_token'">
               <a-form-item label="Client ID" required>
                 <a-input v-model:value="form.googleClientId" autocomplete="off" placeholder="Google OAuth Client ID" />
               </a-form-item>
@@ -54,6 +54,9 @@
               <a-input v-model:value="form.googleQuotaProjectId" placeholder="可选，用于 x-goog-user-project" />
             </a-form-item>
           </template>
+          <a-form-item v-else-if="providerKind === 'openai' && form.oauthMode === 'refresh_token'" label="Client ID">
+            <a-input v-model:value="form.googleClientId" autocomplete="off" placeholder="可选；留空沿用当前 Codex Client ID" />
+          </a-form-item>
         </template>
       </AccountOAuthAuthorizePanel>
     </a-form>
@@ -61,10 +64,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { api } from '@/api/client'
-import type { GeminiOAuthCapabilities } from '@/api/domains/geminiOAuth'
-import type { AccountSummary, OAuthAuthURLResult } from '@/types/domain'
+import { computed, watch } from 'vue'
+import type { AccountEditBasicDetail, OAuthAuthURLResult } from '@/types/domain'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
 import { managedOAuthProviderKind } from './accountProviderCapabilities'
@@ -72,7 +73,7 @@ import { managedOAuthProviderKind } from './accountProviderCapabilities'
 const open = defineModel<boolean>('open', { required: true })
 
 const props = defineProps<{
-  account?: AccountSummary
+  account?: AccountEditBasicDetail
   authLoading: boolean
   authResult?: OAuthAuthURLResult
   form: AccountOAuthAuthorizeForm
@@ -103,19 +104,16 @@ const oauthModeOptions = computed(() => {
   ]
 })
 
-const fallbackGeminiOAuthTypeOptions = [
-  { label: 'Code Assist', value: 'code_assist' as const },
-  { label: 'Google One', value: 'google_one' as const },
-  { label: 'AI Studio', value: 'ai_studio' as const }
+const geminiOAuthTypes = [
+  { label: 'Code Assist', value: 'code_assist' as const, requiresClientCredentials: false, supportsProjectId: true, supportsTierId: true },
+  { label: 'Google One', value: 'google_one' as const, requiresClientCredentials: false, supportsProjectId: true, supportsTierId: true },
+  { label: 'AI Studio', value: 'ai_studio' as const, requiresClientCredentials: true, supportsProjectId: true, supportsTierId: true }
 ]
-const geminiCapabilities = ref<GeminiOAuthCapabilities>()
-const selectedGeminiCapability = computed(() => geminiCapabilities.value?.oauthTypes.find((item) => item.oauthType === props.form.oauthType))
-const geminiOAuthTypeOptions = computed(() => geminiCapabilities.value?.oauthTypes.length
-  ? geminiCapabilities.value.oauthTypes.map((item) => ({ label: item.label, value: item.oauthType }))
-  : fallbackGeminiOAuthTypeOptions)
-const geminiRequiresClientCredentials = computed(() => selectedGeminiCapability.value?.requiresClientCredentials ?? props.form.oauthType === 'ai_studio')
-const geminiSupportsProjectId = computed(() => selectedGeminiCapability.value?.supportsProjectId ?? props.form.oauthType === 'code_assist')
-const geminiSupportsTierId = computed(() => selectedGeminiCapability.value?.supportsTierId ?? true)
+const selectedGeminiOAuthType = computed(() => geminiOAuthTypes.find((item) => item.value === props.form.oauthType))
+const geminiOAuthTypeOptions = geminiOAuthTypes.map(({ label, value }) => ({ label, value }))
+const geminiRequiresClientCredentials = computed(() => selectedGeminiOAuthType.value?.requiresClientCredentials ?? false)
+const geminiSupportsProjectId = computed(() => selectedGeminiOAuthType.value?.supportsProjectId ?? true)
+const geminiSupportsTierId = computed(() => selectedGeminiOAuthType.value?.supportsTierId ?? true)
 const geminiTierOptionsByOAuthType = {
   ai_studio: [
     { label: 'AI Studio Free', value: 'aistudio_free' },
@@ -138,23 +136,6 @@ watch(() => props.form.oauthType, () => {
     props.form.tierId = geminiTierOptions.value[0]?.value ?? ''
   }
 })
-
-async function loadGeminiCapabilities() {
-  if (providerKind.value !== 'gemini' || geminiCapabilities.value) return
-  try {
-    geminiCapabilities.value = props.isManagementView
-      ? await api.geminiOAuth.capabilities()
-      : await api.myGeminiOAuth.capabilities()
-    if (!geminiCapabilities.value.oauthTypes.some((item) => item.oauthType === props.form.oauthType)) {
-      props.form.oauthType = geminiCapabilities.value.defaultOAuthType
-    }
-  } catch (error) {
-    console.error(error)
-    geminiCapabilities.value = undefined
-  }
-}
-
-onMounted(() => { void loadGeminiCapabilities() })
 
 defineEmits<{
   (event: 'cancel'): void

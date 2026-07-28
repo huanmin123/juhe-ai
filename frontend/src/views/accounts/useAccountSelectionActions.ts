@@ -1,12 +1,12 @@
 import { computed, ref, toValue, type MaybeRefOrGetter } from 'vue'
 
 import { message } from '@/lib/antd'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { accountSelectionColumnWidth } from './accountTableColumns'
 import { canBatchDeleteAccount, canSelectAccountForBatch } from './accountRules'
 
 interface UseAccountSelectionActionsOptions {
-  accounts: MaybeRefOrGetter<AccountSummary[]>
+  accounts: MaybeRefOrGetter<AccountListItem[]>
 }
 
 export function useAccountSelectionActions(options: UseAccountSelectionActionsOptions) {
@@ -16,7 +16,7 @@ export function useAccountSelectionActions(options: UseAccountSelectionActionsOp
   const selectedDeletableAccountCount = computed(() => selectedAccounts.value.filter(canBatchDeleteAccount).length)
   const batchDeleteConfirmOpen = ref(false)
   const batchDeleteConfirmLoading = ref(false)
-  const batchDeleteTargets = ref<AccountSummary[]>([])
+  const batchDeleteTargets = ref<AccountListItem[]>([])
   const rowSelection = computed(() => ({
     columnWidth: accountSelectionColumnWidth,
     fixed: true,
@@ -24,7 +24,7 @@ export function useAccountSelectionActions(options: UseAccountSelectionActionsOp
     onChange: (selectedRowKeys: Array<string | number>) => {
       selectedAccountIds.value = selectedRowKeys.map((key) => String(key))
     },
-    getCheckboxProps: (account: AccountSummary) => ({ disabled: !canSelectAccountForBatch(account) })
+    getCheckboxProps: (account: AccountListItem) => ({ disabled: !canSelectAccountForBatch(account) })
   }))
 
   function pruneSelection(selectableAccountIds: Set<string>): void {
@@ -44,7 +44,7 @@ export function useAccountSelectionActions(options: UseAccountSelectionActionsOp
     return selectedAccountIdSet.value.has(accountId)
   }
 
-  function toggleAccountSelection(account: AccountSummary): void {
+  function toggleAccountSelection(account: AccountListItem): void {
     if (!canSelectAccountForBatch(account)) return
     selectedAccountIds.value = isAccountSelected(account.id)
       ? selectedAccountIds.value.filter((id) => id !== account.id)
@@ -70,7 +70,7 @@ export function useAccountSelectionActions(options: UseAccountSelectionActionsOp
     batchDeleteTargets.value = []
   }
 
-  async function confirmBatchDeleteWith(batchDeleteSelected: (targets: AccountSummary[]) => Promise<void>): Promise<void> {
+  async function confirmBatchDeleteWith(batchDeleteSelected: (targets: AccountListItem[]) => Promise<void>): Promise<void> {
     const targets = [...batchDeleteTargets.value]
     if (!targets.length) return
     batchDeleteConfirmLoading.value = true

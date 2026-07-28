@@ -23,6 +23,8 @@ export async function applyAccountErrorHandlingWithCacheInvalidation(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    upstreamErrorSummary?: string
+    upstreamErrorSummaryResolved?: boolean
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
     policyDecision?: AccountErrorPolicyDecision

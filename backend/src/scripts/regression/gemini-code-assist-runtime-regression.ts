@@ -8,16 +8,27 @@ import {
   GEMINI_PROTOCOL_VERSION
 } from '../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../storage/openai-account-selector.types.js'
+import { runtimeOpenAIAccountCredentials } from '../../storage/openai-account-selector.repository.js'
 import { geminiProviderDriver } from '../../modules/providers/drivers/gemini/driver.js'
 import {
   GEMINI_CLI_USER_AGENT,
   GEMINI_CODE_ASSIST_STREAM_URL,
+  buildGeminiCodeAssistRequestParts,
   geminiOAuthRuntimeMode
 } from '../../modules/providers/drivers/gemini/code-assist-runtime.js'
 import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
+import { serializeGatewayJsonObject } from '../../modules/gateway/request/serialized-json-body.js'
 
 const codeAssistAccount = geminiAccount('code_assist')
 const googleOneAccount = geminiAccount('google_one')
+
+const selectedCodeAssistAccount = {
+  ...codeAssistAccount,
+  credentials: runtimeOpenAIAccountCredentials(codeAssistAccount.credentials)
+}
+assert.equal(geminiOAuthRuntimeMode(selectedCodeAssistAccount), 'code_assist', '调度凭据投影必须保留 oauth_type')
+assert.equal(selectedCodeAssistAccount.credentials.project_id, 'cloud-ai-companion-project', '调度凭据投影必须保留 project_id')
+assert.equal(selectedCodeAssistAccount.credentials.tier_id, 'gcp_standard', '调度凭据投影必须保留 tier_id')
 
 assert.equal(geminiOAuthRuntimeMode(codeAssistAccount), 'code_assist')
 assert.equal(geminiOAuthRuntimeMode(googleOneAccount), 'google_one')
@@ -47,6 +58,25 @@ assert.deepEqual(JSON.parse(String(streamParts.body)), {
     contents: [{ role: 'user', parts: [{ text: 'hello' }] }]
   }
 })
+
+const originalParse = JSON.parse
+let structuredBodyParseCount = 0
+JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+  structuredBodyParseCount += 1
+  return originalParse(...args)
+}) as typeof JSON.parse
+try {
+  const structuredParts = buildGeminiCodeAssistRequestParts({
+    accessToken: 'token',
+    projectId: 'project',
+    model: 'gemini-3.1-pro-preview',
+    body: serializeGatewayJsonObject({ contents: [{ role: 'user', parts: [{ text: 'structured' }] }] })
+  })
+  assert.equal(structuredBodyParseCount, 0, '已结构化的 bridge/override Body 不得在 Code Assist 包裹时重新 JSON.parse')
+  assert.equal(structuredParts.headers.get('authorization'), 'Bearer token')
+} finally {
+  JSON.parse = originalParse
+}
 
 const countRequest = geminiRequest('/v1beta/models/gemini-3.1-pro-preview:countTokens', {
   contents: [{ role: 'user', parts: [{ text: 'hello' }] }]

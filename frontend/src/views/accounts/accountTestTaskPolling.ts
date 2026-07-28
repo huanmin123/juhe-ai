@@ -1,4 +1,4 @@
-import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import type { AccountListItem, AccountTestResult, AccountTestTask } from '@/types/domain'
 
 import { type AccountTestEndpointMode, failedAccountTestResult } from './accountTestFlow'
 import {
@@ -9,11 +9,11 @@ import {
 } from './accountTestTaskHelpers'
 
 interface WaitForAccountTestResultOptions {
-  account: AccountSummary
-  cancelTask: (taskId: string, account: AccountSummary) => Promise<void>
+  account: AccountListItem
+  cancelTask: (taskId: string, account: AccountListItem) => Promise<void>
   currentTestEndpointMode: () => AccountTestEndpointMode
   currentModel: () => string
-  fetchTask: (taskId: string, account: AccountSummary, signal?: AbortSignal) => Promise<AccountTestTask>
+  fetchTask: (taskId: string, account: AccountListItem, signal?: AbortSignal) => Promise<AccountTestTask>
   initialTask: AccountTestTask
   onTaskSettled?: (taskId: string) => void
   onUpdate?: (task: AccountTestTask) => void
@@ -72,7 +72,7 @@ export async function waitForAccountTestResult(options: WaitForAccountTestResult
 }
 
 export function accountTestTaskTimeoutResult(input: {
-  account: AccountSummary
+  account: AccountListItem
   testEndpointMode: AccountTestEndpointMode
   model: string
   task: AccountTestTask

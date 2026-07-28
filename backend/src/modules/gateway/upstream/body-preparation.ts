@@ -2,12 +2,17 @@ import type { Request } from 'express'
 
 import {
   getGatewayRequestBodyState,
+  isGatewayScannedJsonBody,
   type GatewayRawBodyRequest
 } from '../request/body.js'
 import {
   extractGatewayJsonBodyMetadata,
   type GatewayJsonBodyMetadata
 } from '../request/json-metadata-scanner.js'
+import {
+  gatewaySerializedJsonObject,
+  serializeGatewayJsonObject
+} from '../request/serialized-json-body.js'
 
 type UpstreamBody = Buffer | string
 
@@ -31,23 +36,26 @@ export function prepareAnthropicMessagesBodyForAttempt(
   if (body === undefined) return undefined
 
   if (!Buffer.isBuffer(body) && typeof body !== 'string') {
-    return Buffer.from(JSON.stringify(
+    return serializeGatewayJsonObject(
       isAnthropicMessagesRequest(headers, upstreamUrl)
         ? normalizeAnthropicMessagesBody(body).body
         : body
-    ), 'utf8')
+    )
   }
   if (!isAnthropicMessagesRequest(headers, upstreamUrl)) {
     return body
   }
 
   const request = req as GatewayUpstreamPreparationRequest
+  if (Buffer.isBuffer(body) && request.rawBody === body) {
+    return body
+  }
   const cached = request.gatewayAnthropicMessagesBodyCache
   if (cached?.sourceBody === body) {
     return cached.preparedBody
   }
 
-  const parsed = parsedRequestBodyForSource(request, body) ?? parseJsonBody(body)
+  const parsed = gatewaySerializedJsonObject(body) ?? parseJsonBody(body)
   const preparedBody = prepareParsedAnthropicBody(body, parsed)
   request.gatewayAnthropicMessagesBodyCache = {
     sourceBody: body,
@@ -65,7 +73,10 @@ export function preparedUpstreamBodyMetadata(
   const request = req as GatewayUpstreamPreparationRequest
   if (Buffer.isBuffer(body) && request.rawBody === body) {
     const state = getGatewayRequestBodyState(req)
-    if (state) {
+    // Scanned bodies already received the complete top-level metadata scan in
+    // body admission. Parsed/synthetic states may not include wire-specific
+    // fields such as output_config.effort, so they keep the exact-body fallback.
+    if (state && isGatewayScannedJsonBody(req)) {
       return {
         model: state.model,
         stream: state.stream,
@@ -73,7 +84,9 @@ export function preparedUpstreamBodyMetadata(
         reasoningEffort: state.reasoningEffort,
         maxOutputTokens: state.maxOutputTokens,
         imageGeneration: state.imageGeneration,
-        imageGenerationForced: state.imageGenerationForced
+        imageGenerationForced: state.imageGenerationForced,
+        strictOutputRequirement: state.strictOutputRequirement,
+        codexCompactionTrigger: state.codexCompactionTrigger
       }
     }
   }
@@ -95,22 +108,9 @@ function prepareParsedAnthropicBody(body: UpstreamBody, parsed: unknown): Upstre
   if (!isJsonRecord(parsed)) return body
   const normalized = normalizeAnthropicMessagesBody(parsed)
   if (!normalized.changed) return body
-  const serialized = JSON.stringify(normalized.body)
-  return Buffer.isBuffer(body) ? Buffer.from(serialized, 'utf8') : serialized
-}
-
-function parsedRequestBodyForSource(
-  request: GatewayUpstreamPreparationRequest,
-  body: UpstreamBody
-): unknown {
-  if (
-    !Buffer.isBuffer(body)
-    || request.rawBody !== body
-    || !request.gatewayParsedJsonBodyAvailable
-  ) {
-    return undefined
-  }
-  return request.gatewayParsedJsonBody
+  return Buffer.isBuffer(body)
+    ? serializeGatewayJsonObject(normalized.body)
+    : JSON.stringify(normalized.body)
 }
 
 function parseJsonBody(body: UpstreamBody): unknown {

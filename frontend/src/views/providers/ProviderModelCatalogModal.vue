@@ -16,6 +16,7 @@
             :value="systemAccountFilter"
             :accounts="systemAccounts"
             :active-only="false"
+            :disabled="loading"
             :filter-option="false"
             :loading="systemAccountsLoading"
             :selected-principal="systemAccountFilterSelection"
@@ -29,7 +30,7 @@
           />
         </div>
         <a-space wrap>
-          <a-button type="primary" @click="emit('create')">新增模型</a-button>
+          <a-button type="primary" :disabled="loading" @click="emit('create')">新增模型</a-button>
           <a-tag color="blue">{{ models.length }} / {{ currentCategoryCount }} 个模型</a-tag>
           <a-tag>USD 结算</a-tag>
         </a-space>

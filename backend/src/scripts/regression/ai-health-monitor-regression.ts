@@ -31,7 +31,8 @@ try {
   const monitorSource = readFileSync(resolve('src/storage/account-health-monitor.repository.ts'), 'utf8')
   assert.doesNotMatch(monitorSource, /\busage_records\b/i, '健康监控请求路径不得扫描使用记录明细')
   assert.match(monitorSource, /FROM account_health_hourly/, '健康监控必须查询小时预聚合表')
-  assert.match(monitorSource, /field: 'recentRequestCount'[\s\S]+field: 'lastUsedAt'/, '健康监控必须先按近期请求数、再按最近使用时间排序')
+  assert.match(monitorSource, /field: 'lastUsedAt'[\s\S]+field: 'name'/, '健康监控应按最近使用时间和名称稳定排序')
+  assert.doesNotMatch(monitorSource, /field: 'recentRequestCount'/, '健康监控不得借用管理列表的质量统计排序')
 
   const group = repositories.createGroup({ name: 'AI 健康监控回归分组', providerCode: 'gpt' }, access)
   const account = repositories.createAccount({

@@ -25,10 +25,17 @@ import {
   type GatewayRawBodyRequest
 } from '../../modules/gateway/request/body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
-import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
+import {
+  setGatewayRequestJsonMaterializationObserverForTest,
+  stopGatewayJsonParseWorker
+} from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import { requestHeadersToObject } from '../../modules/gateway/usage/snapshots.js'
 import { applyOpenAIClientCompatibilityHeaders } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import { buildOpenAIModelMappedJsonBody } from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
+import { downgradeGatewayAutoImageGenerationToolForPermission } from '../../modules/gateway/request/image-permission-downgrade.js'
+import { codexCompactionExpectedForRequest } from '../../modules/gateway/response/codex-compaction-contract.js'
+import { extractGatewayJsonBodyMetadata } from '../../modules/gateway/request/json-metadata-scanner.js'
 
 type TestRequest = GatewayRawBodyRequest
 type MockResponse = EventEmitter & {
@@ -89,6 +96,13 @@ async function main(): Promise<void> {
   testOpenAIClientPathNormalization()
   testResponsesCompactRouteCapability()
   testParsedJsonBodyPassthroughForGatewayMetadata()
+  await testSmallJsonApiKeyPassthroughDoesNotMaterialize()
+  await testSmallJsonMaterializesOnceOnDemand()
+  await testSmallAutoImageToolMaterializesOnlyForDowngrade()
+  await testSmallInvalidJsonDoesNotMaterialize()
+  await testSmallValidNonObjectJsonRemainsValid()
+  testMetadataScannerUsesLastDuplicateKey()
+  await testDeferredJsonCompactionMetadataScansEntireBody()
   await testMediumJsonBodyDeferredByGatewayMiddleware()
   await testOversizeJsonBodyRejectedByGatewayMiddleware()
   await testLargeImageJsonBodyAllowedByGatewayMiddleware()
@@ -765,6 +779,189 @@ function testParsedJsonBodyPassthroughForGatewayMetadata(): void {
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 }
 
+async function testSmallJsonApiKeyPassthroughDoesNotMaterialize(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.4',
+    stream: false,
+    service_tier: 'priority',
+    reasoning: { effort: 'high' },
+    generationConfig: { responseModalities: ['IMAGE'] },
+    max_output_tokens: 2048,
+    input: 'hello'
+  }))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  let materializationCount = 0
+  setGatewayRequestJsonMaterializationObserverForTest(() => {
+    materializationCount += 1
+  })
+  try {
+    let nextCalled = false
+    await captureGatewayRawBody(req, res as never, () => {
+      nextCalled = true
+    })
+    assert.equal(nextCalled, true)
+    assert.equal(req.body, undefined)
+    assert.equal(req.rawBody, rawBody)
+    assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json')
+    assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
+    assert.equal(req.gatewayRequestBody?.stream, false)
+    assert.equal(req.gatewayRequestBody?.serviceTier, 'priority')
+    assert.equal(req.gatewayRequestBody?.reasoningEffort, 'high')
+    assert.equal(req.gatewayRequestBody?.maxOutputTokens, 2048)
+    assert.equal(req.gatewayRequestBody?.imageGeneration, true)
+    assert.equal(materializationCount, 0)
+
+    const parts = await buildGatewayUpstreamRequestParts(req, apiKeyAccount, testIdentity)
+    assert.equal(parts.body, rawBody)
+    assert.equal(materializationCount, 0, '原生 API Key 透传不得完整解析小 JSON')
+  } finally {
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+    res.emit('finish')
+  }
+}
+
+async function testSmallJsonMaterializesOnceOnDemand(): Promise<void> {
+  const rawBody = Buffer.from('{"model":"gpt-5.4","input":"hello"}')
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  let materializationCount = 0
+  setGatewayRequestJsonMaterializationObserverForTest(() => {
+    materializationCount += 1
+  })
+  try {
+    await captureGatewayRawBody(req, res as never, () => {})
+    const first = await buildOpenAIModelMappedJsonBody(req, 'gpt-5.4-mini')
+    const second = await buildOpenAIModelMappedJsonBody(req, 'gpt-5.4-nano')
+    assert.equal(materializationCount, 1, '同一 rawBody 的多个按需消费者只能完整解析一次')
+    assert.equal(parseJsonBuffer(first).model, 'gpt-5.4-mini')
+    assert.equal(parseJsonBuffer(second).model, 'gpt-5.4-nano')
+    assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'parsed')
+    assert.equal(req.gatewayParsedJsonBodyAvailable, true)
+  } finally {
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+    res.emit('finish')
+  }
+}
+
+async function testSmallAutoImageToolMaterializesOnlyForDowngrade(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.4',
+    input: 'hello',
+    tools: [{ type: 'image_generation' }],
+    tool_choice: 'auto'
+  }))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  let materializationCount = 0
+  setGatewayRequestJsonMaterializationObserverForTest(() => {
+    materializationCount += 1
+  })
+  try {
+    await captureGatewayRawBody(req, res as never, () => {})
+    assert.equal(req.gatewayRequestBody?.imageGeneration, true)
+    assert.equal(materializationCount, 0)
+    const downgrade = await downgradeGatewayAutoImageGenerationToolForPermission(req)
+    assert.equal(downgrade.downgraded, true)
+    assert.equal(materializationCount, 1)
+    assert.equal((req.body as Record<string, unknown>).tools, undefined)
+  } finally {
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+    res.emit('finish')
+  }
+}
+
+async function testSmallInvalidJsonDoesNotMaterialize(): Promise<void> {
+  const invalidBodies = [
+    '{"model":"gpt-5.4",}',
+    '{"model":"gpt-5.4","input":{"nested":,}}',
+    '{"model":"gpt-5.4","input":"\\q"}',
+    '{"model":"gpt-5.4","max_tokens":01}',
+    '{,"model":"gpt-5.4"}',
+    '{"model":"gpt-5.4",,"input":"hello"}',
+    '[1,]',
+    '{"model":"gpt-5.4"} true'
+  ]
+  let materializationCount = 0
+  setGatewayRequestJsonMaterializationObserverForTest(() => {
+    materializationCount += 1
+  })
+  try {
+    for (const text of invalidBodies) {
+      const rawBody = Buffer.from(text)
+      const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+      const res = createMockResponse()
+      let nextCalled = false
+      await captureGatewayRawBody(req, res as never, () => {
+        nextCalled = true
+      })
+      assert.equal(nextCalled, true)
+      assert.equal(req.body, undefined)
+      assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'invalid_json', text)
+      res.emit('finish')
+    }
+    assert.equal(materializationCount, 0, '入口语法扫描识别无效 JSON 时不得启动完整解析')
+  } finally {
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+  }
+}
+
+async function testSmallValidNonObjectJsonRemainsValid(): Promise<void> {
+  for (const text of ['[]', 'true', '"text"', '0', 'null']) {
+    const rawBody = Buffer.from(text)
+    const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+    const res = createMockResponse()
+    await captureGatewayRawBody(req, res as never, () => {})
+    assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json', text)
+    assert.equal(req.body, undefined)
+    res.emit('finish')
+  }
+}
+
+function testMetadataScannerUsesLastDuplicateKey(): void {
+  const metadata = extractGatewayJsonBodyMetadata(Buffer.from([
+    '{',
+    '"model":"stale","model":null,',
+    '"stream":true,"stream":false,',
+    '"max_output_tokens":999,"max_output_tokens":1,',
+    '"max_tokens":888,"max_tokens":2,',
+    '"reasoning":{"effort":"high"},"reasoning":{"effort":"low"},',
+    '"type":"image_generation","type":"request",',
+    '"tools":[{"type":"image_generation"}],"tools":[],',
+    '"tool_choice":"image_generation","tool_choice":"auto",',
+    '"generationConfig":{"responseModalities":["IMAGE"]},"generationConfig":null,',
+    '"response_format":0,"response_format":1e400,',
+    '"metadata":{"type":"compaction_trigger","type":"ordinary"}',
+    '}'
+  ].join('')))
+  assert.equal(metadata.invalidJson, undefined)
+  assert.equal(metadata.model, undefined)
+  assert.equal(metadata.stream, false)
+  assert.equal(metadata.maxOutputTokens, 2)
+  assert.equal(metadata.reasoningEffort, 'low')
+  assert.equal(metadata.imageGeneration, false, '被后续普通值覆盖的图像字段不得残留')
+  assert.equal(metadata.imageGenerationForced, false)
+  assert.equal(metadata.strictOutputRequirement, true, 'JSON.parse 后为 Infinity 的数值仍是 truthy')
+  assert.equal(metadata.codexCompactionTrigger, false, '对象内重复 type 必须以最后值为准')
+}
+
+async function testDeferredJsonCompactionMetadataScansEntireBody(): Promise<void> {
+  const rawBody = Buffer.from(JSON.stringify({
+    model: 'gpt-5.4',
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
+    metadata: { type: 'compaction_trigger' },
+    suffix: 'y'.repeat(128 * 1024)
+  }))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = createMockResponse()
+  await captureGatewayRawBody(req, res as never, () => {})
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json')
+  assert.equal(req.gatewayRequestBody?.codexCompactionTrigger, true)
+  assert.equal(codexCompactionExpectedForRequest(req), true)
+  assert.equal(req.body, undefined)
+  res.emit('finish')
+}
+
 async function testMediumJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   const body = {
     model: 'gpt-5.4',
@@ -783,7 +980,7 @@ async function testMediumJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
 
   assert.equal(nextCalled, true)
   assert.equal(req.body, undefined)
-  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json')
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
   assert.equal(req.gatewayRequestBody?.stream, false)
   assert.notEqual(req.gatewayParsedJsonBodyAvailable, true, '超过主进程内联解析阈值的 JSON 不应在 server 事件循环完整解析')
@@ -792,11 +989,13 @@ async function testMediumJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
 }
 
 async function testOversizeJsonBodyRejectedByGatewayMiddleware(): Promise<void> {
-  const rawBody = Buffer.from(JSON.stringify({
-    model: 'gpt-5.4',
-    stream: true,
-    input: 'x'.repeat(gatewayTextRawBodyHardLimitBytes)
-  }))
+  const rawBody = Buffer.from([
+    '{"model":"stale","model":"gpt-5.4","stream":true,',
+    '"type":"image_generation","type":"request",',
+    '"tools":[{"type":"image_generation"}],"tools":[],',
+    '"generationConfig":{"responseModalities":["IMAGE"]},"generationConfig":null,',
+    `"input":${JSON.stringify('x'.repeat(gatewayTextRawBodyHardLimitBytes))}}`
+  ].join(''))
   assert.ok(rawBody.length > gatewayTextRawBodyHardLimitBytes)
   assert.ok(rawBody.length < gatewayRawBodyHardLimitBytes)
   const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
@@ -841,7 +1040,7 @@ async function testLargeImageJsonBodyAllowedByGatewayMiddleware(): Promise<void>
   assert.equal(req.body, undefined)
   assert.ok(req.rawBody)
   assert.equal(Buffer.compare(req.rawBody, rawBody), 0)
-  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json')
   assert.equal(req.gatewayRequestBody?.imageGeneration, true)
   assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)
   assert.equal(res.statusCode, 200)
@@ -930,7 +1129,7 @@ async function testDeferredJsonBodyImageToolMetadataScanned(): Promise<void> {
 
   assert.equal(nextCalled, true)
   assert.equal(req.body, undefined)
-  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'scanned_json')
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
   assert.equal(req.gatewayRequestBody?.imageGeneration, true)
   assert.equal(req.gatewayRequestBody?.imageGenerationForced, false)

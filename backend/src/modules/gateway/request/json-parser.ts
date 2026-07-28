@@ -16,6 +16,7 @@ import {
   type OpenAIOAuthCodexNormalizeInput
 } from '../adapters/gpt-codex/oauth-normalizer.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-errors.js'
+import { bindGatewaySerializedJsonObject } from './serialized-json-body.js'
 
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
@@ -51,6 +52,7 @@ interface GatewayJsonWorkerResponse {
   errorCode?: string
   errorStatusCode?: number
   errorType?: string
+  errorAccountScoped?: boolean
 }
 
 interface GatewayJsonWorkerErrorEnvelope {
@@ -147,11 +149,31 @@ class HeadIndexedQueue<T> {
 export class GatewayJsonWorkerQueueFullError extends Error {
 }
 
+export class GatewayJsonWorkerCanceledError extends Error {
+}
+
+export class GatewayJsonWorkerTimeoutError extends Error {
+}
+
 let nextJobId = 1
 let nextWorkerSlotId = 1
 const workerSlots: GatewayJsonWorkerSlot[] = []
 const queuedJobs = new HeadIndexedQueue<GatewayJsonWorkerJob>()
 let queuedJobsBytes = 0
+let gatewayRequestJsonMaterializationObserverForTest: ((rawBody: Buffer) => void) | undefined
+let gatewayJsonWorkerPoolSizeForTest: number | undefined
+
+export function setGatewayRequestJsonMaterializationObserverForTest(
+  observer: ((rawBody: Buffer) => void) | undefined
+): void {
+  gatewayRequestJsonMaterializationObserverForTest = observer
+}
+
+export function setGatewayJsonWorkerPoolSizeForTest(size: number | undefined): void {
+  gatewayJsonWorkerPoolSizeForTest = size === undefined
+    ? undefined
+    : Math.max(1, Math.trunc(size))
+}
 
 export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<unknown> {
   if (shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime()) {
@@ -168,17 +190,19 @@ export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000,
 
 export async function parseGatewayRequestJsonBody(
   req: Request,
-  timeoutMs = 30000,
-  signal?: AbortSignal
+  _timeoutMs = gatewayRequestJsonMaterializationTimeoutMs,
+  _signal?: AbortSignal
 ): Promise<unknown> {
   const request = req as GatewayRawBodyRequest
   while (true) {
     if (request.body !== undefined && !Buffer.isBuffer(request.body)) {
+      bindGatewayRequestParsedJsonObject(request.rawBody, request.body)
       request.gatewayParsedJsonBodyAvailable = true
       request.gatewayParsedJsonBody = request.body
       return request.body
     }
     if (request.gatewayParsedJsonBodyAvailable) {
+      bindGatewayRequestParsedJsonObject(request.rawBody, request.gatewayParsedJsonBody)
       return request.gatewayParsedJsonBody
     }
     const rawBody = request.rawBody
@@ -186,29 +210,39 @@ export async function parseGatewayRequestJsonBody(
       return undefined
     }
     const existingMaterialization = request.gatewayParsedJsonBodyPromise
+    if (!existingMaterialization && _signal?.aborted) {
+      throw new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消')
+    }
     const materialization = existingMaterialization?.rawBody === rawBody
       ? existingMaterialization
       : {
           rawBody,
-          promise: parseGatewayJsonBodyInWorker(rawBody, timeoutMs, signal)
+          promise: startGatewayRequestJsonMaterialization(request, rawBody)
         }
     if (materialization !== existingMaterialization) {
       request.gatewayParsedJsonBodyPromise = materialization
     }
+    let materializationSucceeded = false
     try {
-      const parsed = await materialization.promise
+      const parsed = await awaitGatewayRequestJsonMaterialization(
+        materialization.promise,
+        _timeoutMs,
+        _signal
+      )
       if (request.rawBody !== rawBody) {
         continue
       }
       request.body = parsed
       request.gatewayParsedJsonBodyAvailable = true
       request.gatewayParsedJsonBody = parsed
+      bindGatewayRequestParsedJsonObject(rawBody, parsed)
       if (request.gatewayRequestBody?.isJson) {
         request.gatewayRequestBody = {
           ...request.gatewayRequestBody,
           jsonParseStatus: 'parsed'
         }
       }
+      materializationSucceeded = true
       return parsed
     } catch (error) {
       if (request.rawBody !== rawBody) {
@@ -216,11 +250,89 @@ export async function parseGatewayRequestJsonBody(
       }
       throw error
     } finally {
-      if (request.gatewayParsedJsonBodyPromise === materialization) {
+      if (materializationSucceeded && request.gatewayParsedJsonBodyPromise === materialization) {
         request.gatewayParsedJsonBodyPromise = undefined
       }
     }
   }
+}
+
+function bindGatewayRequestParsedJsonObject(rawBody: Buffer | undefined, parsed: unknown): void {
+  if (!rawBody || typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
+  bindGatewaySerializedJsonObject(rawBody, parsed as Record<string, unknown>)
+}
+
+function startGatewayRequestJsonMaterialization(
+  request: GatewayRawBodyRequest,
+  rawBody: Buffer
+): Promise<unknown> {
+  gatewayRequestJsonMaterializationObserverForTest?.(rawBody)
+  const abortController = new AbortController()
+  const abort = () => abortController.abort()
+  const lifecycleRequest = request as GatewayRawBodyRequest & {
+    aborted?: boolean
+    once?: (event: string, listener: () => void) => unknown
+    off?: (event: string, listener: () => void) => unknown
+    removeListener?: (event: string, listener: () => void) => unknown
+  }
+  if (lifecycleRequest.aborted) {
+    abort()
+  } else {
+    lifecycleRequest.once?.('aborted', abort)
+  }
+  const materialization = parseGatewayJsonBodyInWorker(
+    rawBody,
+    gatewayRequestJsonMaterializationTimeoutMs,
+    abortController.signal
+  ).finally(() => {
+    if (typeof lifecycleRequest.off === 'function') {
+      lifecycleRequest.off('aborted', abort)
+    } else {
+      lifecycleRequest.removeListener?.('aborted', abort)
+    }
+  })
+  void materialization.catch(() => {})
+  return materialization
+}
+
+function awaitGatewayRequestJsonMaterialization<T>(
+  materialization: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<T> {
+  const normalizedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.trunc(timeoutMs)
+    : gatewayRequestJsonMaterializationTimeoutMs
+  if (!signal && normalizedTimeoutMs >= gatewayRequestJsonMaterializationTimeoutMs) {
+    return materialization
+  }
+  if (signal?.aborted) {
+    return Promise.reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消'))
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    let timeout: NodeJS.Timeout | undefined
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      signal?.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onAbort = () => finish(() => reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消')))
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (normalizedTimeoutMs < gatewayRequestJsonMaterializationTimeoutMs) {
+      timeout = setTimeout(() => finish(() => reject(new GatewayJsonWorkerTimeoutError(
+        `网关 JSON worker 任务超时（${normalizedTimeoutMs}ms）`
+      ))), normalizedTimeoutMs)
+      timeout.unref?.()
+    }
+    materialization.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error))
+    )
+  })
 }
 
 export function extractGatewayJsonBodyMetadataInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {
@@ -279,6 +391,19 @@ export function isGatewayJsonWorkerQueueFullError(error: unknown): error is Gate
   return error instanceof GatewayJsonWorkerQueueFullError
 }
 
+export function isGatewayJsonWorkerInvalidJsonError(error: unknown): boolean {
+  return error instanceof SyntaxError
+    || (error instanceof Error && error.name === 'SyntaxError')
+}
+
+export function isGatewayJsonWorkerCanceledError(error: unknown): error is GatewayJsonWorkerCanceledError {
+  return error instanceof GatewayJsonWorkerCanceledError
+}
+
+export function isGatewayJsonWorkerTimeoutError(error: unknown): error is GatewayJsonWorkerTimeoutError {
+  return error instanceof GatewayJsonWorkerTimeoutError
+}
+
 function shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime(): boolean {
   // tsx worker threads do not reliably remap nested .js specifiers to TypeScript sources.
   return currentModulePath.endsWith('.ts')
@@ -286,7 +411,7 @@ function shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime(): boolean {
 
 function parseGatewayJsonBodyInline(rawBody: Buffer, signal?: AbortSignal): Promise<unknown> {
   if (signal?.aborted) {
-    return Promise.reject(new Error('网关 JSON worker 任务已取消'))
+    return Promise.reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消'))
   }
   try {
     return Promise.resolve(JSON.parse(rawBody.toString('utf8')) as unknown)
@@ -297,7 +422,7 @@ function parseGatewayJsonBodyInline(rawBody: Buffer, signal?: AbortSignal): Prom
 
 function extractGatewayJsonBodyMetadataInline(rawBody: Buffer, signal?: AbortSignal): Promise<GatewayJsonBodyMetadata> {
   if (signal?.aborted) {
-    return Promise.reject(new Error('网关 JSON worker 任务已取消'))
+    return Promise.reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消'))
   }
   try {
     return Promise.resolve(extractGatewayJsonBodyMetadata(rawBody))
@@ -312,7 +437,7 @@ async function normalizeOpenAIOAuthCodexBodyInline(
   signal?: AbortSignal
 ): Promise<NormalizedCodexBody> {
   if (signal?.aborted) {
-    throw new Error('网关 JSON worker 任务已取消')
+    throw new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消')
   }
   const {
     normalizeOpenAIOAuthCodexRawBody
@@ -326,7 +451,7 @@ async function normalizeOpenAIOAuthCodexParsedBodyInline(
   signal?: AbortSignal
 ): Promise<NormalizedCodexBody> {
   if (signal?.aborted) {
-    throw new Error('网关 JSON worker 任务已取消')
+    throw new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消')
   }
   const {
     normalizeOpenAIOAuthCodexParsedBody
@@ -371,7 +496,7 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
 }): Promise<TValue> {
   return new Promise((resolve, reject) => {
     if (input.signal?.aborted) {
-      reject(new Error('网关 JSON worker 任务已取消'))
+      reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消'))
       return
     }
     const job: GatewayJsonWorkerJob = {
@@ -397,6 +522,7 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
       job.abortListener = () => cancelJob(job)
       input.signal.addEventListener('abort', job.abortListener, { once: true })
     }
+    startJobTimer(job)
     pushQueuedJob(job)
     pumpJsonWorkerQueue()
   })
@@ -474,7 +600,6 @@ function startJobOnWorkerSlot(slot: GatewayJsonWorkerSlot, job: GatewayJsonWorke
   slot.activeJob = job
   try {
     job.startedAtMs = Date.now()
-    startJobTimer(job)
     slot.worker.postMessage({
       id: job.id,
       type: job.type,
@@ -566,7 +691,8 @@ function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWork
   ) {
     return applyWorkerErrorEnvelope(new OpenAIOAuthCodexAdapterError(errorMessage, message.errorCode, {
       statusCode: message.errorStatusCode,
-      type: message.errorType
+      type: message.errorType,
+      accountScoped: message.errorAccountScoped
     }), message.error)
   }
   return applyWorkerErrorEnvelope(new Error(errorMessage), message.error)
@@ -650,7 +776,15 @@ function activeGatewayJsonWorkerBytes(): number {
 }
 
 function gatewayJsonWorkerJobBytes(job: GatewayJsonWorkerJob): number {
-  return job.payloadBytes + 512
+  const multiplier = job.type === 'normalize_openai_oauth_codex_parsed_body'
+    ? gatewayParsedBodyWorkerMemoryMultiplier
+    : 1
+  return job.payloadBytes * multiplier + gatewayJsonWorkerJobFixedBytes
+}
+
+export function canQueueGatewayJsonParsedBodyJobForTest(payloadBytes: number): boolean {
+  return Math.max(0, Math.trunc(payloadBytes)) * gatewayParsedBodyWorkerMemoryMultiplier
+    + gatewayJsonWorkerJobFixedBytes <= gatewayJsonWorkerMaxTotalBytes
 }
 
 function failActiveJob(slot: GatewayJsonWorkerSlot, error: Error, restartWorker: boolean): void {
@@ -742,7 +876,7 @@ function cancelJob(job: GatewayJsonWorkerJob): void {
     queuedBytes: queuedJobsBytes,
     wasActive
   }, '网关 JSON worker 任务已取消')
-  job.reject(new Error('网关 JSON worker 任务已取消'))
+  job.reject(new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消'))
   if (wasActive && activeSlot) {
     restartJsonWorker(activeSlot)
   }
@@ -825,7 +959,7 @@ function gatewayJsonWorkerParentId(job: GatewayJsonWorkerJob): string | undefine
 function startJobTimer(job: GatewayJsonWorkerJob): void {
   clearJobTimer(job)
   job.timer = setTimeout(() => {
-    failJob(job, new Error(`网关 JSON worker ${job.timeoutMs}ms 超时`), true)
+    failJob(job, new GatewayJsonWorkerTimeoutError(`网关 JSON worker ${job.timeoutMs}ms 超时`), true)
   }, job.timeoutMs)
   job.timer.unref()
 }
@@ -853,11 +987,17 @@ function restartJsonWorker(slot: GatewayJsonWorkerSlot): void {
 }
 
 function gatewayJsonWorkerPoolSize(): number {
+  if (gatewayJsonWorkerPoolSizeForTest !== undefined) {
+    return gatewayJsonWorkerPoolSizeForTest
+  }
   return Math.max(1, Math.min(4, availableParallelism()))
 }
 
 const gatewayJsonWorkerSlowQueueWaitMs = 500
 const gatewayJsonWorkerSlowDurationMs = 1000
+const gatewayRequestJsonMaterializationTimeoutMs = 30_000
+const gatewayParsedBodyWorkerMemoryMultiplier = 4
+const gatewayJsonWorkerJobFixedBytes = 512
 const gatewayJsonWorkerMaxQueuedJobs = 128
 const gatewayJsonWorkerMaxActiveBytes = 128 * 1024 * 1024
-const gatewayJsonWorkerMaxTotalBytes = 256 * 1024 * 1024
+const gatewayJsonWorkerMaxTotalBytes = 256 * 1024 * 1024 + gatewayJsonWorkerJobFixedBytes

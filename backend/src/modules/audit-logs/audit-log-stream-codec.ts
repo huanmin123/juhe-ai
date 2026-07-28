@@ -13,8 +13,28 @@ interface SerializedAuditLogBuffer {
   base64: string
 }
 
+const serializedAuditLogBufferEmptyBytes = Buffer.byteLength('{"__juheAuditBuffer":true,"base64":""}', 'utf8')
+const serializedAuditLogBodyKeyBytes = Buffer.byteLength('"body":', 'utf8')
+
 export function encodeAuditLogStreamPayload(input: AuditLogInput): string {
   return JSON.stringify(serializeAuditLogInput(input))
+}
+
+export function measureAuditLogStreamPayloadBaseBytes(input: AuditLogInput): number {
+  return Buffer.byteLength(JSON.stringify(serializeAuditLogInput({ ...input, payloads: [] })), 'utf8')
+}
+
+export function measureAuditLogStreamPayloadItemBytes(payload: AuditLogPayloadInput): number {
+  const { body, ...rest } = payload
+  const restJson = JSON.stringify(rest)
+  const restBytes = Buffer.byteLength(restJson, 'utf8')
+  const bodyValueBytes = Buffer.isBuffer(body)
+    ? serializedAuditLogBufferEmptyBytes + 4 * Math.ceil(body.byteLength / 3)
+    : typeof body === 'string'
+      ? Buffer.byteLength(JSON.stringify(body), 'utf8')
+      : undefined
+  if (bodyValueBytes === undefined) return restBytes
+  return restBytes + serializedAuditLogBodyKeyBytes + bodyValueBytes + (restJson === '{}' ? 0 : 1)
 }
 
 export function decodeAuditLogStreamPayload(payload: string): AuditLogInput {

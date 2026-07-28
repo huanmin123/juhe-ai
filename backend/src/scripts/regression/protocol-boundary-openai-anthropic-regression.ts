@@ -17,7 +17,11 @@ import {
   buildGatewayUpstreamUrlsForAccount,
   providerDriverForAccount
 } from '../../modules/providers/drivers/registry.js'
-import { buildOpenAIToAnthropicBridgeBody } from '../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'
+import {
+  buildOpenAIToAnthropicBridgeBody,
+  transformOpenAIToAnthropicBridgeUpstreamResponse
+} from '../../modules/providers/drivers/_shared/openai-anthropic-bridge.js'
+import type { GatewayUpstreamResponse } from '../../modules/gateway/upstream/request.js'
 import { GatewayRequestValidationError } from '../../modules/gateway/request/validation-error.js'
 import { logger } from '../../shared/logger.js'
 
@@ -214,6 +218,34 @@ try {
       && error.code === 'openai_anthropic_bridge_unsupported_hosted_tool_choice',
     '强制选择不可桥接托管工具时应返回请求级错误，而不是 200 guidance'
   )
+
+  const originalAnthropicErrorText = JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'overloaded_error',
+      message: 'raw anthropic error',
+      vendor_detail: 'policy-keyword'
+    }
+  })
+  let upstreamErrorBodyReads = 0
+  const upstreamErrorResponse = {
+    status: 529,
+    ok: false,
+    headers: new Headers({ 'content-type': 'application/json; charset=utf-8' }),
+    body: (async function * () {
+      upstreamErrorBodyReads += 1
+      yield Buffer.from(originalAnthropicErrorText, 'utf8')
+    })()
+  } satisfies GatewayUpstreamResponse
+  const preservedErrorResponse = transformOpenAIToAnthropicBridgeUpstreamResponse(
+    gatewayPostRequest('/v1/chat/completions', { model: 'gpt-5.5', messages: [] }),
+    upstreamErrorResponse
+  )
+  assert.strictEqual(preservedErrorResponse, upstreamErrorResponse, '非 2xx 必须保留真实 Anthropic 响应给失败调度')
+  assert.equal(upstreamErrorBodyReads, 0, '跨协议桥接不得预读或解析 generic 非 2xx 正文')
+  const preservedChunks: Buffer[] = []
+  for await (const chunk of preservedErrorResponse.body ?? []) preservedChunks.push(Buffer.from(chunk))
+  assert.equal(Buffer.concat(preservedChunks).toString('utf8'), originalAnthropicErrorText, '原始 Anthropic 错误字段必须完整保留给策略匹配')
 
   console.log('openai anthropic protocol boundary regression passed')
 } finally {

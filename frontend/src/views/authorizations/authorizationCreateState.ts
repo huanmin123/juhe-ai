@@ -74,7 +74,8 @@ export function authorizationCreateTargetGroupPlaceholder(options: {
   return '选择目标用户分组'
 }
 
-export function authorizationCreateTargetGroupTip(targetGroupCount: number): string {
+export function authorizationCreateTargetGroupTip(targetGroupCount: number, loaded = true): string {
+  if (!loaded) return '授权创建后会直接把账户加入所选目标分组。'
   return targetGroupCount
     ? '默认选择目标用户的默认分组；授权创建后会直接把账户加入该分组。'
     : '目标用户暂无可选兼容分组，请先为目标用户准备分组。'

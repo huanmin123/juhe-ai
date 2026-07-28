@@ -26,6 +26,8 @@ const editBasicCredentialKeys = new Set([
   'supported_endpoint_modes',
   'service_tier_override',
   'reasoning_effort_override',
+  'error_handling_rules',
+  'response_inspection_rules',
   'codex_responses_safe_repair_enabled',
   'codex_responses_strict_intercept_enabled'
 ])
@@ -101,14 +103,16 @@ export function sanitizeAccountCredentialCarrierResponse<T extends { credentials
   }
 }
 
-export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): Omit<T, 'items'> & { items: AccountListItem[] } {
+/** @deprecated Management list routes return the exact list DTO directly. */
+export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): Omit<T, 'items'> & { items: Array<Partial<AccountListItem>> } {
   return {
     ...result,
     items: result.items.map(projectAccountListItem)
   }
 }
 
-export function projectAccountListItem(account: AccountSummary): AccountListItem {
+/** @deprecated Management list routes return the exact list DTO directly. */
+export function projectAccountListItem(account: AccountSummary): Partial<AccountListItem> {
   const {
     credentials: _credentials,
     supportedModels: _supportedModels,
@@ -124,7 +128,7 @@ export function projectAccountListItem(account: AccountSummary): AccountListItem
     currentConcurrencyAvailable: _currentConcurrencyAvailable,
     ...item
   } = account
-  return item
+  return item as unknown as Partial<AccountListItem>
 }
 
 export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {

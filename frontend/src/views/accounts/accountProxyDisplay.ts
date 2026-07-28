@@ -1,7 +1,7 @@
-import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 
 export function accountProxyDisplay(
-  account: AccountSummary,
+  account: AccountListItem,
   fallback?: ProxyProfileOptionSummary
 ): ProxyProfileOptionSummary | undefined {
   if (account.proxyProfileName !== undefined || account.proxyProfileType !== undefined || account.proxyProfileEnabled !== undefined) {

@@ -178,8 +178,7 @@ try {
     return `account=${row.id}, concurrency=${row.concurrency_limit}`
   })
   await runCase('runtime-account-selection-snapshot', async () => {
-    const apiKey = repositories.findApiKeySecret(localApiKey.id, access)
-    const routeStrategy = apiKey ? repositories.findRouteStrategySummary(apiKey.routeStrategyId, access) : undefined
+    const routeStrategy = repositories.findRouteStrategySummary(localApiKey.routeStrategyId, access)
     assert(routeStrategy?.groupBindings.some((binding) => binding.groupId === group.id && binding.status === 'active'), '真实联调策略路由未绑定当前分组')
     const selection = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId)
     assert(selection.accounts.length > 0, `真实联调分组没有可调度账号：${JSON.stringify(selection.diagnostics)}`)

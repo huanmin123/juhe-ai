@@ -11,10 +11,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 
 const props = defineProps<{
-  account: AccountSummary
+  account: AccountListItem
 }>()
 
 const tags = computed(() => props.account.tags ?? [])

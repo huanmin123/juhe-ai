@@ -18,6 +18,7 @@ import { openAIEndpointFamilyFromPath } from '../../../../domain/openai-endpoint
 import { getGatewayRequestBodyState } from '../../../gateway/request/body.js'
 import { GatewayAgentGuidanceResponse, GatewayLocalProtocolResponse, GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
@@ -604,15 +605,9 @@ export function transformOpenAIToAnthropicBridgeUpstreamResponse(
     return response
   }
   if (!response.ok) {
-    const headers = new Headers(response.headers)
-    headers.set('content-type', 'application/json; charset=utf-8')
-    headers.delete('content-length')
-    return {
-      status: response.status,
-      ok: response.ok,
-      headers,
-      body: transformAnthropicErrorBodyToOpenAIErrorBody(response.body)
-    }
+    // Account policies and retry accounting must observe the real upstream
+    // protocol. Client-facing gateway errors are formatted at finalization.
+    return response
   }
   const model = options.model ?? requestModel(req) ?? 'anthropic'
   const requestPlan = openAIToAnthropicBridgeRequestPlan(req)
@@ -3614,16 +3609,6 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
   }
 }
 
-async function * transformAnthropicErrorBodyToOpenAIErrorBody(body: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  let parsed: unknown
-  try {
-    parsed = await readJsonBody(body)
-  } catch {
-    parsed = undefined
-  }
-  yield Buffer.from(JSON.stringify(openAIErrorFromAnthropicPayload(parsed)), 'utf8')
-}
-
 async function * transformAnthropicMessagesSseToChatSse(
   body: AsyncIterable<Uint8Array>,
   options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan }
@@ -4333,7 +4318,7 @@ function combineResponsesUsage(first: JsonRecord, second: JsonRecord | undefined
 }
 
 function jsonRecordClone(value: JsonRecord): JsonRecord {
-  return JSON.parse(JSON.stringify(value)) as JsonRecord
+  return structuredClone(value)
 }
 
 function responsesBridgeMetadata(requestPlan?: OpenAIToAnthropicBridgeRequestPlan): JsonRecord {
@@ -6128,7 +6113,10 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
       throw bridgeValidationError('网关请求解析繁忙，请稍后重试', 'gateway_json_parser_busy', 503, 'server_overloaded')
     }
     if (error instanceof GatewayRequestValidationError) throw error
-    throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw bridgeValidationError('OpenAI 到 Anthropic 桥接要求请求体是有效 JSON 对象', 'openai_anthropic_bridge_invalid_json_body')
+    }
+    throw error
   }
 }
 

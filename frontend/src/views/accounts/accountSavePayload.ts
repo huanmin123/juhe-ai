@@ -1,4 +1,6 @@
 import type {
+  AccountEditBasicDetail,
+  AccountListItem,
   AccountSummary,
   ProviderDefinition,
   ProviderModelApiProtocol,
@@ -10,7 +12,7 @@ import { validateAccountErrorPolicyRules } from './accountErrorPolicyPayload'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import { validateAccountResponseInspectionRules } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { buildAccountCredentials, currentAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
+import { buildAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   buildAccountAvailabilitySchedulePayload,
@@ -40,6 +42,7 @@ import {
 } from './accountGptRequestOverrides'
 import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
+import { normalizeGrokSsoTokens } from './grokSsoTokens'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -121,7 +124,7 @@ export function validateAccountSaveForm(input: {
   if (!form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
   if (!form.type) return '请先选择账户类型'
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
-  if (!form.groupId) return '请选择加入分组'
+  if (editingId && !form.groupId) return '请选择加入分组'
   const apiKeyCount = normalizedAccountApiKeys(form).length
   if (form.type === 'api_key' && apiKeyCount === 0) return '请填写 API Key'
   if (form.type === 'api_key' && apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
@@ -140,6 +143,9 @@ export function validateAccountSaveForm(input: {
       return 'Gemini AI Studio OAuth 需要 Client ID 和 Client Secret'
     }
     if (form.oauthMode === 'access_token' && !form.accessToken.trim()) return '请填写 Google Access Token'
+    if (form.oauthMode === 'access_token' && form.oauthType !== 'ai_studio' && !form.projectId.trim()) {
+      return 'Gemini Code Assist / Google One 直接 Token 需要 GCP Project ID'
+    }
   }
   if (!editingId && form.type === 'oauth' && !supportsOAuthAccountType(formProviderProfile)) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && !form.baseUrl.trim()) return '请填写 Base URL'
@@ -150,7 +156,7 @@ export function validateAccountSaveForm(input: {
   if (managedOAuthCreation && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'
   if (managedOAuthCreation && form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
   if (managedOAuthCreation && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
-  if (managedOAuthProvider === 'grok' && form.oauthMode === 'sso_cookie' && !normalizeSsoTokens(form.ssoTokens).length) {
+  if (managedOAuthProvider === 'grok' && form.oauthMode === 'sso_cookie' && !normalizeGrokSsoTokens(form.ssoTokens).length) {
     return '请填写至少一个 Grok Web SSO key'
   }
   if (!managedOAuthCreation && !editingId && form.type === 'oauth' && !form.accessToken.trim()) {
@@ -202,10 +208,6 @@ export function validateAccountSaveForm(input: {
   )
 }
 
-function normalizeSsoTokens(value: string): string[] {
-  return [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))]
-}
-
 export type ModelMappingProtocolOption = {
   value: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
@@ -227,8 +229,8 @@ export function resolveFormProviderProfile(form: AccountFormModel, providers: Pr
 }
 
 export function buildAccountSavePayload(input: {
-  accounts: AccountSummary[]
-  accountDetail?: AccountSummary
+  accounts: AccountListItem[]
+  accountDetail?: AccountEditBasicDetail | AccountSummary
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
@@ -287,7 +289,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload, currentSt
 }
 
 export function buildOAuthCreateCommonPayload(input: {
-  accounts: AccountSummary[]
+  accounts: AccountListItem[]
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
@@ -348,15 +350,15 @@ function saveProxyProfileId(proxyProfileId: string | undefined, editing: boolean
 }
 
 function accountCredentials(input: {
-  accounts: AccountSummary[]
-  accountDetail?: AccountSummary
+  accounts: AccountListItem[]
+  accountDetail?: AccountEditBasicDetail | AccountSummary
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): Record<string, unknown> {
   return buildAccountCredentials({
-    currentCredentials: input.accountDetail?.credentials ?? currentAccountCredentials(input.accounts, input.editingId),
+    currentCredentials: input.accountDetail?.credentials,
     errorPolicyRules: input.errorPolicyRules,
     responseInspectionRules: input.responseInspectionRules,
     form: input.form

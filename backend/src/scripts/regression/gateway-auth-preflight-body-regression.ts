@@ -269,6 +269,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
     status: 'active',
     concurrencyLimit: 20,
     schedulable: true,
+    supportedModels: ['gpt-5.4', 'gpt-image-1'],
     groupId: group.id
   }, access)
   assert(account.boundGroupId, '认证预解析账户应绑定默认分组')

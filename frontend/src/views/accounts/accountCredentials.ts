@@ -14,10 +14,18 @@ import { writeAccountGptRequestOverrides } from './accountGptRequestOverrides'
 const oauthCredentialMetadataKeys = [
   'expires_at',
   'client_id',
+  'id_token',
+  'token_type',
+  'scope',
   'email',
   'account_id',
+  'organization_id',
   'chatgpt_user_id',
   'plan_type',
+  'sub',
+  'team_id',
+  'subscription_tier',
+  'entitlement_status',
   'base_url',
   'supported_endpoint_modes'
 ] as const

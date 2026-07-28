@@ -5,7 +5,7 @@ import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/ru
 import { readUpstreamBodyLimited } from '../gateway/upstream/body.js'
 import { requestUpstream } from '../gateway/upstream/request.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
-import { requestTokenExchange } from '../providers/drivers/_shared/token-exchange-transport.js'
+import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 
 export const GEMINI_OAUTH_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const GEMINI_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -15,7 +15,7 @@ export const GEMINI_CLI_OAUTH_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3h
 export const GEMINI_CLI_OAUTH_CLIENT_SECRET = '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'
 export const GEMINI_OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever'
 export const GEMINI_CODE_ASSIST_OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
-export const GEMINI_GOOGLE_ONE_OAUTH_SCOPE = `${GEMINI_CODE_ASSIST_OAUTH_SCOPE} https://www.googleapis.com/auth/drive.metadata.readonly`
+export const GEMINI_GOOGLE_ONE_OAUTH_SCOPE = GEMINI_CODE_ASSIST_OAUTH_SCOPE
 export const GEMINI_OAUTH_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com'
 export const GEMINI_CLI_DEFAULT_BASE_URL = 'https://cloudcode-pa.googleapis.com'
 export const GEMINI_CLI_USER_AGENT = 'GeminiCLI/0.1.5 (Windows; AMD64)'
@@ -193,7 +193,7 @@ export async function exchangeGeminiAuthCode(input: {
   signal?: AbortSignal
 }): Promise<GeminiOAuthTokenInfo> {
   const { code, state } = extractCodeAndState(input.callbackUrl)
-  const session = await consumeGeminiOAuthSession({
+  const sessionInput = {
     sessionId: input.sessionId,
     state,
     ownerSystemAccountId: input.ownerSystemAccountId,
@@ -204,7 +204,8 @@ export async function exchangeGeminiAuthCode(input: {
     tierId: input.tierId,
     quotaProjectId: input.quotaProjectId,
     baseUrl: input.baseUrl
-  })
+  }
+  const session = await readGeminiOAuthSession(sessionInput)
 
   const tokenInfo = await requestGeminiToken({
     grant_type: 'authorization_code',
@@ -222,9 +223,14 @@ export async function exchangeGeminiAuthCode(input: {
     projectId: session.projectId,
     tierId: session.tierId,
     quotaProjectId: session.quotaProjectId,
-    baseUrl: session.baseUrl
+    baseUrl: session.baseUrl,
+    scope: session.scope
   })
-  return await enrichGeminiTokenInfo(tokenInfo, input.proxyUrl, input.signal)
+  const enriched = await enrichGeminiTokenInfo(tokenInfo, input.proxyUrl, input.signal)
+  if (!await geminiOAuthSessionStore().compareDeleteJson(input.sessionId, session)) {
+    throw new Error('Gemini OAuth 会话已消费，请重新发起授权')
+  }
+  return enriched
 }
 
 export async function refreshGeminiAuthToken(input: GeminiOAuthClientCredentials & {
@@ -234,6 +240,7 @@ export async function refreshGeminiAuthToken(input: GeminiOAuthClientCredentials
   tierId?: string
   quotaProjectId?: string
   baseUrl?: string
+  scope?: string
   proxyUrl?: string
   signal?: AbortSignal
 }): Promise<GeminiOAuthTokenInfo> {
@@ -241,12 +248,13 @@ export async function refreshGeminiAuthToken(input: GeminiOAuthClientCredentials
   if (!refreshToken) throw new Error('Gemini Refresh Token 不能为空')
   const oauthType = normalizeOAuthType(input.oauthType)
   const oauthClient = resolveGeminiOAuthClient({ ...input, oauthType })
-  const tokenInfo = await requestGeminiToken({
+  const form = {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     client_id: oauthClient.clientId,
     client_secret: oauthClient.clientSecret
-  }, {
+  }
+  const options = {
     proxyUrl: input.proxyUrl,
     signal: input.signal,
     oauthType,
@@ -255,8 +263,25 @@ export async function refreshGeminiAuthToken(input: GeminiOAuthClientCredentials
     projectId: normalizeString(input.projectId) || undefined,
     tierId: canonicalGeminiTierId(oauthType, input.tierId) || undefined,
     quotaProjectId: normalizeString(input.quotaProjectId) || undefined,
-    baseUrl: normalizeString(input.baseUrl) || defaultBaseUrl(oauthType)
-  })
+    baseUrl: normalizeString(input.baseUrl) || defaultBaseUrl(oauthType),
+    scope: normalizeString(input.scope) || undefined
+  }
+  let tokenInfo: GeminiOAuthTokenInfo
+  try {
+    tokenInfo = await requestGeminiTokenWithRetry(form, options)
+  } catch (error) {
+    const fallbackClient = legacyGeminiOAuthRefreshClient(input, oauthType, oauthClient)
+    if (!fallbackClient || !isUnauthorizedGeminiOAuthClientError(error)) throw error
+    tokenInfo = await requestGeminiTokenWithRetry({
+      ...form,
+      client_id: fallbackClient.clientId,
+      client_secret: fallbackClient.clientSecret
+    }, {
+      ...options,
+      clientId: fallbackClient.clientId,
+      clientSecret: fallbackClient.clientSecret
+    })
+  }
   return await enrichGeminiTokenInfo(tokenInfo, input.proxyUrl, input.signal)
 }
 
@@ -355,6 +380,19 @@ function resolveGeminiOAuthClient(input: GeminiOAuthClientCredentials & { oauthT
   return { clientId, clientSecret, redirectUri: config.redirectUri, scope: config.scope }
 }
 
+function legacyGeminiOAuthRefreshClient(
+  input: GeminiOAuthClientCredentials,
+  oauthType: GeminiOAuthType,
+  primary: { clientId: string; clientSecret: string }
+): { clientId: string; clientSecret: string } | undefined {
+  if (!oauthConfigForType(oauthType).usesBuiltInClient) return undefined
+  const clientId = normalizeString(input.clientId)
+  const clientSecret = normalizeString(input.clientSecret)
+  if (!clientId || !clientSecret) return undefined
+  if (clientId === primary.clientId && clientSecret === primary.clientSecret) return undefined
+  return { clientId, clientSecret }
+}
+
 function oauthConfigForType(oauthType: GeminiOAuthType): {
   usesBuiltInClient: boolean
   redirectUri: string
@@ -370,7 +408,7 @@ function oauthConfigForType(oauthType: GeminiOAuthType): {
   }
 }
 
-async function consumeGeminiOAuthSession(input: {
+async function readGeminiOAuthSession(input: {
   sessionId: string
   state: string
   ownerSystemAccountId?: string
@@ -396,9 +434,6 @@ async function consumeGeminiOAuthSession(input: {
   assertSessionFieldMatches('Tier ID', canonicalGeminiTierId(session.oauthType, input.tierId), session.tierId)
   assertSessionFieldMatches('Quota Project ID', input.quotaProjectId, session.quotaProjectId)
   assertSessionFieldMatches('Base URL', input.baseUrl, session.baseUrl)
-  if (!await sessionStore.compareDeleteJson(input.sessionId, session)) {
-    throw new Error('Gemini OAuth 会话已消费，请重新发起授权')
-  }
   return session
 }
 
@@ -414,14 +449,16 @@ async function requestGeminiToken(
     tierId?: string
     quotaProjectId?: string
     baseUrl: string
+    scope?: string
   }
 ): Promise<GeminiOAuthTokenInfo> {
   if (options.signal?.aborted) throw new Error('请求已取消')
-  const response = await requestTokenExchange({
+  const response = await requestProviderOAuthToken({
     url: GEMINI_OAUTH_TOKEN_URL,
     headers: new Headers({ accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' }),
     body: new URLSearchParams(form).toString(),
     proxyUrl: normalizeString(options.proxyUrl) || runtimeConfig.oauthProxyUrl,
+    signal: options.signal,
     timeoutMs: geminiOAuthRequestTimeoutMs,
     maxResponseBytes: geminiOAuthResponseMaxBytes
   })
@@ -429,8 +466,12 @@ async function requestGeminiToken(
   if (response.truncated) throw new Error('Gemini OAuth 令牌响应体过大')
   const payload = parseJsonRecord(response.bodyText)
   if (response.statusCode < 200 || response.statusCode >= 300) {
+    const errorCode = normalizeString(payload.error)
+    const errorDescription = normalizeString(payload.error_description)
     const detail = sanitizeGeminiOAuthErrorMessage(
-      normalizeString(payload.error_description) || normalizeString(payload.error) || response.bodyText
+      errorCode
+        ? `${errorCode}${errorDescription && errorDescription !== errorCode ? `: ${errorDescription}` : ''}`
+        : errorDescription || response.bodyText
     )
     throw new Error(`Gemini OAuth 令牌请求失败：HTTP ${response.statusCode}${detail ? `，${detail}` : ''}`)
   }
@@ -443,7 +484,7 @@ async function requestGeminiToken(
     refreshToken: normalizeString(payload.refresh_token) || undefined,
     expiresIn,
     expiresAt: safeExpiresIn ? new Date(Date.now() + safeExpiresIn * 1000).toISOString() : undefined,
-    scope: normalizeString(payload.scope) || undefined,
+    scope: normalizeString(payload.scope) || options.scope,
     tokenType: normalizeString(payload.token_type) || undefined,
     clientId: options.clientId,
     clientSecret: options.clientSecret,
@@ -453,6 +494,55 @@ async function requestGeminiToken(
     quotaProjectId: options.quotaProjectId,
     baseUrl: options.baseUrl
   }
+}
+
+async function requestGeminiTokenWithRetry(
+  form: Record<string, string>,
+  options: Parameters<typeof requestGeminiToken>[1]
+): Promise<GeminiOAuthTokenInfo> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) await waitForGeminiOAuthRetry(2 ** (attempt - 1) * 1000, options.signal)
+    try {
+      return await requestGeminiToken(form, options)
+    } catch (error) {
+      if (isNonRetryableGeminiOAuthError(error)) throw error
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+function isNonRetryableGeminiOAuthError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied']
+    .some((code) => message.includes(code))
+}
+
+function isUnauthorizedGeminiOAuthClientError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return message.includes('unauthorized_client')
+}
+
+function waitForGeminiOAuthRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('请求已取消'))
+      return
+    }
+    const cleanup = () => signal?.removeEventListener('abort', abort)
+    const timer = setTimeout(() => {
+      cleanup()
+      resolve()
+    }, delayMs)
+    const abort = () => {
+      clearTimeout(timer)
+      cleanup()
+      reject(new Error('请求已取消'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+    timer.unref()
+  })
 }
 
 async function enrichGeminiTokenInfo(
@@ -466,12 +556,14 @@ async function enrichGeminiTokenInfo(
 
   let projectId = tokenInfo.projectId
   let tierId = tokenInfo.tierId
-  try {
-    const detected = await detectCodeAssistProjectAndTier(tokenInfo.accessToken, proxyUrl, signal, tierId)
-    projectId = projectId || detected.projectId
-    tierId = detected.tierId || tierId
-  } catch (error) {
-    if (!projectId && tokenInfo.oauthType === 'code_assist') throw error
+  if (!projectId || (tokenInfo.oauthType === 'code_assist' && !tierId)) {
+    try {
+      const detected = await detectCodeAssistProjectAndTier(tokenInfo.accessToken, proxyUrl, signal, tierId)
+      projectId = projectId || detected.projectId
+      if (tokenInfo.oauthType === 'code_assist') tierId = detected.tierId || tierId
+    } catch (error) {
+      if (!projectId && tokenInfo.oauthType === 'code_assist') throw error
+    }
   }
 
   if (tokenInfo.oauthType === 'code_assist') {
@@ -490,15 +582,17 @@ async function enrichGeminiTokenInfo(
   let driveStorageLimit: number | undefined
   let driveStorageUsage: number | undefined
   let driveTierUpdatedAt: string | undefined
-  try {
-    const storage = await fetchGoogleDriveStorageQuota(tokenInfo.accessToken, proxyUrl, signal)
-    driveStorageLimit = storage.limit
-    driveStorageUsage = storage.usage
-    driveTierUpdatedAt = new Date().toISOString()
-    const detectedTier = inferGeminiGoogleOneTier(storage.limit)
-    if (detectedTier !== 'google_one_unknown') tierId = detectedTier
-  } catch {
-    // Project and user-selected tier remain valid fallbacks when Drive is unavailable.
+  if (hasGoogleDriveMetadataScope(tokenInfo.scope)) {
+    try {
+      const storage = await fetchGoogleDriveStorageQuota(tokenInfo.accessToken, proxyUrl, signal)
+      driveStorageLimit = storage.limit
+      driveStorageUsage = storage.usage
+      driveTierUpdatedAt = new Date().toISOString()
+      const detectedTier = inferGeminiGoogleOneTier(storage.limit)
+      if (detectedTier !== 'google_one_unknown') tierId = detectedTier
+    } catch {
+      // Legacy grants may include Drive but still reject quota reads; keep the selected tier.
+    }
   }
   return {
     ...tokenInfo,
@@ -508,6 +602,12 @@ async function enrichGeminiTokenInfo(
     driveStorageUsage,
     driveTierUpdatedAt
   }
+}
+
+function hasGoogleDriveMetadataScope(scope: string | undefined): boolean {
+  return normalizeString(scope)
+    .split(/\s+/u)
+    .includes('https://www.googleapis.com/auth/drive.metadata.readonly')
 }
 
 async function detectCodeAssistProjectAndTier(
@@ -645,15 +745,31 @@ async function requestGeminiJson(input: {
 }
 
 function extractCodeAndState(callbackUrl: string): { code: string; state: string } {
-  let url: URL
+  const value = normalizeString(callbackUrl)
+  if (!value) throw new Error('Gemini 授权结果不能为空')
+  let code = ''
+  let state = ''
   try {
-    url = new URL(normalizeString(callbackUrl))
-  } catch {
-    throw new Error('Gemini 回调 URL 无效')
+    const url = new URL(value)
+    const error = normalizeString(url.searchParams.get('error'))
+    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    code = normalizeString(url.searchParams.get('code'))
+    state = normalizeString(url.searchParams.get('state'))
+  } catch (error) {
+    if (error instanceof Error && !error.message.includes('Invalid URL')) throw error
   }
-  const code = normalizeString(url.searchParams.get('code'))
-  const state = normalizeString(url.searchParams.get('state'))
-  if (!code || !state) throw new Error('Gemini 回调 URL 必须包含 code 和 state')
+  if (!code || !state) {
+    const separator = value.lastIndexOf('#')
+    if (separator > 0) {
+      code = normalizeString(value.slice(0, separator))
+      state = normalizeString(value.slice(separator + 1))
+    } else {
+      const query = new URLSearchParams(value.replace(/^\?/u, ''))
+      code = normalizeString(query.get('code'))
+      state = normalizeString(query.get('state'))
+    }
+  }
+  if (!code || !state) throw new Error('Gemini 授权结果必须包含 code 和 state')
   return { code, state }
 }
 

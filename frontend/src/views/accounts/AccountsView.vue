@@ -179,6 +179,7 @@
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
       :api-key-runtime-details="accountApiKeyRuntimeDetails"
+      :api-key-runtime-loading="accountApiKeyRuntimeLoading"
       :api-key-test-details="apiKeyTestDetails"
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
@@ -190,6 +191,7 @@
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
       :account-detail="editingAccountDetail"
+      :account-advanced-detail="editingAccountAdvancedDetail"
       :advanced-loaded="accountAdvancedDetailLoaded"
       :advanced-loading="accountAdvancedDetailLoading"
       :form="form"
@@ -227,6 +229,7 @@
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
       @delete-tag="deleteAccountTag"
+      @load-api-key-runtime="loadAccountApiKeyRuntimeDetails"
       @generate-auth-url="generateOAuthUrl"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
@@ -242,6 +245,7 @@
       @select-provider="selectProvider"
       @test="testAccountFromEditModal"
       @select-type-choice="selectAccountTypeChoice"
+      @tag-options-dropdown="handleAccountTagOptionsDropdown"
     />
 
     <AccountTrafficMigrationModal
@@ -281,13 +285,14 @@ import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { loadUserReferenceData } from '@/composables/useUserReferenceData'
 import type { AccountDraftTestAccountPayload, AccountModelCatalogDiscoveryAccountPayload } from '@/api/client'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountListItem, AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -341,7 +346,7 @@ import { useAccountTestModal } from './useAccountTestModal'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 import { accountTestEndpointModesForModel } from './accountEndpointModes'
-import { accountFormApiKeyRuntimeChanged, buildAccountCredentials, currentAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
+import { buildAccountCredentials, normalizedAccountApiKeys } from './accountCredentials'
 
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountBatchEditModal = defineAsyncComponent(() => import('./AccountBatchEditModal.vue'))
@@ -395,6 +400,16 @@ const {
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
 })
+
+watch(
+  () => [isManagementView.value, accountScopeParams.value?.systemAccountId] as const,
+  ([managementView, systemAccountId]) => {
+    if (!managementView || !systemAccountId) return
+    void loadUserReferenceData({ viewScope: 'admin', systemAccountId }).catch(() => undefined)
+  },
+  { immediate: true }
+)
+
 const {
   proxies,
   loading: proxyOptionsLoading,
@@ -507,7 +522,7 @@ async function refreshAccountBalance(accountId: string) {
   }
 }
 
-async function saveAccountPriority(account: AccountSummary, priority: number): Promise<boolean> {
+async function saveAccountPriority(account: AccountListItem, priority: number): Promise<boolean> {
   if (!canEditAccount(account)) {
     message.warning('当前账户无权修改调度优先级')
     return false
@@ -522,14 +537,22 @@ async function saveAccountPriority(account: AccountSummary, priority: number): P
   prioritySavingIds.value = new Set(prioritySavingIds.value).add(account.id)
   const scopeParams = accountOperationScopeParams(account, accountScopeParams.value)
   try {
-    const updated = isManagementView.value
-      ? isAuthorizedAccount(account)
+    if (isAuthorizedAccount(account)) {
+      const updated = isManagementView.value
         ? await api.accounts.updateAuthorizedDispatch(account.id, { priority }, scopeParams)
-        : await api.accounts.update(account.id, { priority }, scopeParams)
-      : isAuthorizedAccount(account)
-        ? await api.myAccounts.updateAuthorizedDispatch(account.id, { priority })
-        : await api.myAccounts.update(account.id, { priority })
-    updateLoadedAccount(updated)
+        : await api.myAccounts.updateAuthorizedDispatch(account.id, { priority })
+      updateLoadedAccount(updated)
+    } else {
+      const configRevision = Number(account.configRevision)
+      if (!Number.isInteger(configRevision) || configRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return false
+      }
+      const updated = isManagementView.value
+        ? await api.accounts.update(account.id, { priority, expectedConfigRevision: configRevision }, scopeParams)
+        : await api.myAccounts.update(account.id, { priority, expectedConfigRevision: configRevision })
+      updateLoadedAccount({ ...account, priority, configRevision: updated.configRevision })
+    }
     message.success('调度优先级已更新')
     return true
   } catch (error) {
@@ -676,6 +699,7 @@ const {
   accountAdvancedDetailLoading,
   accountEditDetailLoading,
   accountApiKeyRuntimeDetails,
+  accountApiKeyRuntimeLoading,
   apiKeyTestDetails,
   accountTagOptions,
   accountTagOptionsLoading,
@@ -685,6 +709,7 @@ const {
   availableProviders,
   createScopeParams,
   editingAccountDetail,
+  editingAccountAdvancedDetail,
   editingId,
   editingAuthorizedAccount,
   ensureDefaultGroupSelected,
@@ -694,6 +719,7 @@ const {
   deletingAccountTagId,
   groupOptions,
   handleModalCancel,
+  handleAccountTagOptionsDropdown,
   hasAccountType,
   isApiKeyForm,
   isAnthropicOAuthForm,
@@ -714,6 +740,7 @@ const {
   openEdit,
   ensureAccountEditDetailLoaded,
   loadAdvancedAccountDetail,
+  loadAccountApiKeyRuntimeDetails,
   loadCurrentProviderModelOptions,
   loadMappingSourceModelOptions,
   providerName,
@@ -749,13 +776,8 @@ function handleAccountModelOptionsOpen(open: boolean): void {
 
 let modelCatalogSyncController: AbortController | undefined
 let modelCatalogSyncRequestId = 0
-let accountModelCatalogAutoSyncTimer: ReturnType<typeof setTimeout> | undefined
 
 function cancelAccountModelCatalogSync(): void {
-  if (accountModelCatalogAutoSyncTimer) {
-    clearTimeout(accountModelCatalogAutoSyncTimer)
-    accountModelCatalogAutoSyncTimer = undefined
-  }
   modelCatalogSyncRequestId += 1
   modelCatalogSyncController?.abort()
   modelCatalogSyncController = undefined
@@ -767,7 +789,7 @@ function currentModelCatalogDiscoveryPayload(): { account: AccountModelCatalogDi
   if (form.type === 'api_key' && (!form.baseUrl.trim() || !normalizedAccountApiKeys(form).length)) return undefined
   const credentials = buildAccountCredentials({
     form,
-    currentCredentials: currentAccountCredentials(accounts.value, editingId.value),
+    currentCredentials: editingAccountDetail.value?.credentials ?? {},
     errorPolicyRules: accountErrorPolicyRules.value,
     responseInspectionRules: accountResponseInspectionRules.value
   })
@@ -795,10 +817,10 @@ function currentModelCatalogDiscoveryRequestKey(): string {
   return modelCatalogDiscoveryRequestKey(currentModelCatalogDiscoveryPayload())
 }
 
-async function refreshAccountModelCatalog(options: { automatic?: boolean } = {}): Promise<void> {
+async function refreshAccountModelCatalog(): Promise<void> {
   const payload = currentModelCatalogDiscoveryPayload()
   if (!payload) {
-    if (!options.automatic) message.error('请先填写 Base URL 和 API Key 后再同步')
+    message.error('请先填写 Base URL 和 API Key 后再同步')
     return
   }
   const requestKey = modelCatalogDiscoveryRequestKey(payload)
@@ -817,38 +839,17 @@ async function refreshAccountModelCatalog(options: { automatic?: boolean } = {})
       ...result.addedModels
     ])]
     if (!form.healthCheckModel.trim() && result.recommendedHealthCheckModel) form.healthCheckModel = result.recommendedHealthCheckModel
-    if (!options.automatic) {
-      message.success(result.addedModels.length
-        ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
-        : '上游目录已同步，手动选择已保留')
-    }
+    message.success(result.addedModels.length
+      ? `已新增 ${result.addedModels.length} 个上游支持模型，手动选择已保留`
+      : '上游目录已同步，手动选择已保留')
   } catch (error) {
-    if (requestId === modelCatalogSyncRequestId && !options.automatic && !controller.signal.aborted) {
+    if (requestId === modelCatalogSyncRequestId && !controller.signal.aborted) {
       message.error(extractApiErrorMessage(error, '同步上游模型失败'))
     }
   } finally {
     if (requestId === modelCatalogSyncRequestId) modelCatalogSyncing.value = false
   }
 }
-
-watch(
-  [
-    () => modalOpen.value,
-    () => form.providerCode,
-    () => form.providerProtocolProfileId,
-    () => form.type,
-    currentModelCatalogDiscoveryRequestKey
-  ],
-  () => {
-    cancelAccountModelCatalogSync()
-    if (!modalOpen.value || !currentModelCatalogDiscoveryPayload()) return
-    if (editingId.value && !accountFormApiKeyRuntimeChanged(form, editingAccountDetail.value)) return
-    accountModelCatalogAutoSyncTimer = setTimeout(() => {
-      accountModelCatalogAutoSyncTimer = undefined
-      void refreshAccountModelCatalog({ automatic: true })
-    }, 700)
-  }
-)
 
 onBeforeUnmount(cancelAccountModelCatalogSync)
 
@@ -1157,12 +1158,6 @@ async function handleBatchEditSaved(): Promise<void> {
 
 onMounted(() => {
   void loadData()
-  void loadAccountAuxiliaryOptions(accountScopeParams.value?.systemAccountId).catch((error) => {
-    console.error(error)
-  })
-  void loadFilterAccountTagOptions().catch((error) => {
-    console.error(error)
-  })
 })
 </script>
 

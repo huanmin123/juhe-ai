@@ -10,6 +10,8 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { parseGatewayRequestJsonBody } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
+import type { GatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
+import { serializeGatewayJsonObject } from '../request/serialized-json-body.js'
 import { recordHybridScoringAttempt } from '../usage/records.js'
 import {
   dispatchHybridAuxiliaryChatCompletion,
@@ -157,7 +159,7 @@ export async function inspectHybridGatewayQuality(input: {
     try {
       let parsed: HybridQualityScoreResult
       try {
-        parsed = parseHybridQualityResponse(dispatch.responseBody)
+        parsed = parseHybridQualityResponse(dispatch.parsedResponseBody)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         await finishDispatch({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
@@ -380,7 +382,9 @@ function hasStrictOutputRequirement(req: Request): boolean {
     : undefined
   if (!body) {
     const state = getGatewayRequestBodyState(req)
-    return state?.imageGeneration === true || state?.imageGenerationForced === true
+    return state?.strictOutputRequirement === true
+      || state?.imageGeneration === true
+      || state?.imageGenerationForced === true
   }
   return Boolean(
     body.response_format
@@ -451,7 +455,7 @@ function sanitizeQualityResponseText(value: string, maxChars = 16_384): string {
 }
 
 function createHybridQualityGatewayRequest(body: Record<string, unknown>): Request {
-  const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  const rawBody = serializeGatewayJsonObject(body)
   const headers: Record<string, string> = {
     accept: 'application/json',
     'content-type': 'application/json',
@@ -475,8 +479,11 @@ function createHybridQualityGatewayRequest(body: Record<string, unknown>): Reque
   } as unknown as Request
 }
 
-function parseHybridQualityResponse(body: Buffer): HybridQualityScoreResult {
-  const response = JSON.parse(body.toString('utf8')) as {
+function parseHybridQualityResponse(body: GatewayNonStreamJsonBody): HybridQualityScoreResult {
+  if (body.status !== 'valid' || typeof body.value !== 'object' || body.value === null || Array.isArray(body.value)) {
+    throw new Error('质量评分模型未返回合法 JSON')
+  }
+  const response = body.value as {
     choices?: Array<{ message?: { content?: unknown } }>
   }
   const content = response.choices?.[0]?.message?.content

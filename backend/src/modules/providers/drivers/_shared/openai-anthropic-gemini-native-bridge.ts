@@ -15,6 +15,7 @@ import {
 import type { ResolvedOpenAIModelMapping } from '../../../gateway/protocols/openai-v1/model-mapping.js'
 import { getGatewayRequestBodyState } from '../../../gateway/request/body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
@@ -119,10 +120,13 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
         { statusCode: 503, type: 'server_overloaded' }
       )
     }
-    throw new GatewayRequestValidationError(
-      'Gemini native 目标桥接要求请求体是有效 JSON 对象',
-      'invalid_gemini_target_bridge_json_body'
-    )
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw new GatewayRequestValidationError(
+        'Gemini native 目标桥接要求请求体是有效 JSON 对象',
+        'invalid_gemini_target_bridge_json_body'
+      )
+    }
+    throw error
   }
   if (parsed === undefined) {
     return {}

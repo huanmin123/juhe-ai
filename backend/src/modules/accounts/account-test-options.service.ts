@@ -19,7 +19,8 @@ import {
 } from '../providers/provider-model-options.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import type {
-  AccountManualTestCapabilitiesContext
+  AccountManualTestCapabilitiesContext,
+  AccountManualTestListContext
 } from '../../storage/account-manual-test-context.repository.js'
 import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
@@ -28,11 +29,12 @@ import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1
 export interface AccountManualTestOption {
   id: string
   name: string
+}
+
+export interface AccountManualTestModelCapabilities extends AccountManualTestOption {
   supportedApiProtocols: ProviderModelApiProtocol[]
   testEndpointModes: AccountSupportedEndpointMode[]
 }
-
-export type AccountManualTestModelCapabilities = AccountManualTestOption
 
 export type AccountManualTestOptionsQuery = Pick<ProviderModelOptionQuery, 'keyword' | 'limit' | 'selectedIds'>
 
@@ -46,7 +48,7 @@ export function normalizeAccountManualTestOptionsQuery(query: Record<string, unk
 }
 
 export async function accountManualTestOptionsAsync(
-  account: AccountSummary | AccountManualTestCapabilitiesContext,
+  account: AccountSummary | AccountManualTestListContext,
   query: AccountManualTestOptionsQuery = { limit: 50, selectedIds: [] }
 ): Promise<AccountManualTestOption[]> {
   const systemAccountId = account.ownerSystemAccountId
@@ -69,19 +71,10 @@ export async function accountManualTestOptionsAsync(
     limit: query.limit,
     selectedIds
   })
-  const upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
-  const resolvedOptions = await Promise.all(options.map(async (option) => ({
+  return options.map((option) => ({
     id: option.id,
-    name: option.name,
-    supportedApiProtocols: option.supportedApiProtocols as ProviderModelApiProtocol[],
-    testEndpointModes: await accountManualTestEndpointModesForTargetModelAsync(
-      account,
-      { model: option.id, supportedApiProtocols: option.supportedApiProtocols as ProviderModelApiProtocol[] },
-      systemAccountId,
-      upstreamModels
-    )
-  })))
-  return resolvedOptions.filter((option) => option.testEndpointModes.length > 0)
+    name: option.name
+  }))
 }
 
 export async function resolveAccountManualTestSelectionAsync(

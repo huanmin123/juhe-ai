@@ -1,23 +1,19 @@
 import { createHash, randomBytes } from 'node:crypto'
 import type { AgentOptions } from 'node:http'
-import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
-import {
-  openAICodexOriginator,
-  openAICodexUserAgent
-} from '../gateway/adapters/gpt-codex/client-headers.js'
+import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 
 export const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 export const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
 export const OPENAI_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 export const OPENAI_OAUTH_DEFAULT_REDIRECT_URI = 'http://localhost:1455/auth/callback'
-export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
+export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access'
+export const OPENAI_OAUTH_REFRESH_SCOPES = 'openid profile email'
 export const openAIOAuthTokenResponseMaxBytes = 256 * 1024
 export const openAIOAuthTokenRequestTimeoutMs = 25_000
 
@@ -201,8 +197,7 @@ export function buildOpenAIOAuthAuthorizeUrl(input: {
     code_challenge: input.codeChallenge,
     code_challenge_method: 'S256',
     id_token_add_organizations: 'true',
-    codex_cli_simplified_flow: 'true',
-    originator: 'codex_cli_rs'
+    codex_cli_simplified_flow: 'true'
   })
   return `${OPENAI_OAUTH_AUTHORIZE_URL}?${params.toString()}`
 }
@@ -215,7 +210,7 @@ export async function exchangeOpenAIAuthCode(input: {
   proxyUrl?: string
   signal?: AbortSignal
 }): Promise<OpenAITokenInfo> {
-  const session = await consumeOpenAIOAuthSession(input)
+  const session = await readOpenAIOAuthSession(input)
   const tokenInfo = await requestOpenAIToken({
     grant_type: 'authorization_code',
     client_id: session.clientId,
@@ -223,10 +218,25 @@ export async function exchangeOpenAIAuthCode(input: {
     redirect_uri: session.redirectUri,
     code_verifier: session.codeVerifier
   }, input.proxyUrl, input.signal)
+  if (!await oauthSessionStore().compareDeleteJson(input.sessionId, session)) {
+    throw new Error('OAuth 会话已消费，请重新发起授权')
+  }
   return tokenInfo
 }
 
 export async function consumeOpenAIOAuthSession(input: {
+  sessionId: string
+  state: string
+  ownerSystemAccountId?: string
+}): Promise<OpenAIOAuthSession> {
+  const session = await readOpenAIOAuthSession(input)
+  if (!await oauthSessionStore().compareDeleteJson(input.sessionId, session)) {
+    throw new Error('OAuth 会话已消费，请重新发起授权')
+  }
+  return session
+}
+
+async function readOpenAIOAuthSession(input: {
   sessionId: string
   state: string
   ownerSystemAccountId?: string
@@ -244,9 +254,6 @@ export async function consumeOpenAIOAuthSession(input: {
   if (expectedOwner && actualOwner !== expectedOwner) {
     throw new Error('OAuth session owner 归属无效')
   }
-  if (!await sessionStore.compareDeleteJson(input.sessionId, session)) {
-    throw new Error('OAuth 会话已消费，请重新发起授权')
-  }
   return session
 }
 
@@ -259,7 +266,8 @@ export async function refreshOpenAIOAuthToken(input: { refreshToken: string; cli
   return requestOpenAIToken({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id: clientId
+    client_id: clientId,
+    scope: OPENAI_OAUTH_REFRESH_SCOPES
   }, input.proxyUrl, input.signal)
 }
 
@@ -285,13 +293,35 @@ export function extractCodeAndState(input: { callbackUrl: string }): { code: str
   if (!callbackUrl) {
     throw new Error('回调 URL 不能为空')
   }
-  const url = new URL(callbackUrl)
-  const code = normalizeString(url.searchParams.get('code'))
-  const state = normalizeString(url.searchParams.get('state'))
+  const { code, state } = parseOAuthAuthorizationInput(callbackUrl)
   if (!code || !state) {
     throw new Error('回调 URL 必须包含 code 和 state')
   }
   return { code, state }
+}
+
+function parseOAuthAuthorizationInput(value: string): { code: string; state: string } {
+  try {
+    const url = new URL(value)
+    const error = normalizeString(url.searchParams.get('error'))
+    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    const queryCode = normalizeString(url.searchParams.get('code'))
+    const queryState = normalizeString(url.searchParams.get('state'))
+    if (queryCode || queryState) return { code: queryCode, state: queryState }
+    const fragment = new URLSearchParams(url.hash.replace(/^#/u, ''))
+    return { code: normalizeString(fragment.get('code')), state: normalizeString(fragment.get('state')) }
+  } catch (error) {
+    if (error instanceof Error && !error.message.includes('Invalid URL')) throw error
+  }
+  const hashSeparator = value.lastIndexOf('#')
+  if (hashSeparator > 0) {
+    return {
+      code: normalizeString(value.slice(0, hashSeparator)),
+      state: normalizeString(value.slice(hashSeparator + 1))
+    }
+  }
+  const query = new URLSearchParams(value.replace(/^\?/u, ''))
+  return { code: normalizeString(query.get('code')), state: normalizeString(query.get('state')) }
 }
 
 export function shouldRefreshOpenAIOAuthCredentials(credentials: Record<string, unknown>): boolean {
@@ -347,8 +377,10 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
   const idToken = normalizeString(payload.id_token)
   const refreshToken = normalizeString(payload.refresh_token)
   const clientId = normalizeString(form.client_id) || OPENAI_OAUTH_CLIENT_ID
-  const claims = decodeJwtClaims(idToken) ?? decodeJwtClaims(accessToken)
-  const openAIAuth = claims?.['https://api.openai.com/auth'] as Record<string, unknown> | undefined
+  const idClaims = decodeJwtClaims(idToken)
+  const accessClaims = decodeJwtClaims(accessToken)
+  const idOpenAIAuth = plainObject(idClaims?.['https://api.openai.com/auth'])
+  const accessOpenAIAuth = plainObject(accessClaims?.['https://api.openai.com/auth'])
 
   return {
     accessToken,
@@ -357,10 +389,13 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
     expiresIn,
     expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     clientId,
-    email: normalizeString(claims?.email),
-    accountId: normalizeString(openAIAuth?.chatgpt_account_id),
-    chatgptUserId: normalizeString(openAIAuth?.chatgpt_user_id) || normalizeString(openAIAuth?.user_id),
-    planType: normalizeString(openAIAuth?.chatgpt_plan_type)
+    email: normalizeString(idClaims?.email) || normalizeString(accessClaims?.email),
+    accountId: normalizeString(idOpenAIAuth?.chatgpt_account_id) || normalizeString(accessOpenAIAuth?.chatgpt_account_id),
+    chatgptUserId: normalizeString(idOpenAIAuth?.chatgpt_user_id)
+      || normalizeString(idOpenAIAuth?.user_id)
+      || normalizeString(accessOpenAIAuth?.chatgpt_user_id)
+      || normalizeString(accessOpenAIAuth?.user_id),
+    planType: normalizeString(idOpenAIAuth?.chatgpt_plan_type) || normalizeString(accessOpenAIAuth?.chatgpt_plan_type)
   }
 }
 
@@ -368,16 +403,11 @@ export function buildOpenAIOAuthTokenHttpRequest(form: Record<string, string>): 
   body: string
   headers: Record<string, string | number>
 } {
-  const body = form.grant_type === 'refresh_token'
-    ? JSON.stringify(form)
-    : new URLSearchParams(form).toString()
+  const body = new URLSearchParams(form).toString()
   const headers: Record<string, string | number> = {
-    'content-type': form.grant_type === 'refresh_token' ? 'application/json' : 'application/x-www-form-urlencoded',
+    accept: 'application/json',
+    'content-type': 'application/x-www-form-urlencoded',
     'content-length': Buffer.byteLength(body)
-  }
-  if (form.grant_type === 'refresh_token') {
-    headers.originator = openAICodexOriginator
-    headers['user-agent'] = openAICodexUserAgent
   }
   return {
     body,
@@ -391,65 +421,18 @@ async function performTokenRequest(
   signal?: AbortSignal
 ): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
-  const agent = resolvedProxyUrl ? createProxyAgent(resolvedProxyUrl) : undefined
-  const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('请求已取消'))
-      return
-    }
-    const request = httpsRequest(OPENAI_OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: tokenRequest.headers,
-      agent,
-      timeout: openAIOAuthTokenRequestTimeoutMs
-    }, (response) => {
-      const body = new BoundedBufferCollector(openAIOAuthTokenResponseMaxBytes)
-      let responseSettled = false
-      const settleResponse = (error?: Error) => {
-        if (responseSettled) return
-        responseSettled = true
-        if (error) {
-          reject(error)
-          return
-        }
-        resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
-      }
-      response.on('data', (chunk: Buffer) => {
-        if (responseSettled) return
-        body.append(chunk)
-        if (body.truncated) {
-          const error = new Error('OpenAI OAuth 令牌响应体过大')
-          settleResponse(error)
-          request.destroy(error)
-        }
-      })
-      response.once('aborted', () => {
-        settleResponse(new Error('OpenAI OAuth 令牌响应被中断'))
-      })
-      response.once('error', (error) => {
-        settleResponse(error)
-      })
-      response.once('end', () => {
-        settleResponse()
-      })
-      response.once('close', () => {
-        settleResponse(new Error('OpenAI OAuth 令牌响应提前关闭'))
-      })
-    })
-
-    const abort = () => request.destroy(new Error('请求已取消'))
-    signal?.addEventListener('abort', abort, { once: true })
-    const cleanupAbortSignal = () => signal?.removeEventListener('abort', abort)
-    request.on('error', (error) => {
-      cleanupAbortSignal()
-      reject(error)
-    })
-    request.on('response', cleanupAbortSignal)
-    request.on('close', cleanupAbortSignal)
-    request.on('timeout', () => request.destroy(new Error('OpenAI OAuth 令牌请求超时')))
-    request.end(tokenRequest.body)
+  if (signal?.aborted) throw new Error('请求已取消')
+  const response = await requestProviderOAuthToken({
+    url: OPENAI_OAUTH_TOKEN_URL,
+    headers: new Headers(Object.entries(tokenRequest.headers).map(([key, value]): [string, string] => [key, String(value)])),
+    body: tokenRequest.body,
+    proxyUrl: resolvedProxyUrl,
+    signal,
+    timeoutMs: openAIOAuthTokenRequestTimeoutMs,
+    maxResponseBytes: openAIOAuthTokenResponseMaxBytes
   })
-  return response
+  if (response.truncated) throw new Error('OpenAI OAuth 令牌响应体过大')
+  return { statusCode: response.statusCode, body: response.bodyText }
 }
 
 export function createProxyAgent(proxyUrl: string, options: AgentOptions = {}): HttpsProxyAgent<string> | SocksProxyAgent {
@@ -473,6 +456,12 @@ function decodeJwtClaims(token?: string): Record<string, unknown> | undefined {
   } catch {
     return undefined
   }
+}
+
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }
 
 function normalizeString(value: unknown): string {

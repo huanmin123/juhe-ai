@@ -1,13 +1,15 @@
 import type { Router } from 'express'
 
-import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountTagInUseError, deleteAccountTagAsync, findAccountSummaryAsync, listAccountTagsAsync, updateAccountTagsAsync } from '../../storage/repositories.js'
-import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
+import {
+  AccountManagementPatchRevisionConflictError,
+  patchAccountManagementAsync
+} from '../../storage/account-management-patch.repository.js'
+import { AccountTagInUseError, deleteAccountTagAsync, listAccountTagsAsync } from '../../storage/repositories.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
-import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { accountTagsUpdateSchema } from './account-request.schemas.js'
-import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountTagsRoutes(router: Router): void {
   router.get('/tags', async (req, res, next) => {
@@ -56,44 +58,42 @@ export function registerAccountTagsRoutes(router: Router): void {
       res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '账户标签参数无效'))
       return
     }
-    const before = await findAccountSummaryAsync(req.params.id, requestAccess)
-    if (!before) {
-      res.status(404).json({ message: '账户不存在' })
-      return
-    }
     try {
-      const account = await runLoggedOperationAsync(async () => {
-        const tags = await updateAccountTagsAsync(req.params.id, parsed.data.tags, requestAccess)
-        if (!tags) {
+      const patched = await runLoggedOperationAsync(async () => {
+        const patched = await patchAccountManagementAsync(req.params.id, parsed.data, requestAccess)
+        if (!patched) {
           throw new Error('账户不存在')
         }
-        const account = await findAccountSummaryAsync(req.params.id, requestAccess)
-        if (!account) {
-          throw new Error('账户不存在')
-        }
-        const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
-          ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+        const tagsChange = patched.changes.find((change) => change.field === 'tags')
         return {
-          result: { ...account, tags },
-          log: {
-            operationScopeSystemAccountId: ownerSystemAccountId,
+          result: patched,
+          log: tagsChange ? {
+            operationScopeSystemAccountId: patched.ownerSystemAccountId,
             mode: operationMode(requestAccess),
             module: 'accounts',
             action: 'update_tags',
             operationKey: 'accounts.update_tags',
             resourceType: 'account',
-            resourceId: account.id,
-            resourceName: account.name,
-            summary: `更新账户标签：${account.name}`,
+            resourceId: patched.id,
+            resourceName: patched.name,
+            summary: `更新账户标签：${patched.name}`,
             changes: [
-              safeChange('tags', '标签', before?.tags, tags)
+              safeChange('tags', '标签', tagsChange.before, tagsChange.after)
             ],
-            viewers: viewer(ownerSystemAccountId, 'resource_owner')
-          }
+            viewers: viewer(patched.ownerSystemAccountId, 'resource_owner')
+          } : undefined
         }
       }, req)
-      res.json(ok(sanitizeAccountResponse(account)))
+      res.json(ok({
+        id: patched.id,
+        configRevision: patched.configRevision,
+        changedFields: patched.changedFields
+      }))
     } catch (error) {
+      if (error instanceof AccountManagementPatchRevisionConflictError) {
+        res.status(409).json(badRequest(error.message))
+        return
+      }
       if (error instanceof Error && error.message === '账户不存在') {
         res.status(404).json({ message: '账户不存在' })
         return
@@ -101,12 +101,4 @@ export function registerAccountTagsRoutes(router: Router): void {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户标签失败'))
     }
   })
-}
-
-function authorizedLocalOperationOwner(account: AccountSummary, access?: RequestAccessScope): string | undefined {
-  return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
-}
-
-function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
-  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }

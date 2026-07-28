@@ -21,6 +21,7 @@ import { extractGeminiUsage } from '../../modules/gateway/protocols/gemini-v1bet
 import { parseOpenAISseEventText } from '../../modules/gateway/protocols/openai-v1/stream-events.js'
 import { requestStream } from '../../modules/gateway/request/metadata.js'
 import { resolveGeminiGatewayClientStrategy } from '../../modules/gateway/client-profiles/strategy.js'
+import { setGatewayRequestJsonMaterializationObserverForTest } from '../../modules/gateway/request/json-parser.js'
 import { isSuccessfulEmptyUpstreamResponseAllowed } from '../../modules/gateway/response/finalization.js'
 import * as interactionAffinityModule from '../../modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.js'
 
@@ -169,6 +170,36 @@ async function assertDriverPassThrough(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('api-revision'), '2026-05-20', 'Interactions 请求必须补充缺省 Api-Revision')
   assert.deepEqual(JSON.parse(Buffer.from(parts.body ?? '').toString('utf8')), request.body)
+
+  const scannedRawBody = Buffer.from(JSON.stringify({
+    model: 'gemini-3.5-flash',
+    input: 'hello',
+    stream: true
+  }))
+  const scannedRequest = fakeRequest('POST', '/v1beta/interactions', undefined, 'text/event-stream') as GatewayRawBodyRequest
+  scannedRequest.body = undefined
+  scannedRequest.rawBody = scannedRawBody
+  scannedRequest.gatewayRequestBody = createGatewayRequestBodyState({
+    rawBody: scannedRawBody,
+    contentType: 'application/json',
+    jsonParseStatus: 'scanned_json',
+    model: 'gemini-3.5-flash',
+    stream: true
+  })
+  let materializationCount = 0
+  setGatewayRequestJsonMaterializationObserverForTest(() => {
+    materializationCount += 1
+  })
+  try {
+    const scannedParts = await geminiProviderDriver.buildUpstreamRequestParts(scannedRequest, account, {
+      systemAccountId: 'system-account',
+      groupId: 'group'
+    })
+    assert.equal(scannedParts.body, scannedRawBody)
+    assert.equal(materializationCount, 0, '原生 Gemini Interactions stream=true 透传不得完整解析 JSON')
+  } finally {
+    setGatewayRequestJsonMaterializationObserverForTest(undefined)
+  }
 
   const googleOAuthAccount = {
     ...(account as unknown as Record<string, unknown>),

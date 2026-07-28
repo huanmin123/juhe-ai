@@ -29,6 +29,11 @@ export type ReauthorizeAccessTokenPayload = {
   refreshToken?: string
 }
 
+export function openAIOAuthClientPayload(form: AccountOAuthAuthorizeForm): Record<string, string> {
+  const clientId = form.googleClientId.trim()
+  return clientId ? { clientId } : {}
+}
+
 export function buildOAuthCreatePayload(input: {
   commonPayload: AccountOAuthCreateCommonPayload
   form: AccountOAuthAuthorizeForm
@@ -56,7 +61,7 @@ export function buildOAuthCreatePayload(input: {
 
 export function validateReauthorizeForm(form: AccountOAuthAuthorizeForm, hasAuthSession: boolean): string | undefined {
   if (form.oauthMode === 'manual' && !hasAuthSession) return '请先生成授权链接'
-  if (form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴回调 URL'
+  if (form.oauthMode === 'manual' && !form.callbackUrl.trim()) return '请粘贴授权结果'
   if (form.oauthMode === 'access_token' && !form.accessToken.trim()) return '请填写 Access Token'
   if (form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) return '请填写 Refresh Token'
   return undefined

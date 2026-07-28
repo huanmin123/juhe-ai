@@ -7,6 +7,7 @@
     :max-tag-count="4"
     allow-clear
     placeholder="输入或选择标签"
+    @dropdown-visible-change="$emit('dropdown-visible-change', $event)"
   >
     <template #option="option">
       <div class="account-tag-option">
@@ -53,6 +54,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'delete', tagId: string): void
+  (event: 'dropdown-visible-change', open: boolean): void
 }>()
 
 const selectOptions = computed<AccountTagOption[]>(() => props.options.map((tag) => ({

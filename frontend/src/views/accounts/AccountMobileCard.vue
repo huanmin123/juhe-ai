@@ -96,7 +96,7 @@ import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
@@ -113,7 +113,7 @@ import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedA
 import { accountProxyDisplay } from './accountProxyDisplay'
 
 const props = defineProps<{
-  account: AccountSummary
+  account: AccountListItem
   canClone: boolean
   canDelete: boolean
   canEdit: boolean
@@ -124,7 +124,7 @@ const props = defineProps<{
   providerName: string
   priorityEditing: boolean
   proxy?: ProxyProfileOptionSummary
-  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
+  savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   selected: boolean
   balanceRefreshing?: boolean
 }>()

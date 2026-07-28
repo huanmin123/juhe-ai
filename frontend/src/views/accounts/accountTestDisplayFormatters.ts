@@ -1,4 +1,4 @@
-import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import type { AccountListItem, AccountTestResult, AccountTestTask } from '@/types/domain'
 import { isGptVendorCode } from '@/shared/providerProtocol'
 
 import type { AccountTestEndpointMode } from './accountTestFlow'
@@ -22,18 +22,18 @@ const diagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000]
 const imageDiagnosticAttemptTimeoutsMs = [120_000]
 
 interface SingleAccountTestOutputOptions {
-  account?: AccountSummary
+  account?: AccountListItem
   activeTask?: AccountTestTask
   testEndpointMode: AccountTestEndpointMode
   selectedEndpointModeText: string
   model: string
-  providerLabel: (account: AccountSummary) => string
+  providerLabel: (account: AccountListItem) => string
   result?: AccountTestResult
   running: boolean
 }
 
 export function accountTestSelectedEndpointModeText(input: {
-  account: AccountSummary
+  account: AccountListItem
   testEndpointMode: AccountTestEndpointMode
   selectedEndpointModeText: string
 }): string {
@@ -162,7 +162,7 @@ function accountTestModelMappingOutputLines(
 }
 
 export function accountTestSingleRunningOutputLines(input: {
-  account: AccountSummary
+  account: AccountListItem
   activeTask?: AccountTestTask
   model: string
   testEndpointMode?: AccountTestEndpointMode
@@ -206,7 +206,7 @@ export function accountTestSingleRunningOutputLines(input: {
   return lines
 }
 
-function shouldDisplayManagedOAuthRefreshHint(account: AccountSummary): boolean {
+function shouldDisplayManagedOAuthRefreshHint(account: AccountListItem): boolean {
   if (account.type !== 'oauth') return false
   return accountProviderProtocolKind(account) === 'openai_v1'
     || account.clientCompatibility === 'codex_responses'
@@ -253,7 +253,7 @@ function isImageTestMode(testEndpointMode?: AccountTestEndpointMode): boolean {
 }
 
 function accountTestActualProtocolLine(
-  account: AccountSummary,
+  account: AccountListItem,
   result: AccountTestResult
 ): AccountTestOutputLine {
   const endpointMode = result.testEndpointMode ?? accountTestEndpointModesForAccount(account)[0]
@@ -263,7 +263,7 @@ function accountTestActualProtocolLine(
   }
 }
 
-function fallbackProtocolText(account: AccountSummary): string {
+function fallbackProtocolText(account: AccountListItem): string {
   const protocolKind = accountProviderProtocolKind(account)
   if (protocolKind === 'anthropic_v1') return 'Messages API'
   if (protocolKind === 'gemini_v1beta') return 'generateContent'

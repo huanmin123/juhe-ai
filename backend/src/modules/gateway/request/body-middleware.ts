@@ -15,7 +15,7 @@ import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.serv
 import {
   createGatewayRequestBodyState,
   gatewayImageRawBodyHardLimitBytes,
-  gatewayJsonBodyInlineParseMaxBytes,
+  gatewayJsonBodyInlineMetadataScanMaxBytes,
   gatewayJsonBodyLargeWarningBytes,
   gatewayRawBodyHardLimitBytes,
   gatewayTextRawBodyHardLimitBytes,
@@ -26,7 +26,10 @@ import {
   tryAcquireGatewayRequestBodyInFlightBytes,
   type GatewayRawBodyRequest
 } from './body.js'
-import type { GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
+import {
+  extractGatewayJsonBodyMetadata,
+  type GatewayJsonBodyMetadata
+} from './json-metadata-scanner.js'
 import { extractGatewayJsonBodyMetadataInWorker, isGatewayJsonWorkerQueueFullError } from './json-parser.js'
 import { resolveOpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
 import { buildUsageRequestSnapshot } from '../usage/snapshots.js'
@@ -223,7 +226,7 @@ export async function captureGatewayRawBody(
         return
       }
     } else {
-      if (rawBody.length > gatewayJsonBodyInlineParseMaxBytes) {
+      if (rawBody.length > gatewayJsonBodyInlineMetadataScanMaxBytes) {
         const metadata = await extractLargeJsonBodyMetadata(req, res, rawBody)
         if (!metadata) {
           req.rawBody = undefined
@@ -241,7 +244,7 @@ export async function captureGatewayRawBody(
           path: req.path,
           originalUrl: sanitizeUrlForLog(req.originalUrl),
           rawBodyBytes: rawBody.length,
-          jsonInlineParseMaxBytes: gatewayJsonBodyInlineParseMaxBytes,
+          jsonInlineMetadataScanMaxBytes: gatewayJsonBodyInlineMetadataScanMaxBytes,
           jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
           model: metadata.model,
           stream: metadata.stream,
@@ -260,14 +263,16 @@ export async function captureGatewayRawBody(
         req.gatewayRequestBody = createGatewayRequestBodyState({
           rawBody,
           contentType,
-          jsonParseStatus: metadata.invalidJson ? 'invalid_json' : 'deferred_large_json',
+          jsonParseStatus: metadata.invalidJson ? 'invalid_json' : 'scanned_json',
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
           reasoningEffort: metadata.reasoningEffort,
           maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
-          imageGenerationForced: metadata.imageGenerationForced
+          imageGenerationForced: metadata.imageGenerationForced,
+          strictOutputRequirement: metadata.strictOutputRequirement,
+          codexCompactionTrigger: metadata.codexCompactionTrigger
         })
         req.body = undefined
         if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
@@ -278,14 +283,22 @@ export async function captureGatewayRawBody(
           return
         }
       } else {
-        try {
-          const parsedBody = JSON.parse(rawBody.toString('utf8')) as unknown
-          req.body = parsedBody
-          req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'parsed', parsedBody })
-        } catch {
-          req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
-          req.body = undefined
-        }
+        const metadata = extractGatewayJsonBodyMetadata(rawBody)
+        req.gatewayRequestBody = createGatewayRequestBodyState({
+          rawBody,
+          contentType,
+          jsonParseStatus: metadata.invalidJson ? 'invalid_json' : 'scanned_json',
+          model: metadata.model,
+          stream: metadata.stream,
+          serviceTier: metadata.serviceTier,
+          reasoningEffort: metadata.reasoningEffort,
+          maxOutputTokens: metadata.maxOutputTokens,
+          imageGeneration: metadata.imageGeneration,
+          imageGenerationForced: metadata.imageGenerationForced,
+          strictOutputRequirement: metadata.strictOutputRequirement,
+          codexCompactionTrigger: metadata.codexCompactionTrigger
+        })
+        req.body = undefined
         if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
           completeStage('expected_failure', {
             failureReason: 'gateway_body_size_limit',

@@ -10,7 +10,6 @@ import {
   describeModelMismatch,
   hasFunctionCall,
   hasModelMismatchEvidence,
-  modelFromSse,
   numberValue,
   parseFirstJsonObject,
   ratio,
@@ -171,7 +170,7 @@ export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: s
       firstTokenMs: result.firstTokenMs
     })
   }
-  const modelEvidence = buildProbeModelMatchEvidence(result, result.model ?? modelFromSse(result.bodyText), model)
+  const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const hasOutput = Boolean(result.outputText)
   const score = modelEvidence.modelMismatch
     ? (result.success ? 4 : 0) + (hasOutput ? 1 : 0)

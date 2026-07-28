@@ -288,6 +288,12 @@ export interface AccountTagsUpdateResult {
   tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
 }
 
+export interface AccountUsageListSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
 export interface AccountSummary {
   id: string
   configRevision?: number
@@ -400,19 +406,145 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
-export type AccountListItem = Omit<AccountSummary,
-  | 'credentials'
-  | 'supportedModels'
-  | 'modelMappings'
-  | 'apiKeyRuntimeDetails'
-  | 'balanceQueryConfig'
-  | 'usage'
-  | 'oauthUsage'
-  | 'authorizationSources'
-  | 'authorizationUsageAvailable'
-  | 'authorizationCount'
-  | 'authorizationTeamCount'
->
+export interface AccountListItem {
+  id: string
+  configRevision?: number
+  systemAccountId?: string
+  systemAccountName?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  providerCode: ProviderCode
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
+  name: string
+  notes?: string
+  type: AccountType
+  status: AccountStatus
+  concurrencyLimit: number
+  currentConcurrency: number
+  runtimeAvailability?: AccountRuntimeAvailability
+  circuitSummary?: AccountSummary['circuitSummary']
+  effectiveAvailability?: AccountEffectiveAvailability
+  availabilityPresentation?: AccountAvailabilityPresentation
+  priority: number
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
+  tags?: Array<Pick<AccountTagSummary, 'id' | 'name'>>
+  healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  proxyProfileId?: string
+  proxyProfileName?: string
+  proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyProfileEnabled?: boolean
+  proxyProfileUnavailable?: boolean
+  proxyProfileErrorMessage?: string
+  schedulable: boolean
+  availabilitySchedule?: AccountAvailabilitySchedule
+  accountExpiresAt?: string
+  cooldownUntil?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  lastErrorTraceId?: string
+  cooldownRetestFailureCount?: number
+  cooldownRetestObservationStartedAt?: string
+  cooldownRetestLastAt?: string
+  cooldownRetestLastStatusCode?: number
+  lastHealthCheckAt?: string
+  nextHealthCheckAt?: string
+  lastHealthSuccessAt?: string
+  healthCheckFailureCount?: number
+  healthCheckFailureStartedAt?: string
+  lastHealthCheckStatusCode?: number
+  lastHealthCheckErrorCode?: string
+  lastHealthCheckErrorMessage?: string
+  lastHealthCheckTraceId?: string
+  streamFailureCount?: number
+  streamFailureWindowStartedAt?: string
+  balanceQueryEnabled?: boolean
+  balanceQueryNextRefreshAt?: string
+  balanceSnapshot?: AccountBalanceSnapshot
+  lastUsedAt?: string
+  todayUsage: AccountUsageListSummary
+  accessType?: ResourceAccessType
+  accountAuthorizationId?: string
+  authorizationInstanceSourceAccountStatus?: AccountStatus
+  authorizationInstanceSourceAccountSchedulable?: boolean
+  authorizationInstanceSourceAccountExpiresAt?: string
+  authorizationInstanceSourceAccountCooldownUntil?: string
+  authorizationInstanceSourceAccountLastErrorCode?: string
+  authorizationInstanceSourceAccountLastErrorMessage?: string
+  boundGroupId?: string
+  boundGroupName?: string
+  groupBindStatus?: AccountGroupBindStatus
+  bindingSystemAccountId?: string
+  authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationLimits?: RequestQuotaLimits
+  authorizationQuotaExceeded?: boolean
+  permissions?: Partial<Pick<ResourcePermissions,
+    | 'canUse'
+    | 'canEdit'
+    | 'canDelete'
+    | 'canReturnAuthorization'
+    | 'canAuthorize'
+    | 'canViewCredentials'
+  >>
+}
+
+export interface AccountEditBasicDetail {
+  id: string
+  configRevision: number
+  systemAccountId?: string
+  ownerSystemAccountId: string
+  providerCode: ProviderCode
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  name: string
+  notes?: string
+  type: AccountType
+  credentials: AccountCredentials
+  status: AccountStatus
+  concurrencyLimit: number
+  priority: number
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
+  clientCompatibility: AccountClientCompatibility
+  supportedModels: string[]
+  tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
+  healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  boundGroupId?: string
+  boundGroupName?: string
+}
+
+export interface AccountAdvancedDetail {
+  id: string
+  configRevision: number
+  accessType: 'owner' | 'authorized'
+  modelMappings: AccountModelMapping[]
+  proxyProfileId?: string
+  availabilitySchedule?: AccountAvailabilitySchedule
+  accountExpiresAt?: string
+  temporaryUnavailableContinuousProbeEnabled: boolean
+  balanceQueryEnabled: boolean
+  balanceQueryConfig?: AccountBalanceQueryConfig
+  authorizationInstanceSourceAccountStatus?: AccountStatus
+  authorizationInstanceSourceAccountSchedulable?: boolean
+}
+
+export interface AccountMutationResult {
+  id: string
+  configRevision: number
+  changedFields: string[]
+}
+
+export interface AccountCreateResult {
+  id: string
+  status: AccountStatus
+}
 
 export interface AccountBatchEditTarget {
   accountId: string
@@ -793,8 +925,24 @@ export interface GroupSummary {
   canReturn?: boolean
 }
 
+export interface GroupListItem extends Omit<
+  GroupSummary,
+  'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'
+> {
+  accountStats: Pick<
+    GroupAccountStats,
+    'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'
+  > & {
+    currentConcurrency?: number
+    todayUsage?: AccountUsageSummary
+  }
+  canEdit: boolean
+  canDelete: boolean
+  canReturn: boolean
+}
+
 export interface GroupListResult {
-  items: GroupSummary[]
+  items: GroupListItem[]
   generatedAt: string
   total: number
   hasMore: boolean

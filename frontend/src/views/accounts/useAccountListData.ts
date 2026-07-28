@@ -10,7 +10,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
@@ -91,7 +91,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
     resetPagination: resetAccountListPagination,
-  } = useResponsivePagedList<AccountSummary, AccountListLoadOptions>({
+  } = useResponsivePagedList<AccountListItem, AccountListLoadOptions>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
     showTotal: (total, range, context) => context?.hasMore
@@ -107,7 +107,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       }
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
-        items: accountList.items as AccountSummary[],
+        items: accountList.items,
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
@@ -213,7 +213,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return true
   }
 
-  function updateLoadedAccount(account: AccountSummary): boolean {
+  function updateLoadedAccount(account: AccountListItem): boolean {
     const nextAccounts = replaceAccountListRow(accounts.value, account)
     if (nextAccounts === accounts.value) return false
     accounts.value = nextAccounts

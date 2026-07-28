@@ -83,6 +83,13 @@ import {
   type AccountListResult
 } from './account-summary.repository.js'
 export {
+  listAccountManagementItemsPageAsync,
+  listAccountManagementItemsPageReadOnly,
+  type AccountManagementListBaseItem,
+  type AccountManagementListPage,
+  type AccountManagementListResult
+} from './account-management-list.repository.js'
+export {
   findAccountSummary,
   findAccountSummaryAsync,
   listAccounts,
@@ -100,14 +107,14 @@ import {
 } from './account-usage.repository.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot, upsertAccountUsageSnapshotsAsync } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
+import { ApiKeyRevisionConflictError, createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, patchApiKeyAsync, refreshApiKeySecret, refreshApiKeySecretAsync, refreshApiKeySecretForManagementAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
-import { createPostgresDatabaseClient } from './database-client.js'
+import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import {
   listAccountGroupOptions,
@@ -490,6 +497,8 @@ export {
   type DeletedApiKeyRecordCleanupTarget
 } from './api-key-record-cleanup.js'
 export {
+  ApiKeyRevisionConflictError,
+  ApiKeyValidationCacheInvalidationError,
   createApiKeyRecord,
   createApiKeyRecordAsync,
   deleteApiKey,
@@ -508,10 +517,20 @@ export {
   listApiKeysAsync,
   listApiKeysPage,
   listApiKeysPageAsync,
+  patchApiKeyAsync,
   refreshApiKeySecret,
   refreshApiKeySecretAsync,
+  refreshApiKeySecretForManagementAsync,
   updateApiKey,
-  updateApiKeyAsync
+  updateApiKeyAsync,
+  type ApiKeyCreateResult,
+  type ApiKeyCreatedRecord,
+  type ApiKeyDeleteResult,
+  type ApiKeyListItem,
+  type ApiKeyPatchOutcome,
+  type ApiKeyPatchResult,
+  type ApiKeyRefreshOutcome,
+  type ApiKeySecretRecord
 } from './api-key.repository.js'
 export {
   findChatApiKeySecretAsync,
@@ -545,6 +564,11 @@ export {
   type RouteStrategyListOptions,
   type RouteStrategyOptionListOptions
 } from './route-strategy.repository.js'
+export {
+  findPreferredDefaultRouteStrategyReferenceAsync,
+  findUserReferenceDataAsync,
+  findUserReferenceDataForSystemAccountAsync
+} from './user-reference-data.repository.js'
 export {
   listAuthorizationGranteeAccounts,
   listAuthorizationGranteeAccountsAsync,
@@ -991,6 +1015,64 @@ async function groupOwnerAndProviderForAccountWriteAsync(client: DatabaseClient,
   `, [groupId])
   return row?.system_account_id && row.provider_code
     ? {
+        systemAccountId: row.system_account_id,
+        providerCode: row.provider_code,
+        name: row.name
+      }
+    : undefined
+}
+
+function defaultGroupForAccountWrite(systemAccountId: string, providerCode: ProviderCode): { id: string; systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined {
+  const row = getBusinessDatabase()
+    .prepare(`
+      SELECT id, system_account_id, provider_code, name
+      FROM groups
+      WHERE system_account_id = ?
+        AND provider_code = ?
+        AND is_default = 1
+        AND enabled = 1
+      ORDER BY updated_at DESC, id ASC
+      LIMIT 1
+    `)
+    .get(systemAccountId, providerCode) as unknown as {
+      id?: string
+      system_account_id?: string
+      provider_code?: ProviderCode
+      name?: string
+    } | undefined
+  return row?.id && row.system_account_id && row.provider_code
+    ? {
+        id: row.id,
+        systemAccountId: row.system_account_id,
+        providerCode: row.provider_code,
+        name: row.name
+      }
+    : undefined
+}
+
+async function defaultGroupForAccountWriteAsync(
+  client: DatabaseClient,
+  systemAccountId: string,
+  providerCode: ProviderCode
+): Promise<{ id: string; systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
+  const row = await client.one<{
+    id?: string
+    system_account_id?: string
+    provider_code?: ProviderCode
+    name?: string
+  }>(`
+    SELECT id, system_account_id, provider_code, name
+    FROM ${accountWriteTable(client, 'groups')}
+    WHERE system_account_id = ?
+      AND provider_code = ?
+      AND is_default = 1
+      AND enabled = 1
+    ORDER BY updated_at DESC, id ASC
+    LIMIT 1
+  `, [systemAccountId, providerCode])
+  return row?.id && row.system_account_id && row.provider_code
+    ? {
+        id: row.id,
         systemAccountId: row.system_account_id,
         providerCode: row.provider_code,
         name: row.name
@@ -1745,6 +1827,13 @@ function accountBalanceUpdateValues(
 }
 
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
+  return runInDatabaseTransaction(
+    () => createAccountInSqliteTransaction(input, access),
+    getBusinessDatabase()
+  )
+}
+
+function createAccountInSqliteTransaction(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
@@ -1827,11 +1916,15 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   })
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
   const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
-  const groupId = explicitGroupId
-  if (!groupId) {
-    throw new Error('账户分组不能为空')
+  const defaultGroup = explicitGroupId ? undefined : defaultGroupForAccountWrite(systemAccountId, providerCode)
+  const group = explicitGroupId ? explicitGroup : defaultGroup
+  const groupId = explicitGroupId ?? defaultGroup?.id
+  if (explicitGroupId && !group) {
+    throw new Error('账户分组无效')
   }
-  const group = explicitGroupId === groupId ? explicitGroup : groupOwnerAndProvider(groupId)
+  if (!groupId || !group) {
+    throw new Error(`当前用户缺少供应商 ${providerCode} 的启用默认分组`)
+  }
   if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('账户分组无效')
   }
@@ -2001,10 +2094,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
 }
 
 export async function createAccountAsync(input: Record<string, unknown>, access?: AccessScope): Promise<AccountSummary> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return createAccount(input, access)
-  }
-  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : createSqliteDatabaseClient(getBusinessDatabase())
   return client.transaction(async (tx) => createAccountInClientAsync(tx, input, access))
 }
 
@@ -2091,11 +2183,15 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   })
   const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
   const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
-  const groupId = explicitGroupId
-  if (!groupId) {
-    throw new Error('账户分组不能为空')
+  const defaultGroup = explicitGroupId ? undefined : await defaultGroupForAccountWriteAsync(client, systemAccountId, providerCode)
+  const group = explicitGroupId ? explicitGroup : defaultGroup
+  const groupId = explicitGroupId ?? defaultGroup?.id
+  if (explicitGroupId && !group) {
+    throw new Error('账户分组无效')
   }
-  const group = explicitGroupId === groupId ? explicitGroup : await groupOwnerAndProviderForAccountWriteAsync(client, groupId)
+  if (!groupId || !group) {
+    throw new Error(`当前用户缺少供应商 ${providerCode} 的启用默认分组`)
+  }
   if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('账户分组无效')
   }

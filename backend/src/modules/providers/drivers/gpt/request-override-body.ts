@@ -1,10 +1,15 @@
 import { gatewayJsonBodyInlineParseMaxBytes } from '../../../gateway/request/body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayJsonBodyInWorker
 } from '../../../gateway/request/json-parser.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
-import { gatewaySerializedJsonObject } from '../../../gateway/request/serialized-json-body.js'
+import {
+  bindGatewaySerializedJsonObject,
+  gatewaySerializedJsonObject,
+  serializeGatewayJsonObject
+} from '../../../gateway/request/serialized-json-body.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
 import {
@@ -31,15 +36,21 @@ export async function applyGptAccountRequestOverridesToBody(
   if (!hasApplicableGptAccountRequestOverrides(overrides, input.endpointFamily, input.compact === true)) {
     return body
   }
-  const parsed = await parseAccountRequestOverrideBody(body, input.signal)
+  let parsed: Record<string, unknown> | undefined
+  let upstreamModel = input.upstreamModel
+  if (!upstreamModel && !input.modelCapabilities) {
+    parsed = await parseAccountRequestOverrideBody(body, input.signal)
+    upstreamModel = requestBodyModel(parsed)
+  }
   const { modelCapabilities, effectiveOverrides } = await normalizeGptRequestOverrideCapabilitiesForGateway({
     ...input,
     overrides,
-    upstreamModel: input.upstreamModel ?? requestBodyModel(parsed)
+    upstreamModel
   })
   if (!hasApplicableGptAccountRequestOverrides(effectiveOverrides, input.endpointFamily, input.compact === true)) {
     return body
   }
+  parsed ??= await parseAccountRequestOverrideBody(body, input.signal)
   let overridden: Record<string, unknown>
   try {
     overridden = applyGptAccountRequestOverrides(parsed, {
@@ -49,8 +60,9 @@ export async function applyGptAccountRequestOverridesToBody(
   } catch (error) {
     throw normalizeGptAccountRequestOverrideError(error)
   }
-  const serialized = JSON.stringify(overridden)
-  return typeof body === 'string' ? serialized : Buffer.from(serialized, 'utf8')
+  return typeof body === 'string'
+    ? JSON.stringify(overridden)
+    : serializeGatewayJsonObject(overridden)
 }
 
 export async function normalizeGptRequestOverrideCapabilitiesForGateway(
@@ -128,10 +140,16 @@ export async function parseAccountRequestOverrideBody(
         { statusCode: 503, type: 'server_overloaded' }
       )
     }
-    throw invalidAccountRequestOverrideBodyError()
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw invalidAccountRequestOverrideBodyError()
+    }
+    throw error
   }
   if (!isPlainObject(parsed)) {
     throw invalidAccountRequestOverrideBodyError()
+  }
+  if (Buffer.isBuffer(body)) {
+    bindGatewaySerializedJsonObject(body, parsed)
   }
   return parsed
 }

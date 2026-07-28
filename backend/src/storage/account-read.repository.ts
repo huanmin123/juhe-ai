@@ -29,7 +29,6 @@ type AccountFilterExpression = {
   sql: string
   params: AccountFilterValue[]
 }
-const accountQualityDatabaseAlias = 'account_quality_records'
 const currentIsoSql = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 function authorizedAccountEffectiveStatusExpression(includeAuthorizationQuota = false): AccountFilterExpression {
@@ -276,10 +275,6 @@ function queryAccountRowsForAccess(
   const normalizedSettings = typeof settings === 'boolean' ? { includeTotal: settings } : settings
   const includeTotal = normalizedSettings.includeTotal ?? true
   const accountSelectColumns = accountRowSelectColumns(normalizedSettings.includeCredentials ?? true)
-  const includeQualityInQuery = hasAccountQualityScoreSort(options)
-  if (includeQualityInQuery) {
-    ensureAccountQualityDatabaseAttached(database)
-  }
   if (accountListNeedsQuotaDatabase(options)) {
     ensureRequestQuotaDatabaseAttached(database)
   }
@@ -307,7 +302,7 @@ function queryAccountRowsForAccess(
     return queryRows(`
         SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-          ${accountQualitySelectColumns(includeQualityInQuery)}
+          ${accountQualitySelectColumns()}
         FROM (
           SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
             ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
@@ -326,7 +321,6 @@ function queryAccountRowsForAccess(
               OR ra.status IN ('active', 'paused', 'expired')
             )
         ) account_rows
-        ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
@@ -341,7 +335,7 @@ function queryAccountRowsForAccess(
   return queryRows(`
       SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-        ${accountQualitySelectColumns(includeQualityInQuery)}
+        ${accountQualitySelectColumns()}
       FROM (
         SELECT ${accountSelectColumns}, CASE WHEN accounts.authorization_instance_authorization_id IS NOT NULL THEN 'authorized' ELSE 'owner' END AS access_type,
           ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
@@ -361,7 +355,6 @@ function queryAccountRowsForAccess(
             OR ra.status IN ('active', 'paused', 'expired')
           )
       ) account_rows
-      ${accountQualityJoinClause(includeQualityInQuery)}
       LEFT JOIN ${accountBindingSubquery()} group_bindings
         ON group_bindings.account_id = account_rows.id
         AND group_bindings.system_account_id = CASE WHEN account_rows.access_type = 'authorized' THEN ? ELSE account_rows.system_account_id END
@@ -369,10 +362,6 @@ function queryAccountRowsForAccess(
       LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
     `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
-}
-
-function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
-  return options.sorts.some((sort) => sort.field === 'qualityScore' || sort.field === 'recentRequestCount')
 }
 
 function accountListNeedsQuotaDatabase(options: Pick<NormalizedAccountListOptions, 'status' | 'schedulable'>): boolean {
@@ -389,16 +378,8 @@ function accountListNeedsDerivedStatusFunctions(options: Pick<NormalizedAccountL
     || options.schedulable === 'disabled'
 }
 
-function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getBusinessDatabase>): void {
-  getStatsDatabase()
-  const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
-  if (rows.some((row) => row.name === accountQualityDatabaseAlias)) return
-  database.prepare(`ATTACH DATABASE ? AS ${accountQualityDatabaseAlias}`).run(statsDatabasePath())
-}
-
-function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
-  if (!includeQualityInQuery) {
-    return `NULL AS quality_score,
+function accountQualitySelectColumns(): string {
+  return `NULL AS quality_score,
           NULL AS quality_state,
           NULL AS quality_ewma_first_token_ms,
           NULL AS quality_recent_avg_first_token_ms,
@@ -408,23 +389,6 @@ function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
           NULL AS quality_last_error_at,
           NULL AS quality_last_error_message,
           NULL AS quality_updated_at`
-  }
-  return `quality_scores.quality_score AS quality_score,
-          quality_scores.quality_state AS quality_state,
-          quality_scores.ewma_first_token_ms AS quality_ewma_first_token_ms,
-          quality_scores.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
-          quality_scores.recent_request_count AS quality_recent_request_count,
-          quality_scores.recent_error_count AS quality_recent_error_count,
-          quality_scores.success_rate AS quality_recent_success_rate,
-          quality_scores.last_error_at AS quality_last_error_at,
-          quality_scores.last_error_message AS quality_last_error_message,
-          quality_scores.updated_at AS quality_updated_at`
-}
-
-function accountQualityJoinClause(includeQualityInQuery: boolean): string {
-  if (!includeQualityInQuery) return ''
-  return `LEFT JOIN ${accountQualityDatabaseAlias}.account_quality_scores quality_scores
-        ON quality_scores.account_id = account_rows.id`
 }
 
 export function accountRowSelectColumns(includeCredentials: boolean): string {

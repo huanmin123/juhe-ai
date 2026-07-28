@@ -1,12 +1,12 @@
 import { toValue, type MaybeRefOrGetter } from 'vue'
 
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
-import type { AccountSummary, GroupOptionSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountListItem, GroupOptionSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 
 interface UseAccountFilterInteractionsOptions {
-  accounts: MaybeRefOrGetter<AccountSummary[]>
+  accounts: MaybeRefOrGetter<AccountListItem[]>
   applyFilters: () => void
   availableProviders: MaybeRefOrGetter<ProviderDefinition[]>
   clearSelection: () => void
@@ -20,7 +20,7 @@ interface UseAccountFilterInteractionsOptions {
 }
 
 export function useAccountFilterInteractions(options: UseAccountFilterInteractionsOptions) {
-  function rememberAccountGroupLabels(items: AccountSummary[]): void {
+  function rememberAccountGroupLabels(items: AccountListItem[]): void {
     for (const account of items) {
       rememberGroupLabel(account.boundGroupId, account.boundGroupName)
     }

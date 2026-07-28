@@ -7,89 +7,36 @@ const modalSource = readFileSync(
   'utf8'
 )
 
-assert.match(modalSource, /createApiKeyEditOpenOperationGuard/, 'API Key 弹窗打开流程必须使用独立 generation guard')
-assert.match(modalSource, /beginOpenOperation\(/, '每次新建或编辑必须先取得新的打开操作 token')
-assert.match(modalSource, /isCurrentOpenOperation\(/, '异步 options 返回后必须校验 token 与作用域')
+assert.doesNotMatch(modalSource, /createApiKeyEditOpenOperationGuard|beginOpenOperation|isCurrentOpenOperation/, '同步打开后不得保留异步 open generation guard')
 
-const openCreateSource = sourceBetween(modalSource, 'async function openCreate', 'async function openEdit')
+const openCreateSource = sourceBetween(modalSource, 'function openCreate', 'function openEdit')
+assert.doesNotMatch(openCreateSource, /async|await|loadRouteStrategyOptions|loadUserReferenceData|resetRouteStrategyOptions/, '新建必须同步完成且不得发起候选请求')
 assertOrdered(openCreateSource, [
-  'await loadRouteStrategyOptions()',
-  'isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey())',
-  'form.routeStrategyId = defaultStrategy.id',
-  'modalOpen.value = true'
-], '新建流程必须先校验最新操作，再写默认策略和打开弹窗')
+  'const defaultStrategy = cachedDefaultRouteStrategy()',
+  'Object.assign(form',
+  'editingBaseline = undefined',
+  'modalOpen.value = true',
+  'if (!defaultStrategy) prewarmCreateDefaultRouteStrategy()'
+], '新建必须先读取缓存快照并立即开窗，缓存缺失时才在开窗后异步重试常量')
 
-const openEditSource = sourceBetween(modalSource, 'async function openEdit', 'function apiKeyEditOpenScopeKey')
+const prewarmSource = sourceBetween(modalSource, 'function prewarmCreateDefaultRouteStrategy', 'async function loadRouteStrategyOptions')
+assert.match(prewarmSource, /void loadUserReferenceData\(params\)\.then/, '缓存缺失时应复用用户常量接口异步重试')
+assert.doesNotMatch(prewarmSource, /loadRouteStrategyOptions|routeStrategies\.options/, '常量重试不得加载策略路由候选列表')
+assert.match(prewarmSource, /!modalOpen\.value[\s\S]+editingId\.value[\s\S]+routeStrategyTouched\.value[\s\S]+form\.routeStrategyId/, '异步常量回填必须避开已关闭、已切换编辑或用户已操作的表单')
+
+const createPayloadSource = sourceBetween(modalSource, "const result = await props.apiKeysApi.create", "emit('created'")
+assert.match(createPayloadSource, /routeStrategyTouched\.value && snapshot\.routeStrategyId/, '用户未操作策略下拉时不得提交缓存展示用的默认策略 ID')
+
+const openEditSource = sourceBetween(modalSource, 'function openEdit', 'function apiKeyOperationScopeParams')
+assert.doesNotMatch(openEditSource, /async|await|loadRouteStrategyOptions|resetRouteStrategyOptions/, '编辑必须同步完成且不得碰候选加载状态')
 assertOrdered(openEditSource, [
-  "await loadRouteStrategyOptions('', [apiKey.routeStrategyId])",
-  'isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey(apiKey))',
-  'form.routeStrategy = selectedRouteStrategySelection(apiKey.routeStrategyId)',
+  'editingRevision = apiKey.revision',
+  'routeStrategy: apiKeyRouteStrategySelection(apiKey)',
+  'editingBaseline = currentApiKeyEditableSnapshot',
   'modalOpen.value = true'
-], '编辑流程必须先校验最新操作，再回填已选策略和打开弹窗')
+], '编辑必须从列表行写入已选策略和 revision/baseline 后立即开窗')
 
-const { createApiKeyEditOpenOperationGuard } = await import('../../views/api-keys/apiKeyEditOpenOperation')
-
-await verifyLatestOperationWins()
-await verifyScopeChangeInvalidatesOperation()
-
-console.log('API Key 弹窗异步打开竞态回归通过')
-
-async function verifyLatestOperationWins(): Promise<void> {
-  const guard = createApiKeyEditOpenOperationGuard()
-  const firstOptions = deferred<void>()
-  const secondOptions = deferred<void>()
-  const writes: string[] = []
-
-  const first = simulateOpen('management:owner-a:create', 'first', firstOptions.promise, writes, guard)
-  const second = simulateOpen('management:owner-a:edit:key-b', 'second', secondOptions.promise, writes, guard)
-
-  secondOptions.resolve()
-  await second
-  firstOptions.resolve()
-  await first
-
-  assert.deepEqual(writes, ['second'], '后发编辑完成后，先发新建不得再写默认策略或打开弹窗')
-}
-
-async function verifyScopeChangeInvalidatesOperation(): Promise<void> {
-  const guard = createApiKeyEditOpenOperationGuard()
-  const options = deferred<void>()
-  const writes: string[] = []
-  let currentScopeKey = 'management:owner-a:create'
-  const operation = guard.beginOpenOperation(currentScopeKey)
-  const pending = (async () => {
-    await options.promise
-    if (!guard.isCurrentOpenOperation(operation, currentScopeKey)) return
-    writes.push('opened')
-  })()
-
-  currentScopeKey = 'management:owner-b:create'
-  options.resolve()
-  await pending
-
-  assert.deepEqual(writes, [], '等待 options 期间切换系统账户后，旧作用域不得写表单或打开弹窗')
-}
-
-async function simulateOpen(
-  scopeKey: string,
-  label: string,
-  optionsPromise: Promise<void>,
-  writes: string[],
-  guard: ReturnType<typeof createApiKeyEditOpenOperationGuard>
-): Promise<void> {
-  const operation = guard.beginOpenOperation(scopeKey)
-  await optionsPromise
-  if (!guard.isCurrentOpenOperation(operation, scopeKey)) return
-  writes.push(label)
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve
-  })
-  return { promise, resolve }
-}
+console.log('API Key 弹窗同步打开、默认常量异步重试与零候选预加载回归通过')
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start)

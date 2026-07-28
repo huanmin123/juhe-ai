@@ -1,36 +1,49 @@
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
-import type { AccountSummary, OAuthAuthURLResult, ProviderDefinition } from '@/types/domain'
+import type {
+  AccountAdvancedDetail,
+  AccountCreateResult,
+  AccountEditBasicDetail,
+  AccountListItem,
+  AccountSummary,
+  OAuthAuthURLResult,
+  ProviderDefinition
+} from '@/types/domain'
 import { ref, watch, type ComputedRef, type Ref } from 'vue'
 
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { isAuthorizedAccount } from './accountFormatters'
-import { buildOAuthCreatePayload } from './accountOAuthPayload'
+import { buildOAuthCreatePayload, openAIOAuthClientPayload } from './accountOAuthPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 import {
   ACCOUNT_API_KEY_BATCH_CREATE_LIMIT,
   buildAccountSavePayload,
-  buildAccountUpdatePayload,
   buildOAuthCreateCommonPayload,
   resolveFormProviderProfile,
   validateAccountSaveForm,
   type AccountSavePayload
 } from './accountSavePayload'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
-import { accountBalanceWillAutoDisable, buildAccountBalancePayload } from './accountBalanceQuery'
+import { accountBalanceWillAutoDisable } from './accountBalanceQuery'
 import {
-  normalizedAccountApiKeys,
-  normalizedAccountApiKeyWeights
+  normalizedAccountApiKeys
 } from './accountCredentials'
 import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
+import { normalizeGrokSsoTokens } from './grokSsoTokens'
 import {
   normalizeFormTagNames,
   sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
+import {
+  buildAccountAdvancedUpdatePatch,
+  buildAccountBasicEditSnapshot,
+  buildAccountBasicUpdatePatch,
+  type AccountBasicEditSnapshot
+} from './accountEditPatch'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -40,9 +53,12 @@ interface UseAccountEditSaveFlowOptions {
   accountAdvancedDetailLoaded: ReadonlyValue<boolean>
   accountErrorPolicyRules: Ref<AccountErrorPolicyRuleForm[]>
   accountResponseInspectionRules: Ref<AccountResponseInspectionRuleForm[]>
-  accounts: ReadonlyValue<AccountSummary[]>
+  accounts: ReadonlyValue<AccountListItem[]>
   createScopeParams: ComputedRef<AccountScopeParams>
-  editingAccountDetail: Ref<AccountSummary | undefined>
+  editingAccountDetail: Ref<AccountEditBasicDetail | undefined>
+  editingAccountAdvancedDetail: Ref<AccountAdvancedDetail | undefined>
+  editingAdvancedBaseline: ReadonlyValue<AccountSavePayload | undefined>
+  editingBasicBaseline: ReadonlyValue<AccountBasicEditSnapshot | undefined>
   editingAccountScopeParams: () => AccountScopeParams
   editingAuthorizedAccount: ComputedRef<boolean>
   editingId: Ref<string | undefined>
@@ -98,6 +114,18 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
 
+    const advancedDetail = options.editingId.value
+      ? options.editingAccountAdvancedDetail.value
+      : undefined
+    if (options.editingId.value && !advancedDetail) {
+      message.error('账户高级配置详情缺失，请关闭弹窗并刷新列表后重试')
+      return
+    }
+    const configRevision = advancedDetail
+      ? requiredAccountConfigRevision(advancedDetail)
+      : undefined
+    if (advancedDetail && configRevision === undefined) return
+
     const balanceAutoDisabled = accountBalanceWillAutoDisable(options.form)
     const payload = buildAccountSavePayload({
       accounts: options.accounts.value,
@@ -110,7 +138,21 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
 
     try {
       if (options.editingId.value) {
-        const updatePayload = buildAccountUpdatePayload(payload, options.editingAccountDetail.value?.status)
+        if (configRevision === undefined) return
+        const baseline = options.editingAdvancedBaseline.value
+        if (!baseline) {
+          message.error('账户高级配置基线缺失，请关闭弹窗后重试')
+          return
+        }
+        const updatePayload = buildAccountAdvancedUpdatePatch(
+          payload,
+          baseline,
+          configRevision
+        )
+        if (!updatePayload) {
+          finishUnchangedEdit()
+          return
+        }
         if (options.isManagementView.value) {
           await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
         } else {
@@ -169,7 +211,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   }
 
   async function saveAuthorizedAccountEdit(): Promise<void> {
-    const account = options.editingAccountDetail.value
+    const account = options.accounts.value.find((item) => item.id === options.editingId.value)
     if (!options.editingId.value || !account || !isAuthorizedAccount(account)) {
       message.warning('请选择要编辑的授权账户')
       return
@@ -185,28 +227,28 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
     const nextPriority = Math.trunc(priority)
     const scopeParams = options.editingAccountScopeParams()
+    const expectedConfigRevision = account.configRevision
+    if (!Number.isInteger(expectedConfigRevision) || Number(expectedConfigRevision) < 1) {
+      message.error('账户配置版本缺失，请刷新列表后重试')
+      return
+    }
+    const payload: Record<string, unknown> & { expectedConfigRevision: number } = {
+      expectedConfigRevision: Number(expectedConfigRevision)
+    }
+    if (options.form.groupId !== account.boundGroupId) payload.groupId = options.form.groupId
+    if (nextPriority !== account.priority) payload.priority = nextPriority
+    if (!sameTagNames(options.form.tags, account.tags)) {
+      payload.tags = normalizeFormTagNames(options.form.tags)
+    }
+    if (Object.keys(payload).length === 1) {
+      finishUnchangedEdit()
+      return
+    }
     try {
-      if (options.form.groupId !== account.boundGroupId) {
-        if (options.isManagementView.value) {
-          await api.accounts.bindGroup(account.id, { groupId: options.form.groupId }, scopeParams)
-        } else {
-          await api.myAccounts.bindGroup(account.id, { groupId: options.form.groupId })
-        }
-      }
-      if (nextPriority !== account.priority) {
-        if (options.isManagementView.value) {
-          await api.accounts.updateAuthorizedDispatch(account.id, { priority: nextPriority }, scopeParams)
-        } else {
-          await api.myAccounts.updateAuthorizedDispatch(account.id, { priority: nextPriority })
-        }
-      }
-      if (!sameTagNames(options.form.tags, account.tags)) {
-        const payload = { tags: normalizeFormTagNames(options.form.tags) }
-        if (options.isManagementView.value) {
-          await api.accounts.updateTags(account.id, payload, scopeParams)
-        } else {
-          await api.myAccounts.updateTags(account.id, payload)
-        }
+      if (options.isManagementView.value) {
+        await api.accounts.update(account.id, payload, scopeParams)
+      } else {
+        await api.myAccounts.update(account.id, payload)
       }
       message.success('授权账户已更新')
       options.modalOpen.value = false
@@ -257,24 +299,30 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.warning('检查模型必须从账户支持模型中选择')
       return
     }
-    const balanceAutoDisabled = accountBalanceWillAutoDisable(options.form)
-    const payload: AccountBasicEditPayload = {
-      name: options.form.name.trim(),
-      concurrencyLimit: Math.trunc(concurrencyLimit),
-      priority: Math.trunc(priority),
-      ...(options.form.status === 'active' || options.form.status === 'disabled'
-        ? { status: options.form.status }
-        : {}),
-      superPriorityEnabled: options.form.privilege === 'super_priority',
-      fallbackEnabled: options.form.privilege === 'fallback',
-      groupId: options.form.groupId,
-      tags: normalizeFormTagNames(options.form.tags),
-      notes: options.form.notes,
-      supportedModels,
-      ...(healthCheckModel ? { healthCheckModel } : {}),
-      healthCheckEndpointMode: options.form.healthCheckEndpointMode,
-      credentials: buildBasicEditCredentialsPatch(options.form, options.editingAccountDetail.value?.credentials),
-      ...buildAccountBalancePayload(options.form)
+    const baseline = options.editingBasicBaseline.value
+    if (!baseline) {
+      message.error('账户基础配置基线缺失，请关闭弹窗后重试')
+      return
+    }
+    const accountDetail = accountBasicDetail(options.editingAccountDetail.value)
+    if (!accountDetail) {
+      message.error('账户基础配置详情缺失，请关闭弹窗并刷新列表后重试')
+      return
+    }
+    const configRevision = requiredAccountConfigRevision(accountDetail)
+    if (configRevision === undefined) return
+    const current = buildAccountBasicEditSnapshot(
+      options.form,
+      accountDetail.credentials
+    )
+    const payload = buildAccountBasicUpdatePatch(
+      current,
+      baseline,
+      configRevision
+    )
+    if (!payload) {
+      finishUnchangedEdit()
+      return
     }
     try {
       if (options.isManagementView.value) {
@@ -282,13 +330,18 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       } else {
         await api.myAccounts.update(options.editingId.value, payload)
       }
-      message.success(balanceAutoDisabled ? '账户基础信息已更新，已因多 Key 自动关闭余额查询' : '账户基础信息已更新')
+      message.success('账户基础信息已更新')
       options.modalOpen.value = false
       await options.loadData()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '保存账户失败'))
     }
+  }
+
+  function finishUnchangedEdit(): void {
+    message.info('未检测到账户修改')
+    options.modalOpen.value = false
   }
 
   async function createOAuthAccountFromUnifiedForm(): Promise<AccountSummary> {
@@ -316,7 +369,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     throw new Error('当前授权方式不应走托管 OAuth 创建流程')
   }
 
-  async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountSummary> {
+  async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountCreateResult> {
     return options.isManagementView.value
       ? api.accounts.create(payload, options.createScopeParams.value)
       : api.myAccounts.create(payload)
@@ -326,7 +379,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     if (resolveManagedOAuthProvider(options.form, options.providers.value) !== 'grok') {
       throw new Error('SSO Cookie 导入仅支持 Grok OAuth')
     }
-    const ssoTokens = normalizeSsoTokens(options.form.ssoTokens)
+    const ssoTokens = normalizeGrokSsoTokens(options.form.ssoTokens)
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
       editingId: options.editingId.value,
@@ -357,24 +410,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     saveAccount,
     saving
   }
-}
-
-type AccountBasicEditPayload = {
-  name: string
-  concurrencyLimit: number
-  priority: number
-  status?: 'active' | 'disabled'
-  superPriorityEnabled?: boolean
-  fallbackEnabled?: boolean
-  groupId: string
-  tags: string[]
-  notes: string
-  supportedModels: string[]
-  healthCheckModel?: string
-  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
-  credentials: Record<string, unknown>
-  balanceQueryEnabled?: boolean
-  balanceQueryConfig?: Record<string, unknown>
 }
 
 export function validateBasicEditCredentialFields(form: AccountFormModel): string | undefined {
@@ -413,65 +448,21 @@ function normalizeBasicEditSupportedModels(value: string[]): string[] {
   return output
 }
 
-function buildBasicEditCredentialsPatch(form: AccountFormModel, currentCredentials: Record<string, unknown> = {}): Record<string, unknown> {
-  const credentials: Record<string, unknown> = {
-    supported_endpoint_modes: [...form.supportedEndpointModes]
+function accountBasicDetail(account: AccountEditBasicDetail | undefined): AccountEditBasicDetail | undefined {
+  return account
+}
+
+function requiredAccountConfigRevision(account: { configRevision?: number }): number | undefined {
+  const configRevision = account.configRevision
+  if (typeof configRevision === 'number' && Number.isInteger(configRevision) && configRevision >= 1) {
+    return configRevision
   }
-  if (form.type === 'api_key') {
-    credentials.base_url = form.baseUrl.trim()
-    const apiKeys = normalizedAccountApiKeys(form)
-    if (apiKeys.length > 0) {
-      credentials.api_key = apiKeys[0]
-    }
-    if (apiKeys.length > 1) {
-      credentials.api_keys = apiKeys
-      credentials.api_key_strategy = form.apiKeyStrategy === 'weighted_round_robin'
-        ? 'weighted_round_robin'
-        : 'round_robin'
-      if (credentials.api_key_strategy === 'weighted_round_robin') {
-        credentials.api_key_weights = normalizedAccountApiKeyWeights(form, apiKeys.length)
-      }
-    }
-  } else if (form.type === 'oauth') {
-    credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url) || ''
-    if (form.accessToken.trim() || credentialText(currentCredentials.access_token)) {
-      credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
-    }
-    if (form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)) {
-      credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
-    }
-  } else if (form.type === 'google_oauth') {
-    if (form.accessToken.trim() || credentialText(currentCredentials.access_token)) {
-      credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
-    }
-    if (form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)) {
-      credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
-    }
-    if (form.googleClientId.trim() || credentialText(currentCredentials.client_id)) {
-      credentials.client_id = form.googleClientId.trim() || credentialText(currentCredentials.client_id)
-    }
-    if (form.googleClientSecret.trim() || credentialText(currentCredentials.client_secret)) {
-      credentials.client_secret = form.googleClientSecret.trim() || credentialText(currentCredentials.client_secret)
-    }
-    if (form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)) {
-      credentials.quota_project_id = form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)
-    }
-    credentials.oauth_type = form.oauthType
-    credentials.tier_id = form.tierId.trim()
-    if (form.projectId.trim() || credentialText(currentCredentials.project_id)) {
-      credentials.project_id = form.projectId.trim() || credentialText(currentCredentials.project_id)
-    }
-    credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url) || ''
-  }
-  return credentials
+  message.error('账户配置版本缺失或无效，请关闭弹窗并刷新列表后重试')
+  return undefined
 }
 
 function usesManagedOAuthCreateFlow(form: AccountFormModel, providers: readonly ProviderDefinition[]): boolean {
   return resolveManagedOAuthProvider(form, providers) !== undefined
-}
-
-function credentialText(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 function resolveManagedOAuthProvider(
@@ -552,9 +543,10 @@ async function createManagedOAuthAccountFromRefreshToken(
       ? api.grokOAuth.createFromRefreshToken(payload, scopeParams)
       : api.myGrokOAuth.createFromRefreshToken(payload)
   }
+  const openAIPayload = { ...payload, ...openAIOAuthClientPayload(form) }
   return isManagementView
-    ? api.openaiOAuth.createFromRefreshToken(payload, scopeParams)
-    : api.myOpenaiOAuth.createFromRefreshToken(payload)
+    ? api.openaiOAuth.createFromRefreshToken(openAIPayload, scopeParams)
+    : api.myOpenaiOAuth.createFromRefreshToken(openAIPayload)
 }
 
 function geminiOAuthClientPayload(form: AccountFormModel): Record<string, unknown> {
@@ -569,8 +561,4 @@ function geminiOAuthClientPayload(form: AccountFormModel): Record<string, unknow
     ...(form.googleQuotaProjectId.trim() ? { quotaProjectId: form.googleQuotaProjectId.trim() } : {}),
     ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {})
   }
-}
-
-function normalizeSsoTokens(value: string): string[] {
-  return [...new Set(value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean))]
 }

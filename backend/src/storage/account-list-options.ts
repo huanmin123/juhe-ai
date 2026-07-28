@@ -1,6 +1,6 @@
 import { normalizeListPage } from './query-utils.js'
 
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'recentRequestCount' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 export type AccountListSortDirection = 'asc' | 'desc'
 
 export interface AccountListSort {
@@ -52,8 +52,6 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   priority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_priority, account_rows.priority) ELSE account_rows.priority END",
   superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_super_priority_enabled, account_rows.super_priority_enabled) ELSE account_rows.super_priority_enabled END",
   fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN COALESCE(group_bindings.local_fallback_enabled, account_rows.fallback_enabled) ELSE account_rows.fallback_enabled END",
-  qualityScore: 'quality_score',
-  recentRequestCount: 'COALESCE(quality_recent_request_count, 0)',
   name: 'account_rows.name',
   type: 'account_rows.type',
   providerCode: 'account_rows.provider_code',
@@ -142,9 +140,6 @@ export function accountStatusFilterValues(status?: string): string[] {
 export function buildAccountListOrderClause(options: Pick<NormalizedAccountListOptions, 'sorts'>): string {
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
-    if (sort.field === 'qualityScore') {
-      return `CASE WHEN quality_score IS NULL THEN 1 ELSE 0 END ASC, quality_score ${direction}`
-    }
     return `${accountListSortColumns[sort.field]} ${direction}`
   })
   return `ORDER BY ${[...orderParts, 'account_rows.created_at ASC', 'account_rows.id ASC'].join(', ')}`

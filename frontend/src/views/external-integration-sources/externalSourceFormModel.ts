@@ -4,12 +4,33 @@ import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/
 import type {
   ExternalIntegrationRateLimitRule,
   ExternalIntegrationScopeOption,
+  ExternalIntegrationSourceListItem,
   ExternalIntegrationSourcePayload,
-  ExternalIntegrationSourceStatus,
-  ExternalIntegrationSourceSummary
+  ExternalIntegrationSourceStatus
 } from '@/types/domain'
 
 const defaultPublicScope = 'juhe_ai_public:group_list:read'
+
+export const DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS: ExternalIntegrationScopeOption[] = [
+  { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
+  { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
+  { value: defaultPublicScope, label: 'GET 分组列表' },
+  { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' },
+  { value: 'juhe_ai_public:api_key_add:write', label: 'POST API Key 新增' },
+  { value: 'juhe_ai_public:api_key_update:write', label: 'POST API Key 修改' },
+  { value: 'juhe_ai_public:api_key_delete:write', label: 'POST API Key 删除' },
+  { value: 'juhe_ai_public:route_strategy_add:write', label: 'POST 路由策略新增' },
+  { value: 'juhe_ai_public:route_strategy_update:write', label: 'POST 路由策略修改' },
+  { value: 'juhe_ai_public:route_strategy_delete:write', label: 'POST 路由策略删除' },
+  { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
+  { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
+  { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+  { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
+  { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
+  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+]
+
+export const DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES = [defaultPublicScope] as const
 
 export interface ExternalSourceForm {
   name: string
@@ -25,18 +46,18 @@ export const externalSourceStatusOptions: Array<{ label: string; value: External
   { label: '停用', value: 'disabled' }
 ]
 
-export function createEmptySourceForm(scopeOptions: ExternalIntegrationScopeOption[] = []): ExternalSourceForm {
+export function createEmptySourceForm(): ExternalSourceForm {
   return {
     name: '',
     status: 'active',
-    scopes: defaultCreateSourceScopes(scopeOptions),
+    scopes: [...DEFAULT_EXTERNAL_INTEGRATION_SELECTED_SCOPES],
     rateLimits: [],
     expiresAt: null,
     notes: ''
   }
 }
 
-export function createSourceFormFromRecord(record: ExternalIntegrationSourceSummary): ExternalSourceForm {
+export function createSourceFormFromRecord(record: ExternalIntegrationSourceListItem): ExternalSourceForm {
   return {
     name: record.name,
     status: record.status,
@@ -71,12 +92,6 @@ export function normalizeRateLimits(rules: ExternalIntegrationRateLimitRule[]): 
 
 export function formatRateLimits(rules: ExternalIntegrationRateLimitRule[]): string {
   return rules.length ? rules.map((rule) => `${rule.windowSeconds}s/${rule.maxRequests}次`).join('，') : '不限制'
-}
-
-function defaultCreateSourceScopes(scopeOptions: ExternalIntegrationScopeOption[]): string[] {
-  return scopeOptions.some((item) => item.value === defaultPublicScope)
-    ? [defaultPublicScope]
-    : []
 }
 
 function normalizeRateLimitInteger(value: unknown, min: number, max: number, label: string): number {

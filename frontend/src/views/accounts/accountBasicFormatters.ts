@@ -14,27 +14,27 @@ import {
   isHybridProviderCode,
   isXaiProviderCode
 } from '@/shared/providerProtocol'
-import type { AccountClientCompatibility, AccountSummary, AccountType } from '@/types/domain'
+import type { AccountClientCompatibility, AccountListItem, AccountType } from '@/types/domain'
 
-function hasAuthorizedAccessType(account: AccountSummary): boolean {
+function hasAuthorizedAccessType(account: AccountListItem): boolean {
   return account.accessType === 'authorized'
 }
 
-export function accountDisplayExpiresAt(account: AccountSummary): string | undefined {
+export function accountDisplayExpiresAt(account: AccountListItem): string | undefined {
   if (hasAuthorizedAccessType(account) && account.authorizationExpiresAt) {
     return account.authorizationExpiresAt
   }
   return account.accountExpiresAt
 }
 
-export function isAccountDisplayExpired(account: AccountSummary): boolean {
+export function isAccountDisplayExpired(account: AccountListItem): boolean {
   const expiresAt = accountDisplayExpiresAt(account)
   if (!expiresAt) return false
   const time = serverDateTimeTimestamp(expiresAt)
   return time !== undefined && time <= Date.now()
 }
 
-export function accountDisplayName(account: AccountSummary): string {
+export function accountDisplayName(account: AccountListItem): string {
   if (!hasAuthorizedAccessType(account)) return account.name
   const cleaned = account.name.replace(/（授权(?: [^）]+)?）$/, '')
   return cleaned || account.name
@@ -87,19 +87,19 @@ export function normalizeKeyword(value: unknown): string {
   return String(value ?? '').trim()
 }
 
-export function accountLastUsedAt(account: AccountSummary): string | undefined {
+export function accountLastUsedAt(account: AccountListItem): string | undefined {
   return account.lastUsedAt
 }
 
-export function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
+export function compareAccountLastUsedAt(left: AccountListItem, right: AccountListItem): number {
   return timestampOf(accountLastUsedAt(left)) - timestampOf(accountLastUsedAt(right))
 }
 
-export function compareAccountExpiresAt(left: AccountSummary, right: AccountSummary): number {
+export function compareAccountExpiresAt(left: AccountListItem, right: AccountListItem): number {
   return timestampOf(accountDisplayExpiresAt(left)) - timestampOf(accountDisplayExpiresAt(right))
 }
 
-export function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {
+export function compareAccountConcurrency(left: AccountListItem, right: AccountListItem): number {
   return left.concurrencyLimit - right.concurrencyLimit || left.currentConcurrency - right.currentConcurrency || left.name.localeCompare(right.name, 'zh-CN')
 }
 

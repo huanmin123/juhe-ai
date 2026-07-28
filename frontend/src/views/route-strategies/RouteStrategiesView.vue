@@ -475,11 +475,17 @@ import GroupSelect from '@/components/GroupSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { loadGroupOptionsResource } from '@/composables/useGroupOptionsResource'
-import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
+import {
+  filterModelOption,
+  useProviderModelSelectOptions,
+  type ProviderModelSelectOption
+} from '@/composables/useProviderModelSelectOptions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
+import { invalidateUserReferenceData } from '@/composables/useUserReferenceData'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
@@ -596,6 +602,7 @@ const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
 const groupOptionsRaw = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
+const groupOptionsLoaded = ref(false)
 let groupOptionsRequestToken = 0
 let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
@@ -616,6 +623,7 @@ const {
   systemAccounts
 } = useRemoteSystemAccountOptions({
   enabled: () => isManagementView.value,
+  onMissingSelectedIds: handleMissingSystemAccountFilter,
   selectedIds: () => [systemAccountFilter.value]
 })
 
@@ -643,12 +651,26 @@ const selectedModelIds = computed(() => [
 const {
   loading: modelOptionsLoading,
   loadModelOptions,
-  selectOptions: modelSelectOptions
+  resetModelOptions,
+  selectOptions: loadedModelSelectOptions
 } = useProviderModelSelectOptions({
   scopeParams: modelOptionsScopeParams,
   providerCodes: modelProviderCodes,
   selectedIds: selectedModelIds,
   onLoadError: (error) => message.warning(extractApiErrorMessage(error, '模型选项加载失败'))
+})
+const modelSelectOptions = computed<ProviderModelSelectOption[]>(() => {
+  const optionsByValue = new Map<string, ProviderModelSelectOption>()
+  for (const value of selectedModelIds.value) {
+    optionsByValue.set(value, {
+      label: value,
+      value,
+      providerCodes: modelProviderCodes.value,
+      supportedApiProtocols: []
+    })
+  }
+  for (const option of loadedModelSelectOptions.value) optionsByValue.set(option.value, option)
+  return [...optionsByValue.values()]
 })
 
 const modeOptions: Array<{ label: string; value: RouteStrategyMode }> = [
@@ -799,6 +821,8 @@ const targetSystemAccountLabel = computed(() => {
 })
 
 watch(() => form.mode, (mode) => {
+  clearModelOptionsSearchTimer()
+  if (mode !== 'hybrid_smart') resetModelOptions()
   if (mode === 'normal' && form.groupBindings.length > 1) {
     form.groupBindings = [form.groupBindings[0] ?? createBindingRow()]
   }
@@ -806,8 +830,17 @@ watch(() => form.mode, (mode) => {
   normalizeBindingRowsForMode()
   if (mode === 'hybrid_smart') {
     normalizeHybridLevelRouteRanges()
-    void loadModelOptions()
   }
+})
+watch(() => modelProviderCodes.value.join('\u0000'), () => {
+  clearModelOptionsSearchTimer()
+  resetModelOptions()
+})
+watch(modalOpen, (open) => {
+  if (open) return
+  clearGroupOptionsSearchTimer()
+  clearModelOptionsSearchTimer()
+  resetModelOptions()
 })
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
@@ -818,7 +851,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   routeStrategyListRequestGeneration += 1
+  invalidateEditDetailRequest()
   clearGroupOptionsSearchTimer()
+  clearModelOptionsSearchTimer()
+  resetModelOptions()
 })
 
 async function loadRouteStrategies(): Promise<boolean> {
@@ -878,13 +914,16 @@ function refreshRouteStrategies() {
 }
 
 function resetFilters() {
+  invalidateEditDetailRequest()
   const defaults = defaultRouteStrategiesPageState()
   keyword.value = defaults.keyword
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   statusFilter.value = defaults.statusFilter
   modeFilter.value = defaults.modeFilter
+  resetRouteStrategyListForScopeChange()
   resetGroupOptions()
+  resetRouteModelOptions()
   resetSystemAccountOptionsSearch()
   page.value = defaults.pagination.current
   pageSize.value = defaults.pagination.pageSize
@@ -893,13 +932,35 @@ function resetFilters() {
 }
 
 function handleSystemAccountFilterChange() {
+  invalidateEditDetailRequest()
   if (systemAccountFilter.value === allSystemAccountsValue) {
     systemAccountFilterSelection.value = undefined
   }
+  resetRouteStrategyListForScopeChange()
   resetGroupOptions()
+  resetRouteModelOptions()
   resetSystemAccountOptionsSearch()
   page.value = 1
   void loadRouteStrategies()
+}
+
+function handleMissingSystemAccountFilter(ids: string[]): void {
+  if (systemAccountFilter.value === allSystemAccountsValue || !ids.includes(systemAccountFilter.value)) return
+  invalidateEditDetailRequest()
+  systemAccountFilter.value = allSystemAccountsValue
+  systemAccountFilterSelection.value = undefined
+  resetRouteStrategyListForScopeChange()
+  resetGroupOptions()
+  resetRouteModelOptions()
+  page.value = 1
+  void loadRouteStrategies()
+}
+
+function resetRouteStrategyListForScopeChange(): void {
+  routeStrategyListRequestGeneration += 1
+  loading.value = false
+  items.value = []
+  total.value = 0
 }
 
 function defaultRouteStrategiesPageState(): RouteStrategiesPageState {
@@ -992,7 +1053,7 @@ function openCreate() {
   form.normal = defaultNormalRoutingForm()
   form.hybrid = defaultHybridRoutingForm()
   resetGroupOptions()
-  void loadGroupOptions()
+  resetRouteModelOptions()
   modalOpen.value = true
 }
 
@@ -1004,14 +1065,36 @@ async function openEdit(record: RouteStrategyListItem) {
   const operationScopeParams = routeStrategyOperationScopeParams(record)
   const requestToken = editDetailRequestToken + 1
   editDetailRequestToken = requestToken
+  const requestSignature = editDetailRequestSignature(record.id, operationScopeParams?.systemAccountId)
   try {
     const detail = await routeStrategiesApi.detail(record.id, operationScopeParams)
-    if (requestToken !== editDetailRequestToken) return
+    if (!isCurrentEditDetailRequest(requestToken, requestSignature, record.id, operationScopeParams?.systemAccountId)) return
     fillEditForm(detail, record.systemAccountId)
   } catch (error) {
-    if (requestToken !== editDetailRequestToken) return
+    if (!isCurrentEditDetailRequest(requestToken, requestSignature, record.id, operationScopeParams?.systemAccountId)) return
     message.error(extractApiErrorMessage(error, '策略路由详情加载失败'))
   }
+}
+
+function invalidateEditDetailRequest(): void {
+  editDetailRequestToken += 1
+}
+
+function editDetailRequestSignature(recordId: string, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return JSON.stringify([
+    authState.revision.value,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    routeStrategyListScopeKey(),
+    systemAccountId ?? '',
+    recordId
+  ])
+}
+
+function isCurrentEditDetailRequest(token: number, signature: string, recordId: string, systemAccountId?: string): boolean {
+  return token === editDetailRequestToken
+    && signature === editDetailRequestSignature(recordId, systemAccountId)
 }
 
 function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: string) {
@@ -1030,9 +1113,9 @@ function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: st
   normalizeBindingRowsForMode()
   if (record.mode === 'hybrid_smart') normalizeHybridLevelRouteRanges()
   resetGroupOptions()
-  void loadGroupOptions('', record.groupBindings.map((binding) => binding.groupId))
+  resetRouteModelOptions()
+  groupOptionsRaw.value = selectedGroupOptionsFromBindings(record.groupBindings)
   modalOpen.value = true
-  if (record.mode === 'hybrid_smart') void loadModelOptions()
 }
 
 async function saveRouteStrategy() {
@@ -1080,6 +1163,12 @@ async function saveRouteStrategy() {
     }
     if (editingId.value) {
       await routeStrategiesApi.update(editingId.value, payload, operationScopeParams)
+      if (editingIsDefault.value) {
+        invalidateUserReferenceData({
+          viewScope: isManagementView.value ? 'admin' : 'self',
+          systemAccountId: operationScopeParams?.systemAccountId
+        })
+      }
       message.success('策略路由已更新')
     } else {
       await routeStrategiesApi.create(payload, operationScopeParams)
@@ -1233,6 +1322,21 @@ function createBindingRow(
   }
 }
 
+function selectedGroupOptionsFromBindings(bindings: RouteStrategyGroupBindingSummary[]): GroupOptionSummary[] {
+  const selectedGroups = new Map<string, GroupOptionSummary>()
+  for (const binding of bindings) {
+    const id = binding.groupId.trim()
+    if (!id) continue
+    selectedGroups.set(id, {
+      id,
+      name: binding.groupName?.trim() || id,
+      providerCode: binding.providerCode?.trim() || undefined,
+      enabled: binding.groupEnabled
+    })
+  }
+  return [...selectedGroups.values()]
+}
+
 function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem | RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
   const systemAccountId = record?.systemAccountId?.trim()
     || editingSystemAccountId.value?.trim()
@@ -1246,6 +1350,7 @@ function resetGroupOptions() {
   groupOptionsLoadingKey = undefined
   groupOptionsLoadingPromise = undefined
   groupOptionsRaw.value = []
+  groupOptionsLoaded.value = false
   groupOptionsLoading.value = false
 }
 
@@ -1256,6 +1361,7 @@ async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
     groupOptionsLoadingKey = undefined
     groupOptionsLoadingPromise = undefined
     groupOptionsRaw.value = []
+    groupOptionsLoaded.value = false
     groupOptionsLoading.value = false
     return
   }
@@ -1278,7 +1384,13 @@ async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
         selectedIds: normalizedSelectedIds,
         isCurrent: () => requestToken === groupOptionsRequestToken,
         apply: (groups) => {
-          groupOptionsRaw.value = groups
+          const currentSelectedIds = new Set(form.groupBindings.map((binding) => binding.groupId.trim()).filter(Boolean))
+          const merged = new Map(groups.map((group) => [group.id, group]))
+          for (const group of groupOptionsRaw.value) {
+            if (currentSelectedIds.has(group.id) && !merged.has(group.id)) merged.set(group.id, group)
+          }
+          groupOptionsRaw.value = [...merged.values()]
+          groupOptionsLoaded.value = !keyword
         }
       })
     } catch (error) {
@@ -1306,14 +1418,16 @@ function groupOptionsRequestKey(systemAccountId: string | undefined, keyword: st
 }
 
 function handleGroupOptionsDropdown(open: boolean) {
-  if (open && !groupOptionsRaw.value.length) void loadGroupOptions()
+  if (open && !groupOptionsLoaded.value) {
+    void loadGroupOptions('', form.groupBindings.map((binding) => binding.groupId))
+  }
 }
 
 function handleGroupOptionsSearch(value: string) {
   clearGroupOptionsSearchTimer()
   groupOptionsSearchTimer = window.setTimeout(() => {
     groupOptionsSearchTimer = undefined
-    void loadGroupOptions(value)
+    void loadGroupOptions(value, form.groupBindings.map((binding) => binding.groupId))
   }, 250)
 }
 
@@ -1329,11 +1443,22 @@ function handleModelOptionsDropdown(open: boolean) {
 }
 
 function handleModelOptionsSearch(value: string): void {
-  if (modelOptionsSearchTimer) window.clearTimeout(modelOptionsSearchTimer)
+  clearModelOptionsSearchTimer()
   modelOptionsSearchTimer = window.setTimeout(() => {
     modelOptionsSearchTimer = undefined
     if (modelProviderCodes.value.length) void loadModelOptions({ keyword: value, selectedIds: selectedModelIds.value })
   }, 250)
+}
+
+function clearModelOptionsSearchTimer(): void {
+  if (!modelOptionsSearchTimer || typeof window === 'undefined') return
+  window.clearTimeout(modelOptionsSearchTimer)
+  modelOptionsSearchTimer = undefined
+}
+
+function resetRouteModelOptions(): void {
+  clearModelOptionsSearchTimer()
+  resetModelOptions()
 }
 
 function normalizeBindingRowsForMode() {

@@ -2,13 +2,15 @@ import type { Router } from 'express'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { findAccountForTestAsync, findAccountSummaryAsync } from '../../storage/repositories.js'
-import { loadAccountBalanceConfigurationsByAccountIdsAsync } from '../../storage/account-balance.repository.js'
+import { findAccountSummaryAsync } from '../../storage/repositories.js'
+import { findAccountAdvancedDetailAsync } from '../../storage/account-advanced-detail.repository.js'
+import { findAccountApiKeyRuntimeAccountAsync } from '../../storage/account-api-key-runtime.repository.js'
+import { AccountEditBasicForbiddenError, findAccountEditBasicDetailAsync } from '../../storage/account-edit-basic.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadOwnerAccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
-import { sanitizeAccountApiKeyRuntimeResponse, sanitizeAccountBasicDetailResponse, sanitizeAccountEditBasicDetailResponse, sanitizeAccountResponse, sanitizeAccountRuntimeAvailabilityResponse } from './account-response-sanitizer.js'
+import { sanitizeAccountApiKeyRuntimeResponse, sanitizeAccountBasicDetailResponse } from './account-response-sanitizer.js'
 
 export function registerAccountDetailRoutes(router: Router): void {
   router.get('/:id/api-key-runtime', async (req, res, next) => {
@@ -19,12 +21,8 @@ export function registerAccountDetailRoutes(router: Router): void {
         res.status(404).json({ message: '账户不存在' })
         return
       }
-      if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) {
+      if (account.accessType === 'authorized') {
         res.status(403).json({ message: '授权实例不能查看来源账户 API Key 运行明细' })
-        return
-      }
-      if (account.permissions?.canViewCredentials === false || account.permissions?.canEdit === false) {
-        res.status(403).json({ message: '无权查看账户 API Key 运行明细' })
         return
       }
       const runtime = await loadOwnerAccountApiKeyRuntimeResponse(account)
@@ -43,6 +41,7 @@ export function registerAccountDetailRoutes(router: Router): void {
   })
 
   router.get('/:id/advanced', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
     try {
       const account = await loadEditableAccountDetail(req.params.id, req.query)
       if (!account) {
@@ -55,15 +54,12 @@ export function registerAccountDetailRoutes(router: Router): void {
         res.status(400).json(badRequest(error.message))
         return
       }
-      if (error instanceof Error && error.message === '无权查看账户凭据') {
-        res.status(403).json({ message: error.message })
-        return
-      }
       next(error)
     }
   })
 
   router.get('/:id/edit-basic', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
     try {
       const account = await loadEditableAccountBasicDetail(req.params.id, req.query)
       if (!account) {
@@ -76,7 +72,7 @@ export function registerAccountDetailRoutes(router: Router): void {
         res.status(400).json(badRequest(error.message))
         return
       }
-      if (error instanceof Error && error.message === '无权查看账户凭据') {
+      if (error instanceof AccountEditBasicForbiddenError) {
         res.status(403).json({ message: error.message })
         return
       }
@@ -106,26 +102,21 @@ export function registerAccountDetailRoutes(router: Router): void {
   })
 }
 
-async function loadAccountForApiKeyRuntime(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
+async function loadAccountForApiKeyRuntime(accountId: string, query: Record<string, unknown>) {
   const scopeQuery = parseRequestScopeQuery(query)
   if (!scopeQuery.success) {
     throw new AccountDetailBadRequestError(scopeQuery.message)
   }
-  return findAccountSummaryAsync(accountId, getRequestAccessScope(scopeQuery.data.systemAccountId))
+  return findAccountApiKeyRuntimeAccountAsync(accountId, getRequestAccessScope(scopeQuery.data.systemAccountId))
 }
 
-async function loadEditableAccountBasicDetail(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
+async function loadEditableAccountBasicDetail(accountId: string, query: Record<string, unknown>) {
   const scopeQuery = parseRequestScopeQuery(query)
   if (!scopeQuery.success) {
     throw new AccountDetailBadRequestError(scopeQuery.message)
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const account = await findAccountSummaryAsync(accountId, requestAccess)
-  if (!account) return undefined
-  if (account.permissions?.canViewCredentials === false || account.permissions?.canEdit === false) {
-    throw new Error('无权查看账户凭据')
-  }
-  return sanitizeAccountEditBasicDetailResponse(await hydrateEditableBalanceConfiguration(account))
+  return findAccountEditBasicDetailAsync(accountId, requestAccess)
 }
 
 async function loadBasicAccountDetail(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
@@ -140,38 +131,13 @@ async function loadBasicAccountDetail(accountId: string, query: Record<string, u
   return sanitizeAccountBasicDetailResponse(hydratedAccount)
 }
 
-async function loadEditableAccountDetail(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
+async function loadEditableAccountDetail(accountId: string, query: Record<string, unknown>) {
   const scopeQuery = parseRequestScopeQuery(query)
   if (!scopeQuery.success) {
     throw new AccountDetailBadRequestError(scopeQuery.message)
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const visibleAccount = await findAccountSummaryAsync(accountId, requestAccess)
-  if (!visibleAccount) return undefined
-  if (visibleAccount.accessType === 'authorized') {
-    const hydratedAccount = await applyServerAccountRuntimeToAccount(visibleAccount)
-    return sanitizeAccountResponse(hydratedAccount)
-  }
-  if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
-    throw new Error('无权查看账户凭据')
-  }
-  const account = await findAccountForTestAsync(accountId, requestAccess, visibleAccount)
-  if (!account) return undefined
-  return sanitizeAccountRuntimeAvailabilityResponse(
-    await applyServerAccountRuntimeToAccount(await hydrateEditableBalanceConfiguration(account))
-  )
-}
-
-async function hydrateEditableBalanceConfiguration(account: AccountSummary): Promise<AccountSummary> {
-  if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) return account
-  const configuration = (await loadAccountBalanceConfigurationsByAccountIdsAsync([account.id])).get(account.id)
-  if (!configuration) return account
-  return {
-    ...account,
-    balanceQueryEnabled: configuration.enabled,
-    balanceQueryConfig: configuration.config,
-    balanceQueryNextRefreshAt: configuration.nextRefreshAt
-  }
+  return findAccountAdvancedDetailAsync(accountId, requestAccess)
 }
 
 class AccountDetailBadRequestError extends Error {}

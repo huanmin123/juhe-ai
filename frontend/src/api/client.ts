@@ -23,6 +23,7 @@ import { systemAccountsApi } from './domains/systemAccounts'
 import { myTeamsApi, systemTeamsApi } from './domains/systemTeams'
 import { chatApi } from './domains/chat'
 import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
+import { myUiBootstrapApi, uiBootstrapApi } from './domains/userReferenceData'
 
 export { setMustChangePasswordHandler, setUnauthorizedHandler } from './http'
 export { apiUrl } from './http'
@@ -58,6 +59,8 @@ export const api = {
   proxies: proxiesApi,
   usageRecords: usageRecordsApi,
   myUsageRecords: myUsageRecordsApi,
+  uiBootstrap: uiBootstrapApi,
+  myUiBootstrap: myUiBootstrapApi,
   auditLogs: auditLogsApi,
   runtimeLogs: runtimeLogsApi,
   operationLogs: operationLogsApi,

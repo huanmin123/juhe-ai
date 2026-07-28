@@ -1,5 +1,5 @@
 import type { AccountExportFilters, AccountListSortParam } from '@/api/client'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 
 export interface AccountExportFilterState {
   keyword: string
@@ -33,7 +33,7 @@ export function accountExportFiltersFromState(filters: AccountExportFilterState,
   }
 }
 
-export function accountExportPayloadByIds(accounts: AccountSummary[]): { accountIds: string[] } {
+export function accountExportPayloadByIds(accounts: AccountListItem[]): { accountIds: string[] } {
   return { accountIds: accounts.map((account) => account.id) }
 }
 

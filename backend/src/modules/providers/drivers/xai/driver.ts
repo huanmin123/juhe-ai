@@ -84,8 +84,14 @@ export const xaiProviderDriver: ProviderDriver = {
     })
     const headers = buildUpstreamHeaders(req.headers, account)
     if (account.type === 'oauth') {
-      headers.set('user-agent', 'sub2api-grok/1.0')
-      headers.set('x-grok-client-version', '0.2.93')
+      if (isGrokCliProxyBaseUrl(account.baseUrl)) {
+        headers.set('user-agent', 'xai-grok-workspace/0.2.93')
+        headers.set('x-xai-token-auth', 'xai-grok-cli')
+        headers.set('x-grok-client-version', '0.2.93')
+      } else {
+        headers.delete('x-xai-token-auth')
+        headers.delete('x-grok-client-version')
+      }
       headers.set('accept', 'application/json, text/event-stream')
       headers.set('content-type', 'application/json')
     }
@@ -114,6 +120,14 @@ export const xaiProviderDriver: ProviderDriver = {
       accountType: account.type,
       clientCompatibility: account.clientCompatibility
     })
+  }
+}
+
+function isGrokCliProxyBaseUrl(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === 'cli-chat-proxy.grok.com'
+  } catch {
+    return false
   }
 }
 

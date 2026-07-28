@@ -7,6 +7,8 @@ import {
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
+  GatewayJsonWorkerCanceledError,
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   normalizeOpenAIOAuthCodexParsedBodyInWorker,
   parseGatewayRequestJsonBody
@@ -37,6 +39,17 @@ export interface OpenAIOAuthCodexRequestParts {
 
 type OpenAIOAuthCodexRawBodyRequest = GatewayRawBodyRequest & {
   openAIOAuthCodexLargeBodyLogged?: boolean
+  openAIOAuthCodexNormalizedBodyCache?: {
+    rawBody?: Buffer
+    parsedBody: unknown
+    values: Map<string, Promise<NormalizedCodexBody>>
+  }
+}
+
+let openAIOAuthCodexNormalizationObserverForTest: (() => void) | undefined
+
+export function setOpenAIOAuthCodexNormalizationObserverForTest(observer: (() => void) | undefined): void {
+  openAIOAuthCodexNormalizationObserverForTest = observer
 }
 
 interface OpenAIOAuthCodexRequestOptions {
@@ -94,25 +107,94 @@ async function normalizeOpenAIOAuthCodexBody(
   }
   const rawBodyBytes = (req as GatewayRawBodyRequest).rawBody?.byteLength ?? 0
   if (rawBodyBytes > gatewayJsonBodyInlineParseMaxBytes) {
-    try {
-      return await normalizeOpenAIOAuthCodexParsedBodyInWorker(
-        body,
-        rawBodyBytes,
-        normalizeInput,
-        undefined,
-        signal
-      )
-    } catch (error) {
-      if (isGatewayJsonWorkerQueueFullError(error)) {
-        throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
-          statusCode: 503,
-          type: 'server_overloaded'
-        })
-      }
-      throw error
-    }
+    return await normalizeLargeOpenAIOAuthCodexBody(req, body, rawBodyBytes, normalizeInput, signal)
   }
   return normalizeOpenAIOAuthCodexParsedBody(body, normalizeInput)
+}
+
+// worker_threads clones parsedBody synchronously in postMessage. Equivalent
+// account attempts reuse this result to avoid cloning the full request again.
+async function normalizeLargeOpenAIOAuthCodexBody(
+  req: Request,
+  body: unknown,
+  rawBodyBytes: number,
+  normalizeInput: Parameters<typeof normalizeOpenAIOAuthCodexParsedBody>[1],
+  signal?: AbortSignal
+): Promise<NormalizedCodexBody> {
+  if (signal?.aborted) {
+    throw new GatewayJsonWorkerCanceledError('网关 JSON worker 任务已取消')
+  }
+  const request = req as OpenAIOAuthCodexRawBodyRequest
+  const rawBody = request.rawBody
+  let cache = request.openAIOAuthCodexNormalizedBodyCache
+  if (!cache || cache.rawBody !== rawBody || cache.parsedBody !== body) {
+    cache = {
+      rawBody,
+      parsedBody: body,
+      values: new Map()
+    }
+    request.openAIOAuthCodexNormalizedBodyCache = cache
+  }
+  const key = openAIOAuthCodexNormalizationCacheKey(normalizeInput)
+  const existing = cache.values.get(key)
+  if (existing) return await existing
+
+  openAIOAuthCodexNormalizationObserverForTest?.()
+  const normalization = normalizeOpenAIOAuthCodexParsedBodyInWorker(
+    body,
+    rawBodyBytes,
+    normalizeInput,
+    undefined,
+    signal
+  )
+  cache.values.set(key, normalization)
+  try {
+    return await normalization
+  } catch (error) {
+    if (cache.values.get(key) === normalization) {
+      cache.values.delete(key)
+    }
+    if (isGatewayJsonWorkerQueueFullError(error)) {
+      throw new OpenAIOAuthCodexAdapterError('网关请求解析繁忙，请稍后重试', 'server_overloaded', {
+        statusCode: 503,
+        type: 'server_overloaded'
+      })
+    }
+    throw error
+  }
+}
+
+function openAIOAuthCodexNormalizationCacheKey(
+  input: Parameters<typeof normalizeOpenAIOAuthCodexParsedBody>[1]
+): string {
+  return JSON.stringify([
+    input.compact,
+    input.modelOverride ?? '',
+    input.identity.systemAccountId,
+    input.identity.apiKeyId ?? '',
+    headerValue(input.inputHeaders, 'session-id') ?? '',
+    headerValue(input.inputHeaders, 'thread-id') ?? '',
+    headerValue(input.inputHeaders, 'prompt_cache_key') ?? '',
+    headerValue(input.inputHeaders, 'x-prompt-cache-key') ?? '',
+    stableNormalizationCacheToken(input.account.credentials?.service_tier_override),
+    stableNormalizationCacheToken(input.account.credentials?.reasoning_effort_override),
+    input.requestOverrideModelCapabilities?.supportedServiceTiers ?? [],
+    input.requestOverrideModelCapabilities?.supportedReasoningEfforts ?? []
+  ])
+}
+
+function stableNormalizationCacheToken(value: unknown): string {
+  if (value === undefined) return 'undefined'
+  if (value === null) return 'null'
+  if (typeof value === 'string') return `string:${value}`
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return `${typeof value}:${String(value)}`
+  }
+  try {
+    return `${typeof value}:${JSON.stringify(value)}`
+  } catch {
+    return `${typeof value}:${Object.prototype.toString.call(value)}`
+  }
 }
 
 async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortSignal): Promise<unknown> {
@@ -144,7 +226,10 @@ async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortS
           type: 'server_overloaded'
         })
       }
-      throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
+      if (isGatewayJsonWorkerInvalidJsonError(error)) {
+        throw new OpenAIOAuthCodexAdapterError('请求体必须是有效的 JSON 对象')
+      }
+      throw error
     }
   }
 
@@ -188,12 +273,14 @@ function buildOpenAIOAuthCodexHeaders(
   const nativeCodexClient = isOpenAICodexClientHeaders(headers)
   normalizeOpenAICodexClientHeaders(headers, input.model)
   headers.set('authorization', `Bearer ${account.apiKey}`)
+  headers.set('content-type', 'application/json')
+  if (!headers.has('openai-beta')) headers.set('openai-beta', 'responses=experimental')
   if (!nativeCodexClient) {
-    headers.set('content-type', 'application/json')
     headers.set('accept', input.compact || !input.stream ? 'application/json' : 'text/event-stream')
   }
 
   const accountId = stringCredential(account.credentials, 'account_id')
+    || stringCredential(account.credentials, 'chatgpt_account_id')
   if (accountId) {
     headers.set('chatgpt-account-id', accountId)
   }

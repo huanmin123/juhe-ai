@@ -1,7 +1,6 @@
 import { authState } from '@/composables/useAuth'
 import type {
-  AccountModelMapping,
-  AccountSummary,
+  AccountListItem,
   AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestTask
@@ -22,7 +21,7 @@ export interface AccountTestRunSessionSnapshot {
   modelOptions: Array<{ label: string; value: string }>
   testEndpointMode: AccountTestEndpointMode
   testEndpointModes: AccountSupportedEndpointMode[]
-  testingAccount: AccountSummary
+  testingAccount: AccountListItem
   activeTask: AccountTestTask
   result?: AccountTestResult
   running: boolean
@@ -49,26 +48,26 @@ interface StoredAccountTestRunSessionSnapshot {
 
 interface StoredAccountSummary {
   id: string
+  configRevision?: number
   systemAccountId?: string
-  providerCode: AccountSummary['providerCode']
+  providerCode: AccountListItem['providerCode']
   providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string
   name: string
-  type: AccountSummary['type']
-  status: AccountSummary['status']
+  type: AccountListItem['type']
+  status: AccountListItem['status']
   concurrencyLimit: number
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
-  clientCompatibility: AccountSummary['clientCompatibility']
+  clientCompatibility: AccountListItem['clientCompatibility']
   healthCheckModel: string
-  healthCheckEndpointMode: AccountSummary['healthCheckEndpointMode']
-  modelMappings?: AccountModelMapping[]
+  healthCheckEndpointMode: AccountListItem['healthCheckEndpointMode']
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
   schedulable: boolean
-  accessType?: AccountSummary['accessType']
+  accessType?: AccountListItem['accessType']
   boundGroupId?: string
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
@@ -209,9 +208,10 @@ function storeTask(task: AccountTestTask): AccountTestTask {
   }
 }
 
-function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
+function storeAccountSummary(account: AccountListItem): StoredAccountSummary {
   return {
     id: account.id,
+    configRevision: account.configRevision,
     systemAccountId: account.systemAccountId,
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
@@ -227,7 +227,6 @@ function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
     clientCompatibility: account.clientCompatibility,
     healthCheckModel: account.healthCheckModel,
     healthCheckEndpointMode: account.healthCheckEndpointMode,
-    modelMappings: account.modelMappings,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
     schedulable: account.schedulable,
@@ -238,13 +237,14 @@ function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
   }
 }
 
-function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | undefined {
+function restoreAccountSummary(value: StoredAccountSummary): AccountListItem | undefined {
   if (!value || typeof value !== 'object') return undefined
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.providerCode !== 'string') return undefined
-  if (value.type !== 'api_key' && value.type !== 'oauth') return undefined
+  if (value.type !== 'api_key' && value.type !== 'oauth' && value.type !== 'google_oauth') return undefined
   if (!isAccountHealthCheckEndpointMode(value.healthCheckEndpointMode)) return undefined
   return {
     id: value.id,
+    configRevision: finiteOptionalPositiveInteger(value.configRevision),
     systemAccountId: optionalString(value.systemAccountId),
     providerCode: value.providerCode,
     providerProtocolProfileId: optionalString(value.providerProtocolProfileId),
@@ -252,7 +252,6 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     protocolVersion: optionalString(value.protocolVersion),
     name: value.name,
     type: value.type,
-    credentials: {},
     status: value.status,
     concurrencyLimit: finiteNumber(value.concurrencyLimit, 1),
     currentConcurrency: 0,
@@ -262,7 +261,6 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     clientCompatibility: value.clientCompatibility,
     healthCheckModel: typeof value.healthCheckModel === 'string' ? value.healthCheckModel : '',
     healthCheckEndpointMode: value.healthCheckEndpointMode,
-    modelMappings: Array.isArray(value.modelMappings) ? value.modelMappings : undefined,
     proxyProfileId: optionalString(value.proxyProfileId),
     proxyProfileUnavailable: value.proxyProfileUnavailable === true,
     schedulable: value.schedulable !== false,
@@ -270,8 +268,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     boundGroupId: optionalString(value.boundGroupId),
     bindingSystemAccountId: optionalString(value.bindingSystemAccountId),
     ownerSystemAccountId: optionalString(value.ownerSystemAccountId),
-    todayUsage: emptyUsage(),
-    usage: emptyUsage()
+    todayUsage: emptyListUsage()
   }
 }
 
@@ -341,19 +338,13 @@ function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
-function emptyUsage() {
+function finiteOptionalPositiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+function emptyListUsage() {
   return {
     requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    cacheWriteTokens: 0,
-    cacheWrite1hTokens: 0,
-    cacheWriteCost: 0,
-    thinkingTokens: 0,
-    inputImageTokens: 0,
-    outputImageTokens: 0,
     totalTokens: 0,
     totalCost: 0
   }

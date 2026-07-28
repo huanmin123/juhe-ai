@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { buildAccountCredentials } from '../../views/accounts/accountCredentials'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
@@ -6,6 +7,7 @@ import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import { validateAccountSaveForm } from '../../views/accounts/accountSavePayload'
 import { validateBasicEditCredentialFields } from '../../views/accounts/useAccountEditSaveFlow'
 import { managedOAuthProviderKind } from '../../views/accounts/accountProviderCapabilities'
+import { normalizeGrokSsoTokens } from '../../views/accounts/grokSsoTokens'
 
 const gpt = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')
 const openAICompatible = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')
@@ -101,14 +103,29 @@ assert.equal(validateAccountSaveForm({
   responseInspectionRules: [],
   providers: FALLBACK_PROVIDERS
 }), undefined, 'Gemini Refresh Token 创建应携带客户端凭据直接保存')
-Object.assign(managedGoogleForm, { oauthMode: 'access_token', accessToken: 'access', refreshToken: '' })
+Object.assign(managedGoogleForm, {
+  oauthType: 'code_assist',
+  tierId: 'gcp_standard',
+  oauthMode: 'access_token',
+  accessToken: 'access',
+  refreshToken: '',
+  projectId: ''
+})
 assert.equal(validateAccountSaveForm({
   form: managedGoogleForm,
   hasAuthSession: false,
   errorPolicyRules: [],
   responseInspectionRules: [],
   providers: FALLBACK_PROVIDERS
-}), undefined, 'Gemini Access Token 应保留直接录入路径')
+}), 'Gemini Code Assist / Google One 直接 Token 需要 GCP Project ID', 'Gemini CLI 直接 Token 缺少 Project ID 时不得创建不可运行账户')
+managedGoogleForm.projectId = 'project-direct-token'
+assert.equal(validateAccountSaveForm({
+  form: managedGoogleForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Gemini CLI Access Token 携带 Project ID 后应保留直接录入路径')
 
 const xai = FALLBACK_PROVIDERS.find((provider) => provider.code === 'xai')
 const xaiProfile = xai?.protocolProfiles.find((profile) => profile.id === 'profile_xai_openai_v1')
@@ -146,6 +163,11 @@ assert.equal(validateAccountSaveForm({
   responseInspectionRules: [],
   providers: FALLBACK_PROVIDERS
 }), undefined, 'Grok SSO 批量导入应复用 OAuth 账户公共配置')
+assert.deepEqual(
+  normalizeGrokSsoTokens('Cookie: sso=sso-1; Path=/\nsso-1\nsso-rw=sso-2; Secure'),
+  ['sso-1', 'sso-2'],
+  'Grok SSO 前端必须按后端 Cookie 语义 canonical 去重，保证部分失败索引可安全重试'
+)
 
 const editingGoogleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
 Object.assign(editingGoogleForm, {
@@ -165,5 +187,16 @@ assert.equal(validateAccountSaveForm({
   responseInspectionRules: [],
   providers: FALLBACK_PROVIDERS
 }), undefined, 'Google OAuth 编辑保存不得强制重填已存 secret')
+
+const oauthSectionSource = readFileSync(new URL('../../views/accounts/AccountOAuthSection.vue', import.meta.url), 'utf8')
+const reauthorizeModalSource = readFileSync(new URL('../../views/accounts/AccountReauthorizeModal.vue', import.meta.url), 'utf8')
+const authorizePanelSource = readFileSync(new URL('../../views/accounts/AccountOAuthAuthorizePanel.vue', import.meta.url), 'utf8')
+assert.match(oauthSectionSource, /geminiCapabilitiesRequestId/, 'Gemini capabilities 请求必须使用代次保护')
+assert.match(oauthSectionSource, /props\.form\.providerCode !== providerCode/, 'Gemini capabilities 返回后必须复核当前供应商')
+assert.match(oauthSectionSource, /props\.form\.providerProtocolProfileId !== providerProtocolProfileId/, 'Gemini capabilities 返回后必须复核当前协议档案')
+assert.match(oauthSectionSource, /disabled\s*\/><\/a-form-item>/, '已保存 Gemini 账户的 OAuth 类型必须锁定，类型迁移应走重新授权')
+assert.match(oauthSectionSource, /geminiProfileDefaultEndpointModes/, 'Gemini OAuth 类型切换必须能恢复 AI Studio 协议档案端点能力')
+assert.match(reauthorizeModalSource, /geminiRequiresClientCredentials && form\.oauthMode !== 'access_token'/, 'AI Studio Refresh Token 重新授权必须显示客户端凭据字段')
+assert.match(authorizePanelSource, /overflow-wrap: anywhere/, 'OAuth 多模式控件必须提供移动端长文案换行保护')
 
 console.log('provider auth account capability regression passed')

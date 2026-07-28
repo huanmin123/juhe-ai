@@ -13,8 +13,7 @@ import {
 import {
   apiProtocolOptions,
   defaultProtocolsForProviderModelCategory,
-  formatModelContextTokens,
-  formatModelInputTokens,
+  formatModelCatalogDisplayValue,
   formatTokens
 } from '../../src/views/providers/providerModelFormatters'
 import { buildConfigurationTemplateOptions } from '../../src/views/providers/providerModelTableState'
@@ -78,7 +77,7 @@ assert.equal(form.configurationTemplateId, template.id, '表单应记录本次�
 assert.equal(form.mode, 'text')
 assert.deepEqual(form.supportedApiProtocols, ['responses', 'chat_completions'])
 assert.deepEqual(form.supportedServiceTiers, ['priority', 'flex'])
-assert.deepEqual(form.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+assert.deepEqual(form.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(form.defaultReasoningEffort, undefined, '配置模板不得给新增自定义模型复制默认思考级别')
 assert.equal(form.releaseDate, '2026-06-26', '配置模板必须复制发布时间')
 assert.equal(form.shutdownDate, '2027-06-26', '配置模板必须复制停用时间')
@@ -103,7 +102,7 @@ assert(availableCustomModelStatusOptions(false).some((option) => option.value ==
 const capabilityOptions = buildCustomModelCapabilityOptions('gpt', [], [])
 assert(capabilityOptions.serviceTiers.some((option) => option.value === 'priority'), '没有现存模型时仍必须可选 Priority 服务等级')
 assert(capabilityOptions.serviceTiers.some((option) => option.value === 'flex'), '没有现存模型时仍必须可选 Flex 服务等级')
-assert(capabilityOptions.reasoningEfforts.some((option) => option.value === 'none'), '没有现存模型时仍必须可选关闭思考')
+assert.equal(capabilityOptions.reasoningEfforts.some((option) => option.value === 'none'), false, '关闭思考不得伪装成 reasoning effort 选项')
 assert(capabilityOptions.reasoningEfforts.some((option) => option.value === 'max'), '没有现存模型时仍必须可选 Max 思考级别')
 const deepSeekCapabilityOptions = buildCustomModelCapabilityOptions('deepseek', [], [])
 assert.deepEqual(deepSeekCapabilityOptions.serviceTiers, [], '不能把 GPT Priority/Flex 候选注入 DeepSeek')
@@ -119,10 +118,10 @@ assert.equal(canManageModelPricesForView(true, true), true, '管理员管理视�
 assert.equal(canManageModelPricesForView(false, true), true, '管理员进入我的模型时应能维护自己个人模型的价格')
 assert.equal(canManageModelPricesForView(false, false), true, '普通用户应能维护自己个人模型的价格')
 
-assert.equal(formatModelContextTokens(template), '1.05M', '总上下文应读取 contextWindowTokens')
-assert.equal(formatModelInputTokens(template), '922K', '最大输入应只读取 maxInputTokens')
+assert.equal(formatModelCatalogDisplayValue({ key: 'contextWindowTokens', label: '总上下文', format: 'tokens', value: template.contextWindowTokens ?? 0 }), '1.05M', '动态目录应格式化总上下文容量')
+assert.equal(formatModelCatalogDisplayValue({ key: 'maxInputTokens', label: '最大输入', format: 'tokens', value: template.maxInputTokens ?? 0 }), '922K', '动态目录应独立格式化最大输入容量')
 assert.equal(formatTokens(template.maxOutputTokens), '128K', '最大输出应独立展示')
-assert.equal(formatModelInputTokens(providerModel({ contextWindowTokens: 200_000 })), '-', '未公布最大输入时不得拿总上下文回退')
+assert.equal(formatModelCatalogDisplayValue({ key: 'contextWindowTokens', label: '总上下文', format: 'tokens', value: 200_000 }), '200K', '动态目录容量项必须只格式化服务端明确提供的值')
 
 console.log('自定义模型配置复制回归通过')
 

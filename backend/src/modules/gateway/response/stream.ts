@@ -88,6 +88,11 @@ import {
   rewriteCodexResponsesSseEvent,
   type CodexResponsesResponseGuard
 } from '../codex-responses/response-guard.js'
+import {
+  hasGatewayStreamParsedEventReceiver,
+  publishGatewayStreamInspection,
+  publishGatewayStreamParsedEvent
+} from './stream-observer.js'
 export type { StreamBodyOmissionSummary, StreamPipeResult } from './stream-result.js'
 
 export interface StreamFailureContext {
@@ -207,12 +212,21 @@ export async function pipeUpstreamStream(
   const codexResponsesGuard = options.codexResponsesGuard
   const codexSafeRepairEnabled = codexResponsesGuard?.mode === 'safe_repair'
   const codexStrictInterceptEnabled = codexResponsesGuard?.mode === 'strict_intercept'
-  if (codexResponsesGuard && !codexSafeRepairEnabled && !codexStrictInterceptEnabled && inspector.setParsedEventObserver) {
+  const publishParsedEvents = hasGatewayStreamParsedEventReceiver(res)
+  const inspectCodexShadowEvents = Boolean(
+    codexResponsesGuard && !codexSafeRepairEnabled && !codexStrictInterceptEnabled
+  )
+  if ((publishParsedEvents || inspectCodexShadowEvents) && inspector.setParsedEventObserver) {
     inspector.setParsedEventObserver((event) => {
-      try {
-        codexResponsesGuard.inspectOpenAiSseEvent(event)
-      } catch (error) {
-        getRequestLogger().error({ error }, 'Codex Responses 流式协议检查失败，shadow 模式继续透传')
+      if (publishParsedEvents) {
+        publishGatewayStreamParsedEvent(res, event)
+      }
+      if (inspectCodexShadowEvents && codexResponsesGuard) {
+        try {
+          codexResponsesGuard.inspectOpenAiSseEvent(event)
+        } catch (error) {
+          getRequestLogger().error({ error }, 'Codex Responses 流式协议检查失败，shadow 模式继续透传')
+        }
       }
     })
   }
@@ -524,7 +538,9 @@ export async function pipeUpstreamStream(
     inspection: GatewayStreamInspection,
     input: { accountFailureEligible?: boolean } = {}
   ): Promise<'signaled' | 'interrupted'> => {
-    if (terminalEventWritten || !committedProtocolFailureEventEnabled) {
+    const canSignalCommittedImageFailure = inspection.imageOutputReceived
+      && options.downstreamProtocol === 'responses_sse'
+    if (terminalEventWritten || (!committedProtocolFailureEventEnabled && !canSignalCommittedImageFailure)) {
       interruptResponse(res)
       return 'interrupted'
     }
@@ -576,9 +592,12 @@ export async function pipeUpstreamStream(
     omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: input.eofPendingFlush })
     if (input.drainForKeepAlive && !interpretedProtocolFailure(finalInspection)) {
       res.off('close', closeIterator)
-      finalInspection = await drainIteratorAfterTerminalForInspection(iterator, inspector, {
-        lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
-      })
+      finalInspection = publishGatewayStreamInspection(
+        res,
+        await drainIteratorAfterTerminalForInspection(iterator, inspector, {
+          lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
+        })
+      )
       updateStreamInspectionProgress(finalInspection)
       omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: true })
     } else {
@@ -761,6 +780,7 @@ export async function pipeUpstreamStream(
         latestInspection = pushGatewayStreamInspectorChunk(inspector, outbound, interceptor, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        publishGatewayStreamInspection(res, latestInspection)
         updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection)
         if (latestInspection.skipped && !parserSkipLogged) {
@@ -946,7 +966,7 @@ export async function pipeUpstreamStream(
       if (!interceptor && (chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && chunkCanEndAfterTerminal && !pendingProtocolEvent) {
         await flushPreCommitChunks()
         terminalEventWritten = true
-        return await finishTerminalSuccess(inspector.finish(), {
+        return await finishTerminalSuccess(publishGatewayStreamInspection(res, inspector.finish()), {
           drainForKeepAlive: protocolDriver.drainForKeepAliveAfterTerminal,
           eofPendingFlush: true
         })
@@ -1018,6 +1038,7 @@ export async function pipeUpstreamStream(
         latestInspection = pushGatewayStreamInspectorChunk(inspector, outbound, interceptor, {
           lightweightImageStream: bodyCaptureOmitted || latestInspection.imageOutputReceived
         })
+        publishGatewayStreamInspection(res, latestInspection)
         updateStreamInspectionProgress(latestInspection)
         omitBodyCaptureIfImageStream(latestInspection, { eofPendingFlush: true })
         if (latestInspection.skipped && !parserSkipLogged) {
@@ -1156,7 +1177,7 @@ export async function pipeUpstreamStream(
       throw error.originalError
     }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
-      const inspection = inspector.finish()
+      const inspection = publishGatewayStreamInspection(res, inspector.finish())
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
       if (terminalEventWritten && !interpretedProtocolFailure(inspection)) {
         await closeIteratorPromise
@@ -1222,7 +1243,7 @@ export async function pipeUpstreamStream(
     }
     await closeIteratorPromise
     if (isGatewayResponsePrecommitDeadlineError(error)) {
-      const inspection = inspector.finish()
+      const inspection = publishGatewayStreamInspection(res, inspector.finish())
       const message = error.message
       const upstreamResponseCommitted = totalResponseBytes > 0
       streamLogger.warn({
@@ -1257,7 +1278,7 @@ export async function pipeUpstreamStream(
       )
     }
     const rawMessage = error instanceof Error ? error.message : '上游流式响应已中断'
-    const inspection = inspector.finish()
+    const inspection = publishGatewayStreamInspection(res, inspector.finish())
     omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
     streamLogger.warn({
       event: 'gateway_stream_pipe_error',
@@ -1366,7 +1387,7 @@ export async function pipeUpstreamStream(
   if (shouldKeepNonSemanticSseFramingPrivate()) {
     clearStreamPreCommitChunks(preCommitBuffer)
   }
-  const inspection = inspector.finish()
+  const inspection = publishGatewayStreamInspection(res, inspector.finish())
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
   // Generic clients keep opaque upstream SSE semantics: once at least one real
   // SSE data event was observed, a clean transport EOF is sufficient even when

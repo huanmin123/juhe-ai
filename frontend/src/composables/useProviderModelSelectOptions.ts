@@ -72,6 +72,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     const params = typeof input === 'boolean' ? { force: input } : input
     const contextKey = modelOptionsContextKey()
     const scopeKey = modelOptionsScopeKey(params)
+    if (params.force !== true && loadedScopeKey === scopeKey) return
     if (typeof input !== 'boolean' && loadingKey === scopeKey && loadingPromise) return loadingPromise
     const requestId = ++latestRequestId
     if (loadedScopeKey !== scopeKey) providerModelOptions.value = []
@@ -144,7 +145,6 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
       modelOptionsContextKey(),
       params.keyword?.trim() ?? '',
       params.limit ?? 50,
-      params.force === true,
       [...(options.selectedIds?.value ?? []), ...(params.selectedIds ?? [])].sort()
     ])
   }

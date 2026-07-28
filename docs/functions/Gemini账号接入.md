@@ -120,11 +120,11 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 ### Google OAuth 认证边界
 
 - `GET /gemini-oauth/capabilities` 与个人端同源接口返回三种模式；默认是 `code_assist`。授权 URL 与 code 换取 token 都使用 Google 官方 OAuth endpoint、PKCE S256、30 分钟一次性会话和账户作用域绑定。
-- `code_assist` / `google_one` 使用内置 Gemini CLI client，回调为 `https://codeassist.google.com/authcode`。前者 scope 为 Cloud Platform + userinfo email/profile；后者额外包含 Drive metadata readonly，用于配额档位探测。
+- `code_assist` / `google_one` 使用内置 Gemini CLI client，回调为 `https://codeassist.google.com/authcode`；当前新授权 scope 都是 Cloud Platform + userinfo email/profile。只有历史凭据实际包含 Drive metadata scope 时才 best-effort 读取 Drive 配额，不再为新授权扩大 scope。
 - `ai_studio` 必须提供自定义 Client ID 与 Client Secret（请求字段或后端环境变量），回调为 `http://localhost:1455/auth/callback`，scope 为 Cloud Platform + Generative Language Retriever。
 - 三种模式都支持回调 URL、Refresh Token 和直接 Access Token 创建。凭据保存 `access_token`、`refresh_token`、`client_id`、`client_secret`、`token_type`、`scope`、`expires_at`、`oauth_type`、`project_id`、`tier_id`、`quota_project_id`、`base_url`；Google One 另保存 Drive limit / usage / tier 更新时间。
-- Code Assist 授权后通过 `loadCodeAssist`、Resource Manager fallback 和 onboarding 取得 Project / Tier，最终缺少 `project_id` 时拒绝创建，默认 Tier 为 `gcp_standard`。Google One复用 Code Assist project 探测并按 Drive 配额识别档位，失败时默认 `google_one_free`；AI Studio 默认 `aistudio_free`。
-- Google token 刷新复用账户绑定代理和 `256 KiB` 响应上限，不把 token 写入 URL、模型目录、错误文本或日志。Access-only 账户按静态 token 使用；有 Refresh Token 时按账户保存的模式和 client 刷新。
+- Code Assist 授权后通过 `loadCodeAssist`、Resource Manager fallback 和 onboarding 取得 Project / Tier，最终缺少 `project_id` 时拒绝创建，默认 Tier 为 `gcp_standard`。Google One 复用 Code Assist project 探测并按 Drive 配额识别档位，失败时默认 `google_one_free`；AI Studio 默认 `aistudio_free`。
+- Google token 刷新复用账户绑定代理和 `256 KiB` 响应上限，不把 token 写入 URL、模型目录、错误文本或日志。429/5xx 使用最多四次的有界退避；`invalid_grant`、`invalid_client`、`unauthorized_client` 和 `access_denied` 不做普通重试。内置 client 收到 `unauthorized_client` 且历史凭据同时保存了不同的 client ID/Secret 时，只回退一次到原 client。Access-only 账户按静态 token 使用。
 
 ### Code Assist runtime
 

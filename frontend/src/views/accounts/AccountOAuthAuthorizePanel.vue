@@ -24,8 +24,8 @@
         <div class="oauth-step-card">
           <span>3</span>
           <div>
-            <strong>粘贴回调 URL</strong>
-            <small>保留 code 与 state 参数</small>
+            <strong>粘贴授权结果</strong>
+            <small>保留 code 与 state</small>
           </div>
         </div>
       </div>
@@ -38,7 +38,7 @@
     <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
       <a-textarea :value="authResult.authUrl" :rows="3" readonly />
     </a-form-item>
-    <a-form-item class="oauth-callback-field" label="回调 URL" required :tooltip="callbackTooltip">
+    <a-form-item class="oauth-callback-field" label="授权结果" required :tooltip="callbackTooltip">
       <a-textarea v-model:value="form.callbackUrl" :rows="3" :placeholder="callbackPlaceholder" />
     </a-form-item>
   </template>
@@ -98,9 +98,9 @@ const props = withDefaults(defineProps<{
   accessTokenPlaceholder: '粘贴 OAuth Access Token',
   optionalRefreshTokenPlaceholder: '可选：粘贴 Refresh Token',
   manualAuthorizeStepText: '登录供应商并允许跳转',
-  callbackPlaceholder: '粘贴浏览器地址栏里的完整回调 URL，例如 http://localhost:1455/auth/callback?code=...&state=...'
+  callbackPlaceholder: '粘贴完整回调 URL、code=...&state=...，或供应商返回的 code#state'
 })
-const callbackTooltip = computed(() => `${props.manualAlertMessage} 需要粘贴完整地址，不能只粘贴 code 或 state。`)
+const callbackTooltip = computed(() => `${props.manualAlertMessage} 可粘贴完整 URL、查询参数或 code#state；必须同时包含 code 与 state。`)
 
 defineEmits<{
   (event: 'copy-auth-url', value: string): void
@@ -189,6 +189,20 @@ defineEmits<{
 @media (max-width: 992px) {
   .oauth-step-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .oauth-mode-item :deep(.ant-segmented-item) {
+    min-width: 0;
+  }
+
+  .oauth-mode-item :deep(.ant-segmented-item-label) {
+    min-width: 0;
+    padding: 4px 5px;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+    white-space: normal;
   }
 }
 </style>

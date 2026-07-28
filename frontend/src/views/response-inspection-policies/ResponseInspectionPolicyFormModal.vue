@@ -32,10 +32,13 @@
             <a-select
               v-model:value="form.providerCode"
               :disabled="readOnly"
+              :loading="providerOptionsLoading"
               :options="protocolProviderOptions"
               placeholder="选择同协议供应商"
               show-search
               option-filter-prop="label"
+              @change="handleProviderChange"
+              @dropdown-visible-change="emit('provider-options-dropdown-visible-change', $event)"
             />
           </a-form-item>
           <a-form-item label="优先级">
@@ -67,15 +70,20 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import type { ResponseInspectionPolicyPayload } from '@/api/client'
 import type {
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyDetail,
+  ResponseInspectionPolicyProtocolCode,
   ResponseInspectionPolicyProviderOption,
   ResponseInspectionPolicyScopeType
 } from '@/types/domain'
+import {
+  defaultResponseInspectionProviderCode,
+  responseInspectionProviderSelectOptions
+} from './responseInspectionProviderOptions'
 import ResponseInspectionActionSelector from './ResponseInspectionActionSelector.vue'
 import ResponseInspectionMatchFields from './ResponseInspectionMatchFields.vue'
 import {
@@ -94,7 +102,7 @@ interface ResponseInspectionPolicyForm extends ResponseInspectionMatchFormFields
   enabled: boolean
   priority: number
   scopeType: ResponseInspectionPolicyScopeType
-  protocolCode: string
+  protocolCode: ResponseInspectionPolicyProtocolCode
   providerCode: string
   clientProfiles: ResponseInspectionMatchFormFields['clientProfiles']
   outputTextIncludes: string
@@ -115,16 +123,20 @@ const props = withDefaults(defineProps<{
   mode: ResponseInspectionPolicyFormMode
   policy?: ResponseInspectionPolicyDetail
   saving?: boolean
+  providerOptionsLoading?: boolean
+  providerOptionsReady?: boolean
   providerOptions: ResponseInspectionPolicyProviderOption[]
   defaultPriority: number
-  defaultProviderCode: string
 }>(), {
-  saving: false
+  saving: false,
+  providerOptionsLoading: false,
+  providerOptionsReady: false
 })
 
 const emit = defineEmits<{
   submit: [payload: ResponseInspectionPolicyPayload]
   cancel: []
+  'provider-options-dropdown-visible-change': [open: boolean]
 }>()
 
 const scopeOptions = [
@@ -137,21 +149,16 @@ const protocolOptions = [
   { label: 'Gemini v1beta', value: 'gemini' }
 ]
 const form = reactive<ResponseInspectionPolicyForm>(defaultForm())
+const providerSelectionTouched = ref(false)
 const readOnly = computed(() => props.mode === 'view')
-const protocolProviderOptions = computed(() => {
-  const options = props.providerOptions
-    .filter((option) => option.protocolCode === form.protocolCode)
-    .map((option) => ({ label: option.name, value: option.code }))
-  const selectedCode = props.policy?.providerCode
-  if (
-    selectedCode
-    && props.policy?.protocolCode === form.protocolCode
-    && !options.some((option) => option.value === selectedCode)
-  ) {
-    options.push({ label: props.policy.providerName || selectedCode, value: selectedCode })
+const protocolProviderOptions = computed(() => responseInspectionProviderSelectOptions(
+  props.providerOptions,
+  form.protocolCode,
+  {
+    code: form.providerCode,
+    name: props.policy?.providerCode === form.providerCode ? props.policy.providerName : undefined
   }
-  return options
-})
+))
 const modalTitle = computed(() => {
   if (props.mode === 'view') return '查看默认策略'
   return props.mode === 'edit' ? '编辑响应检查策略' : '新建响应检查策略'
@@ -161,11 +168,24 @@ watch(open, (isOpen) => {
   if (isOpen) resetFormForMode()
 })
 
+watch([() => props.providerOptions, () => props.providerOptionsReady], () => {
+  if (
+    open.value
+    && props.mode === 'create'
+    && form.scopeType === 'provider'
+    && !providerSelectionTouched.value
+    && props.providerOptionsReady
+  ) {
+    form.providerCode = defaultProviderCodeForProtocol()
+  }
+})
+
 function resetFormForMode(): void {
+  providerSelectionTouched.value = false
   if (props.mode === 'create') {
     Object.assign(form, defaultForm(), {
       priority: props.defaultPriority,
-      providerCode: props.defaultProviderCode
+      providerCode: defaultProviderCodeForProtocol()
     })
     return
   }
@@ -255,6 +275,7 @@ function validateForm(): string | undefined {
 
 function handleScopeChange(): void {
   if (readOnly.value) return
+  providerSelectionTouched.value = false
   if (form.scopeType === 'provider' && !form.providerCode) {
     form.providerCode = defaultProviderCodeForProtocol()
   }
@@ -266,13 +287,18 @@ function handleScopeChange(): void {
 function handleProtocolChange(): void {
   if (readOnly.value) return
   if (form.scopeType === 'provider') {
+    providerSelectionTouched.value = false
     form.providerCode = defaultProviderCodeForProtocol()
   }
 }
 
+function handleProviderChange(): void {
+  if (readOnly.value) return
+  providerSelectionTouched.value = true
+}
+
 function defaultProviderCodeForProtocol(): string {
-  const preferred = protocolProviderOptions.value.find((option) => option.value === props.defaultProviderCode)
-  return preferred?.value ?? protocolProviderOptions.value[0]?.value ?? ''
+  return defaultResponseInspectionProviderCode(props.providerOptions, form.protocolCode, props.providerOptionsReady)
 }
 
 function positiveInt(value: unknown, max = Number.POSITIVE_INFINITY): number | undefined {

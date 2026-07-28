@@ -377,7 +377,13 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
     'expires_at',
     'client_id',
     'client_secret',
-    'quota_project_id'
+    'quota_project_id',
+    'oauth_type',
+    'project_id',
+    'tier_id',
+    'token_type',
+    'scope',
+    'base_url'
   ]) {
     copyRuntimeCredentialText(credentials, output, key)
   }

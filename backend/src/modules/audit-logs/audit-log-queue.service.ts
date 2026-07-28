@@ -10,7 +10,7 @@ import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
-import { sendAuditLogsToWorker } from '../background/background-ipc.js'
+import { sendAuditLogsToWorker, sendPreparedAuditLogsToWorker } from '../background/background-ipc.js'
 import { buildAuditLogTransportCapacityFallback } from './audit-log-capacity-fallback.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 import { decodeAuditLogStreamPayload, encodeAuditLogStreamPayload } from './audit-log-stream-codec.js'
@@ -324,7 +324,7 @@ async function dispatchAuditLogFromServer(input: AuditLogInput): Promise<void> {
   }
   if (shouldDispatchAuditLogToIngestWorker()) {
     const prepared = await prepareAuditLogForIpcInWorker(input)
-    const dispatched = sendAuditLogsToWorker([prepared])
+    const dispatched = sendPreparedAuditLogsToWorker([prepared])
     logger.debug({
       event: 'audit_log_dispatch_to_ingest_worker',
       traceId: prepared.traceId,

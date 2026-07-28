@@ -126,6 +126,7 @@ const props = defineProps<{
   form: AuthorizationCreateFormModel
   excludedGranteeIds: string[]
   hasGranteeOptions: boolean
+  granteeOptionsLoaded: boolean
   isManagementView: boolean
   ownerUsers: SystemAccountPrincipalSummary[]
   ownerUsersLoading?: boolean
@@ -147,11 +148,12 @@ const props = defineProps<{
   users: SystemAccountPrincipalSummary[]
 }>()
 
-const granteeNotFoundContent = computed(() => props.hasGranteeOptions
-  ? undefined
-  : props.form.granteeType === 'system_account'
+const granteeNotFoundContent = computed(() => {
+  if (!props.granteeOptionsLoaded || props.hasGranteeOptions) return null
+  return props.form.granteeType === 'system_account'
     ? '暂无可授权用户'
-    : '暂无可被授权团队')
+    : '暂无可被授权团队'
+})
 
 defineEmits<{
   (event: 'grantee-dropdown', open: boolean): void

@@ -1,3 +1,5 @@
+import type { GatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
+
 export interface UpstreamAttempt {
   accountId: string
   accountName: string
@@ -11,6 +13,7 @@ export interface UpstreamAttempt {
   transportFailureKind?: 'timeout' | 'connection' | 'read_incomplete'
   responseHeaders?: Record<string, string>
   responseBodyText?: string
+  parsedResponseBody?: GatewayNonStreamJsonBody
 }
 
 export function isRealUpstreamAttempt(attempt: Pick<UpstreamAttempt, 'upstreamUrl'>): boolean {

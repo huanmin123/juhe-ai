@@ -9,6 +9,33 @@ interface AuthorizationOptionResourceOptions<T> {
   targetSystemAccountId?: string
 }
 
+export interface AuthorizationOptionSingleflight {
+  invalidate: () => void
+  run: <T>(key: string, load: () => Promise<T>) => Promise<T>
+}
+
+export function createAuthorizationOptionSingleflight(): AuthorizationOptionSingleflight {
+  const pending = new Map<string, Promise<unknown>>()
+
+  function invalidate(): void {
+    pending.clear()
+  }
+
+  function run<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const active = pending.get(key) as Promise<T> | undefined
+    if (active) return active
+
+    const request = Promise.resolve().then(load)
+    pending.set(key, request)
+    void request.finally(() => {
+      if (pending.get(key) === request) pending.delete(key)
+    }).catch(() => undefined)
+    return request
+  }
+
+  return { invalidate, run }
+}
+
 export async function loadAuthorizationOptionResource<T>(options: AuthorizationOptionResourceOptions<T>): Promise<T> {
   const result = await options.loadNetwork()
   applyIfCurrent(options, result)

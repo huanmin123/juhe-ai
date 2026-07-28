@@ -2,7 +2,7 @@ import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
 import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
 import type { ProviderAccountCredentialContext } from '../modules/providers/drivers/_shared/account-credentials.js'
-import { isAnthropicProtocolProfile } from '../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, isAnthropicProtocolProfile } from '../domain/provider-protocol.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
@@ -33,6 +33,7 @@ const oauthAccountCredentialKeys = new Set([
   'scope',
   'email',
   'account_id',
+  'chatgpt_account_id',
   'organization_id',
   'chatgpt_user_id',
   'plan_type',
@@ -235,7 +236,12 @@ function normalizeOAuthAccountCredentials(
   copyOptionalCredentialText(input, credentials, 'token_type', 'OAuth token_type', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'scope', 'OAuth scope', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'email', 'OAuth email', accountCredentialMetadataMaxBytes)
-  copyOptionalCredentialText(input, credentials, 'account_id', 'OpenAI account_id', accountCredentialMetadataMaxBytes)
+  const openAIAccountId = optionalCredentialText(input.account_id, 'OpenAI account_id', accountCredentialMetadataMaxBytes)
+    || optionalCredentialText(input.chatgpt_account_id, 'OpenAI chatgpt_account_id', accountCredentialMetadataMaxBytes)
+  if (endpointModeDefaults.providerCode === GPT_VENDOR_CODE && accessToken && !openAIAccountId) {
+    throw new Error('OpenAI OAuth Access Token 缺少 account_id')
+  }
+  if (openAIAccountId) credentials.account_id = openAIAccountId
   copyOptionalCredentialText(input, credentials, 'organization_id', 'Anthropic organization_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'chatgpt_user_id', 'OpenAI chatgpt_user_id', accountCredentialMetadataMaxBytes)
   copyOptionalCredentialText(input, credentials, 'plan_type', 'OpenAI plan_type', accountCredentialMetadataMaxBytes)

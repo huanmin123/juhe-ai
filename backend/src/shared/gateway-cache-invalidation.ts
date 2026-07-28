@@ -5,7 +5,10 @@ import { createRuntimeStateStore } from './runtime-state-store.js'
 import { clearLocalApiKeyLookupCache } from '../storage/repository-lookups.js'
 
 export type GatewayRuntimeCacheInvalidationMetadata =
-  | { source: 'local' }
+  | {
+      source: 'local'
+      keyHashes?: readonly string[]
+    }
   | {
       source: 'runtime_state'
       version: string
@@ -17,12 +20,20 @@ type GatewayRuntimeCacheInvalidationHandler = (
   reason: string,
   metadata: GatewayRuntimeCacheInvalidationMetadata
 ) => GatewayRuntimeCacheInvalidationResult | Promise<GatewayRuntimeCacheInvalidationResult>
+type GatewayApiKeyValidationCacheInvalidationHandler = (
+  apiKeyId: string | undefined,
+  metadata: GatewayRuntimeCacheInvalidationMetadata
+) => GatewayRuntimeCacheInvalidationResult | Promise<GatewayRuntimeCacheInvalidationResult>
 type CacheInvalidationMetadata = {
   publishedAt?: string
 }
 type CacheInvalidationHandler = (metadata?: CacheInvalidationMetadata) => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
-type GatewayCacheInvalidationTopic = 'gateway_runtime_cache' | 'authorization_quota_cache' | 'api_key_quota_cache'
+type GatewayCacheInvalidationTopic =
+  | 'gateway_runtime_cache'
+  | 'gateway_api_key_validation_cache'
+  | 'authorization_quota_cache'
+  | 'api_key_quota_cache'
 
 interface GatewayCacheInvalidationState {
   version: string
@@ -32,6 +43,7 @@ interface GatewayCacheInvalidationState {
 }
 
 const gatewayRuntimeCacheInvalidators = new Set<GatewayRuntimeCacheInvalidationHandler>()
+const gatewayApiKeyValidationCacheInvalidators = new Set<GatewayApiKeyValidationCacheInvalidationHandler>()
 const authorizationQuotaCacheInvalidators = new Set<CacheInvalidationHandler>()
 const apiKeyQuotaCacheInvalidators = new Set<ApiKeyQuotaInvalidationHandler>()
 const gatewayCacheInvalidationState = createRuntimeStateStore('gateway_cache_invalidation')
@@ -39,6 +51,7 @@ const gatewayCacheInvalidationStateTtlMs = 24 * 60 * 60 * 1000
 const gatewayCacheInvalidationSyncIntervalMs = 1000
 const gatewayCacheInvalidationTopics: GatewayCacheInvalidationTopic[] = [
   'gateway_runtime_cache',
+  'gateway_api_key_validation_cache',
   'authorization_quota_cache',
   'api_key_quota_cache'
 ]
@@ -52,6 +65,15 @@ export function registerGatewayRuntimeCacheInvalidator(handler: GatewayRuntimeCa
   gatewayRuntimeCacheInvalidators.add(handler)
   return () => {
     gatewayRuntimeCacheInvalidators.delete(handler)
+  }
+}
+
+export function registerGatewayApiKeyValidationCacheInvalidator(
+  handler: GatewayApiKeyValidationCacheInvalidationHandler
+): () => void {
+  gatewayApiKeyValidationCacheInvalidators.add(handler)
+  return () => {
+    gatewayApiKeyValidationCacheInvalidators.delete(handler)
   }
 }
 
@@ -87,6 +109,40 @@ export async function notifyGatewayRuntimeCacheInvalidationAsync(reason: string)
     (handler) => handler(reason, { source: 'local' })
   )
   await publishGatewayCacheInvalidationToRuntimeStateAsync('gateway_runtime_cache', reason)
+}
+
+export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
+  apiKeyId: string,
+  reason: string,
+  keyHashes: readonly string[] = []
+): Promise<void> {
+  const errors: unknown[] = []
+  try {
+    const applied = await runCacheInvalidatorsAsync(
+      'gateway_api_key_validation_cache',
+      reason,
+      gatewayApiKeyValidationCacheInvalidators,
+      (handler) => handler(apiKeyId, { source: 'local', keyHashes }),
+      { apiKeyId }
+    )
+    if (!applied) {
+      errors.push(new Error('gateway_api_key_validation_cache 本地失效未完成'))
+    }
+  } catch (error) {
+    errors.push(error)
+  }
+  try {
+    await publishGatewayCacheInvalidationToRuntimeStateAsync(
+      'gateway_api_key_validation_cache',
+      reason,
+      { apiKeyId }
+    )
+  } catch (error) {
+    errors.push(error)
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, `gateway_api_key_validation_cache 失效存在 ${errors.length} 个失败`)
+  }
 }
 
 export function notifyAuthorizationQuotaCacheInvalidation(reason: string): void {
@@ -228,8 +284,11 @@ async function publishGatewayCacheInvalidationToRuntimeStateAsync(
 }
 
 async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<void> {
-  for (const topic of gatewayCacheInvalidationTopics) {
-    const state = await gatewayCacheInvalidationState.getJson<GatewayCacheInvalidationState>(gatewayCacheInvalidationStateKey(topic))
+  const states = await gatewayCacheInvalidationState.getJsonMany<GatewayCacheInvalidationState>(
+    gatewayCacheInvalidationTopics.map(gatewayCacheInvalidationStateKey)
+  )
+  for (const [index, topic] of gatewayCacheInvalidationTopics.entries()) {
+    const state = states[index]
     if (!state?.version) continue
     if (lastSeenGatewayCacheInvalidationVersions.get(topic) === state.version) continue
     try {
@@ -257,6 +316,19 @@ async function applyRuntimeStateCacheInvalidation(
       version: state.version,
       publishedAt: state.publishedAt
     })
+  }
+  if (topic === 'gateway_api_key_validation_cache') {
+    return runCacheInvalidatorsAsync(
+      topic,
+      state.reason,
+      gatewayApiKeyValidationCacheInvalidators,
+      (handler) => handler(undefined, {
+        source: 'runtime_state',
+        version: state.version,
+        publishedAt: state.publishedAt
+      }),
+      { apiKeyId: state.apiKeyId }
+    )
   }
   if (topic === 'authorization_quota_cache') {
     runCacheInvalidators(topic, state.reason, authorizationQuotaCacheInvalidators, (handler) => handler({ publishedAt: state.publishedAt }))

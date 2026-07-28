@@ -478,9 +478,11 @@ export class OpenAIResponseInspectionBuffer {
 
   private rememberParsedEvent(buffer: Buffer, event: ParsedOpenAIStreamEvent | undefined): void {
     if (!event || event.dataText === '' || buffer.length > maxBufferedSseEventBytes) return
+    const dataBytes = event.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8')
+    if (dataBytes > maxBufferedSseEventBytes || (event.rawText && /\r(?!\n)/.test(event.rawText))) return
     this.parsedEventByChunk.set(buffer, {
       event,
-      dataBytes: event.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8')
+      dataBytes
     })
   }
 }

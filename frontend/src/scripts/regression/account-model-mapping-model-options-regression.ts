@@ -97,11 +97,16 @@ assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedM
 assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
 assertIncludes(accountApiKeySectionSource, 'mode="multiple"', '支持模型必须只能从模型目录多选')
 assertNotIncludes(accountApiKeySectionSource, 'mode="tags"', '支持模型不得开放任意模型 ID 输入')
-assertMatch(
-  accountEditFormSource,
-  /function selectProvider[\s\S]*?resetForm\(providerCode, ''\)[\s\S]*?loadCurrentProviderModelOptions\(\)/,
-  '切换供应商并带出默认账户类型后必须立即加载该供应商模型目录'
+assertMatch(accountEditFormSource, /function selectProvider[\s\S]*?resetForm\(providerCode, ''\)/, '切换供应商必须重置为该供应商的默认表单')
+assertNotIncludes(
+  accountEditFormSource.slice(
+    accountEditFormSource.indexOf('function selectProvider'),
+    accountEditFormSource.indexOf('function selectAccountType')
+  ),
+  'loadCurrentProviderModelOptions()',
+  '切换供应商时不得在用户展开模型控件前预加载模型目录'
 )
+assertIncludes(accountEditFormSource, 'async function loadCurrentProviderModelOptions', '账户表单必须保留模型控件交互时的按需加载入口')
 assertIncludes(
   accountEditModalSource,
   "credentialItem('supported_endpoint_modes', '上游接口能力'",

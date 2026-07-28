@@ -18,10 +18,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, accountErrorPolicy] = await Promise.all([
+const [databaseModule, repositories, accountErrorPolicy, nonStreamJsonBody, protocolRegistry] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/policy/account-error-policy.service.js')
+  import('../../modules/gateway/policy/account-error-policy.service.js'),
+  import('../../modules/gateway/response/non-stream-json-body.js'),
+  import('../../modules/gateway/protocols/registry.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'super_admin' as const }
@@ -391,6 +393,48 @@ try {
   })
   assert.equal(missingObservationSuccess.changed, false, '缺少 observedAt/revision 的旧成功不得清理任何持久冷却')
   assert.equal(accountState(missingObservationAccount.id).status, 'temporary_unavailable', '旧 active 快照不得绕过当前 cooldown generation')
+
+  const statusOnlyAccount = createReadyAccount(group.id, '状态码策略单次解析账户', 'status-only-single-parse')
+  const statusOnlyGatewayAccount = gatewayAccount(group.id, statusOnlyAccount.id)
+  const originalJsonParse = JSON.parse
+  let jsonParseCount = 0
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    if (args[0] === '{}') jsonParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  try {
+    const parsedBody = nonStreamJsonBody.parseGatewayNonStreamJsonBody(
+      '{}',
+      new Headers({ 'content-type': 'application/json' })
+    )
+    assert.equal(parsedBody.status, 'valid', 'status-only 回归正文必须可建立解析事实')
+    if (parsedBody.status !== 'valid') throw new Error('status-only 回归正文解析失败')
+    const errorPayload = protocolRegistry.parseGatewayProtocolErrorPayloadFromJsonValue(
+      statusOnlyGatewayAccount,
+      parsedBody.value
+    )
+    const upstreamErrorSummary = accountErrorPolicy.accountErrorPayloadSummary(errorPayload)
+    assert.equal(upstreamErrorSummary, undefined, '空错误对象必须表示已解析但没有摘要')
+    const statusOnlyResult = accountErrorPolicy.applyAccountErrorHandling(statusOnlyGatewayAccount, {
+      success: false,
+      statusCode: 429,
+      bodyText: '{}',
+      upstreamErrorSummary,
+      upstreamErrorSummaryResolved: true,
+      observedAt: iso(Date.now() + 90_000),
+      dispatchRevision: statusOnlyGatewayAccount.dispatchRevision,
+      trafficSource: 'gateway',
+      policyDecision: {
+        action: 'cooldown',
+        cooldownStatus: 'rate_limited',
+        ruleName: '仅状态码限流策略'
+      }
+    })
+    assert.equal(statusOnlyResult.changed, true, 'status-only 策略仍必须正常执行账户副作用')
+    assert.equal(jsonParseCount, 1, '已解析但没有摘要时，账户副作用不得再次解析同一错误正文')
+  } finally {
+    JSON.parse = originalJsonParse
+  }
 
   console.log('账户显式策略观测 fencing 回归通过：provenance、epoch、observedAt 和 dispatch revision 共同隔离迟到成功/失败')
 } finally {

@@ -15,7 +15,7 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 - 直连 Anthropic 必须作为独立 `anthropic/v1` 原生协议档案接入，核心端点是 `POST /v1/messages`。
 - Anthropic 官方确实提供 OpenAI SDK compatibility，但官方定位主要是测试和对比，不适合作为本项目直连接入的主协议。
 - “Anthropic-compatible” 和 “Claude 官方模型”不是一回事。DeepSeek、GLM Coding、Kimi 等国内入口即使暴露 Anthropic Messages 形态，也应归到各自供应商，不应显示为官方 Anthropic。
-- 当前 Anthropic 原生目标完整落地 Anthropic API Key 直连、官方 OAuth Access Token 导入，以及 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。Workload Identity Federation（WIF）、Claude.ai / Claude Code 订阅 OAuth 浏览器换码、Bedrock、Vertex 暂不开放。OpenAI Chat / Responses 到 Anthropic Messages 不属于原生 raw passthrough，而是独立的显式桥接能力，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
+- 当前 Anthropic 原生目标完整落地 Anthropic API Key 直连、官方 OAuth / PKCE 浏览器换码、Refresh Token 与 Access Token 导入，以及 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。Workload Identity Federation（WIF）、Setup Token、Cookie/sessionKey、Bedrock、Vertex 暂不开放。OpenAI Chat / Responses 到 Anthropic Messages 不属于原生 raw passthrough，而是独立的显式桥接能力，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
 ## 当前落地状态（2026-07-18）
 
@@ -38,7 +38,7 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 
 仍保持为后续独立需求的边界：
 
-- 不支持 Claude.ai / Claude Code 订阅 OAuth 浏览器换码、Setup Token、Claude 订阅账号中转或 WIF；WIF 是 Anthropic 官方组织级身份联邦，不属于订阅 OAuth，但仍需要独立的可信 assertion source 才能开放。当前支持官方 OAuth / PKCE 浏览器换码、Refresh Token 创建，以及直接导入已有 Access Token。
+- 当前支持官方 OAuth / PKCE 浏览器换码、Refresh Token 创建和已有 Access Token 导入；仍不支持 Setup Token、Cookie/sessionKey、其他 Claude 私有登录代理或 WIF。WIF 是 Anthropic 官方组织级身份联邦，不属于订阅 OAuth，需要独立的可信 assertion source 才能开放。
 - 不在 Anthropic 原生 `/v1/messages` 透传路径里隐式做 OpenAI Chat / Responses 转换；OpenAI-compatible 下游请求 Claude 模型必须走显式 OpenAI -> Anthropic Messages bridge，且覆盖范围、失败策略和测试矩阵以 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md) 为准。
 - stats staged / window / summary 表、授权消耗报表和统计大盘暂未按 cache write、1h cache、thinking token 扩维；后续必须继续由 worker 增量聚合，不在 API 路由临时扫描明细。
 - Anthropic-compatible 国产入口必须按各自供应商建档，不并入官方 `anthropic` 账号池、价格目录和默认分组。
@@ -142,7 +142,7 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 ### Anthropic OAuth 托管与直贴模式
 
 - 当前支持三种入口：
-  - 站内生成官方 OAuth 授权链接，浏览器授权后粘贴完整回调 URL；
+  - 站内生成官方 OAuth 授权链接，浏览器授权后可粘贴完整回调 URL、`code#state` 或裸授权码；
   - 直接提供 `refresh_token` 由后端换取 Access Token；
   - 直接导入已有官方 OAuth Access Token，前端仍推荐粘贴 `CLAUDE_CODE_OAUTH_TOKEN` 或 `ANTHROPIC_AUTH_TOKEN`。
 - 直接导入模式下 `access_token` 为必填；若同时提供 `refresh_token`，会一并保存，并可用于后续手动刷新或重新授权。
@@ -150,9 +150,9 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 - Anthropic OAuth 的手动刷新、Refresh Token 创建与重新授权只复用 Anthropic 自己的路由和 token endpoint，不共享 OpenAI OAuth 的 token endpoint、错误码语义或文案。
 - Claude Code 只作为下游客户端画像和 Bearer Token 来源之一，不等于项目内要复刻 Claude.ai / Claude Code 订阅登录流程。
 
-### 站内浏览器授权式订阅 OAuth 不纳入当前目标
+### 私有登录自动化与 Setup Token 不纳入当前目标
 
-`sub2api`、`new-api` 等参考项目实现的 Claude OAuth / SetupToken 链路更接近 Claude 订阅 / Claude Code token 账号链路，不是普通 Anthropic Console API Key，也不是组织级 WIF。当前目标已经接入官方 Anthropic OAuth / PKCE 浏览器换码与官方 token endpoint，但仍不接入 Claude 订阅账号、Setup Token、Cookie / sessionKey 或 Claude Code 私有登录链路，避免把订阅账号风控和会话限制误写进官方 API 账户主链路。
+`sub2api` 等参考项目中的 Claude OAuth / Setup Token 不是普通 Anthropic Console API Key，也不是组织级 WIF。当前项目接入的是 `claude.ai/oauth/authorize` 到 `platform.claude.com/v1/oauth/token` 的浏览器 PKCE 链路；不接入 Setup Token、Cookie/sessionKey 自动登录或其他私有会话自动化，也不把订阅权益和风控状态伪装成公共 Anthropic API 承诺。
 
 如果重新提出 OAuth 需求，必须先完成真实链路验证：
 
@@ -162,7 +162,7 @@ type AnthropicAccountType = 'api_key' | 'oauth'
 - 验证 access token 刷新、setup token 有效期、账号额度、会话限制、RPM 和风控失败是否能稳定归入现有账户错误处理策略。
 - 完整 HTTP 状态、错误类型和正文不能作为系统自动死亡证据；安全文本请求只做 opaque 请求级接管。只有本地 transport failure 才进入统一确认、半开、冷却复测和并发归零流程，用户显式策略另按声明动作执行。
 
-在新需求完成真实验证并重新设计前，前端不展示 Anthropic 订阅网页登录 OAuth 或 WIF。当前项目已开放官方 Anthropic OAuth / PKCE 浏览器换码、Refresh Token 创建以及 Bearer Token 型 `oauth` 账户导入与创建，但仍不新增订阅网页登录、Setup Token、Cookie / sessionKey 或其他私有登录代理运行路径。
+前端已开放 Anthropic OAuth / PKCE 浏览器换码、Refresh Token 创建以及 Bearer Token 型 `oauth` 账户导入与创建；在新需求完成真实验证并重新设计前，不展示 WIF、Setup Token、Cookie/sessionKey 或其他私有登录代理入口。
 
 ## 本地网关入口
 

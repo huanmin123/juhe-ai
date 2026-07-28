@@ -59,10 +59,12 @@
       :editing="Boolean(editingSourceId)"
       :form="sourceForm"
       :saving="sourceSaving"
-      :scope-options="scopeOptions"
+      :scope-options="availableScopeOptions"
+      :scope-options-loading="scopeOptionsLoading"
       @add-rate-limit="addRateLimit"
       @remove-rate-limit="removeRateLimit"
       @save="saveSource"
+      @scope-options-dropdown-visible-change="handleScopeOptionsDropdown"
     />
 
     <ExternalSourceCreatedTokenModal
@@ -76,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { BookOutlined } from '@ant-design/icons-vue'
 
 import { api, type ExternalIntegrationSourceListParams } from '@/api/client'
@@ -89,8 +91,7 @@ import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type 
 import type {
   ExternalIntegrationScopeOption,
   ExternalIntegrationSourceListItem,
-  ExternalIntegrationSourceStatus,
-  ExternalIntegrationSourceSummary
+  ExternalIntegrationSourceStatus
 } from '@/types/domain'
 import ExternalSourceApiDocsModal from './ExternalSourceApiDocsModal.vue'
 import ExternalSourceCreatedTokenModal from './ExternalSourceCreatedTokenModal.vue'
@@ -102,6 +103,7 @@ import {
   createDefaultRateLimit,
   createEmptySourceForm,
   createSourceFormFromRecord,
+  DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS,
   type ExternalSourceForm
 } from './externalSourceFormModel'
 import { useExternalSourceTokenActions } from './useExternalSourceTokenActions'
@@ -121,10 +123,15 @@ const initialPageState = pageStateCache.read()
 const loading = ref(false)
 const keyword = ref(initialPageState.keyword)
 const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>(initialPageState.statusFilter)
+let listRequestId = 0
 const rows = ref<ExternalIntegrationSourceListItem[]>([])
 const paginationUpperBound = ref(0)
 const pagination = reactive({ ...initialPageState.pagination })
-const scopeOptions = ref<ExternalIntegrationScopeOption[]>([])
+const scopeOptions = ref<ExternalIntegrationScopeOption[]>([...DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS])
+const scopeOptionsLoading = ref(false)
+const scopeOptionsLoaded = ref(false)
+let scopeOptionsRequestId = 0
+let activeScopeOptionsRequest: Promise<void> | undefined
 
 const apiDocsOpen = ref(false)
 const publicApiBaseUrl = computed(() => resolvePublicApiBaseUrl())
@@ -133,6 +140,13 @@ const sourceModalOpen = ref(false)
 const sourceSaving = ref(false)
 const editingSourceId = ref<string>()
 const sourceForm = reactive<ExternalSourceForm>(createEmptySourceForm())
+const availableScopeOptions = computed(() => {
+  const optionsByValue = new Map(scopeOptions.value.map((option) => [option.value, option]))
+  for (const value of sourceForm.scopes) {
+    if (!optionsByValue.has(value)) optionsByValue.set(value, { value, label: value })
+  }
+  return [...optionsByValue.values()]
+})
 
 const builtInSourceDescription = '已授权全部公开资源维护接口；复制完整 Token 调用 /__aipublic__ 接口时只返回 Mock 数据，可用于对接请求头、参数和响应解析。'
 const {
@@ -175,40 +189,71 @@ const tablePagination = computed(() => ({
 }))
 
 onMounted(() => {
-  void loadScopes()
   void loadData()
 })
 
-async function loadScopes(): Promise<void> {
-  try {
-    scopeOptions.value = await api.externalIntegrationSources.scopes()
-  } catch {
-    scopeOptions.value = [
-      { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
-      { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
-      { value: 'juhe_ai_public:group_list:read', label: 'GET 分组列表' },
-      { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' }
-    ]
-  }
+function loadScopes(): Promise<void> {
+  if (scopeOptionsLoaded.value) return Promise.resolve()
+  if (activeScopeOptionsRequest) return activeScopeOptionsRequest
+  const requestId = ++scopeOptionsRequestId
+  scopeOptionsLoading.value = true
+  const request = (async () => {
+    try {
+      const nextOptions = await api.externalIntegrationSources.scopes()
+      if (requestId !== scopeOptionsRequestId) return
+      scopeOptions.value = nextOptions.length ? nextOptions : [...DEFAULT_EXTERNAL_INTEGRATION_SCOPE_OPTIONS]
+      scopeOptionsLoaded.value = true
+    } catch (error) {
+      if (requestId !== scopeOptionsRequestId) return
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '加载接口资源授权选项失败，请重试'))
+    } finally {
+      if (requestId === scopeOptionsRequestId) {
+        scopeOptionsLoading.value = false
+        activeScopeOptionsRequest = undefined
+      }
+    }
+  })()
+  activeScopeOptionsRequest = request
+  return request
 }
+
+function handleScopeOptionsDropdown(open: boolean): void {
+  if (open) void loadScopes()
+}
+
+onBeforeUnmount(() => {
+  listRequestId += 1
+  scopeOptionsRequestId += 1
+  activeScopeOptionsRequest = undefined
+})
 
 function openApiDocs(): void {
   apiDocsOpen.value = true
 }
 
 async function loadData(): Promise<void> {
+  const requestId = ++listRequestId
+  const params = buildListParams()
+  const requestSignature = JSON.stringify(params)
   loading.value = true
   try {
-    const result = await api.externalIntegrationSources.list(buildListParams())
+    const result = await api.externalIntegrationSources.list(params)
+    if (!isCurrentListRequest(requestId, requestSignature)) return
     rows.value = result.items
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     paginationUpperBound.value = result.pageUpperBound
   } catch (error) {
+    if (!isCurrentListRequest(requestId, requestSignature)) return
     message.error(extractApiErrorMessage(error, '加载公开接口授权失败'))
   } finally {
-    loading.value = false
+    if (requestId === listRequestId) loading.value = false
   }
+}
+
+function isCurrentListRequest(requestId: number, signature: string): boolean {
+  return requestId === listRequestId && signature === JSON.stringify(buildListParams())
 }
 
 function buildListParams(): ExternalIntegrationSourceListParams {
@@ -272,21 +317,14 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
 function openCreateSource(): void {
   editingSourceId.value = undefined
   clearCreatedToken()
-  Object.assign(sourceForm, createEmptySourceForm(scopeOptions.value))
+  Object.assign(sourceForm, createEmptySourceForm())
   sourceModalOpen.value = true
 }
 
-async function openEditSource(record: ExternalIntegrationSourceListItem): Promise<void> {
-  let detail: ExternalIntegrationSourceSummary
-  try {
-    detail = await api.externalIntegrationSources.detail(record.id)
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '加载来源授权详情失败'))
-    return
-  }
+function openEditSource(record: ExternalIntegrationSourceListItem): void {
   let nextForm: ExternalSourceForm
   try {
-    nextForm = createSourceFormFromRecord(detail)
+    nextForm = createSourceFormFromRecord(record)
   } catch (error) {
     message.error(extractApiErrorMessage(error, '来源授权数据异常，请清理后再编辑'))
     return
@@ -420,7 +458,7 @@ function sourceNotes(record: ExternalIntegrationSourceListItem): string {
 }
 
 function scopeLabel(scope: string): string {
-  return scopeOptions.value.find((item) => item.value === scope)?.label ?? scope
+  return availableScopeOptions.value.find((item) => item.value === scope)?.label ?? scope
 }
 
 </script>

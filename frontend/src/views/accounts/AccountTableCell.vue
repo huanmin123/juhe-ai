@@ -79,7 +79,7 @@
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
-import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountPriorityEditor from './AccountPriorityEditor.vue'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
@@ -99,30 +99,30 @@ import { authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, auth
 import { accountProxyDisplay } from './accountProxyDisplay'
 
 defineEmits<{
-  (event: 'bind-group', account: AccountSummary): void
-  (event: 'clone', account: AccountSummary): void
-  (event: 'delete', account: AccountSummary): void
-  (event: 'edit', account: AccountSummary): void
-  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
+  (event: 'bind-group', account: AccountListItem): void
+  (event: 'clone', account: AccountListItem): void
+  (event: 'delete', account: AccountListItem): void
+  (event: 'edit', account: AccountListItem): void
+  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
   (event: 'cancel-priority-edit', accountId: string): void
-  (event: 'return-authorization', account: AccountSummary): void
+  (event: 'return-authorization', account: AccountListItem): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void
-  (event: 'test', account: AccountSummary): void
+  (event: 'test', account: AccountListItem): void
 }>()
 
 const props = defineProps<{
-  account: AccountSummary
-  canClone: (account: AccountSummary) => boolean
-  canDelete: (account: AccountSummary) => boolean
-  canEdit: (account: AccountSummary) => boolean
+  account: AccountListItem
+  canClone: (account: AccountListItem) => boolean
+  canDelete: (account: AccountListItem) => boolean
+  canEdit: (account: AccountListItem) => boolean
   columnKey: string
   groupName: (accountId: string) => string | undefined
-  menuItems: (account: AccountSummary) => AccountMenuItem[]
+  menuItems: (account: AccountListItem) => AccountMenuItem[]
   providerName: (providerCode?: string) => string
   priorityEditing: boolean
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
-  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
+  savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   balanceRefreshing?: boolean
 }>()
 

@@ -112,7 +112,7 @@
 import { computed } from 'vue'
 
 import type {
-  AccountSummary,
+  AccountListItem,
   AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestTask
@@ -132,7 +132,7 @@ import {
 } from './accountEndpointModes'
 
 const props = defineProps<{
-  account?: AccountSummary
+  account?: AccountListItem
   activeTask?: AccountTestTask
   endpointModesError: string
   endpointModesLoading: boolean

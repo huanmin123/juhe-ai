@@ -132,7 +132,8 @@ function workerErrorResponse(id: number, jobType: GatewayJsonWorkerJobType, erro
       error: capturedError,
       errorCode: error.code,
       errorStatusCode: error.statusCode,
-      errorType: error.type
+      errorType: error.type,
+      errorAccountScoped: error.accountScoped
     }
   }
   return {
@@ -243,11 +244,13 @@ function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
   code: string
   statusCode: number
   type: string
+  accountScoped: boolean
 } {
   return error instanceof Error
     && typeof (error as { code?: unknown }).code === 'string'
     && typeof (error as { statusCode?: unknown }).statusCode === 'number'
     && typeof (error as { type?: unknown }).type === 'string'
+    && typeof (error as { accountScoped?: unknown }).accountScoped === 'boolean'
 }
 
 const gatewayJsonWorkerErrorMaxStringBytes = 8 * 1024

@@ -3,11 +3,12 @@ import type { ModelCheckAccountOptionListOptions } from './account-options.repos
 import type { ModelCheckAccountOption } from '../domain/types.js'
 import type { ManagementSettingsSectionKey } from './settings.repository.js'
 import type { AccountListResult } from './account-summary.repository.js'
+import type { AccountManagementListPage } from './account-management-list.repository.js'
 import type { AccountStatusProjection } from './account-status-snapshot.repository.js'
 import type { AccountTagSummary } from './account-tags.repository.js'
 import type { AccessScope } from './access-scope.js'
 import type { AnnouncementListOptions, AnnouncementListResult } from './announcements.repository.js'
-import type { ApiKeyListOptions, ApiKeyListResult } from './api-key.repository.js'
+import type { ApiKeyListItem, ApiKeyListOptions, ApiKeyListResult, ApiKeySecretRecord } from './api-key.repository.js'
 import type {
   AuditErrorGroupListOptions,
   AuditErrorGroupListResult,
@@ -177,6 +178,11 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'list_account_items_page_read_only'
+    access?: AccessScope
+    options?: AccountListOptions
+  }
+  | {
+    type: 'list_account_management_items_page_read_only'
     access?: AccessScope
     options?: AccountListOptions
   }
@@ -819,6 +825,7 @@ export type SqliteReadWorkerOperation =
 export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation> =
   T extends { type: 'list_accounts_page_read_only' } ? AccountListResult :
   T extends { type: 'list_account_items_page_read_only' } ? AccountListResult :
+  T extends { type: 'list_account_management_items_page_read_only' } ? AccountManagementListPage :
   T extends { type: 'list_account_status_snapshots_read_only' } ? AccountStatusProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
@@ -915,10 +922,10 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_group_options_read_only' } ? GroupOptionSummary[] :
   T extends { type: 'list_account_group_options_read_only' } ? AccountGroupOptionSummary[] :
   T extends { type: 'find_group_summary_read_only' } ? GroupSummary | undefined :
-  T extends { type: 'list_api_keys_read_only' } ? ApiKeySummary[] :
+  T extends { type: 'list_api_keys_read_only' } ? ApiKeyListItem[] :
   T extends { type: 'list_api_keys_page_read_only' } ? ApiKeyListResult :
   T extends { type: 'find_api_key_summary_read_only' } ? ApiKeySummary | undefined :
-  T extends { type: 'find_api_key_secret_read_only' } ? ApiKeySummary | undefined :
+  T extends { type: 'find_api_key_secret_read_only' } ? ApiKeySecretRecord | undefined :
   T extends { type: 'list_route_strategies_page_read_only' } ? RouteStrategyListResult :
   T extends { type: 'list_route_strategy_list_items_page_read_only' } ? RouteStrategyListItemResult :
   T extends { type: 'list_route_strategy_list_snapshot_read_only' } ? RouteStrategyListSnapshotResult :

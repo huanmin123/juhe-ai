@@ -59,6 +59,7 @@
         :tag-options="tagOptions"
         :tag-options-loading="tagOptionsLoading"
         @delete-tag="$emit('delete-tag', $event)"
+        @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
       />
     </div>
   </section>
@@ -89,6 +90,7 @@ const emit = defineEmits<{
   (event: 'delete-tag', tagId: string): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
+  (event: 'tag-options-dropdown', open: boolean): void
 }>()
 
 const groupDropdownOpen = ref(false)

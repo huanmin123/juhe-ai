@@ -245,9 +245,10 @@
                     show-search
                     option-filter-prop="label"
                     :disabled="disabled"
-                    :loading="modelsLoading"
-                    :options="modelOptions"
-                    placeholder="选择账户实际支持的模型"
+                     :loading="modelsLoading"
+                     :options="modelOptions"
+                     placeholder="选择账户实际支持的模型"
+                     @dropdown-visible-change="handleMappingModelOptionsOpen"
                   />
                 </template>
               </AccountBatchEditField>
@@ -264,9 +265,10 @@
                       v-model:value="form.healthCheckModel"
                       show-search
                       option-filter-prop="label"
-                      :disabled="disabled || !healthCheckModelOptions.length"
-                      :options="healthCheckModelOptions"
-                      placeholder="选择检查模型"
+                     :disabled="disabled || !healthCheckModelOptions.length"
+                     :options="healthCheckModelOptions"
+                     placeholder="选择检查模型"
+                     @dropdown-visible-change="handleMappingModelOptionsOpen"
                     />
                   </template>
                 </AccountBatchEditField>
@@ -425,6 +427,7 @@ import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAcc
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
+  AccountListItem,
   AccountModelMapping,
   AccountSummary,
   AccountTagSummary,
@@ -472,7 +475,7 @@ interface SelectOption {
 
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{
-  accounts: AccountSummary[]
+  accounts: AccountListItem[]
   isManagementView: boolean
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
@@ -634,9 +637,6 @@ async function loadContext(): Promise<void> {
     if (accountDetails.value.length !== props.accounts.length) {
       throw new Error('部分账户详情未能加载')
     }
-    if (homogeneousModelConfiguration.value) {
-      await loadModelOptions(token)
-    }
   } catch (error) {
     console.error(error)
     contextError.value = extractApiErrorMessage(error, '获取批量编辑配置失败，请刷新列表后重试')
@@ -679,6 +679,15 @@ function handleMappingModelOptionsOpen(nextOpen: boolean): void {
 function handleMappingModelOptionsSearch(value: string): void {
   void loadModelOptions(loadToken, value.trim())
 }
+
+watch(
+  () => [form.enabled.serviceTierOverride, form.enabled.reasoningEffortOverride] as const,
+  ([serviceTierEnabled, reasoningEffortEnabled], [previousServiceTierEnabled, previousReasoningEffortEnabled]) => {
+    if ((serviceTierEnabled && !previousServiceTierEnabled) || (reasoningEffortEnabled && !previousReasoningEffortEnabled)) {
+      void loadModelOptions(loadToken)
+    }
+  }
+)
 
 async function save(): Promise<void> {
   if (saveDisabled.value) return

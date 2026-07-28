@@ -43,12 +43,12 @@ import { message } from 'ant-design-vue'
 import { CopyOutlined } from '@ant-design/icons-vue'
 
 import StatusTag from '@/components/StatusTag.vue'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
 import { accountStatusTooltipTraceId } from './accountStatusPresentation'
 
 const props = defineProps<{
-  account: AccountSummary
+  account: AccountListItem
 }>()
 
 const dispatchFlagActive = computed(() => props.account.effectiveAvailability?.available ?? (props.account.status === 'active' && props.account.schedulable))

@@ -37,6 +37,7 @@ type GatewayGroupAccess struct {
 
 type GatewayAccountCandidateListInput struct {
 	Access             GatewayGroupAccess
+	AccountID          string
 	Now                time.Time
 	IncludeUnavailable bool
 	RequestedModel     string

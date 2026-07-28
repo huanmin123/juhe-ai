@@ -22,6 +22,7 @@ type GatewayCandidateModelMapping struct {
 type GatewayCandidateAccountFacts struct {
 	SupportedModels []string
 	ModelMappings   []GatewayCandidateModelMapping
+	DefaultBaseURL  string
 }
 
 type GatewayCandidateQualityFacts struct {

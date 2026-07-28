@@ -7,8 +7,8 @@ import { badRequest, ok } from '../../shared/http.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
+  AccountConfigRevisionConflictError,
   ProxyProfileUnavailableError,
-  clearAccountFailureStateAsync,
   createAccountAsync,
   findAccountForTestAsync,
   findGroupSummaryAsync,
@@ -55,6 +55,8 @@ import {
   type GrokOAuthTokenInfo
 } from './grok-oauth.service.js'
 import { normalizeGrokSSOImportTokens } from './grok-sso-device-flow.js'
+import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
+import { shouldRefreshGrokOAuthCredentials } from '../providers/drivers/xai/oauth-dispatch-preparation.js'
 
 export const grokOAuthRouter = Router()
 
@@ -117,8 +119,8 @@ const createFromRefreshTokenSchema = z.object({
 }).strict()
 
 const createFromSSOSchema = z.object({
-  ssoTokens: z.array(z.string()).optional().default([]),
-  ssoToken: z.string().optional(),
+  ssoTokens: z.array(z.string().max(16_384)).max(3).optional().default([]),
+  ssoToken: z.string().max(16_384).optional(),
   ...managedAccountFields
 }).strict()
 
@@ -279,8 +281,10 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
   fingerprint: (req) => ({
     owner: normalizedText(queryField(req, 'systemAccountId')),
-    ssoTokens: sensitiveFingerprint(sortedTextValues(bodyField(req, 'ssoTokens')).join('\n')),
-    ssoToken: sensitiveFingerprint(bodyField(req, 'ssoToken')),
+    ssoTokens: sensitiveFingerprint(normalizeGrokSSOImportTokens(
+      sortedTextValues(bodyField(req, 'ssoTokens')),
+      textValue(bodyField(req, 'ssoToken'))
+    ).sort().join('\n')),
     providerProtocolProfileId: normalizedText(bodyField(req, 'providerProtocolProfileId')),
     proxyProfileId: normalizedText(bodyField(req, 'proxyProfileId'))
   })
@@ -299,6 +303,10 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
   const tokens = normalizeGrokSSOImportTokens(parsed.data.ssoTokens, parsed.data.ssoToken)
   if (!tokens.length) {
     res.status(400).json(badRequest('Grok SSO Cookie 不能为空'))
+    return
+  }
+  if (tokens.length > 3) {
+    res.status(400).json(badRequest('Grok SSO Cookie 单次最多导入 3 个'))
     return
   }
   const providerProfile = await resolveGrokOAuthProviderProfile(parsed.data.providerProtocolProfileId)
@@ -358,6 +366,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
           }
         }
       } catch (error) {
+        if (abortController.signal.aborted) throw error
         const message = oauthErrorMessage(error, 'Grok SSO Cookie 转换失败')
         getRequestLogger().warn({
           event: 'grok_sso_import_item_failed',
@@ -374,7 +383,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
           }
         }
       }
-    })
+    }, abortController.signal)
     if (abortController.signal.aborted || res.writableEnded) return
     res.json(ok({
       created: results.filter((result) => result.created).map((result) => result.item),
@@ -411,21 +420,33 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
   })
 
   try {
-    const tokenInfo = await refreshGrokAuthToken({
-      refreshToken,
-      clientId: stringCredential(account.credentials, 'client_id'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined,
-      signal: abortController.signal
-    })
+    const updatedAccount = await runWithProviderOAuthRefreshLock(
+      XAI_PROVIDER_CODE,
+      account.id,
+      async () => {
+        const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+        if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
+        if (oauthTokensChanged(account.credentials, current.credentials)
+          && !shouldRefreshGrokOAuthCredentials(current.credentials)) {
+          return current
+        }
+        const currentRefreshToken = stringCredential(current.credentials, 'refresh_token')
+        if (!currentRefreshToken) throw new Error('Grok OAuth 账户缺少 Refresh Token')
+        const tokenInfo = await refreshGrokAuthToken({
+          refreshToken: currentRefreshToken,
+          clientId: stringCredential(current.credentials, 'client_id'),
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        })
+        return await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+      },
+      { signal: abortController.signal }
+    )
     if (abortController.signal.aborted || res.writableEnded) return
-    const updatedAccount = await updateGrokOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-    if (abortController.signal.aborted || res.writableEnded) return
-    const restoredAccount = await clearAccountFailureStateAsync(account.id, requestAccess) ?? updatedAccount
     await recordOperationLogAsync(
-      buildOAuthUpdateLog(account, restoredAccount, requestAccess, 'refresh_token', '刷新 Grok OAuth Token'),
+      buildOAuthUpdateLog(account, updatedAccount, requestAccess, 'refresh_token', '刷新 Grok OAuth Token'),
       req
     )
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(restoredAccount)))
+    res.json(ok(sanitizeAccountCredentialCarrierResponse(updatedAccount)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) return
     handleOAuthAccountUpdateError(error, res, 'Grok 访问令牌刷新失败')
@@ -451,19 +472,26 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
   }
 
   try {
-    const tokenInfo = await exchangeGrokAuthCode({
-      sessionId: parsed.data.sessionId,
-      callbackUrl: parsed.data.callbackUrl,
-      ownerSystemAccountId: requestAccess?.systemAccountId,
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateGrokOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 Grok OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await exchangeGrokAuthCode({
+        sessionId: parsed.data.sessionId,
+        callbackUrl: parsed.data.callbackUrl,
+        ownerSystemAccountId: requestAccess?.systemAccountId,
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Grok OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Grok OAuth 重新授权失败')
@@ -489,26 +517,33 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
   }
 
   try {
-    const tokenInfo = await refreshGrokAuthToken({
-      refreshToken: parsed.data.refreshToken,
-      clientId: stringCredential(account.credentials, 'client_id'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateGrokOAuthAccountCredentials(account, tokenInfo, {
-        refreshToken: parsed.data.refreshToken
-      }, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(
-          account,
-          updated,
-          requestAccess,
-          'reauthorize_from_refresh_token',
-          '使用 Refresh Token 重新授权 Grok OAuth 账户'
-        )
+    const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await refreshGrokAuthToken({
+        refreshToken: parsed.data.refreshToken,
+        clientId: stringCredential(current.credentials, 'client_id'),
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, {
+          refreshToken: parsed.data.refreshToken
+        }, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(
+            current,
+            result,
+            requestAccess,
+            'reauthorize_from_refresh_token',
+            '使用 Refresh Token 重新授权 Grok OAuth 账户'
+          )
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Grok 刷新令牌重新授权失败')
@@ -591,11 +626,19 @@ function grokSSOImportAccountExpiresAt(requested: string | null | undefined, tok
   return Number.isFinite(requestedExpiresAt) && requestedExpiresAt < tokenExpiresAt ? requested : tokenInfo.expiresAt
 }
 
-async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal
+): Promise<R[]> {
   const output = new Array<R>(items.length)
   let nextIndex = 0
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (nextIndex < items.length) {
+      if (signal?.aborted) {
+        throw signal.reason instanceof Error ? signal.reason : new Error('请求已取消')
+      }
       const index = nextIndex
       nextIndex += 1
       output[index] = await worker(items[index]!, index)
@@ -659,7 +702,9 @@ async function updateGrokOAuthAccountCredentials(
   const credentials = { ...account.credentials, ...buildGrokOAuthCredentials(tokenInfo, fallback) }
   const existingBaseUrl = stringCredential(account.credentials, 'base_url')
   if (existingBaseUrl) credentials.base_url = existingBaseUrl
-  const updated = await updateAccountAsync(account.id, { credentials }, access)
+  const updated = await updateAccountAsync(account.id, { credentials }, access, {
+    expectedConfigRevision: account.configRevision ?? 1
+  })
   if (!updated) throw new Error('Grok OAuth 账户不存在或无法更新')
   return updated
 }
@@ -690,7 +735,8 @@ function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
 }
 
 function isOAuthBusinessConflictError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('已存在')
+  return error instanceof AccountConfigRevisionConflictError
+    || (error instanceof Error && error.message.includes('已存在'))
 }
 
 function buildOAuthCreateLog(
@@ -760,4 +806,9 @@ function buildOAuthUpdateLog(
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {
   const value = credentials[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
+    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }

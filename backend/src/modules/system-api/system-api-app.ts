@@ -32,6 +32,7 @@ import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
+import { uiBootstrapRouter } from '../ui-bootstrap/ui-bootstrap.routes.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
@@ -107,6 +108,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-groups`, forceSelfAccessScope, groupsRouter)
   app.use(`${systemApiPrefix}/my-route-strategies`, forceSelfAccessScope, routeStrategiesRouter)
   app.use(`${systemApiPrefix}/my-api-keys`, forceSelfAccessScope, apiKeysRouter)
+  app.use(`${systemApiPrefix}/my-ui-bootstrap`, forceSelfAccessScope, uiBootstrapRouter)
   app.use(`${systemApiPrefix}/my-authorization-options`, forceSelfAccessScope, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/my-authorizations`, forceSelfAccessScope, authorizationsRouter)
   app.use(`${systemApiPrefix}/my-anthropic-oauth`, forceSelfAccessScope, anthropicOAuthRouter)
@@ -123,6 +125,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)
   app.use(`${systemApiPrefix}/route-strategies`, requireAdmin, routeStrategiesRouter)
   app.use(`${systemApiPrefix}/api-keys`, requireAdmin, apiKeysRouter)
+  app.use(`${systemApiPrefix}/ui-bootstrap`, requireAdmin, uiBootstrapRouter)
   app.use(`${systemApiPrefix}/authorization-options`, requireAdmin, authorizationOptionsRouter)
   app.use(`${systemApiPrefix}/authorizations`, requireAdmin, authorizationsRouter)
   app.use(`${systemApiPrefix}/anthropic-oauth`, requireAdmin, anthropicOAuthRouter)

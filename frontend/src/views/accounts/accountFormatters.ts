@@ -6,7 +6,7 @@ import {
   parseStrictDatePickerValue,
   serverDateTimeTimestamp
 } from '@/shared/formatters'
-import type { AccountStatus, AccountSummary, AccountTestResult } from '@/types/domain'
+import type { AccountListItem, AccountStatus, AccountTestResult } from '@/types/domain'
 import {
   accountDiagnosticTooltipLines,
   conciseAccountLastErrorText,
@@ -43,10 +43,6 @@ export {
 export interface AccountStatusTagInfo {
   color: string
   label: string
-}
-
-interface AccountQualityStatusInfo extends AccountStatusTagInfo {
-  tooltipLines: string[]
 }
 
 export function statusColor(status: AccountStatus) {
@@ -88,7 +84,7 @@ export function accountErrorCodeText(code?: string): string {
   return code || '未分类异常'
 }
 
-export function accountStatusColor(account: AccountSummary) {
+export function accountStatusColor(account: AccountListItem) {
   if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
@@ -109,7 +105,7 @@ export function accountStatusColor(account: AccountSummary) {
   return statusColor(account.status)
 }
 
-export function accountStatusText(account: AccountSummary) {
+export function accountStatusText(account: AccountListItem) {
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
     return directAccountStatusText(account)
   }
@@ -135,62 +131,12 @@ export function accountStatusText(account: AccountSummary) {
   return statusText(account.status)
 }
 
-function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatusInfo | undefined {
-  if (account.effectiveAvailability?.status !== 'available') return undefined
-  if (account.status !== 'active' || !account.schedulable) return undefined
-
-  const requestCount = Math.max(0, Math.trunc(account.qualityRecentRequestCount ?? 0))
-  const successRate = normalizedRate(account.qualityRecentSuccessRate)
-  const derivedErrorCount = successRate === undefined
-    ? 0
-    : Math.max(0, requestCount - Math.round(requestCount * successRate))
-  const errorCount = Math.max(0, Math.trunc(account.qualityRecentErrorCount ?? derivedErrorCount))
-  if (requestCount < 3 || errorCount < 2) return undefined
-
-  const successRateText = successRate === undefined ? '' : `，成功率 ${Math.round(successRate * 100)}%`
-  const lines = [
-    `AI账户质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
-    '归因范围：仅统计明确账号失败和账号依赖失败',
-    '不计入：并发满、额度/认证/规则拦截、客户端断开',
-    '账户状态：基础状态仍为可调度，不参与状态筛选'
-  ]
-  if (account.qualityLastErrorAt) {
-    lines.push(`最后质量失败：${formatDateTime(account.qualityLastErrorAt)}`)
-  }
-  const lastErrorMessage = formatAccountQualityLastError(account.qualityLastErrorMessage)
-  if (lastErrorMessage) {
-    lines.push(`最后质量原因：${lastErrorMessage}`)
-  }
-  if (account.qualityUpdatedAt) {
-    lines.push(`统计刷新：${formatDateTime(account.qualityUpdatedAt)}`)
-  }
-
-  if (requestCount >= 5 && (errorCount >= 5 || (successRate !== undefined && successRate <= 0.5))) {
-    return { color: 'red', label: '频繁失败', tooltipLines: lines }
-  }
-  if (errorCount >= 3 || (successRate !== undefined && successRate <= 0.8)) {
-    return { color: 'orange', label: '近期不稳', tooltipLines: lines }
-  }
-  return { color: 'gold', label: '近期失败', tooltipLines: lines }
-}
-
-function normalizedRate(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
-  return Math.max(0, Math.min(1, value))
-}
-
-function formatAccountQualityLastError(message?: string): string {
-  const value = conciseAccountLastErrorText(message)
-  const maxLength = 120
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
-}
-
-export function accountCooldownText(account: AccountSummary) {
+export function accountCooldownText(account: AccountListItem) {
   if (!isCoolingDown(account)) return ''
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
 }
 
-function accountRetestNextText(account: AccountSummary): string {
+function accountRetestNextText(account: AccountListItem): string {
   if (!account.cooldownUntil) return ''
   const timestamp = serverDateTimeTimestamp(account.cooldownUntil)
   if (timestamp === undefined) return formatDateTime(account.cooldownUntil)
@@ -200,7 +146,7 @@ function accountRetestNextText(account: AccountSummary): string {
   return formatDateTime(account.cooldownUntil)
 }
 
-function accountCooldownRetestText(account: AccountSummary): string {
+function accountCooldownRetestText(account: AccountListItem): string {
   const parts: string[] = []
   if (account.cooldownRetestFailureCount) {
     parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
@@ -216,7 +162,7 @@ function accountCooldownRetestText(account: AccountSummary): string {
   return parts.length ? `后台复测：${parts.join('，')}` : ''
 }
 
-export function accountStatusTooltipLines(account: AccountSummary): string[] {
+export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const lines = accountStatusPresentationTooltipLines(account)
   const circuitStatus = activeCircuitStatus(account)
   if (circuitStatus === 'avoided') {
@@ -232,7 +178,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   return lines
 }
 
-function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
+function conciseAccountStatusTooltipLines(account: AccountListItem): string[] {
   const lines = [directAccountStatusText(account)]
   const effectiveStatus = account.effectiveAvailability?.status
   if (account.status === 'error') {
@@ -273,7 +219,7 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
   return lines
 }
 
-function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
+function accountHealthCheckTooltipLines(account: AccountListItem): string[] {
   const lines: string[] = []
   if (account.lastHealthCheckAt) {
     lines.push(`最近主动健康检查：${formatDateTime(account.lastHealthCheckAt)}`)
@@ -309,7 +255,7 @@ function formatAccountHealthCheckError(message?: string): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
 }
 
-function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
+function shouldShowEffectiveAvailabilitySummary(account: AccountListItem): boolean {
   const availability = account.effectiveAvailability
   if (!availability || availability.available) return false
   if (isDirectAccountStatus(availability.status)) return false
@@ -322,12 +268,12 @@ function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolea
   return true
 }
 
-function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
+function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountListItem): account is AccountListItem & { effectiveAvailability: NonNullable<AccountListItem['effectiveAvailability']> } {
   const availability = account.effectiveAvailability
   return Boolean(availability && !availability.available)
 }
 
-function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): string[] {
+function authorizedInstanceLocalStatusTooltipLines(account: AccountListItem): string[] {
   if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) return []
   const lines = [`授权实例本地状态：${localAccountStatusText(account)}`]
   if (account.status === 'error') {
@@ -349,13 +295,13 @@ function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): str
   return lines
 }
 
-function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountSummary): boolean {
+function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountListItem): boolean {
   return isAuthorizedAccount(account)
     && !isAccountInstanceEffectiveAvailability(account)
     && Boolean(localAccountStatusText(account))
 }
 
-function localAccountStatusText(account: AccountSummary): string {
+function localAccountStatusText(account: AccountListItem): string {
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (isLongTermUnavailableAccount(account)) return '长期不可用'
   if (account.status !== 'active') return statusText(account.status)
@@ -364,7 +310,7 @@ function localAccountStatusText(account: AccountSummary): string {
   return ''
 }
 
-export function authorizationSourceAccountStatusTag(account: AccountSummary): AccountStatusTagInfo | undefined {
+export function authorizationSourceAccountStatusTag(account: AccountListItem): AccountStatusTagInfo | undefined {
   if (!isAuthorizedAccount(account)) return undefined
   if (isAuthorizationSourceAccountExpired(account)) return { color: 'red', label: '来源到期' }
   const sourceStatus = account.authorizationInstanceSourceAccountStatus
@@ -383,7 +329,7 @@ export function authorizationSourceAccountStatusTag(account: AccountSummary): Ac
   return undefined
 }
 
-export function authorizationSourceAccountTooltipLines(account: AccountSummary): string[] {
+export function authorizationSourceAccountTooltipLines(account: AccountListItem): string[] {
   if (!isAuthorizedAccount(account)) return []
   const sourceStatus = account.authorizationInstanceSourceAccountStatus
   const lines: string[] = []
@@ -424,7 +370,7 @@ export function authorizationSourceAccountTooltipLines(account: AccountSummary):
   return lines
 }
 
-function isAuthorizationSourceAccountExpired(account: AccountSummary): boolean {
+function isAuthorizationSourceAccountExpired(account: AccountListItem): boolean {
   if (!isAuthorizedAccount(account)) return false
   if (account.authorizationInstanceSourceAccountLastErrorCode === 'account_expired') return true
   if (!account.authorizationInstanceSourceAccountExpiresAt) return false
@@ -432,47 +378,47 @@ function isAuthorizationSourceAccountExpired(account: AccountSummary): boolean {
   return time !== undefined && time <= Date.now()
 }
 
-function activeRuntimeAvailabilityStatus(account: AccountSummary) {
+function activeRuntimeAvailabilityStatus(account: AccountListItem) {
   const status = account.runtimeAvailability?.status
   if (!status || status === 'normal') return undefined
   if (account.status !== 'active') return undefined
   return status
 }
 
-function activeCircuitStatus(account: AccountSummary) {
+function activeCircuitStatus(account: AccountListItem) {
   const status = account.circuitSummary?.status
   if (!status || status === 'normal') return undefined
   if (account.status !== 'active') return undefined
   return status
 }
 
-export function hasAccountRuntimeRecoveryState(account: AccountSummary): boolean {
+export function hasAccountRuntimeRecoveryState(account: AccountListItem): boolean {
   return Boolean(activeRuntimeAvailabilityStatus(account))
 }
 
-export function isTemporaryAccountStatus(account: AccountSummary) {
+export function isTemporaryAccountStatus(account: AccountListItem) {
   return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }
 
-function isLongTermUnavailableAccount(account: AccountSummary): boolean {
+function isLongTermUnavailableAccount(account: AccountListItem): boolean {
   return isTemporaryAccountStatus(account)
     && account.lastErrorCode === 'cooldown_retest_long_term_unavailable'
 }
 
-function isDirectAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
+function isDirectAccountStatus(status: NonNullable<AccountListItem['effectiveAvailability']>['status']): boolean {
   return status.startsWith('instance_')
 }
 
-function isAccountInstanceEffectiveAvailability(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
+function isAccountInstanceEffectiveAvailability(account: AccountListItem): account is AccountListItem & { effectiveAvailability: NonNullable<AccountListItem['effectiveAvailability']> } {
   const scope = account.effectiveAvailability?.blockerScope
   return scope === 'account' || scope === 'authorized_instance'
 }
 
-function isConciseAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
+function isConciseAccountStatus(status: NonNullable<AccountListItem['effectiveAvailability']>['status']): boolean {
   return isDirectAccountStatus(status)
 }
 
-function directAccountStatusText(account: AccountSummary): string {
+function directAccountStatusText(account: AccountListItem): string {
   const status = account.effectiveAvailability?.status
   if (status === 'instance_expired') return '账户到期'
   if (status === 'instance_pending_test') return isPendingHealthCheckFailed(account) ? '检查失败' : '待检查'
@@ -487,20 +433,20 @@ function directAccountStatusText(account: AccountSummary): string {
   return statusText(account.status)
 }
 
-function pendingHealthCheckStatusText(account: AccountSummary): string {
+function pendingHealthCheckStatusText(account: AccountListItem): string {
   if (isPendingHealthCheckFailed(account)) {
     return '后台健康检查未通过，系统每 1 小时自动重试；首次失败持续 24 小时仍未通过时转为异常；人工测试仅用于诊断，不改变账户状态'
   }
   return '等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态'
 }
 
-export function isPendingHealthCheckFailed(account: AccountSummary): boolean {
+export function isPendingHealthCheckFailed(account: AccountListItem): boolean {
   return account.status === 'pending_test'
     && Boolean(account.lastHealthCheckAt)
     && Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
 }
 
-export function isCoolingDown(account: AccountSummary) {
+export function isCoolingDown(account: AccountListItem) {
   if (!account.cooldownUntil) return false
   return isFutureTime(account.cooldownUntil)
 }
@@ -511,18 +457,18 @@ function isFutureTime(value?: string): boolean {
   return time !== undefined && time > Date.now()
 }
 
-export function isAccountPackageExpired(account: AccountSummary) {
+export function isAccountPackageExpired(account: AccountListItem) {
   if (!account.accountExpiresAt) return false
   const time = serverDateTimeTimestamp(account.accountExpiresAt)
   return time !== undefined && time <= Date.now()
 }
 
-export function isAccountPackageExpiredStatus(account: AccountSummary): boolean {
+export function isAccountPackageExpiredStatus(account: AccountListItem): boolean {
   return isAccountPackageExpired(account)
     || account.lastErrorCode === 'account_expired'
 }
 
-export function isAuthorizationExpired(account: AccountSummary): boolean {
+export function isAuthorizationExpired(account: AccountListItem): boolean {
   if (!isAuthorizedAccount(account)) return false
   if (account.authorizationStatus === 'expired') return true
   if (!account.authorizationExpiresAt) return false
@@ -530,18 +476,18 @@ export function isAuthorizationExpired(account: AccountSummary): boolean {
   return time !== undefined && time <= Date.now()
 }
 
-export function isAuthorizationPaused(account: AccountSummary): boolean {
+export function isAuthorizationPaused(account: AccountListItem): boolean {
   return isAuthorizedAccount(account) && account.authorizationStatus === 'paused'
 }
 
-export function isAuthorizationBindingUnavailable(account: AccountSummary): boolean {
+export function isAuthorizationBindingUnavailable(account: AccountListItem): boolean {
   return isAuthorizedAccount(account)
     && account.groupBindStatus === 'authorization_unavailable'
     && !isAuthorizationExpired(account)
     && !isAuthorizationPaused(account)
 }
 
-export function isAuthorizedAccount(account: AccountSummary): boolean {
+export function isAuthorizedAccount(account: AccountListItem): boolean {
   return account.accessType === 'authorized'
 }
 

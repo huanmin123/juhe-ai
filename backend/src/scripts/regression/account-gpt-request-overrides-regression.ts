@@ -9,6 +9,10 @@ import type { ProviderModelCatalogItem } from '../../modules/model-pricing/model
 import { normalizeAccountCredentialsForWrite } from '../../storage/account-credentials-normalization.js'
 import { runtimeOpenAIAccountCredentials } from '../../storage/openai-account-selector.repository.js'
 import { applyGptAccountRequestOverridesToBody } from '../../modules/providers/drivers/gpt/request-override-body.js'
+import { applyProviderAccountRequestOverridesToBody } from '../../modules/providers/drivers/_shared/provider-request-overrides.js'
+import { serializeGatewayJsonObject } from '../../modules/gateway/request/serialized-json-body.js'
+import { parseGatewayRequestJsonBody } from '../../modules/gateway/request/json-parser.js'
+import { prepareAnthropicMessagesBodyForAttempt } from '../../modules/gateway/upstream/body-preparation.js'
 import { setGptRequestOverrideModelCapabilitiesResolverForTest } from '../../modules/providers/drivers/gpt/request-override-capabilities.js'
 import { buildGatewayUpstreamRequestParts } from '../../modules/providers/drivers/registry.js'
 import type { DispatchAccountSecret } from '../../storage/openai-account-selector.types.js'
@@ -162,6 +166,163 @@ const gatewayAccount = {
     reasoning_effort_override: 'high'
   }
 } as unknown as DispatchAccountSecret
+
+const originalJsonParse = JSON.parse
+let serializedBuilderParseCount = 0
+let structuredGptOverrideBody: Buffer | string | undefined
+let structuredProviderOverrideBody: Buffer | string | undefined
+try {
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    serializedBuilderParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  structuredGptOverrideBody = await applyGptAccountRequestOverridesToBody(serializeGatewayJsonObject({
+    model: 'gpt-a',
+    input: 'x'.repeat(512 * 1024)
+  }), {
+    credentials: gatewayAccount.credentials,
+    account: gatewayAccount,
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+  structuredProviderOverrideBody = await applyProviderAccountRequestOverridesToBody(serializeGatewayJsonObject({
+    model: 'gpt-a',
+    messages: [{ role: 'user', content: 'x'.repeat(512 * 1024) }]
+  }), {
+    account: gatewayAccount,
+    upstreamModel: 'gpt-a',
+    wireFormat: 'openai_chat',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+} finally {
+  JSON.parse = originalJsonParse
+}
+assert.equal(serializedBuilderParseCount, 0, 'builder 已绑定结构化对象时 GPT/provider 账户覆盖不得再次 JSON.parse')
+assert.equal((originalJsonParse(String(structuredGptOverrideBody)) as Record<string, unknown>).service_tier, 'priority')
+assert.equal((originalJsonParse(String(structuredProviderOverrideBody)) as Record<string, unknown>).reasoning_effort, 'high')
+
+const requestScopedRawBody = Buffer.from(JSON.stringify({
+  model: 'gpt-a',
+  input: 'request-scoped'
+}), 'utf8')
+const requestScopedRequest = {
+  method: 'POST',
+  path: '/v1/responses',
+  originalUrl: '/v1/responses',
+  headers: { 'content-type': 'application/json' },
+  rawBody: requestScopedRawBody
+} as never
+let requestScopedParseCount = 0
+try {
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    requestScopedParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  await parseGatewayRequestJsonBody(requestScopedRequest)
+  await applyGptAccountRequestOverridesToBody(requestScopedRawBody, {
+    credentials: gatewayAccount.credentials,
+    account: gatewayAccount,
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+} finally {
+  JSON.parse = originalJsonParse
+}
+assert.equal(requestScopedParseCount, 1, '请求级物化后的原始 Buffer 进入账户覆盖时必须复用同一结构对象')
+
+const unsupportedProviderBody = Buffer.from(JSON.stringify({
+  model: 'gpt-a',
+  messages: [{ role: 'user', content: 'x'.repeat(512 * 1024) }]
+}), 'utf8')
+const originalJsonStringify = JSON.stringify
+let unsupportedProviderParseCount = 0
+let unsupportedProviderStringifyCount = 0
+let unsupportedProviderResult: Buffer | string | undefined
+try {
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    unsupportedProviderParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+    unsupportedProviderStringifyCount += 1
+    return originalJsonStringify(...args)
+  }) as typeof JSON.stringify
+  unsupportedProviderResult = await applyProviderAccountRequestOverridesToBody(unsupportedProviderBody, {
+    account: gatewayAccount,
+    upstreamModel: 'gpt-a',
+    wireFormat: 'openai_chat',
+    modelCapabilities: {
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
+  })
+} finally {
+  JSON.parse = originalJsonParse
+  JSON.stringify = originalJsonStringify
+}
+assert.equal(unsupportedProviderResult, unsupportedProviderBody, '能力不支持任何账户覆盖时必须原样复用 Body')
+assert.equal(unsupportedProviderParseCount, 0, '能力不支持覆盖时不得反解析 builder Body')
+assert.equal(unsupportedProviderStringifyCount, 0, '能力不支持覆盖时不得重新序列化大 Body')
+
+const anthropicPreparedInput = structuredProviderOverrideBody as Buffer
+let anthropicPreparationParseCount = 0
+let anthropicPreparedBody: Buffer | string | undefined
+try {
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    anthropicPreparationParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  anthropicPreparedBody = prepareAnthropicMessagesBodyForAttempt({} as never, new Headers({
+    'anthropic-version': '2023-06-01',
+    'x-api-key': 'test-key'
+  }), 'https://api.anthropic.com/v1/messages', anthropicPreparedInput)
+} finally {
+  JSON.parse = originalJsonParse
+}
+assert.equal(anthropicPreparationParseCount, 0, '覆盖后的结构化 Buffer 进入 Anthropic preparation 时不得再次 JSON.parse')
+assert.ok(Buffer.isBuffer(anthropicPreparedBody))
+
+const passthroughLargeBody = Buffer.from(originalJsonStringify({
+  model: 'gpt-a',
+  messages: [{ role: 'user', content: 'x'.repeat(512 * 1024) }]
+}), 'utf8')
+let passthroughParseCount = 0
+try {
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
+    passthroughParseCount += 1
+    return originalJsonParse(...args)
+  }) as typeof JSON.parse
+  await applyProviderAccountRequestOverridesToBody(passthroughLargeBody, {
+    account: gatewayAccount,
+    upstreamModel: 'gpt-a',
+    wireFormat: 'openai_chat',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+  await applyProviderAccountRequestOverridesToBody(passthroughLargeBody, {
+    account: { ...gatewayAccount, id: 'gpt-request-override-switched-account' },
+    upstreamModel: 'gpt-a',
+    wireFormat: 'openai_chat',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+} finally {
+  JSON.parse = originalJsonParse
+}
+assert.equal(passthroughParseCount, 1, '原样透传大 Body 跨账户覆盖时只能完整解析一次')
 
 const unknownCapabilitiesBody = JSON.parse(String(await applyGptAccountRequestOverridesToBody(JSON.stringify({
   messages: [],

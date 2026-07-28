@@ -75,8 +75,8 @@ assertIncludes(accountApiSource, '`/my-accounts/${id}/test-options`', '个人端
 assertIncludes(accountApiSource, 'export type AccountTestOptions = AccountManualTestModelOption[]', 'test-options 契约应返回模型选项数组')
 assertIncludes(accountManualTestModelOptionSource, 'id: string', 'test-options 模型摘要必须返回模型 ID')
 assertIncludes(accountManualTestModelOptionSource, 'name: string', 'test-options 模型摘要必须返回展示名称')
-assertIncludes(accountManualTestModelOptionSource, 'supportedApiProtocols', 'test-options 模型选项必须返回目录协议数组')
-assertIncludes(accountManualTestModelOptionSource, 'testEndpointModes', 'test-options 模型选项必须返回账户能力交集')
+assertNotIncludes(accountManualTestModelOptionSource, 'supportedApiProtocols', '轻量 test-options 模型摘要不得重复返回协议能力')
+assertNotIncludes(accountManualTestModelOptionSource, 'testEndpointModes', '轻量 test-options 模型摘要不得重复返回请求形态')
 assertNotIncludes(accountApiSource, 'defaultModel: string', 'test-options 不得重复返回账户默认模型')
 assertNotIncludes(accountApiSource, 'defaultTestEndpointMode: AccountSupportedEndpointMode', 'test-options 不得重复返回账户默认请求形态')
 assertIncludes(accountApiSource, 'testModelCapabilities', '兼容能力 API 应保留给旧客户端与定点校验')
@@ -100,8 +100,8 @@ assertIncludes(accountTestModelsSource, 'selectedIds', '测试模型搜索必须
 assertIncludes(accountTestComponentSource, "@search=\"$emit('search-model-options', $event)\"", '模型选择器搜索必须触发服务端按需加载')
 assertIncludes(accountTestModelsSource, 'optionsAbortController?.abort()', '关闭或切换账户时必须取消候选模型请求')
 assertIncludes(accountTestModelsSource, 'modelCapabilitiesAbortController?.abort()', '切换账户、模型或关闭时必须取消定点能力请求')
-assertIncludes(accountTestModelsSource, 'supportedApiProtocols', '前端必须保留模型选项自带的目录协议')
-assertIncludes(updateSelectableTestModelSource, 'option.testEndpointModes', '切换模型必须直接使用模型选项自带的请求形态')
+assertNotIncludes(accountTestModelsSource, 'option.supportedApiProtocols', '候选模型列表不得承担当前模型的协议能力详情')
+assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes([], false)', '切换模型必须清空旧请求形态，等待定点能力加载')
 assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
 assertNotIncludes(accountTestModelsSource, 'endpointModesForProtocol', '模型协议标签不得决定保存账户可测试请求形态')
 assertNotIncludes(accountTestModelsSource, 'modelRequestToken', '模型切换不应再维护独立请求 token')
@@ -183,7 +183,7 @@ assert.deepEqual(
   '列表人工测试应允许提交不在账户 supportedModels 中的 test-options 模型'
 )
 
-console.log('账户人工测试解耦回归通过：模型选项携带协议、切换直接绑定请求形态、草稿固定模型和运行隔离均符合预期')
+console.log('账户人工测试解耦回归通过：轻量模型选项、定点能力加载、草稿固定模型和运行隔离均符合预期')
 
 function accountFixture(): AccountSummary {
   return {

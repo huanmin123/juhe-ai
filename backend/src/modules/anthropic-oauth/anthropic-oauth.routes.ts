@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { ANTHROPIC_PROVIDER_CODE, isAnthropicProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -15,6 +15,8 @@ import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules 
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
+import { shouldRefreshAnthropicOAuthCredentials } from '../providers/drivers/anthropic/oauth-dispatch-preparation.js'
 import {
   buildAnthropicOAuthCredentials,
   exchangeAnthropicAuthCode,
@@ -28,6 +30,7 @@ export const anthropicOAuthRouter = Router()
 
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
+  base_url: z.string().trim().min(1).optional(),
   supported_endpoint_modes: z.array(z.string().trim().min(1)).max(20).optional(),
   service_tier_override: z.string().trim().min(1).optional(),
   reasoning_effort_override: z.string().trim().min(1).optional(),
@@ -338,28 +341,42 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
   })
 
   try {
-    const tokenInfo = await refreshAnthropicAuthToken({
-      refreshToken,
-      clientId: stringCredential(account.credentials, 'client_id'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined,
-      signal: abortController.signal
-    })
+    const updatedAccount = await runWithProviderOAuthRefreshLock(
+      ANTHROPIC_PROVIDER_CODE,
+      account.id,
+      async () => {
+        const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+        if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
+        if (oauthTokensChanged(account.credentials, current.credentials)
+          && !shouldRefreshAnthropicOAuthCredentials(current.credentials)) {
+          return current
+        }
+        const currentRefreshToken = stringCredential(current.credentials, 'refresh_token')
+        if (!currentRefreshToken) throw new Error('Anthropic OAuth 账户缺少 Refresh Token')
+        const tokenInfo = await refreshAnthropicAuthToken({
+          refreshToken: currentRefreshToken,
+          clientId: stringCredential(current.credentials, 'client_id'),
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        })
+        return await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+      },
+      { signal: abortController.signal }
+    )
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
-    const updatedAccount = await updateAnthropicOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-    if (abortController.signal.aborted || res.writableEnded) {
-      return
-    }
-    const restoredAccount = await clearAccountFailureStateAsync(account.id, requestAccess) ?? updatedAccount
-    await recordOperationLogAsync(buildOAuthUpdateLog(account, restoredAccount, requestAccess, 'refresh_token', '刷新 Anthropic OAuth Token'), req)
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(restoredAccount)))
+    await recordOperationLogAsync(buildOAuthUpdateLog(account, updatedAccount, requestAccess, 'refresh_token', '刷新 Anthropic OAuth Token'), req)
+    res.json(ok(sanitizeAccountCredentialCarrierResponse(updatedAccount)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
+      return
+    }
+    if (isOAuthBusinessConflictError(error)) {
+      res.status(409).json(badRequest(oauthErrorMessage(error, 'Anthropic 访问令牌刷新失败')))
       return
     }
     res.status(502).json({ message: oauthErrorMessage(error, 'Anthropic 访问令牌刷新失败') })
@@ -385,19 +402,26 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
   }
 
   try {
-    const tokenInfo = await exchangeAnthropicAuthCode({
-      sessionId: parsed.data.sessionId,
-      callbackUrl: parsed.data.callbackUrl,
-      ownerSystemAccountId: requestAccess?.systemAccountId,
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateAnthropicOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 Anthropic OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await exchangeAnthropicAuthCode({
+        sessionId: parsed.data.sessionId,
+        callbackUrl: parsed.data.callbackUrl,
+        ownerSystemAccountId: requestAccess?.systemAccountId,
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Anthropic OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Anthropic OAuth 重新授权失败')
@@ -423,18 +447,25 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
   }
 
   try {
-    const tokenInfo = await refreshAnthropicAuthToken({
-      refreshToken: parsed.data.refreshToken,
-      clientId: stringCredential(account.credentials, 'client_id'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateAnthropicOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Anthropic OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await refreshAnthropicAuthToken({
+        refreshToken: parsed.data.refreshToken,
+        clientId: stringCredential(current.credentials, 'client_id'),
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Anthropic OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Anthropic 刷新令牌重新授权失败')
@@ -472,6 +503,7 @@ async function resolveAnthropicOAuthProviderProfile(providerProtocolProfileId: s
 
 function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
+  if (patch?.base_url !== undefined) output.base_url = patch.base_url
   if (patch?.supported_endpoint_modes !== undefined) output.supported_endpoint_modes = patch.supported_endpoint_modes
   if (patch?.service_tier_override !== undefined) output.service_tier_override = patch.service_tier_override
   if (patch?.reasoning_effort_override !== undefined) output.reasoning_effort_override = patch.reasoning_effort_override
@@ -500,8 +532,8 @@ function buildSafeAnthropicOAuthCredentials(
   fallback?: { refreshToken?: string }
 ): Record<string, unknown> {
   return {
-    ...safeOAuthCredentialsPatch(patch),
-    ...buildAnthropicOAuthCredentials(tokenInfo, fallback)
+    ...buildAnthropicOAuthCredentials(tokenInfo, fallback),
+    ...safeOAuthCredentialsPatch(patch)
   }
 }
 
@@ -523,7 +555,11 @@ async function updateAnthropicOAuthAccountCredentials(
     ...account.credentials,
     ...buildAnthropicOAuthCredentials(tokenInfo, fallback)
   }
-  const updated = await updateAccountAsync(account.id, { credentials }, access)
+  const existingBaseUrl = stringCredential(account.credentials, 'base_url')
+  if (existingBaseUrl) credentials.base_url = existingBaseUrl
+  const updated = await updateAccountAsync(account.id, { credentials }, access, {
+    expectedConfigRevision: account.configRevision ?? 1
+  })
   if (!updated) {
     throw new Error('Anthropic OAuth 账户不存在或无法更新')
   }
@@ -547,7 +583,8 @@ function oauthErrorMessage(error: unknown, fallbackMessage: string): string {
 }
 
 function isOAuthBusinessConflictError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('已存在')
+  return error instanceof AccountConfigRevisionConflictError
+    || (error instanceof Error && error.message.includes('已存在'))
 }
 
 function buildOAuthCreateLog(
@@ -621,4 +658,9 @@ function buildOAuthUpdateLog(
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {
   const value = credentials[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
+    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }

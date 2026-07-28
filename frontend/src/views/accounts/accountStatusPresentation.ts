@@ -1,7 +1,7 @@
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 
-export function accountStatusTooltipLines(account: AccountSummary): string[] {
+export function accountStatusTooltipLines(account: AccountListItem): string[] {
   const presentation = account.availabilityPresentation
   const effective = account.effectiveAvailability
   const observation = presentation?.probe?.lastObservation
@@ -31,7 +31,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   return lines
 }
 
-function accountStatusFallbackLabel(status: AccountSummary['status']): string {
+function accountStatusFallbackLabel(status: AccountListItem['status']): string {
   if (status === 'active') return '可调度'
   if (status === 'pending_test') return '待检查'
   if (status === 'disabled') return '停用'
@@ -42,6 +42,6 @@ function accountStatusFallbackLabel(status: AccountSummary['status']): string {
   return '状态异常'
 }
 
-export function accountStatusTooltipTraceId(account: AccountSummary): string | undefined {
+export function accountStatusTooltipTraceId(account: AccountListItem): string | undefined {
   return account.availabilityPresentation?.probe?.lastObservation?.traceId
 }

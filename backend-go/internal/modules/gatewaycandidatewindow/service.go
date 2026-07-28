@@ -74,6 +74,7 @@ type ProxyRuntime struct {
 type Candidate struct {
 	Projection              port.GatewayAccountCandidate
 	Credentials             CredentialSet `json:"-"`
+	DefaultBaseURL          string
 	SupportedModels         []string
 	ModelMappings           []ModelMapping
 	APIKeyRuntime           []APIKeyRuntime
@@ -327,6 +328,12 @@ func modelRank(candidate Candidate, model, endpointFamily string) int {
 		return 1
 	}
 	return 3
+}
+
+// CandidateSupportsRequest revalidates hydrated model facts immediately before
+// a caller builds an upstream attempt. It is not an authorization lease.
+func CandidateSupportsRequest(candidate Candidate, model, endpointFamily string) bool {
+	return modelRank(candidate, strings.TrimSpace(model), strings.TrimSpace(endpointFamily)) < 3
 }
 
 func supportsModel(models []string, wanted string) bool {

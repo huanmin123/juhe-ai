@@ -231,13 +231,13 @@ for (const [label, source] of [
 }
 assert.match(
   failureDispatchSource,
-  /if \(!explicitPolicyDecision\) \{\s*return handleOpaqueFailedUpstreamResponse\(input, responseBodyRead\)\s*\}/,
-  '显式策略正文未命中时必须直接复用已读取正文进入统一 opaque 切号'
+  /if \(!explicitPolicyDecision\) \{\s*return handleOpaqueFailedUpstreamResponse\(input, responseBodyRead, failureBodyFacts\)\s*\}/,
+  '显式策略正文未命中时必须复用已读取正文及其单次解析事实进入统一 opaque 切号'
 )
 assert.match(
   failureDispatchSource,
-  /if \(!accountErrorPolicyCouldMatchStatus\(account, response\.status\)\) \{\s*return handleOpaqueFailedUpstreamResponse\(input\)\s*\}/,
-  '无策略状态预筛选路径必须对所有端点直接进入统一 opaque 切号'
+  /const policyCouldMatch = input\.accountStateMutationEnabled !== false[\s\S]*accountErrorPolicyCouldMatchStatus\(account, response\.status\)[\s\S]*if \(!policyCouldMatch\) \{\s*return handleOpaqueFailedUpstreamResponse\(input\)\s*\}/,
+  '无策略状态预筛选路径必须直接进入统一 opaque 切号，且不得解析 generic 错误正文'
 )
 assert.match(
   failureDispatchSource,

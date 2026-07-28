@@ -24,9 +24,18 @@ import {
   RouteCoordinationBudget
 } from '../routing/route-coordination.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
-import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
+import {
+  parseOpenAIUsageFromJsonTextFragment,
+  parseOpenAIUsageFromJsonValue
+} from '../protocols/openai-v1/usage.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
+import {
+  gatewayNonStreamJsonBodyFromValue,
+  gatewayNonStreamJsonBodyReceiver,
+  parseGatewayNonStreamJsonBody,
+  type GatewayNonStreamJsonBody
+} from '../response/non-stream-json-body.js'
 
 type HybridAuxiliaryTrafficSource = Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
 
@@ -39,6 +48,7 @@ export type HybridAuxiliaryDispatchResult =
     responseBody: Buffer
     responseBodyText: string
     responseBodyTruncated: boolean
+    parsedResponseBody: GatewayNonStreamJsonBody
     usage: ParsedUsage
     finish: (input: HybridAuxiliaryDispatchFinishInput) => Promise<void>
   }
@@ -56,6 +66,19 @@ export interface HybridAuxiliaryDispatchFinishInput {
   success: boolean
   errorCode?: string
   errorMessage?: string
+}
+
+export function parseHybridAuxiliaryResponse(
+  bodyText: string,
+  headers: Headers
+): { parsedResponseBody: GatewayNonStreamJsonBody; usage: ParsedUsage } {
+  const parsedResponseBody = parseGatewayNonStreamJsonBody(bodyText, headers)
+  return {
+    parsedResponseBody,
+    usage: parsedResponseBody.status === 'valid'
+      ? parseOpenAIUsageFromJsonValue(parsedResponseBody.value)
+      : parseOpenAIUsageFromJsonTextFragment(bodyText)
+  }
 }
 
 export async function dispatchHybridAuxiliaryChatCompletion(input: {
@@ -306,6 +329,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           shouldRecordUsage: true
         }
       }
+      const parsedResponse = parseHybridAuxiliaryResponse(body.bodyText, dispatch.response.headers)
       return {
         outcome: 'success',
         account: dispatch.account,
@@ -314,7 +338,8 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
         responseBody: body.body,
         responseBodyText: body.bodyText,
         responseBodyTruncated: body.truncated,
-        usage: parseOpenAIUsageFromJsonBuffer(body.body),
+        parsedResponseBody: parsedResponse.parsedResponseBody,
+        usage: parsedResponse.usage,
         finish: createFinish({
           auditCapture,
           auditAttemptId: dispatch.auditAttemptId,
@@ -490,14 +515,20 @@ function hybridAuxiliaryAbortSignal(parent: AbortSignal | undefined, timeoutMs: 
 function internalResponseErrorMessage(response: InternalGatewayResponse, fallback: string): string {
   const text = response.bodyText()
   if (!text) return fallback
-  try {
-    const parsed = JSON.parse(text) as { error?: { message?: unknown } }
-    return typeof parsed.error?.message === 'string' && parsed.error.message.trim()
-      ? parsed.error.message.trim()
-      : fallback
-  } catch {
-    return text.slice(0, 500) || fallback
-  }
+  const parsedBody = response.nonStreamJsonBody() ?? parseGatewayNonStreamJsonBody(
+    text,
+    new Headers({ 'content-type': String(response.getHeader('content-type') ?? 'application/json') })
+  )
+  const root = parsedBody.status === 'valid' && typeof parsedBody.value === 'object'
+    && parsedBody.value !== null && !Array.isArray(parsedBody.value)
+    ? parsedBody.value as Record<string, unknown>
+    : undefined
+  const error = root?.error && typeof root.error === 'object' && !Array.isArray(root.error)
+    ? root.error as Record<string, unknown>
+    : undefined
+  return typeof error?.message === 'string' && error.message.trim()
+    ? error.message.trim()
+    : parsedBody.status === 'invalid' ? text.slice(0, 500) || fallback : fallback
 }
 
 export function emptyHybridAuxiliaryUsage(): ParsedUsage {
@@ -514,6 +545,7 @@ class InternalGatewayResponse extends EventEmitter {
   locals: Record<string, unknown> = {}
   private readonly headers = new Map<string, string | string[]>()
   private readonly chunks: Buffer[] = []
+  private parsedNonStreamJsonBody: GatewayNonStreamJsonBody | undefined
 
   constructor(private readonly startedAt: number) {
     super()
@@ -545,6 +577,7 @@ class InternalGatewayResponse extends EventEmitter {
     if (!this.hasHeader('content-type')) {
       this.setHeader('content-type', 'application/json; charset=utf-8')
     }
+    this.parsedNonStreamJsonBody = gatewayNonStreamJsonBodyFromValue(value)
     return this.send(Buffer.from(JSON.stringify(value), 'utf8'))
   }
 
@@ -591,6 +624,14 @@ class InternalGatewayResponse extends EventEmitter {
 
   bodyText(): string {
     return Buffer.concat(this.chunks).toString('utf8')
+  }
+
+  [gatewayNonStreamJsonBodyReceiver](body: GatewayNonStreamJsonBody): void {
+    this.parsedNonStreamJsonBody = body
+  }
+
+  nonStreamJsonBody(): GatewayNonStreamJsonBody | undefined {
+    return this.parsedNonStreamJsonBody
   }
 
   firstTokenMs(): number | undefined {

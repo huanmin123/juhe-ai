@@ -147,14 +147,23 @@ try {
   ])
 
   const cleanupResult = await hotRetentionCleanup.cleanupExpiredAuditHotRetentionData(nowMs)
-  assert.equal(cleanupResult.auditLogs, 1, '热窗口清理应只删除超过 1 小时且未命中 10% 采样的普通成功审计')
+  assert.equal(cleanupResult.auditLogs, 1, '热窗口清理应只降级超过 1 小时且未命中 10% 采样的普通成功审计详情')
   assert(cleanupResult.auditPayloadBlobs >= 1, '热窗口清理应同步清理已无引用的 payload blob')
   assert(cleanupResult.auditHotSearchFiles >= 1, '热窗口清理应删除已完全超过热窗口的旧热搜索镜像文件')
-  assert.equal(repositories.listAuditLogs({ traceId: unsampledTraceId }).total, 0, '未采样普通成功审计超过热窗口后应被删除')
+  const unsampledAfterCleanup = repositories.listAuditLogs({ traceId: unsampledTraceId })
+  assert.equal(unsampledAfterCleanup.total, 1, '未采样普通成功审计超过热窗口后应保留轻量 envelope')
+  const unsampledDetailAfterCleanup = repositories.getAuditLogDetail(unsampledAfterCleanup.items[0]?.id ?? '')
+  assert.equal(unsampledDetailAfterCleanup?.captureStatus, 'metadata_only', '未采样普通成功审计超过热窗口后应降级为 metadata_only')
+  assert.equal(unsampledDetailAfterCleanup?.attemptCount, 0, '未采样普通成功审计降级后应清空 attempt 计数')
+  assert.equal(unsampledDetailAfterCleanup?.payloadCount, 0, '未采样普通成功审计降级后应清空 payload 计数')
+  assert.equal(unsampledDetailAfterCleanup?.rawPayloadBytes, 0, '未采样普通成功审计降级后应清空原始 payload 字节数')
+  assert.equal(unsampledDetailAfterCleanup?.compressedPayloadBytes, 0, '未采样普通成功审计降级后应清空压缩 payload 字节数')
+  assert.equal(unsampledDetailAfterCleanup?.attempts.length, 0, '未采样普通成功审计降级后应删除 attempt 详情')
+  assert.equal(unsampledDetailAfterCleanup?.payloads.length, 0, '未采样普通成功审计降级后应删除 payload 详情')
   assert.equal(repositories.listAuditLogs({ traceId: sampledTraceId }).total, 1, '命中 10% 稳定采样的成功审计应继续保留')
   assert.equal(repositories.listAuditLogs({ traceId: failedTraceId }).total, 1, '失败审计不应被成功热窗口清理删除')
 
-  console.log('审计热搜索与热保留清理回归通过：rg 可搜索最近 1 小时内容，超过热窗口后只删除未采样普通成功审计')
+  console.log('审计热搜索与热保留清理回归通过：rg 可搜索最近 1 小时内容，超过热窗口后未采样普通成功审计仅保留 metadata_only envelope')
 } finally {
   try {
     cleanupTemporaryAuditBlobs()

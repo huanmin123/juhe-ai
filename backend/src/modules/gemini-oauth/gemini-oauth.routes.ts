@@ -3,7 +3,7 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { GEMINI_PROVIDER_CODE, isGeminiProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -15,6 +15,8 @@ import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules 
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
+import { shouldRefreshGeminiOAuthCredentials } from '../providers/drivers/gemini/oauth-dispatch-preparation.js'
 import {
   GEMINI_CLI_OAUTH_CLIENT_ID,
   buildGeminiOAuthCredentials,
@@ -416,28 +418,39 @@ geminiOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
   })
 
   try {
-    const tokenInfo = await refreshGeminiAuthToken({
-      refreshToken,
-      oauthType: accountOAuthType(account.credentials),
-      clientId: stringCredential(account.credentials, 'client_id'),
-      clientSecret: stringCredential(account.credentials, 'client_secret'),
-      projectId: stringCredential(account.credentials, 'project_id'),
-      tierId: stringCredential(account.credentials, 'tier_id'),
-      quotaProjectId: stringCredential(account.credentials, 'quota_project_id'),
-      baseUrl: stringCredential(account.credentials, 'base_url'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined,
-      signal: abortController.signal
-    })
+    const updatedAccount = await runWithProviderOAuthRefreshLock(
+      GEMINI_PROVIDER_CODE,
+      account.id,
+      async () => {
+        const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
+        if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
+        if (oauthTokensChanged(account.credentials, current.credentials)
+          && !shouldRefreshGeminiOAuthCredentials(current.credentials)) {
+          return current
+        }
+        const currentRefreshToken = stringCredential(current.credentials, 'refresh_token')
+        if (!currentRefreshToken) throw new Error('Gemini OAuth 账户缺少 Refresh Token')
+        const tokenInfo = await refreshGeminiAuthToken({
+          refreshToken: currentRefreshToken,
+          oauthType: accountOAuthType(current.credentials),
+          clientId: stringCredential(current.credentials, 'client_id'),
+          clientSecret: stringCredential(current.credentials, 'client_secret'),
+          projectId: stringCredential(current.credentials, 'project_id'),
+          tierId: stringCredential(current.credentials, 'tier_id'),
+          quotaProjectId: stringCredential(current.credentials, 'quota_project_id'),
+          baseUrl: stringCredential(current.credentials, 'base_url'),
+          scope: stringCredential(current.credentials, 'scope'),
+          proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+        })
+        return await updateGeminiOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+      },
+      { signal: abortController.signal }
+    )
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
-    const updatedAccount = await updateGeminiOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-    if (abortController.signal.aborted || res.writableEnded) {
-      return
-    }
-    const restoredAccount = await clearAccountFailureStateAsync(account.id, requestAccess) ?? updatedAccount
-    await recordOperationLogAsync(buildOAuthUpdateLog(account, restoredAccount, requestAccess, 'refresh_token', '刷新 Gemini OAuth Token'), req)
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(restoredAccount)))
+    await recordOperationLogAsync(buildOAuthUpdateLog(account, updatedAccount, requestAccess, 'refresh_token', '刷新 Gemini OAuth Token'), req)
+    res.json(ok(sanitizeAccountCredentialCarrierResponse(updatedAccount)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return
@@ -473,26 +486,33 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
   }
 
   try {
-    const tokenInfo = await exchangeGeminiAuthCode({
-      sessionId: parsed.data.sessionId,
-      callbackUrl: parsed.data.callbackUrl,
-      oauthType: parsed.data.oauthType,
-      clientId: parsed.data.clientId,
-      clientSecret: parsed.data.clientSecret,
-      projectId: parsed.data.projectId,
-      tierId: parsed.data.tierId,
-      quotaProjectId: parsed.data.quotaProjectId,
-      baseUrl: parsed.data.baseUrl,
-      ownerSystemAccountId: requestAccess?.systemAccountId,
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateGeminiOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 Gemini OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await exchangeGeminiAuthCode({
+        sessionId: parsed.data.sessionId,
+        callbackUrl: parsed.data.callbackUrl,
+        oauthType: parsed.data.oauthType,
+        clientId: parsed.data.clientId,
+        clientSecret: parsed.data.clientSecret,
+        projectId: parsed.data.projectId,
+        tierId: parsed.data.tierId,
+        quotaProjectId: parsed.data.quotaProjectId,
+        baseUrl: parsed.data.baseUrl,
+        ownerSystemAccountId: requestAccess?.systemAccountId,
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Gemini OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Gemini OAuth 重新授权失败')
@@ -518,24 +538,32 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   }
 
   try {
-    const tokenInfo = await refreshGeminiAuthToken({
-      refreshToken: parsed.data.refreshToken,
-      oauthType: parsed.data.oauthType ?? accountOAuthType(account.credentials),
-      clientId: parsed.data.clientId ?? stringCredential(account.credentials, 'client_id'),
-      clientSecret: parsed.data.clientSecret ?? stringCredential(account.credentials, 'client_secret'),
-      projectId: parsed.data.projectId ?? stringCredential(account.credentials, 'project_id'),
-      tierId: parsed.data.tierId ?? stringCredential(account.credentials, 'tier_id'),
-      quotaProjectId: parsed.data.quotaProjectId ?? stringCredential(account.credentials, 'quota_project_id'),
-      baseUrl: parsed.data.baseUrl ?? stringCredential(account.credentials, 'base_url'),
-      proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
-    })
-    const updated = await runLoggedOperationAsync(async () => {
-      const updated = await updateGeminiOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
-      return {
-        result: updated,
-        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Gemini OAuth 账户')
+    const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async () => {
+      const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
+      if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
+      if (oauthTokensChanged(account.credentials, current.credentials)) {
+        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
       }
-    }, req)
+      const tokenInfo = await refreshGeminiAuthToken({
+        refreshToken: parsed.data.refreshToken,
+        oauthType: parsed.data.oauthType ?? accountOAuthType(current.credentials),
+        clientId: parsed.data.clientId ?? stringCredential(current.credentials, 'client_id'),
+        clientSecret: parsed.data.clientSecret ?? stringCredential(current.credentials, 'client_secret'),
+        projectId: parsed.data.projectId ?? stringCredential(current.credentials, 'project_id'),
+        tierId: parsed.data.tierId ?? stringCredential(current.credentials, 'tier_id'),
+        quotaProjectId: parsed.data.quotaProjectId ?? stringCredential(current.credentials, 'quota_project_id'),
+        baseUrl: parsed.data.baseUrl ?? stringCredential(current.credentials, 'base_url'),
+        scope: stringCredential(current.credentials, 'scope'),
+        proxyUrl: current.proxyProfileId ? await resolveProxyUrlForProfileAsync(current.proxyProfileId) : undefined
+      })
+      return await runLoggedOperationAsync(async () => {
+        const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+        return {
+          result,
+          log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Gemini OAuth 账户')
+        }
+      }, req)
+    })
     res.json(ok(sanitizeAccountResponse(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Gemini 刷新令牌重新授权失败')
@@ -603,8 +631,8 @@ function buildSafeGeminiOAuthCredentials(
   fallback?: { refreshToken?: string; quotaProjectId?: string; baseUrl?: string }
 ): Record<string, unknown> {
   return {
-    ...safeOAuthCredentialsPatch(patch),
-    ...buildGeminiOAuthCredentials(tokenInfo, fallback)
+    ...buildGeminiOAuthCredentials(tokenInfo, fallback),
+    ...safeOAuthCredentialsPatch(patch)
   }
 }
 
@@ -626,6 +654,8 @@ async function updateGeminiOAuthAccountCredentials(
     ...account.credentials,
     ...buildGeminiOAuthCredentials(tokenInfo, fallback)
   }
+  const existingBaseUrl = stringCredential(account.credentials, 'base_url')
+  if (existingBaseUrl) credentials.base_url = existingBaseUrl
   const updated = await updateAccountAsync(account.id, { credentials }, access, {
     expectedConfigRevision: account.configRevision ?? 1
   })
@@ -741,4 +771,9 @@ function accountOAuthType(credentials: Record<string, unknown>): GeminiOAuthType
   const clientId = stringCredential(credentials, 'client_id')
   if (clientId && clientId !== GEMINI_CLI_OAUTH_CLIENT_ID) return 'ai_studio'
   return 'code_assist'
+}
+
+function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
+    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }

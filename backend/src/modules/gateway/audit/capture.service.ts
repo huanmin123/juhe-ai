@@ -118,6 +118,8 @@ interface AddGatewayMetadataInput {
 
 interface OmitPayloadBodiesInput extends AddGatewayMetadataInput {
   partTypes?: AuditPayloadPartType[]
+  alreadyOmittedPayloadCount?: number
+  alreadyOmittedBodyBytes?: number
 }
 
 type PendingAuditPayloadInput = Omit<AuditLogPayloadInput, 'sequenceIndex'>
@@ -263,8 +265,8 @@ export class AuditCaptureContext {
   omitPayloadBodies(input: OmitPayloadBodiesInput): void {
     if (!this.enabled) return
     const partTypes = input.partTypes ? new Set(input.partTypes) : undefined
-    let omittedPayloadCount = 0
-    let omittedBodyBytes = 0
+    let omittedPayloadCount = input.alreadyOmittedPayloadCount ?? 0
+    let omittedBodyBytes = input.alreadyOmittedBodyBytes ?? 0
     for (const payload of this.payloads) {
       if (partTypes && !partTypes.has(payload.partType)) {
         continue

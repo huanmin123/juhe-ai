@@ -1,5 +1,9 @@
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import {
+  gatewaySerializedJsonObject,
+  serializeGatewayJsonObject
+} from '../../../gateway/request/serialized-json-body.js'
 
 export const GEMINI_CODE_ASSIST_BASE_URL = 'https://cloudcode-pa.googleapis.com'
 export const GEMINI_CODE_ASSIST_STREAM_URL = `${GEMINI_CODE_ASSIST_BASE_URL}/v1internal:streamGenerateContent?alt=sse`
@@ -45,11 +49,11 @@ export function buildGeminiCodeAssistRequestParts(input: {
   })
   return {
     headers,
-    body: Buffer.from(JSON.stringify({
+    body: serializeGatewayJsonObject({
       model: requiredText(input.model, 'Gemini Code Assist model'),
       project: requiredText(input.projectId, 'Gemini Code Assist project_id'),
       request
-    }), 'utf8')
+    })
   }
 }
 
@@ -80,6 +84,8 @@ export function transformGeminiCodeAssistUpstreamResponse(
 
 function parseGeminiRequestObject(body: Buffer | string | undefined): Record<string, unknown> {
   if (body === undefined) throw new Error('Gemini Code Assist 请求体不能为空')
+  const structured = gatewaySerializedJsonObject(body)
+  if (structured) return structured as Record<string, unknown>
   let parsed: unknown
   try {
     parsed = JSON.parse(typeof body === 'string' ? body : body.toString('utf8'))

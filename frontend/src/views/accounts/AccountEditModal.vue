@@ -45,11 +45,13 @@
           @model-options-search="$emit('model-options-search', $event)"
           @group-options-dropdown="$emit('group-options-dropdown', $event)"
           @group-options-search="$emit('group-options-search', $event)"
+          @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
         />
 
         <AccountApiKeySection
           v-if="isApiKeyForm && !authorizedEditing"
           :api-key-runtime-details="apiKeyRuntimeDetails"
+          :api-key-runtime-loading="apiKeyRuntimeLoading"
           :api-key-test-details="apiKeyTestDetails"
           :base-url-placeholder="baseUrlPlaceholder"
           :deleting-tag-id="deletingTagId"
@@ -64,7 +66,11 @@
           :tag-options-loading="tagOptionsLoading"
           :title="credentialTitle"
           @delete-tag="$emit('delete-tag', $event)"
+          @load-api-key-runtime="$emit('load-api-key-runtime')"
+          @model-options-open="$emit('model-options-open', $event)"
+          @model-options-search="$emit('model-options-search', $event)"
           @refresh-models="$emit('refresh-models')"
+          @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
         />
 
         <AccountOAuthSection
@@ -80,6 +86,10 @@
           :model-options="modelOptions"
           :models-loading="modelsLoading"
           :model-syncing="modelSyncing"
+          :profile-default-endpoint-modes="defaultAccountEndpointModes(form.providerCode, form.type, undefined, {
+            provider: selectedProvider,
+            protocolProfile: selectedProtocolProfile
+          })"
           :protocol-code="selectedProtocolProfile?.protocolCode"
           :protocol-version="selectedProtocolProfile?.protocolVersion"
           :title="credentialTitle"
@@ -122,6 +132,7 @@
               :tag-options="tagOptions"
               :tag-options-loading="tagOptionsLoading"
               @delete-tag="$emit('delete-tag', $event)"
+              @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
             />
           </div>
         </section>
@@ -271,7 +282,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -309,8 +320,10 @@ const advancedActiveKeys = ref<string[]>([])
 
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
-  accountDetail?: AccountSummary
+  accountDetail?: AccountEditBasicDetail
+  accountAdvancedDetail?: AccountAdvancedDetail
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
+  apiKeyRuntimeLoading?: boolean
   advancedLoaded?: boolean
   advancedLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
@@ -356,6 +369,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   advancedLoaded: false,
   advancedLoading: false,
+  apiKeyRuntimeLoading: false,
   balanceQueryCanRun: false,
   balanceQueryLoading: false,
   loading: false,
@@ -377,8 +391,13 @@ const publicCredentialItems = computed(() => {
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })
 
+function authorizedSourceAccountDetail(): AccountAdvancedDetail | undefined {
+  const detail = props.accountAdvancedDetail
+  return detail?.accessType === 'authorized' ? detail : undefined
+}
+
 const sourceAccountStatusText = computed(() => {
-  const detail = props.accountDetail
+  const detail = authorizedSourceAccountDetail()
   const status = detail?.authorizationInstanceSourceAccountStatus
   const parts = [
     status ? statusText(status) : '-',
@@ -387,7 +406,7 @@ const sourceAccountStatusText = computed(() => {
   return parts.join(' / ')
 })
 
-const sourceAccountExpiresAtText = computed(() => formatDateTime(props.accountDetail?.authorizationInstanceSourceAccountExpiresAt))
+const sourceAccountExpiresAtText = computed(() => formatDateTime(authorizedSourceAccountDetail()?.accountExpiresAt))
 const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
 const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   const output: SelectOption[] = []
@@ -458,12 +477,14 @@ const emit = defineEmits<{
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void
+  (event: 'load-api-key-runtime'): void
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
   (event: 'model-options-open', open: boolean): void
   (event: 'model-options-search', value: string): void
   (event: 'refresh-models'): void
+  (event: 'tag-options-dropdown', open: boolean): void
   (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
   (event: 'proxyOptionsDropdown', open: boolean): void

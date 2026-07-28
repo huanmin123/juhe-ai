@@ -55,8 +55,6 @@ interface ApiEnvelope<T> {
 type TestOptions = Array<{
   id: string
   name: string
-  supportedApiProtocols: string[]
-  testEndpointModes: string[]
 }>
 
 interface ModelCapabilities {
@@ -64,6 +62,11 @@ interface ModelCapabilities {
   name: string
   supportedApiProtocols: string[]
   testEndpointModes: string[]
+}
+
+interface AccountCreateResult {
+  id: string
+  status: string
 }
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -233,11 +236,9 @@ try {
     assert(selected, `${target.label}模型摘要必须保留请求模型 ID`)
     assert.deepEqual(
       Object.keys(selected).sort(),
-      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
-      `${target.label}模型选项必须直接返回协议与可测试请求形态`
+      ['id', 'name'],
+      `${target.label}模型选项只能返回下拉显示字段`
     )
-    assert.deepEqual(selected.supportedApiProtocols, ['responses'], `${target.label}模型选项必须携带目录协议`)
-    assert.deepEqual([...selected.testEndpointModes].sort(), ['responses_json', 'responses_sse'], `${target.label}模型选项必须携带账户能力交集`)
     assert(selected.name.trim(), `${target.label}模型摘要展示名称不得为空`)
     assert(options.some((item) => item.id === responsesOnlyModelId), `${target.label}已选模型不得被 keyword/limit 窗口截断`)
     assert(options.length <= 2, `${target.label}limit=1 时除已选补齐外最多返回一条搜索结果`)
@@ -269,8 +270,7 @@ try {
     assert.equal(protocolEligibleOptions.some((item) => item.id === mixedImageResponsesModelId), true, `${target.label}模型候选应包含同时支持 Images 与 Responses 的模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === messagesOnlyModelId), false, `${target.label}OpenAI 档案模型候选不得包含仅支持 Messages 的模型`)
     const imageOption = protocolEligibleOptions.find((item) => item.id === imageModelId)
-    assert.deepEqual(imageOption?.supportedApiProtocols, ['images'], `${target.label}图片模型选项必须返回 Images 协议`)
-    assert.deepEqual(imageOption?.testEndpointModes, ['images_json'], `${target.label}图片模型选项必须直接绑定 Images API`)
+    assert.deepEqual(Object.keys(imageOption ?? {}).sort(), ['id', 'name'], `${target.label}图片模型同样只能返回下拉显示字段`)
 
     await requestEnvelope(
       baseUrl,
@@ -336,9 +336,39 @@ try {
       400,
       /账户上游接口能力中没有可用于连接测试的请求形态/
     )
+
+    const created = await requestEnvelope<AccountCreateResult>(
+      baseUrl,
+      `${target.prefix}${target.query}`,
+      target.cookie,
+      201,
+      undefined,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          providerCode: 'openai',
+          providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+          name: `${target.label}创建窄响应账户`,
+          type: 'api_key',
+          credentials: {
+            api_key: `sk-account-create-${target.label}`,
+            base_url: 'https://api.openai.com/v1',
+            supported_endpoint_modes: ['responses_sse']
+          },
+          supportedModels: [encodedModelId],
+          healthCheckModel: encodedModelId,
+          healthCheckEndpointMode: 'responses_sse',
+          groupId: group.id,
+          status: 'disabled'
+        })
+      }
+    )
+    assert.deepEqual(Object.keys(created).sort(), ['id', 'status'], `${target.label}创建响应只能返回后续提示需要的字段`)
+    assert.match(created.id, /^acc_/, `${target.label}创建响应必须返回账户 ID`)
+    assert.equal(created.status, 'disabled', `${target.label}创建响应必须返回最终状态`)
   }
 
-  console.log('账户测试选项 HTTP 契约回归通过：管理/个人镜像、轻量字段、模型 ID 解码和错误边界均符合预期')
+  console.log('账户测试选项 HTTP 契约回归通过：管理/个人镜像、轻量字段、模型 ID 解码、创建窄响应和错误边界均符合预期')
 } finally {
   await closeServer(server)
   await closeSqliteReadWorkerPool()
@@ -353,9 +383,9 @@ try {
 function assertListQueryBoundary(sqlList: string[], label: string): void {
   const contextQueries = sqlList.filter((sql) => sql.includes('AS view_account_id'))
   assert.equal(contextQueries.length, 1, `${label}模型列表只能读取一次最小账户上下文`)
-  assert.match(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型列表必须读取接口能力以计算模型交集`)
+  assert.doesNotMatch(contextQueries[0] ?? '', /credentials_encrypted/i, `${label}模型列表不得提前读取账户凭据`)
   assert.doesNotMatch(contextQueries[0] ?? '', /SELECT\s+\*/i, `${label}模型列表不得读取完整账户行`)
-  assert.equal(sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql)).length, 1, `${label}模型列表必须一次读取当前账户模型映射`)
+  assert.equal(sqlList.filter((sql) => /FROM\s+account_model_mappings/i.test(sql)).length, 0, `${label}模型列表不得提前读取模型映射`)
   assertLightweightCatalogQueries(sqlList, label, false)
 }
 
@@ -403,9 +433,17 @@ async function requestEnvelope<T = unknown>(
   path: string,
   cookie: string,
   expectedStatus: number,
-  expectedMessage?: RegExp
+  expectedMessage?: RegExp,
+  requestInit?: RequestInit
 ): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...requestInit,
+    headers: {
+      cookie,
+      ...(requestInit?.body ? { 'content-type': 'application/json' } : {}),
+      ...requestInit?.headers
+    }
+  })
   const text = await response.text()
   assert.equal(
     response.status,

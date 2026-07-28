@@ -219,7 +219,9 @@ func (h *BatchHydrator) Hydrate(ctx context.Context, input HydrateInput) ([]Hydr
 		}
 		qualityFacts := input.PreRanks[candidate.row.AccountID]
 		hydrated := Candidate{
+			Projection:              candidate.row,
 			Credentials:             candidate.credentials,
+			DefaultBaseURL:          accountFacts.DefaultBaseURL,
 			SupportedModels:         append([]string(nil), accountFacts.SupportedModels...),
 			ModelMappings:           mapModelMappings(accountFacts.ModelMappings),
 			APIKeyRuntime:           mapAPIKeyRuntime(candidate.apiKeys, runtimeStates[candidate.accountID]),

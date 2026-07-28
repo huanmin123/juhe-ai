@@ -39,6 +39,7 @@ const explicitSystemApiDbAccessRules: readonly SystemApiDbAccessRouteRule[] = [
   { methods: ['GET'], pattern: /^\/(?:my-)?route-strategies(?:\/.*)?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/(?:my-)?api-keys\/[^/]+\/secret\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/(?:my-)?api-keys(?:\/.*)?$/, mode: 'read' },
+  { methods: ['GET'], pattern: /^\/(?:my-)?ui-bootstrap\/options\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/(?:my-)?authorization-options(?:\/.*)?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/(?:my-)?authorizations(?:\/.*)?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/(?:my-)?anthropic-oauth(?:\/.*)?$/, mode: 'read' },

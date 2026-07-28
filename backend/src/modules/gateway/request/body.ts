@@ -9,12 +9,14 @@ import {
   requestBodyForcesImageGeneration
 } from './image-generation-tools.js'
 import type { GatewayImageGenerationToolDowngradeResult } from './image-generation-tools.js'
+import { serializeGatewayJsonObject } from './serialized-json-body.js'
 
 export { requestBodyForcesImageGeneration, requestBodyHasImageGenerationHint } from './image-generation-tools.js'
 export type { GatewayImageGenerationToolDowngradeResult } from './image-generation-tools.js'
 
 export const gatewayJsonBodyLargeWarningBytes = 2 * 1024 * 1024
 export const gatewayJsonBodyInlineParseMaxBytes = 256 * 1024
+export const gatewayJsonBodyInlineMetadataScanMaxBytes = 256 * 1024
 export const defaultGatewayTextRawBodyLimitMegabytes = 16
 export const gatewayTextRawBodyLimitMegabytesMin = 1
 export const gatewayTextRawBodyLimitMegabytesMax = 64
@@ -35,6 +37,7 @@ export type GatewayJsonBodyParseStatus =
   | 'empty'
   | 'not_json'
   | 'parsed'
+  | 'scanned_json'
   | 'deferred_large_json'
   | 'invalid_json'
 
@@ -51,6 +54,8 @@ export interface GatewayRequestBodyState {
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
+  strictOutputRequirement?: boolean
+  codexCompactionTrigger?: boolean
 }
 
 export type GatewayRawBodyRequest = Request & {
@@ -103,6 +108,8 @@ export function createGatewayRequestBodyState(input: {
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
+  strictOutputRequirement?: boolean
+  codexCompactionTrigger?: boolean
 }): GatewayRequestBodyState {
   const contentType = String(input.contentType ?? '')
   const parsedBody = typeof input.parsedBody === 'object' && input.parsedBody !== null
@@ -123,15 +130,31 @@ export function createGatewayRequestBodyState(input: {
     imageGeneration: input.imageGeneration ?? (
       imageInspection ? imageInspection.imageToolCount > 0 || imageInspection.forcedImageGeneration : false
     ),
-    imageGenerationForced: input.imageGenerationForced ?? imageInspection?.forcedImageGeneration ?? false
+    imageGenerationForced: input.imageGenerationForced ?? imageInspection?.forcedImageGeneration ?? false,
+    strictOutputRequirement: input.strictOutputRequirement ?? Boolean(
+      parsedBody?.response_format || parsedBody?.tools || parsedBody?.tool_choice
+    ),
+    codexCompactionTrigger: input.codexCompactionTrigger
   }
+}
+
+export function isGatewayScannedJsonBody(req: Request): boolean {
+  const status = getGatewayRequestBodyState(req)?.jsonParseStatus
+  return status === 'scanned_json' || status === 'deferred_large_json'
 }
 
 function parsedReasoningEffort(body: Record<string, unknown> | undefined): UsageReasoningEffort | undefined {
   const nested = typeof body?.reasoning === 'object' && body.reasoning !== null && !Array.isArray(body.reasoning)
     ? (body.reasoning as Record<string, unknown>).effort
     : undefined
-  return normalizeUsageReasoningEffort(nested) ?? normalizeUsageReasoningEffort(body?.reasoning_effort)
+  const outputConfig = typeof body?.output_config === 'object'
+    && body.output_config !== null
+    && !Array.isArray(body.output_config)
+    ? (body.output_config as Record<string, unknown>).effort
+    : undefined
+  return normalizeUsageReasoningEffort(nested)
+    ?? normalizeUsageReasoningEffort(body?.reasoning_effort)
+    ?? normalizeUsageReasoningEffort(outputConfig)
 }
 
 function parsedMaxOutputTokens(body: Record<string, unknown> | undefined): number | undefined {
@@ -293,7 +316,7 @@ export function replaceGatewayJsonBody(req: Request, body: Record<string, unknow
   const request = req as GatewayRawBodyRequest
   const previousState = getGatewayRequestBodyState(req)
   const contentType = previousState?.contentType ?? String(req.headers['content-type'] ?? 'application/json')
-  const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  const rawBody = serializeGatewayJsonObject(body)
   request.rawBody = rawBody
   request.body = body
   request.gatewayParsedJsonBodyAvailable = true
@@ -303,7 +326,7 @@ export function replaceGatewayJsonBody(req: Request, body: Record<string, unknow
   request.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,
     contentType,
-    jsonParseStatus: previousState?.jsonParseStatus ?? 'parsed',
+    jsonParseStatus: 'parsed',
     parsedBody: body
   })
 }

@@ -3,16 +3,17 @@ import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-a
 import type { AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import type { AccountListResult } from '../../storage/account-summary.repository.js'
+import type {
+  AccountManagementListPage,
+  AccountManagementListResult
+} from '../../storage/account-management-list.repository.js'
 import {
   accountBalanceSnapshotMatchesConfiguration,
-  loadAccountBalanceConfigurationsByAccountIdsAsync,
   loadAccountBalanceSnapshotRecordsByAccountIdsAsync
 } from '../../storage/account-balance.repository.js'
 import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
 import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
-import type { AccountRuntimeSnapshotStatus } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-circuit-control-plane-bridge.js'
 
 const maxSnapshotAccountIds = 100
@@ -20,11 +21,11 @@ const maxSnapshotQueryLength = 8192
 
 export async function hydrateAccountListPage(
   access: AccessScope | undefined,
-  page: AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }
-): Promise<Omit<AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }, 'runtimeSnapshot'> & { generatedAt: string }> {
-  const { runtimeSnapshot: _runtimeSnapshot, ...listPage } = page
+  page: AccountManagementListPage
+): Promise<AccountManagementListResult> {
+  const listPage = page
   if (page.items.length === 0) {
-    return { ...listPage, generatedAt: new Date().toISOString() }
+    return { ...listPage, items: [], generatedAt: new Date().toISOString() }
   }
   const snapshot = await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
   const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
@@ -35,7 +36,7 @@ export async function hydrateAccountListPage(
       ...item,
       ...snapshotById.get(item.id),
       currentConcurrency: snapshotById.get(item.id)?.currentConcurrency ?? 0
-    }))
+    } as AccountManagementListResult['items'][number]))
   }
 }
 
@@ -53,14 +54,15 @@ export async function getAccountStatusSnapshot(
   accountIds: string[]
 ): Promise<AccountStatusSnapshotResult> {
   const projections = await listAccountStatusProjectionsAsync(access, accountIds)
-  const ownerIds = projections.filter((item) => item.accessType !== 'authorized').map((item) => item.id)
-  const [runtime, concurrency, circuits, balanceConfigurations, balanceSnapshots] = await Promise.all([
+  const ownerIds = projections
+    .filter((item) => item.accessType !== 'authorized' && item.balanceQueryEnabled === true)
+    .map((item) => item.id)
+  const [runtime, concurrency, circuits, balanceSnapshots] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
     loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
     loadPublicAccountCircuitSummaries(projections.map((item) => item.runtimeKey))
       .then((values) => ({ available: true, values }))
       .catch(() => ({ available: false, values: {} as Record<string, PublicAccountCircuitSummary> })),
-    loadAccountBalanceConfigurationsByAccountIdsAsync(ownerIds),
     loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds)
   ])
   return {
@@ -70,24 +72,37 @@ export async function getAccountStatusSnapshot(
       accountRuntimeAvailabilityAvailable: runtime.available,
       accountCircuitSummaryAvailable: circuits.available
     },
-    items: projections.map(({ runtimeKey, concurrencyAccountId, permissions: _permissions, accessType: _accessType, boundGroupId: _boundGroupId, groupBindStatus: _groupBindStatus, ...projection }) => {
+    items: projections.map((projection) => {
+      const {
+        runtimeKey,
+        concurrencyAccountId,
+        permissions,
+        accessType,
+        boundGroupId,
+        groupBindStatus,
+        balanceQueryEnabled,
+        balanceQueryNextRefreshAt,
+        sourceAccountProbe: _sourceAccountProbe,
+        ...visibleProjection
+      } = projection
       const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
-      const balanceConfiguration = balanceConfigurations.get(projection.id)
-      const balanceSnapshotRecord = balanceSnapshots.get(projection.id)
+      const balanceConfiguration = { nextRefreshAt: balanceQueryNextRefreshAt }
+      const balanceSnapshotRecord = balanceSnapshots.get(visibleProjection.id)
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
-        permissions: _permissions,
-        accessType: _accessType,
-        boundGroupId: _boundGroupId,
-        groupBindStatus: _groupBindStatus,
+        permissions,
+        accessType,
+        boundGroupId,
+        groupBindStatus,
+        sourceAccountProbe: projection.sourceAccountProbe,
         runtimeAvailability: runtime.values[runtimeKey]
       })
       return {
-        ...projection,
-        balanceQueryEnabled: balanceConfiguration?.enabled,
-        balanceQueryNextRefreshAt: balanceConfiguration?.nextRefreshAt,
-        balanceSnapshot: balanceConfiguration?.enabled
-          && !isAccountBalanceSnapshotSuppressed(projection.id, { configuration: balanceConfiguration, snapshotRecord: balanceSnapshotRecord })
+        ...visibleProjection,
+        balanceQueryEnabled: balanceQueryEnabled || undefined,
+        balanceQueryNextRefreshAt,
+        balanceSnapshot: balanceQueryEnabled
+          && !isAccountBalanceSnapshotSuppressed(visibleProjection.id, { configuration: balanceConfiguration, snapshotRecord: balanceSnapshotRecord })
           && accountBalanceSnapshotMatchesConfiguration(balanceConfiguration, balanceSnapshotRecord)
           ? balanceSnapshotRecord.snapshot
           : undefined,

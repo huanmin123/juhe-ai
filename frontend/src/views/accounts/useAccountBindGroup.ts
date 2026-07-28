@@ -3,7 +3,7 @@ import { computed, nextTick, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
-import type { AccountSummary, GroupOptionSummary } from '@/types/domain'
+import type { AccountListItem, GroupOptionSummary } from '@/types/domain'
 import {
   bindGroupOptionsForAccount,
   bindGroupTip as buildBindGroupTip,
@@ -28,7 +28,7 @@ interface UseAccountBindGroupOptions {
 export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   const bindGroupModalOpen = ref(false)
   const bindGroupSaving = ref(false)
-  const bindingAccount = ref<AccountSummary>()
+  const bindingAccount = ref<AccountListItem>()
   const bindGroupForm = reactive<{ groupId: string; group?: GroupSelection }>({
     groupId: '',
     group: undefined
@@ -37,7 +37,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   const bindGroupOptions = computed(() => bindGroupOptionsForAccount(options.groups.value, bindingAccount.value))
   const bindGroupTip = computed(() => buildBindGroupTip(bindingAccount.value))
 
-  async function openBindGroup(account: AccountSummary) {
+  async function openBindGroup(account: AccountListItem) {
     if (account.status === 'error') {
       message.warning('异常账户除编辑、删除外，只支持测试、异常恢复和停用')
       return
@@ -70,8 +70,12 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     try {
       const account = bindingAccount.value
       const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+      if (!Number.isInteger(account.configRevision) || Number(account.configRevision) < 1) {
+        throw new Error('账户配置版本缺失，请刷新列表后重试')
+      }
       const payload = {
-        groupId: bindGroupForm.groupId
+        groupId: bindGroupForm.groupId,
+        expectedConfigRevision: Number(account.configRevision)
       }
       if (options.isManagementView.value) {
         await api.accounts.bindGroup(account.id, payload, scopeParams)

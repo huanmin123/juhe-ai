@@ -94,6 +94,12 @@ function requestBodyHasCompactionTrigger(req: Request): boolean {
     return true
   }
   const bodyState = getGatewayRequestBodyState(req)
+  if (bodyState?.codexCompactionTrigger === true) {
+    return true
+  }
+  if (bodyState?.jsonParseStatus === 'scanned_json') {
+    return false
+  }
   const rawBody = (req as GatewayRawBodyRequest).rawBody
   if (!rawBody || rawBody.length === 0 || bodyState?.isJson === false) {
     return false

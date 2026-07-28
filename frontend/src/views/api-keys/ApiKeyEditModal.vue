@@ -5,6 +5,7 @@
     width="760px"
     :confirm-loading="apiKeySaving"
     :ok-button-props="{ type: 'primary', disabled: apiKeySaving }"
+    @cancel="clearRouteStrategyOptionsSearchTimer"
     @ok="saveApiKey"
   >
     <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
@@ -19,11 +20,12 @@
           :disabled="editingIsDefault"
           :filter-option="false"
           :loading="routeStrategyOptionsLoading"
-          :route-strategies="routeStrategyOptionsRaw"
+          :route-strategies="visibleRouteStrategyOptions"
           disable-inactive
           placeholder="选择策略路由"
           @dropdown-visible-change="handleRouteStrategyDropdown"
           @search="handleRouteStrategySearch"
+          @update:value="markRouteStrategyTouched"
         />
       </a-form-item>
       <a-row :gutter="12">
@@ -50,18 +52,25 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
+import { getCachedUserReferenceData, loadUserReferenceData } from '@/composables/useUserReferenceData'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
-import { routeStrategySelectionFromOption, type RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
-import type { ApiKeyAvailabilitySchedule, ApiKeyQuotaLimits, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
+import type { RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
+import type {
+  ApiKeyAvailabilitySchedule,
+  ApiKeyMutationResult,
+  ApiKeyQuotaLimits,
+  ApiKeySummary,
+  RouteStrategyOptionSummary
+} from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 import {
@@ -73,7 +82,11 @@ import {
   createApiKeyTimeScheduleForm,
   type ApiKeyAvailabilityScheduleForm
 } from './apiKeyFormModel'
-import { createApiKeyEditOpenOperationGuard } from './apiKeyEditOpenOperation'
+import {
+  buildApiKeyMutationPatch,
+  hasApiKeyMutationChanges,
+  type ApiKeyEditableSnapshot
+} from './apiKeyMutation'
 import type { ApiKeyScopeParams } from './apiKeyScope'
 import { apiKeyStatusOptions as statusOptions } from './apiKeyTableConfig'
 
@@ -97,7 +110,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'created', payload: CreatedKeyPayload): void
   (event: 'reload', options?: { quiet?: boolean }): void
-  (event: 'updated', apiKey: ApiKeySummary): void
+  (event: 'updated', result: ApiKeyMutationResult): void
 }>()
 
 const modalOpen = ref(false)
@@ -109,15 +122,14 @@ const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
+const routeStrategyOptionsScopeKey = ref('')
+const routeStrategyTouched = ref(false)
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
-const {
-  beginOpenOperation,
-  invalidateOpenOperation,
-  isCurrentOpenOperation
-} = createApiKeyEditOpenOperationGuard()
+let editingBaseline: ApiKeyEditableSnapshot | undefined
+let editingRevision: string | undefined
 
 const form = reactive({
   name: '',
@@ -129,46 +141,40 @@ const form = reactive({
   quotaLimits: createQuotaLimitForm(),
   availabilitySchedule: createApiKeyTimeScheduleForm()
 })
+const visibleRouteStrategyOptions = computed(() => (
+  routeStrategyOptionsScopeKey.value === currentRouteStrategyOptionsScopeKey()
+    ? routeStrategyOptionsRaw.value
+    : []
+))
 
-async function openCreate() {
-  const openScopeKey = apiKeyEditOpenScopeKey()
-  const openOperation = beginOpenOperation(openScopeKey)
+function openCreate() {
   if (props.isManagementView && !props.scopeParams?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建 API Key')
     return
   }
+  const defaultStrategy = cachedDefaultRouteStrategy()
   editingId.value = undefined
   editingIsDefault.value = false
   editingNameLocked.value = false
   editingSystemAccountId.value = undefined
+  editingRevision = undefined
+  routeStrategyTouched.value = false
   Object.assign(form, {
     name: '',
-    routeStrategyId: '',
-    routeStrategy: undefined,
+    routeStrategyId: defaultStrategy?.id ?? '',
+    routeStrategy: defaultStrategy,
     status: 'active',
     expiresAt: undefined,
     description: '',
     quotaLimits: createQuotaLimitForm(),
     availabilitySchedule: createApiKeyTimeScheduleForm()
   })
-  resetRouteStrategyOptions()
-  await loadRouteStrategyOptions()
-  if (!isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey())) return
-  const activeStrategies = routeStrategyOptionsRaw.value.filter((strategy) => strategy.status === 'active')
-  const defaultStrategy = activeStrategies.find((strategy) => strategy.isDefault)
-  if (defaultStrategy) {
-    form.routeStrategyId = defaultStrategy.id
-    form.routeStrategy = routeStrategySelectionFromOption(defaultStrategy)
-  } else if (activeStrategies.length === 1) {
-    form.routeStrategyId = activeStrategies[0].id
-    form.routeStrategy = routeStrategySelectionFromOption(activeStrategies[0])
-  }
+  editingBaseline = undefined
   modalOpen.value = true
+  if (!defaultStrategy) prewarmCreateDefaultRouteStrategy()
 }
 
-async function openEdit(apiKey: ApiKeySummary) {
-  const openScopeKey = apiKeyEditOpenScopeKey(apiKey)
-  const openOperation = beginOpenOperation(openScopeKey)
+function openEdit(apiKey: ApiKeySummary) {
   const editScopeParams = apiKeyOperationScopeParams(apiKey)
   if (props.isManagementView && !editScopeParams?.systemAccountId) {
     message.warning('无法确定 API Key 归属系统账户，请刷新后重试')
@@ -189,6 +195,8 @@ async function openEdit(apiKey: ApiKeySummary) {
   editingIsDefault.value = apiKey.isDefault === true && apiKey.purpose !== 'chat'
   editingNameLocked.value = apiKey.isDefault === true || apiKey.purpose === 'chat'
   editingSystemAccountId.value = editScopeParams?.systemAccountId
+  editingRevision = apiKey.revision
+  routeStrategyTouched.value = false
   Object.assign(form, {
     name: apiKey.name,
     routeStrategyId: apiKey.routeStrategyId,
@@ -199,20 +207,8 @@ async function openEdit(apiKey: ApiKeySummary) {
     quotaLimits,
     availabilitySchedule
   })
-  resetRouteStrategyOptions()
-  await loadRouteStrategyOptions('', [apiKey.routeStrategyId])
-  if (!isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey(apiKey))) return
-  form.routeStrategy = selectedRouteStrategySelection(apiKey.routeStrategyId) ?? form.routeStrategy
+  editingBaseline = currentApiKeyEditableSnapshot(buildTimeSchedulePayload(form.availabilitySchedule))
   modalOpen.value = true
-}
-
-function apiKeyEditOpenScopeKey(apiKey?: Pick<ApiKeySummary, 'id' | 'systemAccountId'>): string {
-  return JSON.stringify([
-    props.isManagementView ? 'management' : 'self',
-    props.scopeParams?.systemAccountId?.trim() ?? '',
-    apiKey?.id ?? 'create',
-    apiKey?.systemAccountId?.trim() ?? ''
-  ])
 }
 
 function apiKeyOperationScopeParams(apiKey?: Pick<ApiKeySummary, 'systemAccountId'>): ApiKeyScopeParams {
@@ -227,7 +223,11 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     message.warning('请填写名称')
     return
   }
-  if (!form.routeStrategyId.trim()) {
+  if (editingId.value && !form.routeStrategyId.trim()) {
+    message.warning('请选择策略路由')
+    return
+  }
+  if (!editingId.value && routeStrategyTouched.value && !form.routeStrategyId.trim()) {
     message.warning('请选择策略路由')
     return
   }
@@ -235,23 +235,35 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     const availabilitySchedule = availabilitySchedulePayload()
     if (availabilitySchedule === false) return
     const targetId = editingId.value
-    const expiresAt = formatServerDateTimeInput(form.expiresAt)
-    const payload = {
-      name: form.name.trim(),
-      routeStrategyId: form.routeStrategyId,
-      status: form.status,
-      expiresAt: targetId ? expiresAt : expiresAt ?? undefined,
-      description: form.description,
-      quotaLimits: quotaLimitsPayload(),
-      availabilitySchedule
-    }
+    const snapshot = currentApiKeyEditableSnapshot(availabilitySchedule)
     if (targetId) {
-      const updated = await props.apiKeysApi.update(targetId, payload, apiKeyOperationScopeParams())
-      emit('updated', updated)
+      if (!editingBaseline || !editingRevision) {
+        message.error('API Key 编辑基线缺失，请关闭弹窗后重试')
+        return
+      }
+      const patch = buildApiKeyMutationPatch(editingBaseline, snapshot)
+      if (!hasApiKeyMutationChanges(patch)) {
+        message.info('没有需要保存的修改')
+        return
+      }
+      const result = await props.apiKeysApi.update(targetId, {
+        expectedRevision: editingRevision,
+        ...patch
+      }, apiKeyOperationScopeParams())
+      emit('updated', result)
       message.success('API Key 已更新')
-      emit('reload', { quiet: true })
     } else {
-      const result = await props.apiKeysApi.create(payload, props.scopeParams)
+      const result = await props.apiKeysApi.create({
+        name: snapshot.name,
+        ...(routeStrategyTouched.value && snapshot.routeStrategyId
+          ? { routeStrategyId: snapshot.routeStrategyId }
+          : {}),
+        status: snapshot.status,
+        expiresAt: snapshot.expiresAt ?? undefined,
+        description: snapshot.description,
+        quotaLimits: snapshot.quotaLimits,
+        availabilitySchedule: snapshot.availabilitySchedule
+      }, props.scopeParams)
       emit('created', {
         key: result.key,
         title: 'API Key 已创建',
@@ -279,16 +291,55 @@ function availabilitySchedulePayload(): ApiKeyAvailabilitySchedule | null | fals
   return buildTimeSchedulePayload(form.availabilitySchedule)
 }
 
-function resetRouteStrategyOptions() {
-  clearRouteStrategyOptionsSearchTimer()
-  routeStrategyOptionsRequestToken += 1
-  routeStrategyOptionsLoadingKey = undefined
-  routeStrategyOptionsLoadingPromise = undefined
-  routeStrategyOptionsRaw.value = []
-  routeStrategyOptionsLoading.value = false
+function currentApiKeyEditableSnapshot(
+  availabilitySchedule: ApiKeyAvailabilitySchedule | null
+): ApiKeyEditableSnapshot {
+  return {
+    name: form.name.trim(),
+    routeStrategyId: form.routeStrategyId.trim() || undefined,
+    status: form.status,
+    expiresAt: formatServerDateTimeInput(form.expiresAt),
+    description: form.description,
+    quotaLimits: quotaLimitsPayload(),
+    availabilitySchedule
+  }
 }
 
-async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []) {
+function cachedDefaultRouteStrategy(): RouteStrategySelection | undefined {
+  const reference = getCachedUserReferenceData({
+    viewScope: props.isManagementView ? 'admin' : 'self',
+    systemAccountId: props.scopeParams?.systemAccountId
+  })?.preferredDefaultRouteStrategy
+  if (!reference || reference.status !== 'active') return undefined
+  return {
+    ...reference,
+    isDefault: true
+  }
+}
+
+function prewarmCreateDefaultRouteStrategy(): void {
+  const params = {
+    viewScope: props.isManagementView ? 'admin' as const : 'self' as const,
+    systemAccountId: props.scopeParams?.systemAccountId
+  }
+  void loadUserReferenceData(params).then((referenceData) => {
+    const reference = referenceData?.preferredDefaultRouteStrategy
+    if (
+      !reference
+      || reference.status !== 'active'
+      || !modalOpen.value
+      || editingId.value
+      || routeStrategyTouched.value
+      || form.routeStrategyId
+    ) {
+      return
+    }
+    form.routeStrategyId = reference.id
+    form.routeStrategy = { ...reference, isDefault: true }
+  }).catch(() => undefined)
+}
+
+async function loadRouteStrategyOptions(keyword = '') {
   const operationScopeParams = apiKeyOperationScopeParams()
   if (props.isManagementView && !operationScopeParams?.systemAccountId) {
     routeStrategyOptionsRequestToken += 1
@@ -299,8 +350,8 @@ async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []
     return
   }
   const requestKeyword = keyword.trim() || undefined
-  const normalizedSelectedIds = [...new Set(selectedIds.map((id) => id.trim()).filter(Boolean))]
-  const requestKey = routeStrategyOptionsRequestKey(operationScopeParams?.systemAccountId, requestKeyword, normalizedSelectedIds)
+  const requestScopeKey = routeStrategyOptionsCatalogScopeKey(operationScopeParams?.systemAccountId)
+  const requestKey = routeStrategyOptionsRequestKey(operationScopeParams?.systemAccountId, requestKeyword)
   if (routeStrategyOptionsLoadingKey === requestKey && routeStrategyOptionsLoadingPromise) {
     return routeStrategyOptionsLoadingPromise
   }
@@ -311,11 +362,14 @@ async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []
     try {
       await loadRouteStrategyOptionsResource({
         api: props.routeStrategiesApi,
-        apply: (nextOptions) => { routeStrategyOptionsRaw.value = nextOptions },
-        isCurrent: () => requestToken === routeStrategyOptionsRequestToken,
+        apply: (nextOptions) => {
+          routeStrategyOptionsRaw.value = nextOptions
+          routeStrategyOptionsScopeKey.value = requestScopeKey
+        },
+        isCurrent: () => requestToken === routeStrategyOptionsRequestToken
+          && requestScopeKey === currentRouteStrategyOptionsScopeKey(),
         isManagementView: props.isManagementView,
         keyword: requestKeyword,
-        selectedIds: normalizedSelectedIds,
         systemAccountId: operationScopeParams?.systemAccountId
       })
     } catch (error) {
@@ -334,24 +388,27 @@ async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []
   return routeStrategyOptionsLoadingPromise
 }
 
-function mergeRouteStrategyOptionsById(leading: RouteStrategyOptionSummary[], trailing: RouteStrategyOptionSummary[]): RouteStrategyOptionSummary[] {
-  const merged = new Map<string, RouteStrategyOptionSummary>()
-  for (const strategy of [...leading, ...trailing]) {
-    merged.set(strategy.id, strategy)
-  }
-  return [...merged.values()]
-}
-
-function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined, selectedIds: string[]): string {
+function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined): string {
   return JSON.stringify([
-    props.isManagementView ? `management:${systemAccountId ?? ''}` : 'self',
-    keyword ?? '',
-    selectedIds
+    routeStrategyOptionsCatalogScopeKey(systemAccountId),
+    keyword ?? ''
   ])
 }
 
+function currentRouteStrategyOptionsScopeKey(): string {
+  return routeStrategyOptionsCatalogScopeKey(apiKeyOperationScopeParams()?.systemAccountId)
+}
+
+function routeStrategyOptionsCatalogScopeKey(systemAccountId: string | undefined): string {
+  return props.isManagementView ? `management:${systemAccountId ?? ''}` : 'self'
+}
+
 function handleRouteStrategyDropdown(open: boolean) {
-  if (open && !routeStrategyOptionsRaw.value.length) void loadRouteStrategyOptions()
+  if (open && !visibleRouteStrategyOptions.value.length) void loadRouteStrategyOptions()
+}
+
+function markRouteStrategyTouched(): void {
+  routeStrategyTouched.value = true
 }
 
 function handleRouteStrategySearch(value: string) {
@@ -369,13 +426,6 @@ function clearRouteStrategyOptionsSearchTimer() {
   }
 }
 
-function selectedRouteStrategySelection(id: string | undefined): RouteStrategySelection | undefined {
-  const normalizedId = id?.trim()
-  if (!normalizedId) return undefined
-  const strategy = routeStrategyOptionsRaw.value.find((item) => item.id === normalizedId)
-  return strategy ? routeStrategySelectionFromOption(strategy) : undefined
-}
-
 function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelection | undefined {
   const id = apiKey.routeStrategyId.trim()
   const name = apiKey.routeStrategyName?.trim()
@@ -390,7 +440,6 @@ function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelec
 }
 
 onBeforeUnmount(() => {
-  invalidateOpenOperation()
   clearRouteStrategyOptionsSearchTimer()
 })
 

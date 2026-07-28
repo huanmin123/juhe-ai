@@ -4,7 +4,16 @@ import type { Request, Response } from 'express'
 
 import type { AccountClientCompatibility } from '../../../domain/types.js'
 import { BoundedBufferCollector } from '../../../shared/bounded-buffer.js'
-import { OpenAIStreamInspector } from '../protocols/openai-v1/stream-inspection.js'
+import type { ParsedOpenAIStreamEvent } from '../protocols/openai-v1/stream-events.js'
+import type { GatewayStreamInspection } from '../protocols/_shared/types.js'
+import {
+  gatewayNonStreamJsonBodyReceiver,
+  type GatewayNonStreamJsonBody
+} from '../response/non-stream-json-body.js'
+import {
+  gatewayStreamInspectionReceiver,
+  gatewayStreamParsedEventReceiver
+} from '../response/stream-observer.js'
 
 export const accountTestResponsePreviewBytes = 256 * 1024
 
@@ -155,8 +164,11 @@ export class MemoryGatewayResponse extends EventEmitter {
   locals: Record<string, unknown> = {}
   private readonly headers = new Map<string, string | string[]>()
   private readonly body = new BoundedBufferCollector(accountTestResponsePreviewBytes)
-  private readonly streamInspector = new OpenAIStreamInspector()
   private firstOutputMs: number | undefined
+  private parsedNonStreamJsonBody: GatewayNonStreamJsonBody | undefined
+  private readonly parsedStreamEventValues: ParsedOpenAIStreamEvent[] = []
+  private parsedStreamEventBytes = 0
+  private parsedStreamEventsTruncated = false
 
   constructor(private readonly startedAt: number) {
     super()
@@ -201,10 +213,6 @@ export class MemoryGatewayResponse extends EventEmitter {
   write(value: Buffer | string | Uint8Array): boolean {
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
     this.body.append(buffer)
-    const inspection = this.streamInspector.pushChunk(buffer)
-    if (this.firstOutputMs === undefined && inspection.outputReceived) {
-      this.firstOutputMs = Date.now() - this.startedAt
-    }
     return true
   }
 
@@ -226,6 +234,36 @@ export class MemoryGatewayResponse extends EventEmitter {
 
   bodyTruncated(): boolean {
     return this.body.truncated
+  }
+
+  [gatewayNonStreamJsonBodyReceiver](body: GatewayNonStreamJsonBody): void {
+    this.parsedNonStreamJsonBody = body
+  }
+
+  nonStreamJsonBody(): GatewayNonStreamJsonBody | undefined {
+    return this.parsedNonStreamJsonBody
+  }
+
+  [gatewayStreamParsedEventReceiver](event: ParsedOpenAIStreamEvent): void {
+    if (this.parsedStreamEventsTruncated) return
+    const eventBytes = (event.dataBytes ?? Buffer.byteLength(event.dataText, 'utf8'))
+      + Buffer.byteLength(event.eventName, 'utf8')
+    if (this.parsedStreamEventBytes + eventBytes > accountTestResponsePreviewBytes) {
+      this.parsedStreamEventsTruncated = true
+      return
+    }
+    this.parsedStreamEventBytes += eventBytes
+    this.parsedStreamEventValues.push(event)
+  }
+
+  [gatewayStreamInspectionReceiver](inspection: GatewayStreamInspection): void {
+    if (this.firstOutputMs === undefined && inspection.outputReceived) {
+      this.firstOutputMs = Date.now() - this.startedAt
+    }
+  }
+
+  parsedStreamEvents(): readonly ParsedOpenAIStreamEvent[] {
+    return this.parsedStreamEventValues
   }
 
   headersObject(): Record<string, string | string[]> {

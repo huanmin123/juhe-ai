@@ -1,7 +1,18 @@
-import type { ApiKeySummary } from '../domain/types.js'
+import type {
+  ApiKeyAvailabilitySchedule,
+  ApiKeyQuotaLimits,
+  ApiKeySummary,
+  RouteStrategyMode,
+  RouteStrategyStatus
+} from '../domain/types.js'
 import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import {
+  notifyGatewayApiKeyValidationCacheInvalidationAsync,
+  notifyApiKeyQuotaCacheInvalidation,
+  notifyGatewayRuntimeCacheInvalidation
+} from '../shared/gateway-cache-invalidation.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { apiKeySystemAccountId, canManageApiKeyOwner } from './api-key-access.js'
 import {
@@ -9,15 +20,22 @@ import {
   apiKeyAvailabilityScheduleJson,
   apiKeyAvailabilityScheduleStatus,
   isApiKeyAvailabilityScheduleInputPresent,
-  nextApiKeyAvailabilityScheduleCheckAt
+  nextApiKeyAvailabilityScheduleCheckAt,
+  parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
+import {
+  apiKeyListItemsFromRows,
+  apiKeyListItemsFromRowsAsync,
+  type ApiKeyListItem,
+  type ApiKeyListRow
+} from './api-key-list-mappers.js'
 import { apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow } from './api-key-mappers.js'
 import { registerDeletedApiKeyRecordCleanupTargetInClientAsync } from './api-key-record-cleanup.js'
-import { createApiKey, encryptJson, hashSecret } from './crypto.js'
+import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
-import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync } from './gateway-api-key.repository.js'
+import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -25,7 +43,7 @@ import {
   syncApiKeyRequestQuotaHourlyWindowScopeBinding,
   syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync
 } from './request-quota-hourly-windows.repository.js'
-import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
+import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import {
   assertRouteStrategySelectableForApiKey,
   assertRouteStrategySelectableForApiKeyAsync,
@@ -33,7 +51,10 @@ import {
   ensureDefaultRouteStrategiesForSystemAccountAsync
 } from './route-strategy.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { findPreferredDefaultRouteStrategyReferenceAsync } from './user-reference-data.repository.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
+
+export type { ApiKeyListItem } from './api-key-list-mappers.js'
 
 const businessSchemaName = 'juhe_business'
 const apiKeyMutationInputKeys = new Set([
@@ -55,7 +76,7 @@ export interface ApiKeyListOptions {
 }
 
 export interface ApiKeyListResult {
-  items: ApiKeySummary[]
+  items: ApiKeyListItem[]
   total: number
   hasMore: boolean
   page: number
@@ -65,15 +86,133 @@ export interface ApiKeyListResult {
 type ApiKeyDeleteRow = {
   id: string
   system_account_id: string
+  name: string
+  key_hash: string
   is_default?: number | string | boolean | null
   purpose?: string | null
 }
 
-export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
+interface ApiKeySecretRow {
+  id: string
+  system_account_id: string
+  name: string
+  key_prefix: string
+  key_suffix: string
+  key_secret_encrypted: string | null
+}
+
+interface ApiKeyMutationRow {
+  id: string
+  system_account_id: string
+  name: string
+  key_hash: string
+  description: string | null
+  route_strategy_id: string
+  status: 'active' | 'disabled'
+  is_default?: number | string | boolean | null
+  purpose?: string | null
+  expires_at: string | null
+  quota_limits_json: string | null
+  availability_schedule_json: string | null
+  updated_at: string
+}
+
+interface ApiKeyRefreshRow {
+  id: string
+  system_account_id: string
+  name: string
+  key_hash: string
+  key_prefix: string
+  key_suffix: string
+  updated_at: string
+}
+
+export interface ApiKeySecretRecord {
+  id: string
+  systemAccountId: string
+  name: string
+  keyPrefix: string
+  keySuffix: string
+  key: string
+}
+
+export interface ApiKeyCreateResult {
+  id: string
+  key: string
+  keyPrefix: string
+  keySuffix: string
+  revision: string
+}
+
+export interface ApiKeyRefreshOutcome {
+  result: ApiKeyCreateResult
+  ownerSystemAccountId: string
+  resourceName: string
+  previousKeyPrefix: string
+  previousKeySuffix: string
+  validationCacheError?: ApiKeyValidationCacheInvalidationError
+}
+
+export type ApiKeyCreatedRecord = ApiKeySummary & { key: string; revision: string }
+
+export type ApiKeyMutableField =
+  | 'name'
+  | 'description'
+  | 'routeStrategyId'
+  | 'status'
+  | 'expiresAt'
+  | 'quotaLimits'
+  | 'availabilitySchedule'
+
+export interface ApiKeyMutationRowPatch {
+  revision: string
+  name?: string
+  description?: string | null
+  routeStrategyId?: string
+  routeStrategyName?: string
+  routeStrategyMode?: RouteStrategyMode
+  routeStrategyStatus?: RouteStrategyStatus
+  status?: 'active' | 'disabled'
+  expiresAt?: string | null
+  quotaLimits?: ApiKeyQuotaLimits
+  availabilitySchedule?: ApiKeyAvailabilitySchedule | null
+}
+
+export interface ApiKeyPatchResult {
+  id: string
+  revision: string
+  changedFields: ApiKeyMutableField[]
+  rowPatch: ApiKeyMutationRowPatch
+}
+
+export interface ApiKeyPatchOutcome {
+  result: ApiKeyPatchResult
+  ownerSystemAccountId: string
+  resourceName: string
+  before: Partial<Record<ApiKeyMutableField, unknown>>
+  after: Partial<Record<ApiKeyMutableField, unknown>>
+  validationCacheError?: ApiKeyValidationCacheInvalidationError
+}
+
+export class ApiKeyRevisionConflictError extends Error {
+  constructor(readonly currentRevision: string) {
+    super('API Key 已被其他操作修改，请刷新后重试')
+    this.name = 'ApiKeyRevisionConflictError'
+  }
+}
+
+export class ApiKeyValidationCacheInvalidationError extends Error {
+  constructor(readonly apiKeyId: string, readonly invalidationCause: unknown) {
+    super('API Key validation cache 失效失败')
+    this.name = 'ApiKeyValidationCacheInvalidationError'
+  }
+}
+
+export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListItem[] {
   return queryApiKeys(access, options).items
 }
 
-export async function listApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions): Promise<ApiKeySummary[]> {
+export async function listApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions): Promise<ApiKeyListItem[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     if (sqliteReadWorkerPoolEnabled()) {
       return requestSqliteReadWorker({
@@ -87,7 +226,7 @@ export async function listApiKeysAsync(access?: AccessScope, options?: ApiKeyLis
   return (await queryApiKeysAsync(access, options)).items
 }
 
-export function listApiKeysReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
+export function listApiKeysReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListItem[] {
   return queryApiKeys(access, options).items
 }
 
@@ -147,19 +286,19 @@ export async function findApiKeySummaryAsync(id: string, access?: AccessScope): 
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: false }))[0] : undefined
 }
 
-export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySummary | undefined {
+export function findApiKeySecret(id: string, access?: AccessScope): ApiKeySecretRecord | undefined {
   return findApiKeySecretReadOnly(id, access)
 }
 
-export function findApiKeySecretReadOnly(id: string, access?: AccessScope): ApiKeySummary | undefined {
+export function findApiKeySecretReadOnly(id: string, access?: AccessScope): ApiKeySecretRecord | undefined {
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getBusinessDatabase()
-    .prepare(`SELECT ${apiKeyListColumns({ includeSecret: true })} FROM api_keys ${apiKeyListJoins()} WHERE api_keys.id = ?${scope.clause}`)
-    .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
-  return row ? apiKeySummariesFromRows([row], access, { includeSecret: true })[0] : undefined
+    .prepare(`SELECT ${apiKeySecretColumns()} FROM api_keys WHERE api_keys.id = ?${scope.clause}`)
+    .get(id, ...scope.params) as unknown as ApiKeySecretRow | undefined
+  return row ? apiKeySecretRecordFromRow(row) : undefined
 }
 
-export async function findApiKeySecretAsync(id: string, access?: AccessScope): Promise<ApiKeySummary | undefined> {
+export async function findApiKeySecretAsync(id: string, access?: AccessScope): Promise<ApiKeySecretRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     if (sqliteReadWorkerPoolEnabled()) {
       return requestSqliteReadWorker({
@@ -172,18 +311,17 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
   }
   const client = await getApiKeyDatabaseClient()
   const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
-  const row = await client.one<ApiKeyRow>(`
-    SELECT ${apiKeyListColumns({ includeSecret: true })}
+  const row = await client.one<ApiKeySecretRow>(`
+    SELECT ${apiKeySecretColumns()}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    ${apiKeyListJoinsForClient(client)}
     WHERE api_keys.id = ?${scope.clause}
   `, [id, ...scope.params])
-  return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
+  return row ? apiKeySecretRecordFromRow(row) : undefined
 }
 
 function queryApiKeys(access: AccessScope | undefined, options: ApiKeyListOptions | undefined, paged: true): ApiKeyListResult
-function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged?: false): Omit<ApiKeyListResult, 'items'> & { items: ApiKeySummary[] }
-function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult | (Omit<ApiKeyListResult, 'items'> & { items: ApiKeySummary[] }) {
+function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged?: false): Omit<ApiKeyListResult, 'items'> & { items: ApiKeyListItem[] }
+function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult | (Omit<ApiKeyListResult, 'items'> & { items: ApiKeyListItem[] }) {
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const filters = buildApiKeyFilters(scope, normalized)
@@ -191,16 +329,16 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT ${apiKeyListColumns()}
+      SELECT ${apiKeyPageColumns(access)}
       FROM api_keys
-      ${apiKeyListJoins()}
+      ${apiKeyPageJoins(access)}
       ${filters.clause}
       ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
       ${limitClause}
     `)
-    .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
+    .all(...filters.params, ...limitParams) as unknown as ApiKeyListRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
+  const items = apiKeyListItemsFromRows(pageRows.rows, access)
   return {
     items,
     total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
@@ -211,8 +349,8 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
 }
 
 function queryApiKeysAsync(access: AccessScope | undefined, options: ApiKeyListOptions | undefined, paged: true): Promise<ApiKeyListResult>
-function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged?: false): Promise<Omit<ApiKeyListResult, 'items'> & { items: ApiKeySummary[] }>
-async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged = false): Promise<ApiKeyListResult | (Omit<ApiKeyListResult, 'items'> & { items: ApiKeySummary[] })> {
+function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged?: false): Promise<Omit<ApiKeyListResult, 'items'> & { items: ApiKeyListItem[] }>
+async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptions, paged = false): Promise<ApiKeyListResult | (Omit<ApiKeyListResult, 'items'> & { items: ApiKeyListItem[] })> {
   const normalized = normalizeApiKeyListOptions(options)
   const client = await getApiKeyDatabaseClient()
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
@@ -241,17 +379,17 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
       ${limitClause}
     )`
   ].filter((part): part is string => Boolean(part))
-  const rows = await client.query<ApiKeyRow>(`
+  const rows = await client.query<ApiKeyListRow>(`
     WITH ${cteParts.join(', ')}
-    SELECT ${apiKeyListColumns()}
+    SELECT ${apiKeyPageColumns(access, client)}
     FROM page_api_key_ids
     INNER JOIN ${apiKeyTable(client, 'api_keys')} api_keys
       ON api_keys.id = page_api_key_ids.id
-    ${apiKeyListJoinsForClient(client)}
+    ${apiKeyPageJoinsForClient(client, access)}
     ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
   `, [...(keywordCte?.params ?? []), ...filters.params, ...limitParams])
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = await apiKeySummariesFromRowsAsync(pageRows.rows, access, { includeSecret: false })
+  const items = await apiKeyListItemsFromRowsAsync(pageRows.rows, access)
   return {
     items,
     total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
@@ -284,6 +422,85 @@ function buildPostgresApiKeyKeywordCte(
       WHERE ${clauses.join(' AND ')}
     )`,
     params
+  }
+}
+
+function apiKeyPageColumns(access?: AccessScope, client?: DatabaseClient): string {
+  const columns = [
+    'api_keys.id',
+    'api_keys.system_account_id',
+    'api_keys.route_strategy_id',
+    'route_strategies.name AS route_strategy_name',
+    'route_strategies.mode AS route_strategy_mode',
+    'route_strategies.status AS route_strategy_status',
+    'api_keys.name',
+    'api_keys.description',
+    'api_keys.key_prefix',
+    'api_keys.key_suffix',
+    'api_keys.status',
+    'api_keys.is_default',
+    'api_keys.purpose',
+    'api_keys.expires_at',
+    'api_keys.quota_limits_json',
+    'api_keys.availability_schedule_json',
+    apiKeyRevisionSelectExpression(client)
+  ]
+  if (includeSystemAccountFields(access)) {
+    columns.splice(2, 0, 'system_accounts.display_name AS system_account_name')
+  }
+  return columns.join(', ')
+}
+
+function apiKeyRevisionSelectExpression(_client?: DatabaseClient, tableAlias = 'api_keys'): string {
+  return `${tableAlias}.updated_at`
+}
+
+function apiKeyPageJoins(access?: AccessScope): string {
+  return `
+    ${includeSystemAccountFields(access) ? 'LEFT JOIN system_accounts ON system_accounts.id = api_keys.system_account_id' : ''}
+    INNER JOIN route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+  `
+}
+
+function apiKeyPageJoinsForClient(client: DatabaseClient, access?: AccessScope): string {
+  return `
+    ${includeSystemAccountFields(access)
+      ? `LEFT JOIN ${apiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id`
+      : ''}
+    INNER JOIN ${apiKeyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+  `
+}
+
+function apiKeySecretColumns(): string {
+  return [
+    'api_keys.id',
+    'api_keys.system_account_id',
+    'api_keys.name',
+    'api_keys.key_prefix',
+    'api_keys.key_suffix',
+    'api_keys.key_secret_encrypted'
+  ].join(', ')
+}
+
+function apiKeySecretRecordFromRow(row: ApiKeySecretRow): ApiKeySecretRecord {
+  if (!row.key_secret_encrypted) {
+    throw new Error('API Key 密文缺少完整密钥')
+  }
+  const decrypted = decryptJson<{ key?: unknown }>(row.key_secret_encrypted)
+  if (typeof decrypted.key !== 'string' || !decrypted.key) {
+    throw new Error('API Key 密文缺少完整密钥')
+  }
+  return {
+    id: row.id,
+    systemAccountId: row.system_account_id,
+    name: row.name,
+    keyPrefix: row.key_prefix,
+    keySuffix: row.key_suffix,
+    key: decrypted.key
   }
 }
 
@@ -332,16 +549,17 @@ function apiKeyListJoinsForClient(client: DatabaseClient): string {
   `
 }
 
-export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {
+export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeyCreatedRecord {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 创建参数')
   const nowDate = new Date()
   const now = nowDate.toISOString()
+  const revision = apiKeyRevisionFromTimestamp(nowDate.getTime())
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const name = normalizedApiKeyName(input.name)
-  let routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
+  let routeStrategyId = typeof input.routeStrategyId === 'string' ? input.routeStrategyId.trim() : ''
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const status = apiKeyStatusForScheduleMutation({
@@ -384,7 +602,17 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    routeStrategyId = assertRouteStrategySelectableForApiKey(systemAccountId, routeStrategyId)
+    const preferredRouteStrategy = input.routeStrategyId === undefined
+      ? defaultGptRouteStrategyForSystemAccount(database, systemAccountId)
+      : undefined
+    if (input.routeStrategyId === undefined && !preferredRouteStrategy) {
+      throw new Error('当前用户缺少可用的默认策略路由')
+    }
+    routeStrategyId = assertRouteStrategySelectableForApiKey(
+      systemAccountId,
+      preferredRouteStrategy?.id ?? input.routeStrategyId
+    )
+    record.routeStrategyId = routeStrategyId
     const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
     const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
     database
@@ -411,14 +639,14 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
         apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
         availabilityScheduleNextCheckAt,
         now,
-        now
+        revision
       )
     syncApiKeyRequestQuotaHourlyWindowScopeBinding({
       apiKeyId: record.id,
       systemAccountId,
       limitsJson: quotaLimitsJson,
       active: record.status === 'active'
-    }, database, now)
+    }, database, revision)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -430,26 +658,24 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     }
     throw error
   }
-  invalidateApiKeyLookupCache(record.id)
-  notifyGatewayRuntimeCacheInvalidation('api_key_created')
-  notifyApiKeyQuotaCacheInvalidation(record.id, 'api_key_created')
   return {
-    ...(findApiKeySummary(record.id, access) ?? record),
-    key
+    ...record,
+    revision
   }
 }
 
-export async function createApiKeyRecordAsync(input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeySummary & { key: string }> {
+export async function createApiKeyRecordAsync(input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeyCreatedRecord> {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 创建参数')
   const nowDate = new Date()
   const now = nowDate.toISOString()
+  const revision = apiKeyRevisionFromTimestamp(nowDate.getTime())
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
   const name = normalizedApiKeyName(input.name)
   const client = await getApiKeyDatabaseClient()
-  let routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
+  let routeStrategyId = typeof input.routeStrategyId === 'string' ? input.routeStrategyId.trim() : ''
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const availabilitySchedule = apiKeyAvailabilityScheduleFromRequest(input)
   const status = apiKeyStatusForScheduleMutation({
@@ -491,7 +717,23 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
   }
   try {
     await client.transaction(async (tx) => {
-      routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, routeStrategyId, tx, true)
+      const preferredRouteStrategy = input.routeStrategyId === undefined
+        ? await findPreferredDefaultRouteStrategyReferenceAsync(systemAccountId, tx, true)
+        : undefined
+      if (input.routeStrategyId === undefined && !preferredRouteStrategy) {
+        throw new Error('当前用户缺少可用的默认策略路由')
+      }
+      routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(
+        systemAccountId,
+        preferredRouteStrategy?.id ?? input.routeStrategyId,
+        tx,
+        true
+      )
+      record.routeStrategyId = routeStrategyId
+      const routeStrategy = preferredRouteStrategy ?? await apiKeyRouteStrategyReferenceAsync(tx, systemAccountId, routeStrategyId)
+      record.routeStrategyName = routeStrategy?.name
+      record.routeStrategyMode = routeStrategy?.mode
+      record.routeStrategyStatus = routeStrategy?.status
       const quotaLimitsJson = requestQuotaLimitsJson(record.quotaLimits)
       const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(record.availabilitySchedule, nowDate)
       await tx.execute(`
@@ -516,14 +758,14 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
         apiKeyAvailabilityScheduleJson(record.availabilitySchedule),
         availabilityScheduleNextCheckAt,
         now,
-        now
+        revision
       ])
-      await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
+      await syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(tx, {
         apiKeyId: record.id,
         systemAccountId,
         limitsJson: quotaLimitsJson,
         active: record.status === 'active'
-      }, now)
+      }, revision)
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
@@ -531,12 +773,9 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
     }
     throw error
   }
-  invalidateApiKeyLookupCache(record.id)
-  notifyGatewayRuntimeCacheInvalidation('api_key_created')
-  notifyApiKeyQuotaCacheInvalidation(record.id, 'api_key_created')
   return {
-    ...(await findApiKeySummaryAsync(record.id, access) ?? record),
-    key
+    ...record,
+    revision
   }
 }
 
@@ -633,90 +872,261 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
 
 export async function updateApiKeyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeySummary | undefined> {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
-  const systemAccountId = await apiKeySystemAccountIdAsync(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
   const client = await getApiKeyDatabaseClient()
-  const currentRow = await client.one<ApiKeyRow>(`
-    SELECT ${apiKeyListColumns()}
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  const revisionRow = await client.one<{ updated_at: string }>(`
+    SELECT ${apiKeyRevisionSelectExpression(client)}
     FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    ${apiKeyListJoinsForClient(client)}
-    WHERE api_keys.id = ? AND api_keys.system_account_id = ?
-  `, [id, systemAccountId])
-  const current = currentRow ? (await apiKeySummariesFromRowsAsync([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false }))[0] : undefined
-  if (!current || !currentRow) return undefined
+    WHERE api_keys.id = ?${scope.clause}
+    LIMIT 1
+  `, [id, ...scope.params])
+  if (!revisionRow) return undefined
 
-  const nextName = Object.prototype.hasOwnProperty.call(input, 'name') ? normalizedApiKeyName(input.name) : current.name
-  assertApiKeyNameChangeAllowed(current, nextName)
-  const hasRouteStrategyInput = Object.prototype.hasOwnProperty.call(input, 'routeStrategyId')
-  let nextRouteStrategyId = hasRouteStrategyInput
-    ? await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
-    : current.routeStrategyId
-  if (current.isDefault && current.purpose !== 'chat' && nextRouteStrategyId !== current.routeStrategyId) {
-    throw new Error('默认 API Key 不允许更换策略路由')
+  let revision = revisionRow.updated_at
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const outcome = await patchApiKeyAsync(id, input, revision, access)
+      if (!outcome) return undefined
+      if (outcome.validationCacheError) throw outcome.validationCacheError
+      return findApiKeySummaryAsync(id, access)
+    } catch (error) {
+      if (!(error instanceof ApiKeyRevisionConflictError) || attempt === 2) throw error
+      revision = error.currentRevision
+    }
   }
-  const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
-  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  const hasAvailabilityScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
-  const mutationNow = new Date()
-  const requestedStatus = hasStatusInput ? normalizeApiKeyStatus(input.status, current.status) : current.status
-  const nextAvailabilitySchedule = hasAvailabilityScheduleInput ? apiKeyAvailabilityScheduleFromRequest(input) : current.availabilitySchedule
-  const nextStatus = hasAvailabilityScheduleInput
-    ? apiKeyStatusForScheduleMutation({ requestedStatus, schedule: nextAvailabilitySchedule, now: mutationNow })
-    : requestedStatus
-  const next: ApiKeySummary = {
-    ...current,
-    name: nextName,
-    description: Object.prototype.hasOwnProperty.call(input, 'description') ? normalizeOptionalApiKeyDescription(input.description) : current.description,
-    status: nextStatus,
-    routeStrategyId: nextRouteStrategyId,
-    expiresAt: hasExpiresAtInput ? normalizeOptionalApiKeyExpiresAt(input.expiresAt) : current.expiresAt,
-    quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits()),
-    availabilitySchedule: nextAvailabilitySchedule
-  }
+  return undefined
+}
+
+export async function patchApiKeyAsync(
+  id: string,
+  input: Record<string, unknown>,
+  expectedRevision: string,
+  access?: AccessScope
+): Promise<ApiKeyPatchOutcome | undefined> {
+  assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
+  const client = await getApiKeyDatabaseClient()
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  let outcome: ApiKeyPatchOutcome | undefined
+  let committedKeyHash: string | undefined
+
   try {
-    await client.transaction(async (tx) => {
-      nextRouteStrategyId = await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, nextRouteStrategyId, tx, true)
-      const nowDate = mutationNow
-      const now = nowDate.toISOString()
-      const quotaLimitsJson = requestQuotaLimitsJson(next.quotaLimits)
-      const availabilityScheduleNextCheckAt = nextApiKeyAvailabilityScheduleCheckAt(next.availabilitySchedule, nowDate)
-      await tx.execute(`
+    outcome = await client.transaction(async (tx) => {
+      const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+      const current = await tx.one<ApiKeyMutationRow>(`
+        SELECT
+          api_keys.id,
+          api_keys.system_account_id,
+          api_keys.name,
+          api_keys.key_hash,
+          api_keys.description,
+          api_keys.route_strategy_id,
+          api_keys.status,
+          api_keys.is_default,
+          api_keys.purpose,
+          api_keys.expires_at,
+          api_keys.quota_limits_json,
+          api_keys.availability_schedule_json,
+          ${apiKeyRevisionSelectExpression(tx)}
+        FROM ${apiKeyTable(tx, 'api_keys')} api_keys
+        WHERE api_keys.id = ?${scope.clause}
+        LIMIT 1${lockClause}
+      `, [id, ...scope.params])
+      if (!current) return undefined
+      if (current.updated_at !== expectedRevision) {
+        throw new ApiKeyRevisionConflictError(current.updated_at)
+      }
+
+      const changedFields: ApiKeyMutableField[] = []
+      const rowPatch: ApiKeyMutationRowPatch = { revision: current.updated_at }
+      const before: Partial<Record<ApiKeyMutableField, unknown>> = {}
+      const after: Partial<Record<ApiKeyMutableField, unknown>> = {}
+      const setClauses: string[] = []
+      const setParams: unknown[] = []
+      let nextName = current.name
+      let nextStatus = current.status
+      let nextQuotaLimitsJson = current.quota_limits_json
+      let nextAvailabilitySchedule = parseApiKeyAvailabilityScheduleJson(current.availability_schedule_json)
+      const mutationNow = new Date()
+
+      const addChange = (field: ApiKeyMutableField, previous: unknown, next: unknown): void => {
+        changedFields.push(field)
+        before[field] = previous
+        after[field] = next
+      }
+
+      if (Object.hasOwn(input, 'name')) {
+        const value = normalizedApiKeyName(input.name)
+        assertApiKeyNameChangeAllowed({
+          name: current.name,
+          isDefault: normalizeApiKeyDefaultFlag(current.is_default),
+          purpose: current.purpose === 'chat' ? 'chat' : 'general'
+        }, value)
+        if (value !== current.name) {
+          nextName = value
+          addChange('name', current.name, value)
+          setClauses.push('name = ?')
+          setParams.push(value)
+          rowPatch.name = value
+        }
+      }
+
+      if (Object.hasOwn(input, 'description')) {
+        const value = normalizeOptionalApiKeyDescription(input.description)
+        const previous = current.description ?? undefined
+        if (value !== previous) {
+          addChange('description', previous, value)
+          setClauses.push('description = ?')
+          setParams.push(value ?? null)
+          rowPatch.description = value ?? null
+        }
+      }
+
+      if (Object.hasOwn(input, 'routeStrategyId')) {
+        const candidate = typeof input.routeStrategyId === 'string' ? input.routeStrategyId.trim() : input.routeStrategyId
+        if (candidate !== current.route_strategy_id) {
+          if (normalizeApiKeyDefaultFlag(current.is_default) && current.purpose !== 'chat') {
+            throw new Error('默认 API Key 不允许更换策略路由')
+          }
+          const routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(
+            current.system_account_id,
+            candidate,
+            tx,
+            true
+          )
+          const routeStrategy = await apiKeyRouteStrategyReferenceAsync(tx, current.system_account_id, routeStrategyId)
+          if (!routeStrategy) throw new Error('API Key 绑定的策略路由不存在或不属于当前用户')
+          addChange('routeStrategyId', current.route_strategy_id, routeStrategyId)
+          setClauses.push('route_strategy_id = ?')
+          setParams.push(routeStrategyId)
+          Object.assign(rowPatch, {
+            routeStrategyId,
+            routeStrategyName: routeStrategy.name,
+            routeStrategyMode: routeStrategy.mode,
+            routeStrategyStatus: routeStrategy.status
+          })
+        }
+      }
+
+      if (Object.hasOwn(input, 'expiresAt')) {
+        const value = normalizeOptionalApiKeyExpiresAt(input.expiresAt)
+        const previous = current.expires_at ?? undefined
+        if (value !== previous) {
+          addChange('expiresAt', previous, value)
+          setClauses.push('expires_at = ?')
+          setParams.push(value ?? null)
+          rowPatch.expiresAt = value ?? null
+        }
+      }
+
+      if (Object.hasOwn(input, 'quotaLimits')) {
+        const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits, parseRequestQuotaLimitsJson(current.quota_limits_json))
+        const quotaLimitsJson = requestQuotaLimitsJson(quotaLimits)
+        if (quotaLimitsJson !== current.quota_limits_json) {
+          nextQuotaLimitsJson = quotaLimitsJson
+          addChange('quotaLimits', parseRequestQuotaLimitsJson(current.quota_limits_json), quotaLimits)
+          setClauses.push('quota_limits_json = ?')
+          setParams.push(quotaLimitsJson)
+          rowPatch.quotaLimits = quotaLimits
+        }
+      }
+
+      const hasScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
+      if (hasScheduleInput) {
+        const schedule = apiKeyAvailabilityScheduleFromRequest(input)
+        if (apiKeyAvailabilityScheduleJson(schedule) !== apiKeyAvailabilityScheduleJson(nextAvailabilitySchedule)) {
+          addChange('availabilitySchedule', nextAvailabilitySchedule, schedule)
+          nextAvailabilitySchedule = schedule
+          setClauses.push('availability_schedule_json = ?', 'availability_schedule_next_check_at = ?')
+          setParams.push(
+            apiKeyAvailabilityScheduleJson(schedule),
+            nextApiKeyAvailabilityScheduleCheckAt(schedule, mutationNow)
+          )
+          rowPatch.availabilitySchedule = schedule ?? null
+        }
+      }
+
+      const requestedStatus = Object.hasOwn(input, 'status')
+        ? normalizeApiKeyStatus(input.status, current.status)
+        : current.status
+      nextStatus = hasScheduleInput
+        ? apiKeyStatusForScheduleMutation({ requestedStatus, schedule: nextAvailabilitySchedule, now: mutationNow })
+        : requestedStatus
+      if (nextStatus !== current.status) {
+        addChange('status', current.status, nextStatus)
+        setClauses.push('status = ?')
+        setParams.push(nextStatus)
+        rowPatch.status = nextStatus
+      }
+
+      if (!changedFields.length) {
+        return {
+          result: { id: current.id, revision: current.updated_at, changedFields, rowPatch },
+          ownerSystemAccountId: current.system_account_id,
+          resourceName: current.name,
+          before,
+          after
+        }
+      }
+
+      const revision = nextApiKeyRevision(current.updated_at)
+      setClauses.push('updated_at = ?')
+      setParams.push(revision)
+      const updateResult = await tx.execute(`
         UPDATE ${apiKeyTable(tx, 'api_keys')}
-        SET name = ?, description = ?, route_strategy_id = ?, status = ?, expires_at = ?,
-            quota_limits_json = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?,
-            updated_at = ?
-        WHERE id = ? AND system_account_id = ?
-      `, [
-        next.name,
-        next.description ?? null,
-        nextRouteStrategyId,
-        next.status,
-        next.expiresAt ?? null,
-        quotaLimitsJson,
-        apiKeyAvailabilityScheduleJson(next.availabilitySchedule),
-        availabilityScheduleNextCheckAt,
-        now,
-        id,
-        systemAccountId
-      ])
-      await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
-        apiKeyId: id,
-        systemAccountId,
-        limitsJson: quotaLimitsJson,
-        active: next.status === 'active'
-      }, now)
+        SET ${setClauses.join(', ')}
+        WHERE id = ? AND system_account_id = ? AND updated_at = ?
+      `, [...setParams, current.id, current.system_account_id, current.updated_at])
+      if (updateResult.changes !== 1) {
+        throw new ApiKeyRevisionConflictError(current.updated_at)
+      }
+
+      const quotaChanged = changedFields.includes('quotaLimits')
+      const statusChanged = changedFields.includes('status')
+      if (quotaChanged || statusChanged) {
+        await syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(tx, {
+          apiKeyId: current.id,
+          systemAccountId: current.system_account_id,
+          limitsJson: nextQuotaLimitsJson,
+          active: nextStatus === 'active'
+        }, revision)
+      }
+
+      rowPatch.revision = revision
+      committedKeyHash = current.key_hash
+      return {
+        result: { id: current.id, revision, changedFields, rowPatch },
+        ownerSystemAccountId: current.system_account_id,
+        resourceName: nextName,
+        before,
+        after
+      }
     })
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
-      throw new Error(`API Key 名称已存在：${next.name}`)
+      throw new Error(`API Key 名称已存在：${normalizedApiKeyName(input.name)}`)
     }
     throw error
   }
-  await invalidateGatewayApiKeyCacheByIdAsync(id)
-  invalidateApiKeyLookupCache(id)
-  notifyGatewayRuntimeCacheInvalidation('api_key_updated')
-  notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
-  return await findApiKeySummaryAsync(id, access) ?? next
+
+  if (!outcome || !outcome.result.changedFields.length) return outcome
+  const changed = new Set(outcome.result.changedFields)
+  const validationChanged = ['routeStrategyId', 'status', 'expiresAt', 'quotaLimits']
+    .some((field) => changed.has(field as ApiKeyMutableField))
+  if (validationChanged) {
+    outcome.validationCacheError = await invalidateRequiredApiKeyValidationCacheAsync(
+      id,
+      'api_key_updated',
+      committedKeyHash ? [committedKeyHash] : []
+    )
+  }
+  await invalidateCommittedApiKeyCachesBestEffortAsync({
+    apiKeyId: id,
+    reason: 'api_key_updated',
+    lookup: changed.has('name'),
+    quota: changed.has('quotaLimits'),
+    quotaReason: 'api_key_quota_updated'
+  })
+  return outcome
 }
 
 function apiKeyStatusForScheduleMutation(input: {
@@ -727,49 +1137,217 @@ function apiKeyStatusForScheduleMutation(input: {
   return apiKeyAvailabilityScheduleStatus(input.schedule, input.now) ?? input.requestedStatus
 }
 
-export function refreshApiKeySecret(id: string, access?: AccessScope): (ApiKeySummary & { key: string }) | undefined {
-  const systemAccountId = apiKeySystemAccountId(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
-  const key = createApiKey()
-  const keyPrefix = key.slice(0, 8)
-  const keySuffix = key.slice(-8)
-  const now = nowIso()
-  const result = getBusinessDatabase()
-    .prepare(`
-      UPDATE api_keys
-      SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
-      WHERE id = ? AND system_account_id = ?
-    `)
-    .run(hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId)
-  if (result.changes <= 0) return undefined
-  invalidateGatewayApiKeyCacheById(id)
-  invalidateApiKeyLookupCache(id)
-  notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
-  notifyApiKeyQuotaCacheInvalidation(id, 'api_key_secret_refreshed')
-  const summary = findApiKeySummary(id, access)
-  return summary ? { ...summary, key } : undefined
+async function apiKeyRouteStrategyReferenceAsync(
+  client: DatabaseClient,
+  systemAccountId: string,
+  routeStrategyId: string
+): Promise<{
+    id: string
+    name: string
+    mode: RouteStrategyMode
+    status: RouteStrategyStatus
+  } | undefined> {
+  return client.one<{
+    id: string
+    name: string
+    mode: RouteStrategyMode
+    status: RouteStrategyStatus
+  }>(`
+    SELECT id, name, mode, status
+    FROM ${apiKeyTable(client, 'route_strategies')}
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1
+  `, [routeStrategyId, systemAccountId])
 }
 
-export async function refreshApiKeySecretAsync(id: string, access?: AccessScope): Promise<(ApiKeySummary & { key: string }) | undefined> {
-  const systemAccountId = await apiKeySystemAccountIdAsync(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
+async function syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(
+  client: DatabaseClient,
+  input: {
+    apiKeyId: string
+    systemAccountId: string
+    limitsJson: string | null | undefined
+    active: boolean
+  },
+  timestamp: string
+): Promise<void> {
+  if (client.driver === 'postgres') {
+    await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(client, input, timestamp)
+    return
+  }
+  syncApiKeyRequestQuotaHourlyWindowScopeBinding(input, getBusinessDatabase(), timestamp)
+}
+
+function nextApiKeyRevision(currentRevision: string): string {
+  const currentTimestamp = Date.parse(currentRevision)
+  const nextTimestamp = Math.max(
+    Date.now(),
+    Number.isFinite(currentTimestamp) ? currentTimestamp + 1 : 0
+  )
+  return apiKeyRevisionFromTimestamp(nextTimestamp)
+}
+
+function apiKeyRevisionFromTimestamp(timestamp: number): string {
+  return new Date(timestamp).toISOString().replace(
+    /(\.\d{3})Z$/,
+    (_match, milliseconds: string) => `${milliseconds}000Z`
+  )
+}
+
+async function invalidateCommittedApiKeyCachesBestEffortAsync(input: {
+  apiKeyId: string
+  reason: string
+  lookup?: boolean
+  quota?: boolean
+  quotaReason?: string
+}): Promise<void> {
+  const effects: Array<{ name: string; run: () => void | Promise<void> }> = []
+  if (input.lookup) {
+    effects.push({ name: 'api_key_lookup', run: () => invalidateApiKeyLookupCache(input.apiKeyId) })
+  }
+  if (input.quota) {
+    effects.push({
+      name: 'api_key_quota',
+      run: () => notifyApiKeyQuotaCacheInvalidation(input.apiKeyId, input.quotaReason ?? input.reason)
+    })
+  }
+  for (const effect of effects) {
+    try {
+      await effect.run()
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'api_key_cache_sync_failed_after_commit',
+        apiKeyId: input.apiKeyId,
+        reason: input.reason,
+        cache: effect.name
+      }), 'API Key 已提交，但缓存同步失败')
+    }
+  }
+}
+
+async function invalidateRequiredApiKeyValidationCacheAsync(
+  apiKeyId: string,
+  reason: string,
+  keyHashes: readonly string[]
+): Promise<ApiKeyValidationCacheInvalidationError | undefined> {
+  try {
+    await notifyGatewayApiKeyValidationCacheInvalidationAsync(apiKeyId, reason, keyHashes)
+    return undefined
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'api_key_validation_cache_sync_failed_after_commit',
+      apiKeyId,
+      reason,
+      cache: 'gateway_api_key'
+    }), 'API Key 已提交，但 validation cache 必需失效失败')
+    return new ApiKeyValidationCacheInvalidationError(apiKeyId, error)
+  }
+}
+
+export function refreshApiKeySecret(id: string, access?: AccessScope): ApiKeyCreateResult | undefined {
+  const database = getBusinessDatabase()
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const keySuffix = key.slice(-8)
-  const now = nowIso()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let row: ApiKeyRefreshRow | undefined
+  let revision = ''
+  try {
+    row = database.prepare(`
+      SELECT id, system_account_id, name, key_hash, key_prefix, key_suffix, updated_at
+      FROM api_keys
+      WHERE id = ?${scope.clause}
+      LIMIT 1
+    `).get(id, ...scope.params) as unknown as ApiKeyRefreshRow | undefined
+    if (row) {
+      revision = nextApiKeyRevision(row.updated_at)
+      const result = database.prepare(`
+        UPDATE api_keys
+        SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ? AND updated_at = ?
+      `).run(
+        hashSecret(key),
+        keyPrefix,
+        keySuffix,
+        encryptJson({ key }),
+        revision,
+        row.id,
+        row.system_account_id,
+        row.updated_at
+      )
+      if (result.changes !== 1) throw new ApiKeyRevisionConflictError(row.updated_at)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    throw error
+  }
+  if (!row) return undefined
+  invalidateGatewayApiKeyCacheById(id)
+  return { id: row.id, key, keyPrefix, keySuffix, revision }
+}
+
+export async function refreshApiKeySecretAsync(id: string, access?: AccessScope): Promise<ApiKeyCreateResult | undefined> {
+  const outcome = await refreshApiKeySecretForManagementAsync(id, access)
+  if (outcome?.validationCacheError) throw outcome.validationCacheError
+  return outcome?.result
+}
+
+export async function refreshApiKeySecretForManagementAsync(
+  id: string,
+  access?: AccessScope
+): Promise<ApiKeyRefreshOutcome | undefined> {
+  const key = createApiKey()
+  const keyHash = hashSecret(key)
+  const keyPrefix = key.slice(0, 8)
+  const keySuffix = key.slice(-8)
   const client = await getApiKeyDatabaseClient()
-  const result = await client.execute(`
-    UPDATE ${apiKeyTable(client, 'api_keys')}
-    SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
-    WHERE id = ? AND system_account_id = ?
-  `, [hashSecret(key), keyPrefix, keySuffix, encryptJson({ key }), now, id, systemAccountId])
-  if (result.changes <= 0) return undefined
-  await invalidateGatewayApiKeyCacheByIdAsync(id)
-  invalidateApiKeyLookupCache(id)
-  notifyGatewayRuntimeCacheInvalidation('api_key_secret_refreshed')
-  notifyApiKeyQuotaCacheInvalidation(id, 'api_key_secret_refreshed')
-  const summary = await findApiKeySummaryAsync(id, access)
-  return summary ? { ...summary, key } : undefined
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  let previousKeyHash: string | undefined
+  const outcome: ApiKeyRefreshOutcome | undefined = await client.transaction(async (tx) => {
+    const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const row = await tx.one<ApiKeyRefreshRow>(`
+      SELECT id, system_account_id, name, key_hash, key_prefix, key_suffix, ${apiKeyRevisionSelectExpression(tx)}
+      FROM ${apiKeyTable(tx, 'api_keys')} api_keys
+      WHERE id = ?${scope.clause}
+      LIMIT 1${lockClause}
+    `, [id, ...scope.params])
+    if (!row) return undefined
+    previousKeyHash = row.key_hash
+    const revision = nextApiKeyRevision(row.updated_at)
+    const result = await tx.execute(`
+      UPDATE ${apiKeyTable(tx, 'api_keys')}
+      SET key_hash = ?, key_prefix = ?, key_suffix = ?, key_secret_encrypted = ?, updated_at = ?
+      WHERE id = ? AND system_account_id = ? AND updated_at = ?
+    `, [
+      keyHash,
+      keyPrefix,
+      keySuffix,
+      encryptJson({ key }),
+      revision,
+      row.id,
+      row.system_account_id,
+      row.updated_at
+    ])
+    if (result.changes !== 1) throw new ApiKeyRevisionConflictError(row.updated_at)
+    return {
+      result: { id: row.id, key, keyPrefix, keySuffix, revision },
+      ownerSystemAccountId: row.system_account_id,
+      resourceName: row.name,
+      previousKeyPrefix: row.key_prefix,
+      previousKeySuffix: row.key_suffix
+    }
+  })
+  if (!outcome) return undefined
+  outcome.validationCacheError = await invalidateRequiredApiKeyValidationCacheAsync(
+    id,
+    'api_key_secret_refreshed',
+    previousKeyHash ? [previousKeyHash, keyHash] : [keyHash]
+  )
+  return outcome
 }
 
 export interface ApiKeyDeleteCleanupTarget {
@@ -777,9 +1355,17 @@ export interface ApiKeyDeleteCleanupTarget {
   systemAccountId: string
 }
 
-export interface ApiKeyDeleteResult {
-  deleted: boolean
-  cleanupTarget?: ApiKeyDeleteCleanupTarget
+export type ApiKeyDeleteResult = {
+  deleted: false
+  cleanupTarget?: undefined
+  ownerSystemAccountId?: undefined
+  resourceName?: undefined
+} | {
+  deleted: true
+  cleanupTarget: ApiKeyDeleteCleanupTarget
+  ownerSystemAccountId: string
+  resourceName: string
+  validationCacheError?: ApiKeyValidationCacheInvalidationError
 }
 
 export function deleteApiKey(id: string, access?: AccessScope): boolean {
@@ -787,14 +1373,16 @@ export function deleteApiKey(id: string, access?: AccessScope): boolean {
 }
 
 export async function deleteApiKeyAsync(id: string, access?: AccessScope): Promise<boolean> {
-  return (await deleteApiKeyWithRelatedCleanupAsync(id, access)).deleted
+  const outcome = await deleteApiKeyWithRelatedCleanupAsync(id, access)
+  if (outcome.deleted && outcome.validationCacheError) throw outcome.validationCacheError
+  return outcome.deleted
 }
 
 export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope): ApiKeyDeleteResult {
   const scope = buildSystemAccountScopeClause(access)
   const database = getBusinessDatabase()
   const row = database
-    .prepare(`SELECT id, system_account_id, is_default, purpose FROM api_keys WHERE id = ?${scope.clause}`)
+    .prepare(`SELECT id, system_account_id, name, key_hash, is_default, purpose FROM api_keys WHERE id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) return { deleted: false }
   assertApiKeyNotDefault(row)
@@ -820,62 +1408,66 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
   if (deleted) {
     invalidateGatewayApiKeyCacheById(row.id)
     invalidateApiKeyLookupCache(row.id)
-    notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
     notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
   }
+  if (!deleted) return { deleted: false }
   return {
-    deleted,
-    cleanupTarget: deleted ? { apiKeyId: row.id, systemAccountId: row.system_account_id } : undefined
+    deleted: true,
+    cleanupTarget: { apiKeyId: row.id, systemAccountId: row.system_account_id },
+    ownerSystemAccountId: row.system_account_id,
+    resourceName: row.name
   }
 }
 
 export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: AccessScope): Promise<ApiKeyDeleteResult> {
   const client = await getApiKeyDatabaseClient()
-  const scope = buildSystemAccountScopeClause(access)
-  const row = await client.one<ApiKeyDeleteRow>(`
-    SELECT id, system_account_id, is_default, purpose
-    FROM ${apiKeyTable(client, 'api_keys')}
-    WHERE id = ?${scope.clause}
-  `, [id, ...scope.params])
-  if (!row) return { deleted: false }
-  assertApiKeyNotDefault(row)
-
-  const cleanupTarget = { apiKeyId: row.id, systemAccountId: row.system_account_id }
-  let deleted = false
-  if (runtimeConfig.databaseDriver === 'postgres') {
-    deleted = await client.transaction(async (tx) => {
-      const result = await tx.execute(`
-        DELETE FROM ${apiKeyTable(tx, 'api_keys')}
-        WHERE id = ? AND system_account_id = ?
-      `, [row.id, row.system_account_id])
-      const rowDeleted = result.changes > 0
-      if (rowDeleted) {
-        await syncApiKeyRequestQuotaHourlyWindowScopeBindingAsync(tx, {
-          apiKeyId: row.id,
-          systemAccountId: row.system_account_id,
-          limitsJson: null,
-          active: false
-        })
-        await registerDeletedApiKeyRecordCleanupTargetInClientAsync(tx, cleanupTarget)
-      }
-      return rowDeleted
-    })
-  } else {
-    const result = await client.execute(`
-      DELETE FROM ${apiKeyTable(client, 'api_keys')}
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  const outcome = await client.transaction(async (tx) => {
+    const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const row = await tx.one<ApiKeyDeleteRow>(`
+      SELECT api_keys.id, api_keys.system_account_id, api_keys.name, api_keys.key_hash, api_keys.is_default, api_keys.purpose
+      FROM ${apiKeyTable(tx, 'api_keys')} api_keys
+      WHERE api_keys.id = ?${scope.clause}
+      LIMIT 1${lockClause}
+    `, [id, ...scope.params])
+    if (!row) return undefined
+    assertApiKeyNotDefault(row)
+    const cleanupTarget = { apiKeyId: row.id, systemAccountId: row.system_account_id }
+    const result = await tx.execute(`
+      DELETE FROM ${apiKeyTable(tx, 'api_keys')}
       WHERE id = ? AND system_account_id = ?
     `, [row.id, row.system_account_id])
-    deleted = result.changes > 0
-  }
-  if (deleted) {
-    await invalidateGatewayApiKeyCacheByIdAsync(row.id)
-    invalidateApiKeyLookupCache(row.id)
-    notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
-    notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
-  }
+    if (result.changes !== 1) return undefined
+    await syncApiKeyRequestQuotaHourlyWindowScopeBindingForClientAsync(tx, {
+      apiKeyId: row.id,
+      systemAccountId: row.system_account_id,
+      limitsJson: null,
+      active: false
+    }, nowIso())
+    if (tx.driver === 'postgres') {
+      await registerDeletedApiKeyRecordCleanupTargetInClientAsync(tx, cleanupTarget)
+    }
+    return { row, cleanupTarget }
+  })
+  if (!outcome) return { deleted: false }
+
+  const validationCacheError = await invalidateRequiredApiKeyValidationCacheAsync(
+    outcome.row.id,
+    'api_key_deleted',
+    [outcome.row.key_hash]
+  )
+  await invalidateCommittedApiKeyCachesBestEffortAsync({
+    apiKeyId: outcome.row.id,
+    reason: 'api_key_deleted',
+    lookup: true,
+    quota: true
+  })
   return {
-    deleted,
-    cleanupTarget: deleted ? cleanupTarget : undefined
+    deleted: true,
+    cleanupTarget: outcome.cleanupTarget,
+    ownerSystemAccountId: outcome.row.system_account_id,
+    resourceName: outcome.row.name,
+    validationCacheError
   }
 }
 
@@ -1075,6 +1667,7 @@ function defaultGptRouteStrategyForSystemAccount(
     INNER JOIN groups ON groups.id = route_strategy_groups.group_id
       AND groups.system_account_id = route_strategy_groups.system_account_id
       AND groups.enabled = 1
+      AND groups.is_default = 1
     WHERE route_strategies.system_account_id = ?
       AND route_strategies.status = 'active'
       AND route_strategies.is_default = 1
@@ -1099,6 +1692,7 @@ async function defaultGptRouteStrategyForSystemAccountAsync(
       ON groups.id = route_strategy_groups.group_id
       AND groups.system_account_id = route_strategy_groups.system_account_id
       AND groups.enabled = 1
+      AND groups.is_default = 1
     WHERE route_strategies.system_account_id = ?
       AND route_strategies.status = 'active'
       AND route_strategies.is_default = 1
@@ -1304,16 +1898,6 @@ function apiKeyTextPrefixUpperBound(value: string): string {
     return `${chars.slice(0, index).join('')}${String.fromCodePoint(codePoint + 1)}`
   }
   return `${value}\uffff`
-}
-
-async function apiKeySystemAccountIdAsync(apiKeyId: string): Promise<string | undefined> {
-  const client = await getApiKeyDatabaseClient()
-  const row = await client.one<{ system_account_id?: string }>(`
-    SELECT system_account_id
-    FROM ${apiKeyTable(client, 'api_keys')}
-    WHERE id = ?
-  `, [apiKeyId])
-  return row?.system_account_id
 }
 
 async function getApiKeyDatabaseClient(): Promise<DatabaseClient> {

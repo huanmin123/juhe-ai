@@ -965,7 +965,7 @@ function cloneArray(input: unknown[]): unknown[] {
 }
 
 function cloneJson<T>(input: T): T {
-  return JSON.parse(JSON.stringify(input)) as T
+  return structuredClone(input)
 }
 
 function assertRestoredInputSize(input: unknown): void {

@@ -116,7 +116,10 @@
       :saving="scheduleSaving"
       :schedules="schedules"
       :total="schedulesTotal"
+      @account-change="handleScheduleAccountChange"
+      @account-dropdown-visible-change="handleScheduleAccountOptionsDropdown"
       @account-search="loadScheduleAccountOptions"
+      @model-dropdown-visible-change="handleScheduleModelOptionsDropdown"
       @delete="deleteSchedule"
       @page-change="handleSchedulePageChange"
       @save="saveSchedule"
@@ -125,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -238,12 +241,24 @@ const schedulesOpen = ref(false)
 const schedulesLoading = ref(false)
 const scheduleSaving = ref(false)
 const scheduleFormResetToken = ref(0)
-const scheduleAccountOptionsLoading = ref(false)
+const scheduleAccountOptionsSearchLoading = ref(false)
+const scheduleAccountModelOptionsLoading = ref(false)
+const scheduleAccountOptionsLoading = computed(() => scheduleAccountOptionsSearchLoading.value || scheduleAccountModelOptionsLoading.value)
 const schedules = ref<ModelQualitySchedule[]>([])
 const schedulesTotal = ref(0)
 const schedulesPage = ref(1)
 const schedulesPageSize = 10
 const scheduleAccountOptions = ref<Array<{ label: string; value: string; modelCheckModels: string[] }>>([])
+let scheduleAccountOptionsRequestId = 0
+let scheduleAccountOptionsLoadingKeyword: string | undefined
+let scheduleAccountOptionsLoadedKeyword: string | undefined
+let scheduleAccountModelOptionsRequestId = 0
+let scheduleAccountModelOptionsLoadingId: string | undefined
+let scheduleAccountOptionsGeneration = 0
+let schedulesRequestId = 0
+let pageActive = true
+const scheduleAccountModelOptionsLoadedIds = new Set<string>()
+const scheduleAccountModelOptionsById = new Map<string, { label: string; value: string; modelCheckModels: string[] }>()
 const qualityPolicy = ref<ModelQualityPolicy>({
   systemAccountId: '',
   revision: 0,
@@ -439,39 +454,187 @@ async function saveQualityPolicy(input: ModelQualityPolicyUpdateInput) {
 
 async function openSchedules() {
   if (qualityActionsDisabled.value) return
-  schedulesOpen.value = true
   schedulesPage.value = 1
-  await Promise.all([loadSchedules(), loadScheduleAccountOptions('')])
+  resetScheduleAccountOptionsState()
+  schedulesOpen.value = true
+  await loadSchedules()
 }
 
 async function loadSchedules() {
+  const requestId = ++schedulesRequestId
+  const requestSignature = schedulesRequestSignature(schedulesPage.value)
   schedulesLoading.value = true
   try {
     const page = await modelChecksApi.qualitySchedules({ ...modelCheckScopeParams.value, page: schedulesPage.value, pageSize: schedulesPageSize })
+    if (!isCurrentSchedulesRequest(requestId, requestSignature, schedulesPage.value)) return
     schedules.value = page.items
     schedulesTotal.value = page.total
   } catch (error) {
+    if (!isCurrentSchedulesRequest(requestId, requestSignature, schedulesPage.value)) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载定时检查计划失败'))
   } finally {
-    schedulesLoading.value = false
+    if (requestId === schedulesRequestId) schedulesLoading.value = false
   }
 }
 
-async function loadScheduleAccountOptions(keyword: string) {
-  scheduleAccountOptionsLoading.value = true
+function invalidateSchedulesRequest(): void {
+  schedulesRequestId += 1
+  schedulesLoading.value = false
+}
+
+function schedulesRequestSignature(page: number): string {
+  return JSON.stringify([scheduleRequestContextKey(), page])
+}
+
+function isCurrentSchedulesRequest(requestId: number, signature: string, page: number): boolean {
+  return pageActive
+    && schedulesOpen.value
+    && requestId === schedulesRequestId
+    && signature === schedulesRequestSignature(page)
+}
+
+async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '') {
+  const normalizedKeyword = keyword.trim()
+  const normalizedSelectedAccountId = selectedAccountId.trim()
+  const requestKey = JSON.stringify([normalizedKeyword, normalizedSelectedAccountId])
+  if (scheduleAccountOptionsLoadingKeyword === requestKey || scheduleAccountOptionsLoadedKeyword === requestKey) return
+  const requestId = ++scheduleAccountOptionsRequestId
+  const generation = scheduleAccountOptionsGeneration
+  const requestContextKey = scheduleRequestContextKey()
+  scheduleAccountOptionsLoadingKeyword = requestKey
+  scheduleAccountOptionsSearchLoading.value = true
   try {
-    const items = await accountsApi.options({ ...modelCheckScopeParams.value, purpose: 'run', keyword: keyword.trim() || undefined, limit: 50 })
-    scheduleAccountOptions.value = items.map((item) => ({
+    const items = await accountsApi.options({
+      ...modelCheckScopeParams.value,
+      purpose: 'run',
+      keyword: normalizedKeyword || undefined,
+      selectedIds: normalizedSelectedAccountId ? [normalizedSelectedAccountId] : undefined,
+      limit: 50
+    })
+    if (!isCurrentScheduleAccountOptionsRequest(requestId, generation, requestContextKey)) return
+    const nextOptions = items.map((item) => ({
       label: item.name,
       value: item.id,
       modelCheckModels: [...item.modelCheckModels]
     }))
+    for (const option of nextOptions) scheduleAccountModelOptionsLoadedIds.add(option.value)
+    scheduleAccountOptions.value = mergeScheduleAccountOptions(nextOptions)
+    scheduleAccountOptionsLoadedKeyword = requestKey
   } catch (error) {
+    if (!isCurrentScheduleAccountOptionsRequest(requestId, generation, requestContextKey)) return
     console.error(error)
+    message.error(extractApiErrorMessage(error, '加载检查账户选项失败'))
   } finally {
-    scheduleAccountOptionsLoading.value = false
+    if (generation === scheduleAccountOptionsGeneration && requestId === scheduleAccountOptionsRequestId) {
+      scheduleAccountOptionsLoadingKeyword = undefined
+      scheduleAccountOptionsSearchLoading.value = false
+    }
   }
+}
+
+function handleScheduleAccountOptionsDropdown(open: boolean, accountId: string) {
+  if (!open) return
+  void loadScheduleAccountOptions('', accountId)
+}
+
+function handleScheduleAccountChange(): void {
+  scheduleAccountModelOptionsRequestId += 1
+  scheduleAccountModelOptionsLoadingId = undefined
+  scheduleAccountModelOptionsLoading.value = false
+}
+
+function handleScheduleModelOptionsDropdown(open: boolean, accountId: string) {
+  if (!open || !accountId.trim()) return
+  void loadScheduleAccountModelOptions(accountId)
+}
+
+async function loadScheduleAccountModelOptions(accountId: string): Promise<void> {
+  const selectedId = accountId.trim()
+  if (!selectedId
+    || scheduleAccountModelOptionsLoadedIds.has(selectedId)
+    || scheduleAccountModelOptionsLoadingId === selectedId) return
+  const requestId = ++scheduleAccountModelOptionsRequestId
+  const generation = scheduleAccountOptionsGeneration
+  const requestContextKey = scheduleRequestContextKey()
+  scheduleAccountModelOptionsLoadingId = selectedId
+  scheduleAccountModelOptionsLoading.value = true
+  try {
+    const items = await accountsApi.options({
+      ...modelCheckScopeParams.value,
+      purpose: 'run',
+      selectedIds: [selectedId],
+      limit: 1
+    })
+    if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
+    const item = items.find((option) => option.id === selectedId)
+    if (!item) throw new Error('当前检查账户不可用')
+    scheduleAccountModelOptionsById.set(selectedId, {
+      label: item.name,
+      value: item.id,
+      modelCheckModels: [...item.modelCheckModels]
+    })
+    scheduleAccountModelOptionsLoadedIds.add(selectedId)
+    scheduleAccountOptions.value = mergeScheduleAccountOptions(scheduleAccountOptions.value)
+  } catch (error) {
+    if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载检查模型失败'))
+  } finally {
+    if (generation === scheduleAccountOptionsGeneration && requestId === scheduleAccountModelOptionsRequestId) {
+      scheduleAccountModelOptionsLoadingId = undefined
+      scheduleAccountModelOptionsLoading.value = false
+    }
+  }
+}
+
+function scheduleRequestContextKey(): string {
+  const viewer = authState.currentUser.value
+  return JSON.stringify([
+    authState.revision.value,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    isManagementView.value ? 'management' : 'self',
+    modelCheckScopeParams.value?.systemAccountId ?? ''
+  ])
+}
+
+function isCurrentScheduleAccountOptionsRequest(requestId: number, generation: number, contextKey: string): boolean {
+  return pageActive
+    && schedulesOpen.value
+    && generation === scheduleAccountOptionsGeneration
+    && requestId === scheduleAccountOptionsRequestId
+    && contextKey === scheduleRequestContextKey()
+}
+
+function isCurrentScheduleAccountModelOptionsRequest(requestId: number, generation: number, contextKey: string): boolean {
+  return pageActive
+    && schedulesOpen.value
+    && generation === scheduleAccountOptionsGeneration
+    && requestId === scheduleAccountModelOptionsRequestId
+    && contextKey === scheduleRequestContextKey()
+}
+
+function mergeScheduleAccountOptions(
+  options: Array<{ label: string; value: string; modelCheckModels: string[] }>
+): Array<{ label: string; value: string; modelCheckModels: string[] }> {
+  const optionsById = new Map(options.map((option) => [option.value, option]))
+  for (const [id, option] of scheduleAccountModelOptionsById) optionsById.set(id, option)
+  return [...optionsById.values()]
+}
+
+function resetScheduleAccountOptionsState() {
+  scheduleAccountOptionsGeneration += 1
+  scheduleAccountOptionsRequestId += 1
+  scheduleAccountModelOptionsRequestId += 1
+  scheduleAccountOptionsLoadingKeyword = undefined
+  scheduleAccountOptionsLoadedKeyword = undefined
+  scheduleAccountModelOptionsLoadingId = undefined
+  scheduleAccountOptionsSearchLoading.value = false
+  scheduleAccountModelOptionsLoading.value = false
+  scheduleAccountOptions.value = []
+  scheduleAccountModelOptionsLoadedIds.clear()
+  scheduleAccountModelOptionsById.clear()
 }
 
 async function saveSchedule(input: ModelQualityScheduleMutationInput) {
@@ -647,8 +810,10 @@ function handleSystemAccountFilterChange() {
 
 function resetModelCheckScopedState() {
   runDetailRequestId += 1
+  invalidateSchedulesRequest()
   detailLoading.value = false
   resetAccountOptionsState()
+  resetScheduleAccountOptionsState()
   filters.targetId = undefined
   selectedHistoryTargetAccount.value = undefined
   currentRun.value = undefined
@@ -765,6 +930,11 @@ function snapshotPageState(): ModelChecksPageState {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(schedulesOpen, (open) => {
+  if (open) return
+  invalidateSchedulesRequest()
+  resetScheduleAccountOptionsState()
+})
 
 function appendTerminalLine(level: ModelCheckTerminalLine['level'], text: string) {
   appendModelCheckTerminalLine(level, text)
@@ -878,14 +1048,29 @@ function isAbortError(error: unknown): boolean {
 }
 
 onMounted(async () => {
+  pageActive = true
   updateViewportWidth()
   window.addEventListener('resize', updateViewportWidth)
   await Promise.all([loadOptions(), loadQualityPolicy(), loadRuns()])
   await syncActiveModelCheckRun()
 })
 
+onActivated(() => {
+  pageActive = true
+})
+
+onDeactivated(() => {
+  pageActive = false
+  invalidateSchedulesRequest()
+  schedulesOpen.value = false
+  resetScheduleAccountOptionsState()
+})
+
 onBeforeUnmount(() => {
+  pageActive = false
   runDetailRequestId += 1
+  invalidateSchedulesRequest()
+  resetScheduleAccountOptionsState()
   window.removeEventListener('resize', updateViewportWidth)
 })
 </script>

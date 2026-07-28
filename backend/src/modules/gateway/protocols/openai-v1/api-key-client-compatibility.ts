@@ -6,6 +6,7 @@ import {
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
@@ -102,7 +103,10 @@ async function parseOpenAIClientCompatibilityJsonBody(req: Request, signal?: Abo
     if (isGatewayJsonWorkerQueueFullError(error)) {
       throw new Error('网关请求解析繁忙，请稍后重试')
     }
-    throw new Error('Codex Responses 请求形态要求请求体是有效的 JSON 对象')
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw new Error('Codex Responses 请求形态要求请求体是有效的 JSON 对象')
+    }
+    throw error
   }
   if (!isPlainObject(parsed)) {
     throw new Error('Codex Responses 请求形态要求请求体是 JSON 对象')

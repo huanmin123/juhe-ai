@@ -3,7 +3,7 @@ import { computed, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
-import type { AccountSummary, AccountTrafficMigrationSourceStatus } from '@/types/domain'
+import type { AccountListItem, AccountTrafficMigrationSourceStatus } from '@/types/domain'
 import { trafficMigrationTargetOptions as buildTrafficMigrationTargetOptions } from './accountDerivedState'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
@@ -21,7 +21,7 @@ type ReadonlyValue<T> = {
 
 interface UseAccountTrafficMigrationOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
-  accounts: ReadonlyValue<AccountSummary[]>
+  accounts: ReadonlyValue<AccountListItem[]>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: AccountGroupIdResolver
   groupNameForAccount: AccountGroupIdResolver
@@ -32,7 +32,7 @@ interface UseAccountTrafficMigrationOptions {
 export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOptions) {
   const trafficMigrationModalOpen = ref(false)
   const trafficMigrationSaving = ref(false)
-  const trafficMigrationSourceAccount = ref<AccountSummary>()
+  const trafficMigrationSourceAccount = ref<AccountListItem>()
   const trafficMigrationForm = reactive({
     targetAccountId: '',
     targetAccount: undefined as AccountSelection | undefined,
@@ -43,7 +43,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
     trafficMigrationTargetOptionsForSource(trafficMigrationSourceAccount.value)
   ))
 
-  function trafficMigrationTargetOptionsForSource(source?: AccountSummary) {
+  function trafficMigrationTargetOptionsForSource(source?: AccountListItem) {
     return buildTrafficMigrationTargetOptions(
       options.accounts.value,
       source,
@@ -52,7 +52,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
     )
   }
 
-  function openTrafficMigration(account: AccountSummary) {
+  function openTrafficMigration(account: AccountListItem) {
     if (account.status === 'error') {
       message.warning('异常账户除编辑、删除外，只支持测试、异常恢复和停用')
       return

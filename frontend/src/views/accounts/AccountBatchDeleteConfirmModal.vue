@@ -26,11 +26,11 @@
 </template>
 
 <script setup lang="ts">
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { accountDisplayName } from './accountBasicFormatters'
 
 defineProps<{
-  accounts: AccountSummary[]
+  accounts: AccountListItem[]
   isManagementView: boolean
   loading: boolean
   open: boolean

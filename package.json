@@ -104,6 +104,7 @@
     "test:anthropic-oauth-protocol-contract": "pnpm --filter juhe-ai-backend test:anthropic-oauth-protocol-contract",
     "test:gemini-oauth-protocol-contract": "pnpm --filter juhe-ai-backend test:gemini-oauth-protocol-contract",
     "test:grok-oauth-protocol-contract": "pnpm --filter juhe-ai-backend test:grok-oauth-protocol-contract",
+    "test:provider-oauth-refresh-lock": "pnpm --filter juhe-ai-backend test:provider-oauth-refresh-lock",
     "test:grok-sso-device-flow": "pnpm --filter juhe-ai-backend test:grok-sso-device-flow",
     "test:xai-account-capability": "pnpm --filter juhe-ai-frontend test:xai-account-capability",
     "test:provider-auth-account-capability": "pnpm --filter juhe-ai-frontend test:provider-auth-account-capability",

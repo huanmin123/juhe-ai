@@ -56,12 +56,23 @@ pnpm mockdata
 pnpm mockdata -- --days 31 --daily-requests 120
 ```
 
+capability v2 不允许由 Node / SQLite 脚本直接写状态表。启用 v2 的隔离 performance 开发环境使用：
+
+```powershell
+$mockRunId = [guid]::NewGuid().ToString()
+pnpm mockdata -- --capability-v2 --run-id $mockRunId
+```
+
+根命令只负责编排既有业务数据和调用 Go `juhe-ai-maintenance capability-mockdata` owner；Go owner 必须通过真实 control admission、stats outbox / ingest / publication 路径生成能力事实。执行前强制校验非生产环境、独立 PostgreSQL / Redis / Asynq namespace、active capability contract v2、Go gateway / control / Asynq / stats owner manifest digest 与 readyz；任一不满足就失败，不能回退 SQLite、直接 INSERT 最终摘要或连接用户正在使用的开发实例。
+
 参数边界：
 
 | 参数 | 默认值 | 范围 | 说明 |
 | --- | --- | --- | --- |
 | `--days` | `31` | `1` 到 `90` | 生成最近多少天的明细和监控样本 |
 | `--daily-requests` | `120` | `1` 到 `500` | 每天生成多少条使用记录 |
+| `--capability-v2` | `false` | 布尔开关 | 仅在隔离 performance 环境通过 Go owner 生成 v2 |
+| `--run-id` | 自动 UUID | UUID | v2 所有命令、intent、event、task 和清理清单的统一 provenance |
 
 脚本会在业务库所在目录写入 `mockdata-summary.json`，记录本次生成的资源 ID、本地网关 API Key 明文、普通测试用户、分组授权样本、路由策略绑定规则和统计数量。默认本地路径是 `backend/data/mockdata-summary.json`。
 
@@ -81,6 +92,8 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本和图像能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
 - 使用记录必须覆盖 gateway、manual_account_test、account_health_check 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本；GPT 文本记录还必须包含 Priority、Flex 实际计费档位、请求 / 最终思考强度及写入时计价快照样本。
 - AI 健康监控默认给全部 26 个基础 Mock AI 账户生成最多近 31 天的逐小时检查记录，约 1.9 万条；每个基础账户包含稳定的可用、不可用和无记录间隔，并通过真实用量聚合器写入 `account_health_hourly`。列表连同授权账户实例大于默认每页 20 条，可直接验证分页、搜索、7 / 14 / 31 天切换和绿 / 红 / 灰状态条；调小 `--days` 时健康历史随之缩短，最大仍限制为 31 天。
+- 多模型能力健康 v2 启用后，Mockdata 还必须通过真实 capability event ingest / stats publication 路径生成六种 scope 状态和全部 Route / 账户聚合，包括 `no_routable_capability` 与 `no_confirmed_unavailability`。固定场景至少包括 A 正常 / B 阻断、多 Key 局部阻断但 Route 仍可调度、纯 SUSPECT、零 Route、零凭据 unknown、blocked + unknown、blocked + 未到期 SUSPECT 且当前无 effective Route、全部能力 confirmed blocked、recovering、projection unconfirmed / rebuilding、同小时多 revision、繁忙当前小时多次 publication、事件过期和切换日前仅 v1；不得直接插最终摘要或在前端硬编码。
+- v2 Mockdata 同时生成管理员、物理所有者和授权实例三种权限视图，以及 pending_admission / running / terminal / 部分接纳 / 429 / 成本授权所需的生产重检任务样本。授权实例样本必须隐藏 routeScopeRef、凭据数量、scopeRef 和 trace，仍允许显示粗粒度 partially_unavailable。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求 OpenAI。
 - 统计数据来自脚本写入的 `usage_records`，再通过现有聚合器重建预聚合表；页面读取路径仍然和真实数据一致。
@@ -99,6 +112,16 @@ pnpm mockdata -- --days 31 --daily-requests 120
 
 清理后会重建全量用量统计缓存。系统监控小时缓存会从现有 `system_metrics_samples` 和本次 Mockdata 样本重新聚合，避免重复执行导致小时指标累加。
 
+capability v2 的重复执行不能只按名称 / ID 前缀 DELETE。每次运行先在 `mockdata_runs` 注册 runId 和隔离 epoch；所有测试 command、intent、physical member、observation、stats outbox / event 和 task 都携带该 provenance。清理顺序固定为：
+
+1. fenced 关闭该 run 的新 admission，并释放 test-only hold barrier；production 环境或非 mock run 使用 barrier 必须被数据库拒绝。
+2. 通过 control owner 把该 run 的 pending_admission / command、logical intent、physical execution / member、result_ready fanout 和未投影 observation 终结或收敛为 indeterminate，同时写正常 outbox 并归零预算；不得直接删 active 行。
+3. 等待 Asynq task terminal、control projector 连续追平、stats outbox ingest / coverage ACK 完成，并发布不再包含该 run 活动状态的新 publication。
+4. 只清该 run 的隔离 Asynq / Redis key 和可清理终态；generation floor、审计 tombstone 和仍在保留契约内的 publication 按正常 retention 处理，不能为重复造数破坏迟到结果 fencing。
+5. 最后删除带 runId 的业务 fixture 并将 `mockdata_runs` 标为 cleaned。任一步失败都保留 run registry 供同一 runId 幂等 resume，禁止先删业务账户再留下悬挂任务。
+
+pending / running 页面样本由 Go test owner 的确定性 `mock_hold_point` 在 claim 前或 result-ready 后暂停，并在 `mockdata_runs` 登记 barrier；不得依赖 worker 竞态或人工赶在任务完成前截图。退出、超时和清理都必须释放 barrier 并走上述终结流程。
+
 ## 6. 验证点
 
 执行完成后建议检查：
@@ -114,7 +137,9 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 自定义模型目录应能看到全局模型、个人模型、草稿模型、停用模型和图像模型样本；当前不生成专用音频模型样本。
 - 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成、模型映射命中、Priority / Flex 实际档位和最终思考强度样本；悬浮成本应读取写入时计价快照并展示档位计价来源与最终单价。
 - `AI 健康监控` 默认应有至少两页账户列表和近 31 天小时状态；搜索 `造数-` 可命中账户，状态条同时可见可用、不可用和无记录颜色，点击不可用槽位可以查看失败原因。
+- v2 启用后，`AI 健康监控` 还应覆盖全部 scope / Route / 账户聚合、切换日前 `semanticsAvailable=false`、三类独立分页、短期 publication 快照、聚合滞后和事件过期；账户列表、能力详情与监控必须显示同一 presentation，unknown 不得显示绿色，授权实例不得出现凭据展开、生产重检或 trace 入口。
 - 模型检测历史会覆盖管理端与用户侧可见路径，包含快速 / 深度、运行中、已完成、失败、已取消和深度可信对比样本；受控 observation 只绑定深度样本，并通过真实游标聚合器生成 Token 完整轮次、身份来源、基线、配对窗口和账户最新可信结果，用于模型检测与可信度详情验收。
 - `usage_range_window_requests` 只在用户请求尚未生成的自定义范围时登记，未发生请求或处理完成后允许为空；Mockdata 不为满足表非空断言伪造瞬时队列任务。
 - `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和路由策略授权分组绑定。
 - `pnpm mockdata` 会执行内置覆盖断言；如果数据库缺少关键状态、类型、路由策略、账号内 Key 运行态、自定义模型状态 / 范围、图片 token 或模型映射命中记录，脚本应直接失败，不能生成看似成功但覆盖不完整的数据。
+- capability v2 启用时，内置覆盖断言还必须验证 Route / 账户计数守恒、零 Route 为 no_routable_capability、只有全 Route confirmed blocked 才 all blocked、纯 SUSPECT 为 confirming、零凭据为 unknown、blocked + unknown 为 partially_unavailable、partial 无 effective Route 不显示可调度、同小时 revision 可达、授权脱敏和 publication 分区水位连续；还必须证明清理后 command / intent / member / fanout / observation / budget / mock task 为零且新 publication ready。任一缺失都应让造数失败。

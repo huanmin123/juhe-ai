@@ -1,85 +1,63 @@
-import { accountMatchesStatusFilters } from '../../domain/account-status-classification.js'
-import type { AccountSummary } from '../../domain/types.js'
+import { accountFilterStatuses, accountMatchesStatusFilters } from '../../domain/account-status-classification.js'
+import type { AccountListItem } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
-import { pagedTotalUpperBound } from '../../storage/query-utils.js'
-import { listAccountItemsPageAsync, type AccountListResult } from '../../storage/repositories.js'
 import {
-  applyServerAccountConcurrencyToAccountList,
-  peekServerAccountRuntimeAvailabilitySnapshot,
-  type AccountRuntimeAvailabilitySnapshot,
-  type AccountRuntimeSnapshotStatus
-} from '../gateway/runtime/runtime-snapshot.service.js'
-
-export async function applyAccountListRuntimeStatusFilter(
-  access: AccessScope | undefined,
-  options: AccountListOptions,
-  result: AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }
-): Promise<AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }> {
-  if (result.runtimeSnapshot?.accountRuntimeAvailabilityAvailable !== true) return result
-  return await listAccountsPageWithRuntimeStatusFilter(access, options) ?? result
-}
+  listAccountManagementItemsPageAsync,
+  type AccountManagementListResult
+} from '../../storage/account-management-list.repository.js'
+import { pagedTotalUpperBound, pageUpperBoundForWindow } from '../../storage/query-utils.js'
+import { hydrateAccountListPage } from './account-status-snapshot.service.js'
 
 export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
-  const listOptions = normalizeAccountListOptions(options)
-  const statusFilters = accountStatusFilterValues(listOptions.status)
-  return statusFilters.some(statusFilterCanBeChangedByRuntime)
+  const normalized = normalizeAccountListOptions(options)
+  return accountStatusFilterValues(normalized.status).length > 0 || normalized.schedulable !== 'all'
 }
 
 export async function listAccountsPageWithRuntimeStatusFilter(
   access: AccessScope | undefined,
   options: AccountListOptions
-): Promise<(AccountListResult & { runtimeSnapshot: AccountRuntimeSnapshotStatus }) | undefined> {
+): Promise<AccountManagementListResult | undefined> {
   const listOptions = normalizeAccountListOptions(options)
-  const statusFilters = accountStatusFilterValues(listOptions.status)
-  if (!statusFilters.some(statusFilterCanBeChangedByRuntime)) return undefined
-  const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
-  if (!runtimeAvailability) return undefined
-  const runtimeBlockedAccountCount = runtimeBlockedAccountIds(runtimeAvailability).size
-  if (runtimeBlockedAccountCount === 0) return undefined
+  if (!accountListNeedsRuntimeStatusFilter(listOptions)) return undefined
 
+  const statusFilters = accountStatusFilterValues(listOptions.status)
   const pageSize = listOptions.pageSize
-  const sourcePageSize = Math.min(500, Math.max(pageSize, pageSize + runtimeBlockedAccountCount + 1))
+  const sourcePageSize = Math.min(200, Math.max(50, pageSize * 4))
   const skipTarget = (listOptions.page - 1) * pageSize
-  const maxSourcePages = Math.max(1, Math.ceil((skipTarget + pageSize + runtimeBlockedAccountCount + 1) / sourcePageSize) + 1)
-  const output: AccountSummary[] = []
+  const sourcePageLimit = pageUpperBoundForWindow(sourcePageSize)
+  const output: AccountListItem[] = []
   let matchedCount = 0
   let sourcePage = 1
-  let hasMore = false
-  const outputRuntimeSnapshot: AccountRuntimeSnapshotStatus = {
-    accountConcurrencyAvailable: true,
-    accountRuntimeAvailabilityAvailable: true,
-    accountCircuitSummaryAvailable: true
-  }
+  let exhausted = false
+  let generatedAt = new Date().toISOString()
 
-  while (!hasMore && sourcePage <= maxSourcePages) {
-    const candidatePage = await listAccountItemsPageAsync(access, {
+  while (output.length <= pageSize && !exhausted && sourcePage <= sourcePageLimit) {
+    const basePage = await listAccountManagementItemsPageAsync(access, {
       ...listOptions,
-      status: runtimeStatusFilterSourceStatus(statusFilters),
       page: sourcePage,
-      pageSize: sourcePageSize
+      pageSize: sourcePageSize,
+      status: undefined,
+      schedulable: 'all'
     })
-    const hydratedPage = await applyServerAccountConcurrencyToAccountList(candidatePage)
-    outputRuntimeSnapshot.accountConcurrencyAvailable &&= hydratedPage.runtimeSnapshot.accountConcurrencyAvailable
-    outputRuntimeSnapshot.accountRuntimeAvailabilityAvailable &&= hydratedPage.runtimeSnapshot.accountRuntimeAvailabilityAvailable
-    outputRuntimeSnapshot.accountCircuitSummaryAvailable &&= hydratedPage.runtimeSnapshot.accountCircuitSummaryAvailable
+    const hydratedPage = await hydrateAccountListPage(access, basePage)
+    generatedAt = hydratedPage.generatedAt
     for (const account of hydratedPage.items) {
       if (!accountMatchesStatusFilters(account, statusFilters)) continue
+      if (!accountMatchesSchedulableFilter(account, listOptions.schedulable)) continue
       if (matchedCount < skipTarget) {
         matchedCount += 1
         continue
       }
       output.push(account)
       matchedCount += 1
-      if (output.length > pageSize) {
-        hasMore = true
-        break
-      }
+      if (output.length > pageSize) break
     }
-    if (!candidatePage.hasMore) break
+    exhausted = !basePage.hasMore
     sourcePage += 1
   }
 
+  const hasMore = output.length > pageSize || !exhausted
   const items = output.slice(0, pageSize)
   return {
     items,
@@ -87,32 +65,18 @@ export async function listAccountsPageWithRuntimeStatusFilter(
     hasMore,
     page: listOptions.page,
     pageSize,
-    runtimeSnapshot: outputRuntimeSnapshot
+    generatedAt
   }
 }
 
-function statusFilterCanBeChangedByRuntime(status: string): boolean {
-  return status === 'active' || status === 'temporary_unavailable'
-}
-
-function runtimeStatusFilterSourceStatus(statusFilters: string[]): string | undefined {
-  const statuses = new Set(statusFilters)
-  if (statusFilters.includes('active') || statusFilters.includes('temporary_unavailable')) {
-    statuses.add('active')
-    statuses.add('temporary_unavailable')
-  }
-  return statuses.size > 0 ? [...statuses].join(',') : undefined
-}
-
-function runtimeBlockedAccountIds(runtimeAvailability: AccountRuntimeAvailabilitySnapshot | undefined): Set<string> {
-  const output = new Set<string>()
-  if (!runtimeAvailability) return output
-  for (const [runtimeKey, runtime] of Object.entries(runtimeAvailability)) {
-    if (!runtime || runtime.status === 'normal') continue
-    const accountId = runtimeKey.includes(':authorized:')
-      ? runtimeKey.slice(0, runtimeKey.indexOf(':authorized:'))
-      : runtimeKey
-    if (accountId) output.add(accountId)
-  }
-  return output
+function accountMatchesSchedulableFilter(
+  account: AccountListItem,
+  filter: ReturnType<typeof normalizeAccountListOptions>['schedulable']
+): boolean {
+  if (filter === 'all') return true
+  const statuses = accountFilterStatuses(account)
+  const cooling = statuses.has('rate_limited') || statuses.has('temporary_unavailable')
+  if (filter === 'cooling') return cooling
+  if (filter === 'enabled') return account.effectiveAvailability.available
+  return !account.effectiveAvailability.available && !cooling
 }

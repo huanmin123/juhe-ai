@@ -1,3 +1,6 @@
+import type { GatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
+import type { ParsedOpenAIStreamEvent } from '../protocols/openai-v1/stream-events.js'
+
 export interface DiagnosticSseEvent {
   event?: string
   data: string
@@ -21,7 +24,8 @@ export function parseDiagnosticResponseContext(
   bodyText: string,
   options: DiagnosticResponseParseOptions = {}
 ): DiagnosticResponseContext {
-  const trimmed = bodyText.trim()
+  const normalizedBodyText = bodyText.startsWith('\uFEFF') ? bodyText.slice(1) : bodyText
+  const trimmed = normalizedBodyText.trim()
   if (!trimmed) return emptyDiagnosticResponseContext(bodyText)
 
   if (!looksLikeServerSentEvents(trimmed)) {
@@ -38,7 +42,7 @@ export function parseDiagnosticResponseContext(
     }
   }
 
-  const events = parseDiagnosticSseEvents(bodyText, options)
+  const events = parseDiagnosticSseEvents(normalizedBodyText, options)
   return {
     bodyText,
     events,
@@ -50,6 +54,48 @@ export function diagnosticResponseContext(
   input: string | DiagnosticResponseContext
 ): DiagnosticResponseContext {
   return typeof input === 'string' ? parseDiagnosticResponseContext(input) : input
+}
+
+export function diagnosticResponseContextFromGatewayNonStream(
+  bodyText: string,
+  parsedBody: GatewayNonStreamJsonBody | undefined,
+  options: DiagnosticResponseParseOptions = {}
+): DiagnosticResponseContext {
+  if (!parsedBody) return parseDiagnosticResponseContext(bodyText, options)
+  if (parsedBody.status !== 'valid') return emptyDiagnosticResponseContext(bodyText)
+  const record = recordValue(parsedBody.value)
+  return {
+    bodyText,
+    json: parsedBody.value,
+    record,
+    events: [],
+    payloads: record ? [record] : []
+  }
+}
+
+export function diagnosticResponseContextFromGatewayResponse(
+  bodyText: string,
+  parsedBody: GatewayNonStreamJsonBody | undefined,
+  parsedStreamEvents: readonly ParsedOpenAIStreamEvent[] | undefined,
+  options: DiagnosticResponseParseOptions = {}
+): DiagnosticResponseContext {
+  if (parsedBody) {
+    return diagnosticResponseContextFromGatewayNonStream(bodyText, parsedBody, options)
+  }
+  if (!parsedStreamEvents?.length) {
+    return parseDiagnosticResponseContext(bodyText, options)
+  }
+  const events = parsedStreamEvents.map((event): DiagnosticSseEvent => ({
+    event: event.eventName || undefined,
+    data: event.dataText,
+    json: event.data,
+    done: event.dataText.trim() === '[DONE]'
+  }))
+  return {
+    bodyText,
+    events,
+    payloads: events.flatMap((event) => event.json ? [event.json] : [])
+  }
 }
 
 function parseDiagnosticSseEvents(
@@ -66,11 +112,12 @@ function parseDiagnosticSseEvents(
       return
     }
     const data = dataLines.join('\n')
-    const done = data.trim() === '[DONE]'
+    const normalizedData = data.trim()
+    const done = normalizedData === '[DONE]'
     events.push({
       event,
       data,
-      json: done ? undefined : recordValue(parseJson(data, options)),
+      json: done || !normalizedData ? undefined : recordValue(parseJson(data, options)),
       done
     })
     event = undefined
@@ -107,7 +154,7 @@ function parseJson(text: string, options: DiagnosticResponseParseOptions): unkno
 }
 
 function looksLikeServerSentEvents(text: string): boolean {
-  return /^(?:event|data|id|retry):/.test(text) || text.startsWith(':')
+  return /(?:^|\r\n|\r|\n)(?::|(?:event|data|id|retry)(?::|$))/.test(text)
 }
 
 function emptyDiagnosticResponseContext(bodyText: string): DiagnosticResponseContext {

@@ -141,14 +141,6 @@ try {
   assert.equal(authorizedTargetOption.status, 'active', '模型检测账户下拉应返回可调度授权账户的有效状态')
   assertLightweightAccountOption(authorizedTargetOption)
 
-  const repositorySortedOptions = repositories.listAccountOptions(
-    { systemAccountId: seed.userId, role: 'admin', systemAccountFilterId: seed.userId },
-    { sorts: [{ field: 'qualityScore', order: 'desc' }], limit: 1 }
-  )
-  assert.equal(repositorySortedOptions.length, 1, '账户选项 repository 层应忽略重型质量分排序并继续遵守 limit')
-  assert.equal(repositorySortedOptions[0]?.systemAccountId, seed.userId, 'repository 层账户选项不应因重型排序请求混入其他用户作用域账户')
-  assertLightweightAccountOption(repositorySortedOptions[0])
-
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []

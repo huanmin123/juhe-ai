@@ -10,11 +10,13 @@ export interface GatewayJsonBodyMetadata {
   imageGeneration?: boolean
   imageGenerationForced?: boolean
   strictOutputRequirement?: boolean
+  codexCompactionTrigger?: boolean
   invalidJson?: boolean
 }
 
 interface GenerationConfigInspection {
   nextIndex: number
+  isObject: boolean
   reasoningEffort?: UsageReasoningEffort
   imageOutput: boolean
 }
@@ -38,171 +40,81 @@ interface JsonToolInspectionReadResult {
 
 export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBodyMetadata {
   const metadata: GatewayJsonBodyMetadata = {}
-  const inspection: ImageGenerationToolInspection = {
-    imageToolCount: 0,
-    nonImageToolCount: 0,
-    forcedImageGeneration: false
-  }
+  let codexCompactionTrigger = false
+  let reasoningObjectEffort: UsageReasoningEffort | undefined
+  let reasoningFieldEffort: UsageReasoningEffort | undefined
+  let outputConfigEffort: UsageReasoningEffort | undefined
+  let camelGenerationConfig: GenerationConfigInspection | undefined
+  let snakeGenerationConfig: GenerationConfigInspection | undefined
+  let maxOutputTokens: number | undefined
+  let maxTokens: number | undefined
+  let topLevelTypeForcesImage = false
+  let toolsInspection = createEmptyImageGenerationToolInspection()
+  let toolChoiceInspection = createEmptyImageGenerationToolInspection()
   let toolChoiceRequired = false
-  let imageOutput = false
-  let index = skipJsonWhitespace(rawBody, 0)
-  if (rawBody[index] !== jsonObjectOpenByte) {
+  let responseFormatStrict = false
+  let toolsStrict = false
+  let toolChoiceStrict = false
+  const validJson = isValidJsonDocument(rawBody, {
+    onCodexCompactionTrigger: () => {
+      codexCompactionTrigger = true
+    },
+    onTopLevelProperty: (key, index) => {
+      if (key === 'model') {
+        const value = readJsonStringToken(rawBody, index)
+        metadata.model = value?.value
+      } else if (key === 'service_tier') {
+        const value = readJsonStringToken(rawBody, index)
+        metadata.serviceTier = value ? normalizeOptionalUsageServiceTier(value.value) : undefined
+      } else if (key === 'reasoning_effort') {
+        const value = readJsonStringToken(rawBody, index)
+        reasoningFieldEffort = normalizeUsageReasoningEffort(value?.value)
+      } else if (key === 'reasoning') {
+        const result = readJsonObjectStringProperty(rawBody, index, 'effort')
+        reasoningObjectEffort = normalizeUsageReasoningEffort(result.value)
+      } else if (key === 'output_config') {
+        const result = readJsonObjectStringProperty(rawBody, index, 'effort')
+        outputConfigEffort = normalizeUsageReasoningEffort(result.value)
+      } else if (key === 'generationConfig') {
+        camelGenerationConfig = inspectGenerationConfig(rawBody, index)
+      } else if (key === 'generation_config') {
+        snakeGenerationConfig = inspectGenerationConfig(rawBody, index)
+      } else if (key === 'stream') {
+        metadata.stream = readJsonBoolean(rawBody, index)?.value
+      } else if (key === 'max_output_tokens') {
+        maxOutputTokens = readJsonNonNegativeInteger(rawBody, index)?.value
+      } else if (key === 'max_tokens') {
+        maxTokens = readJsonNonNegativeInteger(rawBody, index)?.value
+      } else if (key === 'type') {
+        topLevelTypeForcesImage = readJsonStringToken(rawBody, index)?.value === 'image_generation'
+      } else if (key === 'tools') {
+        toolsStrict = jsonValueIsTruthy(rawBody, index)
+        toolsInspection = inspectJsonToolDefinitions(rawBody, index).inspection
+      } else if (key === 'tool_choice') {
+        toolChoiceStrict = jsonValueIsTruthy(rawBody, index)
+        const result = inspectJsonToolChoice(rawBody, index)
+        toolChoiceInspection = result.inspection
+        toolChoiceRequired = result.required === true
+      } else if (key === 'response_format') {
+        responseFormatStrict = jsonValueIsTruthy(rawBody, index)
+      }
+    }
+  })
+
+  if (!validJson) {
+    metadata.invalidJson = true
     return metadata
   }
-  index += 1
-  let closed = false
 
-  while (index < rawBody.length) {
-    index = skipJsonWhitespace(rawBody, index)
-    if (rawBody[index] === jsonObjectCloseByte) {
-      index += 1
-      closed = true
-      break
-    }
-    if (rawBody[index] === jsonCommaByte) {
-      index += 1
-      continue
-    }
-
-    const key = readJsonStringToken(rawBody, index)
-    if (!key) {
-      metadata.invalidJson = true
-      break
-    }
-    index = skipJsonWhitespace(rawBody, key.nextIndex)
-    if (rawBody[index] !== jsonColonByte) {
-      metadata.invalidJson = true
-      break
-    }
-    index = skipJsonWhitespace(rawBody, index + 1)
-
-    if (key.value === 'model') {
-      const value = readJsonStringToken(rawBody, index)
-      if (value) {
-        metadata.model = value.value
-        index = value.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'service_tier') {
-      const value = readJsonStringToken(rawBody, index)
-      if (value) {
-        metadata.serviceTier = normalizeOptionalUsageServiceTier(value.value)
-        index = value.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'reasoning_effort') {
-      const value = readJsonStringToken(rawBody, index)
-      if (value) {
-        metadata.reasoningEffort = metadata.reasoningEffort ?? normalizeUsageReasoningEffort(value.value)
-        index = value.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'reasoning') {
-      const result = readJsonObjectStringProperty(rawBody, index, 'effort')
-      metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
-      metadata.invalidJson = metadata.invalidJson || !result.ok
-      index = result.nextIndex
-    } else if (key.value === 'output_config') {
-      const result = readJsonObjectStringProperty(rawBody, index, 'effort')
-      metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
-      metadata.invalidJson = metadata.invalidJson || !result.ok
-      index = result.nextIndex
-    } else if (key.value === 'generationConfig' || key.value === 'generation_config') {
-      const result = inspectGenerationConfig(rawBody, index)
-      metadata.reasoningEffort = result.reasoningEffort ?? metadata.reasoningEffort
-      imageOutput = imageOutput || result.imageOutput
-      index = result.nextIndex
-    } else if (key.value === 'stream') {
-      const booleanValue = readJsonBoolean(rawBody, index)
-      if (booleanValue) {
-        metadata.stream = booleanValue.value
-        index = booleanValue.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'max_output_tokens' || key.value === 'max_tokens') {
-      const numberValue = readJsonNonNegativeInteger(rawBody, index)
-      if (numberValue) {
-        metadata.maxOutputTokens = metadata.maxOutputTokens === undefined
-          ? numberValue.value
-          : Math.max(metadata.maxOutputTokens, numberValue.value)
-        index = numberValue.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'type') {
-      const value = readJsonStringToken(rawBody, index)
-      if (value) {
-        if (value.value === 'image_generation') {
-          inspection.forcedImageGeneration = true
-        }
-        index = value.nextIndex
-      } else {
-        const skipped = skipJsonValue(rawBody, index)
-        metadata.invalidJson = metadata.invalidJson || !skipped.ok
-        index = skipped.nextIndex
-      }
-    } else if (key.value === 'tools') {
-      metadata.strictOutputRequirement = true
-      const result = inspectJsonToolDefinitions(rawBody, index)
-      mergeImageGenerationToolInspection(inspection, result.inspection)
-      index = result.nextIndex
-    } else if (key.value === 'tool_choice') {
-      metadata.strictOutputRequirement = true
-      const result = inspectJsonToolChoice(rawBody, index)
-      mergeImageGenerationToolInspection(inspection, result.inspection)
-      if (result.required) {
-        toolChoiceRequired = true
-      }
-      index = result.nextIndex
-    } else if (key.value === 'response_format') {
-      metadata.strictOutputRequirement = true
-      const skipped = skipJsonValue(rawBody, index)
-      metadata.invalidJson = metadata.invalidJson || !skipped.ok
-      index = skipped.nextIndex
-    } else {
-      const skipped = skipJsonValue(rawBody, index)
-      metadata.invalidJson = metadata.invalidJson || !skipped.ok
-      index = skipped.nextIndex
-    }
-    index = skipJsonWhitespace(rawBody, index)
-    if (rawBody[index] === jsonCommaByte) {
-      index += 1
-      continue
-    }
-    if (rawBody[index] === jsonObjectCloseByte) {
-      index += 1
-      closed = true
-      break
-    }
-    if (index >= rawBody.length) {
-      metadata.invalidJson = true
-      break
-    }
-    metadata.invalidJson = true
-    break
-  }
-
-  if (rawBody.length > 0 && !closed && !metadata.invalidJson) {
-    metadata.invalidJson = true
-  }
-  if (closed && skipJsonWhitespace(rawBody, index) < rawBody.length) {
-    metadata.invalidJson = true
-  }
-
+  const generationConfig = camelGenerationConfig?.isObject
+    ? camelGenerationConfig
+    : snakeGenerationConfig?.isObject
+      ? snakeGenerationConfig
+      : undefined
+  const inspection = createEmptyImageGenerationToolInspection()
+  mergeImageGenerationToolInspection(inspection, toolsInspection)
+  mergeImageGenerationToolInspection(inspection, toolChoiceInspection)
+  inspection.forcedImageGeneration = inspection.forcedImageGeneration || topLevelTypeForcesImage
   if (
     toolChoiceRequired
     && inspection.imageToolCount > 0
@@ -210,60 +122,116 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
   ) {
     inspection.forcedImageGeneration = true
   }
-  metadata.imageGeneration = imageOutput || inspection.imageToolCount > 0 || inspection.forcedImageGeneration
+
+  metadata.reasoningEffort = reasoningObjectEffort
+    ?? reasoningFieldEffort
+    ?? outputConfigEffort
+    ?? generationConfig?.reasoningEffort
+  const tokenLimits = [maxOutputTokens, maxTokens]
+    .filter((value): value is number => value !== undefined)
+  metadata.maxOutputTokens = tokenLimits.length > 0 ? Math.max(...tokenLimits) : undefined
+  metadata.imageGeneration = generationConfig?.imageOutput === true
+    || inspection.imageToolCount > 0
+    || inspection.forcedImageGeneration
   metadata.imageGenerationForced = inspection.forcedImageGeneration
-  metadata.invalidJson = metadata.invalidJson || !isValidJsonDocument(rawBody)
+  metadata.strictOutputRequirement = responseFormatStrict || toolsStrict || toolChoiceStrict
+  metadata.codexCompactionTrigger = codexCompactionTrigger
   return metadata
 }
 
 function inspectGenerationConfig(rawBody: Buffer, index: number): GenerationConfigInspection {
   index = skipJsonWhitespace(rawBody, index)
   if (rawBody[index] !== jsonObjectOpenByte) {
-    return { nextIndex: skipJsonValue(rawBody, index).nextIndex, imageOutput: false }
+    return { nextIndex: skipJsonValue(rawBody, index).nextIndex, isObject: false, imageOutput: false }
   }
 
   index += 1
-  let reasoningEffort: UsageReasoningEffort | undefined
-  let imageOutput = false
+  let camelThinkingIsObject = false
+  let camelThinkingEffort: UsageReasoningEffort | undefined
+  let snakeThinkingIsObject = false
+  let snakeThinkingEffort: UsageReasoningEffort | undefined
+  let camelModalitiesDefined = false
+  let camelModalitiesImage = false
+  let snakeModalitiesImage = false
+  let camelMimeDefined = false
+  let camelMimeImage = false
+  let snakeMimeImage = false
+  const result = (nextIndex: number): GenerationConfigInspection => ({
+    nextIndex,
+    isObject: true,
+    reasoningEffort: camelThinkingIsObject ? camelThinkingEffort : snakeThinkingIsObject ? snakeThinkingEffort : undefined,
+    imageOutput: (camelModalitiesDefined ? camelModalitiesImage : snakeModalitiesImage)
+      || (camelMimeDefined ? camelMimeImage : snakeMimeImage)
+  })
   while (index < rawBody.length) {
     index = skipJsonWhitespace(rawBody, index)
     if (rawBody[index] === jsonObjectCloseByte) {
-      return { nextIndex: index + 1, reasoningEffort, imageOutput }
+      return result(index + 1)
     }
     if (rawBody[index] === jsonCommaByte) {
       index += 1
       continue
     }
     const key = readJsonStringToken(rawBody, index)
-    if (!key) return { nextIndex: rawBody.length, reasoningEffort, imageOutput }
+    if (!key) return result(rawBody.length)
     index = skipJsonWhitespace(rawBody, key.nextIndex)
     if (rawBody[index] !== jsonColonByte) {
-      return { nextIndex: rawBody.length, reasoningEffort, imageOutput }
+      return result(rawBody.length)
     }
     index = skipJsonWhitespace(rawBody, index + 1)
-    if (key.value === 'thinkingConfig' || key.value === 'thinking_config') {
-      const result = readJsonObjectStringProperty(rawBody, index, key.value === 'thinkingConfig' ? 'thinkingLevel' : 'thinking_level')
-      reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? reasoningEffort
-      index = result.nextIndex
+    if (key.value === 'thinkingConfig') {
+      camelThinkingIsObject = rawBody[index] === jsonObjectOpenByte
+      const nested = readJsonObjectStringProperty(rawBody, index, 'thinkingLevel')
+      camelThinkingEffort = normalizeUsageReasoningEffort(nested.value)
+      index = nested.nextIndex
       continue
     }
-    if (key.value === 'responseModalities' || key.value === 'response_modalities') {
-      const result = inspectJsonStringArrayForImage(rawBody, index)
-      imageOutput = imageOutput || result.imageOutput
-      index = result.nextIndex
+    if (key.value === 'thinking_config') {
+      snakeThinkingIsObject = rawBody[index] === jsonObjectOpenByte
+      const nested = readJsonObjectStringProperty(rawBody, index, 'thinking_level')
+      snakeThinkingEffort = normalizeUsageReasoningEffort(nested.value)
+      index = nested.nextIndex
       continue
     }
-    if (key.value === 'responseMimeType' || key.value === 'response_mime_type') {
+    if (key.value === 'responseModalities') {
+      camelModalitiesDefined = !jsonValueIsNull(rawBody, index)
+      const modalities = inspectJsonStringArrayForImage(rawBody, index)
+      camelModalitiesImage = modalities.imageOutput
+      index = modalities.nextIndex
+      continue
+    }
+    if (key.value === 'response_modalities') {
+      const modalities = inspectJsonStringArrayForImage(rawBody, index)
+      snakeModalitiesImage = modalities.imageOutput
+      index = modalities.nextIndex
+      continue
+    }
+    if (key.value === 'responseMimeType') {
+      camelMimeDefined = !jsonValueIsNull(rawBody, index)
       const value = readJsonStringToken(rawBody, index)
       if (value) {
-        imageOutput = imageOutput || /^image\//i.test(value.value.trim())
+        camelMimeImage = /^image\//i.test(value.value.trim())
         index = value.nextIndex
         continue
       }
+      camelMimeImage = false
+    } else if (key.value === 'response_mime_type') {
+      const value = readJsonStringToken(rawBody, index)
+      if (value) {
+        snakeMimeImage = /^image\//i.test(value.value.trim())
+        index = value.nextIndex
+        continue
+      }
+      snakeMimeImage = false
     }
     index = skipJsonValue(rawBody, index).nextIndex
   }
-  return { nextIndex: rawBody.length, reasoningEffort, imageOutput }
+  return result(rawBody.length)
+}
+
+function jsonValueIsNull(rawBody: Buffer, index: number): boolean {
+  index = skipJsonWhitespace(rawBody, index)
+  return rawBody.subarray(index, index + jsonNullBuffer.length).equals(jsonNullBuffer)
 }
 
 function inspectJsonStringArrayForImage(
@@ -339,10 +307,11 @@ function readJsonObjectNestedStringProperty(
           index = propertyValue.nextIndex
           continue
         }
+        value = undefined
       } else {
         const nested = readJsonObjectNestedStringProperty(rawBody, index, propertyPath.slice(1))
         if (!nested.ok) return { nextIndex: nested.nextIndex, value, ok: false }
-        value = nested.value ?? value
+        value = nested.value
         index = nested.nextIndex
         continue
       }
@@ -410,10 +379,12 @@ function inspectJsonToolDefinitions(rawBody: Buffer, index: number, depth = 0): 
 
 function inspectJsonToolObject(rawBody: Buffer, index: number): JsonToolInspectionReadResult {
   const inspection = createEmptyImageGenerationToolInspection()
+  let toolType: string | undefined
   index += 1
   while (index < rawBody.length) {
     index = skipJsonWhitespace(rawBody, index)
     if (rawBody[index] === jsonObjectCloseByte) {
+      if (toolType !== undefined) countToolType(toolType, inspection)
       return { nextIndex: index + 1, inspection }
     }
     if (rawBody[index] === jsonCommaByte) {
@@ -432,10 +403,11 @@ function inspectJsonToolObject(rawBody: Buffer, index: number): JsonToolInspecti
     if (key.value === 'type') {
       const value = readJsonStringToken(rawBody, index)
       if (value) {
-        countToolType(value.value, inspection)
+        toolType = value.value
         index = value.nextIndex
         continue
       }
+      toolType = undefined
     }
     index = skipJsonValue(rawBody, index).nextIndex
   }
@@ -460,9 +432,13 @@ function inspectJsonToolChoice(rawBody: Buffer, index: number): JsonToolInspecti
   }
 
   index += 1
+  let choiceType: string | undefined
+  let nestedTools = createEmptyImageGenerationToolInspection()
   while (index < rawBody.length) {
     index = skipJsonWhitespace(rawBody, index)
     if (rawBody[index] === jsonObjectCloseByte) {
+      if (choiceType === 'image_generation') inspection.forcedImageGeneration = true
+      mergeImageGenerationToolInspection(inspection, nestedTools)
       return { nextIndex: index + 1, inspection }
     }
     if (rawBody[index] === jsonCommaByte) {
@@ -481,15 +457,14 @@ function inspectJsonToolChoice(rawBody: Buffer, index: number): JsonToolInspecti
     if (key.value === 'type') {
       const value = readJsonStringToken(rawBody, index)
       if (value) {
-        if (value.value === 'image_generation') {
-          inspection.forcedImageGeneration = true
-        }
+        choiceType = value.value
         index = value.nextIndex
         continue
       }
+      choiceType = undefined
     } else if (key.value === 'tools') {
       const result = inspectJsonToolDefinitions(rawBody, index)
-      mergeImageGenerationToolInspection(inspection, result.inspection)
+      nestedTools = result.inspection
       index = result.nextIndex
       continue
     }
@@ -517,6 +492,17 @@ function readJsonStringToken(rawBody: Buffer, index: number): { value: string; n
   const nextIndex = skipJsonString(rawBody, index)
   if (nextIndex === undefined) {
     return undefined
+  }
+  return decodeJsonStringToken(rawBody, index, nextIndex)
+}
+
+function decodeJsonStringToken(
+  rawBody: Buffer,
+  index: number,
+  nextIndex: number
+): { value: string; nextIndex: number } | undefined {
+  if (rawBody.subarray(index + 1, nextIndex - 1).indexOf(jsonEscapeByte) === -1) {
+    return { value: rawBody.toString('utf8', index + 1, nextIndex - 1), nextIndex }
   }
   try {
     const value = JSON.parse(rawBody.toString('utf8', index, nextIndex)) as unknown
@@ -546,6 +532,24 @@ function readJsonNonNegativeInteger(rawBody: Buffer, index: number): { value: nu
     : undefined
 }
 
+function jsonValueIsTruthy(rawBody: Buffer, index: number): boolean {
+  index = skipJsonWhitespace(rawBody, index)
+  const byte = rawBody[index]
+  if (byte === jsonObjectOpenByte || byte === jsonArrayOpenByte) return true
+  if (byte === jsonStringByte) return Boolean(readJsonStringToken(rawBody, index)?.value)
+  if (rawBody.subarray(index, index + 4).equals(jsonTrueBuffer)) return true
+  if (
+    rawBody.subarray(index, index + 4).equals(jsonNullBuffer)
+    || rawBody.subarray(index, index + 5).equals(jsonFalseBuffer)
+  ) {
+    return false
+  }
+  const skipped = skipJsonValue(rawBody, index)
+  if (!skipped.ok) return false
+  const value = Number(rawBody.toString('utf8', index, skipped.nextIndex).trim())
+  return !Number.isNaN(value) && value !== 0
+}
+
 function skipJsonValue(rawBody: Buffer, index: number): JsonReadResult {
   index = skipJsonWhitespace(rawBody, index)
   const firstByte = rawBody[index]
@@ -569,7 +573,8 @@ function skipJsonValue(rawBody: Buffer, index: number): JsonReadResult {
     }
   }
 
-  const stack = [firstByte]
+  const stack = new CompactJsonFrameStack()
+  stack.push(firstByte)
   for (let cursor = index + 1; cursor < rawBody.length; cursor += 1) {
     const byte = rawBody[cursor]
     if (byte === jsonStringByte) {
@@ -622,26 +627,98 @@ function skipJsonString(rawBody: Buffer, index: number): number | undefined {
   return undefined
 }
 
-type JsonContainerFrame =
-  | { kind: 'object'; state: 'first_key_or_end' | 'key' | 'colon' | 'value' | 'comma_or_end' }
-  | { kind: 'array'; state: 'first_value_or_end' | 'value' | 'comma_or_end' }
+let gatewayJsonMetadataScannerStackObserverForTest: ((capacityBytes: number) => void) | undefined
 
-function isValidJsonDocument(rawBody: Buffer): boolean {
-  const stack: JsonContainerFrame[] = []
+export function setGatewayJsonMetadataScannerStackObserverForTest(
+  observer: ((capacityBytes: number) => void) | undefined
+): void {
+  gatewayJsonMetadataScannerStackObserverForTest = observer
+}
+
+class CompactJsonFrameStack {
+  private frames = new Uint8Array(256)
+  length = 0
+
+  constructor() {
+    gatewayJsonMetadataScannerStackObserverForTest?.(this.frames.byteLength)
+  }
+
+  push(frame: number): void {
+    if (this.length >= this.frames.length) {
+      const expanded = new Uint8Array(this.frames.length * 2)
+      expanded.set(this.frames)
+      this.frames = expanded
+      gatewayJsonMetadataScannerStackObserverForTest?.(this.frames.byteLength)
+    }
+    this.frames[this.length] = frame
+    this.length += 1
+  }
+
+  peek(): number | undefined {
+    return this.length > 0 ? this.frames[this.length - 1] : undefined
+  }
+
+  replaceTop(frame: number): boolean {
+    if (this.length === 0) return false
+    this.frames[this.length - 1] = frame
+    return true
+  }
+
+  pop(): number | undefined {
+    if (this.length === 0) return undefined
+    this.length -= 1
+    return this.frames[this.length]
+  }
+}
+
+const jsonFrameStateMask = 0x07
+const jsonFrameTypeIsCompactionFlag = 0x08
+const jsonFrameKeyIsTypeFlag = 0x10
+const jsonObjectFirstKeyOrEndState = 0
+const jsonObjectKeyState = 1
+const jsonObjectColonState = 2
+const jsonObjectValueState = 3
+const jsonObjectCommaOrEndState = 4
+const jsonArrayFirstValueOrEndState = 5
+const jsonArrayValueState = 6
+const jsonArrayCommaOrEndState = 7
+
+function jsonFrameState(frame: number): number {
+  return frame & jsonFrameStateMask
+}
+
+function jsonFrameWithState(frame: number, state: number): number {
+  return (frame & ~jsonFrameStateMask) | state
+}
+
+function isJsonObjectFrame(frame: number): boolean {
+  return jsonFrameState(frame) <= jsonObjectCommaOrEndState
+}
+
+function isValidJsonDocument(
+  rawBody: Buffer,
+  callbacks: {
+    onCodexCompactionTrigger: () => void
+    onTopLevelProperty: (key: string, startIndex: number, endIndex: number) => void
+  }
+): boolean {
+  const stack = new CompactJsonFrameStack()
   let index = skipJsonWhitespace(rawBody, 0)
   let rootComplete = false
+  let currentTopLevelKey: string | undefined
+  let pendingTopLevelProperty: { key: string; startIndex: number } | undefined
 
   const consumeValue = (): boolean => {
     index = skipJsonWhitespace(rawBody, index)
     const byte = rawBody[index]
     if (byte === jsonObjectOpenByte) {
       index += 1
-      stack.push({ kind: 'object', state: 'first_key_or_end' })
+      stack.push(jsonObjectFirstKeyOrEndState)
       return true
     }
     if (byte === jsonArrayOpenByte) {
       index += 1
-      stack.push({ kind: 'array', state: 'first_value_or_end' })
+      stack.push(jsonArrayFirstValueOrEndState)
       return true
     }
     if (byte === jsonStringByte) {
@@ -661,61 +738,100 @@ function isValidJsonDocument(rawBody: Buffer): boolean {
     return true
   }
 
+  const closeCurrentFrame = (): boolean => {
+    const frame = stack.pop()
+    if (frame === undefined) return false
+    if (isJsonObjectFrame(frame) && (frame & jsonFrameTypeIsCompactionFlag) !== 0) {
+      callbacks.onCodexCompactionTrigger()
+    }
+    if (pendingTopLevelProperty && stack.length === 1) {
+      callbacks.onTopLevelProperty(pendingTopLevelProperty.key, pendingTopLevelProperty.startIndex, index)
+      pendingTopLevelProperty = undefined
+    }
+    return true
+  }
+
   if (!consumeValue()) return false
   if (stack.length === 0) rootComplete = true
 
   while (!rootComplete) {
     index = skipJsonWhitespace(rawBody, index)
-    const frame = stack[stack.length - 1]
-    if (!frame) return false
+    const frame = stack.peek()
+    if (frame === undefined) return false
+    const state = jsonFrameState(frame)
 
-    if (frame.kind === 'object') {
-      if (frame.state === 'first_key_or_end' && rawBody[index] === jsonObjectCloseByte) {
+    if (isJsonObjectFrame(frame)) {
+      if (state === jsonObjectFirstKeyOrEndState && rawBody[index] === jsonObjectCloseByte) {
         index += 1
-        stack.pop()
-      } else if (frame.state === 'first_key_or_end' || frame.state === 'key') {
+        if (!closeCurrentFrame()) return false
+      } else if (state === jsonObjectFirstKeyOrEndState || state === jsonObjectKeyState) {
         const nextIndex = skipValidJsonString(rawBody, index)
         if (nextIndex === undefined) return false
+        const key = decodeJsonInspectionKey(rawBody, index, nextIndex, stack.length === 1)
         index = nextIndex
-        frame.state = 'colon'
+        if (stack.length === 1) currentTopLevelKey = key
+        let nextFrame = jsonFrameWithState(frame, jsonObjectColonState) & ~jsonFrameKeyIsTypeFlag
+        if (key === 'type') nextFrame |= jsonFrameKeyIsTypeFlag
+        if (!stack.replaceTop(nextFrame)) return false
         continue
-      } else if (frame.state === 'colon') {
+      } else if (state === jsonObjectColonState) {
         if (rawBody[index] !== jsonColonByte) return false
         index += 1
-        frame.state = 'value'
+        if (!stack.replaceTop(jsonFrameWithState(frame, jsonObjectValueState))) return false
         continue
-      } else if (frame.state === 'value') {
-        frame.state = 'comma_or_end'
+      } else if (state === jsonObjectValueState) {
+        const key = stack.length === 1
+          ? currentTopLevelKey
+          : (frame & jsonFrameKeyIsTypeFlag) !== 0
+            ? 'type'
+            : undefined
+        const valueStartIndex = skipJsonWhitespace(rawBody, index)
+        let nextFrame = jsonFrameWithState(frame, jsonObjectCommaOrEndState) & ~jsonFrameKeyIsTypeFlag
+        if ((frame & jsonFrameKeyIsTypeFlag) !== 0) {
+          const value = readJsonStringToken(rawBody, index)
+          nextFrame = value?.value === 'compaction_trigger'
+            ? nextFrame | jsonFrameTypeIsCompactionFlag
+            : nextFrame & ~jsonFrameTypeIsCompactionFlag
+        }
+        if (stack.length === 1) currentTopLevelKey = undefined
+        if (!stack.replaceTop(nextFrame)) return false
         const depth = stack.length
         if (!consumeValue()) return false
+        if (depth === 1 && key !== undefined) {
+          if (stack.length === depth) {
+            callbacks.onTopLevelProperty(key, valueStartIndex, index)
+          } else {
+            pendingTopLevelProperty = { key, startIndex: valueStartIndex }
+          }
+        }
         if (stack.length === depth) continue
         continue
       } else if (rawBody[index] === jsonCommaByte) {
         index += 1
-        frame.state = 'key'
+        if (!stack.replaceTop(jsonFrameWithState(frame, jsonObjectKeyState))) return false
         continue
       } else if (rawBody[index] === jsonObjectCloseByte) {
         index += 1
-        stack.pop()
+        if (!closeCurrentFrame()) return false
       } else {
         return false
       }
-    } else if (frame.state === 'first_value_or_end' && rawBody[index] === jsonArrayCloseByte) {
+    } else if (state === jsonArrayFirstValueOrEndState && rawBody[index] === jsonArrayCloseByte) {
       index += 1
-      stack.pop()
-    } else if (frame.state === 'first_value_or_end' || frame.state === 'value') {
-      frame.state = 'comma_or_end'
+      if (!closeCurrentFrame()) return false
+    } else if (state === jsonArrayFirstValueOrEndState || state === jsonArrayValueState) {
+      if (!stack.replaceTop(jsonFrameWithState(frame, jsonArrayCommaOrEndState))) return false
       const depth = stack.length
       if (!consumeValue()) return false
       if (stack.length === depth) continue
       continue
     } else if (rawBody[index] === jsonCommaByte) {
       index += 1
-      frame.state = 'value'
+      if (!stack.replaceTop(jsonFrameWithState(frame, jsonArrayValueState))) return false
       continue
     } else if (rawBody[index] === jsonArrayCloseByte) {
       index += 1
-      stack.pop()
+      if (!closeCurrentFrame()) return false
     } else {
       return false
     }
@@ -726,6 +842,26 @@ function isValidJsonDocument(rawBody: Buffer): boolean {
   }
 
   return skipJsonWhitespace(rawBody, index) === rawBody.length
+}
+
+function decodeJsonInspectionKey(
+  rawBody: Buffer,
+  index: number,
+  nextIndex: number,
+  topLevel: boolean
+): string | undefined {
+  const content = rawBody.subarray(index + 1, nextIndex - 1)
+  if (content.indexOf(jsonEscapeByte) === -1) {
+    if (content.equals(jsonTypeKeyBuffer)) return 'type'
+    if (!topLevel) return undefined
+    for (const candidate of topLevelMetadataKeyBuffers) {
+      if (content.equals(candidate.buffer)) return candidate.key
+    }
+    return undefined
+  }
+  const decoded = decodeJsonStringToken(rawBody, index, nextIndex)?.value
+  if (decoded === 'type') return decoded
+  return topLevel && topLevelMetadataKeys.has(decoded ?? '') ? decoded : undefined
 }
 
 function skipValidJsonString(rawBody: Buffer, index: number): number | undefined {
@@ -917,3 +1053,20 @@ const jsonArrayCloseByte = 0x5d
 const jsonNullBuffer = Buffer.from('null')
 const jsonTrueBuffer = Buffer.from('true')
 const jsonFalseBuffer = Buffer.from('false')
+const jsonTypeKeyBuffer = Buffer.from('type')
+const topLevelMetadataKeyBuffers = [
+  'model',
+  'service_tier',
+  'reasoning_effort',
+  'reasoning',
+  'output_config',
+  'generationConfig',
+  'generation_config',
+  'stream',
+  'max_output_tokens',
+  'max_tokens',
+  'tools',
+  'tool_choice',
+  'response_format'
+].map((key) => ({ key, buffer: Buffer.from(key) }))
+const topLevelMetadataKeys = new Set(topLevelMetadataKeyBuffers.map(({ key }) => key))

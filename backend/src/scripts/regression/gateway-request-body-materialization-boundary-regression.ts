@@ -101,6 +101,21 @@ try {
   assert.equal(materializedAfterReplacement, staleRequest.body, '解析期间 Body 改写后不得向调用者返回旧版本对象')
   assert.deepEqual(materializedAfterReplacement, { model: 'current-model' })
 
+  const serializedSyntheticRequestModules = [
+    'modules/gateway/codex-responses/compact-preflight.ts',
+    'modules/gateway/hybrid/scoring.service.ts',
+    'modules/gateway/hybrid/quality-inspection.service.ts'
+  ] as const
+  for (const relativePath of serializedSyntheticRequestModules) {
+    const source = readFileSync(new URL(`../../${relativePath}`, import.meta.url), 'utf8')
+    assert.match(source, /serializeGatewayJsonObject\(body\)/, `${relativePath} 必须绑定 synthetic JSON Body 与 canonical Buffer`)
+    assert.doesNotMatch(
+      source,
+      /Buffer\.from\(JSON\.stringify\(body\)/,
+      `${relativePath} 不得创建未绑定的 synthetic JSON Buffer`
+    )
+  }
+
   for (const relativePath of requestJsonMaterializationModules) {
     const source = readFileSync(new URL(`../../${relativePath}`, import.meta.url), 'utf8')
     assert.match(source, /parseGatewayRequestJsonBody/, `${relativePath} 必须复用请求级 JSON 物化入口`)

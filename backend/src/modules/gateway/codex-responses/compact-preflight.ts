@@ -18,6 +18,7 @@ import {
   getGatewayRequestBodyState,
   type GatewayRawBodyRequest
 } from '../request/body.js'
+import { serializeGatewayJsonObject } from '../request/serialized-json-body.js'
 import { setGatewayModelMappingSourceEndpointFamilyOverride } from '../protocols/openai-v1/model-mapping.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
@@ -274,7 +275,7 @@ function extractChatCompletionSummary(bodyText: string): string | undefined {
 }
 
 function buildSyntheticChatCompletionsRequest(sourceReq: Request, body: JsonRecord): Request {
-  const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  const rawBody = serializeGatewayJsonObject(body)
   const synthetic = Object.create(sourceReq) as GatewayRawBodyRequest
   synthetic.method = 'POST'
   synthetic.url = '/v1/chat/completions'

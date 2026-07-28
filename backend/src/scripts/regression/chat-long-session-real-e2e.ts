@@ -306,7 +306,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       throw new Error('chat_long_session_resume_fixture_hash_mismatch')
     }
     let accountId: string
-    let gatewayKey: NonNullable<ReturnType<typeof repositories.findApiKeySecret>>
+    let gatewayKey: { id: string; key: string }
     if (resumedCheckpoint) {
       accountId = resumedCheckpoint.accountId
       const existingGatewayKey = repositories.findApiKeySecret(resumedCheckpoint.gatewayKeyId, access)

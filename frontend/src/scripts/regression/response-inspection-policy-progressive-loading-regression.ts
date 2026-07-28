@@ -8,6 +8,10 @@ import type {
   ResponseInspectionPolicyProviderOption
 } from '@/types/domain'
 import { createResponseInspectionPolicyLoadCoordinator } from '@/views/response-inspection-policies/responseInspectionPolicyLoadCoordinator'
+import {
+  defaultResponseInspectionProviderCode,
+  responseInspectionProviderSelectOptions
+} from '@/views/response-inspection-policies/responseInspectionProviderOptions'
 
 const emptyList: ResponseInspectionPolicyListResult = { defaultRules: [], policies: [] }
 const options: ResponseInspectionPolicyProviderOption[] = [
@@ -20,6 +24,7 @@ await verifyRequestMatrix()
 await verifyListRaceIsolation()
 await verifyModalIntentAndDetailRaceIsolation()
 await verifyProviderOptionsIntentIsolationAndRetry()
+verifyLocalProviderDefaultsAndSelectedOptions()
 verifyViewUsesCoordinator()
 
 console.log('响应检查策略前端渐进加载回归通过：请求矩阵、按需详情/options、缓存重试和竞态隔离均符合预期')
@@ -50,8 +55,9 @@ async function verifyRequestMatrix(): Promise<void> {
   assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 0 }, '查看只能按需请求 detail，不得请求 provider options')
 
   const createIntent = coordinator.beginModalIntent()
+  assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 0 }, '打开创建弹窗不得请求 provider options')
   assert.deepEqual(await coordinator.loadProviderOptions(createIntent), options)
-  assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 1 }, '创建只能按需请求 provider options，不得请求 detail')
+  assert.deepEqual(calls, { list: 1, detail: ['policy_view'], options: 1 }, '创建时只有展开供应商下拉才请求 provider options')
 
   coordinator.dispose()
 
@@ -71,13 +77,13 @@ async function verifyRequestMatrix(): Promise<void> {
     }
   })
   const editIntent = editCoordinator.beginModalIntent('policy_edit')
-  const [editDetail, editOptions] = await Promise.all([
-    editCoordinator.loadDetail(editIntent, 'policy_edit'),
-    editCoordinator.loadProviderOptions(editIntent)
-  ])
+  const editDetail = await editCoordinator.loadDetail(editIntent, 'policy_edit')
   assert.equal(editDetail?.id, 'policy_edit')
-  assert.deepEqual(editOptions, options)
-  assert.deepEqual(editCalls, { list: 0, detail: 1, options: 1 }, '编辑必须且只能并行请求 detail 与 provider options')
+  assert.deepEqual(editCalls, { list: 0, detail: 1, options: 0 }, '打开编辑弹窗只能请求 detail，不得预取 provider options')
+  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent), options)
+  assert.deepEqual(editCalls, { list: 0, detail: 1, options: 1 }, '编辑时只有展开供应商下拉才请求 provider options')
+  assert.deepEqual(await editCoordinator.loadProviderOptions(editIntent), options)
+  assert.deepEqual(editCalls, { list: 0, detail: 1, options: 1 }, '同一编辑 intent 重复展开不得重复请求 provider options')
   editCoordinator.dispose()
 }
 
@@ -210,13 +216,57 @@ async function verifyProviderOptionsIntentIsolationAndRetry(): Promise<void> {
   retryCoordinator.dispose()
 }
 
+function verifyLocalProviderDefaultsAndSelectedOptions(): void {
+  assert.equal(defaultResponseInspectionProviderCode([], 'openai'), 'gpt', 'OpenAI 协议在 options 未加载时必须使用本地 GPT 默认值')
+  assert.equal(defaultResponseInspectionProviderCode([], 'anthropic'), 'anthropic', 'Anthropic 协议在 options 未加载时必须使用本地默认值')
+  assert.equal(defaultResponseInspectionProviderCode([], 'gemini'), 'gemini', 'Gemini 协议在 options 未加载时必须使用本地默认值')
+  assert.equal(defaultResponseInspectionProviderCode([], 'openai', true), '', '远程 options 已确认当前协议没有可用供应商时不得继续提交本地默认代码')
+  assert.equal(
+    defaultResponseInspectionProviderCode([{ code: 'custom-openai', name: 'Custom', protocolCode: 'openai' }], 'openai'),
+    'custom-openai',
+    '远程 options 不含本地默认值时必须回落到当前协议首个可用供应商'
+  )
+  assert.deepEqual(
+    responseInspectionProviderSelectOptions([], 'anthropic', { code: 'anthropic', name: 'Anthropic' }),
+    [{ label: 'Anthropic', value: 'anthropic' }],
+    'options 未加载时必须保留创建或编辑表单的已选供应商回显'
+  )
+  assert.deepEqual(
+    responseInspectionProviderSelectOptions(options, 'openai', { code: 'custom-selected', name: '已选自定义供应商' }).at(-1),
+    { label: '已选自定义供应商', value: 'custom-selected' },
+    '远程候选不含当前值时不得清空用户已选供应商'
+  )
+}
+
 function verifyViewUsesCoordinator(): void {
   const source = readFileSync(resolve('../frontend/src/views/response-inspection-policies/ResponseInspectionPoliciesView.vue'), 'utf8')
+  const modalSource = readFileSync(resolve('../frontend/src/views/response-inspection-policies/ResponseInspectionPolicyFormModal.vue'), 'utf8')
   assert.match(source, /onMounted\(loadPolicies\)/, '页面首屏必须从 overview loader 启动')
   assert.match(source, /list:\s*\(signal\)[\s\S]{0,180}responseInspectionPolicies\.list\(\{ signal \}\)/, 'overview 请求必须受协调器 AbortSignal 管理')
-  assert.match(source, /async function openCreate[\s\S]{0,700}loadProviderOptionsForIntent\(intent\)/, '创建操作必须按需加载 provider options')
-  assert.match(source, /async function openView[\s\S]{0,700}loadPolicyDetailForIntent\(intent, policy\.id\)/, '查看操作必须按需加载 detail')
-  assert.match(source, /async function openEdit[\s\S]{0,1000}Promise\.all\([\s\S]{0,500}loadPolicyDetailForIntent\(intent, policy\.id\)[\s\S]{0,300}loadProviderOptionsForIntent\(intent\)/, '编辑操作必须并行加载 detail 与 provider options')
+  const createFunction = functionSource(source, 'function openCreate')
+  assert.match(createFunction, /modalOpen\.value = true/, '创建操作必须直接打开弹窗')
+  assert.doesNotMatch(createFunction, /providerOptions|loadProviderOptions/, '打开创建弹窗不得加载 provider options')
+  const viewFunction = functionSource(source, 'async function openView')
+  assert.match(viewFunction, /loadPolicyDetailForIntent\(intent, policy\.id\)/, '查看操作必须按需加载 detail')
+  assert.doesNotMatch(viewFunction, /providerOptions|loadProviderOptions/, '查看操作不得加载 provider options')
+  const editFunction = functionSource(source, 'async function openEdit')
+  assert.match(editFunction, /loadPolicyDetailForIntent\(intent, policy\.id\)/, '编辑操作必须加载必要 detail')
+  assert.doesNotMatch(editFunction, /Promise\.all|providerOptions|loadProviderOptions/, '打开编辑弹窗不得并行或提前加载 provider options')
+  const dropdownFunction = functionSource(source, 'async function loadProviderOptionsOnDropdown')
+  assert.match(dropdownFunction, /!open \|\| modalMode\.value === 'view'/, '关闭下拉和查看模式不得加载 provider options')
+  assert.match(dropdownFunction, /activeProviderOptionsRequest/, '同一 intent 的在途下拉加载必须在页面层复用，避免重复错误提示')
+  assert.match(dropdownFunction, /loadCoordinator\.loadProviderOptions\(intent\)/, '只有供应商下拉展开后才加载 provider options')
+  assert.equal((dropdownFunction.match(/message\.error\(/g) ?? []).length, 1, '同一 provider options 请求只能在一个 UI 边界提示一次错误')
+  assert.match(source, /:provider-options-loading="providerOptionsLoading"/, '父层必须向供应商下拉传递 loading 状态')
+  assert.match(source, /:provider-options-ready="providerOptionsReady"/, '父层必须区分 options 未加载与远程已确认为空')
+  assert.match(source, /@provider-options-dropdown-visible-change="loadProviderOptionsOnDropdown"/, '父层必须监听供应商下拉展开事件')
+  assert.doesNotMatch(source, /default-provider-code/, '父层不得把 OpenAI 默认供应商硬编码传给所有协议')
+  assert.match(modalSource, /:loading="providerOptionsLoading"/, '供应商下拉必须展示按需加载状态')
+  assert.match(modalSource, /@dropdown-visible-change="emit\('provider-options-dropdown-visible-change', \$event\)"/, '供应商下拉必须在展开时通知父层')
+  assert.match(modalSource, /@change="handleProviderChange"/, '用户手动选择供应商后必须保护该选择')
+  assert.match(modalSource, /responseInspectionProviderSelectOptions\([\s\S]{0,300}code: form\.providerCode/, '编辑已选供应商在 options 未加载时必须仍可显示名称')
+  assert.match(modalSource, /watch\(\[\(\) => props\.providerOptions, \(\) => props\.providerOptionsReady\][\s\S]{0,600}form\.providerCode = defaultProviderCodeForProtocol\(\)/, 'options 返回后必须按当前协议补默认供应商或清空不可用本地默认值')
+  assert.match(modalSource, /defaultResponseInspectionProviderCode\(props\.providerOptions, form\.protocolCode, props\.providerOptionsReady\)/, '协议切换必须区分本地默认与远程已确认为空')
   const mountedFunction = functionSource(source, 'async function loadPolicies')
   assert.doesNotMatch(mountedFunction, /\.detail\(|providerOptions|loadProviderOptions/, '首屏 overview loader 不得夹带 detail 或 provider options')
 }

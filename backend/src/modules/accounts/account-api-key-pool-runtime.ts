@@ -1,4 +1,4 @@
-import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTestApiKeyPoolItemResult } from '../../domain/types.js'
+import type { AccountApiKeyRuntimeDetail, AccountTestApiKeyPoolItemResult } from '../../domain/types.js'
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { loadAccountApiKeyRuntimeDetailsByAccountIdsAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
@@ -9,7 +9,15 @@ export interface AccountApiKeyRuntimeResponse {
   items: AccountApiKeyRuntimeDetail[]
 }
 
-export async function loadOwnerAccountApiKeyRuntimeResponse(account: AccountSummary): Promise<AccountApiKeyRuntimeResponse | undefined> {
+export interface AccountApiKeyRuntimeAccountContext {
+  id: string
+  configRevision?: number
+  accessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
+}
+
+export async function loadOwnerAccountApiKeyRuntimeResponse(account: AccountApiKeyRuntimeAccountContext): Promise<AccountApiKeyRuntimeResponse | undefined> {
   if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) {
     return undefined
   }

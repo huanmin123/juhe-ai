@@ -34,13 +34,21 @@
                   allow-clear
                   :filter-option="false"
                   :loading="accountOptionsLoading"
-                  :options="accountOptions"
+                  :options="effectiveAccountOptions"
                   placeholder="输入账户名称搜索"
-                  @search="emit('account-search', $event)"
+                  @change="handleAccountChange"
+                  @dropdown-visible-change="emit('account-dropdown-visible-change', $event, form.accountId)"
+                  @search="emit('account-search', $event, form.accountId)"
                 />
               </a-form-item>
               <a-form-item label="检查模型" name="model" :rules="[{ required: true, message: '请选择检查模型' }]">
-                <a-select v-model:value="form.model" :options="selectedModelOptions" placeholder="请选择模型" />
+                <a-select
+                  v-model:value="form.model"
+                  :loading="accountOptionsLoading"
+                  :options="selectedModelOptions"
+                  placeholder="请选择模型"
+                  @dropdown-visible-change="emit('model-dropdown-visible-change', $event, form.accountId)"
+                />
               </a-form-item>
             </div>
           </div>
@@ -190,8 +198,18 @@ import { formatDateTime } from '@/shared/formatters'
 import type { ModelQualityPenaltyAction, ModelQualitySchedule, ModelQualityScheduleMutationInput } from '@/types/domain'
 import { statusText } from './modelCheckFormatters'
 
+interface ScheduleAccountOption {
+  label: string
+  value: string
+  modelCheckModels: string[]
+}
+
+interface SelectedScheduleAccountOption extends ScheduleAccountOption {
+  capabilitiesKnown: boolean
+}
+
 const props = defineProps<{
-  accountOptions: Array<{ label: string; value: string; modelCheckModels: string[] }>
+  accountOptions: ScheduleAccountOption[]
   accountOptionsLoading: boolean
   loading: boolean
   modelOptions: Array<{ label: string; value: string }>
@@ -204,7 +222,10 @@ const props = defineProps<{
   total: number
 }>()
 const emit = defineEmits<{
-  (event: 'account-search', value: string): void
+  (event: 'account-change', accountId: string): void
+  (event: 'account-dropdown-visible-change', open: boolean, accountId: string): void
+  (event: 'account-search', value: string, accountId: string): void
+  (event: 'model-dropdown-visible-change', open: boolean, accountId: string): void
   (event: 'delete', id: string): void
   (event: 'page-change', page: number): void
   (event: 'save', value: ModelQualityScheduleMutationInput): void
@@ -221,6 +242,7 @@ const form = reactive<ModelQualityScheduleMutationInput>({
   enabled: true
 })
 const scheduleEditorRef = ref<HTMLElement>()
+const selectedScheduleAccountOption = ref<SelectedScheduleAccountOption>()
 const simpleEmptyImage = Empty.PRESENTED_IMAGE_SIMPLE
 const scheduleActions: RowActionItem[] = [
   { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
@@ -246,10 +268,28 @@ const recoveryRules = [{
     ? Promise.resolve()
     : Promise.reject(new Error('请输入 10 到 10080 的整数'))
 }]
+const effectiveAccountOptions = computed(() => {
+  const optionsByValue = new Map<string, ScheduleAccountOption>()
+  const selected = selectedScheduleAccountOption.value
+  if (selected) optionsByValue.set(selected.value, selected)
+  for (const option of props.accountOptions) optionsByValue.set(option.value, option)
+  return [...optionsByValue.values()]
+})
 const selectedModelOptions = computed(() => {
-  const account = props.accountOptions.find((item) => item.value === form.accountId)
-  if (!account) return props.modelOptions
-  return props.modelOptions.filter((item) => account.modelCheckModels.includes(item.value))
+  const accountId = form.accountId.trim()
+  if (!accountId) return []
+  const remoteAccount = props.accountOptions.find((item) => item.value === accountId)
+  const pinnedAccount = selectedScheduleAccountOption.value?.value === accountId
+    ? selectedScheduleAccountOption.value
+    : undefined
+  const account = remoteAccount ?? pinnedAccount
+  if (!account) return []
+  const options = props.modelOptions.filter((item) => account.modelCheckModels.includes(item.value))
+  const preserveUnresolvedEditModel = Boolean(pinnedAccount && !pinnedAccount.capabilitiesKnown && !remoteAccount)
+  if (preserveUnresolvedEditModel && form.model && !options.some((item) => item.value === form.model)) {
+    options.unshift({ label: form.model, value: form.model })
+  }
+  return options
 })
 
 watch(() => props.open, (open) => { if (!open) resetForm() })
@@ -259,12 +299,19 @@ watch(() => props.accountOptions, () => ensureSelectedModel(), { deep: true })
 
 function save() {
   if (!form.accountId || !form.model || !Number.isInteger(form.intervalMinutes) || form.intervalMinutes < 10) return
+  if (!selectedModelOptions.value.some((item) => item.value === form.model)) return
   if (!Number.isInteger(form.penaltyThreshold) || form.penaltyThreshold < 40 || form.penaltyThreshold > 100) return
   if (form.penaltyAction === 'quality_isolate' && (!Number.isInteger(form.recoveryIntervalMinutes) || form.recoveryIntervalMinutes < 10 || form.recoveryIntervalMinutes > 10080)) return
   emit('save', { ...form })
 }
 
 function edit(item: ModelQualitySchedule) {
+  selectedScheduleAccountOption.value = {
+    label: item.accountName || item.accountId,
+    value: item.accountId,
+    modelCheckModels: [item.model],
+    capabilitiesKnown: false
+  }
   form.accountId = item.accountId
   form.model = item.model
   form.intervalMinutes = item.intervalMinutes
@@ -274,8 +321,25 @@ function edit(item: ModelQualitySchedule) {
   form.recoveryIntervalMinutes = item.recoveryIntervalMinutes
   form.enabled = item.enabled
   form.expectedRevision = item.revision
-  emit('account-search', item.accountName || item.accountId)
   void nextTick(() => scheduleEditorRef.value?.scrollIntoView({ block: 'start' }))
+}
+
+function handleAccountChange(accountId?: string): void {
+  emit('account-change', accountId ?? '')
+  if (!accountId) {
+    selectedScheduleAccountOption.value = undefined
+    return
+  }
+  const account = props.accountOptions.find((option) => option.value === accountId)
+  if (account) {
+    selectedScheduleAccountOption.value = {
+      ...account,
+      modelCheckModels: [...account.modelCheckModels],
+      capabilitiesKnown: true
+    }
+    return
+  }
+  if (selectedScheduleAccountOption.value?.value !== accountId) selectedScheduleAccountOption.value = undefined
 }
 
 function handleScheduleAction(action: string, item: ModelQualitySchedule) {
@@ -284,6 +348,7 @@ function handleScheduleAction(action: string, item: ModelQualitySchedule) {
 }
 
 function resetForm() {
+  selectedScheduleAccountOption.value = undefined
   form.accountId = ''
   form.model = ''
   form.intervalMinutes = 60

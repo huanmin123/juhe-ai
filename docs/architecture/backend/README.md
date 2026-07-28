@@ -94,6 +94,7 @@
 | 协议与供应商 | `modules/providers/` | 内置供应商、协议档案、模型目录和供应商 driver；当前矩阵以 `docs/functions/核心功能设计.md` 为准，`openai/v1` 属于协议层 |
 | AI 账户 | `modules/accounts/` | 账号 CRUD、账号测试、凭据展示边界和调度属性 |
 | OpenAI OAuth | `modules/openai-oauth/` | PKCE、refresh token 创建账户和 token 刷新；额度快照由网关响应头被动写入 |
+| OAuth 模拟上游 E2E | `scripts/regression/provider-oauth-mock-upstream-e2e.ts` | 仅在本地回归中严格模拟 OpenAI、Anthropic、Gemini、Grok authorize/token 协议；设计见 [OAuth 模拟上游 E2E 设计](OAuth模拟上游E2E设计.md) |
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
 | API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和路由策略绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |

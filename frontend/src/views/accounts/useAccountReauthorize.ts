@@ -2,10 +2,10 @@ import { message } from '@/lib/antd'
 import { reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary, OAuthAuthURLResult } from '@/types/domain'
+import type { AccountEditBasicDetail, AccountListItem, OAuthAuthURLResult } from '@/types/domain'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
-import { authUrl, buildReauthorizePayload, validateReauthorizeForm } from './accountOAuthPayload'
-import { accountOperationScopeParams } from './accountOperationScope'
+import { authUrl, buildReauthorizePayload, openAIOAuthClientPayload, validateReauthorizeForm } from './accountOAuthPayload'
+import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accountProviderCapabilities'
 import { canManageOAuthAccount } from './accountRules'
 
@@ -21,7 +21,9 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
   const reauthorizeAuthLoading = ref(false)
   const reauthorizeSaving = ref(false)
   const reauthorizeAuthResult = ref<OAuthAuthURLResult>()
-  const reauthorizingAccount = ref<AccountSummary>()
+  const reauthorizingAccount = ref<AccountEditBasicDetail>()
+  const reauthorizingScopeParams = ref<AccountScopeParams>()
+  let reauthorizeLoadToken = 0
   const reauthorizeForm = reactive<AccountOAuthAuthorizeForm>({
     oauthMode: 'manual',
     ssoTokens: '',
@@ -41,28 +43,48 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
     reauthorizeAuthResult.value = undefined
   })
 
-  function openReauthorizeModal(account: AccountSummary) {
+  async function openReauthorizeModal(account: AccountListItem): Promise<void> {
     if (!canManageOAuthAccount(account)) {
       message.warning('只有支持 OAuth 管理的自有账户可以重新授权')
       return
     }
-    reauthorizingAccount.value = account
+    const requestToken = ++reauthorizeLoadToken
+    const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    const hide = message.loading(`${account.name}: 正在加载授权配置...`, 0)
+    let detail: AccountEditBasicDetail
+    try {
+      detail = options.isManagementView.value
+        ? await api.accounts.editBasicDetail(account.id, scopeParams)
+        : await api.myAccounts.editBasicDetail(account.id)
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, `${account.name}: 加载授权配置失败`))
+      return
+    } finally {
+      hide()
+    }
+    if (requestToken !== reauthorizeLoadToken) return
+    reauthorizingAccount.value = detail
+    reauthorizingScopeParams.value = scopeParams
     reauthorizeForm.oauthMode = 'manual'
     reauthorizeForm.callbackUrl = ''
     reauthorizeForm.refreshToken = ''
     reauthorizeForm.accessToken = ''
-    reauthorizeForm.googleClientId = credentialText(account.credentials?.client_id)
-    reauthorizeForm.googleClientSecret = credentialText(account.credentials?.client_secret)
-    reauthorizeForm.googleQuotaProjectId = credentialText(account.credentials?.quota_project_id)
-    reauthorizeForm.oauthType = googleOAuthType(account.credentials?.oauth_type)
-    reauthorizeForm.tierId = credentialText(account.credentials?.tier_id) || defaultGeminiTierId(reauthorizeForm.oauthType)
-    reauthorizeForm.projectId = credentialText(account.credentials?.project_id)
-    reauthorizeForm.baseUrl = credentialText(account.credentials?.base_url)
+    reauthorizeForm.googleClientId = credentialText(detail.credentials.client_id)
+    reauthorizeForm.googleClientSecret = credentialText(detail.credentials.client_secret)
+    reauthorizeForm.googleQuotaProjectId = credentialText(detail.credentials.quota_project_id)
+    reauthorizeForm.oauthType = googleOAuthType(detail.credentials.oauth_type)
+    reauthorizeForm.tierId = credentialText(detail.credentials.tier_id) || defaultGeminiTierId(reauthorizeForm.oauthType)
+    reauthorizeForm.projectId = credentialText(detail.credentials.project_id)
+    reauthorizeForm.baseUrl = credentialText(detail.credentials.base_url)
     reauthorizeAuthResult.value = undefined
     reauthorizeModalOpen.value = true
   }
 
   function closeReauthorizeModal() {
+    reauthorizeLoadToken += 1
+    reauthorizingAccount.value = undefined
+    reauthorizingScopeParams.value = undefined
     reauthorizeAuthResult.value = undefined
   }
 
@@ -109,7 +131,6 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
     }
     if (providerKind === 'gemini'
       && reauthorizeForm.oauthType === 'ai_studio'
-      && reauthorizeForm.oauthMode === 'manual'
       && (!reauthorizeForm.googleClientId.trim() || !reauthorizeForm.googleClientSecret.trim())) {
       message.warning('Gemini 官方 OAuth 需要 Client ID 和 Client Secret')
       return
@@ -127,15 +148,18 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
       })
       const payload = providerKind === 'gemini'
         ? { ...basePayload, ...geminiOAuthMetadataPayload(reauthorizeForm) }
-        : basePayload
+        : providerKind === 'openai' && reauthorizeForm.oauthMode === 'refresh_token'
+          ? { ...basePayload, ...openAIOAuthClientPayload(reauthorizeForm) }
+          : basePayload
       if (reauthorizeForm.oauthMode === 'manual') {
-        await reauthorizeFromCode(providerKind, account, payload, options)
+        await reauthorizeFromCode(providerKind, account, payload, options, reauthorizingScopeParams.value)
       } else {
-        await reauthorizeFromRefreshToken(providerKind, account, payload, options)
+        await reauthorizeFromRefreshToken(providerKind, account, payload, options, reauthorizingScopeParams.value)
       }
       message.success(`${account.name}: 重新授权成功`)
       reauthorizeModalOpen.value = false
       reauthorizingAccount.value = undefined
+      reauthorizingScopeParams.value = undefined
       reauthorizeAuthResult.value = undefined
       await options.loadData()
     } catch (error) {
@@ -206,9 +230,10 @@ async function requestReauthorizeAuthUrl(
 
 async function reauthorizeFromCode(
   providerKind: ManagedOAuthProviderKind,
-  account: AccountSummary,
+  account: AccountEditBasicDetail,
   payload: Record<string, unknown>,
-  options: UseAccountReauthorizeOptions
+  options: UseAccountReauthorizeOptions,
+  scopeParams: AccountScopeParams | undefined
 ): Promise<void> {
   if (!options.isManagementView.value) {
     if (providerKind === 'anthropic') await api.myAnthropicOAuth.reauthorizeFromCode(account.id, payload)
@@ -217,7 +242,6 @@ async function reauthorizeFromCode(
     else await api.myOpenaiOAuth.reauthorizeFromCode(account.id, payload)
     return
   }
-  const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
   if (providerKind === 'anthropic') await api.anthropicOAuth.reauthorizeFromCode(account.id, payload, scopeParams)
   else if (providerKind === 'gemini') await api.geminiOAuth.reauthorizeFromCode(account.id, payload, scopeParams)
   else if (providerKind === 'grok') await api.grokOAuth.reauthorizeFromCode(account.id, payload, scopeParams)
@@ -226,9 +250,10 @@ async function reauthorizeFromCode(
 
 async function reauthorizeFromRefreshToken(
   providerKind: ManagedOAuthProviderKind,
-  account: AccountSummary,
+  account: AccountEditBasicDetail,
   payload: Record<string, unknown>,
-  options: UseAccountReauthorizeOptions
+  options: UseAccountReauthorizeOptions,
+  scopeParams: AccountScopeParams | undefined
 ): Promise<void> {
   if (!options.isManagementView.value) {
     if (providerKind === 'anthropic') await api.myAnthropicOAuth.reauthorizeFromRefreshToken(account.id, payload)
@@ -237,7 +262,6 @@ async function reauthorizeFromRefreshToken(
     else await api.myOpenaiOAuth.reauthorizeFromRefreshToken(account.id, payload)
     return
   }
-  const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
   if (providerKind === 'anthropic') await api.anthropicOAuth.reauthorizeFromRefreshToken(account.id, payload, scopeParams)
   else if (providerKind === 'gemini') await api.geminiOAuth.reauthorizeFromRefreshToken(account.id, payload, scopeParams)
   else if (providerKind === 'grok') await api.grokOAuth.reauthorizeFromRefreshToken(account.id, payload, scopeParams)

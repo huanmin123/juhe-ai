@@ -28,6 +28,7 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
+import { inspectAccountTestImageResponseEnvelope } from './account-test-image-response-inspection.js'
 import { accountCredentialFingerprint } from './account-credential-update.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
@@ -35,12 +36,10 @@ import {
   parseAccountTestUpstreamErrorCode,
   parseAccountTestStreamFailureMessage,
   parseAccountTestUpstreamMessage,
-  redactAccountTestImageResponse,
   resolveAccountTestResponseDiagnostics,
   type AccountTestDiagnosticProtocol
 } from './account-test-response-diagnostics.js'
 import {
-  accountModelCatalogIds,
   accountModelCatalogIdsFromPayload,
   hasAccountModelCatalogResponseEvidence,
   hasAccountModelCatalogSuccessEvidence,
@@ -60,7 +59,7 @@ import {
   MemoryGatewayResponse
 } from '../gateway/testing/memory-gateway-http.js'
 import { markGatewayUpstreamModelsProbe } from '../gateway/request/upstream-models-probe.js'
-import { parseDiagnosticResponseContext } from '../gateway/diagnostics/diagnostic-response-context.js'
+import { diagnosticResponseContextFromGatewayResponse } from '../gateway/diagnostics/diagnostic-response-context.js'
 import {
   resolveOpenAIRequestModelMapping,
   type ResolvedOpenAIModelMapping
@@ -180,18 +179,16 @@ export async function discoverAccountUpstreamModels(
 ): Promise<AccountUpstreamModelCatalogResult> {
   const result = await testOpenAIAccount(account, {
     ...input,
+    diagnostics: 'full',
     forceProbeKind: 'models_catalog',
     requireCatalogModelEvidence: false,
     disableAccountStateMutation: true
   })
-  const modelIds = result.responseBody !== undefined
-    ? accountModelCatalogIdsFromPayload(result.responseBody)
-    : accountModelCatalogIds(result.responseText ?? '')
   if (!result.success) {
     throw new Error(result.message || '获取上游模型目录失败')
   }
   return {
-    modelIds,
+    modelIds: accountModelCatalogIdsFromPayload(result.responseBody),
     requestUrl: result.requestUrl ?? accountTestModelsPathForProtocol(account.protocolCode),
     durationMs: result.durationMs
   }
@@ -425,40 +422,61 @@ export async function testOpenAIAccount(
       ? account
       : await loadAccountForTest(input, account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
+    const downstreamResponseText = response.bodyText()
     const { responseText, responseHeaders, responseTruncated } = resolveAccountTestResponseDiagnostics({
-      downstreamResponseText: response.bodyText(),
+      downstreamResponseText,
       downstreamResponseHeaders: response.headersObject(),
       downstreamResponseTruncated: response.bodyTruncated(),
       upstreamAttempt: diagnosticLastAttempt
     })
-    const responseContext = parseDiagnosticResponseContext(responseText)
+    const responseContext = probeKind === 'image_generation'
+      ? undefined
+      : diagnosticResponseContextFromGatewayResponse(
+          responseText,
+          responseText === downstreamResponseText ? response.nonStreamJsonBody() : undefined,
+          responseText === downstreamResponseText ? response.parsedStreamEvents() : undefined
+        )
+    const imageResponseInspection = probeKind === 'image_generation'
+      ? inspectAccountTestImageResponseEnvelope(responseText, responseTruncated)
+      : undefined
     const diagnosticProtocol: AccountTestDiagnosticProtocol = messagesTestMode
       ? 'anthropic'
       : geminiTestMode
         ? 'gemini'
         : 'openai'
-    const upstreamMessage = parseAccountTestUpstreamMessage(responseContext, diagnosticProtocol)
-      ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestUpstreamMessage(responseContext, 'openai'))
-      ?? (responseText ? responseText.slice(0, 240) : undefined)
-    const upstreamErrorCode = parseAccountTestUpstreamErrorCode(responseContext)
-    const streamFailureMessage = parseAccountTestStreamFailureMessage(responseContext, diagnosticProtocol)
-      ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestStreamFailureMessage(responseContext, 'openai'))
-    const outputText = extractAccountTestResponseOutputText(responseContext, diagnosticProtocol)
+    const upstreamMessage = imageResponseInspection?.errorMessage ?? (responseContext
+      ? parseAccountTestUpstreamMessage(responseContext, diagnosticProtocol)
+        ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestUpstreamMessage(responseContext, 'openai'))
+        ?? (responseText ? responseText.slice(0, 240) : undefined)
+      : undefined)
+    const upstreamErrorCode = imageResponseInspection?.errorCode
+      ?? (responseContext ? parseAccountTestUpstreamErrorCode(responseContext) : undefined)
+    const streamFailureMessage = responseContext
+      ? parseAccountTestStreamFailureMessage(responseContext, diagnosticProtocol)
+        ?? (diagnosticProtocol === 'openai' ? undefined : parseAccountTestStreamFailureMessage(responseContext, 'openai'))
+      : undefined
+    const outputText = responseContext
+      ? extractAccountTestResponseOutputText(responseContext, diagnosticProtocol)
+      : undefined
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
-    // Image tests intentionally verify the request outcome only. Image payloads are redacted before diagnostics leave the server.
+    // Image tests verify only the HTTP outcome; parsing base64 payloads adds no diagnostic value.
     const protocolSuccessEvidence = probeKind === 'image_generation'
-          ? true
+      ? imageResponseInspection?.successEvidence === true
       : probeKind === 'models_catalog'
         ? input.requireCatalogModelEvidence === false
-          ? hasAccountModelCatalogResponseEvidence(responseContext)
-          : hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseContext)
-        : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseContext))
+          ? Boolean(responseContext && hasAccountModelCatalogResponseEvidence(responseContext))
+          : Boolean(responseContext && hasAccountModelCatalogSuccessEvidence(testedModel ?? '', responseContext))
+        : Boolean(responseContext && testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseContext))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
       ? probeKind === 'models_catalog'
         ? input.requireCatalogModelEvidence === false
           ? '上游模型目录响应格式无效'
           : `上游模型目录响应格式无效`
+        : probeKind === 'image_generation'
+          ? imageResponseInspection?.errorMessage
+            ? '上游 Images API 返回错误响应'
+            : '上游 Images API 响应缺少有效图片结果'
         : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
       : undefined
     const protocolEvidenceErrorCode = probeKind === 'models_catalog'
@@ -467,7 +485,7 @@ export async function testOpenAIAccount(
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     const imageResponseBody = probeKind === 'image_generation'
-      ? redactAccountTestImageResponse(responseContext)
+      ? { response: '已省略' }
       : undefined
     const responseDiagnostics = probeKind === 'image_generation'
       ? {
@@ -479,7 +497,7 @@ export async function testOpenAIAccount(
         ? {}
         : {
             responseHeaders,
-            responseBody: responseContext.json,
+            responseBody: responseContext?.json,
             responseText,
             responseTruncated,
             outputText
@@ -495,7 +513,11 @@ export async function testOpenAIAccount(
       traceId,
       success,
       statusCode: diagnosticStatusCode,
-      errorCode: success ? undefined : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
+      errorCode: success
+        ? undefined
+        : probeKind === 'image_generation' && upstreamErrorCode
+          ? upstreamErrorCode
+          : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : probeKind === 'image_generation'

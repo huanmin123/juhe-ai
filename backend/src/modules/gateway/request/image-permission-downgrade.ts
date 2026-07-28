@@ -5,10 +5,12 @@ import {
   createGatewayRequestBodyState,
   downgradeGatewayAutoImageGenerationTool,
   getGatewayRequestBodyState,
+  isGatewayScannedJsonBody,
   type GatewayImageGenerationToolDowngradeResult,
   type GatewayRawBodyRequest
 } from './body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from './json-parser.js'
@@ -18,7 +20,7 @@ export async function downgradeGatewayAutoImageGenerationToolForPermission(
   signal?: AbortSignal
 ): Promise<GatewayImageGenerationToolDowngradeResult> {
   const directDowngrade = downgradeGatewayAutoImageGenerationTool(req)
-  if (directDowngrade.reason !== 'not_json_object' || !shouldParseLargeJsonForImageToolDowngrade(req)) {
+  if (directDowngrade.reason !== 'not_json_object' || !shouldParseJsonForImageToolDowngrade(req)) {
     return directDowngrade
   }
 
@@ -41,24 +43,28 @@ export async function downgradeGatewayAutoImageGenerationToolForPermission(
       event: 'gateway_auto_image_generation_tool_parse_for_downgrade',
       rawBodyBytes: rawBody.length,
       jsonParseStatus: request.gatewayRequestBody.jsonParseStatus
-    }, '系统账户未开启图像生成，大 JSON 请求按需完整解析以移除 optional image_generation 工具')
+    }, '系统账户未开启图像生成，请求按需完整解析以移除 optional image_generation 工具')
     return downgradeGatewayAutoImageGenerationTool(req)
   } catch (error) {
     if (isGatewayJsonWorkerQueueFullError(error)) {
       return { downgraded: false, removedToolCount: 0, reason: 'json_worker_overloaded' }
     }
-    markGatewayJsonBodyInvalid(req)
-    return { downgraded: false, removedToolCount: 0, reason: 'invalid_json' }
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      markGatewayJsonBodyInvalid(req)
+      return { downgraded: false, removedToolCount: 0, reason: 'invalid_json' }
+    }
+    throw error
   }
 }
 
-function shouldParseLargeJsonForImageToolDowngrade(req: Request): boolean {
+function shouldParseJsonForImageToolDowngrade(req: Request): boolean {
   const request = req as GatewayRawBodyRequest
   const state = getGatewayRequestBodyState(req)
   return Boolean(
     request.rawBody
     && request.rawBody.length > 0
-    && state?.jsonParseStatus === 'deferred_large_json'
+    && state
+    && isGatewayScannedJsonBody(req)
     && state.imageGeneration
     && !state.imageGenerationForced
   )

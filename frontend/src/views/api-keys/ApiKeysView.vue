@@ -152,6 +152,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
+import { loadUserReferenceData } from '@/composables/useUserReferenceData'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -160,7 +161,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { routeStrategySelectionFromOption } from '@/shared/routeStrategyLabelCache'
-import type { ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
+import type { ApiKeyMutationResult, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
 import {
@@ -173,6 +174,7 @@ import ApiKeyCreatedSecretModal from './ApiKeyCreatedSecretModal.vue'
 import ApiKeyEditModal from './ApiKeyEditModal.vue'
 import ApiKeyHelpModal from './ApiKeyHelpModal.vue'
 import ApiKeyResponsiveList from './ApiKeyResponsiveList.vue'
+import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { useApiKeyRowActions } from './useApiKeyRowActions'
 
 const createdKeyOpen = ref(false)
@@ -205,6 +207,14 @@ const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
+watch(
+  () => [isManagementView.value, apiKeyScopeParams.value?.systemAccountId] as const,
+  ([managementView, systemAccountId]) => {
+    if (!managementView || !systemAccountId) return
+    void loadUserReferenceData({ viewScope: 'admin', systemAccountId }).catch(() => undefined)
+  },
+  { immediate: true }
+)
 const routeStrategyFilter = computed({
   get: () => routeStrategyFilterSelection.value?.id,
   set: (id: string | undefined) => {
@@ -505,8 +515,11 @@ function showCreatedKey(payload: { key: string; title: string; message: string }
   createdKeyOpen.value = true
 }
 
-function handleApiKeyUpdated(apiKey: ApiKeySummary) {
-  updateApiKeyItems((item) => item.id === apiKey.id, () => apiKey)
+function handleApiKeyUpdated(result: ApiKeyMutationResult) {
+  updateApiKeyItems(
+    (item) => item.id === result.id,
+    (item) => mergeApiKeyMutationResult(item, result)
+  )
 }
 
 function handleApiKeyModalReload(options?: { quiet?: boolean }) {

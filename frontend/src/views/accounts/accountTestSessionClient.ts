@@ -1,5 +1,5 @@
 import { api, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
-import type { AccountSummary, AccountTestSession, AccountTestTask } from '@/types/domain'
+import type { AccountListItem, AccountTestSession, AccountTestTask } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 
 export type AccountTestDraftMode = 'create' | 'saved'
@@ -38,7 +38,7 @@ export function cancelAccountTestSession(input: AccountTestSessionClientInput): 
 }
 
 export function submitAccountTestTask(input: {
-  account: AccountSummary
+  account: AccountListItem
   accountScopeParams?: AccountScopeParams
   draftMode?: AccountTestDraftMode
   draftPayload?: AccountDraftTestPayload['account']

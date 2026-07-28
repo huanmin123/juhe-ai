@@ -24,6 +24,16 @@ const grokSSODefaultDeviceExpiresMs = 30 * 60 * 1000
 const grokSSOMaxPollDurationMs = 75_000
 const grokSSOMaxRedirects = 8
 
+interface GrokSSOCookie {
+  name: string
+  value: string
+  domain: string
+  path: string
+  secure: boolean
+  hostOnly: boolean
+  expiresAt?: number
+}
+
 export interface GrokSSORawTokenResponse {
   accessToken: string
   refreshToken?: string
@@ -118,7 +128,7 @@ export function normalizeGrokSSOImportTokens(tokens: string[], single?: string):
 }
 
 class GrokSSODeviceFlow {
-  private readonly cookies = new Map<string, string>()
+  private readonly cookies = new Map<string, GrokSSOCookie>()
 
   constructor(private readonly options: {
     proxyUrl?: string
@@ -128,8 +138,8 @@ class GrokSSODeviceFlow {
     now: NonNullable<GrokSSODeviceDependencies['now']>
     ssoToken: string
   }) {
-    this.cookies.set('sso', options.ssoToken)
-    this.cookies.set('sso-rw', options.ssoToken)
+    this.storeCookie({ name: 'sso', value: options.ssoToken, domain: 'x.ai', path: '/', secure: true, hostOnly: false })
+    this.storeCookie({ name: 'sso-rw', value: options.ssoToken, domain: 'x.ai', path: '/', secure: true, hostOnly: false })
   }
 
   async convert(): Promise<GrokSSORawTokenResponse> {
@@ -239,7 +249,7 @@ class GrokSSODeviceFlow {
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'user-agent': grokSSODefaultUserAgent
       }
-      const cookie = this.cookieHeader()
+      const cookie = this.cookieHeader(currentUrl)
       if (cookie) headers.cookie = cookie
       if (body !== undefined) {
         headers['content-type'] = 'application/x-www-form-urlencoded'
@@ -253,7 +263,7 @@ class GrokSSODeviceFlow {
         proxyUrl: this.options.proxyUrl,
         signal: this.options.signal
       })
-      this.captureCookies(response.headers)
+      this.captureCookies(response.headers, currentUrl)
       if (Buffer.byteLength(response.body) > grokSSOMaxAuthBodyBytes) {
         throw new GrokSSODeviceError('xAI OAuth 响应超过 2 MiB')
       }
@@ -273,7 +283,9 @@ class GrokSSODeviceFlow {
     throw new GrokSSODeviceError('xAI OAuth 重定向次数过多')
   }
 
-  private captureCookies(headers: GrokSSODeviceResponse['headers']): void {
+  private captureCookies(headers: GrokSSODeviceResponse['headers'], responseUrl: string): void {
+    const response = new URL(responseUrl)
+    const responseHost = response.hostname.toLowerCase()
     const values = headerValues(headers['set-cookie'])
     for (const value of values) {
       const [pair, ...attributes] = value.split(';')
@@ -282,20 +294,57 @@ class GrokSSODeviceFlow {
       const name = pair!.slice(0, separator).trim()
       const cookieValue = pair!.slice(separator + 1).trim()
       if (!name || name.length > 128 || cookieValue.length > 16_384 || /[\r\n\0]/u.test(name + cookieValue)) continue
-      const maxAge = attributes.find((attribute) => attribute.trim().toLowerCase().startsWith('max-age='))
-      if (maxAge && Number(maxAge.slice(maxAge.indexOf('=') + 1).trim()) < 0) {
-        this.cookies.delete(name)
-        continue
+      const parsedAttributes = cookieAttributes(attributes)
+      const requestedDomain = parsedAttributes.domain?.replace(/^\./u, '').toLowerCase()
+      if (requestedDomain && !cookieDomainMatches(responseHost, requestedDomain)) continue
+      const domain = requestedDomain || responseHost
+      const path = parsedAttributes.path?.startsWith('/')
+        ? parsedAttributes.path
+        : defaultCookiePath(response.pathname)
+      const maxAge = parsedAttributes['max-age'] === undefined
+        ? undefined
+        : Number(parsedAttributes['max-age'])
+      const expiresAt = Number.isFinite(maxAge)
+        ? this.options.now() + Math.trunc(maxAge!) * 1000
+        : parsedAttributes.expires
+          ? Date.parse(parsedAttributes.expires)
+          : undefined
+      const cookie: GrokSSOCookie = {
+        name,
+        value: cookieValue,
+        domain,
+        path,
+        secure: Object.prototype.hasOwnProperty.call(parsedAttributes, 'secure'),
+        hostOnly: !requestedDomain,
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {})
       }
-      this.cookies.set(name, cookieValue)
+      const key = cookieKey(cookie)
+      if ((Number.isFinite(maxAge) && maxAge! <= 0) || (cookie.expiresAt !== undefined && cookie.expiresAt <= this.options.now())) {
+        this.cookies.delete(key)
+      } else {
+        this.cookies.set(key, cookie)
+      }
     }
   }
 
-  private cookieHeader(): string {
-    return [...this.cookies.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, value]) => `${name}=${value}`)
+  private cookieHeader(requestUrl: string): string {
+    const request = new URL(requestUrl)
+    const host = request.hostname.toLowerCase()
+    const now = this.options.now()
+    return [...this.cookies.values()]
+      .filter((cookie) => {
+        if (cookie.expiresAt !== undefined && cookie.expiresAt <= now) return false
+        if (cookie.secure && request.protocol !== 'https:') return false
+        if (cookie.hostOnly ? cookie.domain !== host : !cookieDomainMatches(host, cookie.domain)) return false
+        return cookiePathMatches(request.pathname, cookie.path)
+      })
+      .sort((left, right) => right.path.length - left.path.length || left.name.localeCompare(right.name))
+      .map(({ name, value }) => `${name}=${value}`)
       .join('; ')
+  }
+
+  private storeCookie(cookie: GrokSSOCookie): void {
+    this.cookies.set(cookieKey(cookie), cookie)
   }
 }
 
@@ -402,6 +451,39 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 
 function headerValues(value: string | string[] | undefined): string[] {
   return Array.isArray(value) ? value : value ? [value] : []
+}
+
+function cookieAttributes(attributes: string[]): Record<string, string | undefined> {
+  const output: Record<string, string | undefined> = {}
+  for (const attribute of attributes) {
+    const trimmed = attribute.trim()
+    if (!trimmed) continue
+    const separator = trimmed.indexOf('=')
+    const name = (separator < 0 ? trimmed : trimmed.slice(0, separator)).trim().toLowerCase()
+    if (!name || Object.prototype.hasOwnProperty.call(output, name)) continue
+    output[name] = separator < 0 ? undefined : trimmed.slice(separator + 1).trim()
+  }
+  return output
+}
+
+function cookieKey(cookie: Pick<GrokSSOCookie, 'name' | 'domain' | 'path'>): string {
+  return `${cookie.name}\0${cookie.domain}\0${cookie.path}`
+}
+
+function cookieDomainMatches(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`)
+}
+
+function cookiePathMatches(requestPath: string, cookiePath: string): boolean {
+  if (requestPath === cookiePath) return true
+  if (!requestPath.startsWith(cookiePath)) return false
+  return cookiePath.endsWith('/') || requestPath.charAt(cookiePath.length) === '/'
+}
+
+function defaultCookiePath(pathname: string): string {
+  if (!pathname.startsWith('/') || pathname === '/') return '/'
+  const lastSlash = pathname.lastIndexOf('/')
+  return lastSlash <= 0 ? '/' : pathname.slice(0, lastSlash)
 }
 
 function stringValue(value: unknown): string {

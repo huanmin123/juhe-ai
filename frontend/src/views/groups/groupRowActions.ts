@@ -1,23 +1,25 @@
 import type { RowActionItem } from '@/components/rowActions'
-import type { GroupSummary } from '@/types/domain'
+import type { GroupListItem, GroupSummary } from '@/types/domain'
 
-export function isAuthorizedGroup(group: GroupSummary): boolean {
+type GroupRow = GroupListItem | GroupSummary
+
+export function isAuthorizedGroup(group: GroupRow): boolean {
   return group.accessType === 'authorized'
 }
 
-export function canEditGroup(group: GroupSummary): boolean {
-  return group.canEdit ?? (!group.isDefault && group.permissions?.canEdit !== false)
+export function canEditGroup(group: GroupRow): boolean {
+  return group.canEdit ?? (!group.isDefault && ('permissions' in group ? group.permissions?.canEdit !== false : true))
 }
 
-export function canDeleteGroup(group: GroupSummary): boolean {
-  return group.canDelete ?? (!group.isDefault && group.permissions?.canDelete !== false)
+export function canDeleteGroup(group: GroupRow): boolean {
+  return group.canDelete ?? (!group.isDefault && ('permissions' in group ? group.permissions?.canDelete !== false : true))
 }
 
-export function canReturnAuthorizedGroup(group: GroupSummary): boolean {
-  return group.canReturn ?? (isAuthorizedGroup(group) && group.permissions?.canReturnAuthorization === true)
+export function canReturnAuthorizedGroup(group: GroupRow): boolean {
+  return group.canReturn ?? (isAuthorizedGroup(group) && ('permissions' in group && group.permissions?.canReturnAuthorization === true))
 }
 
-export function groupRowActions(group: GroupSummary): RowActionItem[] {
+export function groupRowActions(group: GroupRow): RowActionItem[] {
   const actions: RowActionItem[] = []
   if (isAuthorizedGroup(group)) {
     if (canEditGroup(group)) {
@@ -34,7 +36,7 @@ export function groupRowActions(group: GroupSummary): RowActionItem[] {
   return actions
 }
 
-export function groupMoreActions(group: GroupSummary): RowActionItem[] {
+export function groupMoreActions(group: GroupRow): RowActionItem[] {
   if (isAuthorizedGroup(group)) return []
   const actions: RowActionItem[] = []
   if (canEditGroup(group)) {
@@ -43,7 +45,7 @@ export function groupMoreActions(group: GroupSummary): RowActionItem[] {
   return actions
 }
 
-function deleteGroupAction(group: GroupSummary): RowActionItem {
+function deleteGroupAction(group: GroupRow): RowActionItem {
   return {
     key: 'delete',
     label: '删除',
@@ -54,7 +56,7 @@ function deleteGroupAction(group: GroupSummary): RowActionItem {
   }
 }
 
-function returnAuthorizedGroupAction(group: GroupSummary): RowActionItem {
+function returnAuthorizedGroupAction(group: GroupRow): RowActionItem {
   return {
     key: 'return-authorization',
     label: '归还',

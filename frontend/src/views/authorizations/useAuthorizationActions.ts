@@ -20,6 +20,7 @@ import {
 } from './authorizationFormModel'
 
 interface UseAuthorizationActionsOptions {
+  authorizationRequestContext: ComputedRef<string>
   createAuthorizationScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   createExcludedGranteeIds: ComputedRef<string[]>
   createForm: AuthorizationCreateFormModel
@@ -43,6 +44,7 @@ interface UseAuthorizationActionsOptions {
 
 export function useAuthorizationActions(options: UseAuthorizationActionsOptions) {
   const {
+    authorizationRequestContext,
     createAuthorizationScopeParams,
     createExcludedGranteeIds,
     createForm,
@@ -62,6 +64,8 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
   } = options
   const { submitAction, submittingRef } = useSubmitAction('authorizations')
   const authorizationCreating = submittingRef('authorizations.create')
+  let expireDetailRequestToken = 0
+  let activeExpireDetailRequestSignature: string | undefined
 
   const createAuthorization = submitAction('authorizations.create', async () => {
     if (isManagementView.value && !createForm.ownerSystemAccountId) {
@@ -220,26 +224,50 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
   }
 
   async function openExpireModal(item: ResourceAuthorizationListItem) {
+    const requestToken = ++expireDetailRequestToken
+    const requestContext = authorizationRequestContext.value
+    const managementView = isManagementView.value
+    const resourceOwnerSystemAccountId = item.resourceOwnerSystemAccountId
+    const requestSignature = JSON.stringify([
+      requestContext,
+      managementView ? 'management' : 'self',
+      resourceOwnerSystemAccountId ?? '',
+      item.id
+    ])
+    activeExpireDetailRequestSignature = requestSignature
+    const isCurrent = () => requestToken === expireDetailRequestToken
+      && activeExpireDetailRequestSignature === requestSignature
+      && authorizationRequestContext.value === requestContext
+      && isManagementView.value === managementView
     let detail: ResourceAuthorizationSummary
     try {
-      detail = isManagementView.value
-        ? await api.authorizations.detail(item.id, authorizationOperationScopeParams(item))
+      detail = managementView
+        ? await api.authorizations.detail(item.id, resourceOwnerSystemAccountId ? { systemAccountId: resourceOwnerSystemAccountId } : undefined)
         : await api.myAuthorizations.detail(item.id)
     } catch (error) {
+      if (!isCurrent()) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载授权配置失败'))
       return
     }
+    if (!isCurrent()) return
     let nextForm: AuthorizationExpireFormModel
     try {
       nextForm = authorizationExpireFormFromSummary(detail)
     } catch (error) {
+      if (!isCurrent()) return
       message.error(extractApiErrorMessage(error, '授权数据结构异常，请清理后再编辑'))
       return
     }
+    if (!isCurrent()) return
     expireAuthorization.value = detail
     Object.assign(expireForm, nextForm)
     expireModalOpen.value = true
+  }
+
+  function invalidateExpireDetailRequest(): void {
+    expireDetailRequestToken += 1
+    activeExpireDetailRequestSignature = undefined
   }
 
   async function confirmExpireChange() {
@@ -299,6 +327,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     authorizationCreating,
     confirmExpireChange,
     createAuthorization,
-    handleActionMenuClick
+    handleActionMenuClick,
+    invalidateExpireDetailRequest
   }
 }

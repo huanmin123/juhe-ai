@@ -5,7 +5,8 @@ import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protoco
 import { badRequest, ok } from '../../shared/http.js'
 import { accountTestUnavailableMessage, findAccountForTestAsync } from '../../storage/repositories.js'
 import {
-  findAccountManualTestCapabilitiesContextAsync
+  findAccountManualTestCapabilitiesContextAsync,
+  findAccountManualTestListContextAsync
 } from '../../storage/account-manual-test-context.repository.js'
 import {
   createAccountTestTaskAsync,
@@ -36,7 +37,7 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       res.status(403).json({ message: '缺少系统账户上下文' })
       return
     }
-    const account = await findAccountManualTestCapabilitiesContextAsync(req.params.id, requestAccess)
+    const account = await findAccountManualTestListContextAsync(req.params.id, requestAccess)
     if (!account) {
       res.status(404).json({ message: '账户不存在' })
       return

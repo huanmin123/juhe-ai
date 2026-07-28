@@ -2,6 +2,22 @@ export type GatewayNonStreamJsonBody =
   | { status: 'valid'; value: unknown }
   | { status: 'empty' | 'not_json' | 'invalid' }
 
+export const gatewayNonStreamJsonBodyReceiver = Symbol('gatewayNonStreamJsonBodyReceiver')
+
+export interface GatewayNonStreamJsonBodyReceiver {
+  [gatewayNonStreamJsonBodyReceiver]?: (body: GatewayNonStreamJsonBody) => void
+}
+
+export function publishGatewayNonStreamJsonBody(
+  response: object,
+  body: GatewayNonStreamJsonBody | undefined
+): void {
+  if (body) {
+    const receiver = response as GatewayNonStreamJsonBodyReceiver
+    receiver[gatewayNonStreamJsonBodyReceiver]?.(body)
+  }
+}
+
 export function parseGatewayNonStreamJsonBody(
   bodyText: string | undefined,
   headers?: Headers
@@ -24,4 +40,3 @@ export function parseGatewayNonStreamJsonBody(
 export function gatewayNonStreamJsonBodyFromValue(value: unknown): GatewayNonStreamJsonBody {
   return { status: 'valid', value }
 }
-

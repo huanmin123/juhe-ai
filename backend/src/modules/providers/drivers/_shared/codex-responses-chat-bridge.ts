@@ -7,6 +7,7 @@ import type { AccountSupportedEndpointMode, ClientCompatibilityCapability } from
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../../../gateway/request/body.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
@@ -355,10 +356,13 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
         { statusCode: 503, type: 'server_overloaded' }
       )
     }
-    throw new GatewayRequestValidationError(
-      'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
-      'invalid_codex_bridge_json_body'
-    )
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw new GatewayRequestValidationError(
+        'Codex Responses 到 Chat 桥接要求请求体是有效 JSON 对象',
+        'invalid_codex_bridge_json_body'
+      )
+    }
+    throw error
   }
   if (parsed === undefined) {
     return {}

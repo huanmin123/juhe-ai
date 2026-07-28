@@ -1,18 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { request as httpsRequest } from 'node:https'
-
 import { runtimeConfig } from '../../config/runtime.js'
-import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
-import { HttpsProxyAgent } from 'https-proxy-agent'
-import { SocksProxyAgent } from 'socks-proxy-agent'
-import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
+import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 
 export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 export const ANTHROPIC_OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize'
-export const ANTHROPIC_OAUTH_TOKEN_URL = 'https://api.anthropic.com/v1/oauth/token'
-export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://localhost:1455/auth/callback'
+export const ANTHROPIC_OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
+export const ANTHROPIC_OAUTH_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback'
 export const ANTHROPIC_OAUTH_BROWSER_SCOPE = 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 export const ANTHROPIC_OAUTH_API_SCOPE = 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 export const anthropicOAuthResponseMaxBytes = 256 * 1024
@@ -105,21 +100,28 @@ export async function exchangeAnthropicAuthCode(input: {
   proxyUrl?: string
   signal?: AbortSignal
 }): Promise<AnthropicOAuthTokenInfo> {
-  const { code, state } = extractCodeAndState(input.callbackUrl)
-  const session = await consumeAnthropicOAuthSession({
+  const authorization = extractCodeAndState(input.callbackUrl)
+  const { code } = authorization
+  const sessionInput = {
     sessionId: input.sessionId,
-    state,
+    state: authorization.state,
+    requiresState: authorization.requiresState,
     ownerSystemAccountId: input.ownerSystemAccountId
-  })
+  }
+  const session = await readAnthropicOAuthSession(sessionInput)
 
-  return await requestAnthropicToken({
+  const tokenInfo = await requestAnthropicToken({
     code,
     redirect_uri: session.redirectUri,
     client_id: session.clientId,
     grant_type: 'authorization_code',
     code_verifier: session.codeVerifier,
-    state
+    state: authorization.state || session.state
   }, input.proxyUrl, input.signal)
+  if (!await anthropicOauthSessionStore().compareDeleteJson(input.sessionId, session)) {
+    throw new Error('Anthropic OAuth 会话已消费，请重新发起授权')
+  }
+  return tokenInfo
 }
 
 export async function refreshAnthropicAuthToken(input: {
@@ -158,21 +160,20 @@ export function sanitizeAnthropicOAuthErrorMessage(message: string): string {
   return sanitizeDiagnosticPayload(message)
 }
 
-async function consumeAnthropicOAuthSession(input: {
+async function readAnthropicOAuthSession(input: {
   sessionId: string
-  state: string
+  state?: string
+  requiresState: boolean
   ownerSystemAccountId?: string
 }): Promise<AnthropicOAuthSession> {
   const sessionStore = anthropicOauthSessionStore()
   const session = await sessionStore.getJson<AnthropicOAuthSession>(input.sessionId)
   if (!session) throw new Error('Anthropic OAuth 会话不存在或已过期')
-  if (!input.state || input.state !== session.state) throw new Error('Anthropic OAuth state 无效')
+  if (input.requiresState && !input.state) throw new Error('Anthropic OAuth 回调缺少 state')
+  if (input.state && input.state !== session.state) throw new Error('Anthropic OAuth state 无效')
   const expectedOwner = normalizeString(session.ownerSystemAccountId)
   const actualOwner = normalizeString(input.ownerSystemAccountId)
   if (expectedOwner && actualOwner !== expectedOwner) throw new Error('Anthropic OAuth session owner 归属无效')
-  if (!await sessionStore.compareDeleteJson(input.sessionId, session)) {
-    throw new Error('Anthropic OAuth 会话已消费，请重新发起授权')
-  }
   return session
 }
 
@@ -230,64 +231,55 @@ async function performAnthropicTokenRequest(
   signal?: AbortSignal
 ): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
-  const agent: HttpsProxyAgent<string> | SocksProxyAgent | undefined = resolvedProxyUrl ? createProxyAgent(resolvedProxyUrl) : undefined
-
-  return await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('请求已取消'))
-      return
-    }
-    const requestHandle = httpsRequest(ANTHROPIC_OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: request.headers,
-      agent,
-      timeout: anthropicOAuthRequestTimeoutMs
-    }, (response) => {
-      const body = new BoundedBufferCollector(anthropicOAuthResponseMaxBytes)
-      let settled = false
-      const settle = (error?: Error) => {
-        if (settled) return
-        settled = true
-        if (error) {
-          reject(error)
-          return
-        }
-        resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
-      }
-      response.on('data', (chunk: Buffer) => {
-        if (settled) return
-        body.append(chunk)
-        if (body.truncated) {
-          const error = new Error('Anthropic OAuth 令牌响应体过大')
-          settle(error)
-          requestHandle.destroy(error)
-        }
-      })
-      response.once('aborted', () => settle(new Error('Anthropic OAuth 令牌响应被中断')))
-      response.once('error', (error) => settle(error))
-      response.once('end', () => settle())
-      response.once('close', () => settle(new Error('Anthropic OAuth 令牌响应提前关闭')))
-    })
-    const abort = () => requestHandle.destroy(new Error('请求已取消'))
-    signal?.addEventListener('abort', abort, { once: true })
-    const cleanupAbort = () => signal?.removeEventListener('abort', abort)
-    requestHandle.on('error', (error) => {
-      cleanupAbort()
-      reject(error)
-    })
-    requestHandle.on('response', cleanupAbort)
-    requestHandle.on('close', cleanupAbort)
-    requestHandle.on('timeout', () => requestHandle.destroy(new Error('Anthropic OAuth 令牌请求超时')))
-    requestHandle.end(request.body)
+  if (signal?.aborted) throw new Error('请求已取消')
+  const headers = new Headers()
+  for (const [key, value] of Object.entries(request.headers)) headers.set(key, String(value))
+  const response = await requestProviderOAuthToken({
+    url: ANTHROPIC_OAUTH_TOKEN_URL,
+    headers,
+    body: request.body,
+    proxyUrl: resolvedProxyUrl,
+    signal,
+    timeoutMs: anthropicOAuthRequestTimeoutMs,
+    maxResponseBytes: anthropicOAuthResponseMaxBytes
   })
+  if (response.truncated) throw new Error('Anthropic OAuth 令牌响应体过大')
+  return { statusCode: response.statusCode, body: response.bodyText }
 }
 
-function extractCodeAndState(callbackUrl: string): { code: string; state: string } {
-  const url = new URL(normalizeString(callbackUrl))
-  const code = normalizeString(url.searchParams.get('code'))
-  const state = normalizeString(url.searchParams.get('state'))
-  if (!code || !state) throw new Error('Anthropic 回调 URL 必须包含 code 和 state')
-  return { code, state }
+function extractCodeAndState(callbackUrl: string): { code: string; state?: string; requiresState: boolean } {
+  const value = normalizeString(callbackUrl)
+  if (!value) throw new Error('Anthropic 授权结果不能为空')
+  let code = ''
+  let state = ''
+  let requiresState = false
+  try {
+    const url = new URL(value)
+    requiresState = true
+    const error = normalizeString(url.searchParams.get('error'))
+    if (error) throw new Error(normalizeString(url.searchParams.get('error_description')) || error)
+    code = normalizeString(url.searchParams.get('code'))
+    state = normalizeString(url.searchParams.get('state'))
+  } catch (error) {
+    if (error instanceof Error && !error.message.includes('Invalid URL')) throw error
+  }
+  if (!code || !state) {
+    const separator = value.lastIndexOf('#')
+    if (separator > 0) {
+      requiresState = true
+      code = normalizeString(value.slice(0, separator))
+      state = normalizeString(value.slice(separator + 1))
+    } else if (value.includes('=')) {
+      requiresState = true
+      const query = new URLSearchParams(value.replace(/^\?/u, ''))
+      code = normalizeString(query.get('code'))
+      state = normalizeString(query.get('state'))
+    } else {
+      code = value
+    }
+  }
+  if (!code || (requiresState && !state)) throw new Error('Anthropic 授权结果必须包含 code，URL 或查询形式还必须包含 state')
+  return { code, state: state || undefined, requiresState }
 }
 
 function finitePositiveInteger(value: unknown): number | undefined {

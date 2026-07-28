@@ -144,6 +144,22 @@ func TestClassifyAutomaticProbeOutcome(t *testing.T) {
 			want: ProbeOutcomeTaskFailure,
 		},
 		{
+			name: "empty hostname is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt("http://:8080/v1/responses"),
+				Transport:       IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
+			name: "out of range port is a task failure",
+			evidence: ProbeEvidence{
+				UpstreamAttempt: realAttempt("https://api.example.test:65536/v1/responses"),
+				Transport:       IncompleteTransport(ProbeTransportFailureConnection),
+			},
+			want: ProbeOutcomeTaskFailure,
+		},
+		{
 			name: "success without a real attempt is a task failure",
 			evidence: ProbeEvidence{
 				Success:   true,

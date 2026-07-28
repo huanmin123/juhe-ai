@@ -2,12 +2,12 @@ import { strict as assert } from 'node:assert'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
-import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
@@ -280,11 +280,13 @@ async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayB
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `普通客户端图像流预输出失败应转换为可重试 503，实际 ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/, '图像流预输出失败应返回稳定可重试错误码')
+  assert.equal(response.status, 200, `图像增量已经提交后应保持 SSE 200 并正常结束，实际 ${response.status}: ${text}`)
+  assert.match(text, /partial_image_b64/, '客户端应收到已经提交的图片增量')
+  assert.match(text, /response\.failed/, '图片增量后失败应补发标准 Responses 失败终态')
+  assert.match(text, /upstream_retryable_error/, '图片增量后失败应返回稳定可重试错误码')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到图像流数据的失败应写入 upstream_failed 审计')
+  assert.equal(detail.auditOutcome, 'stream_failed', '客户端已收到图像增量后的失败应写入 stream_failed 审计')
   await assertPayloadBodyContains(detail, 'client_request', 'audit image stream failure should keep request payload')
   await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
 }
@@ -422,6 +424,7 @@ function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: 
         api_key: upstreamKey,
         base_url: upstreamBaseUrl
       },
+      supportedModels: [model],
       groupId: group.id
     }, access)
     const activated = repositories.recordAccountHealthCheckSuccess(account.id, {
@@ -683,7 +686,7 @@ function cleanupAuditBlobFilesForTest(): void {
 }
 
 function auditBlobFilePath(storageKey: string): string {
-  return resolve(backendRoot, 'data', 'audit', 'blobs', storageKey)
+  return resolve(dirname(runtimeConfig.datasetDatabasePath), 'audit', 'blobs', storageKey)
 }
 
 function gatewayHeaders(apiKey: string, traceId: string): Record<string, string> {

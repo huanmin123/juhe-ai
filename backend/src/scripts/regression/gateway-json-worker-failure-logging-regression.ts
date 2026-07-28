@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { Request, Response } from 'express'
+import { gatewayRawBodyHardLimitBytes } from '../../modules/gateway/request/body.js'
 
 const backendRoot = resolve(import.meta.dirname, '../../../')
 const parserPath = resolve(backendRoot, 'dist/modules/gateway/request/json-parser.js')
@@ -21,10 +22,19 @@ const [{ logger }, parserModule, {
   import(pathToFileURL(requestContextPath).href) as Promise<typeof import('../../shared/request-context.js')>
 ])
 const {
+  canQueueGatewayJsonParsedBodyJobForTest,
   normalizeOpenAIOAuthCodexBodyInWorker,
+  normalizeOpenAIOAuthCodexParsedBodyInWorker,
   parseGatewayJsonBodyInWorker,
+  setGatewayJsonWorkerPoolSizeForTest,
   stopGatewayJsonParseWorker
 } = parserModule
+
+assert.equal(
+  canQueueGatewayJsonParsedBodyJobForTest(gatewayRawBodyHardLimitBytes),
+  true,
+  '合法的 64MiB Body 必须能进入 parsed-body worker，队列上限需包含固定作业开销'
+)
 
 const capturedErrors: Array<Record<string, unknown>> = []
 const capturedWarnings: Array<Record<string, unknown>> = []
@@ -63,6 +73,59 @@ try {
     capturedErrors.filter((event) => event.event === 'gateway_json_parse_worker_failed').length,
     0,
     '客户端提交无效 JSON 属于输入错误，不能记成 worker 基础设施故障'
+  )
+
+  const largeParsedBody = {
+    model: 'gpt-regression',
+    input: 'x'.repeat(512 * 1024),
+    reasoning: { effort: 'low' }
+  }
+  const normalizedForFirstAccount = await normalizeOpenAIOAuthCodexParsedBodyInWorker(
+    largeParsedBody,
+    Buffer.byteLength(JSON.stringify(largeParsedBody)),
+    {
+      inputHeaders: {},
+      account: {
+        apiKey: 'regression-first-key',
+        credentials: { reasoning_effort_override: 'high' }
+      },
+      identity: { systemAccountId: 'system-regression', groupId: 'group-regression' },
+      compact: false,
+      requestOverrideModelCapabilities: {
+        supportedServiceTiers: [],
+        supportedReasoningEfforts: ['high', 'medium']
+      }
+    }
+  )
+  const normalizedForSecondAccount = await normalizeOpenAIOAuthCodexParsedBodyInWorker(
+    largeParsedBody,
+    Buffer.byteLength(JSON.stringify(largeParsedBody)),
+    {
+      inputHeaders: {},
+      account: {
+        apiKey: 'regression-second-key',
+        credentials: { reasoning_effort_override: 'medium' }
+      },
+      identity: { systemAccountId: 'system-regression', groupId: 'group-regression' },
+      compact: false,
+      requestOverrideModelCapabilities: {
+        supportedServiceTiers: [],
+        supportedReasoningEfforts: ['high', 'medium']
+      }
+    }
+  )
+  assert.equal((JSON.parse(normalizedForFirstAccount.body ?? '{}') as { reasoning?: { effort?: string } }).reasoning?.effort, 'high')
+  assert.equal((JSON.parse(normalizedForSecondAccount.body ?? '{}') as { reasoning?: { effort?: string } }).reasoning?.effort, 'medium')
+  assert.equal(largeParsedBody.reasoning.effort, 'low', '生产 worker 结构化克隆不得污染请求级解析对象')
+  await assert.rejects(
+    normalizeOpenAIOAuthCodexParsedBodyInWorker([], 2, {
+      inputHeaders: {},
+      account: { apiKey: 'regression-test-key' },
+      identity: { systemAccountId: 'system-regression', groupId: 'group-regression' },
+      compact: false
+    }),
+    (error: unknown) => error instanceof Error
+      && (error as Error & { code?: string }).code === 'invalid_openai_oauth_codex_request'
   )
   const invalidJsonEvent = capturedInfos.find((event) => (
     event.event === 'gateway_json_worker_job_completed'
@@ -151,6 +214,30 @@ try {
   assert.match(String(workerError?.cause?.stack), /json-worker\.js/, 'worker envelope 必须保留原始 cause stack')
 
   await assert.rejects(
+    normalizeOpenAIOAuthCodexParsedBodyInWorker({
+      model: 'gpt-regression',
+      input: 'hello'
+    }, 1024, {
+      inputHeaders: {},
+      account: {
+        id: 'worker-account-scoped-error',
+        apiKey: 'token',
+        credentials: { service_tier_override: 'invalid value' }
+      },
+      identity: { systemAccountId: 'system', apiKeyId: 'api-key', groupId: 'group' },
+      compact: false,
+      requestOverrideModelCapabilities: {
+        supportedServiceTiers: ['priority'],
+        supportedReasoningEfforts: ['high']
+      }
+    }),
+    (error: unknown) => {
+      assert.equal((error as { accountScoped?: unknown }).accountScoped, true, 'worker 返回必须保留 accountScoped')
+      return true
+    }
+  )
+
+  await assert.rejects(
     withRequestContext(requestContext, () => parseGatewayJsonBodyInWorker(
       Buffer.from(JSON.stringify({ input: 'x'.repeat(8 * 1024 * 1024) }), 'utf8'),
       1
@@ -165,7 +252,7 @@ try {
   assert(failureEvent, 'worker 超时必须进入 logger.error 失败通道')
   assert.equal(failureEvent.failureClass, 'infrastructure')
   const timeoutError = failureEvent.err as { type?: unknown; message?: unknown; stack?: unknown } | undefined
-  assert.equal(timeoutError?.type, 'Error')
+  assert.equal(timeoutError?.type, 'GatewayJsonWorkerTimeoutError')
   assert.match(String(timeoutError?.message), /worker 1ms 超时/)
   assert.match(String(timeoutError?.stack), /worker 1ms 超时/)
   assert.match(String(failureEvent.jobId), /^gateway-json-worker:\d+$/, 'jobId 必须是稳定字符串标识')
@@ -177,6 +264,25 @@ try {
     '基础设施故障不能落入 warn 普通日志通道'
   )
 
+  await stopGatewayJsonParseWorker()
+  setGatewayJsonWorkerPoolSizeForTest(1)
+  try {
+    const blocker = parseGatewayJsonBodyInWorker(
+      Buffer.from(JSON.stringify({ input: 'x'.repeat(32 * 1024 * 1024) }), 'utf8'),
+      30_000
+    )
+    const queuedTimeoutStartedAt = performance.now()
+    await assert.rejects(
+      parseGatewayJsonBodyInWorker(Buffer.from('{"queued":true}', 'utf8'), 1),
+      /worker 1ms 超时/
+    )
+    assert.ok(performance.now() - queuedTimeoutStartedAt < 1_000, '排队等待必须纳入 worker 任务总超时')
+    await blocker
+  } finally {
+    await stopGatewayJsonParseWorker()
+    setGatewayJsonWorkerPoolSizeForTest(undefined)
+  }
+
   const completedValue = await withRequestContext(requestContext, () => parseGatewayJsonBodyInWorker(
     Buffer.from('{"model":"gpt-regression"}', 'utf8')
   )) as { model?: unknown }
@@ -184,6 +290,8 @@ try {
   const completedEvent = capturedInfos.find((event) => (
     event.event === 'gateway_json_worker_job_completed'
       && event.outcome === 'success'
+      && event.jobType === 'parse_json_body'
+      && event.parentId === requestId
   ))
   assert(completedEvent, '普通快速 worker 任务也必须记录 info 完成事件')
   assert.equal(completedEvent.traceId, traceId)

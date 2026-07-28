@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountListItem, AccountSummary, GroupOptionSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
@@ -159,11 +159,11 @@ export function groupByIdMap(groups: GroupOptionSummary[]): Map<string, GroupOpt
   return new Map(groups.map((group) => [group.id, group]))
 }
 
-export function accountByIdMap(accounts: AccountSummary[]): Map<string, AccountSummary> {
+export function accountByIdMap(accounts: AccountListItem[]): Map<string, AccountListItem> {
   return new Map(accounts.map((account) => [account.id, account]))
 }
 
-export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: GroupOptionSummary[]): Map<string, string> {
+export function groupNameByAccountIdMap(accounts: AccountListItem[], groups: GroupOptionSummary[]): Map<string, string> {
   const map = new Map<string, string>()
   const groupsById = groupByIdMap(groups)
   for (const account of accounts) {
@@ -213,17 +213,17 @@ export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCo
   return candidates.find((group) => group.isDefault)
 }
 
-export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
+export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountListItem): SelectOption[] {
   if (!account) return []
   return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
 }
 
-export function bindGroupTip(account?: AccountSummary): string {
+export function bindGroupTip(account?: AccountListItem): string {
   const ownerName = account?.ownerSystemAccountName || '其他用户'
   return `授权账户来自 ${ownerName}。绑定到你的兼容分组后，对应 API Key 才能调度使用。`
 }
 
-export function trafficMigrationTargetOptions(accounts: AccountSummary[], source: AccountSummary | undefined, groupIdForAccount: AccountGroupIdResolver, groupNameForAccount: AccountGroupIdResolver): SelectOption[] {
+export function trafficMigrationTargetOptions(accounts: AccountListItem[], source: AccountListItem | undefined, groupIdForAccount: AccountGroupIdResolver, groupNameForAccount: AccountGroupIdResolver): SelectOption[] {
   if (!source) return []
   return accounts
     .filter((account) => canUseAsTrafficMigrationTarget(source, account, groupIdForAccount))

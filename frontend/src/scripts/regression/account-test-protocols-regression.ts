@@ -74,6 +74,11 @@ const updateSelectableTestModelSource = sourceSection(
   'function updateSelectableTestModel',
   'function resetTestModels'
 )
+const loadTestEndpointModeOptionsSource = sourceSection(
+  accountTestModelsSource,
+  'async function loadTestEndpointModeOptions',
+  'function useFixedTestModel'
+)
 const applyTestEndpointModesSource = sourceSection(
   accountTestModelsSource,
   'function applyTestEndpointModes',
@@ -164,9 +169,11 @@ assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccoun
 assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 'Anthropic 与 Gemini 混合选择不应加载单一供应商默认模型')
 assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAccount]), 'Gemini 原生与 Gemini OpenAI Chat 混合选择不应被视为同一协议档案')
 
-assertIncludes(accountTestModelsSource, 'option.testEndpointModes', '保存账户测试应从同一次模型选项响应读取请求形态')
-assertIncludes(updateSelectableTestModelSource, 'normalizeEndpointModes(option.testEndpointModes)', '切换模型必须使用模型选项携带的模型与账户能力协议交集')
-assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes(endpointModes, preserveEndpointMode)', '切换模型必须通过统一入口更新请求形态')
+assertNotIncludes(accountTestModelsSource, 'option.testEndpointModes', '模型目录不得提前携带请求形态')
+assertIncludes(updateSelectableTestModelSource, 'applyTestEndpointModes([], false)', '切换模型必须立即清空前一模型的请求形态')
+assertIncludes(loadTestEndpointModeOptionsSource, 'testModelCapabilities(', '只有用户展开请求形态下拉时才定点读取当前模型能力')
+assertIncludes(loadTestEndpointModeOptionsSource, 'modelCapabilitiesCache', '当前模型能力应按账户版本与模型缓存')
+assertIncludes(loadTestEndpointModeOptionsSource, 'applyTestEndpointModes(endpointModes, true)', '能力返回后才能更新请求形态')
 assertIncludes(applyTestEndpointModesSource, "endpointModes[0] ?? 'account_default'", '切换模型后必须清除前一模型遗留的无效检查协议')
 assertIncludes(applyTestEndpointModesSource, 'endpointModes.includes(currentEndpointMode)', '补齐当前模型能力时必须保留仍然有效的列表默认请求形态')
 assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '前端不能自行按模型协议标签二次推导检查协议')

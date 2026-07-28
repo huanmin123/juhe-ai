@@ -2,7 +2,8 @@ import type { UpstreamAttempt } from './attempt.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
-import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
+import { parseGatewayProtocolErrorPayloadFromJsonValue } from '../protocols/registry.js'
+import { parseGatewayNonStreamJsonBody } from '../response/non-stream-json-body.js'
 
 type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
   upstream?: {
@@ -22,10 +23,16 @@ export function buildDiagnosticUpstreamError(
   const statusCode = isHttpStatusCode(lastAttempt.status) ? lastAttempt.status : 503
   const bodyText = lastAttempt.responseBodyText?.trim()
   const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
-  const parsedError = bodyText ? parseGatewayProtocolErrorPayload(lastAttempt, bodyText, responseHeaders) : {}
+  const parsedJsonBody = lastAttempt.parsedResponseBody
+    ?? (bodyText ? parseGatewayNonStreamJsonBody(bodyText, responseHeaders) : undefined)
+  const parsedPayload = parsedJsonBody?.status === 'valid' && isJsonObject(parsedJsonBody.value)
+    ? parsedJsonBody.value
+    : undefined
+  const parsedError = parsedPayload
+    ? parseGatewayProtocolErrorPayloadFromJsonValue(lastAttempt, parsedPayload)
+    : {}
   const errorMessage = sanitizeDiagnosticPayload(stringValue(parsedError.message) || lastAttempt.message || fallbackMessage)
   const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
-  const parsedPayload = bodyText ? parseJsonObject(bodyText) : undefined
   const payload = hasErrorObject(parsedPayload)
     ? sanitizeDiagnosticPayload(parsedPayload) as GatewayDiagnosticErrorPayload
     : gatewayErrorPayload(errorMessage, errorType) as GatewayDiagnosticErrorPayload
@@ -49,15 +56,8 @@ function headersFromObject(headers?: Record<string, string>): Headers {
   return output
 }
 
-function parseJsonObject(text: string): Record<string, unknown> | undefined {
-  try {
-    const value = JSON.parse(text) as unknown
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : undefined
-  } catch {
-    return undefined
-  }
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function hasErrorObject(value: Record<string, unknown> | undefined): boolean {

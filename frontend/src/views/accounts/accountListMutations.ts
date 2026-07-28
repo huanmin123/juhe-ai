@@ -1,12 +1,12 @@
 import { toRaw } from 'vue'
 
-import type { AccountBalanceSnapshot, AccountSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListItem } from '@/types/domain'
 
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
 }
 
-function effectiveAvailabilityWithPreservedRuntime(previous: AccountSummary, incoming: AccountSummary) {
+function effectiveAvailabilityWithPreservedRuntime(previous: AccountListItem, incoming: AccountListItem) {
   if (!previous.runtimeAvailability) return incoming.effectiveAvailability
   const incomingAvailability = incoming.effectiveAvailability
   if (incomingAvailability?.available === false && incomingAvailability.blockerScope !== 'runtime') {
@@ -16,9 +16,9 @@ function effectiveAvailabilityWithPreservedRuntime(previous: AccountSummary, inc
 }
 
 function presentationWithPreservedRuntime(
-  previous: AccountSummary,
-  incoming: AccountSummary,
-  effectiveAvailability: AccountSummary['effectiveAvailability']
+  previous: AccountListItem,
+  incoming: AccountListItem,
+  effectiveAvailability: AccountListItem['effectiveAvailability']
 ) {
   return effectiveAvailability?.blockerScope === 'runtime'
     ? previous.availabilityPresentation
@@ -26,9 +26,9 @@ function presentationWithPreservedRuntime(
 }
 
 export function replaceAccountListRow(
-  accounts: AccountSummary[],
-  updated: AccountSummary
-): AccountSummary[] {
+  accounts: AccountListItem[],
+  updated: AccountListItem
+): AccountListItem[] {
   const accountIndex = accounts.findIndex((account) => account.id === updated.id)
   if (accountIndex < 0) return accounts
 
@@ -47,30 +47,18 @@ export function replaceAccountListRow(
     runtimeAvailability: preserveRuntime ? current.runtimeAvailability : updated.runtimeAvailability,
     effectiveAvailability,
     availabilityPresentation,
-    qualityScore: current.qualityScore,
-    qualityState: current.qualityState,
-    qualityEwmaFirstTokenMs: current.qualityEwmaFirstTokenMs,
-    qualityRecentAvgFirstTokenMs: current.qualityRecentAvgFirstTokenMs,
-    qualityRecentRequestCount: current.qualityRecentRequestCount,
-    qualityRecentErrorCount: current.qualityRecentErrorCount,
-    qualityRecentSuccessRate: current.qualityRecentSuccessRate,
-    qualityLastErrorAt: current.qualityLastErrorAt,
-    qualityLastErrorMessage: current.qualityLastErrorMessage,
-    qualityUpdatedAt: current.qualityUpdatedAt,
     balanceSnapshot: current.balanceSnapshot,
     lastUsedAt: current.lastUsedAt,
-    todayUsage: current.todayUsage,
-    usage: current.usage,
-    oauthUsage: current.oauthUsage
+    todayUsage: current.todayUsage
   }
   return nextAccounts
 }
 
 export function replaceAccountBalanceSnapshot(
-  accounts: AccountSummary[],
+  accounts: AccountListItem[],
   accountId: string,
   snapshot: AccountBalanceSnapshot | undefined
-): AccountSummary[] {
+): AccountListItem[] {
   const accountIndex = accounts.findIndex((account) => account.id === accountId)
   if (accountIndex < 0) return accounts
 

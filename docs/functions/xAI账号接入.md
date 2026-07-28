@@ -8,7 +8,7 @@
 
 - xAI 作为独立 `providerCode = xai` 接入，默认档案为 `profile_xai_openai_v1`。
 - 当前同时接入官方 xAI API Key 和 Grok OAuth。API Key 复用 OpenAI v1 Chat Completions / Responses；OAuth 使用 Grok CLI OAuth 上游，只承接 Responses JSON / SSE。
-- Grok OAuth 支持浏览器 PKCE 回调、Refresh Token、直接 Access Token和 Grok Web SSO Cookie 转 device flow；SSO Cookie 只用于换取 OAuth token，不作为网关长期认证凭据。
+- Grok OAuth 支持浏览器 PKCE 回调、Refresh Token、直接 Access Token 和 Grok Web SSO Cookie 转 device flow；SSO Cookie 只用于换取 OAuth token，不作为网关长期认证凭据。
 - API Key 默认 Base URL 为 `https://api.x.ai/v1`，OAuth 默认 Base URL 为 `https://cli-chat-proxy.grok.com/v1`；两类账户都使用 `Authorization: Bearer`，但能力和请求准备语义按账户类型分开。
 
 ## 供应商与账户类型
@@ -39,9 +39,9 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 ## Grok OAuth 创建与维护
 
 - 浏览器授权使用 xAI OAuth authorization code + PKCE S256，会话保存 `state`、`nonce`、verifier、client、scope 和回调地址，30 分钟内一次性消费。
-- 前端可以粘贴完整 callback URL 或 Refresh Token 创建账户，也可直接录入当前可用的 Access Token；已有 OAuth 账户支持手动刷新和两种重新授权入口。
+- 前端可以粘贴完整 callback URL、裸 query、`code#state` 或 Refresh Token 创建账户，也可直接录入当前可用的 Access Token；已有 OAuth 账户支持手动刷新和两种重新授权入口。
 - 管理端使用 `/grok-oauth/*`，个人端使用 `/my-grok-oauth/*`；创建、刷新和重新授权都复用账户绑定代理。
-- OAuth 上游派发补充 Grok CLI 请求头，但不继承 GPT/Codex OAuth 的 compact、attestation、Chat 兼容或账户请求覆盖规则。
+- OAuth 上游只在目标主机精确为 `cli-chat-proxy.grok.com` 时补充 `X-XAI-Token-Auth: xai-grok-cli`、`x-grok-client-version: 0.2.93` 和 `xai-grok-workspace/0.2.93` User-Agent；`api.x.ai` 与自定义主机不得携带这些 CLI 身份头。它不继承 GPT/Codex OAuth 的 compact、attestation、Chat 兼容或账户请求覆盖规则。
 
 ### Grok Web SSO 转 OAuth
 
@@ -93,6 +93,7 @@ xAI 官方价格页列出的 Web Search、X Search 和 Code Execution 均按 5 U
 - `pnpm --filter juhe-ai-backend test:xai-provider` 覆盖 seed、API Key / OAuth 凭据、Chat / Responses URL、Grok OAuth Responses-only、Bearer / CLI header 和跨协议拒绝。
 - `pnpm --filter juhe-ai-backend test:grok-oauth-protocol-contract` 覆盖 OAuth 端点、PKCE、凭据构建、刷新保留与管理 / 个人路由挂载。
 - `pnpm --filter juhe-ai-backend test:grok-sso-device-flow` 覆盖 SSO 归一化、device flow、轮询、批量 3 并发和逐项结果契约。
+- `pnpm --filter juhe-ai-backend test:provider-oauth-mock-upstream-e2e` 离线覆盖 Grok authorize、nonce/PKCE、回调换票、刷新轮换和 System API 建号落库；它不证明真实 xAI 订阅资格或线上风控状态。
 - `pnpm --filter juhe-ai-frontend test:xai-account-capability` 覆盖 API Key / OAuth 创建类型、默认 Base URL、Responses-only、SSO Cookie 输入和中文文案。
 - `pnpm --filter juhe-ai-backend test:model-catalog` 覆盖 xAI 模型目录、价格来源和默认模型；真实 xAI E2E 需要用户提供临时 API Key，不能把密钥写入文档、日志或提交。
 

@@ -19,6 +19,11 @@ export type GroupEditForm = {
   schedulingPolicy: Required<GroupSchedulingPolicy>
 }
 
+type GroupFormSeed = Pick<
+  GroupSummary,
+  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType'
+> & Partial<Pick<GroupSummary, 'schedulingPolicy'>>
+
 export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefinition[]>) {
   const form = reactive<GroupEditForm>({
     name: '',
@@ -59,7 +64,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     })
   }
 
-  function applyGroupToForm(group: GroupSummary) {
+  function applyGroupToForm(group: GroupFormSeed) {
     const schedulingPolicy = group.groupType === 'high_concurrency'
       ? cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy, { requireComplete: true })
       : cloneHighConcurrencySchedulingPolicy()
@@ -83,7 +88,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     form.schedulingPolicy.clientIpConcurrencyLimit = value
   }
 
-  function groupFormPayload(targetGroup?: GroupSummary): Record<string, unknown> {
+  function groupFormPayload(targetGroup?: Pick<GroupSummary, 'accessType'>): Record<string, unknown> {
     const schedulingPolicy = cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
     const localSettings = {
       enabled: form.enabled,

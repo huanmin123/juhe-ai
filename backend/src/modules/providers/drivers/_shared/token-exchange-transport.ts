@@ -6,6 +6,7 @@ export interface TokenExchangeTransportInput {
   headers: Headers
   body: string
   proxyUrl?: string
+  signal?: AbortSignal
   timeoutMs: number
   maxResponseBytes: number
 }
@@ -27,7 +28,8 @@ export const requestTokenExchange: TokenExchangeTransport = async (input) => {
     body: input.body,
     proxyUrl: input.proxyUrl,
     timeoutMs: input.timeoutMs,
-    requestTimeoutMs: input.timeoutMs
+    requestTimeoutMs: input.timeoutMs,
+    signal: input.signal
   })
   const body = await readUpstreamBodyLimited(response.body, {
     maxBytes: input.maxResponseBytes

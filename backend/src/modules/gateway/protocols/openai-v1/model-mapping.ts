@@ -27,6 +27,7 @@ import {
   type GatewayRawBodyRequest
 } from '../../request/body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../request/json-parser.js'
@@ -273,7 +274,10 @@ async function parseOpenAIModelMappingJsonObjectBody(req: Request, signal?: Abor
         type: 'server_overloaded'
       })
     }
-    throw modelMappingRequestError('账号模型映射要求请求体是有效的 JSON 对象')
+    if (isGatewayJsonWorkerInvalidJsonError(error)) {
+      throw modelMappingRequestError('账号模型映射要求请求体是有效的 JSON 对象')
+    }
+    throw error
   }
 
   if (!isPlainObject(parsed)) {

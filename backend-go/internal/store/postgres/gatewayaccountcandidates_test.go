@@ -67,6 +67,7 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family",
 		"mapped_models.provider_code = model_mappings.provider_code",
 		"model_ranking.model_rank < 3",
+		"($11::text = '' OR group_accounts.account_id = $11::text)",
 		"ORDER BY model_ranking.model_rank ASC",
 		"mapped_models.model = model_mappings.upstream_model",
 		"group_accounts.local_fallback_enabled ASC",
@@ -74,7 +75,7 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"group_accounts.local_priority ASC",
 		"group_accounts.created_at ASC",
 		"group_accounts.account_id ASC",
-		"LIMIT $11",
+		"LIMIT $12",
 	} {
 		if !strings.Contains(listGatewayAccountCandidatesSQL, fragment) {
 			t.Fatalf("candidate SQL missing %q", fragment)

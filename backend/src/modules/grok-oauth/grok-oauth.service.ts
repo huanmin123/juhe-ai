@@ -1,14 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { request as httpsRequest } from 'node:https'
-
-import { HttpsProxyAgent } from 'https-proxy-agent'
-import { SocksProxyAgent } from 'socks-proxy-agent'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
-import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
+import { requestProviderOAuthToken } from '../providers/drivers/_shared/provider-oauth-token-transport.js'
 import { convertGrokSSOToOAuth } from './grok-sso-device-flow.js'
 
 export const GROK_OAUTH_AUTHORIZE_URL = 'https://auth.x.ai/oauth2/authorize'
@@ -124,20 +119,25 @@ export async function exchangeGrokAuthCode(input: {
 }): Promise<GrokOAuthTokenInfo> {
   const authorization = parseGrokAuthorizationInput(input.callbackUrl)
   if (!authorization.code) throw new GrokOAuthError('Grok OAuth 授权码不能为空', 400)
-  const session = await consumeGrokOAuthSession({
+  const sessionInput = {
     sessionId: input.sessionId,
     state: authorization.state,
     requiresState: authorization.requiresState,
     ownerSystemAccountId: input.ownerSystemAccountId
-  })
+  }
+  const session = await readGrokOAuthSession(sessionInput)
 
-  return await requestGrokToken({
+  const tokenInfo = await requestGrokToken({
     grant_type: 'authorization_code',
     client_id: session.clientId,
     code: authorization.code,
     redirect_uri: session.redirectUri,
     code_verifier: session.codeVerifier
   }, session.clientId, input.proxyUrl, input.signal)
+  if (!await grokOAuthSessionStore().compareDeleteJson(input.sessionId, session)) {
+    throw new GrokOAuthError('Grok OAuth 会话已消费，请重新发起授权', 400)
+  }
+  return tokenInfo
 }
 
 export async function refreshGrokAuthToken(input: {
@@ -194,7 +194,7 @@ export function sanitizeGrokOAuthErrorMessage(message: string): string {
   return sanitizeDiagnosticPayload(message)
 }
 
-async function consumeGrokOAuthSession(input: {
+async function readGrokOAuthSession(input: {
   sessionId: string
   state?: string
   requiresState: boolean
@@ -215,9 +215,6 @@ async function consumeGrokOAuthSession(input: {
   const actualOwner = normalizeString(input.ownerSystemAccountId)
   if (expectedOwner && actualOwner !== expectedOwner) {
     throw new GrokOAuthError('Grok OAuth session owner 归属无效', 400)
-  }
-  if (!await sessionStore.compareDeleteJson(sessionId, session)) {
-    throw new GrokOAuthError('Grok OAuth 会话已消费，请重新发起授权', 400)
   }
   return session
 }
@@ -324,55 +321,20 @@ async function performGrokTokenRequest(
   signal?: AbortSignal
 ): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
-  const agent: HttpsProxyAgent<string> | SocksProxyAgent | undefined = resolvedProxyUrl
-    ? createProxyAgent(resolvedProxyUrl)
-    : undefined
-
-  return await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('请求已取消'))
-      return
-    }
-    const requestHandle = httpsRequest(GROK_OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: request.headers,
-      agent,
-      timeout: grokOAuthRequestTimeoutMs
-    }, (response) => {
-      const body = new BoundedBufferCollector(grokOAuthResponseMaxBytes)
-      let settled = false
-      const settle = (error?: Error) => {
-        if (settled) return
-        settled = true
-        cleanupAbort()
-        if (error) reject(error)
-        else resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
-      }
-      response.on('data', (chunk: Buffer) => {
-        if (settled) return
-        body.append(chunk)
-        if (body.truncated) {
-          const error = new Error('Grok OAuth 令牌响应体过大')
-          settle(error)
-          requestHandle.destroy(error)
-        }
-      })
-      response.once('aborted', () => settle(new Error('Grok OAuth 令牌响应被中断')))
-      response.once('error', (error) => settle(error))
-      response.once('end', () => settle())
-      response.once('close', () => settle(new Error('Grok OAuth 令牌响应提前关闭')))
-    })
-    const abort = () => requestHandle.destroy(new Error('请求已取消'))
-    signal?.addEventListener('abort', abort, { once: true })
-    const cleanupAbort = () => signal?.removeEventListener('abort', abort)
-    requestHandle.on('error', (error) => {
-      cleanupAbort()
-      reject(error)
-    })
-    requestHandle.on('close', cleanupAbort)
-    requestHandle.on('timeout', () => requestHandle.destroy(new Error('Grok OAuth 令牌请求超时')))
-    requestHandle.end(request.body)
+  if (signal?.aborted) throw new Error('请求已取消')
+  const headers = new Headers()
+  for (const [key, value] of Object.entries(request.headers)) headers.set(key, String(value))
+  const response = await requestProviderOAuthToken({
+    url: GROK_OAUTH_TOKEN_URL,
+    headers,
+    body: request.body,
+    proxyUrl: resolvedProxyUrl,
+    signal,
+    timeoutMs: grokOAuthRequestTimeoutMs,
+    maxResponseBytes: grokOAuthResponseMaxBytes
   })
+  if (response.truncated) throw new Error('Grok OAuth 令牌响应体过大')
+  return { statusCode: response.statusCode, body: response.bodyText }
 }
 
 function hasExplicitEntitlementDenial(payload: Record<string, unknown>, body: string): boolean {

@@ -3,7 +3,7 @@ import { onBeforeUnmount, reactive, ref, type ComputedRef } from 'vue'
 import { message } from '@/lib/antd'
 import type { AccountDraftTestPayload, AccountTestPayload } from '@/api/client'
 import type {
-  AccountSummary,
+  AccountListItem,
   AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestTask
@@ -50,7 +50,7 @@ interface UseAccountTestModalOptions {
 const accountTestSessionHeartbeatIntervalMs = 5000
 
 interface AccountTestRunContext {
-  account: AccountSummary
+  account: AccountListItem
   controller: AbortController
   detached: boolean
   draftMode?: AccountTestDraftMode
@@ -74,7 +74,7 @@ interface AccountTestRunContext {
 export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testModalOpen = ref(false)
   const testRunning = ref(false)
-  const testingAccount = ref<AccountSummary>()
+  const testingAccount = ref<AccountListItem>()
   const activeSingleTestTask = ref<AccountTestTask>()
   const testResult = ref<AccountTestResult>()
   const draftTestingAccountPayload = ref<AccountDraftTestPayload['account']>()
@@ -105,7 +105,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   let activeTestRun: AccountTestRunContext | undefined
   let testViewToken = 0
 
-  async function openTestModal(account: AccountSummary): Promise<void> {
+  async function openTestModal(account: AccountListItem): Promise<void> {
     if (!canTestAccount(account)) {
       if (!isGatewayTestableAccountProfile(account)) {
         message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
@@ -130,7 +130,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function openDraftTestModal(
-    account: AccountSummary,
+    account: AccountListItem,
     draftPayload: AccountDraftTestPayload['account'],
     fixedHealthCheckModel: string,
     fixedEndpointModes?: AccountSupportedEndpointMode[]
@@ -139,7 +139,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function openSavedDraftTestModal(
-    account: AccountSummary,
+    account: AccountListItem,
     draftPayload: AccountDraftTestPayload['account'],
     fixedHealthCheckModel: string,
     fixedEndpointModes?: AccountSupportedEndpointMode[]
@@ -148,7 +148,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function openFixedDraftTestModal(
-    account: AccountSummary,
+    account: AccountListItem,
     draftPayload: AccountDraftTestPayload['account'],
     fixedHealthCheckModel: string,
     mode: AccountTestDraftMode,
@@ -329,7 +329,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     detachCurrentTestView()
   })
 
-  function beginTestView(account: AccountSummary): number {
+  function beginTestView(account: AccountListItem): number {
     const viewToken = nextTestViewToken()
     detachCurrentTestView()
     resetVisibleTestState()
@@ -348,7 +348,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function beginAccountTestRun(input: {
-    account: AccountSummary
+    account: AccountListItem
     draftMode?: AccountTestDraftMode
     draftPayload?: AccountDraftTestPayload['account']
     endpointMode: AccountSupportedEndpointMode
@@ -382,7 +382,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     return run
   }
 
-  async function restoreSavedAccountTestRun(account: AccountSummary, viewToken: number): Promise<void> {
+  async function restoreSavedAccountTestRun(account: AccountListItem, viewToken: number): Promise<void> {
     const snapshot = readAccountTestRunSession(options.isManagementView.value, account.id)
     if (
       !snapshot
@@ -649,7 +649,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   }
 
   function accountTestTaskScopeParams(
-    account: AccountSummary,
+    account: AccountListItem,
     activeDraftMode: AccountTestDraftMode | undefined,
     draftPayload: AccountDraftTestPayload['account'] | undefined
   ): { systemAccountId: string } | undefined {

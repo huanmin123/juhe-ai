@@ -71,7 +71,6 @@ function accountListOptions(options: ReturnType<typeof normalizeAiHealthListOpti
     pageSize: options.pageSize,
     keyword: options.keyword,
     sorts: [
-      { field: 'recentRequestCount' as const, order: 'desc' as const },
       { field: 'lastUsedAt' as const, order: 'desc' as const },
       { field: 'name' as const, order: 'asc' as const }
     ]

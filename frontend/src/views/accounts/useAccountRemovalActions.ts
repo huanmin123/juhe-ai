@@ -2,14 +2,14 @@ import type { ComputedRef, Ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
 import { canBatchDeleteAccount } from './accountRules'
 
 interface UseAccountRemovalActionsOptions {
-  accountById: ComputedRef<Map<string, AccountSummary>>
-  accounts: Ref<AccountSummary[]>
+  accountById: ComputedRef<Map<string, AccountListItem>>
+  accounts: Ref<AccountListItem[]>
   accountScopeParams: ComputedRef<AccountScopeParams>
   clearSelection: () => void
   extractApiErrorMessage: (error: unknown, fallback: string) => string
@@ -66,7 +66,7 @@ export function useAccountRemovalActions(options: UseAccountRemovalActionsOption
     }
   }
 
-  async function batchDeleteSelected(sourceAccounts: AccountSummary[]): Promise<void> {
+  async function batchDeleteSelected(sourceAccounts: AccountListItem[]): Promise<void> {
     const selected = sourceAccounts.filter(canBatchDeleteAccount)
     if (!selected.length) {
       message.warning('所选账户里没有可删除的自有账户')

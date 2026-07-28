@@ -18,6 +18,12 @@ export interface UsageSummaryScopeRequest {
   scopeId: string
 }
 
+export interface ApiKeyListUsageSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
 interface UsageSummaryAggregateRow {
   system_account_id: string
   scope_id: string
@@ -375,6 +381,33 @@ export async function loadApiKeyUsageSummariesForScopesAsync(scopes: UsageSummar
   return loadUsageSummariesForScopeRequestsAsync(scopes, 'api_key', statDate)
 }
 
+export function loadApiKeyListUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[]): Map<string, ApiKeyListUsageSummary> {
+  const normalizedScopes = uniqueUsageSummaryScopes(scopes)
+  if (!normalizedScopes.length || shouldSkipMissingSqliteStatsRead()) return new Map()
+  try {
+    const rows = getStatsDatabase().prepare(apiKeyListUsageSummarySql('usage_stats_totals', normalizedScopes.length))
+      .all(...apiKeyListUsageSummaryParams(normalizedScopes)) as unknown as ApiKeyListUsageSummaryRow[]
+    return apiKeyListUsageSummaryMap(rows)
+  } catch (error) {
+    if (isMissingSqliteStatsReadError(error)) return new Map()
+    throw error
+  }
+}
+
+export async function loadApiKeyListUsageSummariesForScopesAsync(scopes: UsageSummaryScopeRequest[]): Promise<Map<string, ApiKeyListUsageSummary>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadApiKeyListUsageSummariesForScopes(scopes)
+  }
+  const normalizedScopes = uniqueUsageSummaryScopes(scopes)
+  if (!normalizedScopes.length) return new Map()
+  const client = await getUsageSummaryDatabaseClient()
+  const rows = await client.query<ApiKeyListUsageSummaryRow>(
+    apiKeyListUsageSummarySql(statsTable(client, 'usage_stats_totals'), normalizedScopes.length),
+    apiKeyListUsageSummaryParams(normalizedScopes)
+  )
+  return apiKeyListUsageSummaryMap(rows)
+}
+
 export function loadAuthorizationUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], scopeType: AuthorizationUsageScopeType, statDate?: string): Map<string, AccountUsageSummary> {
   return loadUsageSummariesForScopeRequests(scopes, scopeType, statDate)
 }
@@ -402,6 +435,53 @@ function statsTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(statsSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+interface ApiKeyListUsageSummaryRow {
+  row_key: string
+  request_count: number | string | null
+  total_tokens: number | string | null
+  total_cost: number | string | null
+}
+
+function uniqueUsageSummaryScopes(scopes: UsageSummaryScopeRequest[]): UsageSummaryScopeRequest[] {
+  const unique = new Map<string, UsageSummaryScopeRequest>()
+  for (const scope of scopes) {
+    if (!scope.rowKey || !scope.systemAccountId || !scope.scopeId) continue
+    unique.set(`${scope.rowKey}\u0000${scope.systemAccountId}\u0000${scope.scopeId}`, scope)
+  }
+  return [...unique.values()]
+}
+
+function apiKeyListUsageSummarySql(tableName: string, scopeCount: number): string {
+  const requestedRows = Array.from({ length: scopeCount }, () => '(?, ?, ?)').join(', ')
+  return `
+    WITH requested(row_key, system_account_id, scope_id) AS (
+      VALUES ${requestedRows}
+    )
+    SELECT
+      requested.row_key,
+      COALESCE(usage_totals.request_count, 0) AS request_count,
+      COALESCE(usage_totals.input_tokens, 0) + COALESCE(usage_totals.output_tokens, 0) AS total_tokens,
+      COALESCE(usage_totals.total_cost_usd, 0) AS total_cost
+    FROM requested
+    LEFT JOIN ${tableName} usage_totals
+      ON usage_totals.system_account_id = requested.system_account_id
+      AND usage_totals.scope_type = 'api_key'
+      AND usage_totals.scope_id = requested.scope_id
+  `
+}
+
+function apiKeyListUsageSummaryParams(scopes: UsageSummaryScopeRequest[]): string[] {
+  return scopes.flatMap((scope) => [scope.rowKey, scope.systemAccountId, scope.scopeId])
+}
+
+function apiKeyListUsageSummaryMap(rows: ApiKeyListUsageSummaryRow[]): Map<string, ApiKeyListUsageSummary> {
+  return new Map(rows.map((row) => [row.row_key, {
+    requestCount: Number(row.request_count ?? 0),
+    totalTokens: Number(row.total_tokens ?? 0),
+    totalCost: Number(row.total_cost ?? 0)
+  }]))
 }
 
 function shouldSkipMissingSqliteStatsRead(): boolean {

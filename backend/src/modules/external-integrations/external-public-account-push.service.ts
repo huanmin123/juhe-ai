@@ -891,11 +891,7 @@ export async function updatePublicApiKeyAsync(input: PublicApiKeyUpdateInput): P
   }
   assertTargetActive(target.account)
   const access = targetAccess(target.account.id)
-  const apiKey = await findApiKeySummaryAsync(apiKeyId, access)
-  if (!apiKey) {
-    return publicApiKeyResponse('not_found', target, null)
-  }
-  const updated = await updateApiKeyAsync(apiKey.id, publicApiKeyPayload(input, true), access)
+  const updated = await updateApiKeyAsync(apiKeyId, publicApiKeyPayload(input, true), access)
   return publicApiKeyResponse(updated ? 'updated' : 'not_found', target, updated ? sanitizeApiKey(updated) : null)
 }
 

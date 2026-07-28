@@ -34,7 +34,7 @@ assert.throws(
   /不支持凭据写入/,
   '没有可信自动轮换 assertion source 时不得接受 workload_identity 凭据'
 )
-assert.equal(anthropicProviderDriver.prepareAccountBeforeDispatch, undefined, 'Anthropic driver 不得暴露 WIF token exchange 运行钩子')
+assert.equal(typeof anthropicProviderDriver.prepareAccountBeforeDispatch, 'function', 'Anthropic driver 必须暴露 OAuth access token 自动刷新钩子')
 
 const anthropicOAuth = normalizeAccountCredentialsForWrite('oauth', {
   access_token: 'anthropic-access-token',
@@ -191,12 +191,44 @@ const anthropicMessagesRequest = requestFixture('/v1/messages', {
 const anthropicOauthParts = await anthropicProviderDriver.buildUpstreamRequestParts(anthropicMessagesRequest, anthropicOauthAccount, { systemAccountId: 'sys', groupId: 'grp' })
 assert.equal(anthropicOauthParts.headers.get('authorization'), 'Bearer anthropic-access-token')
 assert.equal(anthropicOauthParts.headers.get('x-api-key'), null)
+assert.match(anthropicOauthParts.headers.get('anthropic-beta') ?? '', /(?:^|,)oauth-2025-04-20(?:,|$)/u, 'Anthropic OAuth 请求必须补齐 oauth beta')
+assert.match(anthropicOauthParts.headers.get('anthropic-beta') ?? '', /(?:^|,)claude-code-20250219(?:,|$)/u, 'Anthropic OAuth 请求必须使用 Claude Code 订阅流量契约')
+assert.equal(anthropicOauthParts.headers.get('content-type'), 'application/json')
+assert.deepEqual(
+  Object.fromEntries([
+    'user-agent',
+    'x-stainless-lang',
+    'x-stainless-package-version',
+    'x-stainless-os',
+    'x-stainless-arch',
+    'x-stainless-runtime',
+    'x-stainless-runtime-version',
+    'x-stainless-retry-count',
+    'x-stainless-timeout',
+    'x-app',
+    'anthropic-dangerous-direct-browser-access'
+  ].map((name) => [name, anthropicOauthParts.headers.get(name)])),
+  {
+    'user-agent': 'claude-cli/2.1.161 (external, cli)',
+    'x-stainless-lang': 'js',
+    'x-stainless-package-version': '0.94.0',
+    'x-stainless-os': 'Linux',
+    'x-stainless-arch': 'arm64',
+    'x-stainless-runtime': 'node',
+    'x-stainless-runtime-version': 'v24.3.0',
+    'x-stainless-retry-count': '0',
+    'x-stainless-timeout': '600',
+    'x-app': 'cli',
+    'anthropic-dangerous-direct-browser-access': 'true'
+  },
+  'Anthropic OAuth 绑定后的首次请求必须完整模拟 Claude CLI identity，不能只携带 beta'
+)
 
 const anthropicOAuthRefreshSource = readFileSync(resolve('src/modules/anthropic-oauth/anthropic-oauth.routes.ts'), 'utf8')
 assert.match(anthropicOAuthRefreshSource, /post\('\/accounts\/:id\/refresh-token'[\s\S]*Anthropic OAuth 账户缺少 Refresh Token/, 'Anthropic OAuth 手动刷新必须拒绝缺少 refresh_token 的账户')
-assert.match(anthropicOAuthRefreshSource, /refreshAnthropicAuthToken\([\s\S]*refreshToken,[\s\S]*clientId: stringCredential\(account\.credentials, 'client_id'\)/, 'Anthropic OAuth 手动刷新必须复用已保存 refresh_token 和 client_id')
-assert.match(anthropicOAuthRefreshSource, /clearAccountFailureStateAsync\(account\.id, requestAccess\)/, 'Anthropic OAuth 手动刷新成功后必须清理旧失败态')
-assert.match(anthropicOAuthRefreshSource, /sanitizeAccountCredentialCarrierResponse\(restoredAccount\)/, 'Anthropic OAuth 手动刷新响应必须继续走凭据脱敏输出')
+assert.match(anthropicOAuthRefreshSource, /runWithProviderOAuthRefreshLock\([\s\S]*findEditableAnthropicOAuthAccount\(account\.id, requestAccess\)[\s\S]*refreshAnthropicAuthToken\([\s\S]*refreshToken: currentRefreshToken,[\s\S]*clientId: stringCredential\(current\.credentials, 'client_id'\)/, 'Anthropic OAuth 手动刷新必须在共享锁内重新读取并使用当前 refresh_token 和 client_id')
+assert.doesNotMatch(anthropicOAuthRefreshSource, /clearAccountFailureStateAsync/, 'Anthropic OAuth 手动刷新不得无 provenance 清除账户业务状态')
+assert.match(anthropicOAuthRefreshSource, /sanitizeAccountCredentialCarrierResponse\(updatedAccount\)/, 'Anthropic OAuth 手动刷新响应必须继续走凭据脱敏输出')
 
 console.log('provider auth account credential regression passed')
 

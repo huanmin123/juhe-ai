@@ -1,5 +1,5 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
-import type { AccountSummary, AccountSupportedEndpointMode, AccountTestResult } from '@/types/domain'
+import type { AccountListItem, AccountSupportedEndpointMode, AccountTestResult } from '@/types/domain'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import {
   accountTestEndpointModesForAccount,
@@ -15,7 +15,7 @@ export type AccountTestForm = {
 
 export function buildAccountTestPayload(
   form: AccountTestForm,
-  account?: AccountSummary,
+  account?: AccountListItem,
   draftAccount?: AccountDraftTestAccountPayload
 ): { model?: string; testEndpointMode?: AccountSupportedEndpointMode } {
   const payload: { model?: string; testEndpointMode?: AccountSupportedEndpointMode } = {}
@@ -32,20 +32,20 @@ export function buildAccountTestPayload(
   return payload
 }
 
-export function accountTestSuccessMessage(account: AccountSummary, result: AccountTestResult): string {
+export function accountTestSuccessMessage(account: AccountListItem, result: AccountTestResult): string {
   return `${account.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`
 }
 
-export function accountTestErrorMessage(account: AccountSummary, result: AccountTestResult): string {
+export function accountTestErrorMessage(account: AccountListItem, result: AccountTestResult): string {
   return `${account.name}: ${result.message}`
 }
 
-export function stoppedAccountTestMessage(account: AccountSummary): string {
+export function stoppedAccountTestMessage(account: AccountListItem): string {
   return `${account.name}: 已停止测试`
 }
 
 export function failedAccountTestResult(input: {
-  account: AccountSummary
+  account: AccountListItem
   error: unknown
   model: string
   testEndpointMode: AccountTestEndpointMode
@@ -68,7 +68,7 @@ export function failedAccountTestResult(input: {
 }
 
 export function effectiveAccountTestEndpointMode(
-  account: AccountSummary,
+  account: AccountListItem,
   testEndpointMode: AccountTestEndpointMode,
   draftAccount?: AccountDraftTestAccountPayload
 ): AccountSupportedEndpointMode | undefined {

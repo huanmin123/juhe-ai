@@ -72,6 +72,7 @@ func (s *Store) ListGatewayAccountCandidates(ctx context.Context, input port.Gat
 		input.Access.GroupAuthorizationID,
 		input.RequestedModel,
 		input.EndpointFamily,
+		input.AccountID,
 		limit,
 	)
 	if err != nil {
@@ -208,6 +209,7 @@ func normalizeGatewayCandidateInput(input *port.GatewayAccountCandidateListInput
 	input.Access.CallerSystemAccountID = strings.TrimSpace(input.Access.CallerSystemAccountID)
 	input.Access.ProviderCode = strings.TrimSpace(input.Access.ProviderCode)
 	input.Access.GroupAuthorizationID = strings.TrimSpace(input.Access.GroupAuthorizationID)
+	input.AccountID = strings.TrimSpace(input.AccountID)
 	input.RequestedModel = strings.TrimSpace(input.RequestedModel)
 	input.EndpointFamily = strings.TrimSpace(input.EndpointFamily)
 	if input.Now.IsZero() {

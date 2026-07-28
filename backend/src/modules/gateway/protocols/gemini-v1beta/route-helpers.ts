@@ -10,6 +10,7 @@ import {
   GEMINI_MODELS_FAMILY,
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 } from '../../../../domain/provider-protocol.js'
+import { requestStream } from '../../request/metadata.js'
 
 export type GeminiUpstreamAccount = DispatchAccountSecret
 
@@ -130,7 +131,7 @@ function mergeGeminiQuery(target: URLSearchParams, source: URLSearchParams, stre
 function requestIndicatesSse(req: Request): boolean {
   const query = new URLSearchParams((req.originalUrl || req.path || '').split('?', 2)[1] ?? '')
   if (query.get('stream')?.toLowerCase() === 'true') return true
-  if (req.body && typeof req.body === 'object' && (req.body as Record<string, unknown>).stream === true) return true
+  if (requestStream(req)) return true
   const accept = req.headers.accept
   return typeof accept === 'string' && accept.toLowerCase().includes('text/event-stream')
 }

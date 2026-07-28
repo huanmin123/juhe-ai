@@ -147,15 +147,17 @@ export async function recordFailedUpstreamAttempt(
     errorMessage?: string
     failureAttribution?: UsageFailureAttribution
     interpretUpstreamSemantics?: boolean
+    errorPayload?: Record<string, unknown>
   }
 ): Promise<void> {
   const model = requestModel(req)
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
   const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
   const interpretUpstreamSemantics = input.interpretUpstreamSemantics !== false
-  const errorPayload = interpretUpstreamSemantics && input.bodyText && input.headers instanceof Headers
-    ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
-    : {}
+  const errorPayload = input.errorPayload
+    ?? (interpretUpstreamSemantics && input.bodyText && input.headers instanceof Headers
+      ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
+      : {})
   const errorCode = sanitizeOptionalDiagnosticMessage(
     typeof errorPayload.code === 'string'
       ? errorPayload.code

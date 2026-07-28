@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import * as openAIOAuthService from '../../modules/openai-oauth/openai-oauth.service.js'
 import {
@@ -116,11 +117,11 @@ assert.equal(authorizeUrl.searchParams.get('code_challenge'), 'contract-challeng
 assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256')
 assert.equal(
   authorizeUrl.searchParams.get('scope'),
-  'openid profile email offline_access api.connectors.read api.connectors.invoke'
+  'openid profile email offline_access'
 )
 assert.equal(authorizeUrl.searchParams.get('id_token_add_organizations'), 'true')
 assert.equal(authorizeUrl.searchParams.get('codex_cli_simplified_flow'), 'true')
-assert.equal(authorizeUrl.searchParams.get('originator'), 'codex_cli_rs')
+assert.equal(authorizeUrl.searchParams.has('originator'), false)
 
 const buildTokenHttpRequest = serviceExports.buildOpenAIOAuthTokenHttpRequest as BuildTokenHttpRequest
 const authorizationCodeRequest = buildTokenHttpRequest({
@@ -144,22 +145,84 @@ assert.deepEqual(Object.fromEntries(new URLSearchParams(authorizationCodeRequest
 const refreshRequest = buildTokenHttpRequest({
   grant_type: 'refresh_token',
   refresh_token: 'contract-refresh-token',
-  client_id: 'contract-client'
+  client_id: 'contract-client',
+  scope: 'openid profile email'
 })
-assert.equal(headerValue(refreshRequest.headers, 'content-type'), 'application/json')
+assert.equal(headerValue(refreshRequest.headers, 'content-type'), 'application/x-www-form-urlencoded')
+assert.equal(headerValue(refreshRequest.headers, 'accept'), 'application/json')
 assert.equal(headerValue(refreshRequest.headers, 'content-length'), Buffer.byteLength(refreshRequest.body))
-assert.equal(headerValue(refreshRequest.headers, 'originator'), 'Codex Desktop')
-assert.equal(headerValue(refreshRequest.headers, 'user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
-assert.deepEqual(JSON.parse(refreshRequest.body), {
+assert.equal(headerValue(refreshRequest.headers, 'originator'), undefined)
+assert.equal(headerValue(refreshRequest.headers, 'user-agent'), undefined)
+assert.deepEqual(Object.fromEntries(new URLSearchParams(refreshRequest.body)), {
   grant_type: 'refresh_token',
   refresh_token: 'contract-refresh-token',
-  client_id: 'contract-client'
+  client_id: 'contract-client',
+  scope: 'openid profile email'
 })
-assert(!Object.hasOwn(JSON.parse(refreshRequest.body), 'scope'), 'refresh token 请求不得携带 scope')
 
-console.log('OpenAI OAuth 协议契约回归通过：authorize 参数、授权码表单、refresh JSON 与 token headers 均对齐当前 Codex')
+const customClientCredentials = openAIOAuthService.buildOpenAIOAuthCredentials({
+  accessToken: 'custom-client-access-token',
+  refreshToken: 'rotated-custom-client-refresh-token',
+  expiresIn: 3600,
+  expiresAt: '2026-07-28T12:00:00.000Z',
+  clientId: 'custom-mobile-client'
+})
+assert.equal(customClientCredentials.client_id, 'custom-mobile-client', 'Refresh Token 实际兑换使用的 client_id 必须进入持久化凭据')
+
+const routesSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth.routes.ts', import.meta.url), 'utf8')
+const createFromRefreshRoute = sourceBetween(
+  routesSource,
+  "openAIOAuthRouter.post('/create-from-refresh-token'",
+  "openAIOAuthRouter.post('/accounts/:id/refresh-token'"
+)
+assert.match(createFromRefreshRoute, /clientId:\s*parsed\.data\.clientId/u, 'Refresh Token 建号必须把可选 clientId 传给 token endpoint')
+assert.match(createFromRefreshRoute, /clientId:\s*normalizedText\(bodyField\(req, 'clientId'\)\)/u, 'clientId 必须参与建号幂等指纹')
+
+const reauthorizeFromCodeRoute = sourceBetween(
+  routesSource,
+  "openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code'",
+  "openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token'"
+)
+const reauthorizeFromRefreshRoute = sourceBetween(
+  routesSource,
+  "openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token'",
+  '\ntype OpenAIOAuthProvider'
+)
+for (const [name, source] of [
+  ['授权码重授权', reauthorizeFromCodeRoute],
+  ['Refresh Token 重授权', reauthorizeFromRefreshRoute]
+] as const) {
+  assert.match(source, /runWithProviderOAuthRefreshLock\(GPT_VENDOR_CODE, account\.id/u, `${name}必须复用供应商 OAuth 刷新锁`)
+  assert.match(source, /findEditableOpenAIOAuthAccount\(account\.id, requestAccess\)/u, `${name}必须在锁内重读账户`)
+  assert.match(source, /oauthTokensChanged\(account\.credentials, current\.credentials\)/u, `${name}必须拒绝覆盖锁等待期间已更新的 token`)
+  assert.doesNotMatch(source, /isBlockedOpenAIOAuthErrorAccount/u, `${name}不得阻断真正需要重新授权的 error 账户`)
+}
+assert.match(
+  reauthorizeFromRefreshRoute,
+  /clientId:\s*parsed\.data\.clientId \?\? stringCredential\(current\.credentials, 'client_id'\)/u,
+  'Refresh Token 重授权必须优先使用用户提交的 clientId，缺省时沿用锁内最新账户 client_id'
+)
+
+const credentialUpdateSource = sourceBetween(
+  routesSource,
+  'async function updateOpenAIOAuthAccountCredentials',
+  '\nexport function buildReauthorizedOpenAIOAuthCredentials'
+)
+assert.match(credentialUpdateSource, /expectedConfigRevision:\s*account\.configRevision \?\? 1/u, '重授权写回必须使用 config revision CAS')
+assert.match(credentialUpdateSource, /updated\.status !== 'error' \|\| !updated\.lastErrorCode/u, '非 error 账户不得执行无条件失败态清理')
+assert.match(credentialUpdateSource, /expectedLastErrorCodes:\s*\[updated\.lastErrorCode\]/u, '重授权成功后只能按写回时的旧错误码清理失败态')
+
+console.log('OpenAI OAuth 协议契约回归通过：authorize、token wire、自定义 clientId 与重授权并发写回均符合契约')
 
 function headerValue(headers: Record<string, string | number>, name: string): string | number | undefined {
   const entry = Object.entries(headers).find(([headerName]) => headerName.toLowerCase() === name.toLowerCase())
   return entry?.[1]
+}
+
+function sourceBetween(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  assert.notEqual(start, -1, `缺少源码起点：${startMarker}`)
+  assert.notEqual(end, -1, `缺少源码终点：${endMarker}`)
+  return source.slice(start, end)
 }

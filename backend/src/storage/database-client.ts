@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 
 import { postgresTransactionLocalTimeoutSetSql, type PostgresQueryClient, type PostgresPoolClient } from './postgres-client.js'
@@ -41,6 +42,14 @@ interface PostgresTransactionQueryState {
   tail: Promise<unknown>
 }
 
+interface SqliteTransactionContext {
+  database: DatabaseSync
+  active: boolean
+}
+
+const sqliteTransactionContext = new AsyncLocalStorage<SqliteTransactionContext>()
+const sqliteTransactionTails = new WeakMap<DatabaseSync, Promise<void>>()
+
 export const sqliteDialect: SqlDialect = {
   driver: 'sqlite',
   placeholder: () => '?',
@@ -69,7 +78,7 @@ export const postgresDialect: SqlDialect = {
 }
 
 export function createSqliteDatabaseClient(database: DatabaseSync): DatabaseClient {
-  return createSqliteDatabaseClientInternal(database, false)
+  return createSqliteDatabaseClientInternal(database)
 }
 
 export function createPostgresDatabaseClient(client: PostgresPoolLike): DatabaseClient {
@@ -154,19 +163,25 @@ export function convertQuestionPlaceholdersToPostgres(sql: string, startIndex = 
   return output
 }
 
-function createSqliteDatabaseClientInternal(database: DatabaseSync, transactionActive: boolean): DatabaseClient {
+function createSqliteDatabaseClientInternal(database: DatabaseSync): DatabaseClient {
   const client: DatabaseClient = {
     driver: 'sqlite',
     dialect: sqliteDialect,
     async query<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
+      const transactionBoundary = sqliteTransactionBoundary(database)
+      if (transactionBoundary) await transactionBoundary
       const bound = sqliteDialect.bind(sql, params)
       return database.prepare(bound.sql).all(...toSqliteValues(bound.params)) as unknown as T[]
     },
     async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
+      const transactionBoundary = sqliteTransactionBoundary(database)
+      if (transactionBoundary) await transactionBoundary
       const bound = sqliteDialect.bind(sql, params)
       return database.prepare(bound.sql).get(...toSqliteValues(bound.params)) as unknown as T | undefined
     },
     async execute(sql: string, params: readonly unknown[] = []): Promise<ExecuteResult> {
+      const transactionBoundary = sqliteTransactionBoundary(database)
+      if (transactionBoundary) await transactionBoundary
       const bound = sqliteDialect.bind(sql, params)
       const result = database.prepare(bound.sql).run(...toSqliteValues(bound.params))
       return {
@@ -175,21 +190,60 @@ function createSqliteDatabaseClientInternal(database: DatabaseSync, transactionA
       }
     },
     async transaction<T>(operation: (tx: DatabaseClient) => Promise<T>): Promise<T> {
-      if (transactionActive || database.isTransaction) {
-        return operation(createSqliteDatabaseClientInternal(database, true))
+      const activeContext = sqliteTransactionContext.getStore()
+      if (activeContext?.active && activeContext.database === database) {
+        return operation(createSqliteDatabaseClientInternal(database))
       }
-      database.exec('BEGIN IMMEDIATE')
-      try {
-        const result = await operation(createSqliteDatabaseClientInternal(database, true))
-        database.exec('COMMIT')
-        return result
-      } catch (error) {
-        database.exec('ROLLBACK')
-        throw error
-      }
+      return enqueueSqliteTransaction(database, operation)
     }
   }
   return client
+}
+
+function enqueueSqliteTransaction<T>(
+  database: DatabaseSync,
+  operation: (tx: DatabaseClient) => Promise<T>
+): Promise<T> {
+  const previous = sqliteTransactionTails.get(database) ?? Promise.resolve()
+  const run = previous.catch(() => undefined).then(async () => {
+    const context: SqliteTransactionContext = { database, active: true }
+    return sqliteTransactionContext.run(context, async () => {
+      let transactionStarted = false
+      try {
+        database.exec('BEGIN IMMEDIATE')
+        transactionStarted = true
+        const result = await operation(createSqliteDatabaseClientInternal(database))
+        database.exec('COMMIT')
+        transactionStarted = false
+        return result
+      } catch (error) {
+        if (transactionStarted && database.isTransaction) {
+          try {
+            database.exec('ROLLBACK')
+          } catch {
+            // Preserve the operation failure that caused the rollback.
+          }
+        }
+        throw error
+      } finally {
+        context.active = false
+      }
+    })
+  })
+  const tail = run.then(() => undefined, () => undefined)
+  sqliteTransactionTails.set(database, tail)
+  void tail.then(() => {
+    if (sqliteTransactionTails.get(database) === tail) {
+      sqliteTransactionTails.delete(database)
+    }
+  })
+  return run
+}
+
+function sqliteTransactionBoundary(database: DatabaseSync): Promise<void> | undefined {
+  const activeContext = sqliteTransactionContext.getStore()
+  if (activeContext?.active && activeContext.database === database) return undefined
+  return sqliteTransactionTails.get(database)
 }
 
 function createPostgresDatabaseClientInternal(

@@ -1,7 +1,13 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
-import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
-import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import { isAnthropicProtocolProfile, isGptVendorCode, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
+import type {
+  AccountEditBasicDetail,
+  AccountListItem,
+  AccountSummary,
+  ProviderDefinition,
+  ProviderProtocolProfileDefinition
+} from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
@@ -10,8 +16,8 @@ import type { AccountModelSelectOption } from './accountEditFormPayload'
 import { canCreateOAuthAccount } from './accountProviderCapabilities'
 
 interface AccountDraftTestPayloadInput {
-  accountDetail?: AccountSummary
-  accounts: AccountSummary[]
+  accountDetail?: AccountEditBasicDetail | AccountSummary
+  accounts: AccountListItem[]
   editingId?: string
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
@@ -25,7 +31,7 @@ interface AccountDraftTestPayloadInput {
 }
 
 interface AccountDraftTestSummaryInput {
-  accountDetail?: AccountSummary
+  accountDetail?: AccountEditBasicDetail | AccountSummary
   draftPayload: AccountDraftTestAccountPayload
   protocolProfile?: ProviderProtocolProfileDefinition
   scopeSystemAccountId?: string
@@ -125,13 +131,18 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
 }
 
 function draftAccountClientCompatibility(input: AccountDraftTestSummaryInput): AccountSummary['clientCompatibility'] {
-  if (input.draftPayload.type === 'oauth' && isOpenAIProtocolProfile(input.accountDetail ?? input.protocolProfile)) {
+  if (input.draftPayload.type === 'oauth'
+    && isGptVendorCode(input.draftPayload.providerCode)
+    && isOpenAIProtocolProfile(input.accountDetail ?? input.protocolProfile)) {
     return 'codex_responses'
   }
   return 'openai_standard'
 }
 
-function accountDraftTestCredentials(credentials: Record<string, unknown>, accountDetail?: AccountSummary): Record<string, unknown> {
+function accountDraftTestCredentials(
+  credentials: Record<string, unknown>,
+  accountDetail?: AccountEditBasicDetail | AccountSummary
+): Record<string, unknown> {
   if (!accountDetail) return credentials
   const output = { ...credentials }
   preserveCredentialText(output, accountDetail.credentials, 'base_url')

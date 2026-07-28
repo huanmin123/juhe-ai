@@ -18,7 +18,14 @@
         <a-select v-model:value="form.status" :options="externalSourceStatusOptions" />
       </a-form-item>
       <a-form-item label="接口资源授权">
-        <a-select v-model:value="form.scopes" mode="multiple" :options="scopeOptions" placeholder="选择允许调用的公开接口" />
+        <a-select
+          v-model:value="form.scopes"
+          mode="multiple"
+          :loading="scopeOptionsLoading"
+          :options="scopeOptions"
+          placeholder="选择允许调用的公开接口"
+          @dropdown-visible-change="emit('scope-options-dropdown-visible-change', $event)"
+        />
       </a-form-item>
       <a-form-item label="到期时间">
         <a-date-picker v-model:value="form.expiresAt" class="full-control" show-time allow-clear />
@@ -50,6 +57,7 @@ defineProps<{
   form: ExternalSourceForm
   open: boolean
   saving: boolean
+  scopeOptionsLoading?: boolean
   scopeOptions: ExternalIntegrationScopeOption[]
 }>()
 
@@ -57,6 +65,7 @@ const emit = defineEmits<{
   (event: 'add-rate-limit'): void
   (event: 'remove-rate-limit', index: number): void
   (event: 'save'): void
+  (event: 'scope-options-dropdown-visible-change', open: boolean): void
   (event: 'update:open', value: boolean): void
 }>()
 </script>

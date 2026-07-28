@@ -1,4 +1,4 @@
-import type { AccountSummary, ResourcePermissions } from '@/types/domain'
+import type { AccountListItem, ResourcePermissions } from '@/types/domain'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
@@ -23,11 +23,11 @@ import {
 export type AccountGroupIdResolver = (accountId: string) => string | undefined
 export type AuthorizedAccountSourceTone = 'normal' | 'warning' | 'danger'
 
-export function authorizedAccountOwnerBadgeText(account: AccountSummary): string {
+export function authorizedAccountOwnerBadgeText(account: AccountListItem): string {
   return `${account.ownerSystemAccountName || '其他用户'}授权`
 }
 
-export function authorizedAccountTooltip(account: AccountSummary): string {
+export function authorizedAccountTooltip(account: AccountListItem): string {
   const ownerName = account.ownerSystemAccountName || '其他用户'
   const expiresText = account.authorizationExpiresAt ? formatDateTime(account.authorizationExpiresAt) : '长期有效'
   const limitsText = quotaLimitSummaryText(account.authorizationLimits)
@@ -40,34 +40,23 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
   return lines.join('\n')
 }
 
-export function authorizedAccountSourceTone(account: AccountSummary): AuthorizedAccountSourceTone {
+export function authorizedAccountSourceTone(account: AccountListItem): AuthorizedAccountSourceTone {
   if (hasAuthorizedAccountSourceBlocker(account)) return 'danger'
   if (isAuthorizationExpiringSoon(account) || hasQuotaLimits(account.authorizationLimits)) return 'warning'
   return 'normal'
 }
 
-export function authorizedAccountSourceToneClass(account: AccountSummary): string {
+export function authorizedAccountSourceToneClass(account: AccountListItem): string {
   return `source-${authorizedAccountSourceTone(account)}`
 }
 
-function authorizedAccountSourceText(account: AccountSummary): string {
-  const activeSources = account.authorizationSources?.filter((source) => source.status === 'active') ?? []
-  if (!activeSources.length && account.authorizationSources?.some((source) => source.sourceType === 'team')) {
-    return '团队授权'
-  }
-  const manual = activeSources.some((source) => source.sourceType === 'manual')
-  const teamSources = activeSources.filter((source) => source.sourceType === 'team')
-  const teamNames = teamSources.map((source) => source.sourceTeamName).filter((name): name is string => Boolean(name))
-  if (manual && teamSources.length) {
-    return teamNames.length ? `个人授权 + 团队授权（${teamNames.join('、')}）` : '个人授权 + 团队授权'
-  }
-  if (teamSources.length) {
-    return teamNames.length ? `团队授权（${teamNames.join('、')}）` : '团队授权'
-  }
-  return '个人授权'
+function authorizedAccountSourceText(account: AccountListItem): string {
+  return account.ownerSystemAccountName
+    ? `${account.ownerSystemAccountName} 的账户授权`
+    : '账户授权'
 }
 
-function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
+function hasAuthorizedAccountSourceBlocker(account: AccountListItem): boolean {
   if (account.effectiveAvailability?.available === false) return true
   return Boolean(
     account.permissions?.canUse === false
@@ -84,7 +73,7 @@ function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
   )
 }
 
-function isAuthorizationExpiringSoon(account: AccountSummary): boolean {
+function isAuthorizationExpiringSoon(account: AccountListItem): boolean {
   if (!account.authorizationExpiresAt) return false
   const timestamp = serverDateTimeTimestamp(account.authorizationExpiresAt)
   if (timestamp === undefined) return false
@@ -92,41 +81,41 @@ function isAuthorizationExpiringSoon(account: AccountSummary): boolean {
   return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
 
-export function hasAccountEditPermission(account: AccountSummary): boolean {
+export function hasAccountEditPermission(account: AccountListItem): boolean {
   return account.permissions?.canEdit !== false
 }
 
-export function canEditAccount(account: AccountSummary): boolean {
+export function canEditAccount(account: AccountListItem): boolean {
   if (isAuthorizedAccount(account)) return account.permissions?.canUse !== false
   return hasAccountEditPermission(account)
 }
 
-export function canDeleteAccount(account: AccountSummary): boolean {
+export function canDeleteAccount(account: AccountListItem): boolean {
   if (isAuthorizedAccount(account)) return false
   return account.permissions?.canDelete !== false
 }
 
-export function canBatchDeleteAccount(account: AccountSummary): boolean {
+export function canBatchDeleteAccount(account: AccountListItem): boolean {
   return canDeleteAccount(account)
 }
 
-export function canReturnAuthorizedAccount(account: AccountSummary): boolean {
+export function canReturnAuthorizedAccount(account: AccountListItem): boolean {
   if (!isAuthorizedAccount(account)) return false
   if (!account.accountAuthorizationId) return false
   return account.permissions?.canReturnAuthorization === true
 }
 
-export function canCloneAccount(account: AccountSummary): boolean {
+export function canCloneAccount(account: AccountListItem): boolean {
   return !isAuthorizedAccount(account)
     && canEditAccount(account)
     && account.permissions?.canViewCredentials !== false
 }
 
-export function canUseAccountActions(account: AccountSummary): boolean {
+export function canUseAccountActions(account: AccountListItem): boolean {
   return account.status !== 'error' && canEditAccount(account) && account.permissions?.canViewCredentials !== false
 }
 
-export function canBatchManageAccount(account: AccountSummary): boolean {
+export function canBatchManageAccount(account: AccountListItem): boolean {
   if (account.status === 'pending_test') return false
   if (isAuthorizedAccount(account)) {
     return Boolean(account.boundGroupId)
@@ -139,18 +128,18 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
   return canEditAccount(account) && account.status !== 'error'
 }
 
-export function canToggleAccountStatus(account: AccountSummary): boolean {
+export function canToggleAccountStatus(account: AccountListItem): boolean {
   if (isAuthorizedAccount(account)) return canBatchManageAccount(account)
   return canEditAccount(account) && account.permissions?.canViewCredentials !== false
 }
 
-export function canBatchEditAccount(account: AccountSummary): boolean {
+export function canBatchEditAccount(account: AccountListItem): boolean {
   return !isAuthorizedAccount(account)
     && hasAccountEditPermission(account)
     && account.permissions?.canViewCredentials !== false
 }
 
-export function canSelectAccountForBatch(account: AccountSummary): boolean {
+export function canSelectAccountForBatch(account: AccountListItem): boolean {
   return canBatchEditAccount(account)
     || canBatchManageAccount(account)
     || canBatchRestoreAccount(account)
@@ -158,7 +147,7 @@ export function canSelectAccountForBatch(account: AccountSummary): boolean {
     || canTestAccount(account)
 }
 
-export function canBatchRestoreAccount(account: AccountSummary): boolean {
+export function canBatchRestoreAccount(account: AccountListItem): boolean {
   if (isAccountPackageExpiredStatus(account)) return false
   if (account.status === 'pending_test') return false
   if (isAuthorizedAccount(account)) {
@@ -173,11 +162,11 @@ export function canBatchRestoreAccount(account: AccountSummary): boolean {
   return hasAccountRuntimeRecoveryState(account) || isTemporaryAccountStatus(account) || hasPersistentFailureState(account)
 }
 
-export function canRestoreException(account: AccountSummary): boolean {
+export function canRestoreException(account: AccountListItem): boolean {
   return account.status === 'error' && hasAccountEditPermission(account)
 }
 
-function hasPersistentFailureState(account: AccountSummary): boolean {
+function hasPersistentFailureState(account: AccountListItem): boolean {
   return Boolean(
     account.cooldownUntil
     || account.lastErrorCode
@@ -191,7 +180,7 @@ function hasPersistentFailureState(account: AccountSummary): boolean {
   )
 }
 
-export function authorizedAccountUnavailableText(account: AccountSummary): string | undefined {
+export function authorizedAccountUnavailableText(account: AccountListItem): string | undefined {
   if (!isAuthorizedAccount(account)) return undefined
   if (account.effectiveAvailability?.available === false) {
     return account.effectiveAvailability.reason ?? account.effectiveAvailability.label
@@ -216,15 +205,15 @@ function isFutureTime(value?: string): boolean {
   return time !== undefined && time > Date.now()
 }
 
-export function canUseAuthorizedAccount(account: AccountSummary): boolean {
+export function canUseAuthorizedAccount(account: AccountListItem): boolean {
   return isAuthorizedAccount(account) && !authorizedAccountUnavailableText(account)
 }
 
-export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
+export function canUseBoundAuthorizedAccount(account: AccountListItem): boolean {
   return canUseAuthorizedAccount(account) && Boolean(account.boundGroupId)
 }
 
-export function canTestAccount(account: AccountSummary): boolean {
+export function canTestAccount(account: AccountListItem): boolean {
   if (!isGatewayTestableAccountProfile(account)) return false
   if (isAuthorizedAccount(account)) {
     if (!account.boundGroupId || account.permissions?.canUse === false) return false
@@ -248,7 +237,7 @@ export function canTestAccount(account: AccountSummary): boolean {
   return account.permissions?.canUse !== false
 }
 
-export function hasAuthorizedInstanceFailureState(account: AccountSummary): boolean {
+export function hasAuthorizedInstanceFailureState(account: AccountListItem): boolean {
   return Boolean(
     (account.status !== 'active' && account.status !== 'disabled')
     || account.cooldownUntil
@@ -260,7 +249,7 @@ export function canManageGroupAccounts(group: { accessType?: string; permissions
   return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
 }
 
-export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountSummary, groupIdForAccount: AccountGroupIdResolver): boolean {
+export function canUseAsTrafficMigrationTarget(source: AccountListItem, target: AccountListItem, groupIdForAccount: AccountGroupIdResolver): boolean {
   if (target.id === source.id) return false
   if (target.providerProtocolProfileId !== source.providerProtocolProfileId) return false
   if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
@@ -274,13 +263,13 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target) && !hasAccountRuntimeRecoveryState(target)
 }
 
-export function canManageOAuthAccount(account: AccountSummary): boolean {
+export function canManageOAuthAccount(account: AccountListItem): boolean {
   return canUseAccountActions(account)
     && (account.type === 'oauth' || account.type === 'google_oauth')
     && canManageNativeOAuthAccount({ profile: account })
 }
 
-export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
+export function accountMenuItems(account: AccountListItem): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
   if (isAuthorizedAccount(account)) {
     if (canTestAccount(account)) {
@@ -359,7 +348,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   return items.map(normalizeAccountMenuItem)
 }
 
-function pushAccountStatusToggleItem(items: AccountMenuItem[], account: AccountSummary): void {
+function pushAccountStatusToggleItem(items: AccountMenuItem[], account: AccountListItem): void {
   items.push({
     key: 'toggle-status',
     label: account.status === 'disabled' ? '启用账户' : '停用账户',
@@ -385,7 +374,7 @@ export function accountMenuItemsWithClone(menuItems: AccountMenuItem[], canClone
   ]
 }
 
-function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountSummary): void {
+function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountListItem): void {
   const canEnableDispatchFlag = isAuthorizedAccount(account)
     ? canUseBoundAuthorizedAccount(account)
     : account.status === 'active' || account.status === 'pending_test'

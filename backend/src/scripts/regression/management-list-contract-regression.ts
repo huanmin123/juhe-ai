@@ -6,7 +6,9 @@ import { join, resolve } from 'node:path'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { hydrateAccountListPage } from '../../modules/accounts/account-status-snapshot.service.js'
 import { logger } from '../../shared/logger.js'
+import { todayDateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-management-list-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 
@@ -42,6 +44,7 @@ try {
       api_key: 'sk-management-list-contract-account',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
     groupId: group.id,
     status: 'active'
   }, access)
@@ -62,18 +65,25 @@ try {
     { scopeType: 'api_key', scopeId: apiKey.id, requestCount: 11, inputTokens: 2200, outputTokens: 900, totalCost: 0.0456 },
     { scopeType: 'group', scopeId: group.id, requestCount: 13, inputTokens: 3200, outputTokens: 1000, totalCost: 0.0789 }
   ])
+  await seedAccountTodayUsage(account.id, 7, 1200, 800, 0.0123)
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '回归准备应刷新分组账号统计预聚合')
 
-  const accountList = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+  const accountList = await hydrateAccountListPage(
+    access,
+    await repositories.listAccountManagementItemsPageReadOnly(access, { page: 1, pageSize: 20 })
+  )
   const listedAccount = accountList.items.find((item) => item.id === account.id)
   assert(listedAccount, 'AI 账户列表应返回种子账户')
-  assert.equal(listedAccount.usage.requestCount, 7, 'AI 账户列表 usage 应读取预聚合真实总请求数')
-  assert.equal(listedAccount.usage.inputTokens, 1200, 'AI 账户列表 usage 应读取预聚合真实输入 token')
-  assert.equal(listedAccount.usage.outputTokens, 800, 'AI 账户列表 usage 应读取预聚合真实输出 token')
+  assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, 'usage'), false, 'AI 账户列表不得返回完整累计 usage')
+  assert.equal(listedAccount.todayUsage.requestCount, 7, 'AI 账户列表应读取今日预聚合真实请求数')
+  assert.equal(listedAccount.todayUsage.totalTokens, 2000, 'AI 账户列表今日用量只汇总可展示 token')
+  assert.equal(listedAccount.todayUsage.totalCost, 0.0123, 'AI 账户列表今日用量应返回可展示成本')
   assert.equal(typeof listedAccount.currentConcurrency, 'number', 'AI 账户列表 currentConcurrency 字段应保持数字')
   assert.equal(listedAccount.availabilityPresentation?.status, 'available', 'AI 账户列表必须返回统一用户状态 presentation')
-  assertUsageContract(listedAccount.usage, 'AI 账户列表 usage')
-  assertUsageContract(listedAccount.todayUsage, 'AI 账户列表 todayUsage')
+  assert.deepEqual(Object.keys(listedAccount.todayUsage).sort(), ['requestCount', 'totalCost', 'totalTokens'])
+  for (const key of ['credentials', 'supportedModels', 'modelMappings', 'apiKeyRuntime', 'oauthUsage', 'authorizationSources']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(listedAccount, key), false, `AI 账户列表不得返回 ${key}`)
+  }
 
   const apiKeyList = repositories.listApiKeysPage(access, { page: 1, pageSize: 20 })
   const listedApiKey = apiKeyList.items.find((item) => item.id === apiKey.id)
@@ -82,9 +92,9 @@ try {
   assert.equal(listedApiKey.routeStrategyId, apiKey.routeStrategyId, 'API Key 列表应保留 routeStrategyId')
   assert.equal(listedApiKey.status, 'active', 'API Key 列表应保留状态字段')
   assert.equal(listedApiKey.usage.requestCount, 11, 'API Key 列表应读取预聚合真实总请求数')
-  assert.equal(listedApiKey.usage.inputTokens, 2200, 'API Key 列表应读取预聚合真实输入 token')
-  assert.equal(listedApiKey.usage.outputTokens, 900, 'API Key 列表应读取预聚合真实输出 token')
-  assertUsageContract(listedApiKey.usage, 'API Key 列表 usage')
+  assert.equal(listedApiKey.usage.totalTokens, 3100, 'API Key 列表 usage 应只返回可展示的总 token')
+  assert.equal(listedApiKey.usage.totalCost, 0.0456, 'API Key 列表 usage 应只返回可展示的总成本')
+  assert.deepEqual(Object.keys(listedApiKey.usage).sort(), ['requestCount', 'totalCost', 'totalTokens'], 'API Key 列表 usage 必须保持三字段窄契约')
 
   const routeStrategyList = await repositories.listCompleteRouteStrategyListItemsPageAsync(access, { page: 1, pageSize: 20 })
   const listedRouteStrategy = routeStrategyList.items.find((item) => item.id === apiKey.routeStrategyId)
@@ -149,6 +159,24 @@ function seedUsageStats(rows: Array<{
   for (const row of rows) {
     statement.run('sys_admin', row.scopeType, row.scopeId, row.requestCount, row.inputTokens, row.outputTokens, row.totalCost, now, now)
   }
+}
+
+async function seedAccountTodayUsage(
+  accountId: string,
+  requestCount: number,
+  inputTokens: number,
+  outputTokens: number,
+  totalCost: number
+): Promise<void> {
+  const now = new Date().toISOString()
+  const today = todayDateKey(await usageStatsTimezoneAsync())
+  databaseModule.getStatsDatabase().prepare(`
+    INSERT INTO usage_stats_daily (
+      system_account_id, scope_type, scope_id, stat_date,
+      request_count, input_tokens, output_tokens, total_cost_usd,
+      last_used_at, updated_at
+    ) VALUES ('sys_admin', 'account', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(accountId, today, requestCount, inputTokens, outputTokens, totalCost, now, now)
 }
 
 function assertUsageContract(value: object, label: string): void {

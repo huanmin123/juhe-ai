@@ -1,13 +1,13 @@
-import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary } from '@/types/domain'
+import type { AccountEffectiveAvailabilityStatus, AccountListItem, AccountStatus } from '@/types/domain'
 import { matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { normalizeKeyword } from './accountBasicFormatters'
 
 export function filterAccounts(input: {
-  accounts: AccountSummary[]
+  accounts: AccountListItem[]
   filters: AccountFilters
   isManagementView: boolean
-}): AccountSummary[] {
+}): AccountListItem[] {
   const keyword = normalizeKeyword(input.filters.keyword)
   return input.accounts.filter((account) => {
     const normalizedName = normalizeKeyword(account.name)
@@ -22,11 +22,11 @@ export function filterAccounts(input: {
   })
 }
 
-function accountMatchesStatusFilter(account: AccountSummary, status: AccountFilters['status'][number]): boolean {
+function accountMatchesStatusFilter(account: AccountListItem, status: AccountFilters['status'][number]): boolean {
   return accountFilterStatuses(account).has(status)
 }
 
-function accountFilterStatuses(account: AccountSummary): Set<AccountStatus> {
+function accountFilterStatuses(account: AccountListItem): Set<AccountStatus> {
   const availabilityStatus = account.effectiveAvailability?.status
   const derivedStatus = availabilityStatus ? statusFilterForEffectiveAvailability(availabilityStatus) : undefined
   if (derivedStatus) {

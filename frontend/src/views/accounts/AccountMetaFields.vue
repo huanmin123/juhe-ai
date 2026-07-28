@@ -6,6 +6,7 @@
       :loading="tagOptionsLoading"
       :options="tagOptions"
       @delete="$emit('delete-tag', $event)"
+      @dropdown-visible-change="$emit('tag-options-dropdown', $event)"
     />
   </a-form-item>
   <a-form-item class="notes-form-item" label="说明">
@@ -28,6 +29,7 @@ defineProps<{
 
 defineEmits<{
   (event: 'delete-tag', tagId: string): void
+  (event: 'tag-options-dropdown', open: boolean): void
 }>()
 </script>
 

@@ -2,7 +2,7 @@ import { message } from '@/lib/antd'
 import type { ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
@@ -13,12 +13,12 @@ interface UseAccountBatchActionsOptions {
   clearSelection: () => void
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
-  selectedAccounts: ComputedRef<AccountSummary[]>
+  selectedAccounts: ComputedRef<AccountListItem[]>
 }
 
 export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
   async function batchUpdateAccounts(
-    payloadBuilder: (account: AccountSummary) => Record<string, unknown>,
+    payloadBuilder: (account: AccountListItem) => Record<string, unknown>,
     loadingLabel: string,
     successLabel: string,
     selected = options.selectedAccounts.value.filter(canBatchManageAccount)
@@ -29,17 +29,22 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     }
     const hide = message.loading(`${loadingLabel}（${selected.length} 个）...`, 0)
     try {
-      const results = await runWithConcurrency(selected, accountBatchConcurrency, (account) => {
+      const results = await runWithConcurrency(selected, accountBatchConcurrency, async (account): Promise<unknown> => {
         const payload = payloadBuilder(account)
         if (isAuthorizedAccount(account)) {
           const authorizedPayload = payload as Parameters<typeof api.accounts.updateAuthorizedDispatch>[1]
-          return options.isManagementView.value
+          return await (options.isManagementView.value
             ? api.accounts.updateAuthorizedDispatch(account.id, authorizedPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
-            : api.myAccounts.updateAuthorizedDispatch(account.id, authorizedPayload)
+            : api.myAccounts.updateAuthorizedDispatch(account.id, authorizedPayload))
         }
-        return options.isManagementView.value
-          ? api.accounts.update(account.id, payload, options.accountScopeParams.value)
-          : api.myAccounts.update(account.id, payload)
+        const configRevision = Number(account.configRevision)
+        if (!Number.isInteger(configRevision) || configRevision < 1) {
+          throw new Error(`账户 ${account.name} 的版本信息缺失，请刷新列表后重试`)
+        }
+        const updatePayload = { ...payload, expectedConfigRevision: configRevision }
+        return await (options.isManagementView.value
+          ? api.accounts.update(account.id, updatePayload, options.accountScopeParams.value)
+          : api.myAccounts.update(account.id, updatePayload))
       })
       const failedCount = results.filter((result) => result.status === 'rejected').length
       if (failedCount === 0) {

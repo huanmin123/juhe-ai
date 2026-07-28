@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Request } from 'express'
 
 import type { DispatchAccountSecret } from '../../../../storage/repositories.js'
@@ -29,7 +30,11 @@ export function buildOpenAICodexUpstreamUrls(req: Request): string[] {
   if (!openAICodexSupportedPaths.has(normalizedPath)) {
     return []
   }
-  return [`${openAICodexBaseUrl}${normalizedPath}${query}`]
+  return [`${openAICodexBaseUrlForRequest()}${normalizedPath}${query}`]
+}
+
+export function runWithOpenAICodexBaseUrlForTest<T>(baseUrl: string, task: () => T): T {
+  return openAICodexBaseUrlTestContext.run(baseUrl.replace(/\/+$/u, ''), task)
 }
 
 export function splitPathAndQuery(pathAndQuery: string): { path: string; query: string } {
@@ -108,4 +113,9 @@ function requestHeader(req: Request, name: string): string | undefined {
 }
 
 const openAICodexBaseUrl = 'https://chatgpt.com/backend-api/codex'
+const openAICodexBaseUrlTestContext = new AsyncLocalStorage<string>()
+
+function openAICodexBaseUrlForRequest(): string {
+  return openAICodexBaseUrlTestContext.getStore() ?? openAICodexBaseUrl
+}
 const openAICodexSupportedPaths = new Set(['/responses', '/responses/compact'])

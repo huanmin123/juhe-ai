@@ -7,6 +7,7 @@ package accounthealth
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -172,11 +173,11 @@ func IsRealHTTPUpstreamURL(rawURL string) bool {
 	if err != nil {
 		return false
 	}
-	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
-		return false
-	}
-	if parsed.Host != "" {
+	if validProbeHTTPURL(parsed) {
 		return true
+	}
+	if parsed.Host != "" || (!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) {
+		return false
 	}
 
 	// WHATWG URL, used by Node, accepts special-scheme URLs with zero or one
@@ -191,7 +192,23 @@ func IsRealHTTPUpstreamURL(rawURL string) bool {
 		return false
 	}
 	normalized, err := url.Parse(parsed.Scheme + "://" + remainder)
-	return err == nil && normalized.Host != ""
+	return err == nil && validProbeHTTPURL(normalized)
+}
+
+func validProbeHTTPURL(value *url.URL) bool {
+	if value == nil || value.Host == "" || value.Hostname() == "" || value.Opaque != "" || value.User != nil || value.Fragment != "" {
+		return false
+	}
+	if !strings.EqualFold(value.Scheme, "http") && !strings.EqualFold(value.Scheme, "https") {
+		return false
+	}
+	if port := value.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return false
+		}
+	}
+	return true
 }
 
 // CooldownCandidate is the runtime state needed to decide whether a cooling

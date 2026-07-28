@@ -26,7 +26,6 @@ import {
   parseAccountTestUpstreamErrorCode,
   parseAccountTestStreamFailureMessage,
   parseAccountTestUpstreamMessage,
-  redactAccountTestImageResponse,
   resolveAccountTestResponseDiagnostics
 } from '../../modules/accounts/account-test-response-diagnostics.js'
 import {
@@ -124,16 +123,6 @@ assert.equal(accountModelCatalogRefreshSchema.safeParse({
     credentials: { base_url: 'https://upstream.example/v1', api_key: 'sk-test' }
   }
 }).success, true, '模型目录发现不得要求预先选择支持模型、检查模型或分组')
-assert.deepEqual(redactAccountTestImageResponse(JSON.stringify({
-  created: 1,
-  data: [{ b64_json: 'base64-must-not-leak', url: 'https://image.example/private.png', revised_prompt: 'a white square' }],
-  usage: { total_tokens: 1 }
-})), {
-  created: 1,
-  data: [{ b64_json: '已省略', url: '已省略', revised_prompt: 'a white square' }],
-  usage: { total_tokens: 1 }
-}, '图片测试完整 JSON 必须保留非图片字段，并省略图片内容')
-assert.deepEqual(redactAccountTestImageResponse('not-json'), { response: '已省略' }, '非 JSON 图片响应不得原样返回前端')
 
 for (const mode of ['interactions_json', 'interactions_sse'] as const) {
   assert.equal(accountCreateSchema.safeParse({
@@ -460,14 +449,16 @@ assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupported
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
-assert.match(serviceSource, /const responseContext = parseDiagnosticResponseContext\(responseText\)/, '账户测试必须为最终诊断正文创建唯一解析上下文')
-assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? redactAccountTestImageResponse\(responseContext\)/, '图片测试必须复用解析上下文后脱敏图片响应正文')
+assert.match(serviceSource, /const responseContext = probeKind === 'image_generation'\s*\? undefined\s*: parseDiagnosticResponseContext\(responseText\)/, '非图片账户测试必须为最终诊断正文创建唯一解析上下文')
+assert.match(serviceSource, /inspectAccountTestImageResponseEnvelope\(responseText, responseTruncated\)/, '图片测试必须使用有界 Images envelope 扫描器')
+assert.match(serviceSource, /const imageResponseBody = probeKind === 'image_generation'\s*\? \{ response: '已省略' \}/, '图片测试必须使用静态省略响应，不得解析或复制大图片正文')
+assert.doesNotMatch(serviceSource, /redactAccountTestImageResponse/, '图片测试不得为纯展示解析上游图片正文')
 assert.doesNotMatch(serviceSource, /parseOpenAIJsonBody|parseOpenAIUpstreamMessage|parseAnthropicUpstreamMessage|parseGeminiPayloads/, '账户测试不得绕过统一诊断上下文重复解析响应正文')
 assert.match(serviceSource, /responseBody: imageResponseBody,\s*responseText: JSON\.stringify\(imageResponseBody\)/, '图片测试必须仅返回已脱敏的响应 JSON')
 assert.match(serviceSource, /probeKind === 'image_generation'\s*\? proxyFailureMessage \|\| protocolEvidenceError \|\| accountTestHttpFailureMessage/, '图片测试失败信息不得回显上游响应正文')
 assert.match(serviceSource, /const suppressDiagnostics = probeKind === 'image_generation'/, '图片测试异常路径不得保留原始错误正文')
 assert.match(serviceSource, /createOpenAIImageGenerationTestRequest/, '人工图像测试必须构造真实图片生成请求')
-assert.match(serviceSource, /const protocolSuccessEvidence = probeKind === 'image_generation'\s*\? true/, '图片测试 HTTP 2xx 必须直接判定为成功，不解析图片响应内容')
+assert.match(serviceSource, /const protocolSuccessEvidence = probeKind === 'image_generation'\s*\? imageResponseInspection\?\.successEvidence === true/, '图片测试 HTTP 2xx 仍必须验证 Images JSON 成功证据')
 assert.match(serviceSource, /accountManualTestEndpointModes/, '测试服务必须复用共享解析器读取账号可测试形态')
 assert.match(optionsServiceSource, /accountManualTestEndpointModes/, '测试选项必须复用共享解析器读取账号可测试形态')
 assert.match(endpointModesSource, /supported_endpoint_modes/, '共享解析器必须从账号上游接口能力读取可测试形态')

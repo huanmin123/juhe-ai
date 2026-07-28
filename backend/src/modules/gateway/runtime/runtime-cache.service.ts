@@ -10,7 +10,11 @@ import {
   gatewayAccountConcurrencyAccountIds
 } from '../dispatch/account-concurrency-identity.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
+import {
+  registerGatewayApiKeyValidationCacheInvalidator,
+  registerGatewayRuntimeCacheInvalidator,
+  syncGatewayCacheInvalidationsFromRuntimeState
+} from '../../../shared/gateway-cache-invalidation.js'
 import { shouldInvalidateProviderModelCatalog } from '../response/model-catalog-cache-policy.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
@@ -57,6 +61,19 @@ interface GatewayRuntimeCacheEntry {
   revalidateAtMs?: number
 }
 
+interface GatewayRuntimeApiKeyIdentity {
+  apiKeyId: string
+}
+
+interface GatewayRuntimeLoadGeneration {
+  all: number
+  key: number
+}
+
+interface GatewayRuntimeKeyGeneration {
+  value: number
+}
+
 interface GroupUsageAccessCacheEntry {
   value: GroupUsageAccessMetadata | false
   revalidateAtMs?: number
@@ -100,6 +117,24 @@ export type ProviderModelRouteResolution =
 
 // Gateway runtime contains decrypted upstream credentials, so it must not be copied into Redis.
 // It is nevertheless safe as a process-local, invalidation-aware last-good snapshot.
+const gatewayRuntimeCacheKeysByApiKeyId = new Map<string, Set<string>>()
+const gatewayRuntimeApiKeyIdentityCache = createProcessLocalResourceCache<string, GatewayRuntimeApiKeyIdentity>({
+  name: 'gateway:runtime-api-key-identity',
+  max: 10000,
+  ttlMs: gatewayRuntimeRetainTtlMs,
+  updateAgeOnGet: runtimeConfig.runtimeMode === 'standalone',
+  dispose: (identity, cacheKey) => {
+    removeGatewayRuntimeCacheIndex(identity.apiKeyId, cacheKey)
+  },
+  onClear: () => {
+    gatewayRuntimeCacheKeysByApiKeyId.clear()
+  }
+})
+const gatewayRuntimeKeyGenerationCache = createProcessLocalResourceCache<string, GatewayRuntimeKeyGeneration>({
+  name: 'gateway:runtime-key-generation',
+  max: 10000,
+  ttlMs: gatewayRuntimeRetainTtlMs
+})
 const gatewayRuntimeCache = createProcessLocalResourceCache<string, GatewayRuntimeCacheEntry>({
   name: 'gateway:runtime',
   max: 10000,
@@ -179,6 +214,8 @@ const pendingOpenAIAccountsRefreshes = new Map<string, Promise<void>>()
 const pendingProviderModelCatalogLoads = new Map<string, Promise<ProviderModelCatalogItem[]>>()
 const pendingResponseInspectionPolicyRefreshes = new Map<string, Promise<void>>()
 let gatewayRuntimeCacheGeneration = 0
+let gatewayApiKeyRuntimeCacheGeneration = 0
+let nextGatewayRuntimeKeyGeneration = 0
 let providerModelCatalogCacheGeneration = 0
 const sharedCacheFailureLoggedAt = new Map<string, number>()
 const sharedCacheFailureLogIntervalMs = 30_000
@@ -558,6 +595,7 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached !== undefined) {
+    gatewayRuntimeApiKeyIdentityCache.get(cacheKey)
     if (isGatewayRuntimeCacheEntryFresh(cached)) {
       const runtime = sanitizedGatewayRuntimeForDispatch(cached.runtime)
       if (runtime.apiKey && isDynamicRouteStrategyMode(runtime.apiKey.route_strategy_mode)) {
@@ -607,11 +645,14 @@ export function clearGatewayRuntimeCache(reason?: string): void {
 
 export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean; clearModelCatalog?: boolean } = {}): void {
   gatewayRuntimeCacheGeneration += 1
+  gatewayApiKeyRuntimeCacheGeneration += 1
   pendingGatewayRuntimeLoads.clear()
   pendingGroupUsageAccessRefreshes.clear()
   pendingOpenAIAccountsRefreshes.clear()
   pendingResponseInspectionPolicyRefreshes.clear()
   gatewayRuntimeCache.clear()
+  gatewayRuntimeApiKeyIdentityCache.clear()
+  gatewayRuntimeKeyGenerationCache.clear()
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
@@ -629,6 +670,84 @@ export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean
   clearResponseInspectionPolicySharedCache()
   if (options.clearSettings ?? true) {
     clearSettingsRepositoryCache()
+  }
+}
+
+registerGatewayApiKeyValidationCacheInvalidator((apiKeyId, metadata) => {
+  invalidateGatewayRuntimeCacheByApiKeyId(
+    apiKeyId,
+    metadata.source === 'local' ? metadata.keyHashes : undefined
+  )
+})
+
+function invalidateGatewayRuntimeCacheByApiKeyId(
+  apiKeyId: string | undefined,
+  keyHashes: readonly string[] = []
+): void {
+  const cacheKeys = new Set(keyHashes)
+  if (apiKeyId) {
+    for (const cacheKey of gatewayRuntimeCacheKeysByApiKeyId.get(apiKeyId) ?? []) {
+      cacheKeys.add(cacheKey)
+    }
+  }
+  if (!cacheKeys.size) {
+    gatewayApiKeyRuntimeCacheGeneration += 1
+    pendingGatewayRuntimeLoads.clear()
+    gatewayRuntimeCache.clear()
+    gatewayRuntimeApiKeyIdentityCache.clear()
+    gatewayRuntimeKeyGenerationCache.clear()
+    return
+  }
+  for (const cacheKey of cacheKeys) {
+    nextGatewayRuntimeKeyGeneration += 1
+    gatewayRuntimeKeyGenerationCache.set(cacheKey, { value: nextGatewayRuntimeKeyGeneration })
+    pendingGatewayRuntimeLoads.delete(cacheKey)
+    gatewayRuntimeCache.delete(cacheKey)
+  }
+}
+
+function gatewayRuntimeLoadGeneration(cacheKey: string): GatewayRuntimeLoadGeneration {
+  return {
+    all: gatewayApiKeyRuntimeCacheGeneration,
+    key: gatewayRuntimeKeyGenerationCache.get(cacheKey)?.value ?? 0
+  }
+}
+
+function isGatewayRuntimeLoadGenerationCurrent(
+  cacheKey: string,
+  generation: GatewayRuntimeLoadGeneration
+): boolean {
+  return generation.all === gatewayApiKeyRuntimeCacheGeneration
+    && generation.key === (gatewayRuntimeKeyGenerationCache.get(cacheKey)?.value ?? 0)
+}
+
+function setGatewayRuntimeCacheEntry(
+  cacheKey: string,
+  entry: GatewayRuntimeCacheEntry,
+  options: { ttlMs?: number } = {}
+): void {
+  gatewayRuntimeCache.set(cacheKey, entry, options)
+  const apiKeyId = entry.runtime.apiKey?.id
+  if (!apiKeyId) return
+  const previousIdentity = gatewayRuntimeApiKeyIdentityCache.get(cacheKey)
+  if (previousIdentity && previousIdentity.apiKeyId !== apiKeyId) {
+    removeGatewayRuntimeCacheIndex(previousIdentity.apiKeyId, cacheKey)
+  }
+  gatewayRuntimeApiKeyIdentityCache.set(cacheKey, { apiKeyId }, {
+    ttlMs: options.ttlMs ?? gatewayRuntimeRetainTtlMs
+  })
+  const cacheKeys = gatewayRuntimeCacheKeysByApiKeyId.get(apiKeyId) ?? new Set<string>()
+  cacheKeys.add(cacheKey)
+  gatewayRuntimeCacheKeysByApiKeyId.set(apiKeyId, cacheKeys)
+}
+
+function removeGatewayRuntimeCacheIndex(apiKeyId: string | undefined, cacheKey: string): void {
+  if (!apiKeyId) return
+  const cacheKeys = gatewayRuntimeCacheKeysByApiKeyId.get(apiKeyId)
+  if (!cacheKeys) return
+  cacheKeys.delete(cacheKey)
+  if (!cacheKeys.size) {
+    gatewayRuntimeCacheKeysByApiKeyId.delete(apiKeyId)
   }
 }
 
@@ -829,7 +948,7 @@ async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise
     return await pending
   }
 
-  const generation = gatewayRuntimeCacheGeneration
+  const generation = gatewayRuntimeLoadGeneration(cacheKey)
   const load = loadGatewayRuntimeAndPopulateCaches(apiKey, cacheKey, generation)
   pendingGatewayRuntimeLoads.set(cacheKey, load)
   try {
@@ -844,7 +963,7 @@ async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise
 async function loadGatewayRuntimeAndPopulateCaches(
   apiKey: string,
   cacheKey: string,
-  generation: number
+  generation: GatewayRuntimeLoadGeneration
 ): Promise<DbServiceGatewayRuntime> {
   const runtime = await requestGatewayDbService({
     type: 'read_gateway_runtime',
@@ -853,7 +972,7 @@ async function loadGatewayRuntimeAndPopulateCaches(
   }, {
     timeoutMs: gatewayRuntimeDbServiceTimeoutMs
   })
-  if (gatewayRuntimeCacheGeneration === generation) {
+  if (isGatewayRuntimeLoadGenerationCurrent(cacheKey, generation)) {
     await populateGatewayRuntimeCaches(cacheKey, runtime)
   }
   return runtime
@@ -861,7 +980,7 @@ async function loadGatewayRuntimeAndPopulateCaches(
 
 async function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbServiceGatewayRuntime): Promise<void> {
   if (!runtime.apiKey) {
-    gatewayRuntimeCache.set(cacheKey, {
+    setGatewayRuntimeCacheEntry(cacheKey, {
       runtime: cloneStaticGatewayRuntime(runtime),
       revalidateAtMs: Date.now() + invalidGatewayRuntimeTtlMs
     }, { ttlMs: gatewayRuntimeRetainTtlMs })
@@ -871,7 +990,7 @@ async function populateGatewayRuntimeCaches(cacheKey: string, runtime: DbService
 
   const nowMs = Date.now()
   const runtimeTtlMs = gatewayRuntimeCacheTtlMs(runtime, nowMs)
-  gatewayRuntimeCache.set(cacheKey, {
+  setGatewayRuntimeCacheEntry(cacheKey, {
     runtime: cloneStaticGatewayRuntime(runtime),
     revalidateAtMs: nowMs + runtimeTtlMs
   }, { ttlMs: gatewayRuntimeRetainTtlMs })

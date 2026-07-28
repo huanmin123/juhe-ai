@@ -23,6 +23,7 @@ import {
   type GatewayProbeResult
 } from './model-checks-evaluation.js'
 import {
+  isSuccessfulModelCheckProbeResponse,
   parseModelCheckProbeResponse
 } from './model-checks-response-parsing.js'
 import type { ModelCheckProbeProtocol } from './model-checks.profiles.js'
@@ -168,7 +169,9 @@ async function runGatewayProbeAttempt(
       ? parseModelCheckProbeResponse({
           bodyText: responseBodyText,
           protocol: probe.responseProtocol ?? 'openai_responses',
-          path: probe.path
+          path: probe.path,
+          parsedNonStreamJsonBody: response.nonStreamJsonBody(),
+          parsedStreamEvents: response.parsedStreamEvents()
         }).errorMessage
       : undefined
     const statusCode = attemptSignal.aborted
@@ -244,12 +247,14 @@ async function runGatewayProbeAttempt(
   const parsed = parseModelCheckProbeResponse({
     bodyText,
     protocol: probe.responseProtocol ?? 'openai_responses',
-    path: probe.path
+    path: probe.path,
+    parsedNonStreamJsonBody: response.nonStreamJsonBody(),
+    parsedStreamEvents: response.parsedStreamEvents()
   })
   const result: GatewayProbeResult = {
     traceId,
     statusCode: response.statusCode,
-    success: response.statusCode >= 200 && response.statusCode < 300 && !parsed.streamFailureMessage,
+    success: isSuccessfulModelCheckProbeResponse(response.statusCode, parsed),
     durationMs: Date.now() - startedAt,
     ...probeModelFields(probe),
     firstTokenMs: response.firstTokenMs(),

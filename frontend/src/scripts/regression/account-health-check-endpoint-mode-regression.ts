@@ -68,13 +68,13 @@ const updateSelectableTestModelSource = accountTestModelsSource.slice(
 )
 assert.match(
   updateSelectableTestModelSource,
-  /const endpointModes = normalizeEndpointModes\(option\.testEndpointModes\)/,
-  '模型请求形态必须直接使用选项响应携带的能力交集'
+  /applyTestEndpointModes\(\[\], false\)/,
+  '切换模型必须先清空前一模型的请求形态'
 )
 assert.doesNotMatch(
   updateSelectableTestModelSource,
-  /testModelCapabilities\(/,
-  '模型切换不得再发起额外能力请求'
+  /option\.testEndpointModes/,
+  '模型目录选项不得预载请求形态'
 )
 assert.match(
   accountTestModelsSource,

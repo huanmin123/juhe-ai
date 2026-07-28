@@ -6,6 +6,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
+import { mergeApiKeyMutationResult } from './apiKeyMutation'
 import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
 
@@ -126,10 +127,15 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
   async function updateApiKeyStatus(apiKey: ApiKeySummary, status: 'active' | 'disabled') {
     statusUpdatingId.value = apiKey.id
     try {
-      const updated = await input.apiKeysApi.update(apiKey.id, { status }, input.operationScopeParams(apiKey))
-      input.updateItems((item) => item.id === apiKey.id, () => updated)
+      const result = await input.apiKeysApi.update(apiKey.id, {
+        expectedRevision: apiKey.revision,
+        status
+      }, input.operationScopeParams(apiKey))
+      input.updateItems(
+        (item) => item.id === apiKey.id,
+        (item) => mergeApiKeyMutationResult(item, result)
+      )
       message.success(status === 'active' ? 'API Key 已启用' : 'API Key 已停用')
-      void input.reload()
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, status === 'active' ? '启用 API Key 失败' : '停用 API Key 失败'))
@@ -155,7 +161,6 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
         message: '密钥已刷新，旧密钥已失效，请立即复制新密钥并更新客户端配置。'
       })
       message.success('API Key 密钥已刷新')
-      void input.reload()
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '刷新 API Key 密钥失败'))

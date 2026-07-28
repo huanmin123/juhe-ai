@@ -6,6 +6,7 @@ import {
   isXaiProviderCode
 } from '../../shared/providerProtocol'
 import { buildAccountCredentials } from '../../views/accounts/accountCredentials'
+import { buildAccountDraftTestSummary } from '../../views/accounts/accountDraftTestPayload'
 import { providerModelsForProtocolProfile } from '../../views/accounts/accountEditFormPayload'
 import { accountTypeChoicesForProvider } from '../../views/accounts/accountEditFormDisplay'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
@@ -70,6 +71,50 @@ const credentials = buildAccountCredentials({
 assert.equal(credentials.api_key, 'xai-form-key')
 assert.equal(credentials.base_url, 'https://api.x.ai/v1')
 assert.deepEqual(credentials.supported_endpoint_modes, ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'])
+
+const grokOAuthForm = defaultAccountForm(XAI_PROVIDER_CODE, 'oauth', FALLBACK_PROVIDERS, XAI_OPENAI_V1_PROFILE_ID)
+grokOAuthForm.accessToken = 'grok-access'
+grokOAuthForm.refreshToken = 'grok-refresh'
+const grokOAuthCredentials = buildAccountCredentials({
+  currentCredentials: {
+    access_token: 'grok-access',
+    refresh_token: 'grok-refresh',
+    token_type: 'Bearer',
+    scope: 'openid api:access',
+    sub: 'xai-user',
+    team_id: 'xai-team',
+    subscription_tier: 'supergrok',
+    entitlement_status: 'active'
+  },
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  form: grokOAuthForm
+})
+assert.equal(grokOAuthCredentials.token_type, 'Bearer')
+assert.equal(grokOAuthCredentials.scope, 'openid api:access')
+assert.equal(grokOAuthCredentials.sub, 'xai-user')
+assert.equal(grokOAuthCredentials.team_id, 'xai-team')
+assert.equal(grokOAuthCredentials.subscription_tier, 'supergrok')
+assert.equal(grokOAuthCredentials.entitlement_status, 'active')
+
+const grokDraftSummary = buildAccountDraftTestSummary({
+  draftPayload: {
+    providerCode: XAI_PROVIDER_CODE,
+    providerProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
+    name: 'Grok OAuth draft',
+    type: 'oauth',
+    credentials: grokOAuthCredentials,
+    concurrencyLimit: 1,
+    priority: 0,
+    supportedModels: ['grok-4.5'],
+    healthCheckModel: 'grok-4.5',
+    healthCheckEndpointMode: 'responses_json',
+    modelMappings: [],
+    groupId: 'group-xai'
+  },
+  protocolProfile: profile
+})
+assert.equal(grokDraftSummary.clientCompatibility, 'openai_standard', 'Grok OAuth 草稿测试不得误归为 Codex Responses 客户端')
 
 assert.deepEqual(
   providerModelsForProtocolProfile([

@@ -85,18 +85,18 @@
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
-import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountListItem, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountTableCell from './AccountTableCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import { tableColumnKey } from './accountTableColumns'
 
 defineProps<{
-  accounts: AccountSummary[]
-  canClone: (account: AccountSummary) => boolean
-  canDelete: (account: AccountSummary) => boolean
-  canEdit: (account: AccountSummary) => boolean
-  canSelect: (account: AccountSummary) => boolean
+  accounts: AccountListItem[]
+  canClone: (account: AccountListItem) => boolean
+  canDelete: (account: AccountListItem) => boolean
+  canEdit: (account: AccountListItem) => boolean
+  canSelect: (account: AccountListItem) => boolean
   columns: Array<Record<string, unknown>>
   editingPriorityAccountId?: string
   groupName: (accountId: string) => string | undefined
@@ -104,36 +104,36 @@ defineProps<{
   isSelected: (accountId: string) => boolean
   loading: boolean
   loadingMore: boolean
-  menuItems: (account: AccountSummary) => AccountMenuItem[]
-  mobileAccounts: AccountSummary[]
+  menuItems: (account: AccountListItem) => AccountMenuItem[]
+  mobileAccounts: AccountListItem[]
   mobileHasMore: boolean
   pagination: Record<string, unknown>
   providerName: (providerCode?: string) => string
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   refreshing: boolean
   rowSelection: Record<string, unknown>
-  savePriority: (account: AccountSummary, priority: number) => Promise<boolean>
+  savePriority: (account: AccountListItem, priority: number) => Promise<boolean>
   tableScrollX: number
   tableScrollY: string
   balanceRefreshingIds: Set<string>
 }>()
 
 defineEmits<{
-  (event: 'bind-group', account: AccountSummary): void
+  (event: 'bind-group', account: AccountListItem): void
   (event: 'change', ...args: unknown[]): void
-  (event: 'clone', account: AccountSummary): void
+  (event: 'clone', account: AccountListItem): void
   (event: 'cancel-priority-edit', accountId: string): void
   (event: 'delete', accountId: string): void
-  (event: 'edit', account: AccountSummary): void
-  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
+  (event: 'edit', account: AccountListItem): void
+  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
   (event: 'return-authorization', accountId: string): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'start-priority-edit', accountId: string): void
-  (event: 'test', account: AccountSummary): void
-  (event: 'toggle-selection', account: AccountSummary): void
+  (event: 'test', account: AccountListItem): void
+  (event: 'toggle-selection', account: AccountListItem): void
 }>()
 </script>
 

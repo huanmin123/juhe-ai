@@ -2,7 +2,7 @@ import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
@@ -21,16 +21,16 @@ interface UseAccountMenuActionsOptions {
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
-  openReauthorizeModal: (account: AccountSummary) => void
-  openTestModal: (account: AccountSummary) => Promise<void>
-  openTrafficMigration: (account: AccountSummary) => void
-  updateLoadedAccount: (account: AccountSummary) => boolean
+  openReauthorizeModal: (account: AccountListItem) => void | Promise<void>
+  openTestModal: (account: AccountListItem) => Promise<void>
+  openTrafficMigration: (account: AccountListItem) => void
+  updateLoadedAccount: (account: AccountListItem) => boolean
 }
 
 export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
   const tokenRefreshLoading = ref(false)
 
-  async function refreshOAuthToken(account: AccountSummary) {
+  async function refreshOAuthToken(account: AccountListItem) {
     if (!canManageOAuthAccount(account)) {
       message.warning('只有支持 OAuth 管理的自有账户可以刷新令牌')
       return
@@ -74,7 +74,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
   }
 
-  async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string, updateOptions: { allowExceptionRecovery?: boolean } = {}) {
+  async function updateAccountState(account: AccountListItem, payload: Record<string, unknown>, successText: string, updateOptions: { allowExceptionRecovery?: boolean } = {}) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
       try {
@@ -94,18 +94,26 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     try {
-      const updated = options.isManagementView.value
-        ? await api.accounts.update(account.id, payload, scopeParams)
-        : await api.myAccounts.update(account.id, payload)
-      options.updateLoadedAccount(updated)
+      const configRevision = Number(account.configRevision)
+      if (!Number.isInteger(configRevision) || configRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return
+      }
+      const updatePayload = { ...payload, expectedConfigRevision: configRevision }
+      if (options.isManagementView.value) {
+        await api.accounts.update(account.id, updatePayload, scopeParams)
+      } else {
+        await api.myAccounts.update(account.id, updatePayload)
+      }
       message.success(successText)
+      await options.loadData()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '账户状态更新失败'))
     }
   }
 
-  async function handleAccountMenu(key: string, account: AccountSummary) {
+  async function handleAccountMenu(key: string, account: AccountListItem) {
     if (key === 'test') {
       await options.openTestModal(account)
       return
@@ -187,7 +195,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'reauthorize-oauth') {
-      options.openReauthorizeModal(account)
+      await options.openReauthorizeModal(account)
       return
     }
     if (key === 'toggle-status') {
@@ -263,7 +271,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
   }
 
-  function handleAccountMenuClick(event: { key: string | number }, account: AccountSummary) {
+  function handleAccountMenuClick(event: { key: string | number }, account: AccountListItem) {
     void handleAccountMenu(String(event.key), account)
   }
 

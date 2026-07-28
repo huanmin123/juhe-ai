@@ -1,12 +1,12 @@
 import type { RowActionItem } from '@/components/rowActions'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountListItem } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { accountDisplayName } from './accountBasicFormatters'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountMenuItemsWithClone, canReturnAuthorizedAccount } from './accountRules'
 
 export type AccountRowActionOptions = {
-  account: AccountSummary
+  account: AccountListItem
   canClone: boolean
   canDelete: boolean
   canEdit: boolean

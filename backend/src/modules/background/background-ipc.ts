@@ -269,6 +269,13 @@ export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
   })
 }
 
+export function sendPreparedAuditLogsToWorker(items: AuditLogInput[]): boolean {
+  return sendBackgroundWorkerMessageToWorker({
+    type: 'background_worker_audit_logs',
+    items
+  })
+}
+
 export function sendOperationLogsToWorker(items: OperationLogInput[]): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_operation_logs',

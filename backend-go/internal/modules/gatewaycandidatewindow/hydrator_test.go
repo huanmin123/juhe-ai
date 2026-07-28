@@ -19,6 +19,7 @@ func TestBatchHydratorLoadsResourceFactsProxyRuntimeAndFreshQuality(t *testing.T
 			"source_1": {
 				SupportedModels: []string{"gpt-upstream"},
 				ModelMappings:   []port.GatewayCandidateModelMapping{{ProviderCode: "gpt", SourceModel: "gpt-client", SourceEndpointFamily: "responses", UpstreamModel: "gpt-upstream", UpstreamEndpointFamily: "responses", Enabled: true}},
+				DefaultBaseURL:  "https://profile.example.com",
 			},
 		},
 		Proxies: map[string]port.GatewayCandidateProxyFacts{
@@ -51,6 +52,12 @@ func TestBatchHydratorLoadsResourceFactsProxyRuntimeAndFreshQuality(t *testing.T
 		t.Fatalf("results = %+v", results)
 	}
 	candidate := results[0].Candidate
+	if candidate.Projection.AccountID != "view_1" || candidate.Projection.ResourceAccountID != "source_1" {
+		t.Fatalf("candidate projection = %+v", candidate.Projection)
+	}
+	if candidate.DefaultBaseURL != "https://profile.example.com" {
+		t.Fatalf("default base URL = %q", candidate.DefaultBaseURL)
+	}
 	if value, ok := candidate.Credentials.StringValue("base_url"); !ok || value != "https://api.example.com" {
 		t.Fatalf("base_url = %q/%v", value, ok)
 	}

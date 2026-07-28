@@ -52,12 +52,12 @@ import { computed } from 'vue'
 
 import AccountSelect from '@/components/AccountSelect.vue'
 import type { AccountSelection } from '@/shared/accountLabelCache'
-import type { AccountSummary, AccountTrafficMigrationSourceStatus } from '@/types/domain'
+import type { AccountListItem, AccountTrafficMigrationSourceStatus } from '@/types/domain'
 
 const props = defineProps<{
   open: boolean
   saving: boolean
-  sourceAccount?: AccountSummary
+  sourceAccount?: AccountListItem
   targetAccountId: string
   targetAccount?: AccountSelection
   targetOptions: Array<{ label: string; value: string }>

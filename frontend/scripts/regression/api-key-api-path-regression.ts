@@ -33,12 +33,12 @@ const requestCaptureAdapter: AxiosAdapter = async (config) => {
 try {
   http.defaults.adapter = requestCaptureAdapter
 
-  await apiKeysApi.update(apiKeyId, { name: '管理端 Key' })
+  await apiKeysApi.update(apiKeyId, { expectedRevision: 'revision-1', name: '管理端 Key' })
   await apiKeysApi.secret(apiKeyId)
   await apiKeysApi.refreshKey(apiKeyId)
   await apiKeysApi.delete(apiKeyId)
 
-  await myApiKeysApi.update(apiKeyId, { name: '个人 Key' })
+  await myApiKeysApi.update(apiKeyId, { expectedRevision: 'revision-1', name: '个人 Key' })
   await myApiKeysApi.secret(apiKeyId)
   await myApiKeysApi.refreshKey(apiKeyId)
   await myApiKeysApi.delete(apiKeyId)

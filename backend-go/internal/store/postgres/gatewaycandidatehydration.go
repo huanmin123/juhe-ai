@@ -37,8 +37,17 @@ SELECT
     FROM juhe_business.account_model_mappings AS mappings
     WHERE mappings.account_id = requested.account_id
       AND mappings.enabled = true
-  ), '[]'::jsonb)::text
+  ), '[]'::jsonb)::text,
+  COALESCE(protocol_profiles.base_url, '')
 FROM requested
+INNER JOIN juhe_business.accounts AS accounts
+  ON accounts.id = requested.account_id
+  AND accounts.deleted_at IS NULL
+INNER JOIN juhe_business.provider_protocol_profiles AS protocol_profiles
+  ON protocol_profiles.id = accounts.provider_protocol_profile_id
+  AND protocol_profiles.provider_code = accounts.provider_code
+  AND protocol_profiles.protocol_code = accounts.protocol_code
+  AND protocol_profiles.protocol_version = accounts.protocol_version
 ORDER BY array_position($1::text[], requested.account_id)`
 
 const gatewayCandidateProxyFactsSQL = `
@@ -93,8 +102,8 @@ func (s *Store) loadGatewayCandidateAccountFacts(ctx context.Context, ids []stri
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var accountID, modelsJSON, mappingsJSON string
-		if err := rows.Scan(&accountID, &modelsJSON, &mappingsJSON); err != nil {
+		var accountID, modelsJSON, mappingsJSON, defaultBaseURL string
+		if err := rows.Scan(&accountID, &modelsJSON, &mappingsJSON, &defaultBaseURL); err != nil {
 			return fmt.Errorf("scan gateway candidate account facts: %w", err)
 		}
 		var models []string
@@ -108,6 +117,7 @@ func (s *Store) loadGatewayCandidateAccountFacts(ctx context.Context, ids []stri
 		facts := output[accountID]
 		facts.SupportedModels = models
 		facts.ModelMappings = mappings
+		facts.DefaultBaseURL = strings.TrimSpace(defaultBaseURL)
 		output[accountID] = facts
 	}
 	if err := rows.Err(); err != nil {

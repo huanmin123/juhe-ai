@@ -35,9 +35,11 @@ import {
   type GatewayRawBodyRequest
 } from '../../../gateway/request/body.js'
 import {
+  isGatewayJsonWorkerInvalidJsonError,
   isGatewayJsonWorkerQueueFullError,
   parseGatewayRequestJsonBody
 } from '../../../gateway/request/json-parser.js'
+import { serializeGatewayJsonObject } from '../../../gateway/request/serialized-json-body.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
 import {
   buildUpstreamRequestBody,
@@ -50,7 +52,7 @@ import {
   prepareOpenAIOrAnthropicToGeminiNativeHeaders,
   transformGeminiNativeTargetBridgeUpstreamResponse
 } from '../_shared/openai-anthropic-gemini-native-bridge.js'
-import { createGeminiGoogleOAuthTokenProvider, type GeminiGoogleOAuthTokenProvider } from './google-oauth-token.service.js'
+import { prepareGeminiAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
 import {
   GEMINI_CODE_ASSIST_STREAM_URL,
   buildGeminiCodeAssistRequestParts,
@@ -80,9 +82,6 @@ function isGeminiNativeGenerateContentModelMapping(
     || mapping?.sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
   ) && mapping.upstreamEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY
 }
-
-const googleOAuthProviders = new Map<string, { fingerprint: string; provider: GeminiGoogleOAuthTokenProvider }>()
-const maxGoogleOAuthProviders = 1024
 
 export const geminiProviderDriver: ProviderDriver = {
   id: 'gemini',
@@ -117,30 +116,7 @@ export const geminiProviderDriver: ProviderDriver = {
   },
   async prepareAccountBeforeDispatch(account, context) {
     if (account.type !== 'google_oauth') return account
-    const credentials = account.credentials ?? {}
-    const accessToken = textCredential(credentials.access_token)
-    const refreshToken = textCredential(credentials.refresh_token)
-    if (!accessToken && !refreshToken) throw new Error('Gemini Google OAuth 凭据不完整')
-    const fingerprint = geminiGoogleOAuthProviderFingerprint(account)
-    const key = account.credentialSourceAccountId ?? account.id ?? fingerprint
-    let entry = googleOAuthProviders.get(key)
-    if (!entry || entry.fingerprint !== fingerprint) {
-      entry = {
-        fingerprint,
-        provider: createGeminiGoogleOAuthTokenProvider({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          client_id: textCredential(credentials.client_id),
-          client_secret: textCredential(credentials.client_secret),
-          expires_at: textCredential(credentials.expires_at)
-        }, {
-          proxyUrl: account.proxyUrl
-        })
-      }
-      setBoundedProviderCache(googleOAuthProviders, key, entry)
-    }
-    const token = await entry.provider.getAccessToken({ signal: context.signal })
-    return { ...account, apiKey: token }
+    return await prepareGeminiAccountBeforeDispatch(account, context.signal)
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
     const mapping = resolveOpenAIRequestModelMapping(req, account)
@@ -285,10 +261,7 @@ export const geminiProviderDriver: ProviderDriver = {
   }
 }
 
-function secretFingerprint(parts: Array<string | undefined>): string {
-  return createHash('sha256').update(parts.map((part) => part ?? '').join('\0')).digest('hex')
-}
-
+/** Retained for regression compatibility; dispatch refresh now uses the shared persisted lock path. */
 export function geminiGoogleOAuthProviderFingerprint(input: {
   credentials?: {
     access_token?: unknown
@@ -301,7 +274,7 @@ export function geminiGoogleOAuthProviderFingerprint(input: {
   proxyUrl?: string
 }): string {
   const credentials = input.credentials ?? {}
-  return secretFingerprint([
+  return createHash('sha256').update([
     textCredential(credentials.access_token),
     textCredential(credentials.refresh_token),
     textCredential(credentials.client_id),
@@ -309,7 +282,7 @@ export function geminiGoogleOAuthProviderFingerprint(input: {
     textCredential(credentials.expires_at),
     textCredential(credentials.oauth_type),
     textCredential(input.proxyUrl)
-  ])
+  ].map((part) => part ?? '').join('\0')).digest('hex')
 }
 
 function isGeminiCodeAssistGenerationRequest(
@@ -332,20 +305,6 @@ function geminiCodeAssistDownstreamStream(
   return geminiEndpointFamilyFromPath(req.path || req.originalUrl.split('?', 1)[0]) === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
 }
 
-function setBoundedProviderCache<T>(
-  cache: Map<string, T>,
-  key: string,
-  value: T
-): void {
-  cache.delete(key)
-  cache.set(key, value)
-  while (cache.size > maxGoogleOAuthProviders) {
-    const oldest = cache.keys().next().value as string | undefined
-    if (oldest === undefined) break
-    cache.delete(oldest)
-  }
-}
-
 function textCredential(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
@@ -366,15 +325,18 @@ async function normalizeGeminiInteractionsStreamBody(
     return body
   }
   const requestWithBody = req as GatewayRawBodyRequest
+  const bodyState = getGatewayRequestBodyState(req)
+  if (bodyState?.jsonParseStatus === 'invalid_json') {
+    throw geminiInteractionsJsonBodyError('Interactions 请求体必须是有效的 JSON 对象')
+  }
+  if (bodyState?.stream === true) {
+    return body
+  }
   let parsedBody: unknown = req.body
   if (parsedBody === undefined && requestWithBody.gatewayParsedJsonBodyAvailable) {
     parsedBody = requestWithBody.gatewayParsedJsonBody
   }
   if (parsedBody === undefined) {
-    const bodyState = getGatewayRequestBodyState(req)
-    if (bodyState?.jsonParseStatus === 'invalid_json') {
-      throw geminiInteractionsJsonBodyError('Interactions 请求体必须是有效的 JSON 对象')
-    }
     if (!requestWithBody.rawBody?.length) return body
     try {
       parsedBody = await parseGatewayRequestJsonBody(req, undefined, signal)
@@ -386,7 +348,10 @@ async function normalizeGeminiInteractionsStreamBody(
           { statusCode: 503, type: 'server_overloaded' }
         )
       }
-      throw geminiInteractionsJsonBodyError('Interactions 请求体必须是有效的 JSON 对象')
+      if (isGatewayJsonWorkerInvalidJsonError(error)) {
+        throw geminiInteractionsJsonBodyError('Interactions 请求体必须是有效的 JSON 对象')
+      }
+      throw error
     }
   }
   if (typeof parsedBody !== 'object' || parsedBody === null || Array.isArray(parsedBody)) {
@@ -395,7 +360,7 @@ async function normalizeGeminiInteractionsStreamBody(
   if ((parsedBody as Record<string, unknown>).stream === true) {
     return body
   }
-  return Buffer.from(JSON.stringify({ ...parsedBody, stream: true }))
+  return serializeGatewayJsonObject({ ...parsedBody, stream: true })
 }
 
 function geminiInteractionsJsonBodyError(message: string): GatewayRequestValidationError {

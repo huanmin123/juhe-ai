@@ -137,12 +137,16 @@ assertTrue(
   '待检查账户的恢复可调度操作应调用强制恢复接口'
 )
 assertTrue(
-  /updateLoadedAccount: \(account: AccountSummary\) => boolean/.test(accountMenuActionsSource),
-  '账户菜单操作应注入当前行更新入口'
+  /updateLoadedAccount: \(account: AccountListItem\) => boolean/.test(accountMenuActionsSource),
+  '账户菜单操作只能依赖列表 DTO'
 )
 assertTrue(
-  /const updated = options\.isManagementView\.value[\s\S]+options\.updateLoadedAccount\(updated\)/.test(accountMenuActionsSource),
-  '账户状态与调度标记操作应直接回写 API 返回的当前行'
+  /const updatePayload = \{ \.\.\.payload, expectedConfigRevision: configRevision \}/.test(accountMenuActionsSource),
+  '自有账户菜单 PATCH 必须携带列表中的配置 revision'
+)
+assertTrue(
+  /await options\.loadData\(\)/.test(accountMenuActionsSource),
+  '最小 mutation 响应不得当成完整列表行回写'
 )
 assertTrue(
   /if \(key === 'manual-isolate'\)[\s\S]+status: 'temporary_unavailable'[\s\S]+后台将按现有机制探测恢复/.test(accountMenuActionsSource),
@@ -620,11 +624,12 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
 function apiKeyFixture(overrides: Partial<ApiKeySummary> = {}): ApiKeySummary {
   return {
     id: 'api_key_status_formatter_regression',
+    revision: 'api-key-status-formatter-revision',
     name: 'API Key 状态 formatter 回归',
     keyPrefix: 'sk-test',
     keySuffix: 'suffix',
-    key: '',
     status: 'active',
+    purpose: 'general',
     routeStrategyId: 'route_strategy_status_formatter_regression',
     routeStrategyName: '状态 formatter 策略路由',
     routeStrategyMode: 'normal',

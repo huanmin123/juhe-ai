@@ -18,6 +18,13 @@ const capabilitySource = readFileSync(resolve(frontendRoot, 'src/views/model-che
 const schedulesModalSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualitySchedulesModal.vue'), 'utf8')
 const modelChecksViewSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelChecksView.vue'), 'utf8')
 const qualityConfigSource = readFileSync(resolve(frontendRoot, 'src/views/model-checks/ModelQualityConfigPopover.vue'), 'utf8')
+const openSchedulesSource = functionSource(modelChecksViewSource, 'async function openSchedules')
+const scheduleAccountDropdownSource = functionSource(modelChecksViewSource, 'function handleScheduleAccountOptionsDropdown')
+const loadScheduleAccountOptionsSource = functionSource(modelChecksViewSource, 'async function loadScheduleAccountOptions')
+const scheduleModelDropdownSource = functionSource(modelChecksViewSource, 'function handleScheduleModelOptionsDropdown')
+const loadScheduleAccountModelOptionsSource = functionSource(modelChecksViewSource, 'async function loadScheduleAccountModelOptions')
+const loadSchedulesSource = functionSource(modelChecksViewSource, 'async function loadSchedules')
+const editScheduleSource = functionSource(schedulesModalSource, 'function edit')
 
 const gptOpenAIAccount = accountFixture({
   id: 'acct_model_check_gpt_openai',
@@ -117,6 +124,9 @@ assert.match(capabilitySource, /gemini-3\.5-flash/, '能力 helper 必须包含 
 assert.match(capabilitySource, /account\?\.modelCheckModels/, '能力 helper 必须优先使用后台返回的账户级可用检测模型')
 assert.match(schedulesModalSource, /<a-form\s+:model="form"/, '定时检查表单必须绑定 model，确保提交事件实际触发')
 assert.match(schedulesModalSource, /selectedModelOptions/, '定时检查模型必须随账户模型能力联动')
+assert.match(schedulesModalSource, /@dropdown-visible-change="emit\('account-dropdown-visible-change', \$event, form\.accountId\)"/, '定时检查账户候选必须由用户展开下拉后按需加载并携带当前已选账户')
+assert.match(schedulesModalSource, /@dropdown-visible-change="emit\('model-dropdown-visible-change', \$event, form\.accountId\)"/, '定时检查模型候选必须由模型下拉展开后按当前账户加载')
+assert.match(schedulesModalSource, /:options="effectiveAccountOptions"/, '定时检查账户下拉必须合并本地已选项和远程候选')
 assert.match(schedulesModalSource, /props\.resetToken/, '定时检查保存或删除成功后必须清除旧 revision 编辑态')
 assert.match(schedulesModalSource, /class="schedule-form-actions"/, '定时检查操作按钮必须使用独立布局容器')
 assert.match(schedulesModalSource, /grid-column:\s*1\s*\/\s*-1/, '定时检查操作按钮必须跨列收口，避免编辑态按钮溢出弹窗')
@@ -133,6 +143,34 @@ assert.match(qualityConfigSource, /关闭后仅记录检测结果与健康状态
 assert.match(qualityConfigSource, /仅用于页面手动检查；定时计划使用各自独立配置/, '外部质量配置必须明确只作用于手动检查')
 assert.match(modelChecksViewSource, /modelCheckModels:\s*\[\.\.\.item\.modelCheckModels\]/, '定时检查账户选项必须保留后台返回的账户级模型能力')
 assert.match(modelChecksViewSource, /scheduleFormResetToken\.value \+= 1/, '定时检查成功写入后必须推进表单重置代次')
+assert.doesNotMatch(openSchedulesSource, /loadScheduleAccountOptions/, '打开定时检查弹窗不得预取账户候选')
+assert.match(openSchedulesSource, /await loadSchedules\(\)/, '打开定时检查弹窗仍应加载计划列表')
+assert.match(modelChecksViewSource, /@account-dropdown-visible-change="handleScheduleAccountOptionsDropdown"/, '父页面必须接入账户下拉展开事件')
+assert.match(modelChecksViewSource, /@model-dropdown-visible-change="handleScheduleModelOptionsDropdown"/, '父页面必须接入模型下拉展开事件')
+assert.match(modelChecksViewSource, /@account-change="handleScheduleAccountChange"/, '父页面必须在账户切换时作废旧账户的模型能力请求')
+assert.match(scheduleAccountDropdownSource, /if \(!open\) return[\s\S]*loadScheduleAccountOptions\('', accountId\)/, '只有账户下拉打开时才允许按需加载默认候选并保留已选账户')
+assert.match(scheduleModelDropdownSource, /!open \|\| !accountId\.trim\(\)/, '关闭模型下拉或未选账户时不得请求模型候选')
+assert.match(scheduleModelDropdownSource, /loadScheduleAccountModelOptions\(accountId\)/, '展开模型下拉必须只加载当前账户能力')
+assert.match(loadScheduleAccountOptionsSource, /scheduleAccountOptionsRequestId/, '账户候选搜索必须隔离迟到响应')
+assert.match(loadScheduleAccountOptionsSource, /scheduleAccountOptionsLoadedKeyword === requestKey/, '账户候选必须按关键词和已选账户共同去重')
+assert.match(loadScheduleAccountOptionsSource, /selectedIds: normalizedSelectedAccountId \? \[normalizedSelectedAccountId\] : undefined/, '账户候选搜索必须携带当前已选账户，避免搜索窗口丢失回显')
+assert.match(loadScheduleAccountOptionsSource, /scheduleAccountModelOptionsLoadedIds\.add\(option\.value\)/, '账户候选已经携带模型能力时必须标记为已加载，避免模型下拉重复请求')
+assert.match(loadScheduleAccountOptionsSource, /isCurrentScheduleAccountOptionsRequest\(/, '账户候选写回和错误提示必须校验弹窗、身份与 owner 上下文')
+assert.match(loadScheduleAccountModelOptionsSource, /selectedIds: \[selectedId\]/, '模型下拉必须按当前账户 ID 精确请求，不得加载前 50 个无关账户')
+assert.match(loadScheduleAccountModelOptionsSource, /limit: 1/, '模型下拉的账户能力请求必须限制为单个已选账户')
+assert.match(loadScheduleAccountModelOptionsSource, /scheduleAccountModelOptionsLoadedIds\.has\(selectedId\)/, '当前账户模型能力成功加载后必须避免重复请求')
+assert.match(loadScheduleAccountModelOptionsSource, /isCurrentScheduleAccountModelOptionsRequest\(/, '切换账户后的迟到模型能力不得覆盖当前状态')
+assert.match(modelChecksViewSource, /function handleScheduleAccountChange[\s\S]*scheduleAccountModelOptionsRequestId \+= 1[\s\S]*scheduleAccountModelOptionsLoading\.value = false/, '切换计划账户必须立即作废旧模型能力请求并结束旧 loading')
+assert.equal((loadScheduleAccountModelOptionsSource.match(/message\.error\(/g) ?? []).length, 1, '模型能力请求失败只能在一个 UI 边界提示一次')
+assert.match(editScheduleSource, /selectedScheduleAccountOption\.value = [\s\S]*item\.accountName \|\| item\.accountId[\s\S]*modelCheckModels: \[item\.model\]/, '编辑计划必须直接用列表行构造已选账户回显')
+assert.doesNotMatch(editScheduleSource, /emit\('account-search'/, '编辑计划不得为了回显已选账户而发起搜索')
+assert.match(schedulesModalSource, /preserveUnresolvedEditModel[\s\S]*!pinnedAccount\.capabilitiesKnown[\s\S]*!remoteAccount/, '仅编辑账户能力未加载时允许保留计划中的原模型回显')
+assert.match(schedulesModalSource, /if \(preserveUnresolvedEditModel && form\.model[\s\S]*label: form\.model/, '编辑计划的原模型必须在精确能力返回前本地回显')
+assert.match(schedulesModalSource, /function handleAccountChange[\s\S]*props\.accountOptions\.find[\s\S]*capabilitiesKnown: true/, '用户选择的新账户必须固定已选标签和能力，后续搜索不得丢失')
+assert.match(schedulesModalSource, /selectedModelOptions\.value\.some\(\(item\) => item\.value === form\.model\)/, '保存计划前必须拒绝当前账户不支持的旧模型')
+assert.match(loadSchedulesSource, /schedulesRequestSignature[\s\S]*isCurrentSchedulesRequest/, '计划列表分页和 owner 切换必须隔离迟到响应')
+assert.match(modelChecksViewSource, /watch\(schedulesOpen,[\s\S]*invalidateSchedulesRequest\(\)[\s\S]*resetScheduleAccountOptionsState\(\)/, '关闭计划弹窗必须作废列表与候选请求')
+assert.match(modelChecksViewSource, /onDeactivated\([\s\S]*pageActive = false[\s\S]*invalidateSchedulesRequest\(\)[\s\S]*resetScheduleAccountOptionsState\(\)/, 'KeepAlive 停用必须作废计划列表与候选请求')
 
 console.log('模型检测供应商能力回归通过：多供应商账户按完整模型 ID 和 provider profile 进入检测')
 
@@ -165,4 +203,11 @@ function accountFixture(overrides: Partial<AccountOptionSummary> = {}): AccountO
     },
     ...overrides
   }
+}
+
+function functionSource(source: string, signature: string): string {
+  const start = source.indexOf(signature)
+  assert.notEqual(start, -1, `必须找到 ${signature}`)
+  const next = source.slice(start + signature.length).search(/\n(?:async\s+)?function\s+/)
+  return source.slice(start, next < 0 ? undefined : start + signature.length + next)
 }

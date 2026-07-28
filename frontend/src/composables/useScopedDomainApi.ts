@@ -13,7 +13,8 @@ import {
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
-type ApiKeyMutationPayload = Parameters<typeof api.apiKeys.create>[0]
+type ApiKeyCreatePayload = Parameters<typeof api.apiKeys.create>[0]
+type ApiKeyUpdatePayload = Parameters<typeof api.apiKeys.update>[1]
 type GroupListParams = Parameters<typeof api.groups.listPage>[0]
 type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
@@ -29,10 +30,10 @@ export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
     list: (params?: ApiKeyListParams) => isManagementView.value
       ? api.apiKeys.list(params)
       : api.myApiKeys.list(params),
-    create: (payload: ApiKeyMutationPayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
+    create: (payload: ApiKeyCreatePayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.create(payload, params)
       : api.myApiKeys.create(payload),
-    update: (id: string, payload: ApiKeyMutationPayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
+    update: (id: string, payload: ApiKeyUpdatePayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.update(id, payload, params)
       : api.myApiKeys.update(id, payload),
     secret: (id: string, params?: ApiKeyMutationScopeParams) => isManagementView.value

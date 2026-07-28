@@ -4,12 +4,11 @@ import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
-import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountEditBasicDetail, AccountListItem, AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
-import { accountOperationScopeParams } from './accountOperationScope'
 import {
   buildAccountDraftTestPayload,
   buildAccountDraftTestSummary,
@@ -17,10 +16,10 @@ import {
 } from './accountDraftTestPayload'
 
 interface UseAccountEditTestActionOptions {
-  accountDetail: MaybeRefOrGetter<AccountSummary | undefined>
+  accountDetail: MaybeRefOrGetter<AccountEditBasicDetail | AccountSummary | undefined>
   accountAdvancedDetailLoaded: MaybeRefOrGetter<boolean>
   accountScopeParams: MaybeRefOrGetter<{ systemAccountId: string } | undefined>
-  accounts: MaybeRefOrGetter<AccountSummary[]>
+  accounts: MaybeRefOrGetter<AccountListItem[]>
   authSessionId: MaybeRefOrGetter<string | undefined>
   createScopeParams: MaybeRefOrGetter<{ systemAccountId: string } | undefined>
   editingAuthorizedAccount: MaybeRefOrGetter<boolean>
@@ -36,7 +35,7 @@ interface UseAccountEditTestActionOptions {
   mappingUpstreamModelOptions: MaybeRefOrGetter<AccountModelSelectOption[]>
   openDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
   openSavedDraftTestModal: (account: AccountSummary, draftPayload: AccountDraftTestAccountPayload) => void | Promise<void>
-  openTestModal: (account: AccountSummary) => void | Promise<void>
+  openTestModal: (account: AccountListItem) => void | Promise<void>
   providers: MaybeRefOrGetter<ProviderDefinition[]>
   responseInspectionRules: MaybeRefOrGetter<AccountResponseInspectionRuleForm[]>
   selectedProtocolProfile: MaybeRefOrGetter<ProviderProtocolProfileDefinition | undefined>
@@ -62,6 +61,10 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
       if (toValue(options.editingAuthorizedAccount)) {
         if (!accountDetail) {
           message.warning('请选择要测试的授权账户')
+          return
+        }
+        if (!('currentConcurrency' in accountDetail)) {
+          message.warning('授权账户详情尚未加载完成，请重试')
           return
         }
         if (options.form.groupId && options.form.groupId !== accountDetail.boundGroupId) {
@@ -143,9 +146,11 @@ export function useAccountEditTestAction(options: UseAccountEditTestActionOption
     }
   }
 
-  function draftTestScopeSystemAccountId(accountDetail: AccountSummary | undefined): string | undefined {
+  function draftTestScopeSystemAccountId(accountDetail: AccountEditBasicDetail | AccountSummary | undefined): string | undefined {
     if (accountDetail) {
-      return accountOperationScopeParams(accountDetail, toValue(options.accountScopeParams))?.systemAccountId
+      return accountDetail.systemAccountId
+        ?? accountDetail.ownerSystemAccountId
+        ?? toValue(options.accountScopeParams)?.systemAccountId
     }
     return toValue(options.createScopeParams)?.systemAccountId ?? toValue(options.accountScopeParams)?.systemAccountId
   }

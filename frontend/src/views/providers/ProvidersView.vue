@@ -91,7 +91,7 @@
       :default-health-check-model="activeProviderDefaultHealthCheckModel"
       :is-management-view="isManagementView"
       :load-error="modelLoadError"
-      :loading="modelLoading"
+      :loading="modelModalLoading"
       :models="filteredModels"
       :row-actions="modelRowActions"
       :system-account-filter="modelSystemAccountFilter"
@@ -102,7 +102,7 @@
       @cancel="resetModelModal"
       @create="openCreateCustomModel"
       @model-action="handleModelAction"
-      @system-account-change="reloadActiveProviderModels"
+      @system-account-change="handleModelSystemAccountChange"
       @system-account-dropdown="handleModelSystemAccountOptionsDropdown"
       @system-account-search="handleModelSystemAccountOptionsSearch"
       @update:system-account-filter="modelSystemAccountFilter = $event"
@@ -287,6 +287,8 @@ import {
 const route = useRoute()
 const loading = ref(false)
 const modelLoading = ref(false)
+const providerDetailLoading = ref(false)
+const modelModalLoading = computed(() => modelLoading.value || providerDetailLoading.value)
 const customModelSaving = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
@@ -296,6 +298,8 @@ const selectedModelCategory = ref<ModelCategoryKey>('text')
 const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
+const activeProviderDetail = ref<ProviderDefinition | null>(null)
+const activeProviderScopedDefaultHealthCheckModel = ref<string>()
 const modelSystemAccountFilter = ref('')
 const modelSystemAccountFilterSelection = ref<PrincipalSelection>()
 const editingCustomModelId = ref<string>()
@@ -303,6 +307,11 @@ const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 let modelRequestSequence = 0
+let providerListRequestSequence = 0
+let providerDetailRequestSequence = 0
+let activeProviderDetailCode: string | undefined
+let providerDetailLoadingKey: string | undefined
+let providerDetailLoadingPromise: Promise<boolean> | undefined
 let pageActive = true
 let pageWasDeactivated = false
 
@@ -329,8 +338,11 @@ const {
   selectedIds: () => [modelSystemAccountFilter.value],
   onMissingSelectedIds: (ids) => {
     if (!ids.includes(modelSystemAccountFilter.value)) return
-    modelSystemAccountFilter.value = currentUserSystemAccountId()
-    modelSystemAccountFilterSelection.value = undefined
+    const fallback = currentUserPrincipalSelection()
+    modelSystemAccountFilter.value = fallback?.id ?? ''
+    modelSystemAccountFilterSelection.value = fallback
+    invalidateActiveProviderDetail()
+    if (modelModalOpen.value && activeProvider.value) void reloadActiveProviderModels(true)
   }
 })
 
@@ -342,7 +354,21 @@ const currentCategoryModels = computed(() => {
 const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
-const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
+const activeProviderConfiguration = computed(() => activeProviderDetail.value ?? activeProvider.value)
+const activeProviderDefaultHealthCheckModel = computed(() => {
+  if (activeProviderScopedDefaultHealthCheckModel.value !== undefined) {
+    return activeProviderScopedDefaultHealthCheckModel.value
+  }
+  const detail = activeProviderDetail.value
+  if (detail && detail.code === activeProvider.value?.code) {
+    return detail.defaultHealthCheckModel ?? ''
+  }
+  const selectedOwnerId = modelSystemAccountFilter.value.trim()
+  const viewerId = authState.currentUser.value?.id ?? ''
+  return !isManagementView.value || (selectedOwnerId && selectedOwnerId === viewerId)
+    ? activeProvider.value?.defaultHealthCheckModel ?? ''
+    : ''
+})
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑内置模型' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelTargetProviderCode = computed(() => editingCustomModelProviderCode.value ?? activeProvider.value?.code ?? '')
@@ -373,7 +399,7 @@ const customModelStatusOptions = computed(() => {
 })
 const customModelApiProtocolOptions = computed(() => {
   const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
-  for (const protocol of defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
+  for (const protocol of defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
   return apiProtocolOptions.filter((option) => supported.has(option.value))
 })
 const customModelModeOptions = computed(() => availableCustomModelModeOptions(
@@ -418,35 +444,53 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 }
 
 async function loadProviders(force = false) {
+  const requestSequence = ++providerListRequestSequence
+  const requestSignature = providerListRequestSignature()
   loading.value = true
   try {
     const providerResult = await loadProviderOptionsResource({
-      apply: (nextProviders) => { providers.value = nextProviders },
       force,
       includeDisabled: isManagementView.value,
       includeDefinitions: !isManagementView.value,
       listItemsOnly: true,
       viewScope: isManagementView.value ? 'admin' : 'self',
-      isManagementView: isManagementView.value
+      isManagementView: isManagementView.value,
+      isCurrent: () => isCurrentProviderListRequest(requestSequence, requestSignature)
     })
+    if (!isCurrentProviderListRequest(requestSequence, requestSignature)) return
     providers.value = providerResult.data
   } catch (error) {
+    if (!isCurrentProviderListRequest(requestSequence, requestSignature)) return
     console.error(error)
     message.error('加载供应商失败')
   } finally {
-    loading.value = false
+    if (requestSequence === providerListRequestSequence) loading.value = false
   }
 }
 
+function providerListRequestSignature(): string {
+  const viewer = authState.currentUser.value
+  return JSON.stringify([
+    authState.revision.value,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    isManagementView.value ? 'admin' : 'self'
+  ])
+}
+
+function isCurrentProviderListRequest(sequence: number, signature: string): boolean {
+  return pageActive
+    && sequence === providerListRequestSequence
+    && signature === providerListRequestSignature()
+}
+
 async function openModelModal(provider: ProviderDefinition) {
+  invalidateActiveProviderDetail()
   activeProvider.value = provider
   modelModalOpen.value = true
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
   ensureModelSystemAccountFilter()
-  if (isManagementView.value) {
-    void handleModelSystemAccountOptionsDropdown(true)
-  }
   await reloadActiveProviderModels()
 }
 
@@ -458,6 +502,7 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 
 function resetModelModal() {
   modelRequestSequence += 1
+  invalidateActiveProviderDetail()
   modelLoading.value = false
   activeProvider.value = null
   modelKeyword.value = ''
@@ -467,20 +512,22 @@ function resetModelModal() {
   resetCustomModelForm()
 }
 
-function openCreateCustomModel() {
+async function openCreateCustomModel() {
   if (!activeProvider.value) return
   ensureModelSystemAccountFilter()
+  if (!await ensureActiveProviderDetail()) return
   resetCustomModelForm()
   customModelForm.scope = 'personal'
   customModelForm.status = 'active'
   customModelForm.mode = selectedModelCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value, selectedModelCategory.value)
+  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, selectedModelCategory.value)
   applyDefaultConfigurationTemplate()
   customModelModalOpen.value = true
 }
 
-function openEditCustomModel(record: ProviderModelPricing) {
+async function openEditCustomModel(record: ProviderModelPricing) {
   if (!record.id || (record.scope === 'built_in' && !isManagementView.value)) return
+  if (!await ensureActiveProviderDetail()) return
   resetCustomModelForm()
   editingCustomModelId.value = record.id
   editingCustomModelProviderCode.value = record.providerCode
@@ -542,15 +589,17 @@ async function reloadActiveProviderModels(force = false) {
   const requestSequence = ++modelRequestSequence
   const requestSignature = modelRequestSignature(provider.code)
   const modelQuery = modelCatalogQueryParams()
+  providerModels.value = []
   modelLoading.value = true
   modelLoadError.value = ''
   try {
-    const [detail, modelResult] = await Promise.all([
-      api.providers.detail(provider.code, { ...modelQuery, viewScope: isManagementView.value ? 'admin' : 'self' }),
-      loadProviderModelCatalogResource({ force, isManagementView: isManagementView.value, providerCode: provider.code, query: modelQuery })
-    ])
+    const modelResult = await loadProviderModelCatalogResource({
+      force,
+      isManagementView: isManagementView.value,
+      providerCode: provider.code,
+      query: modelQuery
+    })
     if (!isCurrentModelRequest(requestSequence, requestSignature, provider.code)) return
-    activeProvider.value = detail
     applyProviderModelResult(modelResult, requestSequence, provider.code)
   } catch (error) {
     if (!isCurrentModelRequest(requestSequence, requestSignature, provider.code)) return
@@ -564,11 +613,13 @@ async function reloadActiveProviderModels(force = false) {
 
 function modelRequestSignature(providerCode: string): string {
   const viewer = authState.currentUser.value
+  const query = modelProviderQueryParams()
   return JSON.stringify([
     authState.revision.value,
     viewer?.id ?? 'anonymous',
     viewer?.role ?? 'anonymous',
-    isManagementView.value ? 'admin' : 'self',
+    query.viewScope ?? 'self',
+    query.systemAccountId ?? '',
     providerCode
   ])
 }
@@ -602,11 +653,71 @@ function resetCustomModelForm() {
 
 function ensureModelSystemAccountFilter(): void {
   if (!isManagementView.value || modelSystemAccountFilter.value.trim()) return
-  modelSystemAccountFilter.value = currentUserSystemAccountId()
+  const currentUser = currentUserPrincipalSelection()
+  modelSystemAccountFilter.value = currentUser?.id ?? ''
+  modelSystemAccountFilterSelection.value = currentUser
 }
 
-function currentUserSystemAccountId(): string {
-  return authState.currentUser.value?.id ?? ''
+function currentUserPrincipalSelection(): PrincipalSelection | undefined {
+  const user = authState.currentUser.value
+  if (!user?.id || !user.displayName?.trim()) return undefined
+  return { id: user.id, name: user.displayName.trim(), kind: 'system_account' }
+}
+
+function handleModelSystemAccountChange(): void {
+  invalidateActiveProviderDetail()
+  void reloadActiveProviderModels(true)
+}
+
+function ensureActiveProviderDetail(): Promise<boolean> {
+  const provider = activeProvider.value
+  if (!provider) return Promise.resolve(false)
+  if (activeProviderDetailCode === provider.code && activeProviderDetail.value?.code === provider.code) return Promise.resolve(true)
+  const requestSignature = modelRequestSignature(provider.code)
+  const requestKey = `${provider.code}:${requestSignature}`
+  if (providerDetailLoadingKey === requestKey && providerDetailLoadingPromise) return providerDetailLoadingPromise
+  const requestSequence = ++providerDetailRequestSequence
+  providerDetailLoading.value = true
+  const request = (async () => {
+    try {
+      const detail = await api.providers.detail(provider.code, modelProviderQueryParams())
+      if (!isCurrentProviderDetailRequest(requestSequence, requestSignature, provider.code)) return false
+      activeProviderDetail.value = detail
+      activeProviderDetailCode = provider.code
+      return true
+    } catch (error) {
+      if (!isCurrentProviderDetailRequest(requestSequence, requestSignature, provider.code)) return false
+      console.error(error)
+      message.error(extractModelErrorMessage(error, '加载供应商模型配置失败'))
+      return false
+    } finally {
+      if (requestSequence === providerDetailRequestSequence) {
+        providerDetailLoading.value = false
+        providerDetailLoadingKey = undefined
+        providerDetailLoadingPromise = undefined
+      }
+    }
+  })()
+  providerDetailLoadingKey = requestKey
+  providerDetailLoadingPromise = request
+  return request
+}
+
+function isCurrentProviderDetailRequest(sequence: number, signature: string, providerCode: string): boolean {
+  return pageActive
+    && sequence === providerDetailRequestSequence
+    && signature === modelRequestSignature(providerCode)
+    && activeProvider.value?.code === providerCode
+}
+
+function invalidateActiveProviderDetail(): void {
+  providerDetailRequestSequence += 1
+  providerDetailLoading.value = false
+  providerDetailLoadingKey = undefined
+  providerDetailLoadingPromise = undefined
+  activeProviderDetailCode = undefined
+  activeProviderDetail.value = null
+  activeProviderScopedDefaultHealthCheckModel.value = undefined
 }
 
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
@@ -654,7 +765,7 @@ function handleCustomModelServiceTiersChange(): void {
 
 function handleCustomModelModeChange() {
   const category = customModelPricingCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
+  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, category)
   customModelForm.configurationTemplateId = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
   if (!showCustomModelRequestCapabilities.value) {
@@ -717,6 +828,7 @@ function modelOperationQueryParams(payload: ProviderModelUpsertPayload): Pick<Pr
 }
 
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
+  if (modelLoading.value) return []
   const actions: RowActionItem[] = []
   const isDefault = isActiveProviderDefaultHealthCheckModel(record.model)
   if (getModelCategory(record) === 'text') {
@@ -738,12 +850,13 @@ function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
 }
 
 function handleModelAction(key: string, record: ProviderModelPricing) {
+  if (modelLoading.value) return
   if (key === 'set-default-health-check-model') {
     void setDefaultHealthCheckModel(record)
     return
   }
   if (key === 'edit') {
-    openEditCustomModel(record)
+    void openEditCustomModel(record)
     return
   }
   if (key === 'delete') {
@@ -764,13 +877,21 @@ function isActiveProviderDefaultHealthCheckModel(model: string): boolean {
 }
 
 function applyProviderDefaultHealthCheckModel(providerCode: string, defaultHealthCheckModel: string) {
-  providers.value = providers.value.map((provider) => (
-    provider.code === providerCode
-      ? providerWithDefaultHealthCheckModel(provider, defaultHealthCheckModel)
-      : provider
-  ))
-  if (activeProvider.value?.code === providerCode) {
-    activeProvider.value = providerWithDefaultHealthCheckModel(activeProvider.value, defaultHealthCheckModel)
+  activeProviderScopedDefaultHealthCheckModel.value = defaultHealthCheckModel
+  if (activeProviderDetail.value?.code === providerCode) {
+    activeProviderDetail.value = providerWithDefaultHealthCheckModel(activeProviderDetail.value, defaultHealthCheckModel)
+  }
+  const selectedOwnerId = modelSystemAccountFilter.value.trim()
+  const viewerId = authState.currentUser.value?.id ?? ''
+  if (!isManagementView.value || (selectedOwnerId && selectedOwnerId === viewerId)) {
+    providers.value = providers.value.map((provider) => (
+      provider.code === providerCode
+        ? providerWithDefaultHealthCheckModel(provider, defaultHealthCheckModel)
+        : provider
+    ))
+    if (activeProvider.value?.code === providerCode) {
+      activeProvider.value = providerWithDefaultHealthCheckModel(activeProvider.value, defaultHealthCheckModel)
+    }
   }
 }
 
@@ -793,7 +914,9 @@ function extractModelErrorMessage(error: unknown, fallback: string) {
 
 function invalidateProviderPageRequests(): void {
   pageActive = false
+  providerListRequestSequence += 1
   modelRequestSequence += 1
+  providers.value = []
   resetModelModal()
   customModelModalOpen.value = false
 }
@@ -811,8 +934,12 @@ onActivated(() => {
   void loadProviders(true)
 })
 watch(() => authState.revision.value, () => {
+  providerListRequestSequence += 1
   modelRequestSequence += 1
   resetModelModal()
+  providers.value = []
+  modelSystemAccountFilter.value = ''
+  modelSystemAccountFilterSelection.value = undefined
   customModelModalOpen.value = false
   if (pageActive) void loadProviders(true)
   else pageWasDeactivated = true

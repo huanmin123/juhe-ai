@@ -3,13 +3,16 @@ import { parentPort, workerData } from 'node:worker_threads'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 
 const {
-  encodeAuditLogStreamPayload
+  encodeAuditLogStreamPayload,
+  measureAuditLogStreamPayloadBaseBytes,
+  measureAuditLogStreamPayloadItemBytes
 } = await import(resolveWorkerModuleUrl('./audit-log-stream-codec')) as typeof import('./audit-log-stream-codec.js')
 const {
   summarizeAuditPayloadForLimit
 } = await import(resolveWorkerModuleUrl('./audit-payload-summary')) as typeof import('./audit-payload-summary.js')
 
 const auditTransportMaxBytes = 4 * 1024 * 1024
+const auditTransportIpcEnvelopeReserveBytes = 4 * 1024
 const auditTransportMinimumSummaryWindowBytes = 4 * 1024
 interface AuditLogTransportWorkerData {
   successFullBodyLimitBytes: number
@@ -28,7 +31,7 @@ interface AuditLogTransportWorkerRequest {
 
 interface PreparedAuditLogTransport {
   input: AuditLogInput
-  encoded: string
+  encodedBytes: number
 }
 
 if (!parentPort) {
@@ -39,15 +42,22 @@ const workerPort = parentPort
 workerPort.on('message', (message: AuditLogTransportWorkerRequest) => {
   try {
     const input = rehydrateAuditLogBuffers(message.input)
-    const prepared = prepareAuditLogForTransport(input)
-    if (encodedTransportBytes(prepared.encoded) > auditTransportMaxBytes) {
+    const transportBudgetBytes = message.mode === 'ipc'
+      ? auditTransportMaxBytes - auditTransportIpcEnvelopeReserveBytes
+      : auditTransportMaxBytes
+    const prepared = prepareAuditLogForTransport(input, transportBudgetBytes)
+    if (prepared.encodedBytes > transportBudgetBytes) {
       throw new Error('审计传输 worker 输出超过 4MiB 消息预算')
     }
     if (message.mode === 'redis_stream') {
+      const encoded = encodeAuditLogStreamPayload(prepared.input)
+      if (encodedTransportBytes(encoded) !== prepared.encodedBytes) {
+        throw new Error('审计传输 worker 增量字节核算与最终编码不一致')
+      }
       workerPort.postMessage({
         id: message.id,
         ok: true,
-        encoded: prepared.encoded
+        encoded
       })
       return
     }
@@ -75,7 +85,7 @@ function rehydrateAuditLogBuffers(input: AuditLogInput): AuditLogInput {
   }
 }
 
-function prepareAuditLogForTransport(input: AuditLogInput): PreparedAuditLogTransport {
+function prepareAuditLogForTransport(input: AuditLogInput, transportBudgetBytes: number): PreparedAuditLogTransport {
   const bodyMaxBytes = input.auditOutcome === 'success'
     ? transportSettings.successFullBodyLimitBytes
     : transportSettings.problemFullBodyLimitBytes
@@ -96,13 +106,13 @@ function prepareAuditLogForTransport(input: AuditLogInput): PreparedAuditLogTran
     payloads,
     captureStatus: structureDropped && input.captureStatus !== 'overflow' ? 'dropped' : input.captureStatus
   }
+  const byteTracker = new AuditLogTransportByteTracker(prepared)
 
-  let encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
+  if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
 
   const bodyIndexes = prepared.payloads
-    .map((payload, index) => ({ index, bytes: auditPayloadBodyBytes(payload.body) }))
-    .filter((item) => item.bytes > 0)
+    .map((payload, index) => ({ index, bytes: auditPayloadBodyBytes(payload.body), captureStatus: payload.captureStatus }))
+    .filter((item) => item.bytes > 0 && item.captureStatus === 'complete')
     .sort((left, right) => right.bytes - left.bytes)
   for (const item of bodyIndexes) {
     const payload = prepared.payloads[item.index]
@@ -112,13 +122,12 @@ function prepareAuditLogForTransport(input: AuditLogInput): PreparedAuditLogTran
       includeGatewayMetadata: true,
       reason: 'transport_message_budget'
     })
+    byteTracker.updatePayload(item.index, payload)
+    if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
   }
-  encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
 
-  shrinkAuditPayloadSummariesToMinimumWindow(prepared)
-  encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
+  shrinkAuditPayloadSummariesToMinimumWindow(prepared, byteTracker)
+  if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
 
   const headerIndexes = prepared.payloads
     .map((payload, index) => ({ index, bytes: estimateHeadersBytes(payload.headers) }))
@@ -129,59 +138,112 @@ function prepareAuditLogForTransport(input: AuditLogInput): PreparedAuditLogTran
     if (!payload?.headers) continue
     prepared.payloads[item.index] = { ...payload, headers: undefined }
     structureDropped = true
-  }
-  if (structureDropped) prepared = markAuditLogStructureDropped(prepared)
-  encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
-
-  if (prepared.payloads.length > 2) {
-    prepared = {
-      ...prepared,
-      payloads: [
-        prepared.payloads[0],
-        prepared.payloads[prepared.payloads.length - 1]
-      ]
+    byteTracker.updatePayload(item.index, prepared.payloads[item.index])
+    if (prepared.captureStatus !== 'dropped' && prepared.captureStatus !== 'overflow') {
+      prepared = markAuditLogStructureDropped(prepared)
+      byteTracker.updateBase(prepared)
     }
+    if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
+  }
+
+  while (prepared.payloads.length > 2 && byteTracker.encodedBytes > transportBudgetBytes) {
+    const middleIndex = Math.floor(prepared.payloads.length / 2)
+    prepared.payloads.splice(middleIndex, 1)
+    byteTracker.removePayload(middleIndex)
     structureDropped = true
   }
-  if (structureDropped) prepared = markAuditLogStructureDropped(prepared)
-  encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) <= auditTransportMaxBytes) return { input: prepared, encoded }
-
-  if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
-    for (const payload of prepared.payloads) {
-      summarizeAuditPayloadForLimit(payload, 0, {
-        force: true,
-        includeGatewayMetadata: true,
-        reason: 'transport_message_budget'
-      })
-      structureDropped = true
-    }
-  }
-  if (structureDropped) {
+  if (structureDropped && prepared.captureStatus !== 'dropped' && prepared.captureStatus !== 'overflow') {
     prepared = markAuditLogStructureDropped(prepared)
+    byteTracker.updateBase(prepared)
   }
-  encoded = encodeAuditLogStreamPayload(prepared)
-  if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
+  if (byteTracker.encodedBytes <= transportBudgetBytes) return preparedAuditLogTransport(prepared, byteTracker)
+
+  for (let index = 0; index < prepared.payloads.length; index += 1) {
+    const payload = prepared.payloads[index]
+    if (!payload) continue
+    summarizeAuditPayloadForLimit(payload, 0, {
+      force: true,
+      includeGatewayMetadata: true,
+      reason: 'transport_message_budget'
+    })
+    byteTracker.updatePayload(index, payload)
+    structureDropped = true
+    if (prepared.captureStatus !== 'dropped' && prepared.captureStatus !== 'overflow') {
+      prepared = markAuditLogStructureDropped(prepared)
+      byteTracker.updateBase(prepared)
+    }
+    if (byteTracker.encodedBytes <= transportBudgetBytes) break
+  }
+  if (byteTracker.encodedBytes > transportBudgetBytes) {
     prepared = markAuditLogStructureDropped({
       ...prepared,
       attempts: [],
       payloads: []
     })
-    encoded = encodeAuditLogStreamPayload(prepared)
+    byteTracker.reset(prepared)
   }
-  return { input: prepared, encoded }
+  return preparedAuditLogTransport(prepared, byteTracker)
 }
 
-function shrinkAuditPayloadSummariesToMinimumWindow(input: AuditLogInput): void {
-  for (const payload of input.payloads) {
+function shrinkAuditPayloadSummariesToMinimumWindow(input: AuditLogInput, byteTracker: AuditLogTransportByteTracker): void {
+  for (let index = 0; index < input.payloads.length; index += 1) {
+    const payload = input.payloads[index]
+    if (!payload) continue
     if (payload.captureStatus !== 'summary_only') continue
     summarizeAuditPayloadForLimit(payload, auditTransportMinimumSummaryWindowBytes, {
       force: true,
       includeGatewayMetadata: true,
       reason: 'transport_message_budget'
     })
+    byteTracker.updatePayload(index, payload)
   }
+}
+
+class AuditLogTransportByteTracker {
+  private baseBytes: number
+  private payloadBytes: number[]
+  private payloadTotalBytes: number
+
+  constructor(input: AuditLogInput) {
+    this.baseBytes = measureAuditLogStreamPayloadBaseBytes(input)
+    this.payloadBytes = input.payloads.map(measureAuditLogStreamPayloadItemBytes)
+    this.payloadTotalBytes = this.payloadBytes.reduce((total, bytes) => total + bytes, 0)
+  }
+
+  get encodedBytes(): number {
+    return this.baseBytes
+      + this.payloadTotalBytes
+      + Math.max(0, this.payloadBytes.length - 1)
+  }
+
+  updateBase(input: AuditLogInput): void {
+    this.baseBytes = measureAuditLogStreamPayloadBaseBytes(input)
+  }
+
+  updatePayload(index: number, payload: AuditLogInput['payloads'][number]): void {
+    const previousBytes = this.payloadBytes[index] ?? 0
+    const nextBytes = measureAuditLogStreamPayloadItemBytes(payload)
+    this.payloadBytes[index] = nextBytes
+    this.payloadTotalBytes += nextBytes - previousBytes
+  }
+
+  removePayload(index: number): void {
+    const removedBytes = this.payloadBytes.splice(index, 1)[0] ?? 0
+    this.payloadTotalBytes -= removedBytes
+  }
+
+  reset(input: AuditLogInput): void {
+    this.baseBytes = measureAuditLogStreamPayloadBaseBytes(input)
+    this.payloadBytes = input.payloads.map(measureAuditLogStreamPayloadItemBytes)
+    this.payloadTotalBytes = this.payloadBytes.reduce((total, bytes) => total + bytes, 0)
+  }
+}
+
+function preparedAuditLogTransport(
+  input: AuditLogInput,
+  byteTracker: AuditLogTransportByteTracker
+): PreparedAuditLogTransport {
+  return { input, encodedBytes: byteTracker.encodedBytes }
 }
 
 function markAuditLogStructureDropped(input: AuditLogInput): AuditLogInput {
@@ -219,9 +281,17 @@ function encodedTransportBytes(encoded: string): number {
 function truncateAuditLogStrings(input: AuditLogInput): AuditLogInput {
   return {
     ...input,
+    id: truncateOptionalString(input.id, 256),
+    traceId: truncateString(input.traceId, 256),
     conversationKey: truncateOptionalString(input.conversationKey, 256),
     sessionId: truncateOptionalString(input.sessionId, 512),
     sessionClientType: truncateOptionalString(input.sessionClientType, 128),
+    systemAccountId: truncateOptionalString(input.systemAccountId, 256),
+    apiKeyId: truncateOptionalString(input.apiKeyId, 256),
+    groupId: truncateOptionalString(input.groupId, 256),
+    accountId: truncateOptionalString(input.accountId, 256),
+    providerCode: truncateOptionalString(input.providerCode, 128),
+    method: truncateString(input.method, 32),
     path: truncateString(input.path, 2048),
     queryString: truncateOptionalString(input.queryString, 4096),
     model: truncateOptionalString(input.model, 512),
@@ -233,18 +303,35 @@ function truncateAuditLogStrings(input: AuditLogInput): AuditLogInput {
     errorPhase: truncateOptionalString(input.errorPhase, 256),
     errorCode: truncateOptionalString(input.errorCode, 512),
     errorMessage: truncateOptionalString(input.errorMessage, 4096),
-    sampleReason: truncateString(input.sampleReason, 1024)
+    sampleReason: truncateString(input.sampleReason, 1024),
+    startedAt: truncateString(input.startedAt, 128),
+    endedAt: truncateString(input.endedAt, 128),
+    httpCompletedAt: truncateOptionalString(input.httpCompletedAt, 128),
+    createdAt: truncateOptionalString(input.createdAt, 128)
   }
 }
 
 function truncateAttemptStrings(attempt: AuditLogInput['attempts'][number]): AuditLogInput['attempts'][number] {
   return {
     ...attempt,
+    id: truncateOptionalString(attempt.id, 256),
+    tempId: truncateOptionalString(attempt.tempId, 256),
+    accountId: truncateOptionalString(attempt.accountId, 256),
+    accountOwnerSystemAccountId: truncateOptionalString(attempt.accountOwnerSystemAccountId, 256),
+    groupId: truncateOptionalString(attempt.groupId, 256),
     proxyUrl: truncateOptionalString(attempt.proxyUrl, 2048),
+    providerCode: truncateOptionalString(attempt.providerCode, 128),
+    model: truncateOptionalString(attempt.model, 512),
+    upstreamModel: truncateOptionalString(attempt.upstreamModel, 512),
+    pricingModel: truncateOptionalString(attempt.pricingModel, 512),
+    modelMappingSource: truncateOptionalString(attempt.modelMappingSource, 128),
+    upstreamMethod: truncateString(attempt.upstreamMethod, 32),
     upstreamUrl: truncateString(attempt.upstreamUrl, 4096),
     errorPhase: truncateOptionalString(attempt.errorPhase, 256),
     errorCode: truncateOptionalString(attempt.errorCode, 512),
-    errorMessage: truncateOptionalString(attempt.errorMessage, 4096)
+    errorMessage: truncateOptionalString(attempt.errorMessage, 4096),
+    startedAt: truncateString(attempt.startedAt, 128),
+    endedAt: truncateOptionalString(attempt.endedAt, 128)
   }
 }
 

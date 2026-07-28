@@ -144,6 +144,11 @@ interface GroupSummary {
   accessType?: string
 }
 
+interface GroupSelectOption {
+  id: string
+  name: string
+}
+
 interface GroupListResult {
   items: GroupSummary[]
   total: number
@@ -158,6 +163,14 @@ interface ApiKeySummary {
   name: string
   status?: string
   routeStrategyId?: string
+}
+
+interface ApiKeyCreateResult {
+  id: string
+  key: string
+  keyPrefix: string
+  keySuffix: string
+  revision: string
 }
 
 interface ApiKeyListResult {
@@ -471,16 +484,42 @@ async function main(): Promise<void> {
     const userAMyGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, '/__aisys__/api/my-groups?page=1&pageSize=1', seed.userACookie)
     assert(userAMyGroupPage1.items.length === 1 && userAMyGroupPage1.pageSize === 1, '用户侧分组分页第一页异常')
     assert(userAMyGroupPage1.hasMore === true, '用户侧分组分页应提示还有更多')
-    const userAGroupOptions = await getEnvelope<GroupSummary[]>(baseUrl, '/__aisys__/api/my-groups/options?limit=50', seed.userACookie)
-    assert(userAGroupOptions.length >= 1 && userAGroupOptions.every((group) => group.ownerSystemAccountId === seed.userAId || group.accessType === 'authorized'), '普通用户应能查询用户侧分组选项且不能混入不可见分组')
-    assert(userAGroupOptions.some((group) => group.id === seed.userBGroupId && group.ownerSystemAccountId === seed.userBId && group.accessType === 'authorized'), '团队分组授权应让用户 A 看到授权分组')
+    const userAGroupOptions = await getEnvelope<GroupSelectOption[]>(baseUrl, '/__aisys__/api/my-groups/options?limit=50', seed.userACookie)
+    assert(userAGroupOptions.length >= 1, '普通用户应能查询用户侧分组选项')
+    assert(
+      userAGroupOptions.every((group) => JSON.stringify(Object.keys(group).sort()) === JSON.stringify(['id', 'name'])),
+      '用户侧分组选项只应返回 id/name 最小摘要'
+    )
+    const optionOwnerRows = databaseModule.getBusinessDatabase().prepare(`
+      SELECT id, system_account_id
+      FROM groups
+      WHERE id IN (${userAGroupOptions.map(() => '?').join(', ')})
+    `).all(...userAGroupOptions.map((group) => group.id)) as unknown as Array<{ id: string; system_account_id: string }>
+    const optionOwnerById = new Map(optionOwnerRows.map((row) => [row.id, row.system_account_id]))
+    assert(
+      userAGroupOptions.every((group) => optionOwnerById.get(group.id) === seed.userAId || group.id === seed.userBGroupId),
+      '普通用户的分组选项不得混入自有或明确授权范围外的分组'
+    )
+    assert(userAGroupOptions.some((group) => group.id === seed.userBGroupId), '团队分组授权应让用户 A 看到授权分组')
     summary.push('管理员代建分组归属检查通过')
 
-    const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
+    const createdApiKey = await postEnvelope<ApiKeyCreateResult>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建 Key',
       routeStrategyId: seed.userBRouteStrategyId
     })
-    assert(createdApiKey.systemAccountId === seed.userBId, '管理员按用户 B 创建 API Key 没有归属到用户 B')
+    assert(
+      JSON.stringify(Object.keys(createdApiKey).sort()) === JSON.stringify(['id', 'key', 'keyPrefix', 'keySuffix', 'revision']),
+      'API Key 创建响应只应返回一次性密钥回执'
+    )
+    const createdApiKeySeeds = await getApiKeyItems(
+      baseUrl,
+      `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}&keyword=${encodeURIComponent('用户 B 管理代建 Key')}&page=1&pageSize=10`,
+      seed.adminCookie
+    )
+    assert(
+      createdApiKeySeeds.some((item) => item.id === createdApiKey.id && item.systemAccountId === seed.userBId),
+      '管理员按用户 B 创建 API Key 后，列表 seed 没有归属到用户 B'
+    )
     summary.push('管理员代建 API Key 归属检查通过')
 
     const userAKeys = await getApiKeyItems(baseUrl, `/__aisys__/api/my-api-keys?systemAccountId=${seed.userBId}`, seed.userACookie)

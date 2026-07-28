@@ -14,7 +14,13 @@
         <a-input v-model:value="form.name" :disabled="editingAuthorizedGroup" />
       </a-form-item>
       <a-form-item label="所属供应商" required tooltip="供应商决定这个分组后续可绑定的账户范围。">
-        <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked || editingAuthorizedGroup" />
+        <a-select
+          v-model:value="form.providerCode"
+          :options="providerOptions"
+          :loading="providerOptionsLoading"
+          :disabled="providerLocked || editingAuthorizedGroup"
+          @dropdown-visible-change="emit('provider-dropdown-visible-change', $event)"
+        />
       </a-form-item>
       <a-form-item label="分组类型" required tooltip="个人分组按账号并发直接调度；高并发分组会启用短队列、单账户软阈值和可选单 IP 并发限制。">
         <a-radio-group v-model:value="form.groupType" button-style="solid">
@@ -62,6 +68,7 @@ defineProps<{
   open: boolean
   providerLocked: boolean
   providerOptions: Array<{ label: string; value: string; disabled?: boolean }>
+  providerOptionsLoading: boolean
   saving: boolean
   showTargetAlert: boolean
   targetSystemAccountLabel?: string
@@ -71,6 +78,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'client-ip-concurrency-limit-change', value: unknown): void
   (event: 'max-queue-wait-seconds-change', value: unknown): void
+  (event: 'provider-dropdown-visible-change', open: boolean): void
   (event: 'save'): void
   (event: 'update:clientIpLimitEnabled', value: boolean): void
   (event: 'update:open', value: boolean): void

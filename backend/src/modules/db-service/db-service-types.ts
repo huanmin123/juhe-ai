@@ -657,6 +657,8 @@ export type DbServiceOperation =
       headers?: Record<string, string | string[]>
       bodyText?: string
       errorMessage?: string
+      upstreamErrorSummary?: string
+      upstreamErrorSummaryResolved?: boolean
       traceId?: string
       observedAt?: string
       dispatchRevision?: number

@@ -3,7 +3,7 @@ import { computed, ref, toValue, type MaybeRefOrGetter } from 'vue'
 import { api, type AccountListSortParam } from '@/api/client'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { AccountExportResult, AccountSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountExportResult, AccountListItem, SystemAccountPrincipalSummary } from '@/types/domain'
 import {
   accountExportFilename,
   accountExportFiltersFromState,
@@ -21,7 +21,7 @@ interface UseAccountExportActionsConfig {
   accountSorts: MaybeRefOrGetter<AccountListSortParam[]>
   filters: AccountFilters
   isManagementView: MaybeRefOrGetter<boolean>
-  selectedAccounts: MaybeRefOrGetter<AccountSummary[]>
+  selectedAccounts: MaybeRefOrGetter<AccountListItem[]>
   systemAccounts: MaybeRefOrGetter<SystemAccountPrincipalSummary[]>
 }
 
@@ -66,7 +66,7 @@ export function useAccountExportActions(config: UseAccountExportActionsConfig) {
     }
   }
 
-  async function exportAccountsByIds(sourceAccounts: AccountSummary[]): Promise<void> {
+  async function exportAccountsByIds(sourceAccounts: AccountListItem[]): Promise<void> {
     const exportableAccounts = sourceAccounts.filter(canExportAccount)
     if (!exportableAccounts.length) {
       message.warning('所选账户没有可导出的自有 AI 账户')
@@ -112,7 +112,7 @@ function accountFilterExportSuccessMessage(summary: AccountExportResult['summary
   return `已按当前筛选导出 ${summary.accounts} 个账户${matchedText}${skippedText}${truncatedText}`
 }
 
-function canExportAccount(account: AccountSummary): boolean {
+function canExportAccount(account: AccountListItem): boolean {
   return account.accessType !== 'authorized'
     && account.permissions?.canViewCredentials !== false
     && account.permissions?.canEdit !== false
