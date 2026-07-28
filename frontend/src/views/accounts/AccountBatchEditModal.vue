@@ -427,9 +427,10 @@ import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAcc
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type {
+  AccountBatchEditContextField,
+  AccountBatchEditContextItem,
   AccountListItem,
   AccountModelMapping,
-  AccountSummary,
   AccountTagSummary,
   ProviderDefinition
 } from '@/types/domain'
@@ -494,7 +495,7 @@ const loading = ref(false)
 const saving = ref(false)
 const modelsLoading = ref(false)
 const contextError = ref('')
-const accountDetails = ref<AccountSummary[]>([])
+const accountDetails = ref<AccountBatchEditContextItem[]>([])
 const currentProviderModelOptions = ref<AccountModelSelectOption[]>([])
 const modelOptions = ref<AccountModelSelectOption[]>([])
 const form = reactive<AccountBatchEditForm>(createAccountBatchEditForm())
@@ -523,6 +524,12 @@ const selectedProtocolProfile = computed(() => {
   return provider?.protocolProfiles.find((profile) => profile.id === account?.providerProtocolProfileId)
     ?? provider?.protocolProfiles.find((profile) => profile.enabled)
     ?? provider?.protocolProfiles[0]
+})
+const managementScopeParams = computed(() => {
+  const selectedAccount = props.accounts[0]
+  return props.isManagementView && selectedAccount
+    ? accountOperationScopeParams(selectedAccount, props.scopeParams)
+    : undefined
 })
 const sharedSupportedModels = computed(() => intersectAccountModels(accountDetails.value))
 const effectiveBatchModels = computed(() => (
@@ -629,9 +636,14 @@ async function loadContext(): Promise<void> {
   loading.value = true
   try {
     const accountIds = props.accounts.map((account) => account.id)
+    const fields: AccountBatchEditContextField[] = [
+      'supportedModels',
+      'modelMappings',
+      'supportedEndpointModes'
+    ]
     const details = props.isManagementView
-      ? await api.accounts.batchEditContext(accountIds, props.scopeParams)
-      : await api.myAccounts.batchEditContext(accountIds)
+      ? await api.accounts.batchEditContext(accountIds, fields, managementScopeParams.value)
+      : await api.myAccounts.batchEditContext(accountIds, fields)
     if (token !== loadToken || !open.value) return
     accountDetails.value = details
     if (accountDetails.value.length !== props.accounts.length) {
@@ -651,8 +663,9 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
   const requestId = ++modelOptionsRequestId
   modelsLoading.value = true
   try {
-    const scope = props.isManagementView
-      ? accountOperationScopeParams(account, props.scopeParams)
+    const selectedAccount = props.accounts.find((item) => item.id === account.id) ?? props.accounts[0]
+    const scope = props.isManagementView && selectedAccount
+      ? accountOperationScopeParams(selectedAccount, props.scopeParams)
       : undefined
     const models = await loadAccountProviderModelOptionsResource({
       isManagementView: props.isManagementView,
@@ -707,7 +720,7 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     if (props.isManagementView) {
-      await api.accounts.batchUpdate(result.payload, props.scopeParams)
+      await api.accounts.batchUpdate(result.payload, managementScopeParams.value)
     } else {
       await api.myAccounts.batchUpdate(result.payload)
     }
@@ -785,7 +798,7 @@ function mappingContext() {
   }
 }
 
-function intersectAccountModels(accounts: AccountSummary[]): string[] {
+function intersectAccountModels(accounts: AccountBatchEditContextItem[]): string[] {
   if (!accounts.length) return []
   const [first, ...rest] = accounts.map((account) => normalizedTextList(account.supportedModels ?? []))
   return first.filter((model) => rest.every((models) => models.includes(model)))

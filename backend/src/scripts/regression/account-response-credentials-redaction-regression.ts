@@ -214,23 +214,28 @@ try {
   assertNoSecretValueLeak(detail, '账户高级详情响应')
 
   const batchEditContext = await postEnvelope<AccountResponse[]>(baseUrl, '/__aisys__/api/accounts/batch-edit-context', seed.adminCookie, {
-    accountIds: [seed.apiKeyAccountId, seed.multiApiKeyAccountId]
+    accountIds: [seed.apiKeyAccountId, seed.multiApiKeyAccountId],
+    fields: ['supportedModels', 'modelMappings', 'supportedEndpointModes']
   })
   assert.equal(batchEditContext.length, 2, '批量编辑上下文应一次返回全部目标账户')
-  assert.deepEqual(batchEditContext[0]?.credentials?.error_handling_rules, [{
-    enabled: true,
-    name: '响应脱敏账户错误处理',
-    priority: 10,
-    status_codes: [429],
-    action: 'temp_unschedulable'
-  }], '批量编辑上下文应返回允许覆盖的错误策略')
-  assert.equal(batchEditContext[0]?.credentials?.api_key, undefined, '批量编辑上下文不得返回 API Key')
-  assert.equal(batchEditContext[0]?.credentials?.base_url, undefined, '批量编辑上下文不得返回 Base URL')
-  assertNoForbiddenCredentialKeysExcept(
-    batchEditContext,
-    '批量编辑上下文响应',
-    new Set(['error_handling_rules', 'response_inspection_rules'])
-  )
+  assert.deepEqual(Object.keys(batchEditContext[0] ?? {}).sort(), [
+    'configRevision',
+    'id',
+    'modelMappings',
+    'providerCode',
+    'providerProtocolProfileId',
+    'protocolCode',
+    'protocolVersion',
+    'supportedEndpointModes',
+    'supportedModels',
+    'type'
+  ].sort(), '批量编辑上下文 HTTP 响应只能包含实际消费字段')
+  for (const forbiddenField of [
+    'credentials', 'tags', 'usage', 'todayUsage', 'permissions', 'runtimeAvailability',
+    'currentConcurrency', 'status', 'authorizationSources', 'apiKeyRuntime'
+  ]) {
+    assert.equal(Object.hasOwn(batchEditContext[0] ?? {}, forbiddenField), false, `批量编辑上下文不得返回 ${forbiddenField}`)
+  }
   const batchEditContextText = JSON.stringify(batchEditContext)
   for (const secret of secretValues) {
     assert.equal(batchEditContextText.includes(secret), false, `批量编辑上下文响应不应包含密钥原文 ${secret}`)

@@ -28,8 +28,7 @@ const [
     AccountBatchUpdateAccessError,
     AccountBatchUpdateVersionConflictError
   },
-  { accountBatchEditSchema },
-  { sanitizeAccountBatchEditDetailResponse },
+  { accountBatchEditContextSchema, accountBatchEditSchema },
   { invalidateAccountLookupCache },
   { buildPostgresSchemaSql }
 ] = await Promise.all([
@@ -39,7 +38,6 @@ const [
   import('../../modules/accounts/account-batch-edit.service.js'),
   import('../../storage/account-batch-update.repository.js'),
   import('../../modules/accounts/account-request.schemas.js'),
-  import('../../modules/accounts/account-response-sanitizer.js'),
   import('../../storage/repository-lookups.js'),
   import('../../storage/postgres-schema.js')
 ])
@@ -155,12 +153,26 @@ try {
   }
   assertCredentialPoliciesMerged(accountA.id, 'sk-account-batch-edit-a')
   assertCredentialPoliciesMerged(accountB.id, 'sk-account-batch-edit-b')
-  const batchContext = await loadAccountBatchEditContextAsync([accountA.id, accountB.id], access)
+  const batchContext = await loadAccountBatchEditContextAsync(
+    [accountA.id, accountB.id],
+    ['supportedModels', 'modelMappings', 'supportedEndpointModes'],
+    access
+  )
   assert.equal(batchContext.length, 2, '批量编辑上下文应一次返回全部目标账户')
-  const sanitizedContext = batchContext.map(sanitizeAccountBatchEditDetailResponse)
-  assert.equal(sanitizedContext[0]?.credentials.api_key, undefined, '批量编辑上下文不得返回 API Key')
-  assert.equal(sanitizedContext[0]?.credentials.base_url, undefined, '批量编辑上下文不得返回 Base URL')
-  assert.ok(sanitizedContext[0]?.credentials.error_handling_rules, '批量编辑上下文应返回允许覆盖的错误策略')
+  assert.deepEqual(Object.keys(batchContext[0] ?? {}).sort(), [
+    'configRevision',
+    'id',
+    'modelMappings',
+    'providerCode',
+    'providerProtocolProfileId',
+    'protocolCode',
+    'protocolVersion',
+    'supportedEndpointModes',
+    'supportedModels',
+    'type'
+  ].sort(), '批量编辑上下文只应返回表单实际消费的窄字段')
+  assert.equal(Object.hasOwn(batchContext[0] ?? {}, 'credentials'), false, '批量编辑上下文不得返回 credentials')
+  assert.equal(Object.hasOwn(batchContext[0] ?? {}, 'tags'), false, '批量编辑上下文不得预取标签')
 
   await assert.rejects(
     batchEditAccountsAsync({
@@ -472,9 +484,18 @@ function assertRouteAndSchemaBoundary(): void {
   assert(repositorySource.includes("fields.has('modelMappings') || fields.has('supportedModels') || fields.has('supportedEndpointModes')"), '模型映射关系必须按模型相关字段读取')
   assert(!repositorySource.includes('balance_query_enabled = CASE WHEN ? = 1 THEN 0'), '无关批量修改不得隐式关闭多 Key 余额')
   assert(!batchRouteSource.includes('sanitizeAccountResponse'), '批量保存响应不得重新物化完整账户摘要')
+  assert(!batchRouteSource.includes('sanitizeAccountBatchEditDetailResponse'), '批量上下文必须由 repository 直接返回窄 DTO')
   assert(!batchRouteSource.includes('result.accounts'), '批量保存响应和操作日志不得依赖完整账户数组')
   assert(batchRouteSource.includes('log: result.changedFields.length > 0 ?'), '整批 no-op 不得写入操作日志')
   assert(!repositorySource.includes('updateAccountAsync('), '批量编辑 repository 不能循环调用单账户更新')
+  assert.equal(accountBatchEditContextSchema.safeParse({
+    accountIds: ['account-a', 'account-b'],
+    fields: ['supportedModels', 'modelMappings', 'supportedEndpointModes']
+  }).success, true, '批量编辑上下文只允许显式模型依赖字段')
+  assert.equal(accountBatchEditContextSchema.safeParse({
+    accountIds: ['account-a', 'account-b'],
+    fields: ['permissions']
+  }).success, false, '批量编辑上下文不得接受权限或其他宽字段')
   assert.match(
     buildPostgresSchemaSql(),
     /CREATE TABLE IF NOT EXISTS accounts[\s\S]+config_revision integer NOT NULL DEFAULT 1/,

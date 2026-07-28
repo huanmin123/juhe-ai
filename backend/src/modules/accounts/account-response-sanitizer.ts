@@ -32,16 +32,6 @@ const editBasicCredentialKeys = new Set([
   'codex_responses_strict_intercept_enabled'
 ])
 
-const batchEditCredentialKeys = new Set([
-  'supported_endpoint_modes',
-  'service_tier_override',
-  'reasoning_effort_override',
-  'error_handling_rules',
-  'response_inspection_rules',
-  'codex_responses_safe_repair_enabled',
-  'codex_responses_strict_intercept_enabled'
-])
-
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!credentials) return {}
   const output: Record<string, unknown> = {}
@@ -75,24 +65,6 @@ export function sanitizeAccountEditBasicDetailResponse<T extends AccountSummary>
     credentials: sanitizeAccountCredentialsByKeys(account.credentials, editBasicCredentialKeys),
     runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability),
     supportedModels: [...(account.supportedModels ?? [])]
-  } as T
-}
-
-export function sanitizeAccountBatchEditDetailResponse<T extends AccountSummary>(account: T): T {
-  const {
-    apiKeyRuntime: _apiKeyRuntime,
-    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
-    oauthUsage: _oauthUsage,
-    authorizationSources: _authorizationSources,
-    ...item
-  } = account
-  return {
-    ...item,
-    credentials: sanitizeAccountCredentialsByKeys(account.credentials, batchEditCredentialKeys),
-    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability),
-    supportedModels: [...(account.supportedModels ?? [])],
-    modelMappings: [...(account.modelMappings ?? [])],
-    tags: [...(account.tags ?? [])]
   } as T
 }
 

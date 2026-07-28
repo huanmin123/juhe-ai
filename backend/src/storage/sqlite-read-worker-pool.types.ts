@@ -433,6 +433,11 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'list_response_inspection_policy_provider_options_read_only'
+    input: {
+      protocolCode: string
+      scopeType: 'protocol' | 'provider'
+      keyword?: string
+    }
   }
   | {
     type: 'list_active_response_inspection_policies_read_only'

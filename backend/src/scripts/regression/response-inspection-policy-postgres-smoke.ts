@@ -50,10 +50,10 @@ try {
   assert.ok(defaultDetail, 'PG detail 必须支持系统默认规则')
   assert(defaultDetail.match && Object.keys(defaultDetail.match).length > 0, 'PG 默认规则 detail 必须包含 matcher')
 
-  const providerOptions = await listResponseInspectionPolicyProviderOptionsAsync()
+  const providerOptions = await listResponseInspectionPolicyProviderOptionsAsync({ protocolCode: OPENAI_PROTOCOL_CODE, scopeType: 'provider' })
   assert(providerOptions.length > 0, 'PG provider options 必须返回启用的受支持供应商')
   for (const option of providerOptions) {
-    assert.deepEqual(Object.keys(option).sort(), ['code', 'name', 'protocolCode'], 'PG provider option 只能返回三字段')
+    assert.deepEqual(Object.keys(option).sort(), ['code', 'name'], 'PG provider option 只能返回 code/name')
   }
   assert.equal(new Set(providerOptions.map((option) => `${option.code}\u0000${option.protocolCode}`)).size, providerOptions.length, 'PG provider options 必须去重')
 

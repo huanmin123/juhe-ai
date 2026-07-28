@@ -111,7 +111,7 @@
 import { CopyOutlined } from '@ant-design/icons-vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import type { UsageRecordSummary } from '@/types/domain'
+import type { UsageRecordListItem } from '@/types/domain'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
@@ -138,9 +138,9 @@ withDefaults(defineProps<{
   loading: boolean
   loadingMore: boolean
   mobileHasMore: boolean
-  mobileRecords: UsageRecordSummary[]
+  mobileRecords: UsageRecordListItem[]
   pagination: Record<string, any> | false
-  records: UsageRecordSummary[]
+  records: UsageRecordListItem[]
   emptyDescription?: string
 }>(), {
   emptyDescription: '当前条件下没有使用记录。'

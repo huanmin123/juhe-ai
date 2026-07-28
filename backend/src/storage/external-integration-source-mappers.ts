@@ -58,6 +58,7 @@ export function mapSourceListItem(
     expiresAt: row.expires_at ?? undefined,
     notes: row.notes ?? undefined,
     lastUsedAt: row.last_used_at ?? undefined,
+    updatedAt: row.updated_at,
     primaryToken,
     isBuiltIn: isBuiltInExternalIntegrationTestSourceId(row.id)
   }

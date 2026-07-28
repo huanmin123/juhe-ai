@@ -82,7 +82,16 @@ const createBranchStart = saveSource.indexOf("    } else {\n      const payload 
 assert.notEqual(createBranchStart, -1)
 assert.doesNotMatch(saveSource.slice(0, createBranchStart), /\bloadData\s*\(/, '编辑成功已局部合并列表，不得再无条件刷新整页')
 
-console.log('分组前端差异 PATCH 回归通过：编辑只提交变化字段，空差异与保存后均不发额外请求')
+const removeStart = groupsViewSource.indexOf('async function removeGroup')
+const removeEnd = groupsViewSource.indexOf('function snapshotPageState', removeStart)
+assert.notEqual(removeStart, -1)
+assert.notEqual(removeEnd, -1)
+const removeSource = groupsViewSource.slice(removeStart, removeEnd)
+assert.match(removeSource, /await groupsApi\.delete[\s\S]*removeGroupItems/, '删除成功必须从本地列表移除目标行')
+assert.match(removeSource, /await groupsApi\.returnAuthorization[\s\S]*removeGroupItems/, '归还授权分组成功必须从本地列表移除目标行')
+assert.doesNotMatch(removeSource, /\bloadData\s*\(/, '删除或归还成功后不得重复刷新整页')
+
+console.log('分组前端差异 PATCH 回归通过：编辑、删除和归还成功后均按本地结果更新且不发额外列表请求')
 
 function writableSchedulingPolicy(policy: typeof model.form.schedulingPolicy) {
   return {

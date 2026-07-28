@@ -9,7 +9,7 @@ import {
 } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
 import { buildUsageRecordFilters, buildUsageRecordOrderClause, type NormalizedUsageRecordListOptions, normalizeUsageRecordListOptions, type UsageRecordFilterResult, type UsageRecordFilterSettings } from './usage-record-list-query.js'
-import { hydrateUsageRecordNames, hydrateUsageRecordNamesAsync, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
+import { hydrateUsageRecordNames, hydrateUsageRecordNamesAsync, usageRecordListItemFromRow, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import {
   generateUsageRecordId,
   getUsageRecordShardDatabase,
@@ -111,8 +111,37 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-/** Fields needed by the paged table. Snapshot payloads are detail-only. */
-export type UsageRecordListItem = Omit<UsageRecordSummary, 'requestSnapshot' | 'responseSnapshot'>
+/** Exact projection consumed by the paged table. Heavy pricing/error/snapshot fields stay off the list path. */
+export type UsageRecordListItem = Pick<UsageRecordSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'traceId'
+  | 'trafficSource'
+  | 'clientIp'
+  | 'apiKeyId'
+  | 'apiKeyName'
+  | 'groupId'
+  | 'groupName'
+  | 'accountId'
+  | 'accountName'
+  | 'endpoint'
+  | 'model'
+  | 'upstreamModel'
+  | 'billedServiceTier'
+  | 'effectiveReasoningEffort'
+  | 'modelMappingApplied'
+  | 'stream'
+  | 'statusCode'
+  | 'success'
+  | 'firstTokenMs'
+  | 'durationMs'
+  | 'inputTokens'
+  | 'outputTokens'
+  | 'cacheReadTokens'
+  | 'costUsd'
+  | 'createdAt'
+>
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'opaque_upstream' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
@@ -210,6 +239,33 @@ export interface UsageRecordInput {
 
 const usageRecordAccountKeywordMatchLimit = 200
 
+export const usageRecordListSelectColumns = [
+  'ur.id',
+  'ur.system_account_id',
+  'ur.trace_id',
+  'ur.traffic_source',
+  'ur.client_ip',
+  'ur.api_key_id',
+  'ur.group_id',
+  'ur.account_id',
+  'ur.endpoint',
+  'ur.model',
+  'ur.upstream_model',
+  'ur.billed_service_tier',
+  'ur.effective_reasoning_effort',
+  'ur.model_mapping_applied',
+  'ur.stream',
+  'ur.status_code',
+  'ur.success',
+  'ur.first_token_ms',
+  'ur.duration_ms',
+  'ur.input_tokens',
+  'ur.output_tokens',
+  'ur.cache_read_tokens',
+  'ur.cost_usd',
+  'ur.created_at'
+].join(',\n')
+
 export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordListResult {
   if (runtimeConfig.databaseDriver === 'postgres') {
     throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 listUsageRecordsAsync 读取使用记录')
@@ -229,7 +285,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
     : new Map<string, string>()
-  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordListItemFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -266,7 +322,7 @@ export async function listUsageRecordsAsync(access?: AccessScope, options?: Usag
   const accountNames = shouldIncludeSystemAccountFields
     ? await loadSystemAccountNameMapByIdsAsync(client, rowsWithNames.map((row) => optionalString(row.system_account_id)))
     : new Map<string, string>()
-  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+  const items: UsageRecordListItem[] = rowsWithNames.map((row) => usageRecordListItemFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
@@ -1379,55 +1435,7 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
       const rows = shardDatabase
         .prepare(`
           SELECT
-            ur.id,
-            ur.system_account_id,
-            ur.trace_id,
-            ur.traffic_source,
-            ur.client_ip,
-            ur.api_key_id,
-            ur.group_id,
-            ur.account_id,
-            ur.endpoint,
-            ur.provider_code,
-            ur.provider_protocol_profile_id,
-            ur.usage_semantic,
-            ur.model,
-            ur.upstream_model,
-            ur.pricing_model,
-            ur.requested_service_tier,
-            ur.effective_service_tier,
-            ur.reported_service_tier,
-            ur.billed_service_tier,
-            ur.requested_reasoning_effort,
-            ur.effective_reasoning_effort,
-            ur.cost_breakdown_snapshot_json,
-            ur.model_mapping_applied,
-            ur.model_mapping_source,
-            ur.source_endpoint_family,
-            ur.upstream_endpoint_family,
-            ur.stream,
-            ur.status_code,
-            ur.success,
-            ur.failure_attribution,
-            ur.first_token_ms,
-            ur.duration_ms,
-            ur.input_tokens,
-            ur.output_tokens,
-            ur.cache_read_tokens,
-            ur.cache_read_cost_usd,
-            ur.cache_write_tokens,
-            ur.cache_write_1h_tokens,
-            ur.cache_write_cost_usd,
-            ur.thinking_tokens,
-            ur.input_image_tokens,
-            ur.output_image_tokens,
-            ur.input_audio_tokens,
-            ur.output_audio_tokens,
-            ur.output_image_count,
-            ur.cost_usd,
-            ur.error_code,
-            ur.error_message,
-            ur.created_at
+            ${usageRecordListSelectColumns}
           FROM usage_records ur
           WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
         `)
@@ -1446,55 +1454,7 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
   for (const chunk of chunkValues(entries.map((entry) => entry.usage_id), 900)) {
     const rows = await client.query<UsageRecordRow>(`
       SELECT
-        ur.id,
-        ur.system_account_id,
-        ur.trace_id,
-        ur.traffic_source,
-        ur.client_ip,
-        ur.api_key_id,
-        ur.group_id,
-        ur.account_id,
-        ur.endpoint,
-        ur.provider_code,
-        ur.provider_protocol_profile_id,
-        ur.usage_semantic,
-        ur.model,
-        ur.upstream_model,
-        ur.pricing_model,
-        ur.requested_service_tier,
-        ur.effective_service_tier,
-        ur.reported_service_tier,
-        ur.billed_service_tier,
-        ur.requested_reasoning_effort,
-        ur.effective_reasoning_effort,
-        ur.cost_breakdown_snapshot_json,
-        ur.model_mapping_applied,
-        ur.model_mapping_source,
-        ur.source_endpoint_family,
-        ur.upstream_endpoint_family,
-        ur.stream,
-        ur.status_code,
-        ur.success,
-        ur.failure_attribution,
-        ur.first_token_ms,
-        ur.duration_ms,
-        ur.input_tokens,
-        ur.output_tokens,
-        ur.cache_read_tokens,
-        ur.cache_read_cost_usd,
-        ur.cache_write_tokens,
-        ur.cache_write_1h_tokens,
-        ur.cache_write_cost_usd,
-        ur.thinking_tokens,
-        ur.input_image_tokens,
-        ur.output_image_tokens,
-        ur.input_audio_tokens,
-        ur.output_audio_tokens,
-        ur.output_image_count,
-        ur.cost_usd,
-        ur.error_code,
-        ur.error_message,
-        ur.created_at
+        ${usageRecordListSelectColumns}
       FROM juhe_usage.usage_records ur
       WHERE ur.id IN (${sqlPlaceholders(chunk.length)})
     `, chunk)
@@ -1512,56 +1472,7 @@ async function listPostgresUsageRecordRows(
   limit: number
 ): Promise<UsageRecordRow[]> {
   const normalizedLimit = Math.max(1, Math.trunc(limit))
-  const selectColumns = `
-      ur.id,
-      ur.system_account_id,
-      ur.trace_id,
-      ur.traffic_source,
-      ur.client_ip,
-      ur.api_key_id,
-      ur.group_id,
-      ur.account_id,
-      ur.endpoint,
-      ur.provider_code,
-      ur.provider_protocol_profile_id,
-      ur.usage_semantic,
-      ur.model,
-      ur.upstream_model,
-      ur.pricing_model,
-      ur.requested_service_tier,
-      ur.effective_service_tier,
-      ur.reported_service_tier,
-      ur.billed_service_tier,
-      ur.requested_reasoning_effort,
-      ur.effective_reasoning_effort,
-      ur.cost_breakdown_snapshot_json,
-      ur.model_mapping_applied,
-      ur.model_mapping_source,
-      ur.source_endpoint_family,
-      ur.upstream_endpoint_family,
-      ur.stream,
-      ur.status_code,
-      ur.success,
-      ur.failure_attribution,
-      ur.first_token_ms,
-      ur.duration_ms,
-      ur.input_tokens,
-      ur.output_tokens,
-      ur.cache_read_tokens,
-      ur.cache_read_cost_usd,
-      ur.cache_write_tokens,
-      ur.cache_write_1h_tokens,
-      ur.cache_write_cost_usd,
-      ur.thinking_tokens,
-      ur.input_image_tokens,
-      ur.output_image_tokens,
-      ur.input_audio_tokens,
-      ur.output_audio_tokens,
-      ur.output_image_count,
-      ur.cost_usd,
-      ur.error_code,
-      ur.error_message,
-      ur.created_at`
+  const selectColumns = usageRecordListSelectColumns
   if (filters.tracePrefixLookup) {
     return await client.query<UsageRecordRow>(`
       WITH matched_usage_records AS MATERIALIZED (
@@ -1605,55 +1516,7 @@ function listUsageRecordRowsFromShards(
     rows.push(...shardDatabase
       .prepare(`
         SELECT
-          ur.id,
-          ur.system_account_id,
-          ur.trace_id,
-          ur.traffic_source,
-          ur.client_ip,
-          ur.api_key_id,
-          ur.group_id,
-          ur.account_id,
-          ur.endpoint,
-          ur.provider_code,
-          ur.provider_protocol_profile_id,
-          ur.usage_semantic,
-          ur.model,
-          ur.upstream_model,
-          ur.pricing_model,
-          ur.requested_service_tier,
-          ur.effective_service_tier,
-          ur.reported_service_tier,
-          ur.billed_service_tier,
-          ur.requested_reasoning_effort,
-          ur.effective_reasoning_effort,
-          ur.cost_breakdown_snapshot_json,
-          ur.model_mapping_applied,
-          ur.model_mapping_source,
-          ur.source_endpoint_family,
-          ur.upstream_endpoint_family,
-          ur.stream,
-          ur.status_code,
-          ur.success,
-          ur.failure_attribution,
-          ur.first_token_ms,
-          ur.duration_ms,
-          ur.input_tokens,
-          ur.output_tokens,
-          ur.cache_read_tokens,
-          ur.cache_read_cost_usd,
-          ur.cache_write_tokens,
-          ur.cache_write_1h_tokens,
-          ur.cache_write_cost_usd,
-          ur.thinking_tokens,
-          ur.input_image_tokens,
-          ur.output_image_tokens,
-          ur.input_audio_tokens,
-          ur.output_audio_tokens,
-          ur.output_image_count,
-          ur.cost_usd,
-          ur.error_code,
-          ur.error_message,
-          ur.created_at
+          ${usageRecordListSelectColumns}
         FROM usage_records ur
         ${filters.clause}
         ${orderClause}

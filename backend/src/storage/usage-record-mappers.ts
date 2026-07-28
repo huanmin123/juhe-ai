@@ -1,4 +1,4 @@
-import type { UsageRecordSummary } from './usage-records.repository.js'
+import type { UsageRecordListItem, UsageRecordSummary } from './usage-records.repository.js'
 import { loadAccountNameMap, loadAccountNameMapAsync, loadApiKeyNameMap, loadApiKeyNameMapAsync, loadGroupNameMap, loadGroupNameMapAsync } from './repository-lookups.js'
 import type { DatabaseClient } from './database-client.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
@@ -33,6 +33,43 @@ export async function hydrateUsageRecordNamesAsync(client: DatabaseClient, rows:
     group_name: optionalString(row.group_name) ?? (row.group_id ? groupNames.get(String(row.group_id)) : undefined),
     account_name: optionalString(row.account_name) ?? (row.account_id ? recordAccountNames.get(String(row.account_id)) : undefined)
   }))
+}
+
+export function usageRecordListItemFromRow(
+  row: UsageRecordRow,
+  shouldIncludeSystemAccountFields: boolean,
+  accountNames: Map<string, string>
+): UsageRecordListItem {
+  return {
+    id: String(row.id),
+    systemAccountId: shouldIncludeSystemAccountFields ? optionalString(row.system_account_id) : undefined,
+    systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(String(row.system_account_id)) : undefined,
+    traceId: String(row.trace_id),
+    trafficSource: usageRecordTrafficSource(row.traffic_source),
+    clientIp: optionalString(row.client_ip),
+    apiKeyId: optionalString(row.api_key_id),
+    apiKeyName: optionalString(row.api_key_name),
+    groupId: optionalString(row.group_id),
+    groupName: optionalString(row.group_name),
+    accountId: optionalString(row.account_id),
+    accountName: optionalString(row.account_name),
+    endpoint: optionalString(row.endpoint),
+    model: optionalString(row.model),
+    upstreamModel: optionalString(row.upstream_model),
+    billedServiceTier: usageServiceTier(row.billed_service_tier),
+    effectiveReasoningEffort: usageReasoningEffort(row.effective_reasoning_effort),
+    modelMappingApplied: row.model_mapping_applied === 1,
+    stream: row.stream === 1,
+    statusCode: numberValue(row.status_code),
+    success: row.success === 1,
+    firstTokenMs: numberValue(row.first_token_ms),
+    durationMs: numberValue(row.duration_ms),
+    inputTokens: numberValue(row.input_tokens),
+    outputTokens: numberValue(row.output_tokens),
+    cacheReadTokens: numberValue(row.cache_read_tokens),
+    costUsd: numberValue(row.cost_usd),
+    createdAt: String(row.created_at)
+  }
 }
 
 export function usageRecordSummaryFromRow(

@@ -6,7 +6,7 @@ import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gate
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
-  createRouteStrategyAsync,
+  createRouteStrategyListItemAsync,
   deleteRouteStrategyAsync,
   findRouteStrategyEditBasicDetailAsync,
   findRouteStrategySummaryAsync,
@@ -14,7 +14,8 @@ import {
   listRouteStrategyOptionsAsync,
   patchRouteStrategyAsync,
   RouteStrategyVersionConflictError,
-  type RouteStrategyListOptions
+  type RouteStrategyListOptions,
+  type RouteStrategyMutableField
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -23,6 +24,13 @@ import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gate
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const routeStrategiesRouter = Router()
+
+const normalRouteSpeedFirstRuntimeFields = new Set<RouteStrategyMutableField>([
+  'mode',
+  'status',
+  'groupBindings',
+  'normalRoutingConfig'
+])
 
 const routeStrategyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1, '策略路由分组无效'),
@@ -212,7 +220,7 @@ routeStrategiesRouter.post('/', mutationGuard({
   }
   try {
     const routeStrategy = await runLoggedOperationAsync(async () => {
-      const routeStrategy = await createRouteStrategyAsync(parsed.data, requestAccess)
+      const routeStrategy = await createRouteStrategyListItemAsync(parsed.data, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(routeStrategy as unknown as Record<string, unknown>, requestAccess)
       return {
         result: routeStrategy,
@@ -230,9 +238,9 @@ routeStrategiesRouter.post('/', mutationGuard({
             safeChange('name', '名称', undefined, routeStrategy.name),
             safeChange('mode', '路由模式', undefined, routeStrategy.mode),
             safeChange('status', '状态', undefined, routeStrategy.status),
-            safeChange('groupBindings', '绑定分组', undefined, routeStrategy.groupBindings),
+            safeChange('groupBindings', '绑定分组', undefined, parsed.data.groupBindings),
             safeChange('normalRoutingConfig', '普通路由调度配置', undefined, routeStrategy.normalRoutingConfig),
-            safeChange('hybridRoutingConfig', '混合智能路由配置', undefined, routeStrategy.hybridRoutingConfig)
+            safeChange('hybridRoutingConfig', '混合智能路由配置', undefined, parsed.data.hybridRoutingConfig)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
@@ -283,7 +291,7 @@ routeStrategiesRouter.patch('/:id', async (req, res) => {
         } : undefined
       }
     }, req)
-    if (routeStrategy.changedFields.length) {
+    if (routeStrategy.changedFields.some((field) => normalRouteSpeedFirstRuntimeFields.has(field))) {
       await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
     }
     res.json(ok(routeStrategy))

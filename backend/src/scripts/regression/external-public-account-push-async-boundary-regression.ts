@@ -289,6 +289,7 @@ for (const token of [
   'createRouteStrategyAsync',
   'updateRouteStrategyAsync',
   'deleteRouteStrategyAsync',
+  'findRouteStrategyMutationVersionAsync',
   'findRouteStrategySummaryAsync',
   'listRouteStrategiesPageAsync',
   'requirePublicTargetAsync',
@@ -296,6 +297,12 @@ for (const token of [
 ]) {
   assert(routeStrategyServiceSource.includes(token), `公开路由策略服务必须固定 async/PG 路径：${token}`)
 }
+
+assert.match(
+  routeStrategyServiceSource,
+  /findPublicRouteStrategyOwnerByIdAsync[\s\S]*?updateRouteStrategyAsync\(routeStrategyId,[\s\S]*?expectedUpdatedAt: owner\.updatedAt[\s\S]*?findRouteStrategyMutationVersionAsync\(routeStrategyId, publicRouteStrategyLookupAccess\)/,
+  '公开路由策略更新必须读取 owner 作用域内的窄版本投影并传入 expectedUpdatedAt，不能绕过仓储 CAS'
+)
 
 for (const token of [
   'ensureTargetSystemAccountAsync',

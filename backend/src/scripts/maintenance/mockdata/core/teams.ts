@@ -35,7 +35,7 @@ export function createTeams(adminAccess: AccessScope, users: MockSystemAccounts)
   repositories.addSystemTeamMembers(disabledTeam.id, {
     systemAccountIds: [users.finance.id]
   }, teamAccess)
-  repositories.updateSystemTeam(disabledTeam.id, { status: 'disabled' }, teamAccess)
+  repositories.updateSystemTeam(disabledTeam.id, { status: 'disabled', expectedUpdatedAt: disabledTeam.updatedAt }, teamAccess)
 
   return {
     devTeam: refreshTeam(devTeam.id, teamAccess),

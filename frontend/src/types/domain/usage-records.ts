@@ -105,8 +105,37 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-/** Paged table rows intentionally exclude request/response snapshots; fetch detail to inspect those. */
-export type UsageRecordListItem = Omit<UsageRecordSummary, 'requestSnapshot' | 'responseSnapshot'>
+/** Paged table rows contain only values rendered by the list; heavy detail payloads are not list data. */
+export type UsageRecordListItem = Pick<UsageRecordSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'traceId'
+  | 'trafficSource'
+  | 'clientIp'
+  | 'apiKeyId'
+  | 'apiKeyName'
+  | 'groupId'
+  | 'groupName'
+  | 'accountId'
+  | 'accountName'
+  | 'endpoint'
+  | 'model'
+  | 'upstreamModel'
+  | 'billedServiceTier'
+  | 'effectiveReasoningEffort'
+  | 'modelMappingApplied'
+  | 'stream'
+  | 'statusCode'
+  | 'success'
+  | 'firstTokenMs'
+  | 'durationMs'
+  | 'inputTokens'
+  | 'outputTokens'
+  | 'cacheReadTokens'
+  | 'costUsd'
+  | 'createdAt'
+>
 
 export type UsageRecordReasoningEffort = string
 

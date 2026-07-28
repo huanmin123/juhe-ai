@@ -21,18 +21,21 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, routeStrategyRepository, routeStrategyRoutes, authRequestContext] = await Promise.all([
+const [databaseModule, repositories, routeStrategyRepository, routeStrategyRoutes, authRequestContext, gatewayInvalidation] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/route-strategy.repository.js'),
   import('../../modules/route-strategies/route-strategies.routes.js'),
-  import('../../modules/auth/request-context.js')
+  import('../../modules/auth/request-context.js'),
+  import('../../shared/gateway-cache-invalidation.js')
 ])
 const routeSource = readFileSync(fileURLToPath(new URL('../../modules/route-strategies/route-strategies.routes.ts', import.meta.url)), 'utf8')
 const routePatchSource = sourceBetween(routeSource, "routeStrategiesRouter.patch('/:id'", "routeStrategiesRouter.delete('/:id'")
 assert.doesNotMatch(routePatchSource, /findRouteStrategy(?:EditBasicDetail|Summary)Async/, 'PATCH 路由不得在写入前后读取完整策略路由或编辑详情')
 assert.match(routePatchSource, /patchRouteStrategyAsync[\s\S]*result: mutation\.result/, 'PATCH 路由必须直接返回仓储最小 mutation result')
-assert.match(routePatchSource, /log: mutation\.result\.changedFields\.length[\s\S]*if \(routeStrategy\.changedFields\.length\)[\s\S]*clearNormalRouteSpeedFirstRuntime/, 'no-op PATCH 必须跳过操作日志和运行态清理')
+assert.match(routePatchSource, /log: mutation\.result\.changedFields\.length[\s\S]*normalRouteSpeedFirstRuntimeFields\.has\(field\)[\s\S]*clearNormalRouteSpeedFirstRuntime/, 'no-op 与非调度字段 PATCH 必须跳过速度优先运行态清理')
+assert.match(routeSource, /normalRouteSpeedFirstRuntimeFields[\s\S]*'mode'[\s\S]*'status'[\s\S]*'groupBindings'[\s\S]*'normalRoutingConfig'/, '速度优先运行态只应由真实影响普通路由调度的字段清理')
+assert.doesNotMatch(routeSource.match(/normalRouteSpeedFirstRuntimeFields[\s\S]*?\]\)/)?.[0] ?? '', /'name'|'description'|'hybridRoutingConfig'/, '展示字段和混合评分配置不得清理普通路由速度优先运行态')
 assert.match(routePatchSource, /RouteStrategyVersionConflictError[\s\S]*status\(409\)/, 'PATCH 路由必须把 CAS 冲突映射为 409')
 
 let server: ReturnType<ReturnType<typeof express>['listen']> | undefined
@@ -85,8 +88,22 @@ try {
   assert.match(readCapture.queries[0] ?? '', /updated_at/i, 'edit-basic 必须携带 CAS 所需的更新时间版本')
   assert.doesNotMatch(editSql, /SELECT\s+\*/i, 'edit-basic 不得使用 SELECT *')
 
+  const mutationVersionRead = await captureDmlAsync(() => routeStrategyRepository.findRouteStrategyMutationVersionAsync(routeStrategy.id, access))
+  assert.deepEqual(mutationVersionRead.result, {
+    id: routeStrategy.id,
+    systemAccountId: access.systemAccountId,
+    updatedAt: routeStrategy.updatedAt
+  }, '内部 CAS 调用方应取得最小 owner/version 投影')
+  assert.equal(mutationVersionRead.queries.length, 1, '内部 CAS 版本读取只应执行一条查询')
+  assert.match(mutationVersionRead.queries[0] ?? '', /SELECT\s+id, system_account_id, updated_at/i)
+  assert.doesNotMatch(mutationVersionRead.queries[0] ?? '', /name|description|mode|status|config_json|route_strategy_groups/i, '内部 CAS 版本读取不得加载编辑详情或绑定')
+
   const initialBinding = bindingRow(routeStrategy.id)
   const initialUpdatedAt = routeStrategyRow(routeStrategy.id).updated_at
+  let gatewayRuntimeInvalidations = 0
+  const unregisterGatewayRuntimeInvalidator = gatewayInvalidation.registerGatewayRuntimeCacheInvalidator(() => {
+    gatewayRuntimeInvalidations += 1
+  })
 
   const sameValue = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
     description: '初始说明',
@@ -95,6 +112,11 @@ try {
   assert(sameValue.result, '同值 PATCH 应返回最小 mutation result')
   assert.deepEqual(sameValue.result.result, { id: routeStrategy.id, changedFields: [], rowPatch: {} }, '同值 PATCH 响应必须保持最小 no-op 形态')
   assert.deepEqual(sameValue.statements, [], '同值 PATCH 不得执行任何 DML')
+  assert.equal(sameValue.queries.length, 1, '说明同值 PATCH 只应执行一次动态定位读取')
+  assert.match(sameValue.queries[0] ?? '', /SELECT\s+id, system_account_id, name, mode, updated_at, description/i)
+  assert.match(sameValue.queries[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/i, '动态定位必须同时带 id 与版本；普通用户还必须附加 owner')
+  assert.doesNotMatch(sameValue.queries[0] ?? '', /status|is_default|config_json|route_strategy_groups/i, '说明 PATCH 不得读取无关状态、默认标记、配置或绑定')
+  assert.equal(gatewayRuntimeInvalidations, 0, '说明 no-op 不得触发网关运行时失效')
   assert.equal(routeStrategyRow(routeStrategy.id).updated_at, initialUpdatedAt, '同值 PATCH 不得推进更新时间')
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '同值 PATCH 不得重写分组绑定')
 
@@ -114,6 +136,9 @@ try {
   assert.match(descriptionPatch.statements[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/i, '聚合根 UPDATE 必须同时定位 id、owner 和版本')
   assert.doesNotMatch(descriptionPatch.statements[0] ?? '', /name\s*=|mode\s*=|status\s*=|config_json\s*=/i, '说明 PATCH 不得覆盖未提交列')
   assert.doesNotMatch(descriptionPatch.queries.join('\n'), /api_keys|system_accounts|COUNT\s*\(/i, 'PATCH 审计差异不得触发完整摘要或 owner 宽读')
+  assert.equal(descriptionPatch.queries.length, 1, '说明 PATCH 只应执行一次动态定位读取')
+  assert.doesNotMatch(descriptionPatch.queries[0] ?? '', /status|is_default|config_json|route_strategy_groups/i, '说明 PATCH 投影不得包含无关字段或关系')
+  assert.equal(gatewayRuntimeInvalidations, 0, '说明 PATCH 不得失效网关运行时缓存')
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '未提交 groupBindings 时不得重写绑定')
 
   const namePatch = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
@@ -122,6 +147,10 @@ try {
   }, access))
   assert.equal(namePatch.statements.length, 1, '名称 PATCH 只应执行一条聚合根 UPDATE')
   assert.match(namePatch.statements[0] ?? '', /SET\s+name\s*=\s*\?,\s*updated_at\s*=\s*\?/i)
+  assert.equal(namePatch.queries.length, 1, '名称 PATCH 只应执行一次动态定位读取')
+  assert.match(namePatch.queries[0] ?? '', /is_default/i, '名称 PATCH 只需额外读取默认标记以保护默认路由')
+  assert.doesNotMatch(namePatch.queries[0] ?? '', /description|status|config_json|route_strategy_groups/i, '名称 PATCH 不得读取说明、状态、配置或绑定')
+  assert.equal(gatewayRuntimeInvalidations, 0, '名称 PATCH 不得失效网关运行时缓存')
   const afterIndependentPatches = repositories.findRouteStrategySummary(routeStrategy.id, access)
   assert.equal(afterIndependentPatches?.name, '策略路由按需写回归-改名')
   assert.equal(afterIndependentPatches?.description, '只修改说明', '先后提交不同字段时，后一次 PATCH 不得覆盖前一次字段')
@@ -145,6 +174,8 @@ try {
   assert.equal(bindingRow(routeStrategy.id).group_id, replacementGroup.id)
   assert.equal(changedBindings.result?.result.rowPatch.bindingCount, 1)
   assert.equal(changedBindings.result?.result.rowPatch.groupBindingPreview?.[0]?.groupId, replacementGroup.id)
+  assert.match(changedBindings.queries.join('\n'), /FROM\s+route_strategy_groups/i, '绑定 PATCH 才应按需读取当前关系')
+  assert.equal(gatewayRuntimeInvalidations, 1, '绑定变化必须触发一次网关运行时失效')
 
   const deltaStrategy = repositories.createRouteStrategy({
     name: '策略路由绑定差量回归',
@@ -259,7 +290,7 @@ try {
   }, { systemAccountId: otherOwner.id, role: 'user' }))
   assert.equal(wrongOwnerPatch.result, undefined, '其他用户 PATCH 应表现为资源不存在')
   assert.deepEqual(wrongOwnerPatch.statements, [], '其他用户 PATCH 不得执行 DML')
-  assert.match(wrongOwnerPatch.queries[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?/i, '普通用户 owner 条件必须进入首条定位 SQL')
+  assert.match(wrongOwnerPatch.queries[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?/i, '普通用户 owner 与版本条件必须进入首条定位 SQL')
 
   const app = express()
   app.use(express.json())
@@ -276,6 +307,42 @@ try {
   await onceListening(server)
   const address = server.address()
   assert(address && typeof address !== 'string', '策略路由 edit-basic HTTP 回归服务地址不可用')
+
+  const createHttp = await captureDmlAsync(() => fetch(`http://127.0.0.1:${address.port}/route-strategies`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'HTTP 新建窄列表行',
+      description: '创建后直接插入列表',
+      mode: 'normal',
+      status: 'active',
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, weight: 1, status: 'active' }]
+    })
+  }))
+  assert.equal(createHttp.result.status, 201)
+  const createPayload = await createHttp.result.json() as { data?: Record<string, unknown> }
+  assert(createPayload.data, '创建 HTTP 响应应包含窄列表行')
+  assert.deepEqual(Object.keys(createPayload.data).sort(), [
+    'apiKeyCount',
+    'bindingCount',
+    'createdAt',
+    'description',
+    'groupBindingPreview',
+    'id',
+    'isDefault',
+    'mode',
+    'name',
+    'normalRoutingConfig',
+    'status',
+    'systemAccountId',
+    'updatedAt'
+  ].sort(), '创建接口只应返回可直接插入当前列表的窄行')
+  assert.equal(createPayload.data.bindingCount, 1)
+  assert.equal(createPayload.data.apiKeyCount, 0)
+  assert.equal(Object.prototype.hasOwnProperty.call(createPayload.data, 'groupBindings'), false, '创建响应不得返回完整绑定关系')
+  assert.equal(Object.prototype.hasOwnProperty.call(createPayload.data, 'hybridRoutingConfig'), false, '普通路由创建响应不得返回编辑专用混合配置')
+  assert.doesNotMatch(createHttp.queries.join('\n'), /FROM\s+route_strategies/i, '创建写入后不得为了响应再查询策略路由完整行')
+
   const response = await fetch(`http://127.0.0.1:${address.port}/route-strategies/${routeStrategy.id}/edit-basic`)
   assert.equal(response.status, 200)
   const payload = await response.json() as { data?: Record<string, unknown> }
@@ -342,7 +409,8 @@ try {
   })
   assert.equal(missingVersionHttp.status, 400, '缺少 expectedUpdatedAt 必须在 HTTP 边界返回 400')
 
-  console.log('策略路由按需读写回归通过：PATCH 返回最小 mutation result，审计不宽读，绑定按变化写入，no-op 为零 DML')
+  unregisterGatewayRuntimeInvalidator()
+  console.log('策略路由按需读写回归通过：PATCH 动态窄投影、最小响应、关系差量写入，非调度字段不失效运行时，no-op 为零 DML')
 } finally {
   await closeServer(server)
   try {

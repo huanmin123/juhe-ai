@@ -20,6 +20,19 @@ import {
 } from './resource-authorization-write-state.repository.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 
+interface ResourceAuthorizationIdentity {
+  id: string
+  resource_type: ResourceAuthorizationRow['resource_type']
+  resource_id: string
+  resource_owner_system_account_id: string
+  grantee_system_account_id: string
+}
+
+export interface ReturnedGroupAuthorizationReceipt extends ResourceAuthorizationIdentity {
+  resource_type: 'group'
+  resource_name: string
+}
+
 export function returnResourceAuthorizationForGrantee(authorizationId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
   expireDueResourceAuthorizations()
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
@@ -185,33 +198,47 @@ export async function returnAccountAuthorizationInstanceForGranteeAsync(accountI
   return authorization
 }
 
-export function returnGroupAuthorizationForGrantee(groupId: string, access?: AccessScope): ResourceAuthorizationRow | undefined {
-  expireDueResourceAuthorizations()
+export function returnGroupAuthorizationForGrantee(groupId: string, access?: AccessScope): ReturnedGroupAuthorizationReceipt | undefined {
   const granteeSystemAccountId = userVisibleSystemAccountId(access)
   if (!granteeSystemAccountId) return undefined
   const database = getBusinessDatabase()
-  const authorization = database
-    .prepare(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM resource_authorizations
-      WHERE resource_type = 'group'
-        AND resource_id = ?
-        AND grantee_system_account_id = ?
-      LIMIT 1
-    `)
-    .get(groupId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
-    return undefined
-  }
-  if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
-    return undefined
-  }
-  const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
-  if (!grant) return undefined
   const now = nowIso()
   const actor = currentSystemAccountId(access)
   const transactionStarted = beginDatabaseTransaction(database)
+  let authorization: ReturnedGroupAuthorizationReceipt | undefined
   try {
+    authorization = database
+      .prepare(`
+        SELECT
+          ra.id,
+          ra.resource_type,
+          ra.resource_id,
+          ra.resource_owner_system_account_id,
+          ra.grantee_system_account_id,
+          groups.name AS resource_name
+        FROM resource_authorizations ra
+        INNER JOIN groups
+          ON groups.id = ra.resource_id
+          AND groups.system_account_id = ra.resource_owner_system_account_id
+        WHERE ra.resource_type = 'group'
+          AND ra.resource_id = ?
+          AND ra.grantee_system_account_id = ?
+        LIMIT 1
+      `)
+      .get(groupId, granteeSystemAccountId) as unknown as ReturnedGroupAuthorizationReceipt | undefined
+    if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return undefined
+    }
+    if (!hasActiveManualRuntimeAuthorizationSource(authorization.id, database)) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return undefined
+    }
+    const grant = findReturnableDirectGrantForRuntimeAuthorization(authorization, granteeSystemAccountId, database)
+    if (!grant) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return undefined
+    }
     returnResourceAuthorizationGrant(grant, actor, database, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -219,12 +246,10 @@ export function returnGroupAuthorizationForGrantee(groupId: string, access?: Acc
     throw error
   }
   refreshAfterResourceAuthorizationReturnedWrite()
-  return database
-    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
-    .get(authorization.id) as unknown as ResourceAuthorizationRow | undefined
+  return authorization
 }
 
-export async function returnGroupAuthorizationForGranteeAsync(groupId: string, access?: AccessScope): Promise<ResourceAuthorizationRow | undefined> {
+export async function returnGroupAuthorizationForGranteeAsync(groupId: string, access?: AccessScope): Promise<ReturnedGroupAuthorizationReceipt | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return returnGroupAuthorizationForGrantee(groupId, access)
   }
@@ -234,13 +259,22 @@ export async function returnGroupAuthorizationForGranteeAsync(groupId: string, a
   const actor = currentSystemAccountId(access)
   const now = nowIso()
   const authorization = await client.transaction(async (tx) => {
-    const authorization = await tx.one<ResourceAuthorizationRow>(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM ${resourceAuthorizationReturnTable(tx, 'resource_authorizations')}
-      WHERE resource_type = 'group'
-        AND resource_id = ?
-        AND grantee_system_account_id = ?
-      LIMIT 1
+    const authorization = await tx.one<ReturnedGroupAuthorizationReceipt>(`
+      SELECT
+        ra.id,
+        ra.resource_type,
+        ra.resource_id,
+        ra.resource_owner_system_account_id,
+        ra.grantee_system_account_id,
+        groups.name AS resource_name
+      FROM ${resourceAuthorizationReturnTable(tx, 'resource_authorizations')} ra
+      INNER JOIN ${resourceAuthorizationReturnTable(tx, 'groups')} groups
+        ON groups.id = ra.resource_id
+        AND groups.system_account_id = ra.resource_owner_system_account_id
+      WHERE ra.resource_type = 'group'
+        AND ra.resource_id = ?
+        AND ra.grantee_system_account_id = ?
+      LIMIT 1 FOR UPDATE
     `, [groupId, granteeSystemAccountId])
     if (!authorization || authorization.resource_owner_system_account_id === granteeSystemAccountId) {
       return undefined
@@ -251,12 +285,7 @@ export async function returnGroupAuthorizationForGranteeAsync(groupId: string, a
     const grant = await findReturnableDirectGrantForRuntimeAuthorizationAsync(authorization, granteeSystemAccountId, tx)
     if (!grant) return undefined
     await returnResourceAuthorizationGrantAsync(grant, actor, tx, now)
-    return tx.one<ResourceAuthorizationRow>(`
-      SELECT ${resourceAuthorizationSelectColumns()}
-      FROM ${resourceAuthorizationReturnTable(tx, 'resource_authorizations')}
-      WHERE id = ?
-      LIMIT 1
-    `, [authorization.id])
+    return authorization
   })
   if (authorization) {
     refreshAfterResourceAuthorizationReturnedWrite()
@@ -283,7 +312,7 @@ function findReturnableDirectGrantForGrantee(authorizationId: string, granteeSys
     .get(authorizationId, granteeSystemAccountId) as unknown as ResourceAuthorizationGrantRow | undefined
 }
 
-function findReturnableDirectGrantForRuntimeAuthorization(authorization: ResourceAuthorizationRow, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
+function findReturnableDirectGrantForRuntimeAuthorization(authorization: ResourceAuthorizationIdentity, granteeSystemAccountId: string, database: DatabaseSync): ResourceAuthorizationGrantRow | undefined {
   return database
     .prepare(`
       SELECT *
@@ -368,7 +397,7 @@ async function hasActiveManualRuntimeAuthorizationSourceAsync(authorizationId: s
   return Boolean(row?.id)
 }
 
-async function findReturnableDirectGrantForRuntimeAuthorizationAsync(authorization: ResourceAuthorizationRow, granteeSystemAccountId: string, client: DatabaseClient): Promise<ResourceAuthorizationGrantRow | undefined> {
+async function findReturnableDirectGrantForRuntimeAuthorizationAsync(authorization: ResourceAuthorizationIdentity, granteeSystemAccountId: string, client: DatabaseClient): Promise<ResourceAuthorizationGrantRow | undefined> {
   return client.one<ResourceAuthorizationGrantRow>(`
     SELECT *
     FROM ${resourceAuthorizationReturnTable(client, 'resource_authorization_grants')}

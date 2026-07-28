@@ -25,20 +25,17 @@ export function defaultResponseInspectionProviderCode(
   protocolCode: ResponseInspectionPolicyProtocolCode,
   optionsReady = false
 ): string {
-  const matchingOptions = options.filter((option) => option.protocolCode === protocolCode)
   const localDefault = DEFAULT_RESPONSE_INSPECTION_PROVIDER_CODES[protocolCode]
-  return matchingOptions.find((option) => option.code === localDefault)?.code
-    ?? matchingOptions[0]?.code
+  return options.find((option) => option.code === localDefault)?.code
+    ?? options[0]?.code
     ?? (optionsReady ? '' : localDefault)
 }
 
 export function responseInspectionProviderSelectOptions(
   options: ResponseInspectionPolicyProviderOption[],
-  protocolCode: ResponseInspectionPolicyProtocolCode,
   selected?: { code?: string; name?: string }
 ): ResponseInspectionProviderSelectOption[] {
   const result = options
-    .filter((option) => option.protocolCode === protocolCode)
     .map((option) => ({ label: option.name, value: option.code }))
   const selectedCode = selected?.code?.trim()
   if (!selectedCode || result.some((option) => option.value === selectedCode)) return result

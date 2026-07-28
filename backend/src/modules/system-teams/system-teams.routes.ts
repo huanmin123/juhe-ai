@@ -18,7 +18,7 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sortedTextValues } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const systemTeamsRouter = Router()
 export const myTeamsRouter = Router()
@@ -41,8 +41,11 @@ const createTeamSchema = z.object({
 const updateTeamSchema = z.object({
   name: z.string().trim().min(1, '团队名称不能为空').max(100, '团队名称不能超过 100 个字符').optional(),
   description: z.string().trim().max(200).nullable().optional(),
-  status: z.enum(['active', 'disabled']).optional()
-}).strict()
+  status: z.enum(['active', 'disabled']).optional(),
+  expectedUpdatedAt: z.string().datetime({ message: '团队版本格式不正确' })
+}).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '请至少提交一个团队变更字段'
+})
 
 const teamMembersSchema = z.object({
   systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员').max(maxSystemTeamMemberBatchSize, `单次最多添加 ${maxSystemTeamMemberBatchSize} 个团队成员`)
@@ -190,39 +193,33 @@ systemTeamsRouter.patch('/:id', requireAdmin, async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const team = await runLoggedOperationAsync(async () => {
-      const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
-      const team = await updateSystemTeamAsync(paramsParsed.data.id, parsed.data, requestAccess)
-      if (!team) {
-        throw new Error('团队不存在')
-      }
+    const outcome = await runLoggedOperationAsync(async () => {
+      const outcome = await updateSystemTeamAsync(paramsParsed.data.id, parsed.data, requestAccess)
       return {
-        result: team,
-        log: {
+        result: outcome,
+        log: outcome.status === 'updated' ? {
           mode: operationMode(requestAccess),
           module: 'system_teams',
           action: 'update',
           operationKey: 'system_teams.update',
           resourceType: 'system_team',
-          resourceId: team.id,
-          resourceName: team.name,
-          summary: `更新系统团队：${team.name}`,
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, team as unknown as Record<string, unknown>, {
-            name: '团队名称',
-            description: '说明',
-            status: '状态'
-          }),
-          targets: teamMemberTargets(team),
-          viewers: teamMemberViewers(team)
-        }
+          resourceId: outcome.result.id,
+          resourceName: outcome.name,
+          summary: `更新系统团队：${outcome.name}`,
+          changes: outcome.changes.map((change) => safeChange(change.field, systemTeamPatchFieldLabel(change.field), change.before, change.after))
+        } : undefined
       }
     }, req)
-    res.json(ok(compactSystemTeamResult(team)))
-  } catch (error) {
-    if (error instanceof Error && error.message === '团队不存在') {
+    if (outcome.status === 'not_found') {
       sendNotFound(res, '团队不存在')
       return
     }
+    if (outcome.status === 'conflict') {
+      res.status(409).json(badRequest('团队已被其他操作更新，请刷新后重试'))
+      return
+    }
+    res.json(ok(outcome.result))
+  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '更新团队失败'))
   }
 })
@@ -384,4 +381,12 @@ function compactSystemTeamResult(team: SystemTeamSummary): SystemTeamDetail {
 
 function teamMemberViewers(team: SystemTeamSummary) {
   return viewers(...(team.members ?? []).map((member) => viewer(member.systemAccountId, 'team_member')))
+}
+
+function systemTeamPatchFieldLabel(field: string): string {
+  return ({
+    name: '团队名称',
+    description: '说明',
+    status: '状态'
+  } as Record<string, string>)[field] ?? field
 }

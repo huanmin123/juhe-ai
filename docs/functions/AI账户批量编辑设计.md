@@ -99,6 +99,27 @@ AI 账户列表新增“批量编辑”能力。用户选择多个可编辑账�
 
 ## 6. 接口契约
 
+批量编辑弹窗上下文使用独立的有界批量投影：
+
+```text
+POST /__aisys__/api/accounts/batch-edit-context
+POST /__aisys__/api/my-accounts/batch-edit-context
+```
+
+```json
+{
+  "accountIds": ["account-a", "account-b"],
+  "fields": ["supportedModels", "modelMappings", "supportedEndpointModes"]
+}
+```
+
+- `accountIds` 去重后为 2-100 个；管理端始终提交所选账户的 owner scope，owner 条件进入账户查询 SQL。
+- 基础响应只包含 `id`、`configRevision`、供应商、协议档案、协议和账户类型；不返回名称、标签、代理、策略、usage、运行态、权限或授权来源。
+- `supportedModels`、`modelMappings`、`supportedEndpointModes` 只有在 `fields` 显式请求时返回；endpoint modes 由仓储从密文列提取为顶层字段，响应不返回 `credentials`。
+- 仓储按全部目标 ID 批量读取。基础上下文固定 1 条账户查询；请求全部三类模型依赖时固定为 1 条账户查询和 2 条关系查询，不能逐账户装配完整 `AccountSummary`。
+
+批量保存接口如下。
+
 管理侧：
 
 ```text

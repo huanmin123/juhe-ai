@@ -176,7 +176,6 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
       await input.apiKeysApi.delete(apiKey.id, input.operationScopeParams(apiKey))
       input.removeItems((item) => item.id === apiKey.id)
       message.success('API Key 已删除，关联记录将后台清理')
-      void input.reload()
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '删除 API Key 失败'))

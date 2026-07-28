@@ -535,7 +535,6 @@ async function removeGroup(id: string) {
     await groupsApi.delete(id, groupOperationScopeParams(group))
     removeGroupItems((item) => item.id === id)
     message.success('分组已删除')
-    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除分组失败'))
@@ -556,7 +555,6 @@ async function returnAuthorizationGroup(id: string) {
     await groupsApi.returnAuthorization(id, groupOperationScopeParams(group))
     removeGroupItems((item) => item.id === id)
     message.success('授权分组已归还')
-    void loadData({ quiet: true })
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '归还授权分组失败'))

@@ -69,7 +69,12 @@ async function assertSystemTeamApiContract(): Promise<void> {
   await api.systemTeams.create(createPayload)
   assertLastCall('post', '/system-teams', createPayload, undefined, '团队创建应走管理侧 system-teams POST')
 
-  const updatePayload = { name: '产品授权团队更新', description: '更新说明', status: 'disabled' as const }
+  const updatePayload = {
+    name: '产品授权团队更新',
+    description: '更新说明',
+    status: 'disabled' as const,
+    expectedUpdatedAt: '2026-07-09T09:00:00Z'
+  }
   await api.systemTeams.update('team_w4', updatePayload)
   assertLastCall('patch', '/system-teams/team_w4', updatePayload, undefined, '团队更新应走管理侧 system-teams PATCH')
 
@@ -218,7 +223,7 @@ function assertSourceBoundaries(): void {
   assertIncludes(systemTeamsViewSource, '<a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>', '团队创建入口只能在管理视图展示')
   assertIncludes(systemTeamsViewSource, 'const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)', '团队页面必须使用管理/个人视图作用域 API')
   assertIncludes(systemTeamsViewSource, 'await api.systemTeams.create(payload)', '团队页面创建必须调用 systemTeams.create')
-  assertIncludes(systemTeamsViewSource, 'await api.systemTeams.update(editingTeamId.value, payload)', '团队页面编辑必须调用 systemTeams.update')
+  assertIncludes(systemTeamsViewSource, 'const updated = await api.systemTeams.update(editingTeamId.value', '团队页面编辑必须调用 systemTeams.update')
   assertIncludes(systemTeamsViewSource, 'await api.systemTeams.addMembers(teamId', '团队页面成员新增必须调用 addMembers')
   assertIncludes(systemTeamsViewSource, 'await api.systemTeams.removeMember(teamId, memberId)', '团队页面成员移除必须调用 removeMember')
   assertIncludes(systemTeamsViewSource, "message.warning('当前是只读视图，不能维护授权团队')", '个人团队视图必须保持只读保护')

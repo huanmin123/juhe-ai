@@ -322,6 +322,30 @@ export interface ProxyProfileSummary {
   outboundRegion?: string
   lastTestMessage?: string
   lastTestedAt?: string
+  updatedAt: string
+}
+
+export interface ProxyProfileMutationValues {
+  name?: string
+  description?: string | null
+  type?: string
+  host?: string
+  port?: number
+  username?: string | null
+  enabled?: boolean
+  testStatus?: string
+  latencyMs?: number | null
+  outboundIp?: string | null
+  outboundRegion?: string | null
+  lastTestMessage?: string | null
+  lastTestedAt?: string | null
+}
+
+export interface ProxyProfileMutationResult {
+  id: string
+  updatedAt: string
+  changed: boolean
+  values: ProxyProfileMutationValues
 }
 
 export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>

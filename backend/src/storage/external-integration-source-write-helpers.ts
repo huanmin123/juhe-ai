@@ -24,3 +24,17 @@ export function isUniqueConstraintError(error: unknown): boolean {
     && (error.message.includes('UNIQUE constraint failed')
       || (error as { code?: unknown }).code === '23505')
 }
+
+export class ExternalIntegrationSourcePatchConflictError extends Error {
+  constructor() {
+    super('外部来源配置已被其他操作更新，请刷新后重试')
+    this.name = 'ExternalIntegrationSourcePatchConflictError'
+  }
+}
+
+export function nextExternalIntegrationUpdatedAt(currentUpdatedAt: string): string {
+  const now = new Date().toISOString()
+  if (now > currentUpdatedAt) return now
+  const currentMs = Date.parse(currentUpdatedAt)
+  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
+}

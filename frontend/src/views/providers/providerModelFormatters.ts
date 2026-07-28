@@ -173,6 +173,10 @@ export function defaultProtocolsForProviderModelCategory(
   provider: ProviderDefinition | undefined,
   category: ModelCategoryKey
 ): ProviderModelApiProtocol[] {
+  const providerCode = provider?.code.trim().toLowerCase()
+  if (category === 'text' && (providerCode === 'deepseek' || providerCode === 'glm')) {
+    return ['chat_completions']
+  }
   const protocols = providerProfileApiProtocolsForModelCategory(provider, category)
   if (protocols.length) return protocols
   const protocolCode = provider?.protocolCode?.trim().toLowerCase()

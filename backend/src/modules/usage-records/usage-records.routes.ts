@@ -2,7 +2,7 @@ import { Router } from 'express'
 
 import { ok, sendBadRequest } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { listUsageRecordsAsync, type UsageRecordListItem, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
+import { listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { canAccessAll, scopedSystemAccountId } from '../../storage/access-scope.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -18,8 +18,7 @@ usageRecordsRouter.get('/', async (req, res, next) => {
       return
     }
     const options = await parseListOptionsAsync(req.query)
-    const records = await listUsageRecordsAsync(access, options)
-    res.json(ok({ ...records, items: await Promise.all(records.items.map(withCostBreakdownAsync)) }))
+    res.json(ok(await listUsageRecordsAsync(access, options)))
   } catch (error) {
     next(error)
   }
@@ -41,10 +40,6 @@ const allSystemAccountUnsupportedFilterKeys = [
 ] as const
 
 export type UsageRecordResponse = Omit<UsageRecordSummary, 'pricingSnapshot'> & {
-  costBreakdown?: ProviderCostBreakdown
-}
-
-export type UsageRecordListResponse = Omit<UsageRecordListItem, 'pricingSnapshot'> & {
   costBreakdown?: ProviderCostBreakdown
 }
 

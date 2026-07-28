@@ -98,7 +98,7 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
   assert(editDetail, '分组编辑投影应能读取新建分组')
   assert.deepEqual(
     Object.keys(editDetail).sort(),
-    ['accessType', 'description', 'enabled', 'groupType', 'id', 'isDefault', 'name', 'providerCode', 'schedulingPolicy', 'systemAccountId', 'updatedAt'],
+    ['description', 'enabled', 'groupType', 'name', 'providerCode', 'schedulingPolicy', 'updatedAt'],
     '分组编辑投影只能返回表单所需字段与并发版本'
   )
   assert.equal(editDetail.schedulingPolicy?.maxQueueWaitMs, 30_000, '高并发分组编辑投影应返回调度策略')
@@ -142,21 +142,30 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
     '异步创建分组不应接受协议档案字段'
   )
 
-  const renamed = await repositories.updateGroupAsync(created.id, {
+  const renamed = await repositories.patchGroupAsync(created.id, {
     name: `${name}改`,
     description: '分组管理PG回归已更新',
     enabled: false,
     expectedUpdatedAt: editDetail.updatedAt
   }, adminAccess)
-  assert.equal(renamed?.name, `${name}改`, '异步更新分组应返回新名称')
-  assert.equal(renamed?.enabled, false, '异步更新分组应更新启用状态')
+  assert.equal(renamed?.name, `${name}改`, '异步 PATCH 应返回审计所需的新名称')
+  assert.deepEqual(renamed?.changedFields, ['description', 'enabled', 'name'], '异步 PATCH 只应报告实际变化字段')
+  assert.deepEqual(
+    Object.keys(renamed ?? {}).sort(),
+    ['accessType', 'changedFields', 'changes', 'id', 'name', 'ownerSystemAccountId', 'updatedAt'],
+    '异步 PATCH 仓储结果不得回读完整分组摘要'
+  )
 
   const found = await repositories.findGroupSummaryAsync(created.id, adminAccess)
   assert.equal(found?.description, '分组管理PG回归已更新', '异步读取分组摘要应返回更新后的说明')
+  assert.equal(found?.enabled, false, '异步 PATCH 应更新启用状态')
 
   const deleted = await repositories.deleteGroupAsync(created.id, adminAccess)
   createdGroupIds.splice(createdGroupIds.indexOf(created.id), 1)
   assert.equal(deleted.deleted, true, '异步删除分组应返回 deleted=true')
+  assert.equal(deleted.name, `${name}改`, '删除收据应携带日志所需名称')
+  assert.equal(deleted.ownerSystemAccountId, adminAccess.systemAccountId, '删除收据应携带日志所需 owner')
+  assert.deepEqual(Object.keys(deleted).sort(), ['affectedRouteStrategies', 'deleted', 'name', 'ownerSystemAccountId'], '删除收据不得携带未消费的 API Key 影响明细')
   assert.equal((await repositories.findGroupSummaryAsync(created.id, adminAccess)), undefined, '删除后异步摘要应不可见')
 }
 

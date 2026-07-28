@@ -103,7 +103,23 @@ export interface SystemAccountSummary {
 }
 
 export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>
-export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'>
+export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'> & {
+  editVersion: string
+}
+
+export type SystemAccountMutationResult = {
+  id: string
+  updatedAt: string
+} & Partial<Pick<SystemAccountSummary,
+  'displayName'
+  | 'role'
+  | 'status'
+  | 'mustChangePassword'
+  | 'imageGenerationEnabled'
+>> & {
+  description?: string | null
+  requestLimits?: UserRequestLimits | null
+}
 
 export interface SystemAccountOptionSummary {
   id: string
@@ -233,6 +249,7 @@ export interface SystemTeamListItem {
   status: SystemTeamStatus
   memberCount: number
   createdAt: string
+  updatedAt: string
 }
 
 /** Fields needed by the member drawer only; details are loaded explicitly. */
@@ -1107,6 +1124,24 @@ export interface AccountBatchEditTarget {
   configRevision: number
 }
 
+export type AccountBatchEditContextField =
+  | 'supportedModels'
+  | 'modelMappings'
+  | 'supportedEndpointModes'
+
+export interface AccountBatchEditContextItem {
+  id: string
+  configRevision: number
+  providerCode: ProviderCode
+  providerProtocolProfileId: string
+  protocolCode: string
+  protocolVersion: string
+  type: AccountType
+  supportedModels?: string[]
+  modelMappings?: AccountModelMapping[]
+  supportedEndpointModes?: AccountSupportedEndpointMode[]
+}
+
 export interface AccountBatchEditResult {
   batchId: string
   changedFields: string[]
@@ -1595,16 +1630,12 @@ export interface GroupListItem extends Omit<GroupSummary, 'accountIds' | 'schedu
 
 /** Exact projection consumed by the group edit form. */
 export interface GroupEditDetail {
-  id: string
-  systemAccountId?: string
   name: string
   providerCode: ProviderCode
   description?: string
   enabled: boolean
-  isDefault: boolean
   groupType: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
-  accessType: ResourceAccessType
   updatedAt: string
 }
 

@@ -1,7 +1,9 @@
 import type {
   ResponseInspectionPolicyDetail,
   ResponseInspectionPolicyListResult,
-  ResponseInspectionPolicyProviderOption
+  ResponseInspectionPolicyProtocolCode,
+  ResponseInspectionPolicyProviderOption,
+  ResponseInspectionPolicyScopeType
 } from '@/types/domain'
 
 export interface ResponseInspectionPolicyModalIntent {
@@ -9,10 +11,19 @@ export interface ResponseInspectionPolicyModalIntent {
   policyId?: string
 }
 
+export interface ResponseInspectionPolicyProviderOptionsQuery {
+  protocolCode: ResponseInspectionPolicyProtocolCode
+  scopeType: ResponseInspectionPolicyScopeType
+  keyword?: string
+}
+
 interface ResponseInspectionPolicyLoaders {
   list: (signal: AbortSignal) => Promise<ResponseInspectionPolicyListResult>
   detail: (policyId: string, signal: AbortSignal) => Promise<ResponseInspectionPolicyDetail>
-  providerOptions: (signal: AbortSignal) => Promise<ResponseInspectionPolicyProviderOption[]>
+  providerOptions: (
+    query: ResponseInspectionPolicyProviderOptionsQuery,
+    signal: AbortSignal
+  ) => Promise<ResponseInspectionPolicyProviderOption[]>
 }
 
 export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseInspectionPolicyLoaders) {
@@ -24,8 +35,11 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
   let detailController: AbortController | undefined
   let optionsRevision = 0
   let optionsController: AbortController | undefined
-  let optionsRequest: Promise<ResponseInspectionPolicyProviderOption[] | undefined> | undefined
-  let loadedOptions: ResponseInspectionPolicyProviderOption[] | undefined
+  let optionsRequest: {
+    key: string
+    promise: Promise<ResponseInspectionPolicyProviderOption[] | undefined>
+  } | undefined
+  const loadedOptions = new Map<string, ResponseInspectionPolicyProviderOption[]>()
   let modalRevision = 0
   let modalPolicyId: string | undefined
 
@@ -73,13 +87,20 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
   }
 
   async function loadProviderOptions(
-    intent: ResponseInspectionPolicyModalIntent
+    intent: ResponseInspectionPolicyModalIntent,
+    input: ResponseInspectionPolicyProviderOptionsQuery
   ): Promise<ResponseInspectionPolicyProviderOption[] | undefined> {
     if (!isCurrentModalIntent(intent)) return undefined
-    if (loadedOptions) return loadedOptions
-    if (!optionsRequest) optionsRequest = requestProviderOptions(intent)
+    const query = normalizeProviderOptionsQuery(input)
+    const key = providerOptionsCacheKey(query)
+    const cached = loadedOptions.get(key)
+    if (cached) return cached
+    if (optionsRequest?.key !== key) {
+      cancelProviderOptionsRequest()
+      optionsRequest = { key, promise: requestProviderOptions(intent, query, key) }
+    }
     try {
-      const result = await optionsRequest
+      const result = await optionsRequest.promise
       return result && isCurrentModalIntent(intent) ? result : undefined
     } catch (error) {
       if (!isCurrentModalIntent(intent)) return undefined
@@ -92,7 +113,7 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
     detailController = undefined
     detailPolicyId = ''
     detailRevision += 1
-    invalidateProviderOptions()
+    cancelProviderOptionsRequest()
     modalRevision += 1
     modalPolicyId = policyId
     return { revision: modalRevision, policyId }
@@ -115,23 +136,25 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
     modalRevision += 1
     listController?.abort()
     detailController?.abort()
-    invalidateProviderOptions()
+    cancelProviderOptionsRequest()
+    loadedOptions.clear()
     listController = undefined
     detailController = undefined
   }
 
   function requestProviderOptions(
-    intent: ResponseInspectionPolicyModalIntent
+    intent: ResponseInspectionPolicyModalIntent,
+    query: ResponseInspectionPolicyProviderOptionsQuery,
+    key: string
   ): Promise<ResponseInspectionPolicyProviderOption[] | undefined> {
-    optionsController?.abort()
     const revision = ++optionsRevision
     const controller = new AbortController()
     optionsController = controller
     const request = (async () => {
       try {
-        const result = await loaders.providerOptions(controller.signal)
+        const result = await loaders.providerOptions(query, controller.signal)
         if (!isCurrentOptionsRequest(revision, controller) || !isCurrentModalIntent(intent)) return undefined
-        loadedOptions = result
+        loadedOptions.set(key, result)
         return result
       } catch (error) {
         if (
@@ -150,12 +173,11 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
     return request
   }
 
-  function invalidateProviderOptions(): void {
+  function cancelProviderOptionsRequest(): void {
     optionsRevision += 1
     optionsController?.abort()
     optionsController = undefined
     optionsRequest = undefined
-    loadedOptions = undefined
   }
 
   function isCurrentListRequest(revision: number, controller: AbortController): boolean {
@@ -175,6 +197,7 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
 
   return {
     beginModalIntent,
+    cancelProviderOptionsRequest,
     cancelModalIntent,
     dispose,
     isCurrentModalIntent,
@@ -182,6 +205,21 @@ export function createResponseInspectionPolicyLoadCoordinator(loaders: ResponseI
     loadList,
     loadProviderOptions
   }
+}
+
+function normalizeProviderOptionsQuery(
+  input: ResponseInspectionPolicyProviderOptionsQuery
+): ResponseInspectionPolicyProviderOptionsQuery {
+  const keyword = input.keyword?.trim()
+  return {
+    protocolCode: input.protocolCode,
+    scopeType: input.scopeType,
+    ...(keyword ? { keyword } : {})
+  }
+}
+
+function providerOptionsCacheKey(input: ResponseInspectionPolicyProviderOptionsQuery): string {
+  return `${input.protocolCode}\u0000${input.scopeType}\u0000${input.keyword?.toLocaleLowerCase() ?? ''}`
 }
 
 export function isCanceledRequest(error: unknown): boolean {

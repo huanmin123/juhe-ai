@@ -1,4 +1,4 @@
-import type { GroupListPageResult, GroupStatusSnapshotResult } from '../../domain/types.js'
+import type { GroupListItem, GroupListPageResult, GroupStatusSnapshotResult } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   listGroupOptionRowsForAccess,
@@ -27,7 +27,7 @@ export async function hydrateGroupListPage(
   if (page.items.length === 0) {
     return { ...listPage, generatedAt: new Date().toISOString() }
   }
-  const snapshot = await getGroupStatusSnapshot(access, page.items.map((item) => item.id))
+  const snapshot = await getGroupStatusSnapshotForListItems(page.items)
   const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
   return {
     ...listPage,
@@ -62,22 +62,50 @@ export async function getGroupStatusSnapshot(
   const rows = runtimeConfig.databaseDriver === 'postgres'
     ? await listGroupOptionRowsForAccessAsync(access, { ids: groupIds, limit: maxSnapshotGroupIds })
     : listGroupOptionRowsForAccess(access, { ids: groupIds, limit: maxSnapshotGroupIds })
+  return loadGroupStatusSnapshot(rows.map((row) => ({
+    id: row.id,
+    ownerSystemAccountId: row.system_account_id,
+    accessType: row.access_type === 'authorized' ? 'authorized' : 'owner',
+    groupAuthorizationId: row.authorization_id ?? undefined
+  })))
+}
+
+async function getGroupStatusSnapshotForListItems(items: GroupListItem[]): Promise<GroupStatusSnapshotResult> {
+  return loadGroupStatusSnapshot(items.map((item) => {
+    if (!item.ownerSystemAccountId) throw new Error(`分组 ${item.id} 缺少所有者上下文`)
+    return {
+      id: item.id,
+      ownerSystemAccountId: item.ownerSystemAccountId,
+      accessType: item.accessType === 'authorized' ? 'authorized' : 'owner',
+      groupAuthorizationId: item.groupAuthorizationId
+    }
+  }))
+}
+
+interface GroupStatusSnapshotSubject {
+  id: string
+  ownerSystemAccountId: string
+  accessType: 'owner' | 'authorized'
+  groupAuthorizationId?: string
+}
+
+async function loadGroupStatusSnapshot(subjects: GroupStatusSnapshotSubject[]): Promise<GroupStatusSnapshotResult> {
   const timezone = runtimeConfig.databaseDriver === 'postgres' ? await usageStatsTimezoneAsync() : usageStatsTimezone()
   const dateKey = todayDateKey(timezone)
-  const ownerScopes = rows
-    .filter((row) => row.access_type !== 'authorized')
-    .map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const authorizationScopes = rows
-    .filter((row) => row.access_type === 'authorized' && row.authorization_id)
-    .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
+  const ownerScopes = subjects
+    .filter((subject) => subject.accessType !== 'authorized')
+    .map((subject) => usageScope(subject.id, subject.ownerSystemAccountId, subject.id))
+  const authorizationScopes = subjects
+    .filter((subject) => subject.accessType === 'authorized' && subject.groupAuthorizationId)
+    .map((subject) => usageScope(subject.groupAuthorizationId ?? '', subject.ownerSystemAccountId, subject.groupAuthorizationId ?? ''))
   const [concurrencyAccountIdsByGroup, ownerUsage, authorizationUsage] = runtimeConfig.databaseDriver === 'postgres'
     ? await Promise.all([
-      loadGroupConcurrencyAccountIdsByGroupIdsAsync(rows.map((row) => row.id)),
+      loadGroupConcurrencyAccountIdsByGroupIdsAsync(subjects.map((subject) => subject.id)),
       loadGroupUsageSummariesForScopesAsync(ownerScopes, dateKey),
       loadGroupAuthorizationUsageSummariesAsync(authorizationScopes, dateKey)
     ])
     : [
-      loadGroupConcurrencyAccountIdsByGroupIds(rows.map((row) => row.id)),
+      loadGroupConcurrencyAccountIdsByGroupIds(subjects.map((subject) => subject.id)),
       loadGroupUsageSummariesForScopes(ownerScopes, dateKey),
       loadGroupAuthorizationUsageSummaries(authorizationScopes, dateKey)
     ]
@@ -87,12 +115,12 @@ export async function getGroupStatusSnapshot(
     runtimeSnapshot: {
       accountConcurrencyAvailable: concurrency.available
     },
-    items: rows.map((row) => ({
-      id: row.id,
-      currentConcurrency: sumConcurrency(concurrencyAccountIdsByGroup.get(row.id) ?? [], concurrency.values),
-      todayUsage: row.access_type === 'authorized' && row.authorization_id
-        ? authorizationUsage.get(row.authorization_id) ?? emptyAccountUsageSummary()
-        : ownerUsage.get(row.id) ?? emptyAccountUsageSummary()
+    items: subjects.map((subject) => ({
+      id: subject.id,
+      currentConcurrency: sumConcurrency(concurrencyAccountIdsByGroup.get(subject.id) ?? [], concurrency.values),
+      todayUsage: subject.accessType === 'authorized' && subject.groupAuthorizationId
+        ? authorizationUsage.get(subject.groupAuthorizationId) ?? emptyAccountUsageSummary()
+        : ownerUsage.get(subject.id) ?? emptyAccountUsageSummary()
     }))
   }
 }

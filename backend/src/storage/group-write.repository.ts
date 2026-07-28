@@ -14,11 +14,6 @@ import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteA
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
 import { findGroupSummary, findGroupSummaryAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { sqlPlaceholders } from './query-utils.js'
-import {
-  canManageResourceOwner as canManageAuthorizedResourceOwner,
-  groupOwnerAndProvider
-} from './resource-authorization-helpers.js'
 import {
   invalidateGroupLookupCache,
   loadSystemAccountNameMapByIds
@@ -91,8 +86,6 @@ const authorizedGroupSettingsInputKeys = new Set([
   'groupType',
   'schedulingPolicy'
 ])
-
-const maxDeletedGroupAffectedApiKeyRouteSamples = 500
 
 export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
   assertKnownInputKeys(input, groupCreateInputKeys, '分组创建参数')
@@ -783,36 +776,35 @@ export interface DeletedGroupRouteStrategyChange {
   removedBindingStatus?: string
 }
 
-export interface DeletedGroupApiKeyRouteChange extends DeletedGroupRouteStrategyChange {
-  apiKeyId: string
-}
-
 export interface DeleteGroupResult {
   deleted: boolean
+  ownerSystemAccountId?: string
+  name?: string
   affectedRouteStrategies: DeletedGroupRouteStrategyChange[]
-  affectedApiKeyRoutes: DeletedGroupApiKeyRouteChange[]
-  affectedApiKeyRouteCount: number
-  affectedApiKeyRoutesTruncated: boolean
+}
+
+interface GroupDeleteLocatorRow {
+  id: string
+  system_account_id: string
+  name: string
+  is_default: number | boolean | string
 }
 
 export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult {
-  const current = findGroupSummary(id, access)
-  if (current?.isDefault) {
-    throw new Error('默认分组不能删除')
-  }
-  const owner = groupOwnerAndProvider(id)
-  if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return emptyDeleteGroupResult()
-  }
   const database = getBusinessDatabase()
   let deleted = false
+  let current: GroupDeleteLocatorRow | undefined
   let affectedRouteStrategies: DeletedGroupRouteStrategyChange[] = []
-  let affectedApiKeyRouteChanges = emptyDeletedGroupApiKeyRouteChanges()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    affectedRouteStrategies = preserveRouteStrategiesBeforeGroupDelete(database, id, current?.name)
-    affectedApiKeyRouteChanges = loadDeletedGroupApiKeyRouteChanges(database, affectedRouteStrategies)
-    const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
+    current = findGroupDeleteLocator(database, id, access)
+    if (!current) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return emptyDeleteGroupResult()
+    }
+    if (Number(current.is_default) === 1) throw new Error('默认分组不能删除')
+    affectedRouteStrategies = preserveRouteStrategiesBeforeGroupDelete(database, id, current.name)
+    const result = database.prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, current.system_account_id)
     deleted = Number(result.changes ?? 0) > 0
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -827,34 +819,26 @@ export function deleteGroup(id: string, access?: AccessScope): DeleteGroupResult
   }
   return {
     deleted,
-    affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
-    affectedApiKeyRoutes: deleted ? affectedApiKeyRouteChanges.items : [],
-    affectedApiKeyRouteCount: deleted ? affectedApiKeyRouteChanges.total : 0,
-    affectedApiKeyRoutesTruncated: deleted ? affectedApiKeyRouteChanges.truncated : false
+    ownerSystemAccountId: deleted ? current?.system_account_id : undefined,
+    name: deleted ? current?.name : undefined,
+    affectedRouteStrategies: deleted ? affectedRouteStrategies : []
   }
 }
 
 export async function deleteGroupAsync(id: string, access?: AccessScope): Promise<DeleteGroupResult> {
-  const current = await findGroupSummaryAsync(id, access)
-  if (current?.isDefault) {
-    throw new Error('默认分组不能删除')
-  }
-  const owner = await groupOwnerAndProviderAsync(id)
-  if (!owner || !canManageAuthorizedResourceOwner(owner.systemAccountId, access)) {
-    return emptyDeleteGroupResult()
-  }
   const client = await getGroupWriteDatabaseClient()
   let deleted = false
+  let current: GroupDeleteLocatorRow | undefined
   let affectedRouteStrategies: DeletedGroupRouteStrategyChange[] = []
-  let affectedApiKeyRouteChanges = emptyDeletedGroupApiKeyRouteChanges()
   await client.transaction(async (tx) => {
-    await lockGroupMutationRowAsync(tx, id, owner.systemAccountId)
-    affectedRouteStrategies = await preserveRouteStrategiesBeforeGroupDeleteAsync(tx, id, current?.name)
-    affectedApiKeyRouteChanges = await loadDeletedGroupApiKeyRouteChangesAsync(tx, affectedRouteStrategies)
+    current = await findGroupDeleteLocatorAsync(tx, id, access)
+    if (!current) return
+    if (Number(current.is_default) === 1) throw new Error('默认分组不能删除')
+    affectedRouteStrategies = await preserveRouteStrategiesBeforeGroupDeleteAsync(tx, id, current.name)
     const result = await tx.execute(`
       DELETE FROM ${groupWriteTable(tx, 'groups')}
       WHERE id = ? AND system_account_id = ?
-    `, [id, owner.systemAccountId])
+    `, [id, current.system_account_id])
     deleted = Number(result.changes ?? 0) > 0
   })
   if (deleted) {
@@ -865,10 +849,9 @@ export async function deleteGroupAsync(id: string, access?: AccessScope): Promis
   }
   return {
     deleted,
-    affectedRouteStrategies: deleted ? affectedRouteStrategies : [],
-    affectedApiKeyRoutes: deleted ? affectedApiKeyRouteChanges.items : [],
-    affectedApiKeyRouteCount: deleted ? affectedApiKeyRouteChanges.total : 0,
-    affectedApiKeyRoutesTruncated: deleted ? affectedApiKeyRouteChanges.truncated : false
+    ownerSystemAccountId: deleted ? current?.system_account_id : undefined,
+    name: deleted ? current?.name : undefined,
+    affectedRouteStrategies: deleted ? affectedRouteStrategies : []
   }
 }
 
@@ -912,41 +895,6 @@ function preserveRouteStrategiesBeforeGroupDelete(
   })
 }
 
-function loadDeletedGroupApiKeyRouteChanges(
-  database: DatabaseSync,
-  routeChanges: DeletedGroupRouteStrategyChange[]
-): { items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean } {
-  const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
-  if (!routeIds.length) return emptyDeletedGroupApiKeyRouteChanges()
-  const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
-  const countRow = database
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM api_keys
-      WHERE route_strategy_id IN (${sqlPlaceholders(routeIds.length)})
-    `)
-    .get(...routeIds) as { total?: number } | undefined
-  const total = Number(countRow?.total ?? 0)
-  const rows = database
-    .prepare(`
-      SELECT id AS apiKeyId, route_strategy_id AS routeStrategyId
-      FROM api_keys
-      WHERE route_strategy_id IN (${sqlPlaceholders(routeIds.length)})
-      ORDER BY id ASC
-      LIMIT ?
-    `)
-    .all(...routeIds, maxDeletedGroupAffectedApiKeyRouteSamples) as Array<{ apiKeyId: string; routeStrategyId: string }>
-  const items = rows.flatMap((row) => {
-    const change = changeByRouteStrategyId.get(row.routeStrategyId)
-    return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
-  })
-  return {
-    items,
-    total,
-    truncated: total > items.length
-  }
-}
-
 async function preserveRouteStrategiesBeforeGroupDeleteAsync(
   client: DatabaseClient,
   groupId: string,
@@ -985,52 +933,10 @@ async function preserveRouteStrategiesBeforeGroupDeleteAsync(
   })
 }
 
-async function loadDeletedGroupApiKeyRouteChangesAsync(
-  client: DatabaseClient,
-  routeChanges: DeletedGroupRouteStrategyChange[]
-): Promise<{ items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean }> {
-  const routeIds = [...new Set(routeChanges.map((change) => change.routeStrategyId).filter(Boolean))]
-  if (!routeIds.length) return emptyDeletedGroupApiKeyRouteChanges()
-  const changeByRouteStrategyId = new Map(routeChanges.map((change) => [change.routeStrategyId, change]))
-  const countRow = await client.one<{ total?: number | string }>(`
-    SELECT COUNT(*) AS total
-    FROM ${groupWriteTable(client, 'api_keys')}
-    WHERE route_strategy_id IN (${client.dialect.bindPlaceholders(routeIds.length)})
-  `, routeIds)
-  const total = Number(countRow?.total ?? 0)
-  const rows = await client.query<{ apiKeyId: string; routeStrategyId: string }>(`
-    SELECT id AS "apiKeyId", route_strategy_id AS "routeStrategyId"
-    FROM ${groupWriteTable(client, 'api_keys')}
-    WHERE route_strategy_id IN (${client.dialect.bindPlaceholders(routeIds.length)})
-    ORDER BY id ASC
-    LIMIT ?
-  `, [...routeIds, maxDeletedGroupAffectedApiKeyRouteSamples])
-  const items = rows.flatMap((row) => {
-    const change = changeByRouteStrategyId.get(row.routeStrategyId)
-    return change ? [{ ...change, apiKeyId: row.apiKeyId }] : []
-  })
-  return {
-    items,
-    total,
-    truncated: total > items.length
-  }
-}
-
 function emptyDeleteGroupResult(): DeleteGroupResult {
   return {
     deleted: false,
-    affectedRouteStrategies: [],
-    affectedApiKeyRoutes: [],
-    affectedApiKeyRouteCount: 0,
-    affectedApiKeyRoutesTruncated: false
-  }
-}
-
-function emptyDeletedGroupApiKeyRouteChanges(): { items: DeletedGroupApiKeyRouteChange[]; total: number; truncated: boolean } {
-  return {
-    items: [],
-    total: 0,
-    truncated: false
+    affectedRouteStrategies: []
   }
 }
 
@@ -1044,6 +950,34 @@ async function lockGroupMutationRowAsync(client: DatabaseClient, groupId: string
   `, [groupId, systemAccountId])
 }
 
+function findGroupDeleteLocator(database: DatabaseSync, groupId: string, access?: AccessScope): GroupDeleteLocatorRow | undefined {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && !canAccessAll(access)) return undefined
+  const ownerClause = ownerSystemAccountId ? ' AND system_account_id = ?' : ''
+  const params: SQLInputValue[] = ownerSystemAccountId ? [groupId, ownerSystemAccountId] : [groupId]
+  return database
+    .prepare(`
+      SELECT id, system_account_id, name, is_default
+      FROM groups
+      WHERE id = ?${ownerClause}
+      LIMIT 1
+    `)
+    .get(...params) as unknown as GroupDeleteLocatorRow | undefined
+}
+
+async function findGroupDeleteLocatorAsync(client: DatabaseClient, groupId: string, access?: AccessScope): Promise<GroupDeleteLocatorRow | undefined> {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && !canAccessAll(access)) return undefined
+  const ownerClause = ownerSystemAccountId ? ' AND system_account_id = ?' : ''
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  return client.one<GroupDeleteLocatorRow>(`
+    SELECT id, system_account_id, name, is_default
+    FROM ${groupWriteTable(client, 'groups')}
+    WHERE id = ?${ownerClause}
+    LIMIT 1${lockClause}
+  `, ownerSystemAccountId ? [groupId, ownerSystemAccountId] : [groupId])
+}
+
 function isDuplicateGroupNameError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_groups_owner_provider_name_unique')
@@ -1053,22 +987,6 @@ function isDuplicateGroupNameError(error: unknown): boolean {
 
 function writeSystemAccountId(access?: AccessScope): string {
   return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
-}
-
-async function groupOwnerAndProviderAsync(groupId: string): Promise<{ systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined> {
-  const client = await getGroupWriteDatabaseClient()
-  const row = await client.one<{ system_account_id?: string; provider_code?: ProviderCode; name?: string }>(`
-    SELECT system_account_id, provider_code, name
-    FROM ${groupWriteTable(client, 'groups')}
-    WHERE id = ?
-  `, [groupId])
-  return row?.system_account_id && row.provider_code
-    ? {
-        systemAccountId: row.system_account_id,
-        providerCode: row.provider_code,
-        name: row.name
-      }
-    : undefined
 }
 
 async function getGroupWriteDatabaseClient(): Promise<DatabaseClient> {

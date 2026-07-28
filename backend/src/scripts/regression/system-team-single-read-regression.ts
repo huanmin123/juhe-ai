@@ -43,8 +43,12 @@ try {
   assert.equal(target?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的系统团队')
   assert.equal(target?.name, '团队单条读取回归-000', '按 ID 单条读取应返回完整团队摘要')
 
-  const updated = repositories.updateSystemTeam(targetId, { description: '已通过单条读取更新' }, access)
-  assert.equal(updated?.description, '已通过单条读取更新', '更新团队应通过单条读取返回目标团队摘要')
+  const updated = repositories.updateSystemTeam(targetId, {
+    description: '已通过单条读取更新',
+    expectedUpdatedAt: target?.updatedAt
+  }, access)
+  assert.equal(updated.status, 'updated', '更新团队应通过单条定位执行字段级 PATCH')
+  assert.equal(updated.status === 'updated' ? updated.result.rowPatch.description : undefined, '已通过单条读取更新', '更新团队应返回最小行补丁')
 
   console.log('系统团队单条读取回归通过：写路径不再依赖全量团队列表装配')
 } finally {
