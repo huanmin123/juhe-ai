@@ -98,8 +98,8 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
   assert(editDetail, '分组编辑投影应能读取新建分组')
   assert.deepEqual(
     Object.keys(editDetail).sort(),
-    ['accessType', 'description', 'enabled', 'groupType', 'id', 'isDefault', 'name', 'providerCode', 'schedulingPolicy', 'systemAccountId'],
-    '分组编辑投影只能返回表单所需字段'
+    ['accessType', 'description', 'enabled', 'groupType', 'id', 'isDefault', 'name', 'providerCode', 'schedulingPolicy', 'systemAccountId', 'updatedAt'],
+    '分组编辑投影只能返回表单所需字段与并发版本'
   )
   assert.equal(editDetail.schedulingPolicy?.maxQueueWaitMs, 30_000, '高并发分组编辑投影应返回调度策略')
   const groupSummarySource = readFileSync(resolve('src/storage/group-summary.repository.ts'), 'utf8')
@@ -145,7 +145,8 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
   const renamed = await repositories.updateGroupAsync(created.id, {
     name: `${name}改`,
     description: '分组管理PG回归已更新',
-    enabled: false
+    enabled: false,
+    expectedUpdatedAt: editDetail.updatedAt
   }, adminAccess)
   assert.equal(renamed?.name, `${name}改`, '异步更新分组应返回新名称')
   assert.equal(renamed?.enabled, false, '异步更新分组应更新启用状态')
