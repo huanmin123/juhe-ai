@@ -52,9 +52,9 @@ func newNativeCooldownAccountRetestProbe(
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
-	secret := strings.TrimSpace(cfg.Secret)
-	if len([]rune(secret)) < 32 {
-		return nil, nil, fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
+	secret, err := cooldownProbeSecret(cfg.Secret)
+	if err != nil {
+		return nil, nil, err
 	}
 	stateRedisNamespace := cooldownProbeStateRedisNamespace(cfg.RedisNamespace)
 	if stateRedisNamespace == "" {
@@ -122,13 +122,14 @@ func newNativeCooldownAccountRetestProbe(
 		Next: rawTransportFactory, Guard: cooldownProbeRevocationProtector{guard: revocationGuard},
 	}
 	oauthSnapshots := accountprobe.OAuthSnapshotLoader{Loader: loader, Codec: codec}
+	revocationProtector := cooldownProbeRevocationProtector{guard: revocationGuard}
 	oauthCoordinator := accountprobe.OAuthCoordinator{
 		Reloader: oauthSnapshots,
 		Lock:     accountprobe.NewRedisOAuthRefreshLockRunner(oauthLock),
 		CAS:      accountprobe.OAuthCredentialCASAdapter{Codec: codec, Store: store},
-		Refresh:  accountprobe.OAuthRefreshTransportExecutor{URLPolicy: urlPolicy},
+		Refresh:  accountprobe.OAuthRefreshTransportExecutor{URLPolicy: urlPolicy, Guard: revocationProtector},
 		Enricher: accountprobe.OAuthGeminiRefreshEnricher{Enricher: accountprobe.NewGeminiOAuthEnricher(
-			accountprobe.GeminiOAuthEnrichmentTransportExecutor{URLPolicy: urlPolicy},
+			accountprobe.GeminiOAuthEnrichmentTransportExecutor{URLPolicy: urlPolicy, Guard: revocationProtector},
 		)},
 	}
 	probe := accountprobe.CooldownProbe{
@@ -144,4 +145,11 @@ func cooldownProbeStateRedisNamespace(namespace string) string {
 		return ""
 	}
 	return "juhe-ai:" + namespace + ":state"
+}
+
+func cooldownProbeSecret(secret string) (string, error) {
+	if len([]rune(strings.TrimSpace(secret))) < 32 {
+		return "", fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
+	}
+	return secret, nil
 }

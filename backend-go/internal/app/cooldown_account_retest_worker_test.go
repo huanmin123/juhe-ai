@@ -115,6 +115,20 @@ func TestCooldownProbeStateRedisNamespaceMatchesNodeRuntimeStateKeys(t *testing.
 	}
 }
 
+func TestCooldownProbeSecretValidatesEffectiveLengthWithoutChangingCodecBytes(t *testing.T) {
+	const raw = "  12345678901234567890123456789012  "
+	secret, err := cooldownProbeSecret(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != raw {
+		t.Fatalf("cooldown probe secret bytes changed: got %q", secret)
+	}
+	if _, err := cooldownProbeSecret("  short  "); err == nil {
+		t.Fatal("short effective secret was accepted")
+	}
+}
+
 func TestRunCooldownAccountRetestWorkerExplicitOutcomesOverrideRuntimeStore(t *testing.T) {
 	runtimeStore := &cooldownAccountRetestOutcomeRuntimeStoreStub{
 		cooldownAccountRetestRuntimeStoreStub: &cooldownAccountRetestRuntimeStoreStub{},

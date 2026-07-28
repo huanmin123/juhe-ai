@@ -2,6 +2,7 @@ package accountprobe
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,70 @@ func TestAPIKeyExecutionFenceRequiresMatchingAuthorizedSourceRevision(t *testing
 	}
 }
 
+func TestAPIKeyExecutionFenceRejectsModelRelationshipDriftBeforeTransport(t *testing.T) {
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	observation := now.Add(-time.Minute)
+	candidate := apiKeyCandidate("openai", "gpt", "profile", "https://api.example", map[string]any{"api_key": "key"})
+	candidate.Projection.AccountID = "account"
+	candidate.Projection.SystemAccountID = "system"
+	candidate.Projection.GroupID = "group"
+	candidate.Projection.ConfigRevision = 3
+	candidate.Projection.DispatchRevision = 4
+	candidate.SupportedModels = []string{"alternate", "upstream"}
+	candidate.ModelMappings = []gatewaycandidatewindow.ModelMapping{{
+		ProviderCode: "gpt", SourceModel: "client", SourceEndpointFamily: "responses",
+		UpstreamModel: "upstream", UpstreamEndpointFamily: "responses", Enabled: true,
+	}}
+	prepared, err := PrepareRequest(candidate, RequestInput{Mode: ModeResponsesJSON, Model: "client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := PrepareAPIKeyAttempt(candidate, prepared, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := port.CooldownAccountRetestCandidate{
+		ID: "account", SystemAccountID: "system", GroupID: "group", ConfigRevision: 3, DispatchRevision: 4,
+		ObservationStartedAt: &observation, Generation: "generation", HealthCheckModel: "client", HealthCheckEndpointMode: string(ModeResponsesJSON),
+	}
+	request, err := http.NewRequestWithContext(t.Context(), attempt.Method(), attempt.URL(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*gatewaycandidatewindow.Candidate)
+	}{
+		{name: "supported models", mutate: func(value *gatewaycandidatewindow.Candidate) {
+			value.SupportedModels = append(value.SupportedModels, "unrelated")
+		}},
+		{name: "model mappings", mutate: func(value *gatewaycandidatewindow.Candidate) {
+			value.ModelMappings[0].UpstreamModel = "alternate"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := cloneExecutionCandidate(candidate)
+			test.mutate(&changed)
+			loader := &exactCandidateLoaderStub{candidate: changed, found: true}
+			fence := (APIKeyExecutionFence{
+				Loader: loader, Current: &cooldownCandidateReaderStub{candidate: expected, found: true},
+				LoadInput: LoadInput{AccountID: "account", GroupID: "group", SystemAccountID: "system", RequestedModel: "client", EndpointFamily: "responses"},
+				Expected:  expected, Candidate: candidate, Prepared: prepared, Attempt: attempt, Now: func() time.Time { return now },
+			}).Recheck
+			next := &revocationTransportStub{}
+			_, err := (RevocationGuardTransport{Next: next, Guard: &revocationProtectorStub{}}).ExecuteWithFence(t.Context(), request, fence)
+			if err == nil || !strings.Contains(err.Error(), "candidate changed") {
+				t.Fatalf("ExecuteWithFence() error = %v", err)
+			}
+			if next.calls != 0 {
+				t.Fatalf("wrapped transport calls = %d, want 0", next.calls)
+			}
+		})
+	}
+}
+
 func TestOAuthExecutionFenceDefersWhenCredentialEntersRefreshWindow(t *testing.T) {
 	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
 	expected, candidate := cooldownProbeOAuthFixtures(now, "gpt")
@@ -138,6 +203,8 @@ func TestOAuthExecutionFenceDefersWhenCredentialEntersRefreshWindow(t *testing.T
 
 func cloneExecutionCandidate(value gatewaycandidatewindow.Candidate) gatewaycandidatewindow.Candidate {
 	clone := value
+	clone.SupportedModels = append([]string(nil), value.SupportedModels...)
+	clone.ModelMappings = append([]gatewaycandidatewindow.ModelMapping(nil), value.ModelMappings...)
 	clone.APIKeyRuntime = append([]gatewaycandidatewindow.APIKeyRuntime(nil), value.APIKeyRuntime...)
 	if value.Proxy != nil {
 		proxy := *value.Proxy

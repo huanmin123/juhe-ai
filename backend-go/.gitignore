@@ -6,3 +6,5 @@
 /juhe-ai-maintenance
 /juhe-ai-maintenance.exe
 /cmd/*/*.exe
+/$profile
+/*.coverprofile

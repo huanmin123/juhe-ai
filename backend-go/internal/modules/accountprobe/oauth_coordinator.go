@@ -110,6 +110,21 @@ type OAuthRefreshHTTPExecutor interface {
 	ExecuteOAuthRefresh(context.Context, gatewaycandidatewindow.Candidate, OAuthRefreshRequest) (OAuthRefreshHTTPResponse, error)
 }
 
+// OAuthHTTPExecutionFence is evaluated inside the PostgreSQL revocation gate
+// immediately before a refresh or enrichment request is written upstream.
+type OAuthHTTPExecutionFence func(context.Context) error
+
+type oauthHTTPExecutionFenceContextKey struct{}
+
+func withOAuthHTTPExecutionFence(ctx context.Context, fence OAuthHTTPExecutionFence) context.Context {
+	return context.WithValue(ctx, oauthHTTPExecutionFenceContextKey{}, fence)
+}
+
+func oauthHTTPExecutionFenceFromContext(ctx context.Context) OAuthHTTPExecutionFence {
+	fence, _ := ctx.Value(oauthHTTPExecutionFenceContextKey{}).(OAuthHTTPExecutionFence)
+	return fence
+}
+
 type OAuthCredentialCASInput struct {
 	accountID                 string
 	systemAccountID           string
@@ -226,7 +241,9 @@ func (c OAuthCoordinator) coordinateLocked(
 		if err != nil {
 			return oauthTaskFailure(err)
 		}
-		refreshResult, err := c.exchangeRefresh(ctx, candidate, refreshRequest)
+		executionFence := c.oauthHTTPExecutionFence(input.Reload, candidate, credentials, assertOwned)
+		fencedCtx := withOAuthHTTPExecutionFence(ctx, executionFence)
+		refreshResult, err := c.exchangeRefresh(fencedCtx, candidate, refreshRequest)
 		if err != nil {
 			return oauthTaskFailure(err)
 		}
@@ -234,7 +251,7 @@ func (c OAuthCoordinator) coordinateLocked(
 			if c.Enricher == nil {
 				return oauthTaskFailure(fmt.Errorf("Gemini OAuth refresh enrichment is required"))
 			}
-			refreshResult, err = c.Enricher.EnrichOAuthRefresh(ctx, candidate, refreshResult)
+			refreshResult, err = c.Enricher.EnrichOAuthRefresh(fencedCtx, candidate, refreshResult)
 			if err != nil {
 				return oauthTaskFailure(fmt.Errorf("Gemini OAuth refresh enrichment failed"))
 			}
@@ -276,6 +293,33 @@ func (c OAuthCoordinator) coordinateLocked(
 		previous = winnerCredentials
 	}
 	return oauthTaskFailure(fmt.Errorf("OAuth credential CAS retry limit reached"))
+}
+
+func (c OAuthCoordinator) oauthHTTPExecutionFence(
+	input LoadInput,
+	expectedCandidate gatewaycandidatewindow.Candidate,
+	expectedCredentials OAuthCredentials,
+	assertOwned func(context.Context) error,
+) OAuthHTTPExecutionFence {
+	return func(ctx context.Context) error {
+		reloadInput := input
+		reloadInput.Now = c.currentTime().UTC()
+		current, found, err := c.Reloader.ReloadOAuthProbeCandidate(ctx, reloadInput)
+		if err != nil {
+			return fmt.Errorf("reload OAuth HTTP execution fence: %w", err)
+		}
+		if !found {
+			return fmt.Errorf("OAuth HTTP execution fence target is no longer available")
+		}
+		if !sameExecutionCandidate(expectedCandidate, current.Candidate()) ||
+			!reflect.DeepEqual(expectedCredentials.values, current.Credentials().values) {
+			return fmt.Errorf("OAuth HTTP execution fence candidate or credentials changed")
+		}
+		if assertOwned == nil || assertOwned(ctx) != nil {
+			return fmt.Errorf("OAuth HTTP execution fence refresh lock ownership was lost")
+		}
+		return nil
+	}
 }
 
 func (c OAuthCoordinator) reloadForRefresh(

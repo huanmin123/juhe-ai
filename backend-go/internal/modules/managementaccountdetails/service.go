@@ -17,7 +17,6 @@ import (
 type Level string
 
 const (
-	LevelBasic     Level = "basic"
 	LevelEditBasic Level = "edit-basic"
 	LevelAdvanced  Level = "advanced"
 )
@@ -110,7 +109,7 @@ func (s *Service) Get(ctx context.Context, input Input, level Level) (map[string
 	if s.reader == nil {
 		return nil, false, fmt.Errorf("management account detail reader is required")
 	}
-	if level != LevelBasic && level != LevelEditBasic && level != LevelAdvanced {
+	if level != LevelEditBasic && level != LevelAdvanced {
 		return nil, false, fmt.Errorf("unsupported management account detail level: %s", level)
 	}
 	source, found, err := s.reader.GetManagementAccountDetailSource(ctx, port.ManagementAccountDetailInput{
@@ -131,10 +130,6 @@ func (s *Service) Get(ctx context.Context, input Input, level Level) (map[string
 	detail["effectiveAvailability"] = effectiveAvailability(detail, s.now())
 
 	switch level {
-	case LevelBasic:
-		delete(detail, "credentials")
-		delete(detail, "supportedModels")
-		delete(detail, "modelMappings")
 	case LevelEditBasic:
 		if authorized {
 			return nil, false, ErrCredentialsForbidden

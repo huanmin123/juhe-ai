@@ -43,14 +43,6 @@ func (s managementAccountDetailServiceAdapter) APIKeyRuntime(
 	return s.service.APIKeyRuntime(r.Context(), input)
 }
 
-func NewManagementAccountDetailHandler(service *managementaccountdetails.Service) http.Handler {
-	return newManagementAccountDetailHandler(detailServiceFrom(service), managementAccountDetailScopeAdmin, managementaccountdetails.LevelBasic)
-}
-
-func NewManagementMyAccountDetailHandler(service *managementaccountdetails.Service) http.Handler {
-	return newManagementAccountDetailHandler(detailServiceFrom(service), managementAccountDetailScopeSelf, managementaccountdetails.LevelBasic)
-}
-
 func NewManagementAccountEditBasicDetailHandler(service *managementaccountdetails.Service) http.Handler {
 	return newManagementAccountDetailHandler(detailServiceFrom(service), managementAccountDetailScopeAdmin, managementaccountdetails.LevelEditBasic)
 }
