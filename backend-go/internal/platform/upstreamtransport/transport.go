@@ -4,20 +4,24 @@
 package upstreamtransport
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/net/http/httpguts"
+	xproxy "golang.org/x/net/proxy"
 	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 )
 
@@ -105,8 +109,11 @@ type Client struct {
 	maxResponseBodyBytes int64
 	urlPolicy            upstreamurlpolicy.Config
 	customTransport      bool
-	forwardHTTPProxy     bool
+	proxyURL             *url.URL
 }
+
+func (*Client) String() string   { return "[upstream transport client]" }
+func (*Client) GoString() string { return "[upstream transport client]" }
 
 // Result contains bounded diagnostic bytes and the transport evidence needed
 // by a later account-probe classifier. Body is a private copy owned by Result.
@@ -140,13 +147,12 @@ func NewClient(options Options) (*Client, error) {
 		}
 		roundTripper = owned
 	}
-	forwardHTTPProxy := false
+	var proxyURL *url.URL
 	if rawProxyURL := strings.TrimSpace(options.ProxyURL); rawProxyURL != "" {
-		parsedProxy, parseErr := parseProxyURL(rawProxyURL)
-		if parseErr != nil {
-			return nil, parseErr
+		proxyURL, err = parseProxyURL(rawProxyURL)
+		if err != nil {
+			return nil, err
 		}
-		forwardHTTPProxy = parsedProxy.Scheme == "http" || parsedProxy.Scheme == "https"
 	}
 	return &Client{
 		httpClient: &http.Client{
@@ -161,7 +167,7 @@ func NewClient(options Options) (*Client, error) {
 		maxResponseBodyBytes: maxBody,
 		urlPolicy:            options.URLPolicy,
 		customTransport:      options.Transport != nil,
-		forwardHTTPProxy:     forwardHTTPProxy,
+		proxyURL:             proxyURL,
 	}, nil
 }
 
@@ -282,6 +288,14 @@ func parseProxyURL(raw string) (*url.URL, error) {
 // When request.GetBody is available, Execute uses a fresh body so the caller's
 // request remains reusable. Otherwise the request body ownership is transferred.
 func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, error) {
+	return c.ExecuteWithFence(ctx, request, nil)
+}
+
+// ExecuteWithFence runs fence after URL/DNS policy preparation and immediately
+// before handing the request to the real RoundTripper. A rejected fence is a
+// local, non-attempted failure. This closes the load-to-send revocation window
+// without making the transport aware of account or credential semantics.
+func (c *Client) ExecuteWithFence(ctx context.Context, request *http.Request, fence func(context.Context) error) (Result, error) {
 	if c == nil || c.httpClient == nil || ctx == nil || request == nil || request.URL == nil {
 		return Result{}, failure(FailureInvalidRequest, ErrInvalidRequest)
 	}
@@ -301,6 +315,9 @@ func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, er
 		return Result{}, failure(FailureInvalidRequest, err)
 	}
 	result := Result{AttemptURL: prepared.URL.String()}
+	if prepared.Header.Get("Accept-Encoding") == "" {
+		prepared.Header.Set("Accept-Encoding", "identity")
+	}
 	httpClient := c.httpClient
 	var executionTransport *http.Transport
 	if !c.customTransport {
@@ -316,6 +333,11 @@ func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, er
 		defer executionTransport.CloseIdleConnections()
 		copyClient := *c.httpClient
 		copyClient.Transport = recordingRoundTripper{next: executionTransport}
+		httpClient = &copyClient
+	}
+	if fence != nil {
+		copyClient := *httpClient
+		copyClient.Transport = fenceRoundTripper{next: httpClient.Transport, fence: fence}
 		httpClient = &copyClient
 	}
 	response, doErr := httpClient.Do(prepared)
@@ -371,23 +393,34 @@ func (c *Client) Execute(ctx context.Context, request *http.Request) (Result, er
 	return result, nil
 }
 
+type fenceRoundTripper struct {
+	next  http.RoundTripper
+	fence func(context.Context) error
+}
+
+func (r fenceRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if r.next == nil || r.fence == nil {
+		return nil, ErrInvalidRequest
+	}
+	if err := r.fence(request.Context()); err != nil {
+		return nil, fmt.Errorf("upstream execution fence rejected request: %w", err)
+	}
+	return r.next.RoundTrip(request)
+}
+
 func (c *Client) executionTransport(request *http.Request, plan *upstreamurlpolicy.DialPlan) (*http.Transport, error) {
 	if c == nil || c.ownedTransport == nil || request == nil || request.URL == nil || plan == nil {
 		return nil, ErrInvalidRequest
 	}
 	transport := c.ownedTransport.Clone()
-	if transport.Proxy == nil {
+	if c.proxyURL == nil {
 		transport.DialContext = plan.DialContext
 		return transport, nil
-	}
-	if c.forwardHTTPProxy && request.URL.Scheme == "http" {
-		return nil, fmt.Errorf("plain HTTP upstream through an HTTP(S) forward proxy cannot preserve both a DNS-pinned target and the original Host header")
 	}
 	addresses := plan.Addresses()
 	if len(addresses) == 0 {
 		return nil, fmt.Errorf("validated upstream URL has no pinned address")
 	}
-	originalHost := request.URL.Host
 	originalHostname := request.URL.Hostname()
 	port := request.URL.Port()
 	if port == "" {
@@ -397,10 +430,8 @@ func (c *Client) executionTransport(request *http.Request, plan *upstreamurlpoli
 			port = "80"
 		}
 	}
-	request.URL.Host = net.JoinHostPort(addresses[0].String(), port)
-	if request.Host == "" {
-		request.Host = originalHost
-	}
+	transport.Proxy = nil
+	transport.DialContext = c.proxyTunnelDialContext(addresses, port)
 	if request.URL.Scheme == "https" {
 		transport.TLSClientConfig = cloneTLSConfig(transport.TLSClientConfig)
 		if transport.TLSClientConfig == nil {
@@ -411,6 +442,136 @@ func (c *Client) executionTransport(request *http.Request, plan *upstreamurlpoli
 		}
 	}
 	return transport, nil
+}
+
+func (c *Client) proxyTunnelDialContext(addresses []netip.Addr, port string) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+		if network != "tcp" && network != "tcp4" && network != "tcp6" {
+			return nil, fmt.Errorf("unsupported proxy tunnel network %q", network)
+		}
+		var failures []error
+		for _, address := range addresses {
+			target := net.JoinHostPort(address.String(), port)
+			connection, err := c.dialProxyTunnel(ctx, network, target)
+			if err == nil {
+				return connection, nil
+			}
+			failures = append(failures, err)
+		}
+		return nil, fmt.Errorf("dial pinned upstream through proxy: %w", errors.Join(failures...))
+	}
+}
+
+func (c *Client) dialProxyTunnel(ctx context.Context, network, target string) (net.Conn, error) {
+	switch c.proxyURL.Scheme {
+	case "http", "https":
+		return c.dialHTTPConnectTunnel(ctx, network, target)
+	case "socks5", "socks5h":
+		return c.dialSOCKSTunnel(ctx, network, target)
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme")
+	}
+}
+
+func (c *Client) dialHTTPConnectTunnel(ctx context.Context, network, target string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: c.timeout, KeepAlive: defaultKeepAlive}
+	connection, err := dialer.DialContext(ctx, network, c.proxyURL.Host)
+	if err != nil {
+		return nil, err
+	}
+	closeOnError := true
+	defer func() {
+		if closeOnError {
+			_ = connection.Close()
+		}
+	}()
+	if c.proxyURL.Scheme == "https" {
+		proxyTLS := cloneTLSConfig(c.ownedTransport.TLSClientConfig)
+		if proxyTLS == nil {
+			proxyTLS = &tls.Config{}
+		}
+		proxyTLS.ServerName = c.proxyURL.Hostname()
+		tlsConnection := tls.Client(connection, proxyTLS)
+		if err := tlsConnection.HandshakeContext(ctx); err != nil {
+			return nil, err
+		}
+		connection = tlsConnection
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := connection.SetDeadline(deadline); err != nil {
+			return nil, err
+		}
+	}
+	connectRequest := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: target},
+		Host:   target,
+		Header: make(http.Header),
+	}
+	if c.proxyURL.User != nil {
+		password, _ := c.proxyURL.User.Password()
+		credential := c.proxyURL.User.Username() + ":" + password
+		connectRequest.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(credential)))
+	}
+	if err := connectRequest.Write(connection); err != nil {
+		return nil, err
+	}
+	reader := bufio.NewReader(connection)
+	response, err := http.ReadResponse(reader, connectRequest)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		_ = response.Body.Close()
+		return nil, fmt.Errorf("proxy CONNECT returned HTTP %d", response.StatusCode)
+	}
+	if err := connection.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	closeOnError = false
+	if reader.Buffered() > 0 {
+		return &bufferedConn{Conn: connection, reader: reader}, nil
+	}
+	return connection, nil
+}
+
+func (c *Client) dialSOCKSTunnel(ctx context.Context, network, target string) (net.Conn, error) {
+	var auth *xproxy.Auth
+	if c.proxyURL.User != nil {
+		password, _ := c.proxyURL.User.Password()
+		auth = &xproxy.Auth{User: c.proxyURL.User.Username(), Password: password}
+	}
+	dialer, err := xproxy.SOCKS5(network, c.proxyURL.Host, auth, &net.Dialer{Timeout: c.timeout, KeepAlive: defaultKeepAlive})
+	if err != nil {
+		return nil, err
+	}
+	if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, network, target)
+	}
+	type dialResult struct {
+		connection net.Conn
+		err        error
+	}
+	result := make(chan dialResult, 1)
+	go func() {
+		connection, dialErr := dialer.Dial(network, target)
+		result <- dialResult{connection: connection, err: dialErr}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	case value := <-result:
+		return value.connection, value.err
+	}
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(value []byte) (int, error) {
+	return c.reader.Read(value)
 }
 
 func validateRequest(request *http.Request) error {

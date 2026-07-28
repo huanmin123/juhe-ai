@@ -11,14 +11,14 @@ import {
   findRouteStrategySummaryAsync,
   listCompleteRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
-  updateRouteStrategyAsync,
+  patchRouteStrategyAsync,
   type RouteStrategyListOptions
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const routeStrategiesRouter = Router()
 
@@ -241,59 +241,45 @@ routeStrategiesRouter.post('/', mutationGuard({
   }
 })
 
-routeStrategiesRouter.patch('/:id', async (req, res, next) => {
+routeStrategiesRouter.patch('/:id', async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  let before: Awaited<ReturnType<typeof findRouteStrategyEditBasicDetailAsync>>
-  try {
-    before = await findRouteStrategyEditBasicDetailAsync(req.params.id, requestAccess)
-  } catch (error) {
-    next(error)
-    return
-  }
   const parsed = routeStrategyUpdateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '策略路由参数无效')))
     return
   }
   try {
-    let didChange = false
     const routeStrategy = await runLoggedOperationAsync(async () => {
-      const routeStrategy = await updateRouteStrategyAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
-      if (!routeStrategy) throw new Error('策略路由不存在')
-      const ownerSystemAccountId = resolveOperationOwner(routeStrategy as unknown as Record<string, unknown>, requestAccess)
-      const changes = diffSafeFields(before as unknown as Record<string, unknown> | undefined, routeStrategy as unknown as Record<string, unknown>, {
-        name: '名称',
-        description: '说明',
-        mode: '路由模式',
-        status: '状态',
-        groupBindings: '绑定分组',
-        normalRoutingConfig: '普通路由调度配置',
-        hybridRoutingConfig: '混合智能路由配置'
-      })
-      didChange = changes.length > 0
+      const mutation = await patchRouteStrategyAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
+      if (!mutation) throw new Error('策略路由不存在')
       return {
-        result: routeStrategy,
-        log: didChange ? {
-          operationScopeSystemAccountId: ownerSystemAccountId,
+        result: mutation.result,
+        log: mutation.result.changedFields.length ? {
+          operationScopeSystemAccountId: mutation.ownerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'route_strategies',
           action: 'update',
           operationKey: 'route_strategies.update',
           resourceType: 'route_strategy',
-          resourceId: routeStrategy.id,
-          resourceName: routeStrategy.name,
-          summary: `更新策略路由：${routeStrategy.name}`,
-          changes,
-          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+          resourceId: mutation.result.id,
+          resourceName: mutation.resourceName,
+          summary: `更新策略路由：${mutation.resourceName}`,
+          changes: mutation.changes.map((change) => safeChange(
+            change.field,
+            routeStrategyPatchFieldLabel(change.field),
+            change.before,
+            change.after
+          )),
+          viewers: viewer(mutation.ownerSystemAccountId, 'resource_owner')
         } : undefined
       }
     }, req)
-    if (didChange) {
+    if (routeStrategy.changedFields.length) {
       await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
     }
     res.json(ok(routeStrategy))
@@ -376,6 +362,18 @@ function routeStrategyModeQueryValue(value: unknown): RouteStrategyListOptions['
 function routeStrategyStatusQueryValue(value: unknown): RouteStrategyListOptions['status'] {
   const text = optionalQueryText(value)
   return text === 'active' || text === 'disabled' || text === 'all' ? text : undefined
+}
+
+function routeStrategyPatchFieldLabel(field: string): string {
+  return ({
+    name: '名称',
+    description: '说明',
+    mode: '路由模式',
+    status: '状态',
+    groupBindings: '绑定分组',
+    normalRoutingConfig: '普通路由调度配置',
+    hybridRoutingConfig: '混合智能路由配置'
+  } as Record<string, string>)[field] ?? field
 }
 
 function optionLimitValue(value: number | undefined): number {

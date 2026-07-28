@@ -74,6 +74,7 @@ try {
     status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-owner', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
     proxyProfileId: proxy.id
   }, ownerAccess)
   activateAccountAfterBackgroundCheck(account.id)
@@ -195,7 +196,8 @@ try {
     type: 'api_key',
     status: 'active',
     groupId: ownerGroup.id,
-    credentials: { api_key: 'sk-cache-invalidation-shared', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-cache-invalidation-shared', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5']
   }, ownerAccess)
   activateAccountAfterBackgroundCheck(sharedAccount.id)
   const accountAuthorization = repositories.createResourceAuthorization({
@@ -278,7 +280,8 @@ try {
     type: 'api_key',
     status: 'active',
     groupId: statusGroup.id,
-    credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5']
   }, statusOwnerAccess)
   activateAccountAfterBackgroundCheck(statusAccount.id)
   const statusGroupId = statusGroup.id

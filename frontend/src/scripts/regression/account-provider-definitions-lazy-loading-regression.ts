@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import type { ProviderDefinition } from '@/types/domain'
+import { applyProviderDefinitionDefaultsAfterLoad } from '../../views/accounts/useAccountEditForm'
+
 const accountListDataSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)),
   'utf8'
@@ -53,15 +56,94 @@ assert.match(scopeKeySource, /systemAccountId \?\? 'all'/, '管理视图 definit
 
 const openCreateSource = sourceBetween(accountEditFormSource, 'async function openCreate()', 'watch(')
 const providerSelectSource = sourceBetween(accountEditFormSource, 'function selectProvider(', 'function selectAccountType(')
+const defaultFormSource = sourceBetween(accountEditFormSource, 'function defaultForm(', 'function resetForm(')
+const mergedDefinitionsSource = sourceBetween(accountEditFormSource, 'function mergeAccountProviderDefinitions(', 'function authorizedAccountBasicDetail(')
 assert.doesNotMatch(openCreateSource, /ensureProviderDefinition|providers\.detail|providers\.definitions/, '打开新增弹窗不得加载供应商详情')
 assert.match(providerSelectSource, /ensureProviderDefinition\(providerCode, systemAccountId\)/, '只有用户选择供应商后才加载该供应商详情')
+assert.match(providerSelectSource, /applyProviderDefinitionDefaultsAfterLoad\(/, '供应商选择流程必须在 detail 返回后安全回填权威默认值')
 assert.match(accountEditFormSource, /mergeAccountProviderDefinitions\([\s\S]*FALLBACK_PROVIDERS/, '内置供应商在详情未加载时必须使用本地常量保持表单可用')
+assert.match(accountEditFormSource, /const availableProviders = computed\(mergedProviderDefinitions\)/, '表单展示与默认值必须共用同一套供应商定义合并逻辑')
+assert.match(defaultFormSource, /defaultAccountForm\(providerCode, type, mergedProviderDefinitions\(\), providerProtocolProfileId\)/, '表单默认值必须使用已合并的完整供应商定义')
+assert.doesNotMatch(defaultFormSource, /defaultAccountForm\([^\n]*options\.providers\.value/, '表单默认值不得直接使用缺少协议档案的轻量供应商 options')
+assert.match(mergedDefinitionsSource, /\[\.\.\.FALLBACK_PROVIDERS, \.\.\.loadedDefinitions\]/, '已加载 definition 必须覆盖内置回退定义')
+assert.match(mergedDefinitionsSource, /return \{\s*\.\.\.definition,/, '合并结果必须保留完整 definition 的 Base URL、协议档案和账户类型能力')
 assert.match(accountsViewSource, /providerDefinitions,[\s\S]*ensureProviderDefinition,[\s\S]*useAccountEditForm\([\s\S]*ensureProviderDefinition,[\s\S]*providerDefinitions,/, '账户页必须把按需详情状态和加载入口接入编辑表单')
 
 assert.match(providerResourceSource, /options\.includeDefinitions[\s\S]*api\.providers\.definitions/, '完整 definitions 标志必须路由到 definitions API')
 assert.match(providerResourceSource, /api\.providers\.options/, '轻量路径必须路由到 provider options API')
 
+await verifyAsyncProviderDefinitionDefaults()
+
 console.log('账户供应商定义按需加载回归通过：列表首屏仅请求轻量 options，用户选择后只读取当前供应商详情并按身份作用域隔离')
+
+async function verifyAsyncProviderDefinitionDefaults(): Promise<void> {
+  const initialDefaults = providerDefaults({
+    providerProtocolProfileId: 'fallback-profile',
+    baseUrl: 'https://fallback.example/v1'
+  })
+  const resolvedDefaults = providerDefaults({
+    providerProtocolProfileId: 'server-profile',
+    baseUrl: 'https://server.example/v1'
+  })
+  const form = providerDefaults(initialDefaults)
+  const definitionDeferred = deferred<ProviderDefinition | undefined>()
+  const applyPromise = applyProviderDefinitionDefaultsAfterLoad({
+    ensureDefinition: () => definitionDeferred.promise,
+    form,
+    initialDefaults,
+    isCurrent: () => true,
+    resolvedDefaults: () => resolvedDefaults
+  })
+
+  assert.equal(form.baseUrl, initialDefaults.baseUrl, '详情返回前不得提前应用未加载的默认值')
+  definitionDeferred.resolve({ code: 'gpt' } as ProviderDefinition)
+  await applyPromise
+  assert.deepEqual(form, resolvedDefaults, '详情返回后必须用权威 definition 的 profile 和 Base URL 替换 fallback 默认值')
+
+  const editedForm = providerDefaults(initialDefaults)
+  const editedDeferred = deferred<ProviderDefinition | undefined>()
+  const editedApplyPromise = applyProviderDefinitionDefaultsAfterLoad({
+    ensureDefinition: () => editedDeferred.promise,
+    form: editedForm,
+    initialDefaults,
+    isCurrent: () => true,
+    resolvedDefaults: () => resolvedDefaults
+  })
+  editedForm.baseUrl = 'https://user.example/v1'
+  editedDeferred.resolve({ code: 'gpt' } as ProviderDefinition)
+  await editedApplyPromise
+  assert.equal(editedForm.baseUrl, 'https://user.example/v1', '详情请求期间的用户输入不得被异步回填覆盖')
+  assert.equal(editedForm.providerProtocolProfileId, 'fallback-profile', '用户已修改默认字段时不得部分回填造成混合状态')
+}
+
+function providerDefaults(overrides: Partial<{
+  providerProtocolProfileId: string
+  type: 'api_key'
+  baseUrl: string
+  clientCompatibility: 'openai_standard'
+  supportedEndpointModes: ['chat_json']
+  healthCheckEndpointMode: 'chat_json'
+  oauthMode: 'manual'
+}> = {}) {
+  return {
+    providerProtocolProfileId: 'fallback-profile',
+    type: 'api_key' as const,
+    baseUrl: 'https://fallback.example/v1',
+    clientCompatibility: 'openai_standard' as const,
+    supportedEndpointModes: ['chat_json'] as ['chat_json'],
+    healthCheckEndpointMode: 'chat_json' as const,
+    oauthMode: 'manual' as const,
+    ...overrides
+  }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolvePromise!: (value: T) => void
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve
+  })
+  return { promise, resolve: resolvePromise }
+}
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start)

@@ -416,12 +416,16 @@ export {
   createGroupInClientAsync,
   deleteGroup,
   deleteGroupAsync,
+  patchGroup,
+  patchGroupAsync,
   updateGroup,
   updateGroupAsync
 } from './group-write.repository.js'
 export type {
   DeletedGroupRouteStrategyChange,
-  DeleteGroupResult
+  DeleteGroupResult,
+  GroupManagementPatchChange,
+  GroupManagementPatchResult
 } from './group-write.repository.js'
 export {
   addAccountToGroup,
@@ -562,10 +566,14 @@ export {
   listRouteStrategiesPageAsync,
   listRouteStrategyOptions,
   listRouteStrategyOptionsAsync,
+  patchRouteStrategy,
+  patchRouteStrategyAsync,
   updateRouteStrategy,
   updateRouteStrategyAsync,
   type RouteStrategyListOptions,
-  type RouteStrategyOptionListOptions
+  type RouteStrategyOptionListOptions,
+  type RouteStrategyPatchOutcome,
+  type RouteStrategyPatchResult
 } from './route-strategy.repository.js'
 export {
   findPreferredDefaultRouteStrategyReferenceAsync,

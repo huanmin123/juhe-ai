@@ -110,9 +110,6 @@ func runCooldownAccountRetestWorker(
 	if opts.Probe == nil {
 		return module.ErrProbeNotConfigured
 	}
-	if opts.Outcomes == nil {
-		return fmt.Errorf("cooldown account retest outcome store is not configured")
-	}
 	if strings.TrimSpace(cfg.PostgresURL) == "" {
 		return fmt.Errorf("JUHE_AI_POSTGRES_URL 不能为空")
 	}
@@ -138,6 +135,14 @@ func runCooldownAccountRetestWorker(
 		return fmt.Errorf("open cooldown account retest PostgreSQL: %w", err)
 	}
 	defer store.Close()
+	outcomes := opts.Outcomes
+	if outcomes == nil {
+		var ok bool
+		outcomes, ok = store.(port.CooldownAccountRetestOutcomeStore)
+		if !ok {
+			return fmt.Errorf("cooldown account retest outcome store is not configured")
+		}
+	}
 	pingCtx, cancelPing := context.WithTimeout(ctx, 5*time.Second)
 	err = store.Ping(pingCtx)
 	cancelPing()
@@ -172,7 +177,7 @@ func runCooldownAccountRetestWorker(
 	consumerOptions := worker.CooldownAccountRetestConsumerOptions{
 		Redis: redisOptions,
 		Processor: module.Processor{
-			Store: store, Outcomes: opts.Outcomes, Probe: opts.Probe,
+			Store: store, Outcomes: outcomes, Probe: opts.Probe,
 			Quota: module.QuotaEligibility{Subjects: store, Costs: store, Timezones: store},
 		},
 		ShutdownTimeout: cfg.ShutdownTimeout,

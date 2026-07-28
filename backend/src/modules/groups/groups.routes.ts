@@ -3,11 +3,11 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { hydrateGroupListPage } from './group-status-snapshot.service.js'
 
 export const groupsRouter = Router()
@@ -236,65 +236,33 @@ groupsRouter.patch('/:id', async (req, res, next) => {
     res.status(400).json(badRequest('分组参数无效'))
     return
   }
-  const providerCode = parsed.data.providerCode?.trim()
-  if (providerCode) {
-    let provider: Awaited<ReturnType<typeof listProvidersAsync>>[number] | undefined
-    try {
-      provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
-    } catch (error) {
-      next(error)
-      return
-    }
-    if (!provider) {
-      res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
-      return
-    }
-    if (!provider.enabled) {
-      res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
-      return
-    }
-  }
-  let before: Awaited<ReturnType<typeof findGroupSummaryAsync>>
   try {
-    before = await findGroupSummaryAsync(req.params.id, requestAccess)
-  } catch (error) {
-    next(error)
-    return
-  }
-  try {
-    const group = await runLoggedOperationAsync(async () => {
-      const group = await updateGroupAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
-      if (!group) {
+    const mutation = await runLoggedOperationAsync(async () => {
+      const mutation = await patchGroupAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
+      if (!mutation) {
         throw new Error('分组不存在')
       }
-      const operationScopeSystemAccountId = group.accessType === 'authorized'
+      const operationScopeSystemAccountId = mutation.accessType === 'authorized'
         ? effectiveRequestSystemAccountId(requestAccess)
-        : resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
+        : mutation.ownerSystemAccountId
       return {
-        result: group,
-        log: {
+        result: mutation,
+        log: mutation.changedFields.length ? {
           operationScopeSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'groups',
           action: 'update',
           operationKey: 'groups.update',
           resourceType: 'group',
-          resourceId: group.id,
-          resourceName: group.name,
-          summary: group.accessType === 'authorized' ? `更新授权分组使用配置：${group.name}` : `更新分组：${group.name}`,
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, group as unknown as Record<string, unknown>, {
-            name: '名称',
-            providerCode: '供应商',
-            description: '说明',
-            groupType: '分组类型',
-            schedulingPolicy: '调度策略',
-            enabled: '启用状态'
-          }),
-          viewers: viewer(operationScopeSystemAccountId, group.accessType === 'authorized' ? 'authorization_grantee' : 'resource_owner')
-        }
+          resourceId: mutation.id,
+          resourceName: mutation.name,
+          summary: mutation.accessType === 'authorized' ? `更新授权分组使用配置：${mutation.name}` : `更新分组：${mutation.name}`,
+          changes: mutation.changes.map((change) => safeChange(change.field, groupPatchFieldLabel(change.field), change.before, change.after)),
+          viewers: viewer(operationScopeSystemAccountId, mutation.accessType === 'authorized' ? 'authorization_grantee' : 'resource_owner')
+        } : undefined
       }
     }, req)
-    res.json(ok(group))
+    res.json(ok({ id: mutation.id, changedFields: mutation.changedFields }))
   } catch (error) {
     if (error instanceof DefaultGroupReadonlyError) {
       res.status(400).json(badRequest(error.message))
@@ -309,6 +277,17 @@ groupsRouter.patch('/:id', async (req, res, next) => {
     return
   }
 })
+
+function groupPatchFieldLabel(field: string): string {
+  return ({
+    name: '名称',
+    providerCode: '供应商',
+    description: '说明',
+    groupType: '分组类型',
+    schedulingPolicy: '调度策略',
+    enabled: '启用状态'
+  } as Record<string, string>)[field] ?? field
+}
 
 groupsRouter.post('/:id/return-authorization', mutationGuard({
   operationKey: 'groups.return_authorization',

@@ -67,7 +67,7 @@ assert.equal(typeof oauthParts.headers.get('thread-id'), 'string')
 assert.equal(oauthParts.headers.get('session_id'), null)
 assert.equal(oauthParts.headers.get('conversation_id'), null)
 assert.equal(oauthParts.headers.get('x-openai-internal-codex-responses-lite'), 'true')
-const oauthBody = JSON.parse(oauthParts.body ?? '{}') as Record<string, unknown>
+const oauthBody = parseRequestBody(oauthParts.body)
 assert.deepEqual(oauthBody.reasoning, { context: 'all_turns' }, 'OAuth Lite 请求必须声明全部轮次 reasoning context')
 assert.equal(oauthBody.parallel_tool_calls, false, 'OAuth Lite 请求必须关闭并行工具调用')
 

@@ -260,28 +260,7 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     }
 
     const client = await getGatewayApiKeyDatabaseClient()
-    const row = await client.one<GatewayApiKeyRow>(`
-      SELECT
-        api_keys.id,
-        api_keys.system_account_id,
-        route_strategies.id AS route_strategy_id,
-        route_strategies.mode AS route_strategy_mode,
-        route_strategies.config_json AS route_strategy_config_json,
-        '' AS selected_group_id,
-        api_keys.status,
-        api_keys.expires_at,
-        api_keys.quota_limits_json,
-        system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
-        system_accounts.request_limits_json AS system_account_request_limits_json
-      FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
-      INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
-      INNER JOIN ${gatewayApiKeyTable(client, 'route_strategies')} route_strategies
-        ON route_strategies.id = api_keys.route_strategy_id
-        AND route_strategies.system_account_id = api_keys.system_account_id
-        AND route_strategies.status = 'active'
-      WHERE api_keys.key_hash = ?
-        AND system_accounts.status = 'active'
-    `, [keyHash])
+    const row = await loadGatewayApiKeyBaseRowAsync(keyHash, client)
     if (!isGatewayApiKeyValidationGenerationCurrent(generation)) continue
     if (!row) {
       gatewayApiKeyCache.delete(keyHash)
@@ -314,7 +293,7 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     if (!cached) continue
     return cloneGatewayApiKeyRow(row)
   }
-  return undefined
+  return await loadGatewayApiKeyForValidationAuthoritativelyAsync(keyHash)
 }
 
 export async function prewarmGatewayApiKeyValidationCacheAsync(): Promise<number> {
@@ -441,7 +420,66 @@ async function validateGatewayApiKeyWithSqliteReadWorker(key: string): Promise<G
     if (!cached) continue
     return cloneGatewayApiKeyRow(row)
   }
-  return undefined
+  return await loadGatewayApiKeyForValidationWithSqliteReadWorkerAuthoritativelyAsync(key)
+}
+
+async function loadGatewayApiKeyForValidationAuthoritativelyAsync(keyHash: string): Promise<GatewayApiKeyRow | undefined> {
+  const client = await getGatewayApiKeyDatabaseClient()
+  const row = await loadGatewayApiKeyBaseRowAsync(keyHash, client)
+  const now = Date.now()
+  if (!row || isGatewayApiKeyRowExpired(row, now) || row.status !== 'active') {
+    return undefined
+  }
+  normalizeGatewayApiKeyRouteFields(row)
+  row.group_bindings = await loadActiveGatewayApiKeyGroupBindingsAsync(
+    row.id,
+    row.route_strategy_id,
+    row.system_account_id,
+    client
+  )
+  if (!row.group_bindings.length) {
+    return undefined
+  }
+  row.selected_group_id = row.group_bindings[0]?.group_id ?? row.selected_group_id
+  return cloneGatewayApiKeyRow(row)
+}
+
+async function loadGatewayApiKeyForValidationWithSqliteReadWorkerAuthoritativelyAsync(
+  key: string
+): Promise<GatewayApiKeyRow | undefined> {
+  const row = await requestSqliteReadWorker({
+    type: 'load_gateway_api_key_for_validation_read_only',
+    key
+  })
+  return row ? cloneGatewayApiKeyRow(row) : undefined
+}
+
+async function loadGatewayApiKeyBaseRowAsync(
+  keyHash: string,
+  client: DatabaseClient
+): Promise<GatewayApiKeyRow | undefined> {
+  return await client.one<GatewayApiKeyRow>(`
+    SELECT
+      api_keys.id,
+      api_keys.system_account_id,
+      route_strategies.id AS route_strategy_id,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.config_json AS route_strategy_config_json,
+      '' AS selected_group_id,
+      api_keys.status,
+      api_keys.expires_at,
+      api_keys.quota_limits_json,
+      system_accounts.image_generation_enabled AS system_account_image_generation_enabled,
+      system_accounts.request_limits_json AS system_account_request_limits_json
+    FROM ${gatewayApiKeyTable(client, 'api_keys')} api_keys
+    INNER JOIN ${gatewayApiKeyTable(client, 'system_accounts')} system_accounts ON system_accounts.id = api_keys.system_account_id
+    INNER JOIN ${gatewayApiKeyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+      AND route_strategies.status = 'active'
+    WHERE api_keys.key_hash = ?
+      AND system_accounts.status = 'active'
+  `, [keyHash])
 }
 
 export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | undefined {

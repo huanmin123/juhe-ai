@@ -55,7 +55,7 @@ export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
         }
       }, req)
       if (account.runtimeRestoreRequired) {
-        await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
+        await clearAccountGatewayRuntimeAfterRestore(account)
       }
       res.json(ok({
         id: account.id,
@@ -79,8 +79,7 @@ export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
 }
 
 async function clearAccountGatewayRuntimeAfterRestore(
-  account: Pick<AuthorizedAccountDispatchMutationResult, 'id' | 'authorizedBinding'>,
-  _access?: RequestAccessScope
+  account: Pick<AuthorizedAccountDispatchMutationResult, 'id' | 'authorizedBinding'>
 ): Promise<void> {
   await clearServerAccountRuntimeAvailability({
     accountId: account.id,

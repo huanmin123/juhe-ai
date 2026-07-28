@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../config/runtime.js'
 import type {
   AccountAvailabilitySchedule,
+  AccountCredentials,
   AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily,
@@ -10,6 +11,7 @@ import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balan
 import type { AccountBalanceQueryConfig } from '../modules/accounts/account-balance.types.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import type { AccessScope } from './access-scope.js'
+import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient } from './database-client.js'
@@ -18,10 +20,20 @@ import { canManageResourceOwner } from './resource-authorization-helpers.js'
 
 const businessSchemaName = 'juhe_business'
 
+const advancedEditableCredentialKeys = [
+  'service_tier_override',
+  'reasoning_effort_override',
+  'error_handling_rules',
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
+] as const
+
 interface AccountAdvancedDetailRow {
   id: string
   config_revision: number
   system_account_id: string
+  credentials_encrypted: string | null
   proxy_profile_id: string | null
   availability_schedule_json: string | null
   account_expires_at: string | null
@@ -51,6 +63,7 @@ export interface AccountAdvancedDetail {
   id: string
   configRevision: number
   accessType: 'owner' | 'authorized'
+  credentials?: AccountCredentials
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
   availabilitySchedule?: AccountAvailabilitySchedule
@@ -74,6 +87,12 @@ export async function findAccountAdvancedDetailAsync(
       accounts.id,
       accounts.config_revision,
       accounts.system_account_id,
+      CASE
+        WHEN accounts.authorization_instance_authorization_id IS NULL
+          AND accounts.authorization_instance_source_account_id IS NULL
+        THEN accounts.credentials_encrypted
+        ELSE NULL
+      END AS credentials_encrypted,
       accounts.proxy_profile_id,
       accounts.availability_schedule_json,
       accounts.account_expires_at,
@@ -123,6 +142,9 @@ export async function findAccountAdvancedDetailAsync(
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
     accessType: authorized ? 'authorized' : 'owner',
+    ...(!authorized && row.credentials_encrypted
+      ? { credentials: projectAdvancedEditableCredentials(decryptJson<AccountCredentials>(row.credentials_encrypted)) }
+      : {}),
     modelMappings: mappingRows.map(accountAdvancedDetailMappingFromRow),
     proxyProfileId: (authorized ? row.source_proxy_profile_id : row.proxy_profile_id) ?? undefined,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(authorized
@@ -143,6 +165,14 @@ export async function findAccountAdvancedDetailAsync(
         }
       : {})
   }
+}
+
+function projectAdvancedEditableCredentials(credentials: AccountCredentials): AccountCredentials {
+  const output: Record<string, unknown> = {}
+  for (const key of advancedEditableCredentialKeys) {
+    if (Object.prototype.hasOwnProperty.call(credentials, key)) output[key] = credentials[key]
+  }
+  return output
 }
 
 function accountAdvancedDetailMappingFromRow(row: AccountAdvancedDetailMappingRow): AccountModelMapping {

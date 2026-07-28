@@ -7,7 +7,6 @@
       <a-select
         v-model:value="form.healthCheckModel"
         :disabled="!options.length"
-        allow-clear
         :loading="modelsLoading"
         option-filter-prop="label"
         :options="options"

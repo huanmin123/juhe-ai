@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import type { Request } from 'express'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 
 import {
   buildOpenAIOAuthCodexRequestParts,
@@ -27,6 +29,12 @@ import {
   setGatewayRequestJsonMaterializationObserverForTest,
   stopGatewayJsonParseWorker
 } from '../../modules/gateway/request/json-parser.js'
+import {
+  buildPreparedUpstreamRequestParts,
+  sanitizePreparedCodexResponsesHistoryForAccount
+} from '../../modules/gateway/dispatch/account-preparation.js'
+import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
+import { isGatewayCodexHistorySanitized } from '../../modules/gateway/request/serialized-json-body.js'
 import {
   applyOpenAIClientCompatibilityHeaders,
   buildOpenAIClientCompatibilityBody
@@ -66,12 +74,90 @@ async function main(): Promise<void> {
   await testMediumBodyDeferredMiddlewareToOAuthNormalizer()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testLargeBodyParsesOnceAcrossAccountSwitches()
+  await testLargeBodyProductionDispatchDefersHistorySanitizationToWorker()
   await testOAuthAccountOverrideErrorIsAccountScoped()
   await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
   console.log('OpenAI OAuth Codex adapter regression passed')
+}
+
+async function testLargeBodyProductionDispatchDefersHistorySanitizationToWorker(): Promise<void> {
+  const pollutedHistoryItem = {
+    type: 'custom_tool_call',
+    id: 'item_untrusted_production_dispatch_history',
+    call_id: 'call_production_dispatch_history',
+    name: 'exec',
+    input: '{"command":"Get-Content package.json"}'
+  }
+  const requestBody = {
+    model: 'gpt-5.3-codex',
+    input: [
+      pollutedHistoryItem,
+      {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 64 * 1024)
+        }]
+      }
+    ]
+  }
+  const req = createRequest('/v1/responses', requestBody)
+  const originalRequestBody = req.body
+  const usageContext = {
+    systemAccountId: identity.systemAccountId,
+    apiKeyId: identity.apiKeyId,
+    groupId: identity.groupId,
+    trafficSource: 'gateway'
+  } as GatewayUsageContext
+  let normalizationCount = 0
+  const [firstParts, secondParts] = await (async () => {
+    try {
+      setOpenAIOAuthCodexNormalizationObserverForTest(() => {
+        normalizationCount += 1
+      })
+      const first = await buildPreparedUpstreamRequestParts(
+        req,
+        gatewayOAuthAccount(),
+        usageContext,
+        undefined,
+        { requestClientCompatibility: 'codex_responses' }
+      )
+      const second = await buildPreparedUpstreamRequestParts(
+        req,
+        gatewayOAuthAccount({
+          id: 'acct_owner_oauth_switched_production_dispatch',
+          apiKey: 'oauth-access-token-switched-production-dispatch'
+        }),
+        usageContext,
+        undefined,
+        { requestClientCompatibility: 'codex_responses' }
+      )
+      return [first, second] as const
+    } finally {
+      setOpenAIOAuthCodexNormalizationObserverForTest(undefined)
+    }
+  })()
+
+  assert.strictEqual(req.body, originalRequestBody, 'OAuth Codex 大 Body 不得在主线程前置清理并替换请求对象')
+  assert.equal(
+    ((req.body as Record<string, unknown>).input as Array<Record<string, unknown>>)[0]?.id,
+    pollutedHistoryItem.id,
+    'OAuth Codex 大 Body 原始历史项必须保持未修改，清理应在 worker 内完成'
+  )
+  assert.equal(normalizationCount, 1, '同一大请求切换等价 OAuth 账户时必须复用 worker 规范化结果')
+  assert.equal(firstParts.headers.get('authorization'), `Bearer ${account.apiKey}`)
+  assert.equal(secondParts.headers.get('authorization'), 'Bearer oauth-access-token-switched-production-dispatch')
+  for (const [attempt, parts] of [['first', firstParts], ['second', secondParts]] as const) {
+    assert.ok(Buffer.isBuffer(parts.body), `${attempt} OAuth Codex worker 结果必须保留 Buffer 标记载体`)
+    const outboundItem = (parseBody(parts.body).input as Array<Record<string, unknown>>)[0]!
+    assert.equal(Object.hasOwn(outboundItem, 'id'), false, `${attempt} OAuth Codex attempt 最终上游请求必须剥离不可信 item ID`)
+    assert.equal(outboundItem.call_id, pollutedHistoryItem.call_id)
+    assert.equal(outboundItem.input, pollutedHistoryItem.input)
+  }
 }
 
 async function testOAuthAccountRequestOverrides(): Promise<void> {
@@ -594,9 +680,26 @@ async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
 }
 
 async function testLargeBodyParsesOnceAcrossAccountSwitches(): Promise<void> {
+  const pollutedHistoryItem = {
+    type: 'custom_tool_call',
+    id: 'item_untrusted_large_body_history',
+    call_id: 'call_large_body_history',
+    name: 'exec',
+    input: '{"command":"Get-Content package.json"}'
+  }
   const requestBody = {
     model: 'gpt-5.3-codex',
-    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 64 * 1024),
+    input: [
+      pollutedHistoryItem,
+      {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 64 * 1024)
+        }]
+      }
+    ],
     tools: [{ type: 'web_search_preview' }]
   }
   const rawBodyText = JSON.stringify(requestBody)
@@ -610,12 +713,25 @@ async function testLargeBodyParsesOnceAcrossAccountSwitches(): Promise<void> {
     setOpenAIOAuthCodexNormalizationObserverForTest(() => {
       normalizationCount += 1
     })
-    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    const firstParts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, undefined, {
+      sanitizeCodexHistory: true
+    })
+    assert.ok(Buffer.isBuffer(firstParts.body), 'OAuth 规范化正文必须使用可携带已清理标记的 Buffer')
+    assert.equal(isGatewayCodexHistorySanitized(firstParts.body), true, 'OAuth 规范化结果必须标记 history 已清理')
+    const normalizedItem = (parseBody(firstParts.body).input as Array<Record<string, unknown>>)[0]!
+    assert.equal(Object.hasOwn(normalizedItem, 'id'), false, '大 Body history ID 必须在 OAuth worker 规范化阶段清理')
+    const finalBody = sanitizePreparedCodexResponsesHistoryForAccount(
+      req,
+      account as never,
+      firstParts.body,
+      { requestClientCompatibility: 'codex_responses' }
+    )
+    assert.strictEqual(finalBody, firstParts.body, '已在 worker 清理的正文不得在主线程再次 parse/stringify')
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
       ...account,
       id: 'acct_owner_oauth_switched',
       apiKey: 'oauth-access-token-switched'
-    }, identity)
+    }, identity, undefined, { sanitizeCodexHistory: true })
   } finally {
     setGatewayRequestJsonMaterializationObserverForTest(undefined)
     setOpenAIOAuthCodexNormalizationObserverForTest(undefined)
@@ -761,6 +877,41 @@ function testApiKeyPassthroughUnchanged(): void {
   assert.equal(headers.get('cookie'), null)
 }
 
+function gatewayOAuthAccount(overrides: { id?: string; apiKey?: string } = {}): UpstreamAccount {
+  const modes = ['responses_json', 'responses_sse'] as const
+  return {
+    id: overrides.id ?? account.id,
+    name: 'OpenAI OAuth Codex worker regression account',
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    systemAccountId: identity.systemAccountId,
+    accountOwnerSystemAccountId: identity.systemAccountId,
+    groupOwnerSystemAccountId: identity.systemAccountId,
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    type: 'oauth',
+    status: 'active',
+    concurrencyLimit: 10,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'codex_responses',
+    healthCheckEndpointMode: 'responses_json',
+    supportedEndpointModes: [...modes],
+    supportedModels: ['gpt-5.3-codex'],
+    modelMappings: [],
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    apiKey: overrides.apiKey ?? account.apiKey,
+    streamFailureCount: 0,
+    credentials: {
+      ...account.credentials,
+      supported_endpoint_modes: [...modes]
+    }
+  } as UpstreamAccount
+}
+
 function createRequest(
   originalUrl: string,
   body: unknown,
@@ -781,9 +932,9 @@ function createRequest(
   } as TestRequest
 }
 
-function parseBody(body: string | undefined): Record<string, unknown> {
-  assert.equal(typeof body, 'string')
-  return JSON.parse(body as string) as Record<string, unknown>
+function parseBody(body: Buffer | string | undefined): Record<string, unknown> {
+  assert.ok(body)
+  return JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : body) as Record<string, unknown>
 }
 
 try {

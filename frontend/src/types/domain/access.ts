@@ -121,6 +121,33 @@ export interface RouteStrategyEditBasicDetail {
   groupBindings: RouteStrategyGroupBindingSummary[]
 }
 
+export type RouteStrategyMutableField =
+  | 'name'
+  | 'description'
+  | 'mode'
+  | 'status'
+  | 'groupBindings'
+  | 'normalRoutingConfig'
+  | 'hybridRoutingConfig'
+
+export interface RouteStrategyMutationRowPatch {
+  name?: string
+  description?: string | null
+  mode?: RouteStrategyMode
+  status?: RouteStrategyStatus
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig | null
+  bindingCount?: number
+  groupBindingPreview?: RouteStrategyGroupBindingPreview[]
+  updatedAt?: string
+}
+
+export interface RouteStrategyMutationResult {
+  id: string
+  changedFields: RouteStrategyMutableField[]
+  rowPatch: RouteStrategyMutationRowPatch
+}
+
 export interface RouteStrategyListItem {
   id: string
   systemAccountId?: string

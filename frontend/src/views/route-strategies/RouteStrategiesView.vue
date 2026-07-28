@@ -491,7 +491,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges } from './routeStrategyMutation'
+import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges, mergeRouteStrategyMutationResult } from './routeStrategyMutation'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -507,6 +507,7 @@ import type {
   RouteStrategyGroupBindingPreview,
   RouteStrategyGroupBindingSummary,
   RouteStrategyListItem,
+  RouteStrategyMutationResult,
   RouteStrategyMode,
   RouteStrategyStatus,
   RouteStrategySummary
@@ -1163,7 +1164,8 @@ async function saveRouteStrategy() {
       return
     }
     if (editingId.value) {
-      await routeStrategiesApi.update(editingId.value, payload, operationScopeParams)
+      const result = await routeStrategiesApi.update(editingId.value, payload, operationScopeParams)
+      applyRouteStrategyMutationResult(result)
       if (editingIsDefault.value) {
         invalidateUserReferenceData({
           viewScope: isManagementView.value ? 'admin' : 'self',
@@ -1171,17 +1173,37 @@ async function saveRouteStrategy() {
         })
       }
       message.success('策略路由已更新')
+      modalOpen.value = false
     } else {
       await routeStrategiesApi.create(payload, operationScopeParams)
       message.success('策略路由已创建')
+      modalOpen.value = false
+      await loadRouteStrategies()
     }
-    modalOpen.value = false
-    await loadRouteStrategies()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '策略路由保存失败'))
   } finally {
     saving.value = false
   }
+}
+
+function applyRouteStrategyMutationResult(result: RouteStrategyMutationResult): void {
+  const index = items.value.findIndex((item) => item.id === result.id)
+  if (index < 0) return
+  const updated = mergeRouteStrategyMutationResult(items.value[index]!, result)
+  if (!routeStrategyMatchesCurrentFilters(updated)) {
+    items.value.splice(index, 1)
+    total.value = Math.max(0, total.value - 1)
+    return
+  }
+  items.value[index] = updated
+}
+
+function routeStrategyMatchesCurrentFilters(record: RouteStrategyListItem): boolean {
+  const namePrefix = keyword.value.trim()
+  return (!namePrefix || record.name.startsWith(namePrefix))
+    && (modeFilter.value === 'all' || record.mode === modeFilter.value)
+    && (statusFilter.value === 'all' || record.status === statusFilter.value)
 }
 
 function buildRouteStrategyFormPayload(reportValidation = true): RouteStrategyMutationPayload | false {

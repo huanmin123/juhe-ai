@@ -9,6 +9,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { runRedisOperationWithDeadline, type RedisCommandClient } from '../../shared/redis-client.js'
 import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
+import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import {
   clearAccountFailureState,
   clearAccountFailureStateResult,
@@ -37,6 +38,8 @@ import {
   sanitizeOpenAIOAuthErrorMessage,
   type OpenAITokenInfo
 } from './openai-oauth.service.js'
+
+const openAIOAuthLegacyRefreshLockStore = createRuntimeStateStore('openai-oauth:refresh-locks')
 
 export interface OpenAIOAuthAccessTokenRefreshOptions {
   leadSeconds?: number
@@ -853,7 +856,9 @@ async function runWithAccountRefreshLock<T>(
   return await runWithProviderOAuthRefreshLock(GPT_VENDOR_CODE, accountId, task, {
     signal: options.signal,
     failIfLocked: options.lockMode === 'skip',
-    onLockAcquired: options.onLockAcquired
+    onLockAcquired: options.onLockAcquired,
+    // Remove after every deployed Node instance uses the shared provider lock namespace.
+    compatibilityLock: { lockStore: openAIOAuthLegacyRefreshLockStore, lockKey: accountId }
   })
 }
 

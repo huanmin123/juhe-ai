@@ -693,10 +693,11 @@ function assertOAuthAndRateLimitRedisBoundaries(): void {
   assert.doesNotMatch(oauthSource, /const sessions = new Map/, 'OAuth 授权会话不能使用进程内 Map')
 
   const oauthRefreshSource = source('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')
+  const providerOAuthRefreshLockSource = source('modules/providers/drivers/_shared/oauth-refresh-lock.ts')
   assert.match(functionBody(oauthRefreshSource, 'recordRefreshFailure'), /usesRedisRefreshFailureState\(\)[\s\S]*redisRecordRefreshFailureScript/, 'OAuth 刷新失败计数和 backoff 在 Redis runtime state 下必须通过统一 Redis 状态判定进入原子路径')
   assert.match(functionBody(oauthRefreshSource, 'usesRedisRefreshFailureState'), /runtimeConfig\.runtimeStateDriver === 'redis'/, 'OAuth 刷新失败 Redis 状态判定必须覆盖 performance runtime state driver')
-  assert.match(functionBody(oauthRefreshSource, 'runWithAccountRefreshLock'), /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*runWithRedisAccountRefreshLock/, 'OAuth 刷新锁在 Redis runtime state 下必须使用分布式锁')
-  assert.match(functionBody(oauthRefreshSource, 'runWithRedisAccountRefreshLock'), /acquireLock[\s\S]*releaseLock/, 'OAuth Redis 刷新锁必须 acquire/release runtime state lock')
+  assert.match(functionBody(oauthRefreshSource, 'runWithAccountRefreshLock'), /runWithProviderOAuthRefreshLock[\s\S]*compatibilityLock/, 'OpenAI OAuth 刷新必须同时持有 provider 锁和滚动发布兼容锁')
+  assert.match(functionBody(providerOAuthRefreshLockSource, 'runWithProviderOAuthRefreshLock'), /acquireLock[\s\S]*renewProviderOAuthRefreshLock[\s\S]*releaseProviderOAuthRefreshLocks/, '共享 OAuth 刷新锁必须 acquire/renew/release runtime state lock')
 
   const penaltyRateLimitSource = source('modules/rate-limit/penalty-window-rate-limit.ts')
   assert.match(functionBody(penaltyRateLimitSource, 'consumePenaltyWindowRateLimit'), /assertPenaltyWindowMemoryStoreAllowed/, 'Redis runtime state 下 penalty window 同步限流入口必须 fail-fast')

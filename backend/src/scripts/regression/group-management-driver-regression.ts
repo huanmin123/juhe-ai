@@ -105,7 +105,7 @@ async function assertGroupManagementAsync(repositories: typeof import('../../sto
   const groupSummarySource = readFileSync(resolve('src/storage/group-summary.repository.ts'), 'utf8')
   const editProjectionSource = groupSummarySource.slice(
     groupSummarySource.indexOf('export async function findGroupEditDetailAsync'),
-    groupSummarySource.indexOf('export function buildGroupOptionSummaries')
+    groupSummarySource.indexOf('export async function findGroupSummaryInClientAsync')
   )
   assert.doesNotMatch(
     editProjectionSource,

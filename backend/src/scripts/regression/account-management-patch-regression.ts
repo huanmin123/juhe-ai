@@ -342,6 +342,58 @@ try {
   assert.equal(preservedRuntimeRow.last_error_message, '待归一化运行态')
   assert.equal(preservedRuntimeRow.config_revision, 4)
 
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'disabled', schedulable = 0
+    WHERE id = ?
+  `).run(oauthAccount.id)
+  await assert.rejects(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+    expectedConfigRevision: 4,
+    status: 'active'
+  }, access), /账户套餐已到期，不能启用或参与调度/, '已过期账户不得通过 status=active 重新启用')
+  await assert.rejects(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+    expectedConfigRevision: 4,
+    schedulable: true
+  }, access), /账户套餐已到期，不能启用或参与调度/, '已过期账户不得通过 schedulable=true 重新进入调度')
+  await assert.rejects(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+    expectedConfigRevision: 4,
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows',
+      windows: [
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' },
+        { daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '23:59', end: '00:00' }
+      ]
+    }
+  }, access), /账户套餐已到期，不能启用或参与调度/, '已过期账户不得通过当前可用的时间计划重新启用')
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 0
+    WHERE id = ?
+  `).run(oauthAccount.id)
+  await assert.rejects(() => patchRepository.patchAccountManagementAsync(oauthAccount.id, {
+    expectedConfigRevision: 4,
+    status: 'active'
+  }, access), /账户套餐已到期，不能启用或参与调度/, '已过期 active 账户不得通过重复 status=active 隐式恢复调度')
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'disabled', schedulable = 0
+    WHERE id = ?
+  `).run(oauthAccount.id)
+  const rejectedExpiredActivation = database.prepare(`
+    SELECT status, schedulable, config_revision
+    FROM accounts
+    WHERE id = ?
+  `).get(oauthAccount.id) as unknown as {
+    status: string
+    schedulable: number
+    config_revision: number
+  }
+  assert.equal(rejectedExpiredActivation.status, 'disabled', '拒绝已过期账户启用时必须保持停用')
+  assert.equal(rejectedExpiredActivation.schedulable, 0, '拒绝已过期账户启用时不得恢复调度')
+  assert.equal(rejectedExpiredActivation.config_revision, 4, '拒绝已过期账户启用时不得推进配置版本')
+
   const app = express()
   app.use(express.json())
   app.use((_req, _res, next) => authRequestContext.withRequestAuthContext({

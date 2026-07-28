@@ -39,6 +39,8 @@ interface GatewayJsonWorkerErrorCaptureState {
   truncated: boolean
 }
 
+type GatewayJsonWorkerErrorKind = 'openai_oauth_codex_adapter' | 'gateway_request_validation'
+
 if (!parentPort) {
   throw new Error('网关 JSON worker 缺少 parentPort')
 }
@@ -96,7 +98,7 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
       value: JSON.parse(rawBody.toString('utf8')) as unknown
     })
   } catch (error) {
-    workerPort.postMessage(workerErrorResponse(id, message.type, error))
+    workerPort.postMessage(await workerErrorResponse(id, message.type, error))
   }
 })
 
@@ -121,14 +123,21 @@ function resolveJsonMetadataScannerModuleUrl(): string {
     : new URL('./json-metadata-scanner.js', import.meta.url).href
 }
 
-function workerErrorResponse(id: number, jobType: GatewayJsonWorkerJobType, error: unknown): Record<string, unknown> {
+function resolveGatewayValidationErrorModuleUrl(): string {
+  return import.meta.url.endsWith('.ts')
+    ? new URL('./validation-error.ts', import.meta.url).href
+    : new URL('./validation-error.js', import.meta.url).href
+}
+
+async function workerErrorResponse(id: number, jobType: GatewayJsonWorkerJobType, error: unknown): Promise<Record<string, unknown>> {
   const capturedError = captureWorkerError(error)
-  if (isOpenAIOAuthCodexAdapterErrorLike(error)
-    && error.code === 'invalid_openai_oauth_codex_request') {
+  const errorKind = await gatewayJsonWorkerExpectedErrorKind(error)
+  if (errorKind && isGatewayExpectedErrorLike(error)) {
     return {
       id,
       ok: false,
       failureClass: 'expected',
+      errorKind,
       error: capturedError,
       errorCode: error.code,
       errorStatusCode: error.statusCode,
@@ -144,6 +153,17 @@ function workerErrorResponse(id: number, jobType: GatewayJsonWorkerJobType, erro
       : 'infrastructure',
     error: capturedError
   }
+}
+
+async function gatewayJsonWorkerExpectedErrorKind(error: unknown): Promise<GatewayJsonWorkerErrorKind | undefined> {
+  if (isGatewayExpectedErrorLike(error)
+    && error.code === 'invalid_openai_oauth_codex_request') {
+    return 'openai_oauth_codex_adapter'
+  }
+  const {
+    GatewayRequestValidationError
+  } = await import(resolveGatewayValidationErrorModuleUrl()) as typeof import('./validation-error.js')
+  return error instanceof GatewayRequestValidationError ? 'gateway_request_validation' : undefined
 }
 
 function captureWorkerError(error: unknown): GatewayJsonWorkerErrorEnvelope {
@@ -239,7 +259,7 @@ function truncateWorkerErrorText(value: string, maxBytes: number): string {
   return value.slice(0, end)
 }
 
-function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
+function isGatewayExpectedErrorLike(error: unknown): error is {
   message: string
   code: string
   statusCode: number

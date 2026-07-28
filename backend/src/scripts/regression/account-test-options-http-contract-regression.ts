@@ -61,8 +61,6 @@ type TestOptions = Array<{
 
 interface ModelCapabilities {
   id: string
-  name: string
-  supportedApiProtocols: string[]
   testEndpointModes: string[]
 }
 
@@ -313,7 +311,7 @@ try {
     )
     assert.deepEqual(
       Object.keys(capabilities).sort(),
-      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
+      ['id', 'testEndpointModes'],
       `${target.label}模型能力字段集合必须稳定`
     )
     assert.equal(capabilities.id, encodedModelId, `${target.label}路由必须解码包含斜杠的模型 ID`)

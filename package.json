@@ -162,6 +162,7 @@
     "test:model-check-distribution-similarity": "pnpm --filter juhe-ai-backend test:model-check-distribution-similarity",
     "test:model-check-user-authorized-resource": "pnpm --filter juhe-ai-backend test:model-check-user-authorized-resource",
     "test:authorized-account-dispatch-query": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-query",
+    "test:authorized-account-dispatch-demand-write": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-demand-write",
     "test:authorized-account-dispatch-flags": "pnpm --filter juhe-ai-backend test:authorized-account-dispatch-flags",
     "test:authorized-account-admin-dispatch": "pnpm --filter juhe-ai-backend test:authorized-account-admin-dispatch",
     "test:account-pending-test": "pnpm --filter juhe-ai-backend test:account-pending-test",

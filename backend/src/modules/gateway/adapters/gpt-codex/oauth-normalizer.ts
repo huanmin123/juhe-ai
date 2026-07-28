@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
+import { codexResponsesContractRevision } from '../../codex-responses/contract-registry.js'
+import { sanitizeCodexResponseHistoryItems } from '../../codex-responses/request-history-sanitizer.js'
 import { normalizeOpenAICodexResponsesLiteBody } from './client-headers.js'
 
 const {
@@ -30,12 +32,15 @@ export interface OpenAIOAuthCodexNormalizeInput {
   account: OpenAIOAuthCodexAccount
   identity: OpenAIOAuthCodexIdentity
   compact: boolean
+  sanitizeCodexHistory?: boolean
   modelOverride?: string
   requestOverrideModelCapabilities?: GptRequestOverrideModelCapabilities
 }
 
 export interface NormalizedCodexBody {
   body?: string
+  bodyBytes?: Uint8Array
+  codexHistorySanitized?: true
   stream: boolean
   session: OpenAIOAuthCodexSessionResolution
   model?: string
@@ -67,7 +72,16 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   if (input.compact) {
     deleteFields(body, openAIOAuthCodexCompactDroppedFields)
     normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
-    return { body: JSON.stringify(body), stream: false, session, model: stringValue(body.model) }
+    if (input.sanitizeCodexHistory) sanitizeOpenAIOAuthCodexHistory(body, input.account.id)
+    return {
+      ...(input.sanitizeCodexHistory
+        ? { bodyBytes: Buffer.from(JSON.stringify(body), 'utf8') }
+        : { body: JSON.stringify(body) }),
+      codexHistorySanitized: input.sanitizeCodexHistory ? true : undefined,
+      stream: false,
+      session,
+      model: stringValue(body.model)
+    }
   }
 
   deleteFields(body, openAIOAuthCodexDroppedFields)
@@ -75,8 +89,28 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   body.store = false
   body.stream = true
   normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
+  if (input.sanitizeCodexHistory) sanitizeOpenAIOAuthCodexHistory(body, input.account.id)
 
-  return { body: JSON.stringify(body), stream: true, session, model: stringValue(body.model) }
+  return {
+    ...(input.sanitizeCodexHistory
+      ? { bodyBytes: Buffer.from(JSON.stringify(body), 'utf8') }
+      : { body: JSON.stringify(body) }),
+    codexHistorySanitized: input.sanitizeCodexHistory ? true : undefined,
+    stream: true,
+    session,
+    model: stringValue(body.model)
+  }
+}
+
+function sanitizeOpenAIOAuthCodexHistory(body: Record<string, unknown>, accountId: string | undefined): void {
+  if (!Array.isArray(body.input)) return
+  const result = sanitizeCodexResponseHistoryItems(body.input, {
+    store: false,
+    targetScopeKey: accountId ? `account:${accountId}` : undefined,
+    targetPersistenceScope: 'none',
+    contractRevision: codexResponsesContractRevision
+  })
+  if (result.changed) body.input = result.items
 }
 
 function applyOpenAIOAuthCodexAccountRequestOverrides(

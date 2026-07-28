@@ -196,7 +196,7 @@ account-api-key-cooldown-retest
 
 - 全局并发和单账户并发都必须有限制，例如全局 5、单账户 1，避免 100 个 Key 同时探测压垮上游。
 - 手动停用、账户到期、账户删除、Base URL 不合法、代理不可用、授权来源不可用时不探测 Key。
-- `pending_test` 账户进入后台 activation selection；selection 按当前 Catalog 的 Route / Key Attempt 稳定轮转，至少一个 current definition / binding 得到 `complete_success` 时账户可进入 `active`。完整 HTTP / 协议失败对 Key owner 保持中性，但可阻断本次精确 execution Attempt；只有独立 Key 探针的 `transport_incomplete` 才可写对应自动 transport 运行态并进入恢复队列。
+- `pending_test` 账户进入后台激活检查；激活检查按系统 Key 池策略验证账户，至少一个 Key 得到 `complete_success` 时账户可进入 `active`。只有独立 Key 探针的 `transport_incomplete` 才可写对应自动 transport 运行态并进入恢复队列；完整 HTTP / 协议失败保持中性。
 - 探测使用 `traffic_source = cooldown_retest`，不进入业务用量统计或账户质量统计。
 - 探测记录可以在使用记录和审计里带 `key_fingerprint`，但不写明文 Key。
 
@@ -217,7 +217,7 @@ account-api-key-cooldown-retest
 
 为了避免 100 个新 Key 全部异常但只能靠用户请求逐个发现，新建和关键 Key 配置变更由后台系统检查承担：
 
-- 创建账户先保存为 `pending_test`，后台 activation selection 按当前 Catalog 稳定轮转 Route / Key Attempt；至少一个 current definition / binding 得到 `complete_success` 后账户才进入 `active`。完整 framing 中性只阻断对应精确 execution Attempt，不改变 Key owner；只有独立 `transport_incomplete` Key 探针才写自动 transport 运行态并等待后台恢复。
+- 创建账户先保存为 `pending_test`，后台激活检查按系统策略检查 Key 池；至少一个 Key 得到 `complete_success` 后账户才进入 `active`。完整 framing 中性 Key 只保留诊断，只有独立 `transport_incomplete` Key 才写自动 transport 运行态并等待后台恢复。
 - 已保存账户新增或替换 Key 后，由后台 Key 检查初始化或更新对应运行态，不使用人工测试结果。
 - 关键凭据编辑保存后进入 `pending_test` 并投递后台激活检查；单纯人工测试不会改变当前账户或 Key 的生产状态。
 - 真实网关请求只使用当前可执行 Key；安全文本请求可以按请求内唯一集合逐 Key 尝试，但仍共享 64 次 attempt、墙钟和最终响应预留，不能用它替代后台 Key 初始化检查。

@@ -328,7 +328,7 @@ spend 1 credit = 1 same_tier_exploration assignment
 
 ## 5. 热质量模型
 
-本文“热质量”只统计可验证的协议成功、传输失败和首字速度，不等于按上游状态码猜测业务可用性。只有协议结构验证成功的响应进入 `completedResponses` 和正向速度样本；完整 HTTP `401 / 429 / 5xx`、任意错误正文和 `2xx-invalid-body` 进入中性的 `upstreamResponseFailures` 诊断计数，不抬高也不降低共享可靠性。gateway request collector 可以据最终 Attempt nomination 精确能力 intent，但不能直接写账户状态、transport 电路或数据库质量分。账户所有者若希望特定响应产生语义动作，必须在前端高级设置中显式配置规则。
+本文“热质量”只统计可验证的协议成功、传输失败和首字速度，不等于按上游状态码猜测业务可用性。只有协议结构验证成功的响应进入 `completedResponses` 和正向速度样本；完整 HTTP `401 / 429 / 5xx`、任意错误正文和 `2xx-invalid-body` 进入中性的 `upstreamResponseFailures` 诊断计数，不抬高也不降低共享可靠性。gateway 可以据此投递去重限频的独立健康检查，但不能直接写账户状态、transport 电路或数据库质量分。账户所有者若希望特定响应产生语义动作，必须在前端高级设置中显式配置规则。
 
 ### 5.1 存储边界
 
@@ -347,13 +347,13 @@ spend 1 credit = 1 same_tier_exploration assignment
 | 作用域 | 典型故障 | 电路范围 |
 | --- | --- | --- |
 | `key` | 本地 Key 解密 / 装配失败，或用户显式高级策略指定 Key 动作 | 当前 `keyFingerprint` |
-| `protocol_model / model_capability` | 当前请求形态发生 transport、timeout、读取中断、未完成响应或独立 execution 失败 | 最终 Attempt 的 `scopeId`：运行账户 + 协议档案 + 最终模型 + endpoint + lane + adapter route + credential scope |
-| `account` | 用户显式高级策略指定账号动作，或未来由专属 owner 证明真正与模型无关的账户全局事实 | `accountRuntimeKey`；当前没有从请求派生子 incident 自动建立该层的入口 |
+| `protocol_model` | 当前请求形态发生 transport、timeout、读取中断或未完成响应 | `accountRuntimeKey + protocolProfile + requestLane + modelFamily` |
+| `account` | 多个独立 `protocol_model` 作用域均发生本地可验证失败，或用户显式高级策略指定账号动作 | `accountRuntimeKey`，跨请求、IP、会话和路由实例共享 |
 | `upstream_bucket` | 多个不同账号在同一代理 / Base URL / provider 出现 transport、timeout 或读取中断 | 复用现有上游桶健康作用域 |
 
-任意数量的模型 / endpoint / lane / adapter / Key 子 incident 都不能写全局 `accountRuntimeKey` 电路。父层只允许用户显式高级策略，或未来专属账户全局 owner 的与模型无关独立证据建立；当前自动入口固定关闭。单能力故障不能因为共享物理账号而阻断其他能力。任何上游状态码、响应头、错误码、正文或子 scope 数量都不能作为扩大作用域的证据。
+只有多个独立本地 transport 事实或用户显式高级策略明确指定账号动作时，才写全局 `accountRuntimeKey` 电路。单模型、单 endpoint 或单 Key 故障不能因为共享物理账号而阻断其他模型或另一条快速路由中的健康能力。任何上游状态码、响应头、错误码或正文都不能作为系统自动扩大作用域的证据。
 
-旧 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 与 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 在切换时删除；迁移期即使环境中仍存在也只能告警并忽略，不能重新启用子 scope 投票。既有由该规则生成的父 incident 必须按 provenance / childIncidentIds 清单 CAS 关闭，子 incident 原样保留；来源不明时进入人工 manifest 门禁。
+自动从 `protocol_model` 扩大到 `account` 只按窗口内当前仍为 `OPEN` 的独立 scope 计数。`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 默认 `3`、合法范围 `3..64`；`JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 默认 `600000ms`、合法范围 `60000..86400000ms`。scope key 固定包含 `accountRuntimeKey + protocolProfile + requestLane + modelBucket`；同 scope 重复失败、较大的 confirmation 计数和同坏会话并发都只贡献一个 scope。每个 scope 的新证据只刷新自己的观察时间，窗口滚动淘汰过期项；任一新的完整 framing 清除尚未提交的聚合升级证据，但不提前关闭已经建立的 account 电路。实现不得把阈值配置到 3 以下，也不得把单作用域的并发失败扩大成账号级故障。
 
 热质量按以下维度隔离：
 
@@ -518,7 +518,7 @@ stateDiagram-v2
 | `HALF_OPEN` | 排除并换号 | 仅一个 probe lease | 到期后的单飞验证 |
 | `RECOVERING` | 普通请求排除并换号 | 仅一个 matching-generation recovery canary lease | 防止偶尔成功一次立即恢复全部流量 |
 
-`framing_complete_neutral` 只证明当前传输 framing 已完成，可按匹配 generation 清理轻量 transport 怀疑；它不是账户或 Key 的业务成功证据。只有探针形成匹配 provenance 的 `complete_success`，才可推进对应 owner 管理的业务恢复；模型子电路不能借父 account 通用成功阈值恢复或升级。仅收到响应头、首字节、部分 token、心跳，或请求被客户端取消，都不能关闭电路。
+`framing_complete_neutral` 只证明当前传输 framing 已完成，可按匹配 generation 清理轻量 transport 怀疑；它不是账户或 Key 的业务成功证据。只有探针形成匹配 provenance 的 `complete_success`，或父 account 达到通用协议成功阈值，才算对应账户级业务恢复。仅收到响应头、首字节、部分 token、心跳，或请求被客户端取消，都不能关闭电路。
 
 `RECOVERING` 不允许普通请求无租约进入。每次只能有一个匹配当前 generation 的 recovery canary lease；canary 形成完整 transport framing 后原子递增 `recoveringSuccesses`，等待建议 3 秒恢复间隔后再允许下一个独立 lease。连续 3 个不同 lease 形成完整 framing 才关闭自动 transport circuit。这里的 `CLOSED` 只表示 transport 怀疑解除；若结果只是 `framing_complete_neutral`，仍不得恢复账户 / Key 业务运行态或持久状态，业务恢复继续要求匹配 provenance 的 `complete_success`。任意本地可验证 transport 失败或用户显式策略失败动作立即进入 `OPEN` 并增加退避；取消、没有形成真实 attempt 或旧 generation 结果只释放租约，不计成功或失败。后台恢复探针和受控真实请求都必须先取得该 lease，且恢复探针不进入业务热质量统计。
 
@@ -529,7 +529,7 @@ stateDiagram-v2
 ```text
 gateway-circuit:v1:account:{accountRuntimeKey}
 gateway-circuit:v1:key:{accountRuntimeKey}:{keyFingerprint}
-gateway-circuit:v2:protocol-model:{scopeId}
+gateway-circuit:v1:protocol-model:{accountRuntimeKey}:{protocolProfile}:{requestLane}:{modelFamily}
 gateway-policy-block:v1:{policyScope}
 gateway-hot-quality:v1:{qualityScope}
 ```
@@ -580,7 +580,7 @@ confirmation、half-open 和 recovery canary 的初始租约必须一次覆盖�
 | recovery canary 间隔 | 3 秒 |
 | `RECOVERING -> CLOSED` | 连续 3 次匹配 generation 的完整 transport framing；只关闭自动 transport circuit，不代表业务状态恢复 |
 | `RECOVERING` 失败 | 立即重新 `OPEN` 并增加退避 |
-| 父 account 升级 | `protocol_model / model_capability` 子 scope 自动投票升级固定关闭；全部能力阻断只形成派生门禁 |
+| 父 account 升级 | 默认 10 分钟内至少 3 个当前 OPEN 独立 `protocol_model` scope；阈值可调但不得低于 3 |
 
 用户显式策略建立的 TTL、持久 `temporary_unavailable / rate_limited / error` 和后台持久冷却复测继续使用现有语义；短账户电路是请求热路径保护，不替代账户所有者的显式策略。
 
@@ -667,7 +667,7 @@ observedDispatchRevision
 leaseId
 ```
 
-Key circuit 只接受同 Key 的合法共享证据；protocol-model circuit 必须使用最终 Attempt 描述中的真实上游模型、endpoint、lane 和转换路径，只接受同精确作用域或 driver 明确声明可覆盖的 transport 证据。任意数量的模型子 scope 都不能投票创建父 account incident；全部能力不可调度由能力 Catalog 派生。`transportComplete` 只驱动自动短电路；`protocolSuccess` 继续服务各自来源匹配的持久健康检查和冷却语义。
+Key circuit 只接受同 Key 的合法共享证据；protocol-model circuit 只接受同协议 / lane / modelFamily 或驱动声明可覆盖该作用域的证据。父 account circuit 关闭不再要求覆盖全部肇事子 scope，而是累计可配置数量的通用协议成功证据，当前默认 3；`requiredRecoveryScopeKeys` 只用于保留有界父子关系、冷重建和子级独立恢复，不能成为“每个子模型必须再次有流量”的关闭门槛。父级关闭后仍 `OPEN / RECOVERING` 的子 scope 继续按自己的 due 主动验证并保持调度阻断。`transportComplete` 只驱动自动短电路；`protocolSuccess` 继续服务父级通用恢复证据、持久健康检查和冷却语义。
 
 未知 / 取消 / owner 丢失终态：
 
@@ -678,7 +678,7 @@ Key circuit 只接受同 Key 的合法共享证据；protocol-model circuit 必�
 
 `attempt-terminal` 是不可变事件，不是“全部投影完成”标记。每个 projector 必须有独立幂等 ACK；自动 circuit 的 terminal 创建与 circuit transition 应在同一 Redis 原子操作内完成，或 terminal 进入可靠队列并重放到显式 ACK。读到既有 terminal 时必须继续补齐未完成投影。terminal TTL 不得短于可靠队列最大重放窗口。
 
-每轮故障生成稳定 `incidentId`，状态转换另用 `transitionId`。模型子 incident 按 generation/revision 独立持久化、重建和恢复，不再维护用于自动父级投票的 `childIncidentIds / requiredRecoveryScopeKeys`。真正账户全局事实如果由其他专属 owner 建立父 account incident，父层只能 shadow，关闭时也不能删除或重置仍处于 `OPEN / RECOVERING` 的子 scope。`CLOSED` 仅表示当前自动 circuit 层不再阻断，不等于账户整体 dispatchable。
+每轮故障生成稳定 `incidentId`，状态转换另用 `transitionId`。升级时记录 `parentIncidentId / childIncidentIds / causedByTerminalOutcomeId`；父级 account circuit 只 shadow 子 scope，不隐式关闭子 circuit。父级关闭使用可配置的通用协议成功证据阈值，当前默认 3，不要求 `requiredRecoveryScopeKeys` 中所有肇事子 scope 重新获得流量；关闭后仍处于 `OPEN / RECOVERING` 的子 scope 不被删除或重置，对应请求仍由子状态决定是否可派发。父 incident 和子 incident 都按 generation/revision 持久化，冷重建必须一起恢复；父级 `childIncidentIds / requiredRecoveryScopeKeys` 去重后最多 64 个，超限子 scope 继续保留自己的 incident，但不能放大父级单行 payload 或单轮恢复 fan-out。`CLOSED` 仅表示“当前自动 circuit 层不再阻断”，不等于账户整体 dispatchable。关闭时原子移除 due、清理本代父级升级证据并保留 CLOSED tombstone。
 
 进入 `RECOVERING` 时 `recoveringSuccesses = 0`；只有进入该状态后取得的 3 个不同 recovery-canary lease 形成匹配 generation 的完整 transport framing 才关闭自动 circuit。confirmation / half-open 进入 `RECOVERING` 的那次 framing 不计入这 3 次；仅 framing 中性的结果不能恢复业务运行态。
 
@@ -750,9 +750,9 @@ routeCoordinationBudget
 | 整请求墙钟总预算 | `GatewayRequestWallBudget` 不暂停；文本默认 270 秒，图片由 `imageRequestWallTimeoutSeconds` 控制且默认 3600 秒。决策点到期 handoff 客户端重试重选；在途 attempt 不被另一 lane 的短时限机械取消 |
 | 零可派发等待预算 | `ServerRetryBudget`，默认 270 秒累计，attempt/读取暂停 |
 
-同层规则：当前层内每个唯一最终 Attempt `scopeId` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的精确 scope 不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
+同层规则：当前层内每个唯一 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在本请求最多真实 attempt 一次（confirmation / half-open lease 例外一次）。同层唯一候选全部尝试过或均不可执行后，才允许进入下一账户配置层。该行为只影响当前请求，不重写账户优先级。已经 `SUSPECT / OPEN / HALF_OPEN` 的账号不计为本请求真实失败，也不消耗上游 attempt；它们直接从普通候选中移除。
 
-如果当前层所有精确 scope 已处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `scopeId` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有真正 account 电路已经由专属全局 owner 建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
+如果当前层所有账号已经处于 `SUSPECT / OPEN / HALF_OPEN`，候选扫描直接进入下一账户配置层，不等待、不重复扫描。进入新层时重置 `currentTierKey / currentTierUniqueAttemptCount`，但不清空全局 `attempted*` 集合。同一个 `accountRuntimeKey + protocolProfile + requestLane + modelFamily` 在 `attemptedProtocolModelKeys` 中只允许出现一次；只有合法 confirmation / half-open lease 可以消费一次例外。只有 account 电路已经建立，或用户显式 account 级动作命中时，才把 `accountRuntimeKey` 加入全局 `attemptedAccountRuntimeKeys`；物理凭据去重写入 `attemptedPhysicalCredentialKeys`。
 
 普通路由在请求开始时只解析一次 `normalRoutingConfig.firstByteDeadlineMs`，普通模式、快速模式和同请求后续文本账号 attempt 都复用这个路由观察值。建议默认 10 秒、允许 10–60 秒，且始终不超过文本 first-response timeout。现有 `speedFirstConfig.firstByteThresholdMs` 作为迁移兼容别名读取；目标结构写入公共 `normalRoutingConfig.firstByteDeadlineMs`，迁移完成后删除速度模式专属字段，禁止两个字段同时生效。confirmation 与传输电路使用 lane hard timeout，不消费这个配置值作为失败证据；image 等合法长耗时 lane 不创建文本切换观察、慢样本或 `latency_degraded`，只受图片专用单次时限和图片整请求墙钟约束。
 
@@ -936,7 +936,7 @@ gateway_request_wall_handoff_total
 16. 任意 lane 的 SSE 在真实协议语义尚未提交时可按安全边界切号；一旦真实语义已经写给下游，后续失败绝不透明重放或拼接第二条流。
 17. 客户端取消 confirmation / half-open：释放租约，不累计账号失败结论。
 18. `RECOVERING` 连续三个不同 canary lease 形成匹配 generation 的完整 transport framing 后才关闭自动 circuit；普通请求不能抢占 canary，取消不计结果，framing 中性不能恢复业务状态。
-19. cost-first 的 model A 在完整响应前发生 transport 失败时只打开精确 `protocol_model` 电路，speed-first 的 model B 仍可使用同账号；3 个、64 个或更多模型子 scope 都不能投票升级父 account，只有用户显式 account 动作或真正账户全局事实 owner 才能建立父层。
+19. cost-first 的 model A 在完整响应前发生 transport 失败时只打开 `protocol_model` 电路，speed-first 的 model B 仍可使用同账号；配置窗口内至少 3 个当前 OPEN 的独立 scope，或用户显式指定 account 级动作时，才允许两个路由都过滤该账号。两个 scope、同 scope 重复失败或较大 failure count 都不能升级。
 20. 普通模式和快速模式均使用同一个 3 秒 `routeCoordinationBudget`：存在可恢复账号时返回 `temporarily_blocked`，仅本请求无未尝试候选时返回 `request_exhausted`；不覆盖共享 `ServerRetryBudget`，后续分组仍由路由协调器决定。
 21. 10 个 P1 同时 `OPEN` 时不重复扫描 P1；到期后同 generation 只允许一个半开租约。
 22. 大量未知模型名统一进入有界 `unknown` 桶；内存 / Redis 高基数保护和退化指标生效。
@@ -961,7 +961,7 @@ gateway_request_wall_handoff_total
 41. 流式 confirmation 首个语义 chunk 提交后发生读取中断：不缓存整流、不拼接第二账号，当前客户端断流且后续请求重新避让该账号。
 42. Redis 丢失 / 重建后，活动电路不得因 key 缺失直接 `CLOSED`；必须结合 due 索引、policy block 与 fencing 记录保守重建，并触发后台修复。
 43. `SUSPECT` 后台 probe 连续返回 unknown：状态和确认计数不变，due 按退避与 jitter 渐进后移，不形成零间隔自旋，也不推进 `OPEN`。
-44. 同一坏模型产生 3 个、64 个或更多别名 / endpoint / lane 子 scope：全部保持独立重建和恢复，任意数量都不能创建父 account incident。
+44. 父 account incident 带 64 个恢复子 scope 冷重建：父子 generation/revision、due 与 CLOSED ledger 一致；第 65 个子 scope 不扩张父 payload，仍保留独立子 incident 且不被误判 `CLOSED`。
 
 ## 16. 落地顺序
 
@@ -1016,10 +1016,10 @@ gateway_request_wall_handoff_total
 - 单次请求最多取得一次 confirmation，首次失败后需两个独立 confirmation 失败才 `OPEN`；confirmation 不另设 5 秒 timer，也不把路由配置截止当失败，使用 lane hard timeout；租约本身覆盖 attempt hard lifetime；
 - 故障切号、重新选号和零可派发等待共用一个 3 秒 `routeCoordinationBudget`；
 - 退避从 `3s -> 5s -> 10s -> 30s -> 60s` 起步，长期故障延伸到 15 分钟基线并加入确定性 jitter；
-- `protocol_model / model_capability` 子 scope 自动投票升级父 account 固定关闭；全部能力阻断只形成派生门禁；
+- 父 account 只在配置窗口内至少 3 个当前 OPEN 独立 scope 后升级，scope 阈值可调但硬下限为 3；
 - `RECOVERING` 连续 3 次匹配 generation 的完整 transport framing 才关闭自动电路；framing 中性不恢复业务状态；
 - 热质量只重排完整账户配置层相同的账号；
 - 禁止跨优先级 / 备用层探索；同层按约 1/20 credit 受控观测，无流量时不补合成请求；
 - 快速模式 `latency_degraded` 和确认慢后切号继续优先于账户偏好与热质量。
 
-这些值不新增账户或管理页面配置项；confirmation、容量、重建和恢复并发由部署运行配置控制。旧父级升级阈值 / 窗口配置只作为迁移期废弃项读取，不能重新启用子 scope 投票。变更默认值必须先通过 Mock AI、高并发、Memory/Redis 一致性和真实短窗口观测验证。
+这些值不新增账户或管理页面配置项；confirmation、父级升级阈值 / 窗口、容量、重建和恢复并发由部署运行配置控制。变更默认值必须先通过 Mock AI、高并发、Memory/Redis 一致性和真实短窗口观测验证。

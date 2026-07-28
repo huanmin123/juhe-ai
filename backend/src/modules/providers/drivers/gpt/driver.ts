@@ -189,7 +189,8 @@ export const gptProviderDriver: ProviderDriver = {
       })
       return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
         modelOverride: modelMapping?.upstreamModel,
-        requestOverrideModelCapabilities
+        requestOverrideModelCapabilities,
+        sanitizeCodexHistory: context?.requestClientCompatibility === 'codex_responses'
       })
     }
     const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {

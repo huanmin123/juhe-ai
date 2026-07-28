@@ -232,7 +232,11 @@ func inspectSSEEvidence(mode EndpointMode, body []byte) (Evidence, error) {
 				result.Complete = true
 			}
 		case ModeGenerateContentSSE:
-			if evidenceForObject(ModeGenerateContentJSON, event.object).Complete {
+			payload := objectValue(event.object["response"])
+			if payload == nil {
+				payload = event.object
+			}
+			if evidenceForObject(ModeGenerateContentJSON, payload).Complete {
 				result.Complete = true
 			}
 		case ModeInteractionsSSE:

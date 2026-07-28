@@ -12,6 +12,7 @@
     "test:user-reference-data": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/user-reference-data-cache-regression.ts",
     "test:authorization-create-lazy-options": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-create-lazy-options-regression.ts",
     "test:group-external-source-lazy-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/group-external-source-edit-lazy-loading-regression.ts",
+    "test:group-update-payload": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/group-update-payload-regression.ts",
     "test:response-inspection-policy-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/response-inspection-policy-progressive-loading-regression.ts",
     "test:route-strategy-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-strategy-progressive-loading-regression.ts",
     "test:chat-stream": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-regression.ts",

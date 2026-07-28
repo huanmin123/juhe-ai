@@ -2,6 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import {
+  buildRouteStrategyMutationPatch,
+  hasRouteStrategyMutationChanges,
+  mergeRouteStrategyMutationResult
+} from '../../views/route-strategies/routeStrategyMutation'
+
 const viewSource = readFileSync(fileURLToPath(new URL('../../views/route-strategies/RouteStrategiesView.vue', import.meta.url)), 'utf8')
 const apiSource = readFileSync(fileURLToPath(new URL('../../api/domains/routeStrategies.ts', import.meta.url)), 'utf8')
 const typesSource = readFileSync(fileURLToPath(new URL('../../types/domain/access.ts', import.meta.url)), 'utf8')
@@ -41,7 +47,10 @@ for (const [name, source] of [
   assert.doesNotMatch(source, /loadGroupOptions\s*\(/, `${name}不得预取分组选项`)
   assert.doesNotMatch(source, /loadModelOptions\s*\(/, `${name}不得预取模型选项`)
 }
-assert.match(openEditSource, /routeStrategiesApi\.detail\(/, '编辑弹窗仍必须加载必要的策略路由详情')
+assert.match(openEditSource, /routeStrategiesApi\.editBasicDetail\(/, '编辑弹窗必须只加载策略路由 edit-basic 投影')
+assert.doesNotMatch(openEditSource, /routeStrategiesApi\.detail\(/, '编辑弹窗不得回退到完整策略路由详情')
+assert.match(apiSource, /\/route-strategies\/\$\{id\}\/edit-basic/, '管理与个人策略路由 API 必须暴露 edit-basic 接口')
+assert.match(typesSource, /interface RouteStrategyEditBasicDetail[\s\S]*groupBindings:/, '前端必须使用独立的策略路由编辑 DTO')
 assert.match(openEditSource, /editDetailRequestSignature\(record\.id, operationScopeParams\?\.systemAccountId\)/, '编辑详情必须绑定记录与 owner 作用域签名')
 assert.match(openEditSource, /isCurrentEditDetailRequest\(/, '编辑详情写回和错误提示必须校验当前请求上下文')
 assert.match(openCreateSource, /resetRouteModelOptions\(\)/, '新增弹窗必须清除上一弹窗的模型候选和搜索定时器，且不得为此发请求')
@@ -69,7 +78,78 @@ assert.match(viewSource, /function resetRouteStrategyListForScopeChange[\s\S]*ro
 assert.match(viewSource, /function editDetailRequestSignature[\s\S]*authState\.revision\.value[\s\S]*viewer\?\.id[\s\S]*viewer\?\.role[\s\S]*routeStrategyListScopeKey\(\)[\s\S]*systemAccountId[\s\S]*recordId/, '编辑详情签名必须覆盖身份、页面 scope、owner 和记录 ID')
 assert.match(modelOptionsSource, /params\.force !== true && loadedScopeKey === scopeKey/, '相同作用域的模型下拉重复展开必须复用已加载候选')
 assert.match(saveSource, /routeStrategiesApi\.update[\s\S]*if \(editingIsDefault\.value\)[\s\S]*invalidateUserReferenceData\([\s\S]*viewScope: isManagementView\.value \? 'admin' : 'self'[\s\S]*systemAccountId: operationScopeParams\?\.systemAccountId/, '默认路由更新后必须只失效对应用户 scope 的共享默认资源缓存')
+assert.match(saveSource, /buildRouteStrategyMutationPatch\(editingBaseline, completePayload\)/, '策略路由编辑保存必须根据打开时基线生成字段级 PATCH')
+assert.match(saveSource, /!hasRouteStrategyMutationChanges\(payload\)[\s\S]*没有需要保存的修改/, '策略路由未修改保存不得发出 PATCH')
+const updateBranch = sourceBetween(saveSource, 'if (editingId.value) {', '} else {')
+assert.match(updateBranch, /const result = await routeStrategiesApi\.update[\s\S]*applyRouteStrategyMutationResult\(result\)/, '编辑成功必须用最小 mutation result 本地合并列表行')
+assert.doesNotMatch(updateBranch, /loadRouteStrategies\(/, '编辑成功不得重新加载策略路由列表')
 const createBranch = sourceBetween(saveSource, '} else {\n      await routeStrategiesApi.create', 'message.success(\'策略路由已创建\')')
 assert.doesNotMatch(createBranch, /invalidateUserReferenceData/, '普通路由创建不得无条件失效共享默认资源缓存')
+const createCompletionBranch = sourceBetween(saveSource, '} else {\n      await routeStrategiesApi.create', '\n    }\n  } catch')
+assert.match(createCompletionBranch, /await loadRouteStrategies\(\)/, '创建成功可以重新加载策略路由列表以接收服务端生成字段')
 
-console.log('策略路由渐进加载回归通过：弹窗打开不预取分组或模型，候选仅在下拉展开或搜索时加载')
+const baseline = {
+  name: '基线路由',
+  description: null,
+  mode: 'normal' as const,
+  status: 'active' as const,
+  groupBindings: [{ groupId: 'group-1', priority: 1, weight: 1, status: 'active' as const }],
+  normalRoutingConfig: { schedulingPreference: 'cost_first' as const, firstByteDeadlineMs: 10000 },
+  hybridRoutingConfig: null
+}
+assert.deepEqual(buildRouteStrategyMutationPatch(baseline, { ...baseline }), {}, '未修改策略路由不得生成 PATCH 字段')
+assert.deepEqual(buildRouteStrategyMutationPatch(baseline, { ...baseline, description: '仅修改说明' }), {
+  description: '仅修改说明'
+}, '策略路由编辑只应提交实际变化字段')
+assert.equal(hasRouteStrategyMutationChanges({}), false, '空策略路由 PATCH 必须识别为 no-op')
+
+const listItem = {
+  id: 'route-1',
+  name: '基线路由',
+  description: '旧说明',
+  mode: 'normal' as const,
+  status: 'active' as const,
+  isDefault: false,
+  normalRoutingConfig: { schedulingPreference: 'cost_first' as const, firstByteDeadlineMs: 10000 },
+  bindingCount: 1,
+  apiKeyCount: 7,
+  groupBindingPreview: [{
+    id: 'binding-1',
+    groupId: 'group-1',
+    groupName: '旧分组',
+    providerCode: 'gpt',
+    status: 'active' as const,
+    groupEnabled: true
+  }],
+  createdAt: '2026-07-28T00:00:00.000Z',
+  updatedAt: '2026-07-28T00:00:00.000Z'
+}
+const mergedListItem = mergeRouteStrategyMutationResult(listItem, {
+  id: listItem.id,
+  changedFields: ['name', 'description', 'mode', 'status', 'normalRoutingConfig', 'groupBindings'],
+  rowPatch: {
+    name: '本地合并路由',
+    description: null,
+    mode: 'weighted',
+    status: 'disabled',
+    normalRoutingConfig: null,
+    bindingCount: 2,
+    groupBindingPreview: [{
+      id: 'binding-2',
+      groupId: 'group-2',
+      groupName: '新分组',
+      providerCode: 'gpt',
+      status: 'active',
+      groupEnabled: true
+    }],
+    updatedAt: '2026-07-28T01:00:00.000Z'
+  }
+})
+assert.equal(mergedListItem.name, '本地合并路由')
+assert.equal('description' in mergedListItem, false, '服务端返回 null 时本地行必须清除可选说明字段')
+assert.equal('normalRoutingConfig' in mergedListItem, false, '服务端清除普通路由配置时本地行不得保留旧配置')
+assert.equal(mergedListItem.bindingCount, 2)
+assert.equal(mergedListItem.groupBindingPreview[0]?.groupId, 'group-2')
+assert.equal(mergedListItem.apiKeyCount, listItem.apiKeyCount, '最小 mutation result 未涉及的列表字段必须原样保留')
+
+console.log('策略路由渐进加载回归通过：编辑使用窄投影、字段级 PATCH 和本地行合并，只有创建成功才刷新列表')

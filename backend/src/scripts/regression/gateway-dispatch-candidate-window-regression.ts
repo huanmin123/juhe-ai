@@ -67,6 +67,8 @@ try {
       },
       status: 'active',
       groupId: group.id,
+      supportedModels: ['gpt-5.4'],
+      healthCheckModel: 'gpt-5.4',
       priority: index + 10
     }, access)
     if (index < dispatchCandidateLimit) {
@@ -85,6 +87,8 @@ try {
     },
     status: 'active',
     groupId: group.id,
+    supportedModels: ['gpt-5.4'],
+    healthCheckModel: 'gpt-5.4',
     priority: 1
   }, access)
   const scheduledAllowedAccount = repositories.createAccount({
@@ -98,6 +102,8 @@ try {
     },
     status: 'active',
     groupId: group.id,
+    supportedModels: ['gpt-5.4'],
+    healthCheckModel: 'gpt-5.4',
     priority: 3,
     availabilitySchedule: allowedSchedule
   }, access)
@@ -112,6 +118,8 @@ try {
     },
     status: 'active',
     groupId: group.id,
+    supportedModels: ['gpt-5.4'],
+    healthCheckModel: 'gpt-5.4',
     priority: 2,
     availabilitySchedule: futureSchedule
   }, access)
@@ -209,6 +217,8 @@ try {
         },
         status: 'active',
         groupId: refillGroup.id,
+        supportedModels: ['gpt-5.4'],
+        healthCheckModel: 'gpt-5.4',
         priority: index
       }, access)
       activateAccountAfterBackgroundCheck(repositories, account.id)
@@ -227,6 +237,8 @@ try {
         },
         status: 'active',
         groupId: refillGroup.id,
+        supportedModels: ['gpt-5.4'],
+        healthCheckModel: 'gpt-5.4',
         priority: dispatchCandidateLimit + index
       }, access)
       activateAccountAfterBackgroundCheck(repositories, account.id)

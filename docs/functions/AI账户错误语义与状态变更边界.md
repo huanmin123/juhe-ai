@@ -1,8 +1,6 @@
 # AI 账户错误语义与状态变更边界
 
 > 本文是 AI 账户切换、熔断、恢复和错误副作用的强约束文档。任何修改网关账户错误处理、API Key 轮换、账户运行态、后台探针或恢复状态机的代码，必须先阅读本文。
->
-> 多模型账户的最终派发作用域、凭据级局部阻断和派生全能力门禁见 [AI 账户多模型能力健康与精确隔离设计](AI账户多模型能力健康与精确隔离设计.md)。模型能力层永不写入或清理整号状态；全部能力阻断也只形成派生门禁。
 
 ## 1. 不可信上游原则
 
@@ -12,17 +10,17 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 ## 2. 状态变更授权来源
 
-账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。受控独立探针只能推进与自身 owner、scope、generation 和 provenance 匹配的通用可用性状态：模型 / transport 子探针不得写账户 `temporary_unavailable`；只有已注册且真正与所有模型无关的 account-global owner 才有该权限，当前默认不存在。任何 owner 都不得把状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
+账户、Key、代理、模型和供应商的**具体业务语义状态**只能由用户显式配置的账户错误策略授权变更。账户 `credentials.error_handling_rules` 命中后，可以按用户配置执行切号、限流、临时不可调用或异常动作；这是执行用户意图，不是系统猜测上游语义。系统还可以依据受控的独立可用性探针写入通用 `temporary_unavailable`，但不得把探针返回的状态码、错误码或正文解释成限流、凭据失效、永久异常等具体原因。
 
-传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能 nomination 精确 Attempt 待确认事实；对应 transport scope 的推进必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由同 scope 后台传输探针确认。子 scope 不能升级账户级状态。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
+传输电路是独立的、非语义状态机，只能记录连接失败、响应头未到达、读取中断、超时或完整 framing 等可观察传输事实。业务请求的首个传输失败只能形成待确认事实；账户级升级必须使用隔离的独立证据、租约和 CAS / generation，恢复必须由独立后台传输探针确认。传输电路不得维护 HTTP 状态码、错误码、错误类型或正文关键词白名单。
 
-默认精确 transport 电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证该 Attempt transport 不可用，更不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
+默认电路确认阈值是“首次传输失败 + 2 次独立 confirmation 失败”。同一会话、同一来源或同一 evidence 的并发重放不能自证账户死亡；`SUSPECT` 也不能依赖新的客户端流量才能继续确认，必须进入有界的后台 due 队列，由 single-flight 传输探针提供独立证据。完整 framing、task failure 和 unknown 分别只负责清除传输怀疑、保持中性或延后，不得伪造负向确认。unknown 必须保留当前 `SUSPECT` generation 和确认计数，并使用当前电路退避序列与确定性 jitter 渐进延后；不得把 `retryAt` 重置为当前时间形成忙循环，也不得借 unknown 增加失败次数。
 
 用户配置的路由首字截止和传输 hard timeout 是两类事实。`normalRoutingConfig.firstByteDeadlineMs`、速度优先 cutover、墙钟 handoff 等配置截止只回答“当前请求是否继续等待/换候选”，到期结果对账户电路、Key 运行态、共享质量和恢复副作用保持中性。只有建连失败、真实读取中断，以及 `textFirstResponseTimeoutSeconds` / lane hard lifetime 等传输层 hard timeout 才能作为 transport evidence；即使请求层根据配置截止主动取消了旧 attempt，也不得把该取消反写成 transport failure。
 
-`protocol_model` 或 `model_capability` 子 incident 不得再通过“若干不同子 scope”投票升级为父 `account` 电路。别名、endpoint、lane、转换路径和同一坏模型都可能产生多个子 scope，数量不能证明仍有其他模型的整号已经死亡。子 incident 始终按自己的最终上游模型、endpoint、lane、转换路径、凭据作用域、generation 和 revision 隔离恢复。
+从子 `protocol_model` 电路升级为父 `account` 电路时，只按当前仍为 `OPEN` 的独立 scope 计数，不累计同一 scope 的重复失败或 confirmation 次数。独立 scope 阈值由 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_DISTINCT_SCOPE_THRESHOLD` 配置，默认 `3` 且硬下限为 `3`；滚动证据窗口由 `JUHE_AI_GATEWAY_ACCOUNT_CIRCUIT_ESCALATION_WINDOW_MS` 配置，默认 `600000ms`。scope 必须同时包含 `accountRuntimeKey + protocolProfile + requestLane + modelBucket`，单模型、单 lane 或同坏会话风暴不得扩大为父账户死亡。父 `account` incident 与每个子 `protocol_model` incident 都必须按 `incidentId + generation + dispatchRevision` 持久化，并在冷启动时按父子关系重建；父 incident 的 `requiredRecoveryScopeKeys / childIncidentIds` 最多保留 64 个去重子 scope，超出部分仍可保留独立子 incident，但不得形成无界父 payload 或无界单次恢复 fan-out。
 
-只有当前 `CapabilityScopeCatalog + credential membership baseline + 子 incident` 证明全部 Route 都是 confirmed blocked 时，才派生 `instance_all_capabilities_unavailable` 门禁；全部 Route 暂时 soft avoid / recovering 或凭据 baseline 未确认时使用对应中间态，不能伪装成全部确认不可用。该门禁不创建父 incident，也不写 `accounts.status`。Key owner 运行态单独派生 `all_keys_unavailable`，不进入能力颜色。父 `account` transport circuit 只允许由真正与模型无关、具有专属独立证明的账户全局事实 owner 建立；当前请求派生的子电路没有该证明，因此自动子级升级默认关闭。既有父 incident 的恢复只能解除父层，不能删除、关闭或重置任何子 incident。
+父 `account` scope 的关闭使用可配置的通用协议成功证据阈值，当前默认 `3`；不再要求 `requiredRecoveryScopeKeys` 中每个肇事子 scope 都再次获得流量或逐一成功。父级关闭只解除父 scope 的 shadow/阻断并清理本代父级升级账本，不能关闭、删除或重置仍处于 `OPEN / RECOVERING` 的子 incident；对应模型/lane 后续仍由各自子状态决定是否可派发。这样既避免无流量子模型让父账户永久卡死，也避免父级恢复掩盖局部持续故障。
 
 电路 `dispatch_revision` 只属于上游传输身份：凭据、连接地址、代理绑定、协议和客户端兼容能力变化可以推进 revision。优先级、并发数、调度状态、时间表、模型目录和用户错误策略不得借配置更新清除活动电路；旧 numeric revision、同 revision 重放和迟到探针均必须被 CAS fencing。
 
@@ -37,7 +35,7 @@ HTTP 状态码、错误码、错误类型和正文可以作为脱敏审计事实
 
 任意完整 HTTP 响应可以恢复“传输是否可完成”的电路，但不能据此清除用户显式策略产生的业务状态。业务状态的恢复来源必须和其创建来源匹配，不能用另一个无 provenance 的后台任务覆盖。
 
-OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分类器。Token 端点返回任意非 `2xx`、错误正文、畸形 JSON、缺失字段，或发生网络、代理、timeout 等异常时，只能记录脱敏诊断并有界退避；不得按次数把账户写成 `error` 或永久退出刷新候选。本地可独立验证的单 credential slot 缺失、解密失败或装配失败只能进入该 slot / Attempt 的配置异常路径；单 Route 的映射、endpoint 或配方错误只影响该 Route。只有结构证明某配置被全部 Route 与全部凭据强制共用、且没有可执行旁路时，专属 account-global configuration owner 才能建立整账户门禁。任何本地路径都不能借远端返回内容推断账户死亡。刷新成功只能更新当前代 token，并按匹配 provenance 清理该刷新路径自己创建的状态，不能清理用户显式策略状态。
+OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分类器。Token 端点返回任意非 `2xx`、错误正文、畸形 JSON、缺失字段，或发生网络、代理、timeout 等异常时，只能记录脱敏诊断并有界退避；不得按次数把账户写成 `error` 或永久退出刷新候选。本地可独立验证的凭据缺失、解密失败或配置无法装配可以进入各自明确的配置异常路径，但不能借远端返回内容推断账户死亡。刷新成功只能更新当前代 token，并按匹配 provenance 清理该刷新路径自己创建的状态，不能清理用户显式策略状态。
 
 用户显式策略创建的 `temporary_unavailable`、`rate_limited` 或 `error` 必须持久保存创建来源、代次和观察边界。普通协议成功、后台健康成功、旧在途慢成功或没有匹配 provenance 的刷新成功都不得提前清除；只有 TTL 到期、同来源明确恢复动作、用户人工恢复，或该状态机文档明确授权的匹配恢复证据可以改变它。请求开始时间和完成时间都不能替代来源匹配，迟到结果必须受 generation / revision / observed-at fencing。
 
@@ -54,7 +52,7 @@ OAuth Access Token 刷新属于凭据生命周期，不是上游账户健康分�
 
 当前请求的 Key 排除必须使用请求内集合或等价的 request generation。未知 HTTP 响应不得写入跨请求共享的 `temporary_unavailable`、`rate_limited`、`error` 或其他带语义的 Key 避让状态。
 
-未知 HTTP 响应或明确协议失败不得创建跨请求的客户端 IP × API Key × 账户避让，也不得直接降低共享账户质量。真实 gateway 请求出现这类失败时，请求终态收集最终上游模型、endpoint、lane、转换路径和凭据作用域的候选；每个请求最多 admission 一个新的精确能力 intent。业务请求本身不能写账户或能力状态，独立探针成功 / 失败也只推进匹配 generation 的精确 `model_capability`，永不写通用 `temporary_unavailable`。周期账户哨兵是另一 owner，不接收 request_failure。
+未知 HTTP 响应或明确协议失败不得创建跨请求的客户端 IP × API Key × 账户避让，也不得直接降低共享账户质量。真实 gateway 请求出现这类失败时，每个请求最多选择一个账户投递独立健康检查；业务请求本身不能写账户状态。该二次确认成功时保留账户，确认失败时按专用阈值 1 写通用 `temporary_unavailable`；正常周期健康仍按配置阈值抗抖。
 
 完整 HTTP 非 `2xx` 不能被伪装成 `completed_response` 成功，也不能被伪装成“显式策略失败”。无论网关在安全边界内接管重试还是把响应透传给客户端，都必须以 `opaque_upstream` 结束本次诊断 attempt；它只表达该次真实上游 attempt 未成功，不解释失败语义，也不进入共享质量。完整响应表示传输 framing 已完成，不应据此确认传输电路失败。
 
@@ -104,7 +102,7 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 
 - account circuit 的 memory / Redis 容量必须有硬上限并可配置；容量耗尽时不得把未记录的故障伪装成 `CLOSED`。运行态用共享容量哨兵把未知 scope 标为受控阻塞，只有活动 incident 关闭或容量提高后才自动解除。
 - 冷启动全量重建必须同时受单页时限、总时限、最大页数和严格递增复合 cursor 约束。页失败、数据库挂起或容量不足都必须有界返回，并释放 `rebuilding`，允许下一轮重试。
-- 全量重建未完成时，请求只能通过按账户权威查询渐进恢复。该查询使用有界分页批量返回独立父 incident、全部活动 / 恢复必需子 incident，以及当前 dispatch revision 下仍保留的 `CLOSED` ledger；每页可以限制 64 条，但禁止把“只取前 64 条”当作账户已完整加载。加载结果必须带 cursor 和 completeness fence，完成前该账户继续保守阻塞，完成后一次发布；不能按每条子 scope 再做无界查询，也不得连带阻塞已经确认完成的其他账户。
+- 全量重建未完成时，请求只能通过按账户权威查询渐进恢复。该查询必须一次返回并投影当前账户的父 incident、最多 64 个活动/恢复必需子 incident，以及当前 dispatch revision 下仍保留的 `CLOSED` ledger；不能按每条子 scope 再做无界查询。这样既避免先加载的旧 `OPEN` 卡住账户，也避免只重建父级而把子级误当 `CLOSED`。无法确认的账户继续阻塞，但不得连带阻塞已经确认完成的其他账户。
 - 长期 OPEN 的退避上限为 15 分钟基线，并从第 5 档开始按 scope 做确定性 `±20%` jitter；恢复 worker 使用可配置的有界 batch 和并发。Redis due 修复采用多次小 Lua 分页，单次 Lua 不得扫描整个容量。
 - Redis 的账户 revision 清理必须使用有界 `HSCAN` 分页，不能在账户或 scope 数量增长后退化为 `HGETALL` 全量读取。全量重建暂未完成时，恢复 sweep 和待投影 control-plane 事件仍需继续处理已经加载的 scope，不能互相等待形成全局自锁。
 - 低容量组的 FIFO 排队必须同时受组队列时限、服务器重试预算和请求墙钟约束。只有后续分组存在真实可承接的模型、额度和并发候选时才允许立即 fallback；没有可承接候选时保留当前组有界等待。图片默认使用 600 秒首响应、120 秒 idle、3600 秒单次未提交 attempt 和 3600 秒整请求墙钟；单次时限到期且尚未语义提交时，仍按统一规则继续下一候选。
@@ -136,11 +134,11 @@ Key 冷却探针的 success、transport failure 和 neutral defer 都必须携�
 - 3 个、6 个和超大 Key 池按顺序唯一尝试；真实池穷尽、64-attempt 安全截断和总墙钟截断可区分且都不污染共享状态。
 - 客户端下一次请求根据当时的质量、速度、优先级和恢复状态重新选号，不延续上次请求的候选游标。
 - 普通事件中的 `error/code/message` 字段保持中性；只有协议声明的失败事件结构触发输出前切号或输出后稳定结束。
-- 任意数量的 `protocol_model` / `model_capability` 子 scope 都不得通过计数打开父账户电路；同一坏模型跨别名、endpoint 和 lane 的反例必须覆盖。
+- 父账户升级阈值不能配置到 3 以下；两个 OPEN scope、同 scope 重复失败和伪造较大 failure count 均不得升级，第三个当前 OPEN 独立 scope 才能在配置窗口内升级。
 - 电路满容量、数据库挂起、分页失败、重复 cursor 和 10k due scope 均有界，不能静默 fail-open 或永久全局 fail-closed。
 - 容量耗尽后当前请求和下一请求都被识别为 `runtime_state_capacity_exhausted`，释放 CLOSED 后自动恢复；control-plane restore 不能越过容量上限；
 - 重建的 DB hang、页失败、重复 cursor、持续递增 cursor、超大分页和局部账户渐进恢复均有 fake clock / Mock 覆盖；
-- 冷重建同时覆盖独立父 incident、全部活动子 incident、`CLOSED` ledger、旧 generation/revision 丢弃和各层独立恢复；不存在由子 scope 投票生成的新父 incident；
+- 冷重建同时覆盖父 incident、子 incident、`CLOSED` ledger、最多 64 个恢复子 scope、超限截断、旧 generation/revision 丢弃和父子恢复顺序；
 - 10k 同时到期的长期 OPEN 不形成整分钟同步探针波次，且 recovery 并发不超过配置上限。
 - 低容量真实 HTTP 风暴至少覆盖同一坏会话 64 路并发、多个 transport 故障账户、健康账户并发上限为 1、队列取消、槽位释放和恢复后重新选择高优先级账户；中间错误不得泄漏给客户端。
 - 多实例 Key probe 至少覆盖 64 个旧 fingerprint 堵塞窗口、claim 互斥、租约过期接管、旧失败迟到和新成功恢复。

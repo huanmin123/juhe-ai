@@ -222,6 +222,14 @@ func TestInspectEvidenceHandlesMultilineSSEAndTruncation(t *testing.T) {
 	}
 }
 
+func TestInspectEvidenceAcceptsGeminiCodeAssistNestedSSE(t *testing.T) {
+	body := []byte("data: {\"response\":{\"candidates\":[{\"finishReason\":\"STOP\"}]}}\n\n")
+	evidence, err := InspectEvidence(ModeGenerateContentSSE, body, false)
+	if err != nil || !evidence.Complete || evidence.Failed {
+		t.Fatalf("evidence = %+v error = %v", evidence, err)
+	}
+}
+
 func decodeTestObject(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	object, err := decodeObject(body)

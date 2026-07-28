@@ -213,7 +213,8 @@ export const authorizedAccountDispatchSchema = z.object({
   clearFailureState: z.boolean().optional()
 }).strict().superRefine((value, context) => {
   const changedKeys = Object.keys(value).filter((key) => key !== 'expectedConfigRevision')
-  if (changedKeys.length === 0 || (changedKeys.length === 1 && value.clearFailureState !== true)) {
+  if (changedKeys.length === 0
+    || (changedKeys.length === 1 && changedKeys[0] === 'clearFailureState' && value.clearFailureState !== true)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: '请至少提交一项授权账户调度变更'

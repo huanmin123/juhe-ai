@@ -188,10 +188,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   })
 
   const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
-  const availableProviders = computed(() => mergeAccountProviderDefinitions(
-    options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS,
-    options.providerDefinitions.value
-  ))
+  const availableProviders = computed(mergedProviderDefinitions)
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
   const selectedProtocolProfile = computed(() => selectedProvider.value
     ? selectedProvider.value.protocolProfiles.find((profile) => profile.id === form.providerProtocolProfileId)
@@ -293,7 +290,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   ))
 
   function defaultForm(providerCode = '', type: AccountType = '', providerProtocolProfileId = ''): AccountFormModel {
-    return defaultAccountForm(providerCode, type, options.providers.value, providerProtocolProfileId)
+    return defaultAccountForm(providerCode, type, mergedProviderDefinitions(), providerProtocolProfileId)
+  }
+
+  function mergedProviderDefinitions(): ProviderDefinition[] {
+    return mergeAccountProviderDefinitions(
+      options.providers.value.length ? options.providers.value : FALLBACK_PROVIDERS,
+      options.providerDefinitions.value
+    )
   }
 
   function resetForm(providerCode = '', type: AccountType = '') {
@@ -400,7 +404,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     () => {
       const supportedModels = [...new Set(form.supportedModels.map((model) => model.trim()).filter(Boolean))]
       const current = form.healthCheckModel.trim()
-      if (current && !supportedModels.includes(current)) form.healthCheckModel = ''
+      if (!supportedModels.includes(current)) form.healthCheckModel = supportedModels[0] ?? ''
     },
     { immediate: true }
   )
@@ -426,8 +430,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     const requestToken = formOpenRequestToken
     const systemAccountId = createScopeParams.value?.systemAccountId
     resetForm(providerCode, '')
+    const initialDefaults = providerDefaultState(form)
     applyCachedDefaultGroup(providerCode)
-    void options.ensureProviderDefinition(providerCode, systemAccountId).catch((error) => {
+    void applyProviderDefinitionDefaultsAfterLoad({
+      ensureDefinition: () => options.ensureProviderDefinition(providerCode, systemAccountId),
+      form,
+      initialDefaults,
+      isCurrent: () => isCurrentFormOpenRequest(requestToken) && modalOpen.value && form.providerCode === providerCode,
+      resolvedDefaults: () => defaultForm(providerCode, '')
+    }).catch((error) => {
       if (!isCurrentFormOpenRequest(requestToken) || !modalOpen.value || form.providerCode !== providerCode) return
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '加载供应商账户类型失败'))
@@ -709,7 +720,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       : undefined
     const fallbackGroupId = options.groupIdForAccount(sourceAccount.id)
     const commonLoadInput = {
-      credentials: sourceAccount.credentials,
+      credentials: {
+        ...sourceAccount.credentials,
+        ...(advancedDetail?.credentials ?? {})
+      },
       defaults,
       fallbackGroupId,
       selectedGroup,
@@ -802,7 +816,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       formLoad = buildAccountCloneFormLoad({
         account: sourceAccount,
         advanced: advancedDetail,
-        credentials: sourceAccount.credentials,
+        credentials: {
+          ...sourceAccount.credentials,
+          ...(advancedDetail.credentials ?? {})
+        },
         defaults,
         fallbackGroupId,
         selectedGroup
@@ -1085,6 +1102,56 @@ function mergeAccountProviderDefinitions(
       enabled: provider.enabled
     }
   })
+}
+
+type ProviderDefaultState = Pick<
+  AccountFormModel,
+  | 'providerProtocolProfileId'
+  | 'type'
+  | 'baseUrl'
+  | 'clientCompatibility'
+  | 'supportedEndpointModes'
+  | 'healthCheckEndpointMode'
+  | 'oauthMode'
+>
+
+interface ApplyProviderDefinitionDefaultsInput {
+  ensureDefinition: () => Promise<ProviderDefinition | undefined>
+  form: ProviderDefaultState
+  initialDefaults: ProviderDefaultState
+  isCurrent: () => boolean
+  resolvedDefaults: () => ProviderDefaultState
+}
+
+export async function applyProviderDefinitionDefaultsAfterLoad(
+  input: ApplyProviderDefinitionDefaultsInput
+): Promise<void> {
+  const definition = await input.ensureDefinition()
+  if (!definition || !input.isCurrent() || !providerDefaultsEqual(input.form, input.initialDefaults)) return
+  Object.assign(input.form, providerDefaultState(input.resolvedDefaults()))
+}
+
+function providerDefaultState(form: ProviderDefaultState): ProviderDefaultState {
+  return {
+    providerProtocolProfileId: form.providerProtocolProfileId,
+    type: form.type,
+    baseUrl: form.baseUrl,
+    clientCompatibility: form.clientCompatibility,
+    supportedEndpointModes: [...form.supportedEndpointModes],
+    healthCheckEndpointMode: form.healthCheckEndpointMode,
+    oauthMode: form.oauthMode
+  }
+}
+
+function providerDefaultsEqual(left: ProviderDefaultState, right: ProviderDefaultState): boolean {
+  return left.providerProtocolProfileId === right.providerProtocolProfileId
+    && left.type === right.type
+    && left.baseUrl === right.baseUrl
+    && left.clientCompatibility === right.clientCompatibility
+    && left.healthCheckEndpointMode === right.healthCheckEndpointMode
+    && left.oauthMode === right.oauthMode
+    && left.supportedEndpointModes.length === right.supportedEndpointModes.length
+    && left.supportedEndpointModes.every((mode, index) => mode === right.supportedEndpointModes[index])
 }
 
 function authorizedAccountBasicDetail(

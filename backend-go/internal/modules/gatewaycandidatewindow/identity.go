@@ -33,3 +33,10 @@ func EffectiveAccountIdentity(candidate Candidate) AccountIdentity {
 	}
 	return identity
 }
+
+func EffectiveClientCompatibility(candidate Candidate) string {
+	if strings.TrimSpace(candidate.Projection.ResourceAccountID) != "" {
+		return strings.TrimSpace(candidate.Projection.ResourceClientCompatibility)
+	}
+	return strings.TrimSpace(candidate.Projection.ClientCompatibility)
+}

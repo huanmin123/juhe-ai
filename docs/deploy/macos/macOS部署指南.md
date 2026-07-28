@@ -31,8 +31,6 @@ lsof -iTCP:3000 -sTCP:LISTEN || true
 - 生产只暴露 Caddy `80/443` 或 WireGuard 回源 listener；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
 - 远端 SSH、launchd 和手工预检必须使用同一条 Node LTS PATH。
 
-本文当前只覆盖 capability v1 / legacy 的单主进程 launchd 拓扑，不是 capability v2 runbook。active deployment contract 为 capability v2 时，启动、停止、`launchctl kickstart`、release 切换和 `temporary-cutover.sh` 都必须 fail-closed；只有 macOS 专用 LaunchDaemon / coordinator 已分别监管 gateway、每 host replay / quarantine、control / due / activation、Asynq、stats，声明持久卷、epoch / lease 域、readyz、producer seal 和最长 drain，并完成 ingress 停止后 replay 继续到 drain certificate 的演练，manifest 才可允许 v2。不得用双 health 200 或旧入口反切替代数据库 epoch 与 drain 证明。
-
 ## 3. 发布包目录
 
 ```text

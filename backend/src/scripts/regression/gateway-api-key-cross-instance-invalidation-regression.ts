@@ -37,6 +37,13 @@ assertOrdered(body, [
   'if (!isGatewayApiKeyValidationGenerationCurrent(generation)) continue',
   'expectedGeneration: generation'
 ], '数据库异步读取后必须确认失效代际，并把同一代际传到缓存写入围栏')
+assertOrdered(body, [
+  'for (let attempt = 0; attempt < gatewayApiKeyValidationAttemptLimit; attempt += 1)',
+  'return await loadGatewayApiKeyForValidationAuthoritativelyAsync(keyHash)'
+], 'PostgreSQL 连续代际冲突耗尽后必须执行不经过缓存的权威读取，不能把有效 Key 误判为 401')
+const authoritativePostgresBody = functionBody(repositorySource, 'loadGatewayApiKeyForValidationAuthoritativelyAsync')
+assert.match(authoritativePostgresBody, /loadGatewayApiKeyBaseRowAsync\(keyHash, client\)/, 'PostgreSQL 权威兜底必须直接回源 API Key 行')
+assert.doesNotMatch(authoritativePostgresBody, /gatewayApiKey(?:Process|Shared)?Cache|setGatewayApiKeyCacheEntry/, 'PostgreSQL 权威兜底不得读取或回填失效竞态中的缓存')
 
 const sqliteWorkerBody = functionBody(repositorySource, 'validateGatewayApiKeyWithSqliteReadWorker')
 assert.match(sqliteWorkerBody, /gatewayApiKeyValidationAttemptLimit/, 'SQLite read worker 鉴权也必须有失效竞态有界重试')
@@ -46,6 +53,13 @@ assertOrdered(sqliteWorkerBody, [
   'if (!isGatewayApiKeyValidationGenerationCurrent(generation)) continue',
   'expectedGeneration: generation'
 ], 'SQLite read worker 返回旧读时不得越过失效代际写回缓存')
+assertOrdered(sqliteWorkerBody, [
+  'for (let attempt = 0; attempt < gatewayApiKeyValidationAttemptLimit; attempt += 1)',
+  'return await loadGatewayApiKeyForValidationWithSqliteReadWorkerAuthoritativelyAsync(key)'
+], 'SQLite 连续代际冲突耗尽后必须执行 read worker 权威读取，不能把有效 Key 误判为 401')
+const authoritativeSqliteBody = functionBody(repositorySource, 'loadGatewayApiKeyForValidationWithSqliteReadWorkerAuthoritativelyAsync')
+assert.match(authoritativeSqliteBody, /requestSqliteReadWorker\(/, 'SQLite 权威兜底必须继续使用 query-only read worker')
+assert.doesNotMatch(authoritativeSqliteBody, /gatewayApiKey(?:Process|Shared)?Cache|setGatewayApiKeyCacheEntry/, 'SQLite 权威兜底不得读取或回填失效竞态中的缓存')
 
 const setCacheBody = functionBody(repositorySource, 'setGatewayApiKeyCacheEntryAsync')
 assertOrdered(setCacheBody, [
@@ -115,6 +129,7 @@ async function assertMemoryRuntimeStateCrossProcessInvalidation(): Promise<void>
   runtimeConfig.runtimeStateDriver = 'memory'
 
   let observedMetadata: unknown
+  let childOutput = ''
   const unregister = invalidation.registerGatewayApiKeyValidationCacheInvalidator(async (apiKeyId, metadata) => {
     if (apiKeyId !== 'key_cross_process_regression') return
     await new Promise<void>((resolve) => setTimeout(resolve, 25))
@@ -133,22 +148,24 @@ async function assertMemoryRuntimeStateCrossProcessInvalidation(): Promise<void>
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   })
-  let childOutput = ''
-  child.stdout?.on('data', (chunk) => { childOutput += String(chunk) })
-  child.stderr?.on('data', (chunk) => { childOutput += String(chunk) })
+  let listenerReadyResolve: (() => void) | undefined
+  const listenerReady = new Promise<void>((resolve) => { listenerReadyResolve = resolve })
+  const collectChildOutput = (chunk: unknown): void => {
+    childOutput += String(chunk)
+    if (childOutput.includes('gateway api key invalidation child listener ready')) listenerReadyResolve?.()
+  }
+  child.stdout?.on('data', collectChildOutput)
+  child.stderr?.on('data', collectChildOutput)
   try {
     dbServiceIpc.attachDbServiceProcess(child)
-    let listenerReadyResolve: (() => void) | undefined
     let readyResolve: (() => void) | undefined
     let completedResolve: (() => void) | undefined
-    const listenerReady = new Promise<void>((resolve) => { listenerReadyResolve = resolve })
     const ready = new Promise<void>((resolve) => { readyResolve = resolve })
     const completed = new Promise<void>((resolve) => { completedResolve = resolve })
     const failed = new Promise<never>((_resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error(`跨进程 API Key 失效回归超时：${childOutput}`)), 10_000)
       child.on('message', (message: unknown) => {
         if (!isRecord(message)) return
-        if (message.type === 'gateway_api_key_invalidation_regression_listener_ready') listenerReadyResolve?.()
         if (message.type === 'gateway_api_key_invalidation_regression_ready') readyResolve?.()
         if (message.type === 'gateway_api_key_invalidation_regression_completed') {
           clearTimeout(timeout)
@@ -178,12 +195,13 @@ async function assertMemoryRuntimeStateCrossProcessInvalidation(): Promise<void>
 
 async function runDbServiceInvalidationChild(): Promise<void> {
   const bootstrap = waitForParentMessage('gateway_api_key_invalidation_regression_bootstrap', '等待跨进程 API Key 失效回归 bootstrap 超时')
-  await sendChildMessageAsync({ type: 'gateway_api_key_invalidation_regression_listener_ready' })
+  process.stderr.write('gateway api key invalidation child listener ready\n')
   await bootstrap
   const { runtimeConfig } = await import('../../config/runtime.js')
   runtimeConfig.processRole = 'db-service'
   runtimeConfig.runtimeStateDriver = 'memory'
-  await import('../../modules/db-service/db-service-ipc.js')
+  const dbServiceIpc = await import('../../modules/db-service/db-service-ipc.js')
+  process.on('message', dbServiceIpc.handleDbServiceParentRuntimeMessage)
   const invalidation = await import('../../shared/gateway-cache-invalidation.js')
   await sendChildMessageAsync({ type: 'gateway_api_key_invalidation_regression_ready' })
   await waitForParentMessage('gateway_api_key_invalidation_regression_start', '等待跨进程 API Key 失效回归启动超时')

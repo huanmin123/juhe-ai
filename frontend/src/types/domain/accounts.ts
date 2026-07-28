@@ -524,6 +524,7 @@ export interface AccountAdvancedDetail {
   id: string
   configRevision: number
   accessType: 'owner' | 'authorized'
+  credentials?: AccountCredentials
   modelMappings: AccountModelMapping[]
   proxyProfileId?: string
   availabilitySchedule?: AccountAvailabilitySchedule

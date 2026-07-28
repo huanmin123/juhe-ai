@@ -156,11 +156,19 @@ const {
   formClientIpConcurrencyLimit,
   formMaxQueueWaitSeconds,
   applyGroupToForm,
-  groupFormPayload,
+  groupCreatePayload,
+  groupEditPatch,
   resetGroupFormForCreate,
   setFormClientIpConcurrencyLimit,
   setFormMaxQueueWaitSeconds
 } = useGroupFormModel(availableProviders)
+type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId'> & {
+  accessType: 'owner' | 'authorized'
+  providerLocked: boolean
+}
+let editingTarget: GroupEditTarget | undefined
+const editingAccessType = ref<'owner' | 'authorized'>()
+const editingProviderLocked = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -269,13 +277,12 @@ const providerOptions = computed(() => {
     { label: selectedName === '未知供应商' ? selectedCode : selectedName, value: selectedCode, disabled: false }
   ]
 })
-const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))
-const editingAuthorizedGroup = computed(() => Boolean(editingGroup.value && isAuthorizedGroup(editingGroup.value)))
+const editingAuthorizedGroup = computed(() => editingAccessType.value === 'authorized')
 const groupModalTitle = computed(() => {
   if (!editingId.value) return '新建分组'
   return editingAuthorizedGroup.value ? '编辑授权分组使用配置' : '编辑分组'
 })
-const providerLocked = computed(() => Boolean(editingId.value && groupStats(editingGroup.value).total))
+const providerLocked = computed(() => Boolean(editingId.value && editingProviderLocked.value))
 const activeFilterCount = computed(() => groupsActiveFilterCount(systemAccountFilter.value))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
@@ -312,6 +319,15 @@ function groupOperationScopeParams(group?: Pick<GroupListItem, 'systemAccountId'
     ? groupScopeParams.value?.systemAccountId
     : group?.systemAccountId?.trim() || groupScopeParams.value?.systemAccountId
   return systemAccountId ? { systemAccountId } : undefined
+}
+
+function groupEditTarget(group: GroupListItem): GroupEditTarget {
+  return {
+    id: group.id,
+    systemAccountId: group.systemAccountId,
+    accessType: isAuthorizedGroup(group) ? 'authorized' : 'owner',
+    providerLocked: groupStats(group).total > 0
+  }
 }
 
 async function loadGroupOptions(force = false): Promise<void> {
@@ -403,6 +419,9 @@ function openCreate() {
   }
   groupEditRequestId += 1
   editingId.value = undefined
+  editingTarget = undefined
+  editingAccessType.value = undefined
+  editingProviderLocked.value = false
   resetGroupFormForCreate()
   modalOpen.value = true
 }
@@ -413,8 +432,12 @@ async function openEdit(group: GroupListItem) {
     return
   }
   const requestId = ++groupEditRequestId
+  const target = groupEditTarget(group)
   if (group.groupType !== 'high_concurrency') {
-    applyGroupToForm(group)
+    applyGroupToForm({ ...group, accessType: target.accessType })
+    editingTarget = target
+    editingAccessType.value = target.accessType
+    editingProviderLocked.value = target.providerLocked
     editingId.value = group.id
     modalOpen.value = true
     return
@@ -428,7 +451,10 @@ async function openEdit(group: GroupListItem) {
       || managementView !== isManagementView.value
       || authRevision !== authState.revision.value
       || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
-    applyGroupToForm(detail)
+    applyGroupToForm({ ...detail, accessType: target.accessType })
+    editingTarget = target
+    editingAccessType.value = target.accessType
+    editingProviderLocked.value = target.providerLocked
     editingId.value = group.id
     modalOpen.value = true
   } catch (error) {
@@ -452,14 +478,19 @@ const saveGroup = submitAction('groups.save', async () => {
   try {
     const targetId = editingId.value
     if (targetId) {
-      const targetGroup = groups.value.find((item) => item.id === targetId)
-      const payload = groupFormPayload(targetGroup)
+      const target = editingTarget
+      if (!target || target.id !== targetId) {
+        modalOpen.value = false
+        message.warning('分组列表已变化，请重新打开编辑弹窗')
+        return
+      }
+      const payload = groupEditPatch()
       if (!Object.keys(payload).length) {
         modalOpen.value = false
         message.info('分组配置未发生变化')
         return
       }
-      const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(targetGroup))
+      const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(target))
       const changedFields = new Set(updated.changedFields)
       updateGroupItems((item) => item.id === targetId, (item) => ({
         ...item,
@@ -469,10 +500,9 @@ const saveGroup = submitAction('groups.save', async () => {
         ...(changedFields.has('enabled') && typeof payload.enabled === 'boolean' ? { enabled: payload.enabled } : {}),
         ...(changedFields.has('groupType') && (payload.groupType === 'personal' || payload.groupType === 'high_concurrency') ? { groupType: payload.groupType } : {})
       }))
-      message.success(targetGroup && isAuthorizedGroup(targetGroup) ? '授权分组使用配置已更新' : '分组已更新')
-      void loadData({ quiet: true })
+      message.success(target.accessType === 'authorized' ? '授权分组使用配置已更新' : '分组已更新')
     } else {
-      const payload = groupFormPayload()
+      const payload = groupCreatePayload()
       await groupsApi.create(payload, groupScopeParams.value)
       message.success('分组已创建')
       await loadData()

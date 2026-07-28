@@ -28,8 +28,6 @@ netstat -ano | Select-String ':3000'
 - Node.js 使用官方 LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`。
 - 生产只开放 `80/443`；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
 
-本文当前只覆盖 capability v1 / legacy 的单主进程服务化，不是 capability v2 runbook。active deployment contract 为 capability v2 时，Windows 启动、停止、NSSM / Service 重启和发布切换入口都必须 fail-closed；只有 Windows 专用流程已经分别监管 gateway、每 host replay / quarantine、control / due / activation、Asynq、stats 与 deployment coordinator，声明持久卷、epoch / lease 域、readyz、producer seal 和最长 drain，并完成 ingress 停止后 replay 继续到 drain certificate 的演练，manifest 才可允许 v2。不得直接沿用本文旧服务命令或用 HTTP 200 代替角色证明。
-
 ## 3. 发布包目录
 
 ```text

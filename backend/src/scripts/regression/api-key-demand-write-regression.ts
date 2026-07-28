@@ -155,6 +155,10 @@ try {
     revision: descriptionPatch.result.revision,
     description: '只改说明'
   }, '单字段 PATCH 响应只应返回行合并所需字段')
+  assert.equal(descriptionPatch.ownerSystemAccountId, access.systemAccountId, '字段级 PATCH 必须保留审计 owner')
+  assert.equal(descriptionPatch.resourceName, created.name, '非名称 PATCH 必须保留当前审计资源名')
+  assert.deepEqual(descriptionPatch.before, { description: '初始说明' }, '审计 before 只应包含真实变化字段')
+  assert.deepEqual(descriptionPatch.after, { description: '只改说明' }, '审计 after 只应包含真实变化字段')
   assert.equal(quotaBinding(created.id)?.updated_at, initialBinding?.updated_at, '说明变更不得重建小时额度窗口')
   assert.deepEqual(runtimeInvalidations, [], '说明变更不得失效 gateway runtime')
   assert.deepEqual(quotaInvalidations, [], '说明变更不得失效 quota cache')
@@ -170,6 +174,9 @@ try {
   const namePatch = namePatchCapture.result
   assert(namePatch)
   assert.deepEqual(namePatch.result.changedFields, ['name'])
+  assert.equal(namePatch.resourceName, `${created.name} 改`, '名称 PATCH 审计资源名必须使用提交后的名称')
+  assert.deepEqual(namePatch.before, { name: created.name })
+  assert.deepEqual(namePatch.after, { name: `${created.name} 改` })
   assert.deepEqual(
     apiKeyPatchSelectColumnsFromSql(namePatchCapture.sql),
     ['id', 'is_default', 'name', 'purpose', 'system_account_id', 'updated_at'],
@@ -215,14 +222,20 @@ try {
     '路由 PATCH 提交后下一次运行时读取必须立即看到新路由，不能命中 60 秒旧快照'
   )
 
-  const expiresPatch = await repositories.patchApiKeyAsync(
+  const expiresPatchCapture = await captureBusinessSql(() => repositories.patchApiKeyAsync(
     created.id,
     { expiresAt: '2099-01-01T00:00:00.000Z' },
     routePatch.result.revision,
     access
-  )
+  ))
+  const expiresPatch = expiresPatchCapture.result
   assert(expiresPatch)
   assert.deepEqual(expiresPatch.result.changedFields, ['expiresAt'])
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(expiresPatchCapture.sql),
+    ['expires_at', 'id', 'key_hash', 'name', 'system_account_id', 'updated_at'],
+    '有效期 PATCH 只应额外读取旧有效期与定点鉴权失效所需字段'
+  )
   assert.equal(runtimeInvalidations.length, 0, '有效期变更只需定点 validation 失效，不得清理全局 gateway runtime')
   assert.deepEqual(quotaInvalidations, [], '有效期变更不得失效 quota cache')
   assert.equal(quotaBinding(created.id)?.updated_at, initialBinding?.updated_at, '有效期变更不得重建小时额度窗口')

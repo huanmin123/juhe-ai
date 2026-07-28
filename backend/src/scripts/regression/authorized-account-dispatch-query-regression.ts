@@ -97,6 +97,8 @@ try {
       status: 'active',
       groupId: ownerGroup.id,
       credentials: { api_key: `sk-authorized-dispatch-query-${index}`, base_url: 'https://api.openai.com/v1' },
+      supportedModels: ['gpt-5.5'],
+      skipInitialHealthCheck: true,
       proxyProfileId: index === 0 ? disabledProxy.id : sharedProxy.id
     }, ownerAccess)
     repositories.createResourceAuthorization({
@@ -123,6 +125,8 @@ try {
     status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-stale', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    skipInitialHealthCheck: true,
     proxyProfileId: staleBadProxy.id
   }, ownerAccess)
   const staleAuthorization = repositories.createResourceAuthorization({
@@ -152,6 +156,8 @@ try {
     status: 'active',
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-authorized-dispatch-disabled-source', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    skipInitialHealthCheck: true,
     proxyProfileId: disabledSourceBadProxy.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -173,6 +179,8 @@ try {
     supportedModels: ['gpt-5.5']
   }, ownerAccess), '父账户停用后仍应允许所有者更新资源凭据和模型')
   repositories.updateProxy(disabledProxy.id, { enabled: false })
+  const ownerDisabledListAccount = repositories.listAccounts(granteeAccess)
+    .find((account) => account.id === ownerDisabledAuthorizedInstance.id)
 
   const database = databaseModule.getBusinessDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -211,7 +219,6 @@ try {
     }
     assert.equal(dispatchIds.has(staleAuthorizedInstance.id), false, '授权关系失效后实例应在凭据解密前被跳过')
     assert.equal(dispatchIds.has(ownerDisabledAuthorizedInstance.id), false, '父账户停用应阻断授权实例调度')
-    const ownerDisabledListAccount = repositories.listAccounts(granteeAccess).find((account) => account.id === ownerDisabledAuthorizedInstance.id)
     assert.equal(ownerDisabledListAccount?.effectiveAvailability.status, 'source_disabled', '父账户停用时授权实例列表应返回来源停用实际状态')
     assert(!dispatchAccounts.some((account) => account.proxyProfileId === staleBadProxy.id || account.proxyProfileId === staleAuthorizedInstance.proxyProfileId), '授权失效实例的坏代理不应进入代理解析范围')
     const enabledProxyAccounts = dispatchAccounts.filter((account) => accountIds.includes(account.id) && account.id !== disabledProxyAccountId)

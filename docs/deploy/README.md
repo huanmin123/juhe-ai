@@ -14,7 +14,7 @@
 | 公网 Edge 回源、多人高并发、SSE 长连接 | [反向代理与高并发隧道部署指南](反向代理与高并发隧道部署指南.md) | WireGuard、Caddy/Nginx、系统参数、切换回滚 |
 | 不确定怎么选 | [部署场景选择示例](scenarios/部署场景选择示例.md) | 按示例跳转 |
 
-`部署指南.md` 只保留发布包启动、环境变量、验证、常驻以及项目备份和业务备份这些通用基线，不再作为部署方式选择入口。默认旧模式的两类备份分别只保留最近 3 次，日志、审计 payload、usage 和 Redis 不备份；普通统计仍按旧排除规则处理。capability v2 是强制例外：`juhe_stats` 必须与 `juhe_business` 进入同一个 PostgreSQL 一致快照，`juhe_rollback_compat` 存在时也进入同一 dump，且 compat 非空期间必须保留可恢复的 PITR/WAL 范围，不能套用“统计不备份”或固定三份轮换规则。
+`部署指南.md` 只保留发布包启动、环境变量、验证、常驻以及项目备份和业务备份这些通用基线，不再作为部署方式选择入口。两类备份分别只保留最近 3 次，日志、审计、usage、统计和 Redis 不备份。
 
 ## 文档索引
 
@@ -48,7 +48,3 @@
 - 压测、性能分析和容量结论统一放入 `docs/reports/`，不要混入部署操作手册。
 - 影响本地开发启动或测试验证的内容应优先更新 `docs/develop/`，不要混入部署文档。
 - 影响环境变量、数据目录、加密密钥或发布包结构时，需要同时确认构建指南和部署指南。
-
-## Capability v2 平台门禁
-
-模型能力健康 v2 不是“多启动一个 worker”即可启用。Docker、Linux systemd、Windows Service / PowerShell、macOS launchd 和高性能拓扑各自都必须有可执行 runbook，明确 gateway、每个 gateway host 独立 capability-handoff-replay / quarantine、control projector / reconciler / due scheduler、Asynq consumer、stats partition / hour-close、deployment coordinator 的实例数，active / prepared epoch，host volume / producer inventory / replay fencing lease、shard / cursor / advisory lock 域，readyz，停止顺序和最长 drain。gateway ingress 先停，replay 必须继续到 ACK drain；单个 exported PostgreSQL snapshot 覆盖 `public.goose_db_version + juhe_business + juhe_stats`，compat 存在时同 dump 覆盖它，并携带同 barrier 的 handoff / quarantine 证据和 PITR。对应平台 runbook 和演练报告缺失时，manifest preflight 必须拒绝 capability v2；不能借用另一个平台的命令或只凭 HTTP 200 放行。

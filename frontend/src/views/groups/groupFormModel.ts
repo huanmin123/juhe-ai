@@ -21,11 +21,12 @@ export type GroupEditForm = {
 
 type GroupFormSeed = Pick<
   GroupSummary,
-  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType'
+  'name' | 'providerCode' | 'description' | 'enabled' | 'groupType' | 'accessType'
 > & Partial<Pick<GroupSummary, 'schedulingPolicy'>>
 
 export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefinition[]>) {
   let editBaseline: GroupEditForm | undefined
+  let editAccessType: 'owner' | 'authorized' | undefined
   const form = reactive<GroupEditForm>({
     name: '',
     providerCode: GPT_VENDOR_CODE,
@@ -55,6 +56,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
 
   function resetGroupFormForCreate() {
     editBaseline = undefined
+    editAccessType = undefined
     const providerCode = defaultProviderCode()
     Object.assign(form, {
       name: '',
@@ -79,6 +81,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       schedulingPolicy
     })
     editBaseline = currentGroupFormSnapshot()
+    editAccessType = group.accessType === 'authorized' ? 'authorized' : 'owner'
   }
 
   function setFormMaxQueueWaitSeconds(value: unknown) {
@@ -91,38 +94,35 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     form.schedulingPolicy.clientIpConcurrencyLimit = value
   }
 
-  function groupFormPayload(targetGroup?: Pick<GroupSummary, 'accessType'>): Record<string, unknown> {
+  function groupEditPatch(): Record<string, unknown> {
+    if (!editBaseline || !editAccessType) throw new Error('缺少分组编辑基线，请重新打开编辑弹窗')
     const current = currentGroupFormSnapshot()
     const schedulingPolicy = writableSchedulingPolicy(current)
-    const localSettings = {
-      enabled: current.enabled,
-      groupType: current.groupType,
-      schedulingPolicy: current.groupType === 'high_concurrency'
-        ? schedulingPolicy
-        : undefined
+    const payload: Record<string, unknown> = {}
+    if (current.enabled !== editBaseline.enabled) payload.enabled = current.enabled
+    if (current.groupType !== editBaseline.groupType) payload.groupType = current.groupType
+    if (current.groupType === 'high_concurrency'
+      && (editBaseline.groupType !== 'high_concurrency'
+        || !sameSchedulingPolicy(writableSchedulingPolicy(editBaseline), schedulingPolicy))) {
+      payload.schedulingPolicy = schedulingPolicy
     }
-    if (targetGroup) {
-      if (!editBaseline) throw new Error('缺少分组编辑基线，请重新打开编辑弹窗')
-      const payload: Record<string, unknown> = {}
-      if (current.enabled !== editBaseline.enabled) payload.enabled = current.enabled
-      if (current.groupType !== editBaseline.groupType) payload.groupType = current.groupType
-      if (current.groupType === 'high_concurrency'
-        && (editBaseline.groupType !== 'high_concurrency'
-          || !sameSchedulingPolicy(writableSchedulingPolicy(editBaseline), schedulingPolicy))) {
-        payload.schedulingPolicy = schedulingPolicy
-      }
-      if (targetGroup.accessType !== 'authorized') {
-        if (current.name !== editBaseline.name) payload.name = current.name
-        if (current.providerCode !== editBaseline.providerCode) payload.providerCode = current.providerCode
-        if (current.description !== editBaseline.description) payload.description = current.description
-      }
-      return payload
+    if (editAccessType !== 'authorized') {
+      if (current.name !== editBaseline.name) payload.name = current.name
+      if (current.providerCode !== editBaseline.providerCode) payload.providerCode = current.providerCode
+      if (current.description !== editBaseline.description) payload.description = current.description
     }
+    return payload
+  }
+
+  function groupCreatePayload(): Record<string, unknown> {
+    const current = currentGroupFormSnapshot()
     return {
       name: current.name,
       providerCode: current.providerCode,
       description: current.description,
-      ...localSettings
+      enabled: current.enabled,
+      groupType: current.groupType,
+      ...(current.groupType === 'high_concurrency' ? { schedulingPolicy: writableSchedulingPolicy(current) } : {})
     }
   }
 
@@ -166,7 +166,8 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
     formClientIpConcurrencyLimit,
     formMaxQueueWaitSeconds,
     applyGroupToForm,
-    groupFormPayload,
+    groupCreatePayload,
+    groupEditPatch,
     resetGroupFormForCreate,
     setFormClientIpConcurrencyLimit,
     setFormMaxQueueWaitSeconds

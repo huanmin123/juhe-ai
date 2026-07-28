@@ -483,6 +483,8 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   const requestedStatus = normalizedAccountStatusInput(input.status, row.status)
   assertStatusMutationAllowed(row.status, requestedStatus, hasStatusInput)
   const expiresAtChanged = currentExpiresAt !== nextExpiresAt
+  const currentSchedulable = databaseBoolean(row.schedulable)
+  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', currentSchedulable, '账户是否参与调度')
   const expiredByPackage = expiresAtChanged && isAccountExpired(nextExpiresAt, nowMs)
   const scheduledStatus = expiredByPackage
     ? 'disabled'
@@ -492,13 +494,24 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   const nextStatus = connectionChanged && scheduledStatus !== 'disabled' ? 'pending_test' : scheduledStatus
   const statusChanged = row.status !== nextStatus
 
-  const currentSchedulable = databaseBoolean(row.schedulable)
-  const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', currentSchedulable, '账户是否参与调度')
   const nextSchedulable = expiredByPackage || (statusChanged && accountStatusForcesSchedulableOff(nextStatus))
     ? false
     : statusChanged && nextStatus !== 'disabled'
       ? true
       : requestedSchedulable
+  const explicitActivationRequested = hasStatusInput
+    && requestedStatus === 'active'
+    && (row.status !== 'active' || !currentSchedulable)
+  const explicitSchedulingEnableRequested = hasOwnInput(input, 'schedulable')
+    && requestedSchedulable
+    && !currentSchedulable
+  const enablesAccount = explicitActivationRequested
+    || explicitSchedulingEnableRequested
+    || (row.status !== 'active' && nextStatus === 'active')
+    || (!currentSchedulable && nextSchedulable)
+  if (enablesAccount && isAccountExpired(nextExpiresAt, nowMs)) {
+    throw new Error('账户套餐已到期，不能启用或参与调度')
+  }
   setColumn('status', row.status, nextStatus)
   setColumn('schedulable', currentSchedulable, nextSchedulable, nextSchedulable ? 1 : 0)
   addChange('status', row.status, nextStatus)
@@ -1091,7 +1104,7 @@ function accountManagementPatchProjection(input: AccountManagementPatchInput): s
   if (hasOwnInput(input, 'notes')) add('notes')
   if (hasOwnInput(input, 'concurrencyLimit')) add('concurrency_limit')
   if (hasOwnInput(input, 'availabilitySchedule')) {
-    add('availability_schedule_json', 'availability_schedule_next_check_at', 'schedulable')
+    add('availability_schedule_json', 'availability_schedule_next_check_at', 'schedulable', 'account_expires_at')
     addRuntimeState()
   }
   if (hasOwnInput(input, 'accountExpiresAt')) {
@@ -1099,10 +1112,10 @@ function accountManagementPatchProjection(input: AccountManagementPatchInput): s
     addRuntimeState()
   }
   if (hasOwnInput(input, 'status')) {
-    add('schedulable')
+    add('schedulable', 'account_expires_at')
     addRuntimeState()
   }
-  if (hasOwnInput(input, 'schedulable')) add('schedulable')
+  if (hasOwnInput(input, 'schedulable')) add('schedulable', 'account_expires_at')
   if (hasOwnInput(input, 'temporaryUnavailableContinuousProbeEnabled')) {
     add('temporary_unavailable_continuous_probe_enabled')
     addRuntimeState()

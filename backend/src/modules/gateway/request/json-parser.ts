@@ -17,6 +17,7 @@ import {
 } from '../adapters/gpt-codex/oauth-normalizer.js'
 import { OpenAIOAuthCodexAdapterError } from '../adapters/gpt-codex/oauth-errors.js'
 import { bindGatewaySerializedJsonObject } from './serialized-json-body.js'
+import { GatewayRequestValidationError } from './validation-error.js'
 
 type GatewayJsonWorkerJobType =
   | 'extract_json_body_metadata'
@@ -48,6 +49,7 @@ interface GatewayJsonWorkerResponse {
   ok: boolean
   value?: unknown
   failureClass?: 'expected' | 'infrastructure'
+  errorKind?: 'openai_oauth_codex_adapter' | 'gateway_request_validation'
   error?: GatewayJsonWorkerErrorEnvelope
   errorCode?: string
   errorStatusCode?: number
@@ -687,6 +689,16 @@ function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWork
   const errorMessage = message.error?.message ?? '网关 JSON 请求体必须是有效 JSON'
   if (
     isOpenAIOAuthCodexNormalizeJob(job.type)
+    && message.errorKind === 'gateway_request_validation'
+  ) {
+    return applyWorkerErrorEnvelope(new GatewayRequestValidationError(errorMessage, message.errorCode, {
+      statusCode: message.errorStatusCode,
+      type: message.errorType,
+      accountScoped: message.errorAccountScoped
+    }), message.error)
+  }
+  if (
+    isOpenAIOAuthCodexNormalizeJob(job.type)
     && message.errorCode === 'invalid_openai_oauth_codex_request'
   ) {
     return applyWorkerErrorEnvelope(new OpenAIOAuthCodexAdapterError(errorMessage, message.errorCode, {
@@ -733,8 +745,13 @@ function isExpectedWorkerResponseError(
     return message.error?.name === 'SyntaxError'
   }
   return isOpenAIOAuthCodexNormalizeJob(job.type)
-    && message.errorCode === 'invalid_openai_oauth_codex_request'
-    && error instanceof OpenAIOAuthCodexAdapterError
+    && (
+      (message.errorKind === 'openai_oauth_codex_adapter'
+        && message.errorCode === 'invalid_openai_oauth_codex_request'
+        && error instanceof OpenAIOAuthCodexAdapterError)
+      || (message.errorKind === 'gateway_request_validation'
+        && error instanceof GatewayRequestValidationError)
+    )
 }
 
 function pushQueuedJob(job: GatewayJsonWorkerJob): void {

@@ -41,7 +41,7 @@ export function buildAccountBasicEditSnapshot(
       tags: normalizeFormTagNames(form.tags).sort(),
       notes: form.notes,
       supportedModels: normalizedTextList(form.supportedModels).sort(),
-      healthCheckModel: form.healthCheckModel.trim() || null,
+      healthCheckModel: form.healthCheckModel.trim(),
       healthCheckEndpointMode: form.healthCheckEndpointMode
     })
   }

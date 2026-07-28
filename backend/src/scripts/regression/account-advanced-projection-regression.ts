@@ -122,6 +122,7 @@ try {
     'balanceQueryConfig',
     'balanceQueryEnabled',
     'configRevision',
+    'credentials',
     'id',
     'modelMappings',
     'proxyProfileId',
@@ -129,6 +130,12 @@ try {
   ].sort()
   assert.deepEqual(Object.keys(detail).sort(), expectedKeys, 'advanced 必须使用独立字段白名单')
   assert.deepEqual(detail.modelMappings, [])
+  assert.deepEqual(Object.keys(detail.credentials ?? {}).sort(), [
+    'codex_responses_safe_repair_enabled',
+    'codex_responses_strict_intercept_enabled',
+    'reasoning_effort_override',
+    'service_tier_override'
+  ])
   assert.equal(detail.proxyProfileId, proxy.id)
   assert.equal(detail.balanceQueryConfig?.intervalMinutes, 10)
   assert.equal(detail.temporaryUnavailableContinuousProbeEnabled, false)
@@ -206,6 +213,7 @@ try {
   const authorizedDetail = await advancedRepository.findAccountAdvancedDetailAsync(authorizedInstance.id, access)
   assert(authorizedDetail, '授权实例应返回独立的只读高级投影')
   assert.equal(authorizedDetail.accessType, 'authorized')
+  assert.equal(authorizedDetail.credentials, undefined, '授权实例高级投影不得读取或返回来源账户凭据')
   assert.equal(authorizedDetail.authorizationInstanceSourceAccountStatus, 'active')
   assert.equal(authorizedDetail.authorizationInstanceSourceAccountSchedulable, true)
   assert.equal(authorizedDetail.accountExpiresAt, '2027-01-01T00:00:00.000Z')

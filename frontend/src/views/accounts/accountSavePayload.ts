@@ -165,7 +165,8 @@ export function validateAccountSaveForm(input: {
   const supportedModels = normalizeSupportedModels(form.supportedModels)
   if (!supportedModels.length) return '请选择支持模型'
   const healthCheckModel = form.healthCheckModel.trim()
-  if (healthCheckModel && !supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
+  if (!healthCheckModel) return '请选择检查模型'
+  if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
   if (!accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)) {
     return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
   }

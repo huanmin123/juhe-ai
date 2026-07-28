@@ -31,8 +31,8 @@ export interface AccountManualTestOption {
   name: string
 }
 
-export interface AccountManualTestModelCapabilities extends AccountManualTestOption {
-  supportedApiProtocols: ProviderModelApiProtocol[]
+export interface AccountManualTestModelCapabilities {
+  id: string
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 
@@ -139,8 +139,6 @@ export async function accountManualTestModelCapabilitiesAsync(
   }
   return {
     id: item.model,
-    name: item.model,
-    supportedApiProtocols: item.supportedApiProtocols ?? [],
     testEndpointModes
   }
 }

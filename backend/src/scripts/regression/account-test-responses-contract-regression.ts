@@ -96,10 +96,14 @@ try {
     name: '测试 OAuth 固定 Codex 账户',
     type: 'oauth',
     groupId: group.id,
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     credentials: {
       base_url: 'https://chatgpt.com/backend-api/codex',
       access_token: 'oauth-access-token',
       refresh_token: 'oauth-refresh-token',
+      account_id: 'acct-test-responses-contract',
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString()
     }
   }, access)
@@ -144,8 +148,8 @@ try {
   for (const option of manualTestOptions) {
     assert.deepEqual(
       Object.keys(option).sort(),
-      ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
-      '人工测试模型下拉必须随模型返回协议与可用请求形态'
+      ['id', 'name'],
+      '人工测试模型下拉只能返回可显示的模型标识与名称'
     )
     assert(option.id.trim(), '模型下拉 ID 不得为空')
     assert(option.name.trim(), `模型 ${option.id} 的下拉展示名称不得为空`)
@@ -157,11 +161,10 @@ try {
   )
   assert.deepEqual(
     Object.keys(manualTestModelCapabilities).sort(),
-    ['id', 'name', 'supportedApiProtocols', 'testEndpointModes'],
-    '单模型能力接口返回模型标识、目录协议和可用请求形态'
+    ['id', 'testEndpointModes'],
+    '单模型能力接口只返回模型标识和可用请求形态'
   )
   assert.equal(manualTestModelCapabilities.id, 'gpt-5.5', '单模型能力应保留请求的模型 ID')
-  assert.equal(manualTestModelCapabilities.name, 'gpt-5.5', '单模型能力展示名称应与模型 ID 保持稳定映射')
   assert.deepEqual(
     manualTestModelCapabilities.testEndpointModes,
     ['responses_sse', 'chat_sse', 'chat_json', 'responses_json'],

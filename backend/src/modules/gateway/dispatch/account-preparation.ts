@@ -1,6 +1,10 @@
 import type { Request } from 'express'
 
-import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
+import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  isGptVendorCode,
+  isOpenAIProtocolProfile
+} from '../../../domain/provider-protocol.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
@@ -41,6 +45,7 @@ import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mappi
 import { preparedUpstreamBodyMetadata } from '../upstream/body-preparation.js'
 import {
   gatewaySerializedJsonObject,
+  isGatewayCodexHistorySanitized,
   serializeGatewayJsonObject
 } from '../request/serialized-json-body.js'
 
@@ -266,7 +271,9 @@ export async function buildPreparedUpstreamRequestParts(
 ): Promise<PreparedUpstreamRequestParts> {
   try {
     prepareCodexResponsesContextForAccount(req, account)
-    sanitizeCodexResponsesHistoryForAccount(req, account, context)
+    if (!defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(req, account, context)) {
+      sanitizeCodexResponsesHistoryForAccount(req, account, context)
+    }
     const parts = await buildGatewayUpstreamRequestParts(req, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
@@ -303,6 +310,19 @@ export async function buildPreparedUpstreamRequestParts(
   }
 }
 
+function defersCodexResponsesHistorySanitizationToOpenAIOAuthWorker(
+  req: Request,
+  account: UpstreamAccount,
+  context: ProviderGatewayRequestContext | undefined
+): boolean {
+  return account.type === 'oauth'
+    && isGptVendorCode(account.providerCode)
+    && isOpenAIProtocolProfile(account)
+    && account.providerProtocolProfileId === GPT_OPENAI_V1_PROFILE_ID
+    && context?.requestClientCompatibility === 'codex_responses'
+    && gatewayRequestEndpointFamily(req) === 'responses'
+}
+
 function sanitizeCodexResponsesHistoryForAccount(
   req: Request,
   account: UpstreamAccount,
@@ -334,6 +354,7 @@ export function sanitizePreparedCodexResponsesHistoryForAccount(
   if (body === undefined) return undefined
   if (context?.requestClientCompatibility !== 'codex_responses') return body
   if (gatewayRequestEndpointFamily(req) !== 'responses') return body
+  if (isGatewayCodexHistorySanitized(body)) return body
   const parsed = serializedGatewayJsonObject(body)
   if (!parsed || !Array.isArray(parsed.input)) return body
   const result = sanitizeCodexResponseHistoryItems(parsed.input, {

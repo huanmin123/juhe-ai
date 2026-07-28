@@ -229,8 +229,6 @@ try {
   assert.deepEqual(Object.keys(editDetail.credentials).sort(), [
     'api_key',
     'base_url',
-    'codex_responses_safe_repair_enabled',
-    'codex_responses_strict_intercept_enabled',
     'supported_endpoint_modes'
   ])
   assert.deepEqual(editDetail.supportedModels, ['gpt-5.4-mini'])

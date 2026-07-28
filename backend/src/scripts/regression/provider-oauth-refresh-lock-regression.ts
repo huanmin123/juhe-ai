@@ -11,11 +11,13 @@ import {
 class TestLockStore implements RuntimeStateStore {
   private readonly locks = new Map<string, { token: string; expiresAt: number }>()
   renewCalls = 0
+  onAcquire?: (key: string) => void
 
   async acquireLock(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
     const current = this.freshLock(key)
     if (current) return false
     this.locks.set(key, { token: options.token, expiresAt: Date.now() + options.ttlMs })
+    this.onAcquire?.(key)
     return true
   }
 
@@ -87,6 +89,85 @@ const independent = await Promise.all([
 ])
 assert.deepEqual(independent, ['anthropic', 'xai'], '供应商必须参与锁 key，避免不同供应商同 id 互相阻塞')
 
+const legacyStore = new TestLockStore()
+let releaseLegacyHolder: (() => void) | undefined
+let legacyHolding = false
+const legacyHolderGate = new Promise<void>((resolve) => { releaseLegacyHolder = resolve })
+const legacyHolder = (async () => {
+  assert.equal(await legacyStore.acquireLock('rolling-account', { ttlMs: 1_000, token: 'legacy-node' }), true)
+  legacyHolding = true
+  await legacyHolderGate
+  await legacyStore.releaseLock('rolling-account', 'legacy-node')
+})()
+await waitUntil(() => legacyHolding)
+let dualLockEntered = false
+const dualLockTask = runWithProviderOAuthRefreshLock('gpt', 'rolling-account', async () => {
+  dualLockEntered = true
+  assert.equal(await legacyStore.acquireLock('rolling-account', { ttlMs: 1_000, token: 'legacy-probe' }), false)
+  assert.equal(await store.acquireLock('gpt:rolling-account', { ttlMs: 1_000, token: 'provider-probe' }), false)
+}, {
+  lockStore: store,
+  compatibilityLock: { lockStore: legacyStore, lockKey: 'rolling-account' },
+  waitMs: 1_000,
+  retryMs: 5
+})
+await delay(20)
+assert.equal(dualLockEntered, false, '旧节点持有 legacy 锁时，新节点不能进入 token exchange')
+releaseLegacyHolder?.()
+await legacyHolder
+await dualLockTask
+assert.equal(dualLockEntered, true)
+assert.equal(await legacyStore.acquireLock('rolling-account', { ttlMs: 1_000, token: 'released-legacy-probe' }), true)
+await legacyStore.releaseLock('rolling-account', 'released-legacy-probe')
+
+await runWithProviderOAuthRefreshLock('gpt', 'deduplicated-account', async () => undefined, {
+  lockStore: store,
+  compatibilityLock: { lockStore: store, lockKey: 'gpt:deduplicated-account' },
+  failIfLocked: true
+})
+
+await store.acquireLock('gpt:partial-account', { ttlMs: 1_000, token: 'provider-holder' })
+await assert.rejects(
+  runWithProviderOAuthRefreshLock('gpt', 'partial-account', async () => undefined, {
+    lockStore: store,
+    compatibilityLock: { lockStore: legacyStore, lockKey: 'partial-account' },
+    failIfLocked: true
+  }),
+  /正在其他节点刷新/u
+)
+assert.equal(
+  await legacyStore.acquireLock('partial-account', { ttlMs: 1_000, token: 'partial-release-probe' }),
+  true,
+  '新锁忙时必须释放已经取得的 legacy 锁'
+)
+await legacyStore.releaseLock('partial-account', 'partial-release-probe')
+await store.releaseLock('gpt:partial-account', 'provider-holder')
+
+const abortAfterAcquireStore = new TestLockStore()
+const abortAfterAcquire = new AbortController()
+let acquiredCallbackCalled = false
+let cancelledTaskEntered = false
+abortAfterAcquireStore.onAcquire = () => abortAfterAcquire.abort(new Error('worker shutdown'))
+await assert.rejects(
+  runWithProviderOAuthRefreshLock('gpt', 'shutdown-account', async () => {
+    cancelledTaskEntered = true
+  }, {
+    lockStore: abortAfterAcquireStore,
+    signal: abortAfterAcquire.signal,
+    onLockAcquired: () => { acquiredCallbackCalled = true }
+  }),
+  /worker shutdown/u
+)
+assert.equal(acquiredCallbackCalled, false, '锁等待期间 shutdown 时不能把未发起的刷新计为 started')
+assert.equal(cancelledTaskEntered, false, '锁等待期间 shutdown 时不能进入 token exchange')
+abortAfterAcquireStore.onAcquire = undefined
+assert.equal(
+  await abortAfterAcquireStore.acquireLock('gpt:shutdown-account', { ttlMs: 1_000, token: 'release-probe' }),
+  true,
+  'acquire 完成后的取消也必须释放锁'
+)
+await abortAfterAcquireStore.releaseLock('gpt:shutdown-account', 'release-probe')
+
 await store.acquireLock('xai:busy-account', { ttlMs: 1_000, token: 'external-holder' })
 await assert.rejects(
   runWithProviderOAuthRefreshLock('xai', 'busy-account', async () => undefined, {
@@ -142,9 +223,9 @@ await assert.rejects(lostLockTask, /刷新锁已丢失/u, '锁所有权丢失必
 
 console.log('provider OAuth refresh lock regression passed')
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
+async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 1_000
-  while (!predicate()) {
+  while (!await predicate()) {
     if (Date.now() >= deadline) throw new Error('等待测试条件超时')
     await delay(1)
   }

@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 
 import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderCode } from '../domain/types.js'
@@ -28,7 +28,6 @@ import {
   hasOwnInput,
   normalizeNullableTextInput,
   normalizeOptionalBooleanInput,
-  normalizeOptionalRequiredTextInput,
   requiredTextInput
 } from './repository-input-normalization.js'
 import {
@@ -281,6 +280,9 @@ export async function patchGroupAsync(id: string, input: Record<string, unknown>
     result = await client.transaction(async (tx) => {
       let current = await findGroupPatchRowAsync(tx, id, input, access)
       if (!current) return undefined
+      if (current.access_type === 'authorized') {
+        assertKnownInputKeys(input, authorizedGroupSettingsInputKeys, '授权分组使用配置')
+      }
       if (tx.driver === 'postgres') {
         await lockGroupMutationRowAsync(tx, id, current.system_account_id)
         if (current.authorization_id) await lockGroupAuthorizationMutationRowAsync(tx, current.authorization_id)
@@ -289,9 +291,6 @@ export async function patchGroupAsync(id: string, input: Record<string, unknown>
       }
       if (current.access_type === 'owner' && databaseBoolean(current.is_default)) {
         throw new DefaultGroupReadonlyError()
-      }
-      if (current.access_type === 'authorized') {
-        assertKnownInputKeys(input, authorizedGroupSettingsInputKeys, '授权分组使用配置')
       }
       const plan = buildGroupPatchPlan(current, input)
       if (plan.columns.size > 0) {
@@ -358,36 +357,48 @@ function buildGroupPatchPlan(current: GroupPatchRow, input: Record<string, unkno
       setColumn('group_type', beforeGroupType, afterGroupType)
       addChange('groupType', beforeGroupType, afterGroupType)
     }
-    if (hasSchedulingPolicyInput) {
+    if (beforeGroupType !== afterGroupType) {
       const afterJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), afterGroupType)
-      const beforePolicy = beforeGroupType === afterGroupType
-        ? parseGroupSchedulingPolicyJson(current.scheduling_policy_json, beforeGroupType)
-        : undefined
+      columns.set('scheduling_policy_json', afterJson)
+      if (hasSchedulingPolicyInput) {
+        const beforePolicy = parseGroupSchedulingPolicyJson(current.scheduling_policy_json, beforeGroupType)
+        const afterPolicy = parseGroupSchedulingPolicyJson(afterJson, afterGroupType)
+        addChange('schedulingPolicy', beforePolicy, afterPolicy)
+      }
+    } else if (hasSchedulingPolicyInput) {
+      const beforePolicy = parseGroupSchedulingPolicyJson(current.scheduling_policy_json, beforeGroupType)
+      const afterJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), afterGroupType)
       const afterPolicy = parseGroupSchedulingPolicyJson(afterJson, afterGroupType)
       setColumn('scheduling_policy_json', beforePolicy, afterPolicy, afterJson)
       addChange('schedulingPolicy', beforePolicy, afterPolicy)
-    } else if (beforeGroupType !== afterGroupType) {
-      columns.set('scheduling_policy_json', groupSchedulingPolicyJson(undefined, afterGroupType))
     }
   }
   return { columns, changes, name: nextName }
 }
 
 function applyOwnedGroupPatch(database: DatabaseSync, current: GroupPatchRow, plan: GroupPatchPlan): void {
-  if (plan.columns.has('provider_code') && ownedGroupHasAccounts(database, current.id)) {
-    throw new Error('已有账户的分组不允许修改供应商')
+  if (plan.columns.has('provider_code')) {
+    const providerCode = requiredPatchText(plan.columns.get('provider_code'), '供应商')
+    assertGroupPatchProviderAvailable(database, providerCode)
+    if (ownedGroupHasAccounts(database, current.id)) {
+      throw new Error('已有账户的分组不允许修改供应商')
+    }
   }
   if (plan.columns.get('enabled') === 0 && databaseBoolean(current.enabled)) {
     assertRouteStrategiesCanLoseGroupAvailability(database, current.id, current.name, '停用分组')
   }
   const assignments = [...plan.columns.keys()].map((column) => `${column} = ?`)
   database.prepare(`UPDATE groups SET ${assignments.join(', ')}, updated_at = ? WHERE id = ? AND system_account_id = ?`)
-    .run(...plan.columns.values(), nowIso(), current.id, current.system_account_id)
+    .run(...sqlitePatchValues(plan.columns.values()), nowIso(), current.id, current.system_account_id)
 }
 
 async function applyOwnedGroupPatchAsync(client: DatabaseClient, current: GroupPatchRow, plan: GroupPatchPlan): Promise<void> {
-  if (plan.columns.has('provider_code') && await ownedGroupHasAccountsAsync(client, current.id)) {
-    throw new Error('已有账户的分组不允许修改供应商')
+  if (plan.columns.has('provider_code')) {
+    const providerCode = requiredPatchText(plan.columns.get('provider_code'), '供应商')
+    await assertGroupPatchProviderAvailableAsync(client, providerCode)
+    if (await ownedGroupHasAccountsAsync(client, current.id)) {
+      throw new Error('已有账户的分组不允许修改供应商')
+    }
   }
   if (plan.columns.get('enabled') === 0 && databaseBoolean(current.enabled)) {
     await assertRouteStrategiesCanLoseGroupAvailabilityAsync(client, current.id, current.name, '停用分组')
@@ -410,7 +421,7 @@ function applyAuthorizedGroupPatch(database: DatabaseSync, current: GroupPatchRo
   if (databaseBoolean(current.settings_exists)) {
     const assignments = [...plan.columns.keys()].map((column) => `${column} = ?`)
     database.prepare(`UPDATE group_authorization_settings SET ${assignments.join(', ')}, updated_at = ? WHERE authorization_id = ? AND system_account_id = ? AND group_id = ?`)
-      .run(...plan.columns.values(), nowIso(), authorizationId, granteeSystemAccountId, current.id)
+      .run(...sqlitePatchValues(plan.columns.values()), nowIso(), authorizationId, granteeSystemAccountId, current.id)
     return
   }
   const initial = authorizedGroupSettingsInsertValues(database, current, plan)
@@ -467,16 +478,21 @@ function authorizedGroupSettingsValues(
   current: GroupPatchRow,
   plan: GroupPatchPlan,
   base: { group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
-) {
+): { enabled: number; groupType: GroupType; schedulingPolicyJson: string | null; now: string } {
   if (!base) throw new Error('授权分组归属数据异常，请刷新后重试')
-  const groupType = (plan.columns.get('group_type') ?? normalizeGroupType(base.group_type)) as GroupType
-  const sourceSchedulingPolicyJson = groupType === 'high_concurrency'
-    ? groupSchedulingPolicyJson(writableSchedulingPolicyInput(parseGroupSchedulingPolicyJson(base.scheduling_policy_json, groupType)), groupType)
-    : null
+  const groupTypeValue = plan.columns.has('group_type') ? plan.columns.get('group_type') : normalizeGroupType(base.group_type)
+  if (groupTypeValue !== 'personal' && groupTypeValue !== 'high_concurrency') throw new Error('授权分组类型数据异常，请刷新后重试')
+  const schedulingPolicyJson = plan.columns.has('scheduling_policy_json')
+    ? nullablePatchText(plan.columns.get('scheduling_policy_json'))
+    : groupTypeValue === 'high_concurrency'
+      ? groupSchedulingPolicyJson(writableSchedulingPolicyInput(parseGroupSchedulingPolicyJson(base.scheduling_policy_json, groupTypeValue)), groupTypeValue)
+      : null
+  const enabledValue = plan.columns.has('enabled') ? plan.columns.get('enabled') : 1
+  if (enabledValue !== 0 && enabledValue !== 1) throw new Error('授权分组启用状态数据异常，请刷新后重试')
   return {
-    enabled: plan.columns.get('enabled') ?? 1,
-    groupType,
-    schedulingPolicyJson: plan.columns.has('scheduling_policy_json') ? plan.columns.get('scheduling_policy_json') ?? null : sourceSchedulingPolicyJson,
+    enabled: enabledValue,
+    groupType: groupTypeValue,
+    schedulingPolicyJson,
     now: nowIso()
   }
 }
@@ -494,8 +510,222 @@ function groupPatchResult(current: GroupPatchRow, plan: GroupPatchPlan): GroupMa
 
 function finalizeGroupPatch(result: GroupManagementPatchResult | undefined): void {
   if (!result?.changedFields.length) return
-  if (result.accessType === 'owner') invalidateGroupLookupCache(result.id)
-  invalidateGatewayRuntimeAfterBusinessWrite(result.accessType === 'authorized' ? 'group_authorization_settings_updated' : 'group_updated')
+  const changedFields = new Set(result.changedFields)
+  if (result.accessType === 'owner' && changedFields.has('name')) {
+    invalidateGroupLookupCache(result.id)
+  }
+  const gatewayRuntimeChanged = result.accessType === 'authorized'
+    || ['providerCode', 'enabled', 'groupType', 'schedulingPolicy'].some((field) => changedFields.has(field))
+  if (gatewayRuntimeChanged) {
+    invalidateGatewayRuntimeAfterBusinessWrite(result.accessType === 'authorized' ? 'group_authorization_settings_updated' : 'group_updated')
+  }
+}
+
+interface GroupPatchTables {
+  groups: string
+  resourceAuthorizations: string
+  authorizationSettings: string
+}
+
+interface GroupPatchQuery {
+  sql: string
+  params: string[]
+}
+
+function findGroupPatchRow(
+  database: DatabaseSync,
+  id: string,
+  input: Record<string, unknown>,
+  access?: AccessScope
+): GroupPatchRow | undefined {
+  const query = groupPatchRowQuery(id, input, access, {
+    groups: 'groups',
+    resourceAuthorizations: 'resource_authorizations',
+    authorizationSettings: 'group_authorization_settings'
+  })
+  return database.prepare(query.sql).get(...query.params) as unknown as GroupPatchRow | undefined
+}
+
+async function findGroupPatchRowAsync(
+  client: DatabaseClient,
+  id: string,
+  input: Record<string, unknown>,
+  access?: AccessScope
+): Promise<GroupPatchRow | undefined> {
+  const query = groupPatchRowQuery(id, input, access, {
+    groups: groupWriteTable(client, 'groups'),
+    resourceAuthorizations: groupWriteTable(client, 'resource_authorizations'),
+    authorizationSettings: groupWriteTable(client, 'group_authorization_settings')
+  })
+  return client.one<GroupPatchRow>(query.sql, query.params)
+}
+
+function groupPatchRowQuery(
+  id: string,
+  input: Record<string, unknown>,
+  access: AccessScope | undefined,
+  tables: GroupPatchTables
+): GroupPatchQuery {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const columnPairs = groupPatchColumnPairs(input)
+  const ownerColumns = columnPairs.map((column) => `${column.owner} AS ${column.alias}`).join(', ')
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return {
+      sql: `SELECT ${ownerColumns} FROM ${tables.groups} groups WHERE groups.id = ? LIMIT 1`,
+      params: [id]
+    }
+  }
+  if (!viewerSystemAccountId) throw new Error('缺少系统账户上下文')
+  const authorizedColumns = columnPairs.map((column) => `${column.authorized} AS ${column.alias}`).join(', ')
+  const aliases = columnPairs.map((column) => column.alias).join(', ')
+  const directOwnerSystemAccountId = ownerSystemAccountId ?? viewerSystemAccountId
+  return {
+    sql: `
+      SELECT ${aliases}
+      FROM (
+        SELECT ${ownerColumns}
+        FROM ${tables.groups} groups
+        WHERE groups.id = ? AND groups.system_account_id = ?
+        UNION ALL
+        SELECT ${authorizedColumns}
+        FROM ${tables.resourceAuthorizations} authorization_rows
+        INNER JOIN ${tables.groups} groups ON groups.id = authorization_rows.resource_id
+        LEFT JOIN ${tables.authorizationSettings} authorization_settings
+          ON authorization_settings.authorization_id = authorization_rows.id
+          AND authorization_settings.system_account_id = authorization_rows.grantee_system_account_id
+          AND authorization_settings.group_id = authorization_rows.resource_id
+        WHERE groups.id = ?
+          AND authorization_rows.resource_type = 'group'
+          AND authorization_rows.grantee_system_account_id = ?
+          AND authorization_rows.status IN ('active', 'paused', 'expired')
+          AND groups.system_account_id <> ?
+      ) group_patch_target
+      LIMIT 1
+    `,
+    params: [id, directOwnerSystemAccountId, id, viewerSystemAccountId, directOwnerSystemAccountId]
+  }
+}
+
+function groupPatchColumnPairs(input: Record<string, unknown>): Array<{ alias: string; owner: string; authorized: string }> {
+  const columns = [
+    { alias: 'id', owner: 'groups.id', authorized: 'groups.id' },
+    { alias: 'system_account_id', owner: 'groups.system_account_id', authorized: 'groups.system_account_id' },
+    { alias: 'name', owner: 'groups.name', authorized: 'groups.name' },
+    { alias: 'is_default', owner: 'groups.is_default', authorized: '0' },
+    { alias: 'access_type', owner: "'owner'", authorized: "'authorized'" },
+    { alias: 'authorization_id', owner: 'NULL', authorized: 'authorization_rows.id' },
+    { alias: 'settings_exists', owner: '0', authorized: 'CASE WHEN authorization_settings.authorization_id IS NULL THEN 0 ELSE 1 END' }
+  ]
+  if (hasOwnInput(input, 'providerCode')) {
+    columns.push({ alias: 'provider_code', owner: 'groups.provider_code', authorized: 'groups.provider_code' })
+  }
+  if (hasOwnInput(input, 'description')) {
+    columns.push({ alias: 'description', owner: 'groups.description', authorized: 'groups.description' })
+  }
+  if (hasOwnInput(input, 'enabled')) {
+    columns.push(
+      { alias: 'enabled', owner: 'groups.enabled', authorized: 'COALESCE(authorization_settings.enabled, 1)' },
+      { alias: 'source_enabled', owner: 'groups.enabled', authorized: 'groups.enabled' }
+    )
+  }
+  if (hasOwnInput(input, 'groupType') || hasGroupSchedulingPolicyInput(input)) {
+    columns.push({
+      alias: 'group_type',
+      owner: 'groups.group_type',
+      authorized: 'COALESCE(authorization_settings.group_type, groups.group_type)'
+    })
+  }
+  if (hasGroupSchedulingPolicyInput(input)) {
+    const localGroupType = 'COALESCE(authorization_settings.group_type, groups.group_type)'
+    columns.push({
+      alias: 'scheduling_policy_json',
+      owner: 'groups.scheduling_policy_json',
+      authorized: `CASE WHEN ${localGroupType} = 'high_concurrency' THEN COALESCE(authorization_settings.scheduling_policy_json, groups.scheduling_policy_json) ELSE NULL END`
+    })
+  }
+  return columns
+}
+
+function assertGroupPatchProviderAvailable(database: DatabaseSync, providerCode: string): void {
+  const provider = database.prepare('SELECT enabled FROM providers WHERE code = ? LIMIT 1')
+    .get(providerCode) as unknown as { enabled?: number | boolean | string } | undefined
+  assertGroupPatchProviderRow(provider, providerCode)
+}
+
+async function assertGroupPatchProviderAvailableAsync(client: DatabaseClient, providerCode: string): Promise<void> {
+  const provider = await client.one<{ enabled?: number | boolean | string }>(`
+    SELECT enabled
+    FROM ${groupWriteTable(client, 'providers')}
+    WHERE code = ?
+    LIMIT 1
+  `, [providerCode])
+  assertGroupPatchProviderRow(provider, providerCode)
+}
+
+function assertGroupPatchProviderRow(provider: { enabled?: number | boolean | string } | undefined, providerCode: string): void {
+  if (!provider) throw new Error(`不支持的供应商：${providerCode}`)
+  if (!databaseBoolean(provider.enabled)) throw new Error(`供应商已停用：${providerCode}`)
+}
+
+function ownedGroupHasAccounts(database: DatabaseSync, groupId: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1
+    FROM group_accounts
+    INNER JOIN accounts ON accounts.id = group_accounts.account_id
+    WHERE group_accounts.group_id = ?
+      AND group_accounts.enabled = 1
+      AND accounts.deleted_at IS NULL
+    LIMIT 1
+  `).get(groupId))
+}
+
+async function ownedGroupHasAccountsAsync(client: DatabaseClient, groupId: string): Promise<boolean> {
+  const row = await client.one<{ found?: number }>(`
+    SELECT 1 AS found
+    FROM ${groupWriteTable(client, 'group_accounts')} group_accounts
+    INNER JOIN ${groupWriteTable(client, 'accounts')} accounts ON accounts.id = group_accounts.account_id
+    WHERE group_accounts.group_id = ?
+      AND group_accounts.enabled = 1
+      AND accounts.deleted_at IS NULL
+    LIMIT 1
+  `, [groupId])
+  return Boolean(row)
+}
+
+async function lockGroupAuthorizationMutationRowAsync(client: DatabaseClient, authorizationId: string): Promise<void> {
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  await client.one<{ id?: string }>(`
+    SELECT id
+    FROM ${groupWriteTable(client, 'resource_authorizations')}
+    WHERE id = ?
+    LIMIT 1${lockClause}
+  `, [authorizationId])
+}
+
+function databaseBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === '1' || value === 'true'
+}
+
+function requiredPatchText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label}数据异常，请清理后再编辑`)
+  return value.trim()
+}
+
+function normalizedPatchGroupName(input: Record<string, unknown>): string {
+  return typeof input.name === 'string' && input.name.trim() ? input.name.trim() : '当前分组名称'
+}
+
+function sqlitePatchValues(values: Iterable<unknown>): SQLInputValue[] {
+  return [...values].map((value) => {
+    if (value === null || typeof value === 'string' || typeof value === 'number') return value
+    throw new Error('分组写入值类型无效')
+  })
+}
+
+function nullablePatchText(value: unknown): string | null {
+  if (value === null || typeof value === 'string') return value
+  throw new Error('分组调度策略数据异常，请刷新后重试')
 }
 
 export interface DeletedGroupRouteStrategyChange {

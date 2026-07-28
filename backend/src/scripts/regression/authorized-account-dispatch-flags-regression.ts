@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-dispatch-flags-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -61,9 +62,12 @@ try {
 
   const superAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 授权超级优先账户',
     type: 'api_key',
+    supportedModels: ['gpt-5.5'],
     status: 'active',
+    skipInitialHealthCheck: true,
     credentials: { api_key: 'sk-authorized-super', base_url: 'https://api.openai.com/v1' },
     superPriorityEnabled: true,
     priority: 10,
@@ -71,18 +75,24 @@ try {
   }, ownerAccess)
   const normalAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 授权普通账户',
     type: 'api_key',
+    supportedModels: ['gpt-5.5'],
     status: 'active',
+    skipInitialHealthCheck: true,
     credentials: { api_key: 'sk-authorized-normal', base_url: 'https://api.openai.com/v1' },
     priority: 0,
     groupId: ownerSourceGroup.id
   }, ownerAccess)
   const fallbackAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'C 授权降级备用账户',
     type: 'api_key',
+    supportedModels: ['gpt-5.5'],
     status: 'active',
+    skipInitialHealthCheck: true,
     credentials: { api_key: 'sk-authorized-fallback', base_url: 'https://api.openai.com/v1' },
     fallbackEnabled: true,
     priority: 0,
@@ -90,9 +100,12 @@ try {
   }, ownerAccess)
   const granteeOwnedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'D 被授权人自有账户',
     type: 'api_key',
+    supportedModels: ['gpt-5.5'],
     status: 'active',
+    skipInitialHealthCheck: true,
     credentials: { api_key: 'sk-authorized-owned-target', base_url: 'https://api.openai.com/v1' },
     priority: 0,
     groupId: granteeOwnedGroup.id

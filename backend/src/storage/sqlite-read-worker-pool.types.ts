@@ -52,6 +52,7 @@ import type {
   AuthorizationGranteeGroupOptionSummary,
   GatewayRequestEndpointFamily,
   GroupListResult,
+  GroupEditDetail,
   GroupOptionSummary,
   GroupSummary,
   ModelCheckRunDetail,
@@ -633,6 +634,11 @@ export type SqliteReadWorkerOperation =
     access?: AccessScope
   }
   | {
+    type: 'find_group_edit_detail_read_only'
+    id: string
+    access?: AccessScope
+  }
+  | {
     type: 'list_api_keys_read_only'
     access?: AccessScope
     options?: ApiKeyListOptions
@@ -928,6 +934,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_group_options_read_only' } ? GroupOptionSummary[] :
   T extends { type: 'list_account_group_options_read_only' } ? AccountGroupOptionSummary[] :
   T extends { type: 'find_group_summary_read_only' } ? GroupSummary | undefined :
+  T extends { type: 'find_group_edit_detail_read_only' } ? GroupEditDetail | undefined :
   T extends { type: 'list_api_keys_read_only' } ? ApiKeyListItem[] :
   T extends { type: 'list_api_keys_page_read_only' } ? ApiKeyListResult :
   T extends { type: 'find_api_key_summary_read_only' } ? ApiKeySummary | undefined :

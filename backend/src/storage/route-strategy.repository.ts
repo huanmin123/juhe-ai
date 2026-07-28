@@ -68,6 +68,46 @@ export interface RouteStrategyOptionListOptions {
   activeOnly?: boolean
 }
 
+export type RouteStrategyMutableField =
+  | 'name'
+  | 'description'
+  | 'mode'
+  | 'status'
+  | 'groupBindings'
+  | 'normalRoutingConfig'
+  | 'hybridRoutingConfig'
+
+export interface RouteStrategyMutationRowPatch {
+  name?: string
+  description?: string | null
+  mode?: RouteStrategyMode
+  status?: RouteStrategyStatus
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig | null
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig | null
+  bindingCount?: number
+  groupBindingPreview?: RouteStrategyListSnapshotItem['groupBindingPreview']
+  updatedAt?: string
+}
+
+export interface RouteStrategyPatchResult {
+  id: string
+  changedFields: RouteStrategyMutableField[]
+  rowPatch: RouteStrategyMutationRowPatch
+}
+
+export interface RouteStrategyPatchChange {
+  field: RouteStrategyMutableField
+  before: unknown
+  after: unknown
+}
+
+export interface RouteStrategyPatchOutcome {
+  result: RouteStrategyPatchResult
+  ownerSystemAccountId: string
+  resourceName: string
+  changes: RouteStrategyPatchChange[]
+}
+
 type RouteStrategyGroupBindingStatus = 'active' | 'disabled'
 
 interface RouteStrategyGroupBindingInput {
@@ -557,6 +597,11 @@ export async function createRouteStrategyAsync(input: Record<string, unknown>, a
 }
 
 export function updateRouteStrategy(id: string, input: Record<string, unknown>, access?: AccessScope): RouteStrategySummary | undefined {
+  const outcome = patchRouteStrategy(id, input, access)
+  return outcome ? findRouteStrategySummary(id, access) : undefined
+}
+
+export function patchRouteStrategy(id: string, input: Record<string, unknown>, access?: AccessScope): RouteStrategyPatchOutcome | undefined {
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
   const systemAccountId = routeStrategySystemAccountId(id)
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
@@ -568,7 +613,7 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
   const now = nowIso()
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
-  let changed = false
+  let outcome: RouteStrategyPatchOutcome | undefined
   try {
     const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
     const bindings = bindingInputs ? normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId) : undefined
@@ -578,13 +623,14 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
       validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
     }
     const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
+    let writtenBindings: RouteStrategyGroupBindingSummary[] | undefined
     if (scalarPatch.assignments.length || bindingsChanged) {
       updateRouteStrategyScalarColumns(database, id, systemAccountId, scalarPatch, now)
       if (bindingsChanged) {
-        replaceRouteStrategyGroups(database, id, systemAccountId, scalarPatch.mode, bindings!, now)
+        writtenBindings = replaceRouteStrategyGroups(database, id, systemAccountId, scalarPatch.mode, bindings!, now)
       }
-      changed = true
     }
+    outcome = routeStrategyPatchOutcome(current, systemAccountId, scalarPatch, writtenBindings, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -596,25 +642,30 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
     }
     throw error
   }
-  if (changed) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
-  return findRouteStrategySummary(id, access)
+  if (outcome?.result.changedFields.length) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  return outcome
 }
 
 export async function updateRouteStrategyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<RouteStrategySummary | undefined> {
+  const outcome = await patchRouteStrategyAsync(id, input, access)
+  return outcome ? findRouteStrategySummaryAsync(id, access) : undefined
+}
+
+export async function patchRouteStrategyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<RouteStrategyPatchOutcome | undefined> {
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
   const ownerSystemAccountId = await routeStrategySystemAccountIdAsync(id)
   if (!ownerSystemAccountId || !canManageApiKeyOwner(ownerSystemAccountId, access)) return undefined
-  const current = await findRouteStrategyEditBasicDetailAsync(id, { systemAccountId: ownerSystemAccountId, role: 'user' })
-  if (!current) return undefined
-  const scalarPatch = routeStrategyScalarPatch(input, current)
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
-  const now = nowIso()
   const client = await getRouteStrategyDatabaseClient()
-  let changed = false
+  let outcome: RouteStrategyPatchOutcome | undefined
+  let patchName: string | undefined
   try {
     await client.transaction(async (tx) => {
-      await lockRouteStrategyMutationRowAsync(tx, id, ownerSystemAccountId)
+      const current = await loadLockedRouteStrategyEditBasicDetailAsync(tx, id, ownerSystemAccountId)
+      if (!current) return
+      const scalarPatch = routeStrategyScalarPatch(input, current)
+      patchName = scalarPatch.name
       const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
       const bindings = bindingInputs
         ? await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, ownerSystemAccountId, tx, true)
@@ -625,21 +676,24 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
         validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
       }
       const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
-      if (!scalarPatch.assignments.length && !bindingsChanged) return
-      await updateRouteStrategyScalarColumnsAsync(tx, id, ownerSystemAccountId, scalarPatch, now)
-      if (bindingsChanged) {
-        await replaceRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, scalarPatch.mode, bindings!, now)
+      const now = nowIso()
+      let writtenBindings: RouteStrategyGroupBindingSummary[] | undefined
+      if (scalarPatch.assignments.length || bindingsChanged) {
+        await updateRouteStrategyScalarColumnsAsync(tx, id, ownerSystemAccountId, scalarPatch, now)
       }
-      changed = true
+      if (bindingsChanged) {
+        writtenBindings = await replaceRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, scalarPatch.mode, bindings!, now)
+      }
+      outcome = routeStrategyPatchOutcome(current, ownerSystemAccountId, scalarPatch, writtenBindings, now)
     })
   } catch (error) {
     if (isDuplicateRouteStrategyNameError(error)) {
-      throw new Error(`策略路由名称已存在：${scalarPatch.name}`)
+      throw new Error(`策略路由名称已存在：${patchName ?? String(input.name ?? '').trim()}`)
     }
     throw error
   }
-  if (changed) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
-  return findRouteStrategySummaryAsync(id, access)
+  if (outcome?.result.changedFields.length) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  return outcome
 }
 
 export function deleteRouteStrategy(id: string, access?: AccessScope): boolean {
@@ -1152,6 +1206,8 @@ interface RouteStrategyScalarPatch {
   name: string
   mode: RouteStrategyMode
   assignments: Array<{ column: 'name' | 'description' | 'mode' | 'status' | 'config_json'; value: string | null }>
+  changes: RouteStrategyPatchChange[]
+  rowPatch: RouteStrategyMutationRowPatch
 }
 
 function routeStrategyScalarPatch(
@@ -1159,24 +1215,43 @@ function routeStrategyScalarPatch(
   current: RouteStrategyEditBasicDetail
 ): RouteStrategyScalarPatch {
   const assignments: RouteStrategyScalarPatch['assignments'] = []
+  const changes: RouteStrategyPatchChange[] = []
+  const rowPatch: RouteStrategyMutationRowPatch = {}
+  const addChange = (field: RouteStrategyMutableField, before: unknown, after: unknown): void => {
+    changes.push({ field, before, after })
+  }
   const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
   const name = hasOwnInput(input, 'name')
     ? normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
     : current.name
   if (hasOwnInput(input, 'name')) {
     assertRouteStrategyNameChangeAllowed(current, name)
-    if (name !== current.name) assignments.push({ column: 'name', value: name })
+    if (name !== current.name) {
+      assignments.push({ column: 'name', value: name })
+      addChange('name', current.name, name)
+      rowPatch.name = name
+    }
   }
   if (hasOwnInput(input, 'description')) {
     const description = normalizeNullableTextInput(input.description, '策略路由说明') ?? null
-    if (description !== (current.description ?? null)) assignments.push({ column: 'description', value: description })
+    if (description !== (current.description ?? null)) {
+      assignments.push({ column: 'description', value: description })
+      addChange('description', current.description ?? null, description)
+      rowPatch.description = description
+    }
   }
   if (hasOwnInput(input, 'mode') && mode !== current.mode) {
     assignments.push({ column: 'mode', value: mode })
+    addChange('mode', current.mode, mode)
+    rowPatch.mode = mode
   }
   if (hasOwnInput(input, 'status')) {
     const status = normalizeRouteStrategyStatus(input.status, current.status)
-    if (status !== current.status) assignments.push({ column: 'status', value: status })
+    if (status !== current.status) {
+      assignments.push({ column: 'status', value: status })
+      addChange('status', current.status, status)
+      rowPatch.status = status
+    }
   }
 
   const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
@@ -1198,9 +1273,60 @@ function routeStrategyScalarPatch(
     if (nextConfigJson !== currentConfigJson) {
       assignments.push({ column: 'config_json', value: nextConfigJson })
     }
+    const currentNormalRoutingConfig = current.mode === 'normal'
+      ? current.normalRoutingConfig ?? defaultNormalRoutingConfig()
+      : undefined
+    const nextNormalRoutingConfig = mode === 'normal'
+      ? config.normalRoutingConfig ?? defaultNormalRoutingConfig()
+      : undefined
+    if (!routeStrategyPatchValuesEqual(currentNormalRoutingConfig, nextNormalRoutingConfig)) {
+      addChange('normalRoutingConfig', currentNormalRoutingConfig, nextNormalRoutingConfig)
+      rowPatch.normalRoutingConfig = nextNormalRoutingConfig ?? null
+    }
+    const currentHybridRoutingConfig = current.mode === 'hybrid_smart' ? current.hybridRoutingConfig : undefined
+    const nextHybridRoutingConfig = mode === 'hybrid_smart' ? config.hybridRoutingConfig : undefined
+    if (!routeStrategyPatchValuesEqual(currentHybridRoutingConfig, nextHybridRoutingConfig)) {
+      addChange('hybridRoutingConfig', currentHybridRoutingConfig, nextHybridRoutingConfig)
+      rowPatch.hybridRoutingConfig = nextHybridRoutingConfig ?? null
+    }
   }
 
-  return { name, mode, assignments }
+  return { name, mode, assignments, changes, rowPatch }
+}
+
+function routeStrategyPatchValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
+}
+
+function routeStrategyPatchOutcome(
+  current: RouteStrategyEditBasicDetail,
+  ownerSystemAccountId: string,
+  scalarPatch: RouteStrategyScalarPatch,
+  writtenBindings: RouteStrategyGroupBindingSummary[] | undefined,
+  updatedAt: string
+): RouteStrategyPatchOutcome {
+  const changes = [...scalarPatch.changes]
+  const rowPatch: RouteStrategyMutationRowPatch = { ...scalarPatch.rowPatch }
+  if (writtenBindings) {
+    changes.push({
+      field: 'groupBindings',
+      before: current.groupBindings,
+      after: writtenBindings
+    })
+    rowPatch.bindingCount = writtenBindings.length
+    rowPatch.groupBindingPreview = writtenBindings.slice(0, 3).map(routeStrategyGroupBindingPreview)
+  }
+  if (changes.length) rowPatch.updatedAt = updatedAt
+  return {
+    result: {
+      id: current.id,
+      changedFields: changes.map((change) => change.field),
+      rowPatch
+    },
+    ownerSystemAccountId,
+    resourceName: scalarPatch.name,
+    changes
+  }
 }
 
 function updateRouteStrategyScalarColumns(
@@ -1393,28 +1519,56 @@ function validateRouteStrategyModeBindings(mode: RouteStrategyMode, bindings: Ro
   }
 }
 
-function replaceRouteStrategyGroups(database: DatabaseSync, routeStrategyId: string, systemAccountId: string, mode: RouteStrategyMode, bindings: RouteStrategyGroupBindingWrite[], now: string): void {
+function replaceRouteStrategyGroups(database: DatabaseSync, routeStrategyId: string, systemAccountId: string, mode: RouteStrategyMode, bindings: RouteStrategyGroupBindingWrite[], now: string): RouteStrategyGroupBindingSummary[] {
   validateRouteStrategyModeBindings(mode, bindings)
   database.prepare('DELETE FROM route_strategy_groups WHERE route_strategy_id = ?').run(routeStrategyId)
   const statement = database.prepare(`
     INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
+  const result: RouteStrategyGroupBindingSummary[] = []
   for (const binding of bindings) {
-    statement.run(newId('rsg'), routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now)
+    const id = newId('rsg')
+    statement.run(id, routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now)
+    result.push(routeStrategyGroupBindingSummaryFromWrite(id, binding))
   }
+  return routeStrategyGroupBindingsForPresentation(result)
 }
 
-async function replaceRouteStrategyGroupsAsync(client: DatabaseClient, routeStrategyId: string, systemAccountId: string, mode: RouteStrategyMode, bindings: RouteStrategyGroupBindingWrite[], now: string): Promise<void> {
+async function replaceRouteStrategyGroupsAsync(client: DatabaseClient, routeStrategyId: string, systemAccountId: string, mode: RouteStrategyMode, bindings: RouteStrategyGroupBindingWrite[], now: string): Promise<RouteStrategyGroupBindingSummary[]> {
   validateRouteStrategyModeBindings(mode, bindings)
   await client.execute(`DELETE FROM ${routeStrategyTable(client, 'route_strategy_groups')} WHERE route_strategy_id = ?`, [routeStrategyId])
+  const result: RouteStrategyGroupBindingSummary[] = []
   for (const binding of bindings) {
+    const id = newId('rsg')
     await client.execute(`
       INSERT INTO ${routeStrategyTable(client, 'route_strategy_groups')} (
         id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [newId('rsg'), routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now])
+    `, [id, routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now])
+    result.push(routeStrategyGroupBindingSummaryFromWrite(id, binding))
   }
+  return routeStrategyGroupBindingsForPresentation(result)
+}
+
+function routeStrategyGroupBindingSummaryFromWrite(id: string, binding: RouteStrategyGroupBindingWrite): RouteStrategyGroupBindingSummary {
+  return {
+    id,
+    groupId: binding.groupId,
+    groupName: binding.groupName,
+    providerCode: binding.providerCode || undefined,
+    priority: binding.priority,
+    weight: normalizeApiKeyGroupBindingWeight(binding.weight),
+    status: binding.status,
+    groupEnabled: binding.groupEnabled
+  }
+}
+
+function routeStrategyGroupBindingsForPresentation(bindings: RouteStrategyGroupBindingSummary[]): RouteStrategyGroupBindingSummary[] {
+  return [...bindings].sort((left, right) => {
+    const statusOrder = Number(left.status !== 'active') - Number(right.status !== 'active')
+    return statusOrder || left.priority - right.priority || left.id.localeCompare(right.id)
+  })
 }
 
 function routeStrategyGroupBindingWritesFromSummary(bindings: RouteStrategyGroupBindingSummary[]): RouteStrategyGroupBindingWrite[] {
@@ -1426,7 +1580,7 @@ function routeStrategyGroupBindingWritesFromSummary(bindings: RouteStrategyGroup
     weight: normalizeApiKeyGroupBindingWeight(binding.weight),
     status: binding.status,
     groupEnabled: binding.groupEnabled
-  }))
+  })).sort((left, right) => left.priority - right.priority || left.groupId.localeCompare(right.groupId))
 }
 
 function loadRouteStrategyBindableGroups(groupIds: string[], systemAccountId: string): Map<string, RouteStrategyBindableGroupRow> {
@@ -2016,6 +2170,23 @@ async function lockRouteStrategyMutationRowAsync(client: DatabaseClient, routeSt
     WHERE id = ? AND system_account_id = ?
     LIMIT 1${lockClause}
   `, [routeStrategyId, systemAccountId])
+}
+
+async function loadLockedRouteStrategyEditBasicDetailAsync(
+  client: DatabaseClient,
+  routeStrategyId: string,
+  systemAccountId: string
+): Promise<RouteStrategyEditBasicDetail | undefined> {
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  const row = await client.one<RouteStrategyEditBasicRow>(`
+    SELECT ${routeStrategyEditBasicColumnsForClient()}
+    FROM ${routeStrategyTable(client, 'route_strategies')} route_strategies
+    WHERE route_strategies.id = ? AND route_strategies.system_account_id = ?
+    LIMIT 1${lockClause}
+  `, [routeStrategyId, systemAccountId])
+  if (!row) return undefined
+  const bindings = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync([routeStrategyId], client)
+  return routeStrategyEditBasicDetailFromRow(row, bindings.get(routeStrategyId) ?? [], false)
 }
 
 async function getRouteStrategyDatabaseClient(): Promise<DatabaseClient> {

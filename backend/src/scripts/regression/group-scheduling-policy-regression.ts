@@ -60,6 +60,11 @@ interface GroupSummaryResponse {
   }
 }
 
+interface GroupMutationResponse {
+  id: string
+  changedFields: string[]
+}
+
 let server: ReturnType<typeof app.listen> | undefined
 
 try {
@@ -170,12 +175,7 @@ try {
   assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按自动策略写入 JSON 配置')
   assert(stored.scheduling_policy_json, '高并发分组应写入完整调度策略 JSON')
 
-  const routeUpdatedGroup = await patchEnvelope<GroupSummaryResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
-    name: highConcurrencyGroup.name,
-    providerCode: highConcurrencyGroup.providerCode,
-    description: highConcurrencyGroup.description ?? '',
-    enabled: highConcurrencyGroup.enabled,
-    groupType: 'high_concurrency',
+  const routeUpdatedGroup = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
     schedulingPolicy: {
       defaultSoftConcurrency: 4,
       maxQueueWaitMs: 600000,
@@ -184,8 +184,29 @@ try {
       imageLaneMaxConcurrency: 0
     }
   })
-  assert.equal('providerProtocolProfileId' in routeUpdatedGroup, false, '分组更新路由不应返回 providerProtocolProfileId')
-  assert.equal(routeUpdatedGroup.schedulingPolicy?.defaultSoftConcurrency, 4, '分组更新路由应保留前端提交的高并发调度策略')
+  assert.deepEqual(Object.keys(routeUpdatedGroup).sort(), ['changedFields', 'id'], '分组 PATCH 只能返回写入结果，不得回传完整摘要')
+  assert.equal(routeUpdatedGroup.id, highConcurrencyGroup.id)
+  assert.deepEqual(routeUpdatedGroup.changedFields, ['schedulingPolicy'], '分组 PATCH 应只报告实际变化字段')
+  assert.equal(repositories.findGroupSummary(highConcurrencyGroup.id, access)?.schedulingPolicy?.defaultSoftConcurrency, 4, '分组更新路由应保存前端提交的高并发调度策略')
+  const routeNoopGroup = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
+    schedulingPolicy: {
+      defaultSoftConcurrency: 4,
+      maxQueueWaitMs: 600000,
+      clientIpConcurrencyLimit: 0,
+      clientIpConcurrencyOverflowMode: 'reject',
+      imageLaneMaxConcurrency: 0
+    }
+  })
+  assert.deepEqual(routeNoopGroup, { id: highConcurrencyGroup.id, changedFields: [] }, '分组同值 PATCH 必须明确返回 no-op，不得回传完整摘要')
+  database.prepare("UPDATE providers SET enabled = 0 WHERE code = 'gpt'").run()
+  try {
+    const sameDisabledProviderNoop = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
+      providerCode: 'gpt'
+    })
+    assert.deepEqual(sameDisabledProviderNoop, { id: highConcurrencyGroup.id, changedFields: [] }, '同值供应商 PATCH 不得因当前供应商已停用而触发校验')
+  } finally {
+    database.prepare("UPDATE providers SET enabled = 1 WHERE code = 'gpt'").run()
+  }
 
   database
     .prepare('UPDATE groups SET scheduling_policy_json = NULL WHERE id = ?')
@@ -229,6 +250,8 @@ try {
       api_key: 'sk-group-scheduling-policy',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.1'],
+    healthCheckModel: 'gpt-5.1',
     concurrencyLimit: 10,
     groupId: highConcurrencyGroup.id
   }, access)

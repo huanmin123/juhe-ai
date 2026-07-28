@@ -506,7 +506,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     auditCapture.omitPayloadBodies({
       label: 'stream_body_omission',
       metadata: { ...streamResult.bodyOmission },
-      partTypes: ['upstream_response', 'gateway_response', 'gateway_error'],
+      partTypes: streamResult.completed
+        ? undefined
+        : ['upstream_response', 'gateway_response', 'gateway_error'],
       alreadyOmittedPayloadCount: 2,
       alreadyOmittedBodyBytes: streamResult.bodyOmission.totalUpstreamBytes
         + streamResult.bodyOmission.totalResponseBytes

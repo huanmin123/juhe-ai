@@ -115,10 +115,6 @@ try {
   const expectedEditableCredentialKeys = [
     'api_key',
     'base_url',
-    'codex_responses_safe_repair_enabled',
-    'codex_responses_strict_intercept_enabled',
-    'reasoning_effort_override',
-    'service_tier_override',
     'supported_endpoint_modes'
   ].sort()
   assert.deepEqual(Object.keys(detail.credentials).sort(), expectedEditableCredentialKeys)

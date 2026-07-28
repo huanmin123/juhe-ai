@@ -25,6 +25,7 @@ import { isOpenAICodexClientHeaders, normalizeOpenAICodexClientHeaders } from '.
 import { copyOfficialOAuthClientRequestHeaders } from '../../upstream/header-policy.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../../../shared/request-context.js'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
+import { markGatewayCodexHistorySanitized } from '../../request/serialized-json-body.js'
 
 export {
   isolateOpenAIOAuthCodexSessionId,
@@ -35,7 +36,7 @@ export { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
 
 export interface OpenAIOAuthCodexRequestParts {
   headers: Headers
-  body?: string
+  body?: Buffer | string
 }
 
 type OpenAIOAuthCodexRawBodyRequest = GatewayRawBodyRequest & {
@@ -56,6 +57,7 @@ export function setOpenAIOAuthCodexNormalizationObserverForTest(observer: (() =>
 interface OpenAIOAuthCodexRequestOptions {
   modelOverride?: string
   requestOverrideModelCapabilities?: GptRequestOverrideModelCapabilities
+  sanitizeCodexHistory?: boolean
 }
 
 export async function buildOpenAIOAuthCodexRequestParts(
@@ -68,6 +70,9 @@ export async function buildOpenAIOAuthCodexRequestParts(
 ): Promise<OpenAIOAuthCodexRequestParts> {
   const compact = isOpenAIOAuthCodexCompactRequest(req)
   const normalizedBody = await normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact, signal, options)
+  const sanitizedBody = normalizedBody.bodyBytes
+    ? normalizedCodexBodyBuffer(normalizedBody.bodyBytes)
+    : undefined
   return {
     headers: buildOpenAIOAuthCodexHeaders(inputHeaders, account, {
       compact,
@@ -75,8 +80,16 @@ export async function buildOpenAIOAuthCodexRequestParts(
       session: normalizedBody.session,
       model: normalizedBody.model
     }),
-    body: normalizedBody.body
+    body: sanitizedBody && normalizedBody.codexHistorySanitized
+      ? markGatewayCodexHistorySanitized(sanitizedBody)
+      : normalizedBody.body
   }
+}
+
+function normalizedCodexBodyBuffer(body: Uint8Array): Buffer {
+  return Buffer.isBuffer(body)
+    ? body
+    : Buffer.from(body.buffer, body.byteOffset, body.byteLength)
 }
 
 export function isOpenAIOAuthCodexCompactRequest(req: Request): boolean {
@@ -103,6 +116,7 @@ async function normalizeOpenAIOAuthCodexBody(
     account,
     identity,
     compact,
+    sanitizeCodexHistory: options.sanitizeCodexHistory,
     modelOverride: options.modelOverride,
     requestOverrideModelCapabilities: options.requestOverrideModelCapabilities
   }
@@ -170,6 +184,7 @@ function openAIOAuthCodexNormalizationCacheKey(
 ): string {
   return JSON.stringify([
     input.compact,
+    input.sanitizeCodexHistory === true,
     input.modelOverride ?? '',
     input.identity.systemAccountId,
     input.identity.apiKeyId ?? '',

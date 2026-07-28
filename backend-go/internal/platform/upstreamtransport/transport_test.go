@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -341,11 +346,13 @@ func TestNewClientConfiguresHTTPAndSOCKSProxyTransports(t *testing.T) {
 	socksClient.CloseIdleConnections()
 }
 
-func TestExecuteRejectsPlainHTTPForwardProxyBeforeAttempt(t *testing.T) {
+func TestExecutePinsPlainHTTPThroughConnectProxy(t *testing.T) {
 	t.Parallel()
-	var calls atomic.Int32
+	type observedRequest struct{ method, host, uri string }
+	observed := make(chan observedRequest, 2)
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		calls.Add(1)
+		observed <- observedRequest{method: request.Method, host: request.Host, uri: request.RequestURI}
+		response.WriteHeader(http.StatusOK)
 	}))
 	defer proxyServer.Close()
 
@@ -355,12 +362,56 @@ func TestExecuteRejectsPlainHTTPForwardProxyBeforeAttempt(t *testing.T) {
 	}
 	defer client.CloseIdleConnections()
 	request, _ := http.NewRequest(http.MethodGet, "http://upstream.example.test/probe?mode=proxy", nil)
-	result, err := client.Execute(t.Context(), request)
-	if kind, ok := FailureKindOf(err); !ok || kind != FailureInvalidRequest || result.Attempted {
-		t.Fatalf("result=%+v error=%v kind=%q", result, err, kind)
+	result, executeErr := client.Execute(t.Context(), request)
+	if executeErr != nil || !result.Attempted || !result.FramingComplete || result.StatusCode != http.StatusOK {
+		t.Fatalf("result=%+v error=%v", result, executeErr)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("forward proxy calls = %d", calls.Load())
+	connect := <-observed
+	upstream := <-observed
+	if connect.method != http.MethodConnect || connect.host != "8.8.8.8:80" {
+		t.Fatalf("CONNECT request = %+v", connect)
+	}
+	if upstream.method != http.MethodGet || upstream.host != "upstream.example.test" || upstream.uri != "/probe?mode=proxy" {
+		t.Fatalf("tunneled request = %+v", upstream)
+	}
+}
+
+func TestExecuteWithFenceRejectsImmediatelyBeforeRoundTripWithoutAttempt(t *testing.T) {
+	var calls atomic.Int32
+	wantErr := errors.New("candidate revoked")
+	client, err := NewClient(Options{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequest(http.MethodGet, "https://api.example.test/v1", nil)
+	result, executeErr := client.ExecuteWithFence(t.Context(), request, func(context.Context) error { return wantErr })
+	if !errors.Is(executeErr, wantErr) || calls.Load() != 0 || result.Attempted {
+		t.Fatalf("result=%+v calls=%d error=%v", result, calls.Load(), executeErr)
+	}
+	if kind, ok := FailureKindOf(executeErr); !ok || kind != FailureInvalidRequest {
+		t.Fatalf("failure kind=%q ok=%t", kind, ok)
+	}
+}
+
+func TestExecuteWithFenceRunsOnceBeforeRealAttempt(t *testing.T) {
+	var order []string
+	client, err := NewClient(Options{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		order = append(order, "roundtrip")
+		return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequest(http.MethodGet, "https://api.example.test/v1", nil)
+	result, executeErr := client.ExecuteWithFence(t.Context(), request, func(context.Context) error {
+		order = append(order, "fence")
+		return nil
+	})
+	if executeErr != nil || !result.Attempted || !slices.Equal(order, []string{"fence", "roundtrip"}) {
+		t.Fatalf("result=%+v order=%v error=%v", result, order, executeErr)
 	}
 }
 
@@ -386,6 +437,225 @@ func TestExecutePinsHTTPSConnectTargetThroughForwardProxy(t *testing.T) {
 	if method != http.MethodConnect || target != "8.8.8.8:443" {
 		t.Fatalf("proxy request = %s %s", method, target)
 	}
+}
+
+func TestExecuteTunnelsTLSUpstreamThroughTLSProxyWithSeparateSNI(t *testing.T) {
+	t.Parallel()
+	upstreamSNI := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		upstreamSNI <- request.TLS.ServerName
+		if request.Host != "upstream.example.test" || request.Header.Get("Accept-Encoding") != "identity" {
+			t.Errorf("upstream host=%q accept-encoding=%q", request.Host, request.Header.Get("Accept-Encoding"))
+		}
+		_, _ = io.WriteString(response, "tunneled")
+	}))
+	defer upstream.Close()
+	_, upstreamPort, _ := net.SplitHostPort(upstream.Listener.Addr().String())
+
+	type connectObservation struct {
+		target string
+		sni    string
+	}
+	connects := make(chan connectObservation, 1)
+	proxyServer := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodConnect {
+			http.Error(response, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		connects <- connectObservation{target: request.Host, sni: request.TLS.ServerName}
+		upstreamConnection, err := net.Dial("tcp", request.Host)
+		if err != nil {
+			http.Error(response, err.Error(), http.StatusBadGateway)
+			return
+		}
+		hijacker, ok := response.(http.Hijacker)
+		if !ok {
+			upstreamConnection.Close()
+			http.Error(response, "hijacking unavailable", http.StatusInternalServerError)
+			return
+		}
+		clientConnection, buffered, err := hijacker.Hijack()
+		if err != nil {
+			upstreamConnection.Close()
+			return
+		}
+		_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = buffered.Flush()
+		go func() {
+			_, _ = io.Copy(upstreamConnection, clientConnection)
+			_ = upstreamConnection.Close()
+		}()
+		_, _ = io.Copy(clientConnection, upstreamConnection)
+		_ = clientConnection.Close()
+	}))
+	proxyServer.StartTLS()
+	defer proxyServer.Close()
+
+	client, err := NewClient(Options{
+		ProxyURL:  proxyServer.URL,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true, ServerName: "upstream.example.test"}, // Test certificates are intentionally ephemeral.
+		URLPolicy: privateURLPolicy("https://" + net.JoinHostPort("127.0.0.1", upstreamPort)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	request, _ := http.NewRequest(http.MethodGet, "https://"+net.JoinHostPort("127.0.0.1", upstreamPort)+"/probe", nil)
+	request.Host = "upstream.example.test"
+	result, executeErr := client.Execute(t.Context(), request)
+	if executeErr != nil || result.StatusCode != http.StatusOK || string(result.Body) != "tunneled" || !result.FramingComplete {
+		t.Fatalf("result=%+v error=%v", result, executeErr)
+	}
+	connect := <-connects
+	if connect.target != net.JoinHostPort("127.0.0.1", upstreamPort) || connect.sni == "upstream.example.test" {
+		t.Fatalf("proxy CONNECT=%+v", connect)
+	}
+	if got := <-upstreamSNI; got != "upstream.example.test" {
+		t.Fatalf("upstream SNI=%q", got)
+	}
+}
+
+func TestExecuteTunnelsThroughAuthenticatedSOCKSWithPinnedIP(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.Host, "upstream.example.test:") || request.URL.RequestURI() != "/probe?via=socks" {
+			t.Errorf("upstream request host=%q URI=%q", request.Host, request.URL.RequestURI())
+		}
+		response.Header().Set("Connection", "close")
+		_, _ = io.WriteString(response, "socks-tunneled")
+	}))
+	defer upstream.Close()
+	_, upstreamPort, _ := net.SplitHostPort(upstream.Listener.Addr().String())
+
+	observed := make(chan struct {
+		username string
+		password string
+		host     string
+		port     uint16
+	}, 1)
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyListener.Close()
+	proxyErrors := make(chan error, 1)
+	go func() {
+		connection, acceptErr := proxyListener.Accept()
+		if acceptErr != nil {
+			proxyErrors <- acceptErr
+			return
+		}
+		proxyErrors <- serveSOCKS5Tunnel(connection, upstream.Listener.Addr().String(), observed)
+	}()
+
+	client, err := NewClient(Options{
+		ProxyURL:  "socks5h://proxy-user:proxy-password@" + proxyListener.Addr().String(),
+		URLPolicy: publicURLPolicy("8.8.8.8"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	request, _ := http.NewRequest(http.MethodGet, "http://upstream.example.test:"+upstreamPort+"/probe?via=socks", nil)
+	result, executeErr := client.Execute(t.Context(), request)
+	if executeErr != nil || result.StatusCode != http.StatusOK || string(result.Body) != "socks-tunneled" {
+		t.Fatalf("result=%+v error=%v", result, executeErr)
+	}
+	observation := <-observed
+	wantPort, _ := strconv.Atoi(upstreamPort)
+	if observation.username != "proxy-user" || observation.password != "proxy-password" || observation.host != "8.8.8.8" || observation.port != uint16(wantPort) {
+		t.Fatalf("SOCKS observation=%+v", observation)
+	}
+	if err := <-proxyErrors; err != nil {
+		t.Fatalf("SOCKS proxy error=%v", err)
+	}
+}
+
+func serveSOCKS5Tunnel(connection net.Conn, upstreamAddress string, observed chan<- struct {
+	username string
+	password string
+	host     string
+	port     uint16
+}) error {
+	defer connection.Close()
+	initial := make([]byte, 2)
+	if _, err := io.ReadFull(connection, initial); err != nil || initial[0] != 5 {
+		return fmt.Errorf("read SOCKS greeting: %w", err)
+	}
+	methods := make([]byte, int(initial[1]))
+	if _, err := io.ReadFull(connection, methods); err != nil {
+		return err
+	}
+	if _, err := connection.Write([]byte{5, 2}); err != nil {
+		return err
+	}
+	authHeader := make([]byte, 2)
+	if _, err := io.ReadFull(connection, authHeader); err != nil || authHeader[0] != 1 {
+		return fmt.Errorf("read SOCKS auth header: %w", err)
+	}
+	username := make([]byte, int(authHeader[1]))
+	if _, err := io.ReadFull(connection, username); err != nil {
+		return err
+	}
+	passwordLength := []byte{0}
+	if _, err := io.ReadFull(connection, passwordLength); err != nil {
+		return err
+	}
+	password := make([]byte, int(passwordLength[0]))
+	if _, err := io.ReadFull(connection, password); err != nil {
+		return err
+	}
+	if _, err := connection.Write([]byte{1, 0}); err != nil {
+		return err
+	}
+	request := make([]byte, 4)
+	if _, err := io.ReadFull(connection, request); err != nil || request[0] != 5 || request[1] != 1 {
+		return fmt.Errorf("read SOCKS connect request: %w", err)
+	}
+	var host string
+	switch request[3] {
+	case 1:
+		address := make([]byte, net.IPv4len)
+		if _, err := io.ReadFull(connection, address); err != nil {
+			return err
+		}
+		host = net.IP(address).String()
+	case 4:
+		address := make([]byte, net.IPv6len)
+		if _, err := io.ReadFull(connection, address); err != nil {
+			return err
+		}
+		host = net.IP(address).String()
+	default:
+		return fmt.Errorf("SOCKS target was not a pinned IP: atyp=%d", request[3])
+	}
+	portBytes := make([]byte, 2)
+	if _, err := io.ReadFull(connection, portBytes); err != nil {
+		return err
+	}
+	observed <- struct {
+		username string
+		password string
+		host     string
+		port     uint16
+	}{username: string(username), password: string(password), host: host, port: binary.BigEndian.Uint16(portBytes)}
+	upstream, err := net.Dial("tcp", upstreamAddress)
+	if err != nil {
+		return err
+	}
+	defer upstream.Close()
+	if _, err := connection.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(upstream, connection)
+		_ = upstream.Close()
+		close(done)
+	}()
+	_, copyErr := io.Copy(connection, upstream)
+	<-done
+	return copyErr
 }
 
 func TestTLSConfigIsCloned(t *testing.T) {

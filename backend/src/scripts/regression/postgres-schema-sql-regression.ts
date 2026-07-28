@@ -10,6 +10,7 @@ const sql = buildPostgresSchemaSql()
 const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
 const providerAuthProtocolCatchUpMigration = readFileSync('../backend-go/db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql', 'utf8')
 const accountApiKeyRuntimeTraceMigration = readFileSync('../backend-go/db/migrations/000063_w1_account_api_key_runtime_trace_id.sql', 'utf8')
+const oauthRefreshRuntimeMigration = readFileSync('../backend-go/db/migrations/000092_w7_oauth_refresh_runtime.sql', 'utf8')
 const healthCheckEndpointModeOfflineMigration = readFileSync(
   'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
   'utf8'
@@ -119,6 +120,13 @@ assert.match(accountApiKeyRuntimeTraceMigration, /CREATE TABLE IF NOT EXISTS juh
 assert.match(accountApiKeyRuntimeTraceMigration, /account_api_key_runtime_states[\s\S]+ADD COLUMN IF NOT EXISTS last_trace_id text/, 'Goose 63 必须为既有 PostgreSQL 业务库补齐 Key 运行态 traceId')
 assert.match(accountApiKeyRuntimeTraceMigration, /idx_account_api_key_runtime_unique[\s\S]+idx_account_api_key_runtime_status[\s\S]+idx_account_api_key_runtime_probe[\s\S]+idx_account_api_key_runtime_owner/, 'Goose 63 必须为 fresh PostgreSQL 创建 Key 运行态索引')
 assert.match(sql, /account_api_key_runtime_states[\s\S]+probe_claim_token text[\s\S]+probe_claimed_until text/, 'Key 运行态 PostgreSQL schema 必须包含探针 claim')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+oauth_access_token_expires_at text[\s\S]+oauth_refresh_token_present integer NOT NULL DEFAULT 0/, 'Node PG accounts schema 必须保留 OAuth 刷新运行态字段及 SQLite 兼容类型')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_due\s+ON accounts\(provider_code, type, oauth_refresh_token_present, oauth_access_token_expires_at, status, id\)/, 'Node PG accounts schema 必须创建通用 OAuth 刷新候选索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_accounts_openai_oauth_refresh_pg_due\s+ON accounts\(provider_protocol_profile_id, type, oauth_refresh_token_present, \(oauth_access_token_expires_at IS NOT NULL\), oauth_access_token_expires_at ASC, updated_at ASC, id ASC\)\s+WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL/, 'Node PG accounts schema 必须创建 OAuth 刷新 PG due partial 索引')
+assert.match(oauthRefreshRuntimeMigration, /ADD COLUMN IF NOT EXISTS oauth_access_token_expires_at text,\s+ADD COLUMN IF NOT EXISTS oauth_refresh_token_present integer NOT NULL DEFAULT 0/, 'Goose 92 必须按 Node 权威类型补齐 OAuth 刷新运行态字段')
+assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_due[\s\S]+provider_code,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+oauth_access_token_expires_at,[\s\S]+status,[\s\S]+id/, 'Goose 92 必须补齐通用 OAuth 刷新候选索引')
+assert.match(oauthRefreshRuntimeMigration, /idx_accounts_openai_oauth_refresh_pg_due[\s\S]+provider_protocol_profile_id,[\s\S]+type,[\s\S]+oauth_refresh_token_present,[\s\S]+\(oauth_access_token_expires_at IS NOT NULL\),[\s\S]+oauth_access_token_expires_at ASC,[\s\S]+updated_at ASC,[\s\S]+id ASC[\s\S]+WHERE authorization_instance_authorization_id IS NULL\s+AND deleted_at IS NULL/, 'Goose 92 必须补齐与 Node 一致的 OAuth 刷新 PG due partial 索引')
+assert.doesNotMatch(oauthRefreshRuntimeMigration, /oauth_refresh_token_present (?:boolean|[^\n]*CHECK)/i, 'Goose 92 不得擅自改变 Node 的 OAuth refresh-token 存储语义')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')

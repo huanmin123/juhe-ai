@@ -238,6 +238,25 @@ try {
   const accountGroupOptions = await repositories.listAccountGroupOptionsAsync(userAccess, { limit: 20 })
   assert(accountGroupOptions.some((item) => item.id === group.id && item.accountIds.includes(account.id)), '账户分组选项应保留真实 accountIds')
   assert.equal((await repositories.findGroupSummaryAsync(group.id, userAccess))?.id, group.id, '分组详情 async 读应由 read worker 返回真实数据')
+  const groupEditReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  assert.deepEqual(await repositories.findGroupEditDetailAsync(group.id, userAccess), {
+    id: group.id,
+    name: 'SQLite read worker 分组',
+    providerCode: 'gpt',
+    enabled: true,
+    isDefault: false,
+    groupType: 'personal',
+    accessType: 'owner'
+  }, '分组编辑详情应由 read worker 返回精确 DTO')
+  assert(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= groupEditReadHandledJobsBefore + 1,
+    'SQLite DB service 下 findGroupEditDetailAsync 必须进入 read worker，避免编辑弹窗同步读阻塞主连接'
+  )
+  assert.equal(
+    await repositories.findGroupEditDetailAsync(group.id, { systemAccountId: 'other_account', role: 'user' }),
+    undefined,
+    '分组编辑详情 read worker 必须保留访问范围，不能返回其他账户不可见分组'
+  )
   const sessionReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   const sessionRead = await repositories.findSessionByTokenAsync(session.token)
   assert.equal(sessionRead?.sessionId, session.sessionId, '管理端鉴权 session 读取应由 read worker 返回真实数据')
@@ -275,6 +294,7 @@ try {
   const routeStrategyOptions = await repositories.listRouteStrategyOptionsAsync(userAccess, { limit: 20 })
   assert(routeStrategyOptions.some((item) => item.id === routeStrategy.id), '策略路由选项 async 读应由 read worker 返回真实数据')
   assert.equal((await repositories.findRouteStrategySummaryAsync(routeStrategy.id, userAccess))?.id, routeStrategy.id, '策略路由详情 async 读应由 read worker 返回真实数据')
+  assert.equal((await repositories.findRouteStrategyEditBasicDetailAsync(routeStrategy.id, userAccess))?.id, routeStrategy.id, '策略路由 edit-basic async 读应由 read worker 返回真实数据')
 
   const proxiesPage = await repositories.listProxiesPageAsync({ page: 1, pageSize: 20 })
   assert(proxiesPage.items.some((item) => item.id === proxy.id), '代理列表 async 读应由 read worker 返回真实数据')

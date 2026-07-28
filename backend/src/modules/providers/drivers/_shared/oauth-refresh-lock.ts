@@ -7,9 +7,15 @@ export const providerOAuthRefreshLockTtlMs = 90_000
 export const providerOAuthRefreshLockWaitMs = 30_000
 export const providerOAuthRefreshLockRetryMs = 250
 
+export interface ProviderOAuthRefreshCompatibilityLock {
+  lockStore: RuntimeStateStore
+  lockKey: string
+}
+
 export interface ProviderOAuthRefreshLockOptions {
   signal?: AbortSignal
   lockStore?: RuntimeStateStore
+  compatibilityLock?: ProviderOAuthRefreshCompatibilityLock
   lockTtlMs?: number
   waitMs?: number
   retryMs?: number
@@ -33,24 +39,38 @@ export async function runWithProviderOAuthRefreshLock<T>(
   throwIfAborted(options.signal)
   const lockStore = options.lockStore ?? createRuntimeStateStore('provider-oauth:refresh-locks')
   const lockKey = `${requiredLockPart(providerCode, '供应商')}:${requiredLockPart(accountId, '账户')}`
+  const primaryLock = { lockStore, lockKey }
+  const compatibilityLock = options.compatibilityLock
+    ? { lockStore: options.compatibilityLock.lockStore, lockKey: requiredLockPart(options.compatibilityLock.lockKey, '兼容') }
+    : undefined
+  // Legacy first is the single acquisition order used by every dual-lock caller during rollout.
+  const locks: ProviderOAuthRefreshLockTarget[] = compatibilityLock
+    && (compatibilityLock.lockStore !== primaryLock.lockStore || compatibilityLock.lockKey !== primaryLock.lockKey)
+    ? [compatibilityLock, primaryLock]
+    : [primaryLock]
   const token = randomBytes(16).toString('hex')
   const ttlMs = positiveDuration(options.lockTtlMs, providerOAuthRefreshLockTtlMs)
   const waitMs = positiveDuration(options.waitMs, providerOAuthRefreshLockWaitMs)
   const retryMs = positiveDuration(options.retryMs, providerOAuthRefreshLockRetryMs)
   const deadline = Date.now() + waitMs
 
-  while (!await lockStore.acquireLock(lockKey, { ttlMs, token })) {
-    throwIfAborted(options.signal)
-    if (options.failIfLocked) {
-      throw new ProviderOAuthRefreshLockBusyError(providerCode, accountId)
+  const acquiredLocks: ProviderOAuthRefreshLockTarget[] = []
+  try {
+    for (const lock of locks) {
+      while (!await lock.lockStore.acquireLock(lock.lockKey, { ttlMs, token })) {
+        throwIfAborted(options.signal)
+        if (options.failIfLocked || Date.now() >= deadline) {
+          throw new ProviderOAuthRefreshLockBusyError(providerCode, accountId)
+        }
+        await abortableDelay(retryMs, options.signal)
+      }
+      acquiredLocks.push(lock)
     }
-    if (Date.now() >= deadline) {
-      throw new ProviderOAuthRefreshLockBusyError(providerCode, accountId)
-    }
-    await abortableDelay(retryMs, options.signal)
+  } catch (error) {
+    await releaseProviderOAuthRefreshLocks(acquiredLocks, token, providerCode, accountId)
+    throw error
   }
 
-  options.onLockAcquired?.()
   const renewalAbort = new AbortController()
   let lockLostError: Error | undefined
   const loseLock = (error: Error) => {
@@ -61,11 +81,13 @@ export async function runWithProviderOAuthRefreshLock<T>(
   const assertLockOwned = async () => {
     if (lockLostError) throw lockLostError
     try {
-      const renewed = await lockStore.renewLock(lockKey, { ttlMs, token })
-      if (renewed) return
-      const error = providerOAuthRefreshLockLostError(providerCode, accountId)
-      loseLock(error)
-      throw error
+      for (const lock of acquiredLocks) {
+        const renewed = await lock.lockStore.renewLock(lock.lockKey, { ttlMs, token })
+        if (renewed) continue
+        const error = providerOAuthRefreshLockLostError(providerCode, accountId)
+        loseLock(error)
+        throw error
+      }
     } catch (error) {
       if (lockLostError) throw lockLostError
       const lockError = new Error(`${providerCode} OAuth 刷新锁持有状态验证失败：${accountId}`, { cause: error })
@@ -74,8 +96,7 @@ export async function runWithProviderOAuthRefreshLock<T>(
     }
   }
   const renewal = renewProviderOAuthRefreshLock({
-    lockStore,
-    lockKey,
+    locks: acquiredLocks,
     token,
     ttlMs,
     providerCode,
@@ -85,25 +106,25 @@ export async function runWithProviderOAuthRefreshLock<T>(
   })
   try {
     throwIfAborted(options.signal)
+    options.onLockAcquired?.()
+    throwIfAborted(options.signal)
     const result = await task(renewalAbort.signal, assertLockOwned)
     if (lockLostError) throw lockLostError
     return result
   } finally {
     renewalAbort.abort()
     await renewal.catch(() => undefined)
-    await lockStore.releaseLock(lockKey, token).catch((error) => {
-      logger.error(errorLogFields(error, {
-        event: 'provider_oauth_refresh_lock_release_failed',
-        providerCode,
-        accountId
-      }), '供应商 OAuth 刷新锁释放失败')
-    })
+    await releaseProviderOAuthRefreshLocks(acquiredLocks, token, providerCode, accountId)
   }
 }
 
-interface ProviderOAuthRefreshRenewalInput {
+interface ProviderOAuthRefreshLockTarget {
   lockStore: RuntimeStateStore
   lockKey: string
+}
+
+interface ProviderOAuthRefreshRenewalInput {
+  locks: readonly ProviderOAuthRefreshLockTarget[]
   token: string
   ttlMs: number
   providerCode: string
@@ -114,33 +135,52 @@ interface ProviderOAuthRefreshRenewalInput {
 
 async function renewProviderOAuthRefreshLock(input: ProviderOAuthRefreshRenewalInput): Promise<void> {
   const intervalMs = Math.max(25, Math.min(Math.floor(input.ttlMs / 3), input.ttlMs - 1))
-  let lastSuccessAt = Date.now()
+  const lastSuccessAt = new Map(input.locks.map((lock) => [lock, Date.now()]))
   let delayMs = intervalMs
   while (!input.signal.aborted) {
     await abortableDelay(delayMs, input.signal).catch(() => undefined)
     if (input.signal.aborted) return
-    try {
-      const renewed = await input.lockStore.renewLock(input.lockKey, { ttlMs: input.ttlMs, token: input.token })
-      if (!renewed) {
-        const error = providerOAuthRefreshLockLostError(input.providerCode, input.accountId)
-        input.onLost(error)
-        return
+    for (const lock of input.locks) {
+      try {
+        const renewed = await lock.lockStore.renewLock(lock.lockKey, { ttlMs: input.ttlMs, token: input.token })
+        if (!renewed) {
+          const error = providerOAuthRefreshLockLostError(input.providerCode, input.accountId)
+          input.onLost(error)
+          return
+        }
+        lastSuccessAt.set(lock, Date.now())
+        delayMs = intervalMs
+      } catch (error) {
+        if (Date.now() - (lastSuccessAt.get(lock) ?? 0) >= input.ttlMs) {
+          const lockError = new Error(`${input.providerCode} OAuth 刷新锁续租失败：${input.accountId}`, { cause: error })
+          input.onLost(lockError)
+          return
+        }
+        delayMs = Math.min(1_000, intervalMs)
+        logger.warn(errorLogFields(error, {
+          event: 'provider_oauth_refresh_lock_renew_failed',
+          providerCode: input.providerCode,
+          accountId: input.accountId
+        }), '供应商 OAuth 刷新锁续租暂时失败')
       }
-      lastSuccessAt = Date.now()
-      delayMs = intervalMs
-    } catch (error) {
-      if (Date.now() - lastSuccessAt >= input.ttlMs) {
-        const lockError = new Error(`${input.providerCode} OAuth 刷新锁续租失败：${input.accountId}`, { cause: error })
-        input.onLost(lockError)
-        return
-      }
-      delayMs = Math.min(1_000, intervalMs)
-      logger.warn(errorLogFields(error, {
-        event: 'provider_oauth_refresh_lock_renew_failed',
-        providerCode: input.providerCode,
-        accountId: input.accountId
-      }), '供应商 OAuth 刷新锁续租暂时失败')
     }
+  }
+}
+
+async function releaseProviderOAuthRefreshLocks(
+  locks: readonly ProviderOAuthRefreshLockTarget[],
+  token: string,
+  providerCode: string,
+  accountId: string
+): Promise<void> {
+  for (const lock of [...locks].reverse()) {
+    await lock.lockStore.releaseLock(lock.lockKey, token).catch((error) => {
+      logger.error(errorLogFields(error, {
+        event: 'provider_oauth_refresh_lock_release_failed',
+        providerCode,
+        accountId
+      }), '供应商 OAuth 刷新锁释放失败')
+    })
   }
 }
 

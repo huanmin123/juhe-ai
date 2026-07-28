@@ -356,8 +356,26 @@ export async function findGroupSummaryAsync(id: string, access?: AccessScope): P
 }
 
 export async function findGroupEditDetailAsync(id: string, access?: AccessScope): Promise<GroupEditDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_group_edit_detail_read_only',
+        id,
+        access
+      })
+    }
+    return findGroupEditDetailReadOnly(id, access)
+  }
   const row = await findGroupRowForAccessAsync(access, id)
-  if (!row) return undefined
+  return row ? groupEditDetailFromRow(row, access) : undefined
+}
+
+export function findGroupEditDetailReadOnly(id: string, access?: AccessScope): GroupEditDetail | undefined {
+  const row = findGroupRowForAccess(access, id)
+  return row ? groupEditDetailFromRow(row, access) : undefined
+}
+
+function groupEditDetailFromRow(row: GroupListRow, access?: AccessScope): GroupEditDetail {
   const authorized = row.access_type === 'authorized'
   return {
     id: row.id,

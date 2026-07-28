@@ -333,10 +333,12 @@ async function runHttpSmoke(): Promise<void> {
     }, cookie)
     createdGroupIds.push(createdGroup.id)
     assert.equal(createdGroup.groupType, 'high_concurrency', 'performance smoke 应能创建高并发分组')
-    const updatedGroup = await patchEnvelope<{ id: string; name: string; enabled: boolean }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
+    const updatedGroup = await patchEnvelope<{ id: string; changedFields: string[] }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
       name: `烟测分组${groupSuffix}改`
     }, cookie)
-    assert.equal(updatedGroup.name, `烟测分组${groupSuffix}改`, 'performance smoke 应能更新分组名称')
+    assert.deepEqual(updatedGroup.changedFields, ['name'], 'performance smoke 分组 PATCH 应只确认实际变化字段')
+    const renamedGroup = await getEnvelope<{ name: string }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}/edit-basic`, cookie)
+    assert.equal(renamedGroup.name, `烟测分组${groupSuffix}改`, 'performance smoke 应能更新分组名称')
 
     console.log(`[performance-system-api-smoke:${label}] authorization options`)
     const granteeAccounts = await getEnvelope<Array<{ id: string; username: string }>>(baseUrl, '/__aisys__/api/authorization-options/grantee-accounts?ids=sys_admin', cookie)
@@ -700,10 +702,12 @@ async function runHttpSmoke(): Promise<void> {
     await deleteNoContent(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, cookie)
     createdRouteStrategyIds.splice(createdRouteStrategyIds.indexOf(hybridRouteStrategy.id), 1)
 
-    const disabledGroup = await patchEnvelope<{ id: string; enabled: boolean }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
+    const disabledGroup = await patchEnvelope<{ id: string; changedFields: string[] }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
       enabled: false
     }, cookie)
-    assert.equal(disabledGroup.enabled, false, 'performance smoke 应能更新分组启用状态')
+    assert.deepEqual(disabledGroup.changedFields, ['enabled'], 'performance smoke 分组状态 PATCH 应只确认实际变化字段')
+    const disabledGroupDetail = await getEnvelope<{ enabled: boolean }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}/edit-basic`, cookie)
+    assert.equal(disabledGroupDetail.enabled, false, 'performance smoke 应能更新分组启用状态')
     await deleteNoContent(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, cookie)
     createdGroupIds.splice(createdGroupIds.indexOf(createdGroup.id), 1)
 

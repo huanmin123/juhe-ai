@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountStatus, RequestQuotaLimits } from '../domain/types.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import {
@@ -21,6 +22,7 @@ import {
 } from './request-quota-checker.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
+import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 export interface AuthorizedAccountDispatchInput {
   expectedConfigRevision: number
@@ -146,16 +148,7 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
   })
   if (!outcome) return undefined
   if (outcome.changedFields.length > 0) {
-    if (outcome.groupStatsAffected) {
-      await refreshGroupAccountStatsAfterWriteAsync({
-        groupIds: [outcome.authorizedBinding.groupId],
-        accountIds: [outcome.id],
-        reason: 'authorized_binding_dispatch'
-      }, client)
-    }
-    if (outcome.gatewayRuntimeAffected) {
-      invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_dispatch')
-    }
+    await applyAuthorizedDispatchPostCommitEffects(outcome, client)
   }
   const {
     groupStatsAffected: _groupStatsAffected,
@@ -163,6 +156,45 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
     ...result
   } = outcome
   return result
+}
+
+async function applyAuthorizedDispatchPostCommitEffects(
+  outcome: AuthorizedDispatchTransactionOutcome,
+  client: DatabaseClient
+): Promise<void> {
+  const effects: Promise<unknown>[] = []
+  if (outcome.groupStatsAffected) {
+    effects.push(refreshGroupAccountStatsAfterWriteAsync({
+      groupIds: [outcome.authorizedBinding.groupId],
+      accountIds: [outcome.id],
+      reason: 'authorized_binding_dispatch'
+    }, client))
+  }
+  runAuthorizedDispatchPostCommitSyncEffect(outcome.id, () => invalidateAccountLookupCache(outcome.id))
+  if (outcome.gatewayRuntimeAffected) {
+    runAuthorizedDispatchPostCommitSyncEffect(outcome.id, () => {
+      invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_dispatch')
+    })
+  }
+  const settled = await Promise.allSettled(effects)
+  for (const result of settled) {
+    if (result.status !== 'rejected') continue
+    logger.warn(errorLogFields(result.reason, {
+      event: 'authorized_dispatch_post_commit_effect_failed',
+      accountId: outcome.id
+    }), '授权账户调度更新已提交，但后置统计刷新失败')
+  }
+}
+
+function runAuthorizedDispatchPostCommitSyncEffect(accountId: string, effect: () => void): void {
+  try {
+    effect()
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'authorized_dispatch_post_commit_effect_failed',
+      accountId
+    }), '授权账户调度更新已提交，但后置缓存失效失败')
+  }
 }
 
 async function patchAuthorizedAccountDispatchInTransaction(
@@ -180,8 +212,13 @@ async function patchAuthorizedAccountDispatchInTransaction(
   if ((hasStatusInput || clearFailureState) && row.status === 'pending_test') {
     throw new Error('待检查账户需等待后台健康检查通过后才能参与调度')
   }
-  if (input.superPriorityEnabled === true || input.fallbackEnabled === true) {
-    const unavailableMessage = await authorizedDispatchUnavailableMessage(client, row, binding)
+  if (input.status === 'active'
+    || clearFailureState
+    || input.superPriorityEnabled === true
+    || input.fallbackEnabled === true) {
+    const unavailableMessage = await authorizedDispatchUnavailableMessage(client, row, binding, {
+      allowLocalRecovery: input.status === 'active' || clearFailureState
+    })
     if (unavailableMessage) throw new Error(unavailableMessage)
   }
 
@@ -305,7 +342,7 @@ async function patchAuthorizedAccountDispatchInTransaction(
     changes,
     name: row.name,
     ownerSystemAccountId: row.system_account_id,
-    runtimeRestoreRequired: hasStatusInput || clearFailureState,
+    runtimeRestoreRequired: clearFailureState || input.status === 'active',
     authorizedBinding: authorizedBindingResult(row, binding),
     groupStatsAffected: true,
     gatewayRuntimeAffected: true
@@ -335,6 +372,7 @@ async function authorizedDispatchUnavailableMessage(
   client: DatabaseClient,
   row: AuthorizedAccountDispatchRow,
   binding: AuthorizedAccountBindingRow,
+  options: { allowLocalRecovery?: boolean } = {},
   now = new Date()
 ): Promise<string | undefined> {
   const nowMs = now.getTime()
@@ -365,14 +403,16 @@ async function authorizedDispatchUnavailableMessage(
   if (row.last_error_code === 'account_expired' || isAccountExpired(row.account_expires_at ?? undefined, nowMs)) {
     return '授权账户已到期，当前不可用'
   }
-  if (row.status === 'disabled') return '授权账户已停用，当前不可用'
-  if (row.status === 'pending_test') return '授权账户正在等待后台健康检查，检查通过前不会参与调度'
-  if (row.status === 'error') return row.last_error_message || '授权账户处于异常状态，当前不可用'
-  if (row.status === 'rate_limited') return row.last_error_message || '授权账户限流中，恢复前不会参与调度'
-  if (row.status === 'temporary_unavailable') return row.last_error_message || '授权账户临时不可调用，恢复前不会参与调度'
-  if (row.status === 'quality_isolated') return row.last_error_message || '授权账户因模型质量不达标已隔离，质量恢复检查通过前不会参与调度'
-  if (isFuture(row.cooldown_until, nowMs)) return '授权账户正在冷却，恢复前不会参与调度'
-  if (!databaseBoolean(row.schedulable)) return '授权账户暂时不可调用，恢复前不会参与调度'
+  if (!options.allowLocalRecovery) {
+    if (row.status === 'disabled') return '授权账户已停用，当前不可用'
+    if (row.status === 'pending_test') return '授权账户正在等待后台健康检查，检查通过前不会参与调度'
+    if (row.status === 'error') return row.last_error_message || '授权账户处于异常状态，当前不可用'
+    if (row.status === 'rate_limited') return row.last_error_message || '授权账户限流中，恢复前不会参与调度'
+    if (row.status === 'temporary_unavailable') return row.last_error_message || '授权账户临时不可调用，恢复前不会参与调度'
+    if (row.status === 'quality_isolated') return row.last_error_message || '授权账户因模型质量不达标已隔离，质量恢复检查通过前不会参与调度'
+    if (isFuture(row.cooldown_until, nowMs)) return '授权账户正在冷却，恢复前不会参与调度'
+    if (!databaseBoolean(row.schedulable)) return '授权账户暂时不可调用，恢复前不会参与调度'
+  }
   if (!binding.group_id) return '授权账户需要先绑定到你的分组'
   return undefined
 }
@@ -549,7 +589,8 @@ function assertAuthorizedDispatchInput(input: AuthorizedAccountDispatchInput): v
     throw new Error('账户配置版本无效')
   }
   const commandKeys = Object.keys(input).filter((key) => key !== 'expectedConfigRevision')
-  if (commandKeys.length === 0 || (commandKeys.length === 1 && input.clearFailureState !== true)) {
+  if (commandKeys.length === 0
+    || (commandKeys.length === 1 && commandKeys[0] === 'clearFailureState' && input.clearFailureState !== true)) {
     throw new Error('请至少提交一项授权账户调度变更')
   }
 }

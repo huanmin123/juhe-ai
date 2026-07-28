@@ -53,6 +53,7 @@ import {
   listExternalIntegrationSources
 } from './external-integration-source.repository.js'
 import {
+  findGroupEditDetailReadOnly,
   findGroupSummaryReadOnly,
   listAccountGroupOptionsReadOnly,
   listGroupOptionsReadOnly,
@@ -409,6 +410,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAccountGroupOptionsReadOnly(operation.access, operation.options)
     case 'find_group_summary_read_only':
       return findGroupSummaryReadOnly(operation.id, operation.access)
+    case 'find_group_edit_detail_read_only':
+      return findGroupEditDetailReadOnly(operation.id, operation.access)
     case 'list_api_keys_read_only':
       return listApiKeysReadOnly(operation.access, operation.options)
     case 'list_api_keys_page_read_only':

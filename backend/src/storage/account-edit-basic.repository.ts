@@ -18,15 +18,9 @@ import { getPostgresPool } from './postgres-client.js'
 
 const businessSchemaName = 'juhe_business'
 
-const commonEditableCredentialKeys = [
+const basicEditableCredentialKeys = [
   'base_url',
-  'supported_endpoint_modes',
-  'service_tier_override',
-  'reasoning_effort_override',
-  'error_handling_rules',
-  'response_inspection_rules',
-  'codex_responses_safe_repair_enabled',
-  'codex_responses_strict_intercept_enabled'
+  'supported_endpoint_modes'
 ] as const
 
 const editableCredentialKeysByAccountType: Record<string, readonly string[]> = {
@@ -204,7 +198,7 @@ export function projectEditableCredentials(
   credentials: Record<string, unknown>
 ): AccountCredentials {
   const output: AccountCredentials = {}
-  for (const key of [...commonEditableCredentialKeys, ...(editableCredentialKeysByAccountType[accountType] ?? [])]) {
+  for (const key of [...basicEditableCredentialKeys, ...(editableCredentialKeysByAccountType[accountType] ?? [])]) {
     if (Object.prototype.hasOwnProperty.call(credentials, key)) {
       output[key] = credentials[key]
     }

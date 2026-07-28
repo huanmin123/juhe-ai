@@ -13,6 +13,7 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	job "juhe-ai/backend-go/internal/jobs/cooldownaccountretest"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/jobs/worker"
 	module "juhe-ai/backend-go/internal/modules/cooldownaccountretest"
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/systemsettings"
@@ -54,6 +55,88 @@ func TestRunCooldownAccountRetestWorkerMissingProbeFailsBeforeRuntimeDependencie
 	err := runCooldownAccountRetestWorker(t.Context(), cfg, nil, CooldownAccountRetestWorkerOptions{}, deps)
 	if !errors.Is(err, module.ErrProbeNotConfigured) {
 		t.Fatalf("runCooldownAccountRetestWorker() error = %v, want missing probe", err)
+	}
+}
+
+func TestRunCooldownAccountRetestWorkerDefaultsOutcomesToRuntimeStore(t *testing.T) {
+	runtimeStore := &cooldownAccountRetestOutcomeRuntimeStoreStub{
+		cooldownAccountRetestRuntimeStoreStub: &cooldownAccountRetestRuntimeStoreStub{},
+	}
+	consumerErr := errors.New("consumer stopped")
+	var captured port.CooldownAccountRetestOutcomeStore
+	err := runCooldownAccountRetestWorker(
+		t.Context(),
+		cooldownAccountRetestWorkerTestConfig(),
+		nil,
+		CooldownAccountRetestWorkerOptions{Probe: cooldownAccountRetestProbeStub{}},
+		cooldownAccountRetestWorkerTestDependencies(runtimeStore, func(_ context.Context, opts worker.CooldownAccountRetestConsumerOptions) error {
+			captured = opts.Processor.Outcomes
+			return consumerErr
+		}),
+	)
+	if !errors.Is(err, consumerErr) {
+		t.Fatalf("runCooldownAccountRetestWorker() error = %v, want consumer error", err)
+	}
+	if captured != runtimeStore {
+		t.Fatalf("processor outcomes = %T %p, want runtime store %p", captured, captured, runtimeStore)
+	}
+}
+
+func TestRunCooldownAccountRetestWorkerExplicitOutcomesOverrideRuntimeStore(t *testing.T) {
+	runtimeStore := &cooldownAccountRetestOutcomeRuntimeStoreStub{
+		cooldownAccountRetestRuntimeStoreStub: &cooldownAccountRetestRuntimeStoreStub{},
+	}
+	override := &cooldownAccountRetestOutcomesStub{}
+	consumerErr := errors.New("consumer stopped")
+	var captured port.CooldownAccountRetestOutcomeStore
+	err := runCooldownAccountRetestWorker(
+		t.Context(),
+		cooldownAccountRetestWorkerTestConfig(),
+		nil,
+		CooldownAccountRetestWorkerOptions{Probe: cooldownAccountRetestProbeStub{}, Outcomes: override},
+		cooldownAccountRetestWorkerTestDependencies(runtimeStore, func(_ context.Context, opts worker.CooldownAccountRetestConsumerOptions) error {
+			captured = opts.Processor.Outcomes
+			return consumerErr
+		}),
+	)
+	if !errors.Is(err, consumerErr) {
+		t.Fatalf("runCooldownAccountRetestWorker() error = %v, want consumer error", err)
+	}
+	if captured != override {
+		t.Fatalf("processor outcomes = %T %p, want explicit override %p", captured, captured, override)
+	}
+}
+
+func TestRunCooldownAccountRetestWorkerRequiresOutcomeCapableRuntimeStoreWithoutOverride(t *testing.T) {
+	runtimeStore := &cooldownAccountRetestRuntimeStoreStub{}
+	err := runCooldownAccountRetestWorker(
+		t.Context(),
+		cooldownAccountRetestWorkerTestConfig(),
+		nil,
+		CooldownAccountRetestWorkerOptions{Probe: cooldownAccountRetestProbeStub{}},
+		cooldownAccountRetestWorkerDependencies{
+			openStore: func(context.Context, string) (cooldownAccountRetestRuntimeStore, error) {
+				return runtimeStore, nil
+			},
+			newQueueClient: func(queue.RedisOptions) cooldownAccountRetestQueueClient {
+				t.Fatal("outcome capability rejection created queue client")
+				return nil
+			},
+			newQueueInspector: func(queue.RedisOptions) cooldownAccountRetestQueueInspector {
+				t.Fatal("outcome capability rejection created queue inspector")
+				return nil
+			},
+			runConsumer: func(context.Context, worker.CooldownAccountRetestConsumerOptions) error {
+				t.Fatal("outcome capability rejection ran consumer")
+				return nil
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "outcome store is not configured") {
+		t.Fatalf("runCooldownAccountRetestWorker() error = %v", err)
+	}
+	if !runtimeStore.closed.Load() {
+		t.Fatal("runtime store was not closed after outcome capability rejection")
 	}
 }
 
@@ -181,10 +264,11 @@ type cooldownAccountRetestRuntimeStoreStub struct {
 	pages    []port.CooldownAccountRetestPage
 	inputs   []port.CooldownAccountRetestListInput
 	settings systemsettings.Snapshot
+	closed   atomic.Bool
 }
 
 func (s *cooldownAccountRetestRuntimeStoreStub) Ping(context.Context) error { return nil }
-func (s *cooldownAccountRetestRuntimeStoreStub) Close()                     {}
+func (s *cooldownAccountRetestRuntimeStoreStub) Close()                     { s.closed.Store(true) }
 func (s *cooldownAccountRetestRuntimeStoreStub) ManagementSystemSettings(context.Context) (systemsettings.Snapshot, error) {
 	return s.settings, nil
 }
@@ -220,6 +304,78 @@ func (s *cooldownAccountRetestRuntimeStoreStub) LoadGatewayQuotaSnapshotCosts(_ 
 
 func (s *cooldownAccountRetestRuntimeStoreStub) GetManagementUsageStatsTimezone(context.Context) (string, bool, error) {
 	return "UTC", true, nil
+}
+
+type cooldownAccountRetestOutcomeRuntimeStoreStub struct {
+	*cooldownAccountRetestRuntimeStoreStub
+}
+
+func (*cooldownAccountRetestOutcomeRuntimeStoreStub) RecordCooldownAccountRetestSuccess(context.Context, port.CooldownAccountRetestTask) error {
+	return nil
+}
+
+func (*cooldownAccountRetestOutcomeRuntimeStoreStub) DeferCooldownAccountRetest(context.Context, port.CooldownAccountRetestTask, time.Duration) error {
+	return nil
+}
+
+func (*cooldownAccountRetestOutcomeRuntimeStoreStub) RecordCooldownAccountRetestFailure(context.Context, port.CooldownAccountRetestTask, port.CooldownAccountRetestProbeResult) error {
+	return nil
+}
+
+type cooldownAccountRetestOutcomesStub struct{}
+
+func (*cooldownAccountRetestOutcomesStub) RecordCooldownAccountRetestSuccess(context.Context, port.CooldownAccountRetestTask) error {
+	return nil
+}
+
+func (*cooldownAccountRetestOutcomesStub) DeferCooldownAccountRetest(context.Context, port.CooldownAccountRetestTask, time.Duration) error {
+	return nil
+}
+
+func (*cooldownAccountRetestOutcomesStub) RecordCooldownAccountRetestFailure(context.Context, port.CooldownAccountRetestTask, port.CooldownAccountRetestProbeResult) error {
+	return nil
+}
+
+type cooldownAccountRetestProbeStub struct{}
+
+func (cooldownAccountRetestProbeStub) Probe(context.Context, port.CooldownAccountRetestCandidate) (port.CooldownAccountRetestProbeResult, error) {
+	return port.CooldownAccountRetestProbeResult{}, nil
+}
+
+type cooldownAccountRetestQueueClientStub struct{}
+
+func (*cooldownAccountRetestQueueClientStub) Ping() error  { return nil }
+func (*cooldownAccountRetestQueueClientStub) Close() error { return nil }
+func (*cooldownAccountRetestQueueClientStub) Enqueue(context.Context, string, []byte, queue.EnqueueOptions) (queue.TaskInfo, error) {
+	return queue.TaskInfo{}, nil
+}
+
+func cooldownAccountRetestWorkerTestConfig() config.Config {
+	return config.Config{
+		CooldownAccountRetestWorkerEnabled: true,
+		OwnerLockEnabled:                   true,
+		OwnerLockRole:                      "worker",
+		PostgresURL:                        "postgres://test.invalid/juhe_ai",
+		RedisQueueURL:                      "redis://test.invalid:6379/0",
+	}
+}
+
+func cooldownAccountRetestWorkerTestDependencies(
+	store cooldownAccountRetestRuntimeStore,
+	runConsumer func(context.Context, worker.CooldownAccountRetestConsumerOptions) error,
+) cooldownAccountRetestWorkerDependencies {
+	return cooldownAccountRetestWorkerDependencies{
+		openStore: func(context.Context, string) (cooldownAccountRetestRuntimeStore, error) {
+			return store, nil
+		},
+		newQueueClient: func(queue.RedisOptions) cooldownAccountRetestQueueClient {
+			return &cooldownAccountRetestQueueClientStub{}
+		},
+		newQueueInspector: func(queue.RedisOptions) cooldownAccountRetestQueueInspector {
+			return &cooldownAccountRetestQueueInspectorStub{}
+		},
+		runConsumer: runConsumer,
+	}
 }
 
 type cooldownAccountRetestSettingsReaderStub struct {
