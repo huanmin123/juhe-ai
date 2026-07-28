@@ -111,6 +111,7 @@ import {
   ReloadOutlined,
   RollbackOutlined,
   SettingOutlined,
+  StopOutlined,
   SwapOutlined,
   TeamOutlined,
   ThunderboltOutlined
@@ -161,6 +162,7 @@ const iconMap = {
   resume: PlayCircleOutlined,
   revoke: DisconnectOutlined,
   settings: SettingOutlined,
+  stop: StopOutlined,
   superPriority: ThunderboltOutlined,
   test: ExperimentOutlined,
   view: EyeOutlined

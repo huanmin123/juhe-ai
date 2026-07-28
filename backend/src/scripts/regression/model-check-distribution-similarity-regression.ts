@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-distribution-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -20,6 +21,15 @@ mkdirSync(tempRoot, { recursive: true })
 
 const targetUpstream = createMockUpstream('divergent')
 const comparisonUpstream = createMockUpstream('trusted')
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -62,7 +72,7 @@ try {
     profile: 'full',
     trustedComparison: true,
     trustedComparisonAccountId: comparisonAccount.id
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.level, 'likely', '分布相似度明显异常时不应继续给高可信')

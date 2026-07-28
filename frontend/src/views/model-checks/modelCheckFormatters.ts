@@ -107,6 +107,13 @@ export function checkTitle(check: ModelCheckCheckResult): string {
   return checkTitleByType(check.itemType, check.itemKey)
 }
 
+export function visibleModelCheckChecks(checks: ModelCheckCheckResult[]): ModelCheckCheckResult[] {
+  return checks.filter((check) => {
+    if (check.itemType !== 'responses_basic' && check.itemType !== 'protocol_basic') return true
+    return check.evidenceSummary.success !== true || check.evidenceSummary.modelMismatch === true
+  })
+}
+
 export function checkTitleByType(itemType: string, itemKey: string): string {
   const labels: Record<string, string> = {
     responses_basic: 'Responses 非流式',

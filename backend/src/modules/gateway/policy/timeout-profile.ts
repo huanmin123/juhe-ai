@@ -11,6 +11,7 @@ export interface GatewayTimeoutSettings {
 }
 
 export interface GatewayTimeoutProfile {
+  timeoutsDisabled?: true
   firstResponseTimeoutMs: number
   firstByteTimeoutMs: number
   idleTimeoutMs: number
@@ -20,7 +21,8 @@ export interface GatewayTimeoutProfile {
 
 export function gatewayTimeoutProfileForLane(
   settings: GatewayTimeoutSettings,
-  lane: OpenAIGatewayRequestLane
+  lane: OpenAIGatewayRequestLane,
+  options: { disableTimeouts?: boolean } = {}
 ): GatewayTimeoutProfile {
   const firstResponseTimeoutSeconds = lane === 'image'
     ? settings.imageFirstResponseTimeoutSeconds
@@ -33,6 +35,7 @@ export function gatewayTimeoutProfileForLane(
     : settings.textUncommittedAttemptMaxLifetimeSeconds
 
   return {
+    ...(options.disableTimeouts === true ? { timeoutsDisabled: true as const } : {}),
     firstResponseTimeoutMs: secondsToMilliseconds(firstResponseTimeoutSeconds),
     firstByteTimeoutMs: secondsToMilliseconds(firstResponseTimeoutSeconds),
     idleTimeoutMs: secondsToMilliseconds(idleTimeoutSeconds),

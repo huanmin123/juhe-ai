@@ -24,6 +24,14 @@ export interface AuditErrorGroupPayloadInput {
   bodySha256?: string
 }
 
+interface AuditErrorGroupIdentity {
+  requestFingerprint: string
+  errorFingerprint: string
+  fingerprint: string
+  windowStartedAt: string
+  windowEndedAt: string
+}
+
 const auditErrorGroupWindowMs = 5 * 60 * 1000
 
 export function prepareAuditErrorGroupStatements(database: DatabaseSync): AuditErrorGroupStatements {
@@ -32,11 +40,22 @@ export function prepareAuditErrorGroupStatements(database: DatabaseSync): AuditE
     updateExisting: database.prepare(`
       UPDATE audit_error_groups
       SET count = count + 1,
-          window_ended_at = ?,
-          last_event_id = ?,
+          window_ended_at = MAX(window_ended_at, ?),
+          first_event_id = CASE
+            WHEN ? < created_at OR (? = created_at AND ? < first_event_id) THEN ?
+            ELSE first_event_id
+          END,
+          last_event_id = CASE
+            WHEN ? > updated_at OR (? = updated_at AND ? > last_event_id) THEN ?
+            ELSE last_event_id
+          END,
           sample_event_id = COALESCE(sample_event_id, ?),
-          last_message = ?,
-          updated_at = ?
+          last_message = CASE
+            WHEN ? > updated_at OR (? = updated_at AND ? > last_event_id) THEN ?
+            ELSE last_message
+          END,
+          created_at = MIN(created_at, ?),
+          updated_at = MAX(updated_at, ?)
       WHERE id = ?
     `),
     insertGroup: database.prepare(`
@@ -82,7 +101,16 @@ export function upsertAuditErrorGroup(
   const existing = statements.selectExisting.get(fingerprint, windowStartedAt) as { id?: unknown } | undefined
   const existingId = optionalString(existing?.id)
   if (existingId) {
-    statements.updateExisting.run(windowEndedAt, auditLogId, auditLogId, input.errorMessage ?? null, timestamp, existingId)
+    statements.updateExisting.run(
+      windowEndedAt,
+      timestamp, timestamp, auditLogId, auditLogId,
+      timestamp, timestamp, auditLogId, auditLogId,
+      auditLogId,
+      timestamp, timestamp, auditLogId, input.errorMessage ?? null,
+      timestamp,
+      timestamp,
+      existingId
+    )
     return existingId
   }
 
@@ -126,25 +154,7 @@ export async function upsertAuditErrorGroupAsync(
   if (input.auditOutcome === 'success') {
     return null
   }
-  const requestFingerprint = auditRequestFingerprint(input, payloads)
-  const errorFingerprint = auditErrorFingerprint(input)
-  const windowStartedAt = auditErrorWindowStart(timestamp)
-  const windowEndedAt = new Date(Date.parse(windowStartedAt) + auditErrorGroupWindowMs).toISOString()
-  const fingerprint = sha256Text(stableJsonStringify({
-    systemAccountId: input.systemAccountId ?? '',
-    apiKeyId: input.apiKeyId ?? '',
-    groupId: input.groupId ?? '',
-    accountId: input.accountId ?? '',
-    providerCode: input.providerCode ?? '',
-    trafficSource,
-    path: input.path,
-    model: input.model ?? '',
-    statusCode: input.finalStatusCode ?? '',
-    errorPhase: input.errorPhase ?? '',
-    errorCode: input.errorCode ?? '',
-    requestFingerprint,
-    errorFingerprint
-  }))
+  const identity = auditErrorGroupIdentity(input, payloads, timestamp, trafficSource)
   const row = await client.one<{ id?: string }>(`
     INSERT INTO juhe_dataset.audit_error_groups (
       id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id, group_id, account_id,
@@ -153,17 +163,34 @@ export async function upsertAuditErrorGroupAsync(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(fingerprint, window_started_at) DO UPDATE SET
       count = audit_error_groups.count + 1,
-      window_ended_at = EXCLUDED.window_ended_at,
-      last_event_id = EXCLUDED.last_event_id,
+      window_ended_at = GREATEST(audit_error_groups.window_ended_at, EXCLUDED.window_ended_at),
+      first_event_id = CASE
+        WHEN EXCLUDED.created_at < audit_error_groups.created_at
+          OR (EXCLUDED.created_at = audit_error_groups.created_at AND EXCLUDED.first_event_id < audit_error_groups.first_event_id)
+          THEN EXCLUDED.first_event_id
+        ELSE audit_error_groups.first_event_id
+      END,
+      last_event_id = CASE
+        WHEN EXCLUDED.updated_at > audit_error_groups.updated_at
+          OR (EXCLUDED.updated_at = audit_error_groups.updated_at AND EXCLUDED.last_event_id > audit_error_groups.last_event_id)
+          THEN EXCLUDED.last_event_id
+        ELSE audit_error_groups.last_event_id
+      END,
       sample_event_id = COALESCE(audit_error_groups.sample_event_id, EXCLUDED.sample_event_id),
-      last_message = EXCLUDED.last_message,
-      updated_at = EXCLUDED.updated_at
+      last_message = CASE
+        WHEN EXCLUDED.updated_at > audit_error_groups.updated_at
+          OR (EXCLUDED.updated_at = audit_error_groups.updated_at AND EXCLUDED.last_event_id > audit_error_groups.last_event_id)
+          THEN EXCLUDED.last_message
+        ELSE audit_error_groups.last_message
+      END,
+      created_at = LEAST(audit_error_groups.created_at, EXCLUDED.created_at),
+      updated_at = GREATEST(audit_error_groups.updated_at, EXCLUDED.updated_at)
     RETURNING id
   `, [
     newId('audgrp'),
-    fingerprint,
-    windowStartedAt,
-    windowEndedAt,
+    identity.fingerprint,
+    identity.windowStartedAt,
+    identity.windowEndedAt,
     input.systemAccountId ?? null,
     input.apiKeyId ?? null,
     input.groupId ?? null,
@@ -175,8 +202,8 @@ export async function upsertAuditErrorGroupAsync(
     input.errorPhase ?? null,
     input.errorCode ?? null,
     input.auditOutcome,
-    requestFingerprint,
-    errorFingerprint,
+    identity.requestFingerprint,
+    identity.errorFingerprint,
     auditLogId,
     auditLogId,
     auditLogId,
@@ -185,6 +212,49 @@ export async function upsertAuditErrorGroupAsync(
     timestamp
   ])
   return optionalString(row?.id) ?? null
+}
+
+export function auditErrorGroupLockKey(
+  input: AuditLogInput,
+  payloads: AuditErrorGroupPayloadInput[],
+  timestamp: string,
+  trafficSource: AuditTrafficSource
+): string | undefined {
+  if (input.auditOutcome === 'success') return undefined
+  const identity = auditErrorGroupIdentity(input, payloads, timestamp, trafficSource)
+  return `${identity.fingerprint}\u0000${identity.windowStartedAt}`
+}
+
+function auditErrorGroupIdentity(
+  input: AuditLogInput,
+  payloads: AuditErrorGroupPayloadInput[],
+  timestamp: string,
+  trafficSource: AuditTrafficSource
+): AuditErrorGroupIdentity {
+  const requestFingerprint = auditRequestFingerprint(input, payloads)
+  const errorFingerprint = auditErrorFingerprint(input)
+  const windowStartedAt = auditErrorWindowStart(timestamp)
+  return {
+    requestFingerprint,
+    errorFingerprint,
+    windowStartedAt,
+    windowEndedAt: new Date(Date.parse(windowStartedAt) + auditErrorGroupWindowMs).toISOString(),
+    fingerprint: sha256Text(stableJsonStringify({
+      systemAccountId: input.systemAccountId ?? '',
+      apiKeyId: input.apiKeyId ?? '',
+      groupId: input.groupId ?? '',
+      accountId: input.accountId ?? '',
+      providerCode: input.providerCode ?? '',
+      trafficSource,
+      path: input.path,
+      model: input.model ?? '',
+      statusCode: input.finalStatusCode ?? '',
+      errorPhase: input.errorPhase ?? '',
+      errorCode: input.errorCode ?? '',
+      requestFingerprint,
+      errorFingerprint
+    }))
+  }
 }
 
 function auditRequestFingerprint(input: AuditLogInput, payloads: AuditErrorGroupPayloadInput[]): string {

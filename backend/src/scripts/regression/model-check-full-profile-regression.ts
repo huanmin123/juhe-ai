@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { ModelCheckRunDetail } from '../../domain/types.js'
+import type { ModelCheckRunDetail, ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-full-profile-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -20,6 +20,15 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const upstream = createMockUpstream()
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 let upstreamResponseRequestCount = 0
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -50,6 +59,9 @@ try {
   const secondAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
+  repositories.updateAccount(account.id, {
+    supportedModels: ['gpt-5.5', 'gpt-5.4', 'gpt-5.6-sol', 'gpt-5.6-terra']
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
 
   const quickRun = await runModelCheck({
     targetType: 'account',
@@ -59,7 +71,7 @@ try {
   assert.equal(quickRun.status, 'completed')
   assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
   assert.equal(upstreamResponseRequestCount, 2, '快速检测最多应执行基础请求和一个行为探针')
-  assert(quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '快速检测应包含基础响应探针')
+  assert(!quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '基础连通成功只用于内部早停，不应生成模型评分项')
   assert(quickRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), '快速检测应包含轻量行为探针')
   assert(!quickRun.checks.some((item) => ['responses_stream', 'structured_output', 'tool_calling', 'usage_shape', 'long_context', 'stability', 'cross_model'].includes(item.itemType)), '快速检测不应执行深度探针')
   assert.equal(quickRun.resultSummary.trustedComparison, false)
@@ -75,7 +87,7 @@ try {
     trustedComparison: false
   }, { systemAccountId: 'sys_admin', role: 'admin' }, undefined, (event) => {
     if ('itemKey' in event) progressItemKeys.push(event.itemKey)
-  })
+  }, { policy: fullPolicy })
   await assertRunShape(accountRun, {
     targetType: 'account',
     targetId: account.id,

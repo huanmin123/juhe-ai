@@ -15,13 +15,11 @@ import { loadAccountResponseInspectionRules } from './accountResponseInspectionP
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { asString } from './accountBasicFormatters'
 import { parseStrictDatePickerValue } from './accountFormatters'
-import { defaultAccountClientCompatibility } from './accountFormDefaults'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   defaultAccountEndpointModes,
   normalizeAccountEndpointModes
 } from './accountEndpointModes'
-import { effectiveAccountTestClientCompatibility } from './accountProviderCapabilities'
 import { accountGptRequestOverridesForForm } from './accountGptRequestOverrides'
 import { inferGeminiOAuthType } from './geminiOAuthType'
 
@@ -201,8 +199,7 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
 }
 
 function accountClientCompatibilityForForm(account: AccountEditBasicDetail): AccountFormModel['clientCompatibility'] {
-  return effectiveAccountTestClientCompatibility(account, 'account_default')
-    ?? defaultAccountClientCompatibility(account.providerCode)
+  return account.clientCompatibility
 }
 
 function accountEndpointModesForForm(

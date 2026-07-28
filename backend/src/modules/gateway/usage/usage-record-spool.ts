@@ -126,6 +126,7 @@ async function runUsageRecordSpoolReplay(replay: (input: UsageRecordInput) => Pr
   while (!replayStopping) {
     const files = await listSpoolFiles(runtimeConfig.usageSpool.replayBatchSize)
     if (files.length === 0) {
+      if (replayStopping) break
       await replayDelay(runtimeConfig.usageSpool.replayIntervalMs)
       continue
     }
@@ -182,6 +183,7 @@ async function runUsageRecordSpoolReplay(replay: (input: UsageRecordInput) => Pr
     }
     capacity = undefined
     if (shouldBackoff) {
+      if (replayStopping) break
       await replayDelay(runtimeConfig.usageSpool.replayIntervalMs)
     } else {
       await yieldImmediate()
@@ -329,6 +331,7 @@ function errorMessage(error: unknown): string {
 }
 
 function replayDelay(ms: number): Promise<void> {
+  if (replayStopping) return Promise.resolve()
   return new Promise((resolve) => {
     let settled = false
     const finish = () => {

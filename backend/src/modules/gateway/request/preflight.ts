@@ -102,6 +102,7 @@ import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hy
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
 import { applyCodexResponsesContextStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
+import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
 import { requestModel } from './metadata.js'
 import { resolveGatewayModelsResponseProtocol } from './models-response-protocol.js'
@@ -391,6 +392,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  const compactionTimeoutsDisabled = codexCompactionExpectedForRequest(req)
   let requestLane = options.requestLane ?? 'text'
   const serverRetryBudget = options.serverRetryBudget
     ?? new ServerRetryBudget(activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds * 1000)
@@ -398,10 +400,14 @@ export async function prepareOpenAIGatewayDispatchContext(
   let gatewayRequestWallBudget = options.gatewayRequestWallBudget
     ?? new GatewayRequestWallBudget({
       requestAcceptedAtMs: startedAt,
+      unbounded: compactionTimeoutsDisabled,
       budgetMs: requestLane === 'image'
         ? activeGatewaySettings.imageRequestWallTimeoutSeconds * 1000
         : undefined
     })
+  if (compactionTimeoutsDisabled) {
+    gatewayRequestWallBudget = gatewayRequestWallBudget.withoutLimit()
+  }
   if (requestLane === 'image') {
     gatewayRequestWallBudget = gatewayRequestWallBudget.withMinimumBudgetMs(
       activeGatewaySettings.imageRequestWallTimeoutSeconds * 1000
@@ -1008,7 +1014,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     apiKeyRecord: groupFallbackApiKeyRecord ?? apiKeyRecord,
     gatewayRequestWallBudget,
-    normalRouteFirstByteConfig: normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+    normalRouteFirstByteConfig: !compactionTimeoutsDisabled && normalRouteFirstByteDeadlineAppliesToLane(requestLane)
       ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
       : undefined,
     hybridRoute: selectedHybridRoute
@@ -1042,7 +1048,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     downstreamCommitState,
     routePlanSnapshot,
     interactionResourceAffinity,
-    normalRouteFirstByteConfig: normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+    normalRouteFirstByteConfig: !compactionTimeoutsDisabled && normalRouteFirstByteDeadlineAppliesToLane(requestLane)
       ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
       : undefined
   })
@@ -1181,12 +1187,27 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     options.routePlanSnapshot = routePlanSnapshot
   }
-  const normalRouteFirstByteConfig = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+  const normalRouteFirstByteConfig = !compactionTimeoutsDisabled
+    && normalRouteFirstByteDeadlineAppliesToLane(requestLane)
     ? options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
     : undefined
-  const normalRouteSpeedFirstConfig = normalRouteSpeedFirstAppliesToLane(requestLane)
+  const normalRouteSpeedFirstConfig = !compactionTimeoutsDisabled
+    && normalRouteSpeedFirstAppliesToLane(requestLane)
     ? normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
     : undefined
+  if (compactionTimeoutsDisabled) {
+    auditCapture.addGatewayMetadata({
+      label: 'codex_compaction_timeouts_disabled',
+      metadata: {
+        requestLane,
+        wallBudgetDisabled: true,
+        firstResponseTimeoutsDisabled: true,
+        firstOutputTimeoutsDisabled: true,
+        attemptLifetimeDisabled: true,
+        rawStreamIdleTimeoutRetained: true
+      }
+    })
+  }
 
   const dispatchPreparation = await prepareOpenAIGatewayDispatchAccounts({
     req,
@@ -1242,6 +1263,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     requestCoordination: {
       scope: 'gateway_request',
+      timeoutPolicy: compactionTimeoutsDisabled ? 'codex_compaction_unbounded' : undefined,
       serverRetryBudget,
       gatewayRequestWallBudget,
       routeCoordinationBudget,
@@ -1322,8 +1344,9 @@ function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | u
 function normalRouteFirstByteConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): NormalRouteFirstByteRuntimeConfig | undefined {
   if (apiKeyRecord?.route_strategy_mode !== 'normal') return undefined
   const normalConfig = apiKeyRecord.normal_routing_config ?? defaultNormalRoutingConfig()
+  if (normalConfig.schedulingPreference !== 'speed_first') return undefined
   return {
-    schedulingPreference: normalConfig.schedulingPreference,
+    schedulingPreference: 'speed_first',
     firstByteDeadlineMs: normalConfig.firstByteDeadlineMs
   }
 }

@@ -94,7 +94,7 @@ const baseline = {
   mode: 'normal' as const,
   status: 'active' as const,
   groupBindings: [{ groupId: 'group-1', priority: 1, weight: 1, status: 'active' as const }],
-  normalRoutingConfig: { schedulingPreference: 'cost_first' as const, firstByteDeadlineMs: 10000 },
+  normalRoutingConfig: { schedulingPreference: 'cost_first' as const },
   hybridRoutingConfig: null
 }
 assert.deepEqual(buildRouteStrategyMutationPatch(baseline, { ...baseline }), {}, '未修改策略路由不得生成 PATCH 字段')
@@ -110,7 +110,7 @@ const listItem = {
   mode: 'normal' as const,
   status: 'active' as const,
   isDefault: false,
-  normalRoutingConfig: { schedulingPreference: 'cost_first' as const, firstByteDeadlineMs: 10000 },
+  normalRoutingConfig: { schedulingPreference: 'cost_first' as const },
   bindingCount: 1,
   apiKeyCount: 7,
   groupBindingPreview: [{

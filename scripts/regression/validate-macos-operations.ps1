@@ -48,8 +48,21 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'activation_service_names', 'wait_for_health', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx -t', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', '/usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test', 'assert_runtime_directory', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
+}
+if ($performanceInstaller -match 'proxy_next_upstream_tries') {
+  throw 'Performance topology must not retry streamed or non-idempotent gateway requests'
+}
+foreach ($contract in @(
+  '"$NGINX_BIN" -t -c "$NGINX_MAIN_CONFIG"',
+  '"$NGINX_BIN" -s reload -c "$NGINX_MAIN_CONFIG"',
+  'service_user_xml="<key>UserName</key><string>$(xml_escape "$SERVICE_USER")</string>"',
+  'if ! nginx_test >/dev/null 2>&1 || ! nginx_reload >/dev/null 2>&1'
+)) {
+  if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) {
+    throw "Performance topology installer implementation missing: $contract"
+  }
 }
 $serverSource = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'backend\src\server.ts')
 foreach ($contract in @('processPid: process.pid', 'dbServicePid: dbService.pid', 'workerProcesses')) {
@@ -111,10 +124,17 @@ if (-not $metricsGateFunction.Contains('role_pid_lines="$VERIFIED_GATEWAY_METRIC
   throw 'Performance topology final control gate must reuse the verified PID mappings from every gateway activation'
 }
 $performanceHealthIndex = $performanceInstaller.LastIndexOf('for name in $(service_names); do wait_for_health', [StringComparison]::Ordinal)
-$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx -s reload', [StringComparison]::Ordinal)
-if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex) {
+$performanceNginxIndex = $performanceInstaller.LastIndexOf('nginx_reload', [StringComparison]::Ordinal)
+$performanceIngressIndex = $performanceInstaller.LastIndexOf("wait_for_ingress`n", [StringComparison]::Ordinal)
+if ($performanceHealthIndex -lt 0 -or $performanceNginxIndex -lt 0 -or $performanceIngressIndex -lt 0 -or $performanceHealthIndex -gt $performanceNginxIndex -or $performanceNginxIndex -gt $performanceIngressIndex) {
   throw 'Performance topology must verify every Node service before switching nginx'
 }
+$rollbackFunctionStart = $performanceInstaller.IndexOf('rollback() {', [StringComparison]::Ordinal)
+$onExitFunctionStart = $performanceInstaller.IndexOf('on_exit() {', $rollbackFunctionStart, [StringComparison]::Ordinal)
+$rollbackFunction = $performanceInstaller.Substring($rollbackFunctionStart, $onExitFunctionStart - $rollbackFunctionStart)
+$runtimeDirectoryFunctionStart = $performanceInstaller.IndexOf('assert_runtime_directory() {', [StringComparison]::Ordinal)
+$runtimeDirectoryFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeDirectoryFunctionStart, [StringComparison]::Ordinal) + 3
+$runtimeDirectoryFunction = $performanceInstaller.Substring($runtimeDirectoryFunctionStart, $runtimeDirectoryFunctionEnd - $runtimeDirectoryFunctionStart)
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
 foreach ($contract in @('assert_pid_cwd_port_health', 'API_HEALTH_PATH', 'rollback_target', "trap 'on_exit", '--dry-run', '--apply')) {
@@ -155,10 +175,114 @@ if ($bash) {
     }
     & $bash.Source ((Join-Path $operationsRoot 'install-launchd-service.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-ops-test' --label 'com.example.juhe-ai'
     if ($LASTEXITCODE -ne 0) { throw 'launchd installer dry-run failed' }
-    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir '/tmp/juhe-ai-performance-release' --label-prefix 'com.example.juhe-ai.performance' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' --nginx-bin '/usr/local/bin/nginx' --nginx-main-config '/tmp/nginx.conf'
     if ($LASTEXITCODE -ne 0) { throw 'performance topology installer dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf'
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology system-scope dry-run failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted a missing service user' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --service-user 'juhe-runtime' --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology user scope accepted a service user' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope system --service-user root --base-dir '/tmp/juhe-ai-performance-test' --nginx-config '/tmp/juhe-ai-performance-test/nginx.conf' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology system scope accepted root as its service user' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --release-dir 'relative/release' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a relative release directory' }
+    $resolvedReleaseHarness = @'
+set -euo pipefail
+installer="$1"
+root="/tmp/juhe-ai-resolved-release.$$"
+mkdir -p "$root"
+trap 'rm -rf -- "$root"' EXIT
+unsafe_release="$root/release\$unsafe"
+mkdir -p "$unsafe_release"
+ln -s "$unsafe_release" "$root/current"
+if bash "$installer" --apply --scope user --base-dir "$root/base" --release-dir "$root/current" > "$root/output" 2>&1; then
+  echo 'performance topology accepted an unsafe resolved release path' >&2
+  exit 1
+fi
+grep -Fq 'resolved release path contains unsafe shell characters' "$root/output"
+'@
+    & $bash.Source -c $resolvedReleaseHarness bash ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'performance topology resolved release path safety harness failed' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-bin 'relative/nginx' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a relative nginx binary' }
+    & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --nginx-main-config 'relative/nginx.conf' 2>$null
+    if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted a relative nginx main config' }
     & $bash.Source ((Join-Path $operationsRoot 'install-performance-topology.sh') -replace '\\', '/') --dry-run --scope user --base-dir '/tmp/juhe-ai-performance-test' --control-port 3102 --gateway-base-port 3101 --gateway-count 3 2>$null
     if ($LASTEXITCODE -eq 0) { throw 'performance topology installer accepted overlapping control and gateway ports' }
+
+    $runtimeDirectoryHarness = @'
+set -euo pipefail
+root="$(mktemp -d)"
+trap 'rm -rf -- "$root"' EXIT
+mkdir -p "$root/base/inside" "$root/outside/nested"
+RESOLVED_BASE_DIR="$(cd "$root/base" && pwd -P)"
+__RUNTIME_DIRECTORY_FUNCTION__
+assert_runtime_directory "$root/base/inside"
+ln -s "$root/outside" "$root/base/direct-link"
+if assert_runtime_directory "$root/base/direct-link" 2>/dev/null; then
+  echo 'runtime directory guard accepted a symbolic link' >&2
+  exit 61
+fi
+RESOLVED_BASE_DIR="$(cd "$root/outside" && pwd -P)"
+if assert_runtime_directory "$root/base/inside" 2>/dev/null; then
+  echo 'runtime directory guard accepted a physical path outside the base' >&2
+  exit 62
+fi
+'@.Replace('__RUNTIME_DIRECTORY_FUNCTION__', $runtimeDirectoryFunction)
+    & $bash.Source -c $runtimeDirectoryHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology runtime directory containment harness failed' }
+
+    $rollbackHarness = @'
+set -euo pipefail
+root="$(mktemp -d)"
+trap 'rm -rf -- "$root"' EXIT
+NGINX_CONFIG="$root/nginx.conf"
+NGINX_BACKUP="$root/nginx.backup"
+STAGE_DIR="$root/stage"
+mkdir -p "$STAGE_DIR"
+events="$root/events"
+service_names() { printf '%s\n' control-1; }
+service_plist_path() { printf '%s/%s.plist' "$root" "$1"; }
+service_run_path() { printf '%s/%s.sh' "$root" "$1"; }
+service_label() { printf 'com.example.%s' "$1"; }
+launchctl() {
+  printf '%s\n' "$*" >> "$events"
+  if [ "${FAIL_BOOTSTRAP:-0}" = 1 ] && [ "$1" = bootstrap ]; then return 1; fi
+}
+DOMAIN=system
+nginx_test() { return 0; }
+nginx_reload() { [ "${FAIL_NGINX_RELOAD:-1}" = 0 ]; }
+__ROLLBACK_FUNCTION__
+printf 'CANDIDATE\n' > "$NGINX_CONFIG"
+printf 'OLD\n' > "$NGINX_BACKUP"
+: > "$events"
+if rollback; then echo 'rollback ignored nginx reload failure' >&2; exit 71; fi
+grep -qx OLD "$NGINX_CONFIG" || exit 72
+[ ! -s "$events" ] || { echo 'rollback stopped services after nginx reload failure' >&2; exit 73; }
+printf 'CANDIDATE\n' > "$NGINX_CONFIG"
+rm -f -- "$NGINX_BACKUP"
+: > "$events"
+if rollback; then echo 'rollback accepted a missing prior nginx config' >&2; exit 74; fi
+grep -qx CANDIDATE "$NGINX_CONFIG" || exit 75
+[ ! -s "$events" ] || { echo 'rollback stopped services without a prior nginx config' >&2; exit 76; }
+printf 'CANDIDATE\n' > "$NGINX_CONFIG"
+printf 'OLD\n' > "$NGINX_BACKUP"
+printf 'CANDIDATE PLIST\n' > "$root/control-1.plist"
+printf 'CANDIDATE RUN\n' > "$root/control-1.sh"
+printf 'OLD PLIST\n' > "$root/control-1.plist.performance-backup.$$"
+printf 'OLD RUN\n' > "$root/control-1.sh.performance-backup.$$"
+touch "$STAGE_DIR/control-1.was-loaded"
+: > "$events"
+FAIL_NGINX_RELOAD=0
+FAIL_BOOTSTRAP=1
+if rollback; then echo 'rollback swallowed launchd bootstrap failure' >&2; exit 77; fi
+grep -qx 'OLD PLIST' "$root/control-1.plist" || exit 78
+grep -qx 'OLD RUN' "$root/control-1.sh" || exit 79
+rg -q -- '^bootstrap ' "$events" || exit 80
+'@.Replace('__ROLLBACK_FUNCTION__', $rollbackFunction)
+    & $bash.Source -c $rollbackHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology fail-closed rollback harness failed' }
 
     $metricsGateHarness = @'
 set -euo pipefail

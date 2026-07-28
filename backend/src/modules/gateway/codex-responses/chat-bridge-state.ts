@@ -6,7 +6,7 @@ import type { Request, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
-import { OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
+import { OPENAI_RESPONSES_FAMILY, isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import type {
   CodexContextCompactStateIndex,
   CodexContextPayloadReference,
@@ -34,6 +34,7 @@ import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { GatewayRequestValidationError } from '../request/validation-error.js'
+import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 
 type JsonRecord = Record<string, unknown>
 type CodexContextRestoreFailureOutcome = 'not_found' | 'expired' | 'boundary_mismatch' | 'chain_too_deep' | 'chain_broken'
@@ -581,12 +582,16 @@ export function setCodexResponsesContextStateForRequest(req: Request, state: Cod
 export function codexResponsesContextAllowsAccount(req: Request, account: UpstreamAccount): boolean {
   const state = getCodexResponsesContextState(req)
   if (!state) return true
-  const explicitBridge = isExplicitCodexResponsesChatBridgeAccount(req, account)
+  const compactAccountKind = codexResponsesCompactAccountKind(req, account)
+  const explicitBridge = compactAccountKind === 'bridge'
+  if (state.requestKind !== 'compact' && codexCompactionExpectedForRequest(req)) {
+    return compactAccountKind === 'native'
+  }
   if (state.requestKind === 'compact') {
-    if (state.compactDispatchMode === 'native') return !explicitBridge
+    if (state.compactDispatchMode === 'native') return compactAccountKind === 'native'
     if (state.previousResponseKind === 'internal') return explicitBridge
-    if (state.previousResponseKind === 'external') return !explicitBridge
-    return true
+    if (state.previousResponseKind === 'external') return compactAccountKind === 'native'
+    return compactAccountKind !== 'unsupported'
   }
   return state.previousResponseKind !== 'external' || !explicitBridge
 }
@@ -638,22 +643,23 @@ export function prepareCodexResponsesCompactDispatchForAccounts(
 ): boolean {
   const state = getCodexResponsesContextState(req)
   if (state?.requestKind !== 'compact') return false
-  const bridgeAccounts = accounts.filter((account) => isExplicitCodexResponsesChatBridgeAccount(req, account))
-  const nativeAccountCount = accounts.length - bridgeAccounts.length
+  const accountKinds = accounts.map((account) => codexResponsesCompactAccountKind(req, account))
+  const bridgeAccountCount = accountKinds.filter((kind) => kind === 'bridge').length
+  const nativeAccountCount = accountKinds.filter((kind) => kind === 'native').length
   if (state.previousResponseKind === 'external') {
     state.compactDispatchMode = 'native'
     return false
   }
   if (state.previousResponseKind === 'internal') {
     state.compactDispatchMode = 'bridge'
-    return bridgeAccounts.length > 0
+    return bridgeAccountCount > 0
   }
   if (nativeAccountCount > 0) {
     state.compactDispatchMode = 'native'
     return false
   }
   state.compactDispatchMode = 'bridge'
-  return bridgeAccounts.length > 0
+  return bridgeAccountCount > 0
 }
 
 export function hasExplicitCodexResponsesChatBridgeRuntimeAccount(
@@ -664,11 +670,20 @@ export function hasExplicitCodexResponsesChatBridgeRuntimeAccount(
 }
 
 function isExplicitCodexResponsesChatBridgeAccount(req: Request, account: UpstreamAccount): boolean {
+  return codexResponsesCompactAccountKind(req, account) === 'bridge'
+}
+
+function codexResponsesCompactAccountKind(
+  req: Request,
+  account: UpstreamAccount
+): 'native' | 'bridge' | 'unsupported' {
   const state = getCodexResponsesContextState(req)
   const model = normalizedOptionalText(state?.canonicalBody.model) ?? requestModel(req)
-  return isOpenAIResponsesToChatCompletionsModelMapping(
-    resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
-  )
+  const mapping = resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
+  if (isOpenAIResponsesToChatCompletionsModelMapping(mapping)) return 'bridge'
+  if (!isOpenAIProtocolProfile(account)) return 'unsupported'
+  if (mapping && mapping.upstreamEndpointFamily !== OPENAI_RESPONSES_FAMILY) return 'unsupported'
+  return 'native'
 }
 
 function nativeResponsesInputFromMaterialized(value: unknown): unknown {

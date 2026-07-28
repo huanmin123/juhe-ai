@@ -10,16 +10,15 @@ import {
 
 const defaultConfig = defaultNormalRoutingConfig()
 assert.deepEqual(defaultConfig, {
-  schedulingPreference: 'cost_first',
-  firstByteDeadlineMs: 10_000
-}, '普通路由默认配置必须对成本优先公开 10 秒首字截止')
+  schedulingPreference: 'cost_first'
+}, '普通路由默认成本优先不得创建首字截止')
 
 const costFirst = normalizeNormalRoutingConfig({
   schedulingPreference: 'cost_first',
   firstByteDeadlineMs: 20_000
 })
-assert.equal(costFirst.firstByteDeadlineMs, 20_000, '成本优先必须读取公共首字截止')
-assert.equal(costFirst.speedFirstConfig, undefined, '成本优先不得生成速度优先专属配置')
+assert.equal(Object.hasOwn(costFirst, 'firstByteDeadlineMs'), false, '成本优先必须丢弃旧公共首字截止')
+assert.equal(Object.hasOwn(costFirst, 'speedFirstConfig'), false, '成本优先不得生成速度优先专属配置')
 
 const speedFirst = normalizeNormalRoutingConfig({
   schedulingPreference: 'speed_first',
@@ -33,6 +32,9 @@ assert.equal(speedFirst.firstByteDeadlineMs, 30_000, '速度优先必须读取�
 assert.equal(speedFirst.speedFirstConfig?.slowTriggerCount, 4, '速度优先必须保留慢样本参数')
 assert.equal(speedFirst.speedFirstConfig?.maxFirstByteRetriesPerRequest, 3, '速度优先必须保留单请求切号上限')
 assert.equal(Object.hasOwn(speedFirst.speedFirstConfig ?? {}, 'firstByteThresholdMs'), false, '规范化速度配置不得输出旧字段')
+
+const speedFirstDefault = normalizeNormalRoutingConfig({ schedulingPreference: 'speed_first' })
+assert.equal(speedFirstDefault.firstByteDeadlineMs, 30_000, '速度优先首字截止默认必须为 30 秒')
 
 const legacy = normalizeNormalRoutingConfig({
   schedulingPreference: 'speed_first',
@@ -49,8 +51,8 @@ assert.throws(() => normalizeNormalRoutingConfig({
   firstByteDeadlineMs: 10_000,
   speedFirstConfig: { firstByteThresholdMs: 20_000 }
 }), /不能同时配置/, '新旧首字字段同时出现必须拒绝')
-assert.throws(() => normalizeNormalRoutingConfig({ firstByteDeadlineMs: 9_999 }), /10000-60000/, '公共首字截止不能低于 10 秒')
-assert.throws(() => normalizeNormalRoutingConfig({ firstByteDeadlineMs: 60_001 }), /10000-60000/, '公共首字截止不能高于 60 秒')
+assert.throws(() => normalizeNormalRoutingConfig({ schedulingPreference: 'speed_first', firstByteDeadlineMs: 9_999 }), /10000-60000/, '速度优先首字截止不能低于 10 秒')
+assert.throws(() => normalizeNormalRoutingConfig({ schedulingPreference: 'speed_first', firstByteDeadlineMs: 60_001 }), /10000-60000/, '速度优先首字截止不能高于 60 秒')
 
 const serialized = routeStrategyConfigJson({ normalRoutingConfig: legacy })
 assert(serialized, '速度优先配置必须生成持久化 JSON')
@@ -66,4 +68,4 @@ for (const [source, label] of [[routeApiSource, '管理 API'], [externalApiSourc
   assert(source.includes('firstByteThresholdMs'), `${label} schema 必须保留旧字段读取兼容入口`)
 }
 
-console.log('策略路由公共首字截止配置回归通过：默认值、范围、成本/速度共用、旧字段迁移与单一持久化事实源均正确')
+console.log('策略路由速度优先首字截止配置回归通过：默认 30 秒、成本优先排除、范围与旧字段迁移均正确')

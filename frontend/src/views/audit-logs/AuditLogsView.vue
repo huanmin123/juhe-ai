@@ -344,6 +344,9 @@ watch(systemAccountFilter, () => {
   accountSelection.value = undefined
   resetAccountOptionsSearch()
 })
+watch(traceIdFilter, (value) => {
+  if (value.trim()) clearFiltersForDirectTraceLookup()
+}, { immediate: true, flush: 'sync' })
 
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
@@ -358,6 +361,22 @@ function filterSession(sessionId: string): void {
   applyPageState({ ...defaultAuditLogsPageState(), sessionIdFilter: normalizedSessionId })
   resetPagination()
   void loadData()
+}
+
+function clearFiltersForDirectTraceLookup(): void {
+  const defaults = defaultAuditLogsPageState()
+  accountIdFilter.value = defaults.accountIdFilter
+  accountSelection.value = defaults.accountSelection
+  outcomeFilter.value = defaults.outcomeFilter
+  pathFilter.value = defaults.pathFilter
+  sessionClientTypeFilter.value = defaults.sessionClientTypeFilter
+  sessionIdFilter.value = defaults.sessionIdFilter
+  statusCodeFilter.value = defaults.statusCodeFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountSelection.value = defaults.systemAccountSelection
+  trafficSourceFilter.value = defaults.trafficSourceFilter
+  resetSystemAccountOptionsSearch()
+  resetAccountOptionsSearch()
 }
 
 function applyPageState(state: AuditLogsPageState): void {
@@ -376,6 +395,7 @@ function applyPageState(state: AuditLogsPageState): void {
   viewMode.value = state.viewMode === 'search' ? 'search' : 'list'
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
+  if (traceIdFilter.value.trim()) clearFiltersForDirectTraceLookup()
   resetSystemAccountOptionsSearch()
   resetAccountOptionsSearch()
 }

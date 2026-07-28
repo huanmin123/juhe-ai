@@ -23,6 +23,12 @@ assert.equal(basicTimeout.maxScore, 0, '基础探针超时不应进入评分分�
 assert.equal(record(basicTimeout.evidenceSummary).requestFailure, true, '基础探针超时应标记为请求失败')
 assert.equal(record(basicTimeout.evidenceSummary).excludedFromScoring, true, '基础探针超时应标记为不参与评分')
 
+const basicSuccess = evaluateBasicResponsesProbe(successProbe('trace_basic_success', 'OK-MODEL-CHECK'), model, 'target')
+assert.equal(basicSuccess.score, 0, '基础连通成功不应贡献模型可信度得分')
+assert.equal(basicSuccess.maxScore, 0, '基础连通成功不应进入模型可信度评分分母')
+assert.equal(record(basicSuccess.evidenceSummary).qualificationOnly, true, '基础连通成功只能作为检测资格门槛')
+assert.equal(record(basicSuccess.evidenceSummary).excludedFromScoring, true, '基础连通成功必须明确排除评分')
+
 const usageFromTimeout = evaluateUsageShapeProbe([timeoutProbe('trace_usage_timeout')], 'target')
 assert.equal(usageFromTimeout.status, 'skipped', '无成功响应时 usage 项应落未计分')
 assert.equal(usageFromTimeout.maxScore, 0, '无成功响应时 usage 项不应进入评分分母')
@@ -96,10 +102,23 @@ const partialEvidenceCompleteness = summarizeEvidenceCompleteness([
   summary(longContextPartial),
   summary(stabilityPartial)
 ])
-assert.equal(partialEvidenceCompleteness.evidenceProbeCount, 7, '证据完整度应按子探针单元统计')
-assert.equal(partialEvidenceCompleteness.scoredEvidenceProbeCount, 5, '证据完整度应只统计成功请求形成的证据')
+assert.equal(partialEvidenceCompleteness.evidenceProbeCount, 6, '资格预检不应进入模型证据完整度统计')
+assert.equal(partialEvidenceCompleteness.scoredEvidenceProbeCount, 4, '证据完整度应只统计成功请求形成的模型证据')
 assert.equal(partialEvidenceCompleteness.requestFailureProbeCount, 2, '证据完整度应统计请求失败探针数量')
-assert.equal(partialEvidenceCompleteness.evidenceCompletenessScore, 71, '证据完整度应给出独立百分比')
+assert.equal(partialEvidenceCompleteness.evidenceCompletenessScore, 67, '证据完整度应给出独立百分比')
+
+const trustedIsolationSummary = summarizeChecks([
+  summary(passedItem('target.behavior_probe', 'behavior_probe', 35)),
+  summary({
+    ...passedItem('trusted_comparison.behavior_probe', 'behavior_probe', 35),
+    status: 'failed',
+    score: 0,
+    evidenceSummary: { success: true, modelMismatch: true }
+  }),
+  summary(passedItem('trusted_comparison.comparison', 'trusted_comparison', 10))
+], { trustedComparison: true, profile: 'quick' })
+assert.equal(trustedIsolationSummary.score, 100, '可信账户原始探针失败不得污染目标账户评分')
+assert.equal(trustedIsolationSummary.level, 'likely', '可信账户原始模型名异常不得把目标账户误判为可疑')
 
 const behaviorPartialSummary = summarizeChecks([
   summary(evaluateBasicResponsesProbe(successProbe('trace_basic_behavior_ok', 'OK-MODEL-CHECK'), model, 'target')),

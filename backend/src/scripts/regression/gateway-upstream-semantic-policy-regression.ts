@@ -251,8 +251,18 @@ assert.match(
 )
 assert.match(
   finalizationSource,
-  /pipeNonStreamUpstreamResponseForInspection[\s\S]*maxLifetimeMs: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs[\s\S]*pipeNonStreamUpstreamResponse[\s\S]*maxLifetimeMs: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs/,
-  '非流式响应的普通转发与检查缓冲都必须受 lane 独立绝对上限约束'
+  /pipeNonStreamUpstreamResponseForInspection[\s\S]*maxLifetimeMs: input\.timeoutProfile\.timeoutsDisabled === true\s*\? undefined\s*: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs[\s\S]*pipeNonStreamUpstreamResponse[\s\S]*maxLifetimeMs: input\.timeoutProfile\.timeoutsDisabled === true\s*\? undefined\s*: input\.timeoutProfile\.uncommittedAttemptMaxLifetimeMs/,
+  '非流式普通请求必须保留 lane 独立绝对上限，显式无限时压缩必须同时豁免检查缓冲与普通转发'
+)
+assert.match(
+  finalizationSource,
+  /firstByteDeadlineMs: responseTimeoutsDisabled \? undefined : input\.firstByteDeadlineMs[\s\S]*responsePrecommitDeadlineAtMs: responseTimeoutsDisabled \? undefined : input\.responsePrecommitDeadlineAtMs/,
+  '流式返回边界必须忽略无限时压缩请求遗留的有限 deadline'
+)
+assert.equal(
+  (finalizationSource.match(/firstByteDeadlineMs: input\.timeoutProfile\.timeoutsDisabled === true\s*\? undefined\s*: input\.firstByteDeadlineMs/g) ?? []).length,
+  2,
+  '非流式检查与普通转发边界都必须忽略无限时压缩请求遗留的首字 deadline'
 )
 assert.doesNotMatch(
   failureDispatchSource,

@@ -41,7 +41,7 @@ interface ProviderRow {
   name: string
   parent_code: ProviderCode | null
   description: string | null
-  enabled: number
+  enabled: number | boolean
   default_supported_models_json: string | null
 }
 
@@ -50,7 +50,7 @@ interface ProviderProtocolProfileRow {
   provider_code: ProviderCode
   name: string
   description: string | null
-  enabled: number
+  enabled: number | boolean
   protocol_code: string
   protocol_version: string
   base_url: string
@@ -196,7 +196,7 @@ export function listProvidersReadOnly(providerCode?: string): ProviderDefinition
     name: row.name,
     parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined,
-    enabled: row.enabled === 1,
+    enabled: isProviderEnabled(row.enabled),
     defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
     ...providerDefaultProfileFields(profilesByProvider.get(row.code) ?? []),
     protocolProfiles: profilesByProvider.get(row.code) ?? []
@@ -228,7 +228,7 @@ export async function listProvidersAsync(providerCode?: string): Promise<Provide
     name: row.name,
     parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined,
-    enabled: Number(row.enabled) === 1,
+    enabled: isProviderEnabled(row.enabled),
     defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
     ...providerDefaultProfileFields(profilesByProvider.get(row.code) ?? []),
     protocolProfiles: profilesByProvider.get(row.code) ?? []
@@ -637,7 +637,7 @@ function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtoco
     providerCode: row.provider_code,
     name: row.name,
     description: row.description ?? undefined,
-    enabled: row.enabled === 1,
+    enabled: isProviderEnabled(row.enabled),
     protocolCode: row.protocol_code,
     protocolVersion: row.protocol_version,
     baseUrl: row.base_url,
@@ -669,7 +669,7 @@ async function listProviderProtocolProfilesAsync(providerCodes?: string[], clien
     providerCode: row.provider_code,
     name: row.name,
     description: row.description ?? undefined,
-    enabled: Number(row.enabled) === 1,
+    enabled: isProviderEnabled(row.enabled),
     protocolCode: row.protocol_code,
     protocolVersion: row.protocol_version,
     baseUrl: row.base_url,
@@ -797,8 +797,12 @@ function providerTable(client: DatabaseClient, tableName: string): string {
     : client.dialect.quoteIdentifier(tableName)
 }
 
-function providerEnabledPredicate(_client: DatabaseClient, column: string): string {
-  return `${column} = 1`
+function providerEnabledPredicate(client: DatabaseClient, column: string): string {
+  return `${column} = ${client.driver === 'postgres' ? 'TRUE' : '1'}`
+}
+
+function isProviderEnabled(value: number | boolean): boolean {
+  return value === true || value === 1
 }
 
 function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'parentCode' | 'description' | 'enabled' | 'defaultSupportedModels' | 'protocolProfiles'> {

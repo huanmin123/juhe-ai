@@ -121,6 +121,7 @@ export interface GatewayRouteCoordinatorOwner<TContext = unknown> {
 export interface GatewayRequestWallBudgetOptions {
   requestAcceptedAtMs: number
   budgetMs?: number
+  unbounded?: boolean
   now?: () => number
 }
 
@@ -145,16 +146,21 @@ export class GatewayRequestWallBudget {
   readonly requestAcceptedAtMs: number
   readonly budgetMs: number
   readonly deadlineAtMs: number
+  readonly unbounded: boolean
   private readonly now: () => number
 
   constructor(options: GatewayRequestWallBudgetOptions) {
     this.requestAcceptedAtMs = normalizedTimestamp(options.requestAcceptedAtMs)
-    this.budgetMs = normalizedPositiveMs(options.budgetMs, defaultGatewayRequestWallBudgetMs)
+    this.unbounded = options.unbounded === true
+    this.budgetMs = this.unbounded
+      ? Number.MAX_SAFE_INTEGER - this.requestAcceptedAtMs
+      : normalizedPositiveMs(options.budgetMs, defaultGatewayRequestWallBudgetMs)
     this.deadlineAtMs = this.requestAcceptedAtMs + this.budgetMs
     this.now = options.now ?? Date.now
   }
 
   withMinimumBudgetMs(minimumBudgetMs: number): GatewayRequestWallBudget {
+    if (this.unbounded) return this
     const normalizedMinimumBudgetMs = normalizedPositiveMs(minimumBudgetMs, this.budgetMs)
     if (normalizedMinimumBudgetMs <= this.budgetMs) return this
     return new GatewayRequestWallBudget({
@@ -164,25 +170,38 @@ export class GatewayRequestWallBudget {
     })
   }
 
+  withoutLimit(): GatewayRequestWallBudget {
+    if (this.unbounded) return this
+    return new GatewayRequestWallBudget({
+      requestAcceptedAtMs: this.requestAcceptedAtMs,
+      unbounded: true,
+      now: this.now
+    })
+  }
+
   elapsedMs(nowMs = this.now()): number {
     return Math.max(0, normalizedTimestamp(nowMs) - this.requestAcceptedAtMs)
   }
 
   remainingMs(nowMs = this.now()): number {
+    if (this.unbounded) return Number.POSITIVE_INFINITY
     return Math.max(0, this.deadlineAtMs - normalizedTimestamp(nowMs))
   }
 
   availableDecisionMs(input: GatewayRequestWallBudgetDecision = {}): number {
+    if (this.unbounded) return Number.POSITIVE_INFINITY
     const reserveMs = normalizedFinalResponseReserveMs(input.finalResponseReserveMs)
     return Math.max(0, this.remainingMs(input.nowMs) - reserveMs)
   }
 
   handoffRequired(input: GatewayRequestWallBudgetDecision = {}): boolean {
+    if (this.unbounded) return false
     const meaningfulAttemptMs = normalizedNonNegativeMs(input.minimumMeaningfulAttemptMs)
     return this.availableDecisionMs(input) <= meaningfulAttemptMs
   }
 
   precommitRemainingMs(input: GatewayRequestPrecommitBudgetInput = {}): number {
+    if (this.unbounded) return Number.POSITIVE_INFINITY
     const nowMs = normalizedTimestamp(input.nowMs ?? this.now())
     const reserveMs = normalizedFinalResponseReserveMs(input.finalResponseReserveMs)
     const precommitDeadlineAtMs = normalizedOptionalTimestamp(input.requestPrecommitDeadlineAtMs)
@@ -194,6 +213,7 @@ export class GatewayRequestWallBudget {
   }
 
   clipFirstByteDeadlineMs(input: GatewayFirstByteDeadlineClipInput): number {
+    if (this.unbounded) return normalizedNonNegativeMs(input.firstByteDeadlineMs)
     const nowMs = normalizedTimestamp(input.nowMs ?? this.now())
     const configuredFirstByteDeadlineMs = normalizedNonNegativeMs(input.firstByteDeadlineMs)
     const candidates = [

@@ -46,7 +46,7 @@ try {
     if (/^\s*SELECT\s+id\s+FROM\s+audit_logs\s+WHERE\s+id\s+=\s+\?/i.test(sql)) {
       throw new Error('批量审计日志写入不应逐条查询 audit_logs 是否存在')
     }
-    if (/^\s*SELECT\s+id,\s*storage_key\s+FROM\s+audit_payload_blobs\b/i.test(sql)) {
+    if (/^\s*SELECT\s+id,\s*storage_key\b[\s\S]*?\bFROM\s+audit_payload_blobs\b/i.test(sql)) {
       blobPrepareCounts.selectExisting += 1
     } else if (/^\s*UPDATE\s+audit_payload_blobs\s+SET\s+ref_count\b/i.test(sql)) {
       blobPrepareCounts.updateExisting += 1

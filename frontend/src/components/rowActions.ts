@@ -20,6 +20,7 @@ export type RowActionIcon =
   | 'resume'
   | 'revoke'
   | 'settings'
+  | 'stop'
   | 'superPriority'
   | 'test'
   | 'view'

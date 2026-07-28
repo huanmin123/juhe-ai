@@ -310,13 +310,15 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
   let codexTurnFailureRemembered = false
   const codexResponsesGuard = createCodexResponsesGuardForInput(input)
+  const responseTimeoutsDisabled = input.timeoutProfile.timeoutsDisabled === true
   const shouldMutateAccountForStreamFailure = (
     errorCode: string | undefined,
     context: StreamFailureContext
   ): boolean => {
     if (automaticAccountStateMutationEnabled === false) return false
     return !(
-      (input.firstByteTimeoutMs !== undefined || input.firstByteDeadlineMs !== undefined)
+      !responseTimeoutsDisabled
+      && (input.firstByteTimeoutMs !== undefined || input.firstByteDeadlineMs !== undefined)
       && errorCode === 'first_byte_timeout'
       && context.downstreamBytesWritten === 0
       && !context.outputReceived
@@ -344,9 +346,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
-        firstByteTimeoutMs: input.firstByteTimeoutMs,
-        firstByteDeadlineMs: input.firstByteDeadlineMs,
-        responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
+        firstByteTimeoutMs: responseTimeoutsDisabled ? undefined : input.firstByteTimeoutMs,
+        firstByteDeadlineMs: responseTimeoutsDisabled ? undefined : input.firstByteDeadlineMs,
+        responsePrecommitDeadlineAtMs: responseTimeoutsDisabled ? undefined : input.responsePrecommitDeadlineAtMs,
         onFirstByteDeadline: input.onFirstByteDeadline,
         onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
         responseInspectionPolicies: runtimeResponseInspectionPoliciesForInput(input),
@@ -849,10 +851,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
-          firstByteDeadlineMs: input.firstByteDeadlineMs,
-          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
-          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
+          firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.firstByteTimeoutMs,
+          firstByteDeadlineMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.firstByteDeadlineMs,
+          responsePrecommitDeadlineAtMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.responsePrecommitDeadlineAtMs,
+          maxLifetimeMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {
@@ -989,10 +999,18 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
-          firstByteDeadlineMs: input.firstByteDeadlineMs,
-          responsePrecommitDeadlineAtMs: input.responsePrecommitDeadlineAtMs,
-          maxLifetimeMs: input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
+          firstByteTimeoutMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.firstByteTimeoutMs,
+          firstByteDeadlineMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.firstByteDeadlineMs,
+          responsePrecommitDeadlineAtMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.responsePrecommitDeadlineAtMs,
+          maxLifetimeMs: input.timeoutProfile.timeoutsDisabled === true
+            ? undefined
+            : input.timeoutProfile.uncommittedAttemptMaxLifetimeMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           onFirstByteDeadlineSuperseded: input.onFirstByteDeadlineSuperseded,
           prepareDownstream: () => {

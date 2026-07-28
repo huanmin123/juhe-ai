@@ -99,7 +99,7 @@ try {
   }, access)
   assert.equal(normalStrategy.mode, 'normal', '普通路由策略模式应为 normal')
   assert.equal(normalStrategy.normalRoutingConfig?.schedulingPreference, 'cost_first', '普通路由默认应使用成本优先调度')
-  assert.equal(normalStrategy.normalRoutingConfig?.firstByteDeadlineMs, 10000, '普通路由成本优先默认首字截止应为 10 秒')
+  assert.equal(Object.hasOwn(normalStrategy.normalRoutingConfig ?? {}, 'firstByteDeadlineMs'), false, '普通路由成本优先不得创建首字截止')
   assert.equal(normalStrategy.groupBindings.length, 1, '普通路由只能保存一个分组绑定')
   assert.equal(normalStrategy.groupBindings[0]?.groupId, primaryGroup.id, '普通路由应绑定目标分组')
 

@@ -541,9 +541,9 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
     await input.routeCoordinator.completeFailure({
       statusCode: 503,
-      message: '上游暂时不可用，请重试',
+      message: '没有可用的上游账户',
       errorType: 'service_unavailable',
-      errorCode: 'upstream_retryable_error',
+      errorCode: 'no_available_upstream_account',
       errorPhase: 'dispatch'
     })
     return { outcome: 'completed' }

@@ -53,6 +53,7 @@ interface UpstreamRequestOptions {
   firstByteDeadlineMs?: number
   firstByteDeadlineTransport?: 'stream' | 'non_stream'
   onFirstByteDeadline?: FirstByteDeadlineHandler
+  disableTimeouts?: boolean
   signal?: AbortSignal
   transport?: 'node' | 'fetch'
 }
@@ -235,11 +236,11 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
     const abort = () => request.destroy(new Error('上游请求超时'))
     const abortBySignal = () => request.destroy(new UpstreamRequestAbortedError('请求已取消', upstreamRequestStarted))
 
-    if (options.requestTimeoutMs !== undefined) {
+    if (!options.disableTimeouts && options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
       requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`)), options.requestTimeoutMs)
     }
-    if (options.firstByteDeadlineMs !== undefined) {
+    if (!options.disableTimeouts && options.firstByteDeadlineMs !== undefined) {
       const deadlineMs = options.firstByteDeadlineMs
       const deadlineStartedAtMs = Date.now()
       firstByteDeadlineTimer = setTimeout(() => {
@@ -263,7 +264,9 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
         })
       }, deadlineMs)
     }
-    request.setTimeout(options.timeoutMs ?? 120000, abort)
+    if (!options.disableTimeouts) {
+      request.setTimeout(options.timeoutMs ?? 120000, abort)
+    }
     options.signal?.addEventListener('abort', abortBySignal, { once: true })
     const cleanupAbortSignal = () => options.signal?.removeEventListener('abort', abortBySignal)
     request.on('error', (error) => {
@@ -336,13 +339,13 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
   }
   options.signal?.addEventListener('abort', abortBySignal, { once: true })
   try {
-    if (options.requestTimeoutMs !== undefined) {
+    if (!options.disableTimeouts && options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
       requestTimeout = setTimeout(() => {
         controller.abort(new UpstreamRequestTimeoutError(`上游请求 ${seconds}s 后仍未返回首个响应`))
       }, options.requestTimeoutMs)
     }
-    if (options.firstByteDeadlineMs !== undefined) {
+    if (!options.disableTimeouts && options.firstByteDeadlineMs !== undefined) {
       const deadlineMs = options.firstByteDeadlineMs
       const deadlineStartedAtMs = Date.now()
       firstByteDeadlineTimer = setTimeout(() => {
@@ -366,7 +369,7 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
         })
       }, deadlineMs)
     }
-    if (options.timeoutMs !== undefined) {
+    if (!options.disableTimeouts && options.timeoutMs !== undefined) {
       socketTimeout = setTimeout(() => controller.abort(new Error('上游请求超时')), options.timeoutMs)
     }
     const fetchBody = typeof options.body === 'string' || options.body === undefined
@@ -551,7 +554,8 @@ export async function readStreamChunkWithAbort(
   return readStreamChunkWithTimeout(iterator, undefined, () => new Error(''), signal)
 }
 
-export function upstreamSocketTimeoutMs(req: Request, profile: GatewayTimeoutProfile, account?: { type?: string }): number {
+export function upstreamSocketTimeoutMs(req: Request, profile: GatewayTimeoutProfile, account?: { type?: string }): number | undefined {
+  if (profile.timeoutsDisabled === true) return undefined
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
   if (!isStreamRequest) {
     return Math.max(profile.firstResponseTimeoutMs, 30_000)
@@ -559,7 +563,8 @@ export function upstreamSocketTimeoutMs(req: Request, profile: GatewayTimeoutPro
   return Math.max(profile.firstResponseTimeoutMs, profile.idleTimeoutMs + 15_000, 30_000)
 }
 
-export function upstreamRequestTimeoutMs(profile: GatewayTimeoutProfile): number {
+export function upstreamRequestTimeoutMs(profile: GatewayTimeoutProfile): number | undefined {
+  if (profile.timeoutsDisabled === true) return undefined
   return profile.firstResponseTimeoutMs
 }
 

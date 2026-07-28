@@ -109,6 +109,7 @@ import {
 import { normalRouteFirstByteDeadlineAppliesToLane } from '../policy/speed-first-lane.js'
 import type { FirstByteDeadlineDecisionInput, FirstByteDeadlineAction, FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { observeGatewayRouting } from '../observability/routing-observability.service.js'
+import { codexCompactionExpectedForRequest } from '../response/codex-compaction-contract.js'
 import { getGatewaySessionIdentity } from '../session-identity/index.js'
 
 /**
@@ -184,6 +185,7 @@ export interface OpenAIUpstreamDispatchResult {
 export interface GatewayUpstreamRequestCoordinationContext {
   scope: 'gateway_request' | 'internal_hybrid_auxiliary'
   reason?: string
+  timeoutPolicy?: 'codex_compaction_unbounded'
   serverRetryBudget: ServerRetryBudget
   gatewayRequestWallBudget: GatewayRequestWallBudget
   routeCoordinationBudget: RouteCoordinationBudget
@@ -287,7 +289,11 @@ export async function fetchFirstAvailableUpstream(
     requestAttemptTracker,
     semanticRetryId
   } = requestCoordination
-  const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
+  const compactionTimeoutsDisabled = requestCoordination.timeoutPolicy === 'codex_compaction_unbounded'
+    || codexCompactionExpectedForRequest(req)
+  const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane, {
+    disableTimeouts: compactionTimeoutsDisabled
+  })
   const accountCircuitFailureEvidenceKey = gatewayForegroundAccountCircuitFailureEvidenceKey(
     req,
     usageContext
@@ -347,6 +353,7 @@ export async function fetchFirstAvailableUpstream(
           requestLane,
           model: requestModel(req),
           confirmationLeaseDurationMs,
+          confirmationEligible: !compactionTimeoutsDisabled,
           confirmationFailuresRequired: runtimeConfig.gateway.accountCircuitConfirmationFailuresRequired
             ?? settings.accountCircuitConfirmationFailuresRequired,
           confirmation: accountCircuitConfirmation,
@@ -771,7 +778,8 @@ export async function fetchFirstAvailableUpstream(
               // Long-running lanes (for example image generation) keep their
               // own timeout profile. Candidate failover eligibility remains
               // universal and is intentionally independent from lane timing.
-              const normalRouteFirstByteDeadline = normalRouteFirstByteDeadlineAppliesToLane(requestLane)
+              const normalRouteFirstByteDeadline = !compactionTimeoutsDisabled
+                && normalRouteFirstByteDeadlineAppliesToLane(requestLane)
                 && requestCoordination.normalRouteFirstByteConfig
                 ? normalRouteAttemptFirstByteDeadline({
                     config: requestCoordination.normalRouteFirstByteConfig,
@@ -892,7 +900,7 @@ export async function fetchFirstAvailableUpstream(
                     accountCircuitAttempt,
                     hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
-                    responsePrecommitDeadlineAtMs: requestLane === 'image'
+                    responsePrecommitDeadlineAtMs: requestLane === 'image' || gatewayRequestWallBudget.unbounded
                       ? undefined
                       : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
                     onFirstByteDeadline,
@@ -952,7 +960,7 @@ export async function fetchFirstAvailableUpstream(
                     accountCircuitAttempt,
                     hotQualityAttempt: getHotQualityAttempt(),
                     normalRouteFirstByteDeadline,
-                    responsePrecommitDeadlineAtMs: requestLane === 'image'
+                    responsePrecommitDeadlineAtMs: requestLane === 'image' || gatewayRequestWallBudget.unbounded
                       ? undefined
                       : gatewayRequestWallBudget.deadlineAtMs - defaultGatewayFinalResponseReserveMs,
                     onFirstByteDeadline
@@ -1261,9 +1269,11 @@ export async function fetchFirstAvailableUpstream(
                   !retryAnotherAccountApiKey
                   &&
                   requestErrorResult.action === 'skip_account'
-                  && automaticAccountStateMutationAllowed
                   && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
                 ) {
+                  // Request-scoped recovery is independent from shared account-state mutation.
+                  // Foreground traffic may absorb a transient transport failure even though
+                  // automatic account suppression and health transitions are probe-only.
                   recoverableFailedAccountIds.add(account.id)
                   cycleRecoverableAccountIds.add(account.id)
                 }

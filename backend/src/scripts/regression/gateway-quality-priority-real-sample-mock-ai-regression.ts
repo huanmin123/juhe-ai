@@ -495,7 +495,7 @@ function createScenario(input: {
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
     normalRoutingConfig: input.schedulingPreference === 'speed_first'
       ? { schedulingPreference: 'speed_first', firstByteDeadlineMs, speedFirstConfig: speedConfig }
-      : { schedulingPreference: 'cost_first', firstByteDeadlineMs },
+      : { schedulingPreference: 'cost_first' },
     status: 'active'
   }, access)
   assert(apiKey.key && apiKey.routeStrategyId)

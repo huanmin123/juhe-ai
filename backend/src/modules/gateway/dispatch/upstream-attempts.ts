@@ -96,6 +96,7 @@ export async function performUpstreamRequestAttempt(
       firstByteDeadlineMs,
       firstByteDeadlineTransport: isEffectiveOpenAIStreamRequest(req, account) ? 'stream' : 'non_stream',
       onFirstByteDeadline,
+      disableTimeouts: timeoutProfile.timeoutsDisabled === true,
       signal,
       transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })
@@ -190,6 +191,7 @@ export async function performUpstreamRequestAttempt(
       proxyUrl: account.proxyUrl,
       timeoutMs: socketTimeoutMs,
       requestTimeoutMs,
+      disableTimeouts: timeoutProfile.timeoutsDisabled === true,
       signal,
       transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })

@@ -351,7 +351,7 @@ function createQualityScenario(upstreamBaseUrl: string): QualityScenario {
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '热质量动态重选网关Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-    normalRoutingConfig: { schedulingPreference: 'cost_first', firstByteDeadlineMs: 10_000 },
+    normalRoutingConfig: { schedulingPreference: 'cost_first' },
     status: 'active'
   }, access)
   assert(apiKey.key, '热质量动态重选场景应返回网关 Key')

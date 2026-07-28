@@ -136,16 +136,13 @@ export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: st
   }
   const modelEvidence = buildProbeModelMatchEvidence(result, result.model, model)
   const hasOutput = Boolean(result.outputText)
-  const score = modelEvidence.modelMismatch
-    ? (result.success ? 4 : 0) + (hasOutput ? 2 : 0)
-    : (result.success ? 10 : 0) + (modelEvidence.matchedModel ? 5 : 0) + (hasOutput ? 5 : 0)
-  const status = modelEvidence.modelMismatch
-    ? 'failed'
-    : score >= 18 ? 'passed' : score >= 10 ? 'warning' : 'failed'
-  return item(options.itemKey, options.itemType, status, score, 20, result, {
-    message: describeModelMismatch(modelEvidence) ?? (result.success ? options.successMessage : result.errorMessage ?? `${options.failurePrefix}，HTTP ${result.statusCode}`),
+  const status = modelEvidence.modelMismatch ? 'failed' : 'passed'
+  return item(options.itemKey, options.itemType, status, 0, 0, result, {
+    message: describeModelMismatch(modelEvidence) ?? options.successMessage,
     ...modelEvidence,
-    hasOutput
+    hasOutput,
+    qualificationOnly: true,
+    excludedFromScoring: true
   })
 }
 
@@ -529,12 +526,16 @@ export function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResul
 }
 
 export function buildTrustedComparisonItem(target: ProbeSuiteResult, comparison: ProbeSuiteResult): ModelCheckItemCreateInput {
+  const targetBasic = target.items.find((item) => item.itemType === 'responses_basic' || item.itemType === 'protocol_basic')
+  const comparisonBasic = comparison.items.find((item) => item.itemType === 'responses_basic' || item.itemType === 'protocol_basic')
   const targetBehavior = target.items.find((item) => item.itemType === 'behavior_probe')
   const comparisonBehavior = comparison.items.find((item) => item.itemType === 'behavior_probe')
+  const targetBasicModelMismatch = recordValue(targetBasic?.evidenceSummary)?.modelMismatch === true
+  const comparisonBasicModelMismatch = recordValue(comparisonBasic?.evidenceSummary)?.modelMismatch === true
   const targetBehaviorPassed = targetBehavior?.status === 'passed'
   const comparisonBehaviorPassed = comparisonBehavior?.status === 'passed'
-  const targetOk = Boolean(target.basic?.success && targetBehaviorPassed)
-  const comparisonOk = Boolean(comparison.basic?.success && comparisonBehaviorPassed)
+  const targetOk = Boolean(target.basic?.success && !targetBasicModelMismatch && targetBehaviorPassed)
+  const comparisonOk = Boolean(comparison.basic?.success && !comparisonBasicModelMismatch && comparisonBehaviorPassed)
   const comparable = targetOk && comparisonOk
   const requestFailure = target.basic?.success !== true
     || comparison.basic?.success !== true
@@ -566,21 +567,28 @@ export function buildTrustedComparisonItem(target: ProbeSuiteResult, comparison:
       }
     }
   }
-  const status = comparable ? 'passed' : comparisonOk ? 'warning' : 'failed'
+  const basicModelMismatch = targetBasicModelMismatch || comparisonBasicModelMismatch
+  const status = basicModelMismatch ? 'failed' : comparable ? 'passed' : comparisonOk ? 'warning' : 'failed'
   return {
     itemKey: 'trusted_comparison.comparison',
     itemType: 'trusted_comparison',
     status,
-    score: comparable ? 10 : comparisonOk ? 4 : 0,
+    score: basicModelMismatch ? 0 : comparable ? 10 : comparisonOk ? 4 : 0,
     maxScore: 10,
     durationMs: 0,
     traceId: comparison.basic?.traceId,
     evidenceSummary: {
-      message: comparable ? '目标链路和可信对比链路均完成核心探针' : '可信对比未形成完整可比结果',
+      message: comparisonBasicModelMismatch
+        ? '可信对比账户基础探针返回模型不匹配，不能作为可信对比基准'
+        : targetBasicModelMismatch
+          ? '目标账户基础探针返回模型不匹配，可信对比未形成完整可比结果'
+          : comparable ? '目标链路和可信对比链路均完成核心探针' : '可信对比未形成完整可比结果',
       targetTraceId: target.basic?.traceId,
       comparisonTraceId: comparison.basic?.traceId,
       targetBehaviorPassed,
       comparisonBehaviorPassed,
+      targetBasicModelMismatch,
+      comparisonBasicModelMismatch,
       targetOutputPreview: bounded(target.behavior?.outputText),
       comparisonOutputPreview: bounded(comparison.behavior?.outputText)
     }
@@ -737,12 +745,16 @@ export function emptyProbeResult(): GatewayProbeResult {
 }
 
 export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean; profile?: ModelCheckProfile }): ModelCheckSummaryResult {
-  const scoredChecks = checks.filter((item) => item.maxScore > 0)
+  const scoredChecks = checks.filter((item) => item.maxScore > 0 && (
+    item.itemKey.startsWith('target.')
+    || item.itemKey === 'trusted_comparison.comparison'
+    || item.itemKey === 'trusted_comparison.distribution_similarity'
+  ))
   const maxScore = scoredChecks.reduce((sum, item) => sum + item.maxScore, 0)
   const rawScore = scoredChecks.reduce((sum, item) => sum + item.score, 0)
   const score = maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0
   const failedCount = scoredChecks.filter((item) => item.status === 'failed').length
-  const modelMismatchCount = checks.filter(hasModelMismatchEvidence).length
+  const modelMismatchCount = checks.filter((item) => item.itemKey.startsWith('target.') && hasModelMismatchEvidence(item)).length
   const targetBasic = checks.find((item) => item.itemKey === 'target.responses_basic' || item.itemKey === 'target.protocol_basic')
   const targetBehavior = checks.find((item) => item.itemKey === 'target.behavior_probe')
   const targetLongContext = checks.find((item) => item.itemKey === 'target.long_context')
@@ -829,11 +841,12 @@ export function summarizeEvidenceCompleteness(checks: ModelCheckItemSummary[]): 
       summary.requestFailureProbeCount += requestFailureCount
       return summary
     }
-    if (evidence?.requestFailure === true || evidence?.excludedFromScoring === true) {
+    if (evidence?.requestFailure === true) {
       summary.evidenceProbeCount += 1
       summary.requestFailureProbeCount += 1
       return summary
     }
+    if (evidence?.excludedFromScoring === true) return summary
     if (item.status !== 'skipped') {
       summary.evidenceProbeCount += 1
       summary.scoredEvidenceProbeCount += 1

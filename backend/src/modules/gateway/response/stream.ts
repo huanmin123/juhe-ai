@@ -32,7 +32,7 @@ import {
   type GatewayErrorProtocol,
   writeGatewayStreamFailureEvent
 } from './responses.js'
-import { buildStreamReadPlan } from './stream-read-plan.js'
+import { buildGatewayStreamReadPlan, buildStreamReadPlan } from './stream-read-plan.js'
 import {
   closeAsyncIterator,
   destroyResponseForUpstreamBodyError,
@@ -663,6 +663,7 @@ export async function pipeUpstreamStream(
 
   streamLogger.debug({
     event: 'gateway_stream_pipe_started',
+    timeoutsDisabled: timeoutProfile.timeoutsDisabled === true || undefined,
     firstResponseTimeoutMs: timeoutProfile.firstResponseTimeoutMs,
     idleTimeoutMs: timeoutProfile.idleTimeoutMs,
     uncommittedAttemptMaxLifetimeMs: timeoutProfile.uncommittedAttemptMaxLifetimeMs,
@@ -1732,14 +1733,14 @@ async function readNextStreamChunk(
       continue
     }
 
-    const readPlan = buildStreamReadPlan(timeoutProfile, startedAt, status)
-    if (readPlan.timeoutMs <= 0) {
+    const readPlan = buildGatewayStreamReadPlan(timeoutProfile, startedAt, status)
+    if (readPlan && readPlan.timeoutMs <= 0) {
       throw streamReadPlanTimeoutError(readPlan)
     }
     const race = await raceStreamReadWithDeadlines(pendingRead.promise, {
       signal,
       softTimeoutMs: firstByteRemainingMs,
-      planTimeoutMs: readPlan.timeoutMs,
+      planTimeoutMs: readPlan?.timeoutMs,
       responsePrecommitTimeoutMs: responsePrecommitRemainingMs
     })
     if (race.type === 'read') {
@@ -1756,6 +1757,7 @@ async function readNextStreamChunk(
       throw new UpstreamRequestAbortedError('请求已取消', true)
     }
     if (race.type === 'plan_timeout') {
+      if (!readPlan) throw new Error('网关流读取计时器状态无效')
       throw streamReadPlanTimeoutError(readPlan)
     }
     if (race.type === 'response_precommit_timeout') {
@@ -1799,7 +1801,7 @@ async function raceStreamReadWithDeadlines(
   input: {
     signal?: AbortSignal
     softTimeoutMs?: number
-    planTimeoutMs: number
+    planTimeoutMs?: number
     responsePrecommitTimeoutMs?: number
   }
 ): Promise<
@@ -1833,9 +1835,11 @@ async function raceStreamReadWithDeadlines(
         responsePrecommitTimer = setTimeout(() => resolve({ type: 'response_precommit_timeout' as const }), Math.max(1, responsePrecommitTimeoutMs))
       }))
     }
-    races.push(new Promise((resolve) => {
-      planTimer = setTimeout(() => resolve({ type: 'plan_timeout' as const }), Math.max(1, input.planTimeoutMs))
-    }))
+    if (input.planTimeoutMs !== undefined) {
+      races.push(new Promise((resolve) => {
+        planTimer = setTimeout(() => resolve({ type: 'plan_timeout' as const }), Math.max(1, input.planTimeoutMs!))
+      }))
+    }
     if (input.signal) {
       if (input.signal.aborted) {
         return { type: 'abort' }

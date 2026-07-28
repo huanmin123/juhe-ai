@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import type { ModelQualityPolicy } from '../../domain/types.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-trusted-comparison-success-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -18,11 +19,22 @@ runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
-const upstream = createMockUpstream()
+let comparisonBasicResponseModel: string | undefined
+const targetUpstream = createMockUpstream()
+const comparisonUpstream = createMockUpstream(() => comparisonBasicResponseModel)
+const fullPolicy: ModelQualityPolicy = {
+  systemAccountId: 'sys_admin',
+  revision: 0,
+  profile: 'full',
+  manualEnforcementEnabled: false,
+  penaltyThreshold: 70,
+  penaltyAction: 'fallback',
+  recoveryIntervalMinutes: 10
+}
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
-  await listen(upstream)
+  await Promise.all([listen(targetUpstream), listen(comparisonUpstream)])
   const [
     { createMockGatewayFixture },
     { getModelCheckOptions, runModelCheck },
@@ -37,14 +49,14 @@ try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const targetFixture = createMockGatewayFixture({
     label: '模型检测目标',
-    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
+    upstreamBaseUrl: `http://127.0.0.1:${serverPort(targetUpstream)}/v1`,
     systemAccountId: 'sys_admin',
     accountCount: 1,
     createApiKey: false
   })
   const comparisonFixture = createMockGatewayFixture({
     label: '可信对比',
-    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
+    upstreamBaseUrl: `http://127.0.0.1:${serverPort(comparisonUpstream)}/v1`,
     systemAccountId: 'sys_admin',
     accountCount: 1,
     createApiKey: false
@@ -65,14 +77,14 @@ try {
     profile: 'full',
     trustedComparison: true,
     trustedComparisonAccountId: comparisonAccount.id
-  }, access)
+  }, access, undefined, undefined, { policy: fullPolicy })
 
   assert.equal(detail.status, 'completed')
   assert.equal(detail.trustedComparison, true)
   assert.equal(detail.trustedComparisonAvailable, true)
   assert.equal(detail.level, 'high_confidence', '可信对比通过后应允许高可信')
   assert(!detail.checks.some((item) => item.itemType === 'model_catalog'), '可信对比检测不应生成本地模型目录检测项')
-  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '应记录可信对比基础探针')
+  assert(!detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '可信对比基础连通成功不应生成评分项')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context' && item.status === 'passed'), '可信对比也应执行长上下文探针')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '应记录可信对比汇总项')
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity' && item.status === 'passed'), '可信对比应执行并通过分布相似度对照')
@@ -92,20 +104,39 @@ try {
   assert.equal(quickDetail.trustedComparison, true)
   assert.equal(quickDetail.trustedComparisonAvailable, true)
   assert.equal(quickDetail.level, 'likely', '快速可信对比通过后仍只能给出初步可信结论')
-  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '快速检测应执行可信对比基础探针')
+  assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic'), '快速检测不应展示可信对比基础连通评分项')
   assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.behavior_probe' && item.status === 'passed'), '快速检测应执行可信对比轻量行为探针')
   assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '快速检测应记录可信对比汇总项')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity'), '快速检测不应执行深度分布相似度探针')
   assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context'), '快速检测不应执行可信对比长上下文探针')
   assert(!JSON.stringify(quickDetail).includes('sk-mockdata'), '快速可信对比报告不应泄露账户 API Key')
 
+  comparisonBasicResponseModel = 'gpt-unrelated'
+  const mismatchedComparisonDetail = await runModelCheck({
+    targetType: 'account',
+    targetId: targetAccount.id,
+    model: 'gpt-5.5',
+    profile: 'quick',
+    trustedComparison: true,
+    trustedComparisonAccountId: comparisonAccount.id
+  }, access)
+  assert.equal(mismatchedComparisonDetail.level, 'likely', '可信账户错模型不能把目标账户直接判为疑似不符')
+  assert(
+    mismatchedComparisonDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'failed' && item.evidenceSummary.modelMismatch === true),
+    '可信账户基础探针错模型必须保留原始诊断'
+  )
+  assert(
+    mismatchedComparisonDetail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'failed' && item.score === 0 && item.evidenceSummary.comparisonBasicModelMismatch === true),
+    '可信账户基础探针错模型必须让派生对比项失败，不能继续获得可信对比分数'
+  )
+
   console.log('模型检测可信对比成功回归通过：快速与深度检测均可显式选择可信对比账户')
 } finally {
   await stopGatewayJsonParseWorker?.()
-  await closeServer(upstream)
+  await Promise.all([closeServer(targetUpstream), closeServer(comparisonUpstream)])
 }
 
-function createMockUpstream(): http.Server {
+function createMockUpstream(basicResponseModel?: () => string | undefined): http.Server {
   return http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const chunks: Buffer[] = []
@@ -126,10 +157,12 @@ function createMockUpstream(): http.Server {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const outputText = outputForProbe(body)
+        const requestedModel = String(body.model ?? 'gpt-5.5')
+        const responseModel = outputText === 'OK-MODEL-CHECK' ? basicResponseModel?.() ?? requestedModel : requestedModel
         if (body.stream === true) {
-          sendStream(res, String(body.model ?? 'gpt-5.5'), outputText)
+          sendStream(res, responseModel, outputText)
         } else {
-          sendJson(res, responsePayload(body, outputText))
+          sendJson(res, responsePayload(body, outputText, responseModel))
         }
         return
       }
@@ -139,13 +172,13 @@ function createMockUpstream(): http.Server {
   })
 }
 
-function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
+function responsePayload(body: Record<string, unknown>, outputText: string, responseModel: string): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
     id: 'resp_model_check_trusted_comparison_success',
     object: 'response',
     status: 'completed',
-    model: String(body.model ?? 'gpt-5.5'),
+    model: responseModel,
     output: hasTool
       ? [{
           type: 'function_call',

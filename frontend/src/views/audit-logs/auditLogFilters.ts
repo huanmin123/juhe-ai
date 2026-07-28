@@ -38,10 +38,17 @@ export function auditLogHotSearchActiveFilterCount(value: string): number {
 }
 
 export function auditLogListParams(filters: AuditLogFilterValues, pageState: AuditLogPageWindow): AuditLogListParams {
+  const traceId = filters.traceIdFilter.trim()
+  if (traceId) {
+    return {
+      page: pageState.current,
+      pageSize: pageState.pageSize,
+      traceId
+    }
+  }
   return {
     page: pageState.current,
     pageSize: pageState.pageSize,
-    traceId: filters.traceIdFilter.trim() || undefined,
     sessionId: filters.sessionIdFilter.trim() || undefined,
     sessionClientType: filters.sessionClientTypeFilter.trim() || undefined,
     accountId: filters.accountIdFilter || undefined,

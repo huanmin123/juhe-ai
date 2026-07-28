@@ -1912,11 +1912,17 @@ export interface RouteStrategySpeedFirstConfig {
   maxFirstByteRetriesPerRequest: number
 }
 
-export interface RouteStrategyNormalRoutingConfig {
-  schedulingPreference: RouteStrategyNormalSchedulingPreference
-  firstByteDeadlineMs: number
-  speedFirstConfig?: RouteStrategySpeedFirstConfig
-}
+export type RouteStrategyNormalRoutingConfig =
+  | {
+      schedulingPreference: 'cost_first'
+      firstByteDeadlineMs?: never
+      speedFirstConfig?: never
+    }
+  | {
+      schedulingPreference: 'speed_first'
+      firstByteDeadlineMs: number
+      speedFirstConfig: RouteStrategySpeedFirstConfig
+    }
 
 export type RouteStrategyGroupBindingPreview = Pick<RouteStrategyGroupBindingSummary, 'id' | 'groupId' | 'groupName' | 'providerCode' | 'status' | 'groupEnabled'>
 

@@ -289,7 +289,7 @@ async function assertServerStartupOrder(): Promise<void> {
 
 async function assertRuntimeConfigContract(): Promise<void> {
   const source = await readFile(resolve(process.cwd(), 'src/config/runtime.ts'), 'utf8')
-  assert.match(source, /ownerLock:\s*{\s*enabled:\s*parseOwnerLockEnabled\(rawStringConfig\('JUHE_AI_OWNER_LOCK_ENABLED'\)\)\s*}/)
+  assert.match(source, /ownerLock:\s*{[\s\S]*?enabled:\s*parseOwnerLockEnabled\(rawStringConfig\('JUHE_AI_OWNER_LOCK_ENABLED'\)\)[\s\S]*?}/)
 }
 
 function createSequencedPool(results: QueryResult[], onEnd: () => void): PostgresGooseSchemaGatePool {

@@ -1,7 +1,7 @@
 import http from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { createSession, updateSystemAccountLastLogin, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
+import { createSessionAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
 import { systemSettingKeys } from '../../storage/settings.repository.js'
 import { createMockGatewayFixture } from '../maintenance/mockdata/fixtures.js'
 
@@ -359,8 +359,8 @@ async function loginAsAdmin(): Promise<void> {
   )
   assert(account, `烟测管理员账号或密码错误：${runtimeConfig.smokeTest.adminUsername}`)
   assert(account.role === 'super_admin' || account.role === 'admin', `烟测登录账号不是管理员：${account.username}`)
-  const session = createSession(account.id, 1)
-  updateSystemAccountLastLogin(account.id)
+  const session = await createSessionAsync(account.id, 1)
+  await updateSystemAccountLastLoginAsync(account.id)
   sessionCookie = `juhe_ai_session=${session.token}`
 
   let currentUser: { role?: string; username?: string }
