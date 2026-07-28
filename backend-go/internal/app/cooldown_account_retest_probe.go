@@ -52,8 +52,9 @@ func newNativeCooldownAccountRetestProbe(
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
-	if strings.TrimSpace(cfg.Secret) == "" {
-		return nil, nil, fmt.Errorf("JUHE_AI_SECRET 不能为空")
+	secret := strings.TrimSpace(cfg.Secret)
+	if len([]rune(secret)) < 32 {
+		return nil, nil, fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
 	}
 	stateRedisNamespace := cooldownProbeStateRedisNamespace(cfg.RedisNamespace)
 	if stateRedisNamespace == "" {
@@ -106,9 +107,9 @@ func newNativeCooldownAccountRetestProbe(
 		return nil, nil, fmt.Errorf("create cooldown account retest revocation gate: %w", err)
 	}
 
-	codec := secretcrypto.NewJSONCodec(cfg.Secret)
+	codec := secretcrypto.NewJSONCodec(secret)
 	hydrator := gatewaycandidatewindow.NewBatchHydrator(gatewaycandidatewindow.BatchHydratorOptions{
-		Reader: store, APIKeyRuntime: store, CredentialCodec: codec, FingerprintSecret: cfg.Secret,
+		Reader: store, APIKeyRuntime: store, CredentialCodec: codec, FingerprintSecret: secret,
 	})
 	loader := accountprobe.Loader{Reader: store, Hydrator: hydrator}
 	urlPolicy := upstreamurlpolicy.Config{

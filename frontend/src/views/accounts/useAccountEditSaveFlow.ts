@@ -390,7 +390,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       ? await api.grokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens }, options.createScopeParams.value)
       : await api.myGrokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens })
     if (!result.failed.length) {
-      message.success(`Grok SSO 导入完成：成功 ${result.created.length} 个`)
+      message.success(`Grok SSO 导入完成：成功 ${result.createdCount} 个`)
       return true
     }
     const failedTokens = result.failed
@@ -398,7 +398,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       .filter((token): token is string => Boolean(token))
     options.form.ssoTokens = failedTokens.join('\n')
     const detail = result.failed.slice(0, 3).map((item) => `第 ${item.index} 项：${item.error}`).join('；')
-    message.warning(`Grok SSO 导入完成：成功 ${result.created.length} 个，失败 ${result.failed.length} 个。${detail}`)
+    message.warning(`Grok SSO 导入完成：成功 ${result.createdCount} 个，失败 ${result.failed.length} 个。${detail}`)
     return false
   }
 

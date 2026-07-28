@@ -9,7 +9,7 @@ import type {
   ProviderCode
 } from '../domain/types.js'
 import { canManageResourceOwner } from './resource-authorization-helpers.js'
-import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -95,6 +95,7 @@ export async function findAccountEditBasicDetailAsync(
   const id = accountId.trim()
   if (!id) return undefined
   const client = await accountEditBasicDatabaseClient()
+  const ownerScope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
   const row = await client.one<AccountEditBasicRow>(`
     SELECT
       accounts.id,
@@ -141,8 +142,9 @@ export async function findAccountEditBasicDetailAsync(
     FROM ${accountEditBasicTable(client, 'accounts')} accounts
     WHERE accounts.id = ?
       AND accounts.deleted_at IS NULL
+      ${ownerScope.clause}
     LIMIT 1
-  `, [id])
+  `, [id, ...ownerScope.params])
   if (!row || !canManageResourceOwner(row.system_account_id, access)) return undefined
   if (row.authorization_instance_authorization_id || row.authorization_instance_source_account_id) {
     throw new AccountEditBasicForbiddenError()

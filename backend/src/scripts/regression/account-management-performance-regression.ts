@@ -41,6 +41,7 @@ const expectedListItemKeys = [
   'protocolCode',
   'protocolVersion',
   'providerCode',
+  'providerName',
   'providerProtocolProfileId',
   'schedulable',
   'status',

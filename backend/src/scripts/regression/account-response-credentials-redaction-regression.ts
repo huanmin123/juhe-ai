@@ -59,6 +59,7 @@ interface AccountAdvancedResponse {
   id: string
   configRevision: number
   accessType: 'owner' | 'authorized'
+  credentials?: Record<string, unknown>
   modelMappings: unknown[]
   temporaryUnavailableContinuousProbeEnabled: boolean
   balanceQueryEnabled: boolean
@@ -180,14 +181,23 @@ try {
   assert(Array.isArray(editBasicDetail.supportedModels) && editBasicDetail.supportedModels.length > 0, '账户编辑首屏详情应返回支持模型')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'modelMappings'), false, '账户编辑首屏详情不应返回模型映射')
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'apiKeyRuntimeDetails'), false, '账户编辑首屏详情不应返回 API Key 运行明细')
-  assert.deepEqual(editBasicDetail.credentials.error_handling_rules, [{
+  assert.equal(Object.hasOwn(editBasicDetail.credentials, 'error_handling_rules'), false, '账户编辑首屏不应提前返回高级错误策略')
+  assert.equal(Object.hasOwn(editBasicDetail.credentials, 'response_inspection_rules'), false, '账户编辑首屏不应提前返回高级响应检查策略')
+  assertNoForbiddenCredentialKeysExcept(
+    editBasicDetail,
+    '账户编辑首屏详情响应',
+    new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights'])
+  )
+
+  const detail = await getEnvelope<AccountAdvancedResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
+  assert.deepEqual(detail.credentials?.error_handling_rules, [{
     enabled: true,
     name: '响应脱敏账户错误处理',
     priority: 10,
     status_codes: [429],
     action: 'temp_unschedulable'
-  }], '账户编辑首屏应直接返回基础表单维护的错误策略')
-  assert.deepEqual(editBasicDetail.credentials.response_inspection_rules, [{
+  }], '账户高级详情应按需返回错误策略')
+  assert.deepEqual(detail.credentials?.response_inspection_rules, [{
     enabled: true,
     name: '响应脱敏账户响应检查',
     priority: 11,
@@ -195,12 +205,13 @@ try {
       outputTextIncludes: ['响应污染']
     },
     action: 'retry_next_account'
-  }], '账户编辑首屏应直接返回基础表单维护的响应检查策略')
+  }], '账户高级详情应按需返回响应检查策略')
   assertNoForbiddenCredentialKeysExcept(
-    editBasicDetail,
-    '账户编辑首屏详情响应',
-    new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights', 'error_handling_rules', 'response_inspection_rules'])
+    detail,
+    '账户高级详情响应',
+    new Set(['error_handling_rules', 'response_inspection_rules'])
   )
+  assertNoSecretValueLeak(detail, '账户高级详情响应')
 
   const batchEditContext = await postEnvelope<AccountResponse[]>(baseUrl, '/__aisys__/api/accounts/batch-edit-context', seed.adminCookie, {
     accountIds: [seed.apiKeyAccountId, seed.multiApiKeyAccountId]
@@ -247,23 +258,31 @@ try {
     assert.equal(Object.prototype.hasOwnProperty.call(item, 'apiKey'), false, '账户 API Key 运行明细不得返回 API Key 明文')
   }
 
-  const detail = await getEnvelope<AccountAdvancedResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
   assert.deepEqual(Object.keys(detail).sort(), [
     'accessType',
     'balanceQueryEnabled',
     'configRevision',
+    'credentials',
     'id',
     'modelMappings',
     'temporaryUnavailableContinuousProbeEnabled'
   ].sort(), '高级详情只能返回高级表单使用的窄字段')
   assert.equal(detail.accessType, 'owner')
-  assertNoCredentialLeak(detail, '账户高级详情响应')
 
   const multiKeyDetail = await getEnvelope<AccountAdvancedResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/advanced`, seed.adminCookie)
-  for (const forbiddenField of ['credentials', 'supportedModels', 'tags', 'runtimeAvailability', 'usage', 'todayUsage', 'permissions']) {
+  for (const forbiddenField of ['supportedModels', 'tags', 'runtimeAvailability', 'usage', 'todayUsage', 'permissions']) {
     assert.equal(Object.prototype.hasOwnProperty.call(multiKeyDetail, forbiddenField), false, `多 Key 高级详情不得混入 ${forbiddenField}`)
   }
-  assertNoCredentialLeak(multiKeyDetail, '多 API Key 账户高级详情响应')
+  assert.deepEqual(Object.keys(multiKeyDetail.credentials ?? {}).sort(), [
+    'codex_responses_safe_repair_enabled',
+    'codex_responses_strict_intercept_enabled'
+  ], '多 Key 高级详情只应返回高级策略开关')
+  assertNoForbiddenCredentialKeysExcept(
+    multiKeyDetail,
+    '多 API Key 账户高级详情响应',
+    new Set(['error_handling_rules', 'response_inspection_rules'])
+  )
+  assertNoSecretValueLeak(multiKeyDetail, '多 API Key 账户高级详情响应')
 
   const created = await postEnvelope<AccountCreateResponse>(baseUrl, '/__aisys__/api/accounts', seed.adminCookie, {
     providerCode: 'gpt',
@@ -371,7 +390,7 @@ try {
   })
   assertNoCredentialLeak(migration, '账户流量迁移响应')
   assert.equal(repositories.findAccountForTest(seed.apiKeyAccountId)?.status, 'active', '不影响原账户迁移不应修改源账户状态')
-  assertOAuthRoutesUseAccountResponseSanitizer()
+  assertAccountCreateResponseContracts()
 
   console.log('AI 账户响应凭据边界回归通过：列表和高级详情保持窄投影，基础编辑只返回表单凭据，创建与字段级 PATCH/分组/标签只返回变更定位字段')
 } finally {
@@ -540,14 +559,25 @@ async function requestEnvelope<T>(baseUrl: string, path: string, cookie: string,
   return (JSON.parse(text) as ApiEnvelope<T>).data
 }
 
-function assertOAuthRoutesUseAccountResponseSanitizer(): void {
+function assertAccountCreateResponseContracts(): void {
   const source = readFileSync('src/modules/openai-oauth/openai-oauth.routes.ts', 'utf8')
-  assert.match(source, /ok\(sanitizeAccountResponse\(account\)\)/, 'OpenAI OAuth 创建响应必须经过账号响应脱敏器')
+  assert.match(source, /ok\(\{ id: account\.id, status: account\.status \}\)/, 'OpenAI OAuth 创建响应只能返回 id 与 status')
   assert.match(source, /ok\(sanitizeAccount(?:CredentialCarrier)?Response\(updated\)\)/, 'OpenAI OAuth 更新响应必须经过账号响应脱敏器')
+  const repositorySource = readFileSync('src/storage/repositories.ts', 'utf8')
+  assert.doesNotMatch(repositorySource, /loadSystemAccountNameForAccountWriteAsync/, '账户创建不得为拼装完整摘要额外读取系统账户名称')
+  assert.doesNotMatch(
+    repositorySource,
+    /systemAccountName:\s*includeSystemAccountFields\(access\)[^\n]*loadSystemAccountNameMapByIds/,
+    'SQLite 账户创建不得为拼装完整摘要额外读取系统账户名称'
+  )
 }
 
 function assertNoCredentialLeak(value: unknown, label: string): void {
   assertNoForbiddenCredentialKeys(value, label)
+  assertNoSecretValueLeak(value, label)
+}
+
+function assertNoSecretValueLeak(value: unknown, label: string): void {
   const text = JSON.stringify(value)
   for (const secret of secretValues) {
     assert.equal(text.includes(secret), false, `${label} 不应包含密钥原文 ${secret}`)

@@ -326,6 +326,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function providerName(providerCode?: string) {
+    const listName = options.accounts.value.find((account) => account.providerCode === providerCode)?.providerName
+    if (listName) return listName
     return accountEditProviderName(providerCode, availableProviders.value)
   }
 

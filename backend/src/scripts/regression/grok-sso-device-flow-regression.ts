@@ -136,8 +136,8 @@ assert.equal(routeSource.includes('}, abortController.signal)'), true, '客户�
 assert.equal(routeSource.includes("ssoTokens: sensitiveFingerprint(normalizeGrokSSOImportTokens("), true, '批量 SSO token 的幂等哈希必须基于归一化后的集合')
 assert.equal(routeSource.includes('if (tokens.length > 3)'), true, '多行与逗号展开后仍必须限制最多 3 个 token')
 assert.equal(routeSource.includes("operationKey: 'grok_oauth.sso_to_oauth'"), true, 'SSO 导入必须记录专属操作日志')
-assert.equal(routeSource.includes('account: sanitizeAccountResponse(account)'), true, '逐项成功结果不得返回账户凭据')
-assert.equal(routeSource.includes('created: results.filter'), true)
+assert.equal(routeSource.includes('sanitizeAccountResponse(account)'), false, 'SSO 创建回执不得构建或返回完整账户响应')
+assert.equal(routeSource.includes('createdCount: results.filter'), true, 'SSO 创建回执只返回成功数量')
 assert.equal(routeSource.includes('failed: results.filter'), true)
 
 console.log('Grok SSO device flow 回归通过：Cookie、device code、批准、轮询、代理、边界与批量契约均符合参考实现')

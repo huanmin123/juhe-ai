@@ -760,14 +760,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     }
     case 'sync_api_key_availability_schedule_statuses': {
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const result = await syncApiKeyAvailabilityScheduleStatusesAsync()
-        if (result.changedIds.length > 0) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return result
+      const result = await syncApiKeyAvailabilityScheduleStatusesAsync()
+      if (result.changedIds.length > 0) {
+        clearGatewayRuntimeCacheLocal()
       }
-      return handleDbServiceOperationSync(operation)
+      return result
     }
     case 'sync_account_availability_schedule_statuses': {
       if (runtimeConfig.databaseDriver === 'postgres') {

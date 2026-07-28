@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "deploymentEpoch": "node-production-2026-07-18",
   "release": {
     "nodeVersion": "0.1.0",
@@ -18,5 +18,6 @@
     "gateway": "node",
     "worker": "node"
   },
-  "routeAllowlist": []
+  "routeAllowlist": [],
+  "workerAllowlist": []
 }

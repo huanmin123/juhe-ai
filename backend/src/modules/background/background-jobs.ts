@@ -4,6 +4,7 @@ import { stat as statFile } from 'node:fs/promises'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import { runIfNodeOwnsWorkerJob } from '../../shared/worker-owner.js'
 import {
   performanceProcessMetricsTopologyComplete,
   readPerformanceProcessEventLoopSamples
@@ -328,7 +329,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-recovery'), intervalMs: minuteMs, initialDelayMs: 55 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 20 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await runDueModelQualityRecoveries(signal), '模型质量恢复检查') })
       scheduler.schedule({ name: backgroundScheduledJobName('model-quality-health-sync-retry'), intervalMs: minuteMs, initialDelayMs: 58 * secondMs, stablePhaseWindowMs: 2 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'model-quality', timeoutMs: 2 * minuteMs, failureBackoff: { baseMs: minuteMs, maxMs: 15 * minuteMs }, task: async ({ signal }) => modelQualityBatchOutcome(await retryFailedModelQualityHealthSyncs(signal), '模型质量健康同步补偿') })
       scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, stablePhaseWindowMs: 5 * secondMs, overlapPolicy: 'coalesceOne', resourceLane: 'external-account-maintenance', timeoutMs: 60 * secondMs, failureBackoff: { baseMs: 10 * secondMs, maxMs: 5 * minuteMs }, task: ({ signal }) => runAccountBalanceRefresh({ signal }) })
-      scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: cooldownAccountRetestStartupDelayMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
+      scheduleCooldownAccountRetestJob()
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
@@ -338,6 +339,37 @@ function scheduleBackgroundJobs(): void {
       return
     default:
       return
+  }
+}
+
+function scheduleCooldownAccountRetestJob(): void {
+  const jobName = 'cooldown-account-retest'
+  const ownership = runIfNodeOwnsWorkerJob(runtimeConfig.ownerLock, jobName, () => {
+    scheduler.schedule({
+      name: backgroundScheduledJobName(jobName),
+      intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs,
+      initialDelayMs: cooldownAccountRetestStartupDelayMs,
+      task: () => runCooldownAccountRetest({ settingsNumber })
+    })
+  })
+  if (!ownership.nodeOwns) {
+    const logFields = {
+      event: 'background_worker_job_owner_drained',
+      jobName,
+      ownerLockEnabled: runtimeConfig.ownerLock.enabled,
+      manifestPath: runtimeConfig.ownerLock.manifestPath,
+      configuredDeploymentEpoch: runtimeConfig.ownerLock.deploymentEpoch,
+      resolvedOwner: ownership.resolvedOwner,
+      manifestSchemaVersion: ownership.schemaVersion,
+      reason: ownership.reason,
+      detail: ownership.detail
+    }
+    if (ownership.reason === 'manifest_owner_go') {
+      logger.info(logFields, '后台任务 owner 已切换到 Go，Node 不再注册账户冷却复测任务')
+    } else {
+      logger.error(logFields, '后台任务 owner 无法安全确认，Node 按 fail-closed 策略不注册账户冷却复测任务')
+    }
+    return
   }
 }
 

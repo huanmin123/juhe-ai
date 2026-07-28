@@ -4,6 +4,7 @@ import {
   parseApiKeyAvailabilityScheduleJson
 } from './api-key-availability-schedule.js'
 import { runtimeConfig } from '../config/runtime.js'
+import { notifyGatewayApiKeyValidationCacheInvalidationAsync } from '../shared/gateway-cache-invalidation.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import {
   beginDatabaseTransaction,
@@ -12,7 +13,7 @@ import {
   nowIso,
   rollbackDatabaseTransaction
 } from './database.js'
-import { invalidateGatewayApiKeyCacheById, invalidateGatewayApiKeyCacheByIdAsync } from './gateway-api-key.repository.js'
+import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 
 interface ScheduledApiKeyStatusRow {
@@ -152,7 +153,9 @@ export function syncApiKeyAvailabilityScheduleStatuses(now = new Date()): ApiKey
 
 export async function syncApiKeyAvailabilityScheduleStatusesAsync(now = new Date()): Promise<ApiKeyScheduleStatusSyncResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return syncApiKeyAvailabilityScheduleStatuses(now)
+    const result = syncApiKeyAvailabilityScheduleStatuses(now)
+    await invalidateChangedApiKeyCachesAsync(result.changedIds)
+    return result
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const updatedAt = Number.isFinite(now.getTime()) ? now.toISOString() : nowIso()
@@ -299,7 +302,6 @@ function invalidateChangedApiKeyCaches(ids: string[]): void {
 }
 
 async function invalidateChangedApiKeyCachesAsync(ids: string[]): Promise<void> {
-  for (const id of ids) {
-    await invalidateGatewayApiKeyCacheByIdAsync(id)
-  }
+  if (!ids.length) return
+  await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, 'api_key_schedule_status_changed')
 }

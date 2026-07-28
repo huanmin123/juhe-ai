@@ -371,15 +371,12 @@ async function runHttpSmoke(): Promise<void> {
     const aiAccountSuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
     const smokeModel = 'gpt-5-mini'
     const smokeFallbackModel = 'gpt-5-nano'
+    const createdAiAccountName = `烟测AI账户${aiAccountSuffix}`
     const createdAiAccount = await postEnvelope<{
       id: string
-      name: string
       status: string
-      boundGroupId?: string
-      supportedModels?: string[]
-      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
     }>(baseUrl, '/__aisys__/api/accounts', {
-      name: `烟测AI账户${aiAccountSuffix}`,
+      name: createdAiAccountName,
       providerCode: 'gpt',
       providerProtocolProfileId: gptProviderProfileId,
       type: 'api_key',
@@ -401,58 +398,65 @@ async function runHttpSmoke(): Promise<void> {
       concurrencyLimit: 20
     }, cookie)
     createdAiAccountIds.push(createdAiAccount.id)
+    assert.deepEqual(Object.keys(createdAiAccount).sort(), ['id', 'status'], 'performance smoke AI 账户创建只应返回定位字段')
     assert.equal(createdAiAccount.status, 'disabled', 'performance smoke 应能创建停用 AI 账户，避免依赖后台首次健康检查')
-    assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
-    assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
-    assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeFallbackModel, 'performance smoke AI 账户应保存同协议模型别名映射')
-    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
-      status: 'temporary_unavailable'
-    }, cookie)
-    assert.equal(temporarilyUnavailableAiAccount.status, 'temporary_unavailable', 'performance smoke 应能把停用 AI 账户切换为临时不可用')
-    const aiAccountBasicDetail = await getEnvelope<{
+    const initialAiAccountBasicDetail = await getEnvelope<{
       id: string
-      status: string
-      boundGroupId?: string
-      credentials?: Record<string, unknown>
-      supportedModels?: string[]
-      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
-    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, cookie)
-    assert.equal(aiAccountBasicDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户基础详情')
-    assert.equal(aiAccountBasicDetail.status, 'temporary_unavailable', 'performance smoke AI 账户基础详情应保留状态')
-    assert.equal(aiAccountBasicDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户基础详情应保留分组绑定')
-    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'credentials'), false, 'performance smoke AI 账户基础详情不应返回凭据')
-    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'supportedModels'), false, 'performance smoke AI 账户基础详情不应返回支持模型')
-    assert.equal(Object.prototype.hasOwnProperty.call(aiAccountBasicDetail, 'modelMappings'), false, 'performance smoke AI 账户基础详情不应返回模型映射')
-    const aiAccountDetail = await getEnvelope<{
-      id: string
-      status: string
-      boundGroupId?: string
-      credentials?: Record<string, unknown>
-      supportedModels?: string[]
-      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
-    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}/advanced`, cookie)
-    assert.equal(aiAccountDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户详情')
-    assert.equal(aiAccountDetail.status, 'temporary_unavailable', 'performance smoke AI 账户详情应保留状态')
-    assert.equal(aiAccountDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户详情应保留分组绑定')
-    assert.equal(aiAccountDetail.credentials?.base_url, 'https://example.invalid/v1', 'performance smoke AI 账户详情应返回公开凭据字段')
-    assert.deepEqual(aiAccountDetail.supportedModels, [smokeModel], 'performance smoke AI 账户详情应返回支持模型')
-    assert.equal(aiAccountDetail.modelMappings?.[0]?.upstreamModel, smokeModel, 'performance smoke AI 账户详情应返回模型映射')
-    const restoredAiAccount = await patchEnvelope<{ id: string; status: string; schedulable: boolean }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
-      clearFailureState: true
-    }, cookie)
-    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户临时不可调用状态')
-    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复临时不可调用状态后账户应参与调度')
-    const updatedAiAccountName = `${createdAiAccount.name}改`
-    const updatedAiAccount = await patchEnvelope<{
-      id: string
+      configRevision: number
       name: string
       notes?: string
+      status: string
       priority: number
       boundGroupId?: string
+      credentials?: Record<string, unknown>
       supportedModels?: string[]
       tags?: Array<{ name: string }>
       modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
-    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}/edit-basic`, cookie)
+    assert.equal(initialAiAccountBasicDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户基础详情')
+    assert.equal(initialAiAccountBasicDetail.status, 'disabled', 'performance smoke AI 账户基础详情应保留创建状态')
+    assert.equal(initialAiAccountBasicDetail.boundGroupId, createdGroup.id, 'performance smoke AI 账户基础详情应保留分组绑定')
+    assert.equal(initialAiAccountBasicDetail.credentials?.base_url, 'https://example.invalid/v1', 'performance smoke AI 账户基础详情应返回基础表单凭据')
+    assert.deepEqual(initialAiAccountBasicDetail.supportedModels, [smokeModel], 'performance smoke AI 账户基础详情应返回支持模型')
+    assert.equal(Object.prototype.hasOwnProperty.call(initialAiAccountBasicDetail, 'modelMappings'), false, 'performance smoke AI 账户基础详情不应返回模型映射')
+    const initialAiAccountAdvancedDetail = await getEnvelope<{
+      id: string
+      configRevision: number
+      credentials?: Record<string, unknown>
+      modelMappings?: Array<{ sourceModel: string; upstreamModel: string }>
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}/advanced`, cookie)
+    assert.equal(initialAiAccountAdvancedDetail.id, createdAiAccount.id, 'performance smoke 应能读取新建 AI 账户高级详情')
+    assert.equal(initialAiAccountAdvancedDetail.configRevision, initialAiAccountBasicDetail.configRevision, 'performance smoke 分层详情应返回同一配置版本')
+    assert.equal(Object.prototype.hasOwnProperty.call(initialAiAccountAdvancedDetail.credentials ?? {}, 'base_url'), false, 'performance smoke AI 账户高级详情不应重复返回基础凭据')
+    assert.equal(initialAiAccountAdvancedDetail.modelMappings?.[0]?.upstreamModel, smokeModel, 'performance smoke AI 账户高级详情应返回模型映射')
+    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; configRevision: number; changedFields: string[] }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      expectedConfigRevision: initialAiAccountBasicDetail.configRevision,
+      status: 'temporary_unavailable'
+    }, cookie)
+    assert.deepEqual(Object.keys(temporarilyUnavailableAiAccount).sort(), ['changedFields', 'configRevision', 'id'], 'performance smoke AI 账户 PATCH 只应返回变更定位字段')
+    assert(temporarilyUnavailableAiAccount.changedFields.includes('status'), 'performance smoke 应能把停用 AI 账户切换为临时不可用')
+    const temporarilyUnavailableDetail = await getEnvelope<{ id: string; configRevision: number; status: string }>(
+      baseUrl,
+      `/__aisys__/api/accounts/${createdAiAccount.id}/edit-basic`,
+      cookie
+    )
+    assert.equal(temporarilyUnavailableDetail.status, 'temporary_unavailable', 'performance smoke AI 账户基础详情应返回临时不可用状态')
+    assert.equal(temporarilyUnavailableDetail.configRevision, temporarilyUnavailableAiAccount.configRevision, 'performance smoke 状态 PATCH 后应推进配置版本')
+    const restoredAiAccount = await patchEnvelope<{ id: string; configRevision: number; changedFields: string[] }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      expectedConfigRevision: temporarilyUnavailableDetail.configRevision,
+      clearFailureState: true
+    }, cookie)
+    assert.deepEqual(restoredAiAccount.changedFields, ['clearFailureState'], 'performance smoke 应以显式命令恢复 AI 账户临时不可调用状态')
+    const restoredAiAccountDetail = await getEnvelope<{ id: string; configRevision: number; status: string }>(
+      baseUrl,
+      `/__aisys__/api/accounts/${createdAiAccount.id}/edit-basic`,
+      cookie
+    )
+    assert.equal(restoredAiAccountDetail.status, 'active', 'performance smoke 恢复后账户应为可用状态')
+    assert.equal(restoredAiAccountDetail.configRevision, restoredAiAccount.configRevision, 'performance smoke 恢复 PATCH 后应推进配置版本')
+    const updatedAiAccountName = `${createdAiAccountName}改`
+    const updatedAiAccount = await patchEnvelope<{ id: string; configRevision: number; changedFields: string[] }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      expectedConfigRevision: restoredAiAccountDetail.configRevision,
       name: updatedAiAccountName,
       notes: 'performance smoke account updated',
       priority: 7,
@@ -467,15 +471,36 @@ async function runHttpSmoke(): Promise<void> {
         enabled: true
       }]
     }, cookie)
-    assert.equal(updatedAiAccount.name, updatedAiAccountName, 'performance smoke 应能更新 AI 账户名称')
-    assert.equal(updatedAiAccount.notes, 'performance smoke account updated', 'performance smoke 应能更新 AI 账户备注')
-    assert.equal(updatedAiAccount.priority, 7, 'performance smoke 应能更新 AI 账户优先级')
-    assert.equal(updatedAiAccount.boundGroupId, createdGroup.id, 'performance smoke 更新 AI 账户应保留分组绑定')
-    assert.deepEqual(updatedAiAccount.supportedModels, [smokeModel], 'performance smoke 更新 AI 账户应保留支持模型')
-    assert.ok(updatedAiAccount.tags?.some((tag) => tag.name === '烟测标签'), 'performance smoke 应能更新 AI 账户标签')
+    assert(updatedAiAccount.changedFields.includes('name'), 'performance smoke 应能更新 AI 账户名称')
+    assert(updatedAiAccount.changedFields.includes('notes'), 'performance smoke 应能更新 AI 账户备注')
+    assert(updatedAiAccount.changedFields.includes('priority'), 'performance smoke 应能更新 AI 账户优先级')
+    assert(updatedAiAccount.changedFields.includes('tags'), 'performance smoke 应能更新 AI 账户标签')
+    const updatedAiAccountBasicDetail = await getEnvelope<{
+      id: string
+      configRevision: number
+      name: string
+      notes?: string
+      priority: number
+      boundGroupId?: string
+      supportedModels?: string[]
+      tags?: Array<{ name: string }>
+    }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}/edit-basic`, cookie)
+    assert.equal(updatedAiAccountBasicDetail.configRevision, updatedAiAccount.configRevision, 'performance smoke 配置 PATCH 后应推进配置版本')
+    assert.equal(updatedAiAccountBasicDetail.name, updatedAiAccountName, 'performance smoke 基础详情应返回更新后的名称')
+    assert.equal(updatedAiAccountBasicDetail.notes, 'performance smoke account updated', 'performance smoke 基础详情应返回更新后的备注')
+    assert.equal(updatedAiAccountBasicDetail.priority, 7, 'performance smoke 基础详情应返回更新后的优先级')
+    assert.equal(updatedAiAccountBasicDetail.boundGroupId, createdGroup.id, 'performance smoke 基础详情应保留分组绑定')
+    assert.deepEqual(updatedAiAccountBasicDetail.supportedModels, [smokeModel], 'performance smoke 基础详情应保留支持模型')
+    assert.ok(updatedAiAccountBasicDetail.tags?.some((tag) => tag.name === '烟测标签'), 'performance smoke 基础详情应返回更新后的标签')
+    const updatedAiAccountAdvancedDetail = await getEnvelope<{ modelMappings?: Array<{ sourceModel: string; upstreamModel: string }> }>(
+      baseUrl,
+      `/__aisys__/api/accounts/${createdAiAccount.id}/advanced`,
+      cookie
+    )
+    assert.equal(updatedAiAccountAdvancedDetail.modelMappings?.[0]?.upstreamModel, smokeModel, 'performance smoke 高级详情应返回更新后的模型映射')
     const aiAccounts = await getEnvelope<{ items: Array<{ id: string; boundGroupId?: string; supportedModels?: string[] }> }>(
       baseUrl,
-      `/__aisys__/api/accounts?keyword=${encodeURIComponent(updatedAiAccount.name)}&groupId=${encodeURIComponent(createdGroup.id)}&page=1&pageSize=20`,
+      `/__aisys__/api/accounts?keyword=${encodeURIComponent(updatedAiAccountName)}&groupId=${encodeURIComponent(createdGroup.id)}&page=1&pageSize=20`,
       cookie
     )
     const listedAiAccount = aiAccounts.items.find((item) => item.id === createdAiAccount.id)
@@ -484,7 +509,7 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(Object.prototype.hasOwnProperty.call(listedAiAccount, 'supportedModels'), false, 'performance smoke AI 账户列表不应返回编辑专用支持模型')
     const aiAccountOptions = await getEnvelope<Array<{ id: string; providerCode: string }>>(
       baseUrl,
-      `/__aisys__/api/accounts/options?keyword=${encodeURIComponent(updatedAiAccount.name)}&groupId=${encodeURIComponent(createdGroup.id)}&limit=20`,
+      `/__aisys__/api/accounts/options?keyword=${encodeURIComponent(updatedAiAccountName)}&groupId=${encodeURIComponent(createdGroup.id)}&limit=20`,
       cookie
     )
     assert.ok(aiAccountOptions.some((item) => item.id === createdAiAccount.id && item.providerCode === 'gpt'), 'performance smoke 应能在 AI 账户 options 查回新建账户')

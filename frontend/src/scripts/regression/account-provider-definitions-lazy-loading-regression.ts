@@ -13,6 +13,18 @@ const accountsViewSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/AccountsView.vue', import.meta.url)),
   'utf8'
 )
+const accountFilterToolbarSource = readFileSync(
+  fileURLToPath(new URL('../../views/accounts/AccountFilterToolbar.vue', import.meta.url)),
+  'utf8'
+)
+const accountListSource = readFileSync(
+  fileURLToPath(new URL('../../views/accounts/AccountList.vue', import.meta.url)),
+  'utf8'
+)
+const accountTableCellSource = readFileSync(
+  fileURLToPath(new URL('../../views/accounts/AccountTableCell.vue', import.meta.url)),
+  'utf8'
+)
 const accountEditFormSource = readFileSync(
   fileURLToPath(new URL('../../views/accounts/useAccountEditForm.ts', import.meta.url)),
   'utf8'
@@ -28,8 +40,12 @@ const definitionsSource = sourceBetween(accountListDataSource, 'async function e
 const definitionsFenceSource = sourceBetween(accountListDataSource, 'function isCurrentAccountOptionsRequest(', 'function currentAccountProviderScopeKey(')
 const scopeKeySource = sourceBetween(accountListDataSource, 'function accountProviderScopeKey(', 'function accountListParams(')
 
-assert.match(fetchPageSource, /void loadAccountOptions\(/, '账户列表首屏只允许触发轻量供应商 options')
+assert.doesNotMatch(fetchPageSource, /loadAccountOptions\(/, '账户列表首屏不得为名称映射或筛选器预取供应商 options')
 assert.doesNotMatch(fetchPageSource, /ensureProviderDefinition|includeDefinitions/, '账户列表首屏不得触发供应商详情')
+assert.match(accountsViewSource, /function handleProviderFilterDropdown\(open: boolean\)[\s\S]*if \(!open\) return[\s\S]*loadAccountOptions\(/, '供应商 options 只能在用户展开供应商筛选时加载')
+assert.equal((accountFilterToolbarSource.match(/@dropdown-visible-change="emit\('provider-dropdown', \$event\)"/g) ?? []).length, 2, '桌面和移动供应商筛选都必须透传真实展开事件')
+assert.match(accountTableCellSource, /account\.providerName \|\| providerName\(account\.providerCode\)/, '桌面列表必须优先直接渲染 Node 返回的供应商名称')
+assert.match(accountListSource, /record\.providerName \|\| providerName\(record\.providerCode\)/, '移动列表必须优先直接渲染 Node 返回的供应商名称')
 assert.match(lightOptionsSource, /includeDefinitions:\s*false/, '列表辅助数据必须显式请求轻量 provider options')
 assert.doesNotMatch(lightOptionsSource, /includeDefinitions:\s*true|providerDefinitions\.value/, '轻量 loader 不得读取或写入完整供应商定义')
 
@@ -74,7 +90,7 @@ assert.match(providerResourceSource, /api\.providers\.options/, '轻量路径必
 
 await verifyAsyncProviderDefinitionDefaults()
 
-console.log('账户供应商定义按需加载回归通过：列表首屏仅请求轻量 options，用户选择后只读取当前供应商详情并按身份作用域隔离')
+console.log('账户供应商定义按需加载回归通过：列表首屏零供应商 options，筛选展开才加载候选，用户选择后只读取当前供应商详情')
 
 async function verifyAsyncProviderDefinitionDefaults(): Promise<void> {
   const initialDefaults = providerDefaults({

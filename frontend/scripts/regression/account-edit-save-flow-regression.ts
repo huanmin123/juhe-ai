@@ -25,6 +25,7 @@ const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 const accountsViewSource = readSource('src/views/accounts/AccountsView.vue')
 const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
+const basicInfoSource = readSource('src/views/accounts/AccountBasicInfoSection.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
 const editFormSource = readSource('src/views/accounts/useAccountEditForm.ts')
@@ -75,6 +76,7 @@ for (const [flow, source] of [
   )
 }
 assert.match(editOpenSource, /'edit-basic'/, '普通编辑弹窗首开只允许请求 edit-basic')
+assert.match(basicInfoSource, /<a-form-item v-if="!editing" class="dispatch-status-field"/, '状态选择只允许在新增账户时展示')
 assert.doesNotMatch(healthCheckModelFieldSource, /allow-clear/, '必填检查模型不得暴露清空入口并生成后端不接受的 null PATCH')
 assert.match(savePayloadSource, /if \(!healthCheckModel\) return '请选择检查模型'/, '保存前必须在前端拦截空检查模型')
 assert.match(editFormSource, /supportedModels\[0\] \?\? ''/, '已选检查模型离开支持模型集合时应回落到首个可用模型')
@@ -388,6 +390,14 @@ assert.throws(
 )
 assert.equal('service_tier_override' in basicBaseline.credentials, false, '未加载的高级凭据字段不得进入基础编辑基线')
 assert.equal('balanceQueryConfig' in basicBaseline.values, false, '未加载的高级账户字段不得进入基础编辑增量')
+assert.equal('status' in basicBaseline.values, false, '普通编辑基线不得包含状态，启停与恢复只能走专用行级动作')
+const advancedStatusChanged = structuredClone(advancedBaseline)
+advancedStatusChanged.status = 'active'
+assert.equal(
+  buildAccountAdvancedUpdatePatch(advancedStatusChanged, advancedBaseline, 11),
+  undefined,
+  '高级编辑不得因为表单状态变化提交 status'
+)
 form.status = 'active'
 assert.equal(buildAccountSavePayload({
   accounts: [],

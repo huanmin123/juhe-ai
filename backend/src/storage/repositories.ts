@@ -210,8 +210,7 @@ import {
 } from './resource-authorization-write-state.repository.js'
 import {
   invalidateAccountLookupCache,
-  invalidateGroupLookupCache,
-  loadSystemAccountNameMapByIds
+  invalidateGroupLookupCache
 } from './repository-lookups.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountRow, ResourceAuthorizationSourceRow } from './repository-row-types.js'
@@ -1106,15 +1105,6 @@ async function resolveEnabledProxyProfileIdForAccountWriteAsync(client: Database
   return row.id
 }
 
-async function loadSystemAccountNameForAccountWriteAsync(client: DatabaseClient, systemAccountId: string): Promise<string | undefined> {
-  const row = await client.one<{ display_name?: string }>(`
-    SELECT display_name
-    FROM ${accountWriteTable(client, 'system_accounts')}
-    WHERE id = ?
-  `, [systemAccountId])
-  return row?.display_name
-}
-
 function accountWriteTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable('juhe_business', tableName)
@@ -1958,7 +1948,6 @@ function createAccountInSqliteTransaction(input: Record<string, unknown>, access
   const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     providerCode,
     providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,
@@ -2223,13 +2212,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
   const temporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(input, 'temporaryUnavailableContinuousProbeEnabled', true, '临时不可调用持续恢复探活')
-  const systemAccountName = includeSystemAccountFields(access)
-    ? await loadSystemAccountNameForAccountWriteAsync(client, systemAccountId)
-    : undefined
   const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName,
     providerCode,
     providerProtocolProfileId: providerProfile.id,
     protocolCode: providerProfile.protocolCode,

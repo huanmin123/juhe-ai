@@ -118,7 +118,7 @@ try {
   }
   const allowedFields = new Set([
     'id', 'configRevision', 'systemAccountId', 'systemAccountName', 'ownerSystemAccountId', 'ownerSystemAccountName',
-    'providerCode', 'providerProtocolProfileId', 'protocolCode', 'protocolVersion', 'name', 'notes', 'type',
+    'providerCode', 'providerName', 'providerProtocolProfileId', 'protocolCode', 'protocolVersion', 'name', 'notes', 'type',
     'concurrencyLimit', 'priority', 'superPriorityEnabled', 'fallbackEnabled', 'clientCompatibility', 'tags',
     'healthCheckModel', 'healthCheckEndpointMode', 'proxyProfileId', 'proxyProfileName',
     'proxyProfileType', 'proxyProfileEnabled', 'proxyProfileUnavailable', 'proxyProfileErrorMessage',
@@ -136,6 +136,7 @@ try {
   assert.deepEqual(Object.keys(item.tags[0] ?? {}).sort(), ['id', 'name'], '列表 tag 只能返回 id/name')
   assert.equal(item.name, '列表严格投影账户')
   assert.equal(item.providerCode, 'gpt')
+  assert.equal(item.providerName, 'GPT')
   assert.equal(item.permissions?.canEdit, true, '基础列表必须保留行操作权限')
 
   const executedSql = listSql.join('\n')

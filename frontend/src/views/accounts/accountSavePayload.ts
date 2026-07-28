@@ -72,9 +72,7 @@ export type AccountSavePayload = {
   balanceQueryConfig?: Record<string, unknown>
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type' | 'status'> & {
-  status?: 'active' | 'disabled'
-}
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type' | 'status'>
 
 export type AccountOAuthCreateCommonPayload = {
   providerProtocolProfileId?: string
@@ -264,13 +262,12 @@ export function buildAccountSavePayload(input: {
   }
 }
 
-export function buildAccountUpdatePayload(payload: AccountSavePayload, currentStatus?: AccountSummary['status']): AccountUpdatePayload {
+export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountUpdatePayload {
   return {
     name: payload.name,
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
-    ...(payload.status === 'active' || payload.status === 'disabled' ? { status: payload.status } : {}),
     superPriorityEnabled: payload.superPriorityEnabled,
     fallbackEnabled: payload.fallbackEnabled,
     supportedModels: payload.supportedModels,

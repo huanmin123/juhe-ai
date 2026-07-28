@@ -56,7 +56,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 30. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
 31. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
 32. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
-33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、master 权威五元 fence、授权 quota、payload v3、schema 91 generation/index、neutral defer，以及默认不接线的 exact loader / bounded transport / PostgreSQL outcomes；原生多协议 Probe、execution-time lease、真实依赖和生产 owner 仍未完成。
+33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、master 权威五元 fence、授权 quota、payload v3、schema 91 generation/index、neutral defer、原生十模式 API Key/OAuth Probe、发送前撤销栅栏与 PostgreSQL outcomes；真实依赖、job owner handoff 和生产切换仍未完成。
 34. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
 35. [W10 网关上游请求与流式中转核心迁移记录](W10-网关上游请求与流式中转核心迁移记录.md)：Go-native 上游请求构造、HTTP transport dispatch seam、凭据与 header 隔离、有界 body、流式背压、超时、取消、终态和 usage/audit handoff；当前不接生产 listener、upstream policy 或 owner 切换。
 36. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。

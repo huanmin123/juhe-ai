@@ -447,7 +447,7 @@ function accountStatusGroupBinding(row: AccountStatusProjectionRow): {
   if (!row.bound_group_id || row.binding_system_account_id !== row.system_account_id) return undefined
   return {
     groupId: row.bound_group_id,
-    groupBindStatus: row.bound_group_account_authorization_id && row.bound_group_account_authorization_id !== row.authorization_id
+    groupBindStatus: row.bound_group_account_authorization_id !== row.authorization_id
       ? 'authorization_unavailable'
       : 'bound'
   }

@@ -179,10 +179,59 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const deniedQueries: Array<{ sql: string; params: SQLInputValue[] }> = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    const originalGet = statement.get.bind(statement) as typeof statement.get
+    const originalAll = statement.all.bind(statement) as typeof statement.all
+    statement.get = ((...params: SQLInputValue[]) => {
+      deniedQueries.push({ sql, params })
+      return originalGet(...params)
+    }) as typeof statement.get
+    statement.all = ((...params: SQLInputValue[]) => {
+      deniedQueries.push({ sql, params })
+      return originalAll(...params)
+    }) as typeof statement.all
+    return statement
+  }) as typeof database.prepare
+  let deniedDetail: Awaited<ReturnType<typeof advancedRepository.findAccountAdvancedDetailAsync>>
+  try {
+    deniedDetail = await advancedRepository.findAccountAdvancedDetailAsync(account.id, {
+      systemAccountId: otherOwner.id,
+      role: 'user'
+    })
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(deniedDetail, undefined, '其他用户不能读取账户高级编辑投影')
+  assert.equal(deniedQueries.length, 1, '跨 owner 查询必须在主投影定位阶段结束，不得继续查询模型映射')
+  assert.match(
+    deniedQueries[0]!.sql,
+    /WHERE\s+accounts\.id\s*=\s*\?[\s\S]*AND\s+accounts\.system_account_id\s*=\s*\?/i,
+    '包含凭据列的高级主投影 SQL 必须同时约束账户 owner'
+  )
+  assert.deepEqual(
+    deniedQueries[0]!.params.slice(1),
+    [account.id, otherOwner.id],
+    '普通用户 owner 条件必须作为高级投影 SQL 的末尾绑定参数'
+  )
+
   assert.equal(
-    await advancedRepository.findAccountAdvancedDetailAsync(account.id, { systemAccountId: otherOwner.id, role: 'user' }),
+    await advancedRepository.findAccountAdvancedDetailAsync(account.id, {
+      systemAccountId: access.systemAccountId,
+      role: 'admin',
+      systemAccountFilterId: otherOwner.id
+    }),
     undefined,
-    '其他用户不能读取账户高级编辑投影'
+    '管理员显式目标 scope 不能越过 SQL owner 条件读取其他目标账户'
+  )
+  assert(
+    await advancedRepository.findAccountAdvancedDetailAsync(account.id, {
+      systemAccountId: access.systemAccountId,
+      role: 'admin',
+      systemAccountFilterId: access.systemAccountId
+    }),
+    '管理员显式选择账户 owner scope 后仍应读取高级编辑投影'
   )
 
   const grantee = repositories.createSystemAccount({
@@ -210,7 +259,7 @@ try {
   const authorizedInstance = repositories.listAccounts(granteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === account.id)
   assert(authorizedInstance, '账户授权应创建被授权者作用域内的实例账户')
-  const authorizedDetail = await advancedRepository.findAccountAdvancedDetailAsync(authorizedInstance.id, access)
+  const authorizedDetail = await advancedRepository.findAccountAdvancedDetailAsync(authorizedInstance.id, granteeAccess)
   assert(authorizedDetail, '授权实例应返回独立的只读高级投影')
   assert.equal(authorizedDetail.accessType, 'authorized')
   assert.equal(authorizedDetail.credentials, undefined, '授权实例高级投影不得读取或返回来源账户凭据')
@@ -218,6 +267,14 @@ try {
   assert.equal(authorizedDetail.authorizationInstanceSourceAccountSchedulable, true)
   assert.equal(authorizedDetail.accountExpiresAt, '2027-01-01T00:00:00.000Z')
   assert(!JSON.stringify(authorizedDetail).includes('sk-account-advanced'), '授权实例高级投影不得泄露来源账户 API Key')
+  assert(
+    await advancedRepository.findAccountAdvancedDetailAsync(authorizedInstance.id, {
+      systemAccountId: access.systemAccountId,
+      role: 'admin',
+      systemAccountFilterId: grantee.id
+    }),
+    '管理员显式选择被授权者 scope 后仍应读取授权实例高级投影'
+  )
   const authorizedResponse = await fetch(`${baseUrl}/accounts/${authorizedInstance.id}/advanced`)
   assert.equal(authorizedResponse.status, 200, '授权实例高级编辑应返回只读投影')
   const authorizedPayload = await authorizedResponse.json() as { data?: Record<string, unknown> }

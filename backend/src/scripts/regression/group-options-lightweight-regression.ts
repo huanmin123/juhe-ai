@@ -64,6 +64,13 @@ interface GroupOptionSummary {
   accountStats?: unknown
 }
 
+interface RouteStrategyGroupOption {
+  id: string
+  name: string
+  providerCode: string
+  enabled: boolean
+}
+
 interface GroupListResult {
   items: Array<GroupOptionSummary & {
     accessType?: string
@@ -124,6 +131,14 @@ try {
   const expandedAuthorizedTarget = expandedAdminOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
   assert.equal(expandedAuthorizedTarget?.permissions?.canBindToApiKey, true, '账户用途分组选项应标记授权分组可绑定 API Key')
 
+  const routeStrategyOptions = await getEnvelope<RouteStrategyGroupOption[]>(baseUrl, `/__aisys__/api/groups/route-strategy-options?systemAccountId=${seed.userId}`, seed.adminCookie)
+  const routeStrategyTarget = routeStrategyOptions.find((group) => group.id === seed.userGroupId)
+  assert(routeStrategyTarget, '策略路由分组选项应包含目标用户自有分组')
+  assert.deepEqual(Object.keys(routeStrategyTarget).sort(), ['enabled', 'id', 'name', 'providerCode'], '策略路由分组选项必须只返回路由表单所需字段')
+  assert.equal(routeStrategyTarget.providerCode, 'gpt', '策略路由分组选项必须返回模型作用域所需供应商编码')
+  assert.equal(routeStrategyTarget.enabled, true, '策略路由分组选项必须返回分组可用状态')
+  assert(routeStrategyOptions.some((group) => group.id === seed.adminAuthorizedGroupId), '策略路由分组选项必须包含当前调用方可使用的授权分组')
+
   const userOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/my-groups/options?systemAccountId=sys_admin`, seed.userCookie)
   assert.equal(userOptions.some((group) => group.id === seed.userGroupId), true, '用户侧分组选项应包含当前用户分组')
   const userTargetOption = userOptions.find((group) => group.id === seed.userGroupId)
@@ -133,6 +148,12 @@ try {
   const userAuthorizedOption = userOptions.find((group) => group.id === seed.adminAuthorizedGroupId)
   assert(userAuthorizedOption, '用户侧普通分组选项应保留已授权给当前用户的分组')
   assert.deepEqual(Object.keys(userAuthorizedOption).sort(), ['id', 'name'], '用户侧授权分组默认选项必须只返回 id/name')
+
+  const userRouteStrategyOptions = await getEnvelope<RouteStrategyGroupOption[]>(baseUrl, '/__aisys__/api/my-groups/route-strategy-options?systemAccountId=sys_admin', seed.userCookie)
+  const userRouteStrategyTarget = userRouteStrategyOptions.find((group) => group.id === seed.userGroupId)
+  assert(userRouteStrategyTarget, '用户侧策略路由分组选项应强制返回当前用户分组')
+  assert.deepEqual(Object.keys(userRouteStrategyTarget).sort(), ['enabled', 'id', 'name', 'providerCode'], '用户侧策略路由分组选项也必须保持最小契约')
+  assert(userRouteStrategyOptions.some((group) => group.id === seed.adminAuthorizedGroupId), '用户侧策略路由分组选项必须保留可用授权分组')
 
   const accountOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, '/__aisys__/api/my-groups/account-options', seed.userCookie)
   const accountTargetOption = accountOptions.find((group) => group.id === seed.userGroupId)
@@ -190,6 +211,16 @@ try {
     assert.equal(providerOptions.every((group) => group.providerCode === 'gpt'), true, '供应商分组选项必须按 providerCode 精确过滤')
     assert(!providerOptions.some((group) => group.id === seed.otherProviderGroupId), '供应商分组选项不应混入其他供应商分组')
     assert(!providerOptions.some((group) => group.id === seed.adminAuthorizedGroupId), 'manageableOnly 应排除被授权分组，账户绑定下拉只能展示自有可管理分组')
+
+    const routeStrategyCallStart = capturedCalls.length
+    const routeStrategyWindow = await getEnvelope<RouteStrategyGroupOption[]>(baseUrl, `/__aisys__/api/groups/route-strategy-options?systemAccountId=${seed.userId}&limit=20`, seed.adminCookie)
+    assert(routeStrategyWindow.length > 0, '策略路由分组选项应返回有界候选窗口')
+    const routeStrategyCalls = capturedCalls.slice(routeStrategyCallStart)
+    assert(routeStrategyCalls.length > 0, '策略路由分组选项应直接执行最小投影查询')
+    for (const call of routeStrategyCalls) {
+      assert(!/\bdescription\b|\bscheduling_policy_json\b|\bauthorization_limits_json\b/i.test(call.sql), '策略路由分组选项 SQL 不得读取表单不消费的宽字段')
+      assert.match(call.sql, /SELECT\s+(?:groups\.)?id,\s*(?:groups\.)?name,\s*(?:groups\.)?provider_code,\s*(?:groups\.)?enabled/i, '策略路由分组选项 SQL 必须收窄到专用投影')
+    }
   } finally {
     database.prepare = originalPrepare
   }
@@ -213,7 +244,7 @@ try {
   assert.equal(adminAuthorizedListItem.authorizationSourceSummary?.hasTeam, true, '分组列表必须保留团队授权来源摘要')
   assert.deepEqual(adminAuthorizedListItem.authorizationSourceSummary?.teamNames, ['分组选项团队'], '分组列表团队来源摘要必须保留团队名称')
 
-  console.log('分组选项轻量回归通过：options/account-options 接口不读取统计结果库统计，关键词仅支持精确/前缀匹配，账户表单分组候选按供应商和可管理范围小窗口返回')
+  console.log('分组选项轻量回归通过：通用、账户与策略路由 options 均使用用途专属投影，关键词仅支持精确/前缀匹配')
 } finally {
   await closeServer(server)
   try {

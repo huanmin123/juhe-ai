@@ -30,7 +30,7 @@ type CacheInvalidationMetadata = {
 type CacheInvalidationHandler = (metadata?: CacheInvalidationMetadata) => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
 type GatewayApiKeyValidationServerInvalidator = (
-  apiKeyId: string,
+  apiKeyId: string | undefined,
   keyHashes: readonly string[]
 ) => Promise<void>
 type GatewayCacheInvalidationTopic =
@@ -128,7 +128,7 @@ export async function notifyGatewayRuntimeCacheInvalidationAsync(reason: string)
 }
 
 export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
-  apiKeyId: string,
+  apiKeyId: string | undefined,
   reason: string,
   keyHashes: readonly string[] = []
 ): Promise<void> {
@@ -159,12 +159,15 @@ export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
   if (
     runtimeConfig.runtimeStateDriver !== 'redis'
     && runtimeConfig.processRole === 'db-service'
-    && gatewayApiKeyValidationServerInvalidator
   ) {
-    try {
-      await gatewayApiKeyValidationServerInvalidator(apiKeyId, keyHashes)
-    } catch (error) {
-      errors.push(error)
+    if (!gatewayApiKeyValidationServerInvalidator) {
+      errors.push(new Error('gateway_api_key_validation_cache server 失效发布器未注册'))
+    } else {
+      try {
+        await gatewayApiKeyValidationServerInvalidator(apiKeyId, keyHashes)
+      } catch (error) {
+        errors.push(error)
+      }
     }
   }
   if (errors.length > 0) {
@@ -173,7 +176,7 @@ export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
 }
 
 export async function applyGatewayApiKeyValidationCacheInvalidationFromIpcAsync(
-  apiKeyId: string,
+  apiKeyId: string | undefined,
   keyHashes: readonly string[] = []
 ): Promise<void> {
   const applied = await runCacheInvalidatorsAsync(

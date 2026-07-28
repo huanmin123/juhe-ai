@@ -27,7 +27,10 @@ import type {
   RouteStrategySummary
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import {
+  notifyGatewayApiKeyValidationCacheInvalidationAsync,
+  notifyGatewayRuntimeCacheInvalidation
+} from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, buildSystemAccountScopeClause, buildSystemAccountWhereClause, type AccessScope } from './access-scope.js'
 import { canManageApiKeyOwner } from './api-key-access.js'
 import { maxRouteStrategyGroupBindings } from './route-strategy-group-binding-limits.js'
@@ -76,6 +79,14 @@ export type RouteStrategyMutableField =
   | 'groupBindings'
   | 'normalRoutingConfig'
   | 'hybridRoutingConfig'
+
+const routeStrategyGatewayRuntimeFields = new Set<RouteStrategyMutableField>([
+  'mode',
+  'status',
+  'groupBindings',
+  'normalRoutingConfig',
+  'hybridRoutingConfig'
+])
 
 export interface RouteStrategyMutationRowPatch {
   name?: string
@@ -642,7 +653,7 @@ export function patchRouteStrategy(id: string, input: Record<string, unknown>, a
     }
     throw error
   }
-  if (outcome?.result.changedFields.length) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  if (routeStrategyGatewayRuntimeChanged(outcome)) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
   return outcome
 }
 
@@ -692,8 +703,15 @@ export async function patchRouteStrategyAsync(id: string, input: Record<string, 
     }
     throw error
   }
-  if (outcome?.result.changedFields.length) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  if (routeStrategyGatewayRuntimeChanged(outcome)) {
+    notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+    await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, 'route_strategy_updated')
+  }
   return outcome
+}
+
+function routeStrategyGatewayRuntimeChanged(outcome: RouteStrategyPatchOutcome | undefined): boolean {
+  return outcome?.result.changedFields.some((field) => routeStrategyGatewayRuntimeFields.has(field)) ?? false
 }
 
 export function deleteRouteStrategy(id: string, access?: AccessScope): boolean {

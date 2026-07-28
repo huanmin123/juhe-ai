@@ -414,6 +414,7 @@ export interface AccountListItem {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   providerCode: ProviderCode
+  providerName?: string
   providerProtocolProfileId?: string
   protocolCode?: string
   protocolVersion?: string

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://juhe-ai.local/schemas/owner-manifest-v2.json",
-  "title": "juhe-ai route owner manifest",
+  "$id": "https://juhe-ai.local/schemas/owner-manifest-v3.json",
+  "title": "juhe-ai route and worker owner manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,10 +10,11 @@
     "release",
     "routeOwners",
     "rollbackRouteOwners",
-    "routeAllowlist"
+    "routeAllowlist",
+    "workerAllowlist"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 3 },
     "deploymentEpoch": { "type": "string", "minLength": 1 },
     "release": {
       "type": "object",
@@ -31,6 +32,11 @@
       "type": "array",
       "maxItems": 2048,
       "items": { "$ref": "#/$defs/route" }
+    },
+    "workerAllowlist": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/workerJob" }
     }
   },
   "$defs": {
@@ -54,6 +60,16 @@
         "surface": { "enum": ["management", "public", "gateway"] },
         "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] },
         "path": { "type": "string", "pattern": "^/" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "rollbackOwner": { "$ref": "#/$defs/owner" }
+      }
+    },
+    "workerJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job", "owner", "rollbackOwner"],
+      "properties": {
+        "job": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
         "owner": { "$ref": "#/$defs/owner" },
         "rollbackOwner": { "$ref": "#/$defs/owner" }
       }

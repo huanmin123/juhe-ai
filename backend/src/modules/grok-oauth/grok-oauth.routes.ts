@@ -342,12 +342,9 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
     const proxyUrl = await resolveProxyUrlForProfileAsync(parsed.data.proxyProfileId)
     const results = await mapWithConcurrency(tokens, 3, async (ssoToken, zeroBasedIndex) => {
       const index = zeroBasedIndex + 1
-      let name: string | undefined
-      let email: string | undefined
       try {
         const tokenInfo = await exchangeGrokSSOToken({ ssoToken, proxyUrl, signal: abortController.signal })
-        email = tokenInfo.email
-        name = grokSSOImportAccountName(parsed.data.name, tokenInfo, index, tokens.length)
+        const name = grokSSOImportAccountName(parsed.data.name, tokenInfo, index, tokens.length)
         const accountExpiresAt = grokSSOImportAccountExpiresAt(parsed.data.accountExpiresAt, tokenInfo)
         const accountInput = { ...parsed.data, name, accountExpiresAt }
         const account = await createGrokOAuthAccount(accountInput, providerProfile, tokenInfo, requestAccess)
@@ -358,12 +355,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
         dispatchPendingAccountHealthCheck(account)
         return {
           created: true as const,
-          item: {
-            index,
-            name,
-            ...(tokenInfo.email ? { email: tokenInfo.email } : {}),
-            account: sanitizeAccountResponse(account)
-          }
+          item: { index }
         }
       } catch (error) {
         if (abortController.signal.aborted) throw error
@@ -377,8 +369,6 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
           created: false as const,
           item: {
             index,
-            ...(name ? { name } : {}),
-            ...(email ? { email } : {}),
             error: message
           }
         }
@@ -386,7 +376,7 @@ grokOAuthRouter.post('/sso-to-oauth', mutationGuard({
     }, abortController.signal)
     if (abortController.signal.aborted || res.writableEnded) return
     res.json(ok({
-      created: results.filter((result) => result.created).map((result) => result.item),
+      createdCount: results.filter((result) => result.created).length,
       failed: results.filter((result) => !result.created).map((result) => result.item)
     }))
   } catch (error) {

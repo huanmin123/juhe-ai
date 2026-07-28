@@ -3,8 +3,8 @@ import type { ListParams } from '../contracts'
 import { http, unwrap } from '../http'
 
 export interface GrokSsoImportResult {
-  created: Array<{ index: number; name: string; email?: string; account: AccountSummary }>
-  failed: Array<{ index: number; name?: string; email?: string; error: string }>
+  createdCount: number
+  failed: Array<{ index: number; error: string }>
 }
 
 export const grokOAuthApi = {

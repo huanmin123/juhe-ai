@@ -1,5 +1,9 @@
 # 计划目录
 
+- [PLAN-20260728T141710063Z](计划-20260728T141710063Z-Node管理接口按需读写后续分批治理.md)：承接账户主链路之外已取得证据的供应商模型、授权、响应策略、模型检测、批量账户、用量和日志等场景 DTO / 字段级 PATCH 分批治理；当前待排期。
+
+- [PLAN-20260728T141028099Z](计划-20260728T141028099Z-ResponsesReasoning判定扩展评估.md)：已关闭，不实施；正文标签、reasoning 不可见和语义完整性无法形成可靠硬证据，现有 Responses 硬协议检查继续保留。
+
 - [PLAN-20260728T132013724Z](计划-20260728T132013724Z-CodexReasoning完整性检测调研.md)：审计 OpenAI Codex reasoning 结构、流式生命周期与不可见边界，形成 Responses-only 检测、拦截和模型探针方案。
 
 - [PLAN-20260728T183036249Z](计划-20260728T183036249Z-Node提交审查问题修复与网关验收.md)：修复当天 Node/Vue 提交审查确认的 9 个问题，并完成网关核心链路与隔离本地启动、页面访问验收。
@@ -8,7 +12,7 @@
 
 - [PLAN-20260727T213120104Z](计划-20260727T213120104Z-四供应商OAuth模拟上游E2E与协议复核.md)：为 Node 后端建立 OpenAI、Anthropic、Gemini、Grok 严格本地 OAuth 模拟上游 E2E，并按成熟参考实现复核绑定、刷新和首次请求细节。
 
-- [PLAN-20260727T183737351Z](计划-20260727T183737351Z-Node管理接口按需读写重构.md)：仅针对 Node + Vue（Go 未触碰），从“我的 AI 账户”开始落实场景 DTO、交互按需 options、登录后默认资源引用缓存和字段级 PATCH，并治理 API Key 与其他管理页同类问题。
+- [PLAN-20260727T183737351Z](计划-20260727T183737351Z-Node管理接口按需读写重构.md)：仅针对 Node + Vue（本计划不包含 Go），从“我的 AI 账户”开始落实场景 DTO、交互按需 options、登录后默认资源引用缓存和字段级 PATCH，并治理 API Key 与其他管理页同类问题。
 
 - [PLAN-20260727T174540632Z](计划-20260727T174540632Z-Gemini与GrokOAuth完整补全.md)：补齐 Gemini `ai_studio` / `code_assist` / `google_one` OAuth、Code Assist runtime 与 Grok OAuth / SSO device flow。
 

@@ -1,5 +1,7 @@
 # Codex Reasoning 完整性检测设计
 
+> 状态：方案评估完成，2026-07-28 决定暂不扩展运行时拦截或模型检测。现有 Responses 硬协议检查继续保留；正文、reasoning 可见性和语义启发式不进入自动处罚。
+
 ## 1. 目标与非目标
 
 本设计只处理 Codex 客户端经过 OpenAI Responses 协议时的请求历史 reasoning 结构、响应 reasoning 生命周期和响应终态，不扩散到 Chat Completions、Anthropic Messages、Gemini 或未知协议。
@@ -98,9 +100,29 @@ reasoning 不能被“修复”为人工生成的 summary、content、encrypted 
 - 不在生产热路径运行文本语义模型、句子完整性分析或第二次 LLM 审查。
 - Chat Completions、Anthropic、Gemini 和未知协议不创建本状态机，不改变其成功、失败或切号语义。
 
-## 8. 实施顺序
+## 8. 当前决策：暂不实施扩展
 
-1. 先修正流式 `response.incomplete` 和非流式 `status=incomplete` 的失败语义。
-2. 在 `response.completed` 时核对未完成 identity 和最终 output。
-3. 为 reasoning 状态模型补 JSON、SSE、截断、encrypted-only 和 summary-none 回归。
-4. 再接入模型检测的三次稳定性探针与账户模型能力健康，不把启发式异常接入单次严格切号。
+本轮不新增 reasoning 正文判断、可见性评分、模型检测 reasoning 探针或基于这些信号的自动切号，原因如下：
+
+1. `<thinking>`、`[reasoning unavailable]` 等内容进入 `output_text` 后就是合法正文。用户提示、代码、日志或模型解释协议时都可能自然包含这些文本，关键词无法形成可靠证据。
+2. OpenAI Responses 允许没有 reasoning、空 summary、缺少 raw content 或只有 encrypted content。不可见不等于不完整，也不能证明底层模型被替换。
+3. reasoning 内容是否“想完了”、是否合理、是否循环属于语义质量问题，没有官方长度、校验和或完成标志。启发式阈值会随模型、effort、任务和服务版本漂移。
+4. 协议包装由上游服务或 bridge 产生。结构异常能证明链路不合格，但不能区分真实模型配错适配器和物理模型伪装，直接显示“假模型”会超过证据边界。
+5. 错误自动切号的代价高。正文误判会中断合法请求；语义提交后切号还会混合两个账户的输出，因此不能用弱信号驱动严格动作。
+6. 模型检测即使重复采样，也只能提高“能力异常”的置信度，不能消除专门适配探针、模型输出波动和 bridge 差异带来的歧义。
+
+继续保留的能力：
+
+- 已有 Responses envelope、item 字段、ID、事件阶段和明确 provenance 检查。
+- 已有确定性 ID 安全修复和严格模式提交边界。
+- 已有流缺少协议终态时的失败处理。
+- 模型检测现有的响应模型字段、工具调用、结构化输出、usage、行为和稳定性探针。
+
+明确不做：
+
+- 不扫描正文中的 `<thinking>`、`reasoning unavailable` 或相似关键词。
+- 不因 summary/content 缺失、encrypted-only 或 reasoning tokens 不可见而处罚账户。
+- 不把 reasoning 文本长度、句子完整度或逻辑质量接入严格拦截。
+- 不把单次协议或内容异常直接定性为“假模型”。
+
+只有 OpenAI 后续提供可验证的 reasoning 完成信号，或项目获得能够稳定区分正常/异常的多来源标注样本与可复现实证，才重新评估本扩展。

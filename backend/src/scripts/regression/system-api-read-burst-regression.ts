@@ -76,6 +76,8 @@ try {
       api_key: 'sk-system-api-read-burst',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
+    healthCheckModel: 'gpt-5.4-mini',
     groupId: group.id,
     status: 'active'
   }, access)

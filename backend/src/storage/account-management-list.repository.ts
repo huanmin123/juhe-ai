@@ -29,6 +29,7 @@ export type AccountManagementListBaseItem = Pick<AccountListItem,
   | 'ownerSystemAccountId'
   | 'ownerSystemAccountName'
   | 'providerCode'
+  | 'providerName'
   | 'providerProtocolProfileId'
   | 'protocolCode'
   | 'protocolVersion'
@@ -84,6 +85,7 @@ interface AccountManagementListRow {
   owner_system_account_id: string
   owner_system_account_name: string | null
   provider_code: ProviderCode
+  provider_name: string
   provider_protocol_profile_id: string
   protocol_code: string
   protocol_version: string
@@ -242,6 +244,7 @@ async function listAccountManagementItemsPageDirect(
       account_rows.config_revision,
       account_rows.system_account_id,
       account_rows.provider_code,
+      providers.name AS provider_name,
       account_rows.provider_protocol_profile_id,
       account_rows.protocol_code,
       account_rows.protocol_version,
@@ -310,6 +313,8 @@ async function listAccountManagementItemsPageDirect(
       )
     LEFT JOIN ${businessTable(client, 'proxy_profiles')} proxy_profiles
       ON proxy_profiles.id = COALESCE(account_rows.source_proxy_profile_id, account_rows.configured_proxy_profile_id)
+    LEFT JOIN ${businessTable(client, 'providers')} providers
+      ON providers.code = COALESCE(account_rows.source_provider_code, account_rows.provider_code)
     ${filters.clause}
     ${accountManagementListOrderClause(client, listOptions)}
     LIMIT ? OFFSET ?
@@ -381,6 +386,7 @@ function accountManagementListItemFromRow(
     ownerSystemAccountId: row.owner_system_account_id,
     ownerSystemAccountName: row.owner_system_account_name ?? undefined,
     providerCode,
+    providerName: row.provider_name,
     providerProtocolProfileId,
     protocolCode,
     protocolVersion,

@@ -154,6 +154,7 @@ Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
 Write-Host 'The Web/API process will supervise separate background worker and DB service processes.'
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
 if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
+  $ownerManifestPath = [System.IO.Path]::GetFullPath((Join-Path $appDir 'deploy/owner-manifest.json'))
   $manifestEpoch = node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)"
   if ($LASTEXITCODE -ne 0 -or -not $manifestEpoch) { throw 'Unable to read deploy/owner-manifest.json deploymentEpoch.' }
   node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
@@ -168,6 +169,8 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   if ($LASTEXITCODE -ne 0 -or -not $nodeVersion) { throw 'Unable to read Node release version.' }
   node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion deploy/owner-manifest.json
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $env:JUHE_AI_OWNER_MANIFEST_PATH = $ownerManifestPath
+  $env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH = $ownerLockEpoch
   $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   $PSNativeCommandUseErrorActionPreference = $false
   try {

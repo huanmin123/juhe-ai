@@ -59,7 +59,8 @@ type workerOwnerManifest struct {
 		Gateway    string `json:"gateway"`
 		Worker     string `json:"worker"`
 	} `json:"rollbackRouteOwners"`
-	RouteAllowlist []workerOwnerRoute `json:"routeAllowlist"`
+	RouteAllowlist  []workerOwnerRoute `json:"routeAllowlist"`
+	WorkerAllowlist []workerOwnerJob   `json:"workerAllowlist"`
 }
 
 type workerOwnerRoute struct {
@@ -70,10 +71,17 @@ type workerOwnerRoute struct {
 	RollbackOwner string `json:"rollbackOwner"`
 }
 
+type workerOwnerJob struct {
+	Job           string `json:"job"`
+	Owner         string `json:"owner"`
+	RollbackOwner string `json:"rollbackOwner"`
+}
+
 var (
 	workerOwnerParameterSegmentPattern       = regexp.MustCompile(`^\{([A-Za-z][A-Za-z0-9_]*)\}$`)
 	workerOwnerActionParameterSegmentPattern = regexp.MustCompile(`^\{([A-Za-z][A-Za-z0-9_]*)\}(:[A-Za-z][A-Za-z0-9._~-]*)$`)
 	workerOwnerLiteralSegmentPattern         = regexp.MustCompile(`^[A-Za-z0-9._~:-]+$`)
+	workerOwnerJobPattern                    = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 )
 
 func RunWorkerWithRuntimeGate(
@@ -195,8 +203,8 @@ func readWorkerOwnerManifest(path string) (workerOwnerManifest, error) {
 }
 
 func validateWorkerOwnerManifest(manifest workerOwnerManifest, cfg config.Config) error {
-	if manifest.SchemaVersion != 2 {
-		return fmt.Errorf("worker owner manifest schemaVersion must be 2")
+	if manifest.SchemaVersion != 2 && manifest.SchemaVersion != 3 {
+		return fmt.Errorf("worker owner manifest schemaVersion must be 2 or 3")
 	}
 	if strings.TrimSpace(manifest.DeploymentEpoch) == "" {
 		return fmt.Errorf("worker owner manifest deployment epoch must be non-empty")
@@ -206,9 +214,6 @@ func validateWorkerOwnerManifest(manifest workerOwnerManifest, cfg config.Config
 	}
 	if strings.TrimSpace(manifest.Release.NodeVersion) == "" {
 		return fmt.Errorf("worker owner manifest Node version must be non-empty")
-	}
-	if manifest.RouteOwners.Worker != "go" {
-		return fmt.Errorf("worker owner manifest must declare routeOwners.worker=go")
 	}
 	if manifest.Release.GoVersion != version.Version {
 		return fmt.Errorf("worker owner manifest Go version must be %s", version.Version)
@@ -224,6 +229,44 @@ func validateWorkerOwnerManifest(manifest workerOwnerManifest, cfg config.Config
 	}
 	if manifest.RouteAllowlist == nil {
 		return fmt.Errorf("worker owner manifest routeAllowlist is required")
+	}
+	if manifest.SchemaVersion == 2 && manifest.WorkerAllowlist != nil {
+		return fmt.Errorf("worker owner manifest schemaVersion 2 must not declare workerAllowlist")
+	}
+	workerOwner := manifest.RouteOwners.Worker
+	workerName := strings.TrimSpace(cfg.WorkerName)
+	if manifest.SchemaVersion == 3 {
+		if manifest.WorkerAllowlist == nil {
+			return fmt.Errorf("worker owner manifest workerAllowlist is required")
+		}
+		if workerName == "" || !workerOwnerJobPattern.MatchString(workerName) {
+			return fmt.Errorf("Go worker name is required for owner manifest schemaVersion 3")
+		}
+		if len(manifest.WorkerAllowlist) > 256 {
+			return fmt.Errorf("worker owner manifest workerAllowlist must contain at most 256 jobs")
+		}
+		seenJobs := make(map[string]struct{}, len(manifest.WorkerAllowlist))
+		for index, job := range manifest.WorkerAllowlist {
+			if !workerOwnerJobPattern.MatchString(job.Job) {
+				return fmt.Errorf("worker owner manifest workerAllowlist[%d].job is invalid", index)
+			}
+			if _, exists := seenJobs[job.Job]; exists {
+				return fmt.Errorf("worker owner manifest workerAllowlist contains duplicate job %q", job.Job)
+			}
+			seenJobs[job.Job] = struct{}{}
+			if (job.Owner != "node" && job.Owner != "go") || (job.RollbackOwner != "node" && job.RollbackOwner != "go") || job.Owner == job.RollbackOwner {
+				return fmt.Errorf("worker owner manifest workerAllowlist[%d] owner and rollbackOwner must be different node/go values", index)
+			}
+			if job.Job == workerName {
+				workerOwner = job.Owner
+			}
+		}
+	}
+	if workerOwner != "go" {
+		if manifest.SchemaVersion == 3 {
+			return fmt.Errorf("worker owner manifest must assign worker job %s to go", workerName)
+		}
+		return fmt.Errorf("worker owner manifest must declare routeOwners.worker=go")
 	}
 	if len(manifest.RouteAllowlist) > 2048 {
 		return fmt.Errorf("worker owner manifest routeAllowlist must contain at most 2048 routes")

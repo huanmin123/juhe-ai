@@ -180,6 +180,102 @@ func TestRunWorkerWithRuntimeGateRejectsManifestMismatchBeforeLock(t *testing.T)
 	}
 }
 
+func TestRunWorkerWithRuntimeGateAcceptsSchemaThreeExactJobOwner(t *testing.T) {
+	cfg := enabledWorkerGateConfig(t)
+	cfg.WorkerName = "cooldown-account-retest"
+	manifest := validWorkerOwnerManifest(cfg)
+	manifest.SchemaVersion = 3
+	manifest.RouteOwners.Worker = "node"
+	manifest.WorkerAllowlist = []workerOwnerJob{{
+		Job:           cfg.WorkerName,
+		Owner:         "go",
+		RollbackOwner: "node",
+	}}
+
+	runnerCalled := false
+	err := runWorkerWithRuntimeGate(t.Context(), cfg, nil, func(context.Context) error {
+		runnerCalled = true
+		return nil
+	}, workerRuntimeGateDependencies{
+		readManifest: func(string) (workerOwnerManifest, error) { return manifest, nil },
+		acquire: func(string, ownerlock.Metadata) (workerRuntimeLock, error) {
+			return &fakeWorkerRuntimeLock{}, nil
+		},
+		openStore: func(context.Context, string) (workerRuntimeSchemaStore, error) {
+			return &fakeWorkerRuntimeSchemaStore{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWorkerWithRuntimeGate() error = %v", err)
+	}
+	if !runnerCalled {
+		t.Fatal("runner was not called for exact Go-owned worker job")
+	}
+}
+
+func TestRunWorkerWithRuntimeGateSchemaThreeFallsBackToGlobalWorkerOwner(t *testing.T) {
+	cfg := enabledWorkerGateConfig(t)
+	cfg.WorkerName = "account-test"
+	manifest := validWorkerOwnerManifest(cfg)
+	manifest.SchemaVersion = 3
+	manifest.RouteOwners.Worker = "node"
+	manifest.WorkerAllowlist = []workerOwnerJob{{
+		Job:           "cooldown-account-retest",
+		Owner:         "go",
+		RollbackOwner: "node",
+	}}
+
+	err := runWorkerWithRuntimeGate(t.Context(), cfg, nil, func(context.Context) error {
+		t.Fatal("runner called for a Node-owned fallback worker job")
+		return nil
+	}, workerRuntimeGateDependencies{
+		readManifest: func(string) (workerOwnerManifest, error) { return manifest, nil },
+		acquire: func(string, ownerlock.Metadata) (workerRuntimeLock, error) {
+			t.Fatal("owner lock acquired for a Node-owned fallback worker job")
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "assign worker job account-test to go") {
+		t.Fatalf("runWorkerWithRuntimeGate() error = %v, want exact job owner rejection", err)
+	}
+}
+
+func TestValidateWorkerOwnerManifestRejectsInvalidSchemaThreeWorkerAllowlist(t *testing.T) {
+	cfg := enabledWorkerGateConfig(t)
+	cfg.WorkerName = "cooldown-account-retest"
+	tests := []struct {
+		name string
+		edit func(*workerOwnerManifest)
+		want string
+	}{
+		{name: "missing allowlist", edit: func(manifest *workerOwnerManifest) { manifest.WorkerAllowlist = nil }, want: "workerAllowlist is required"},
+		{name: "missing worker name", edit: func(*workerOwnerManifest) {}, want: "worker name is required"},
+		{name: "invalid job", edit: func(manifest *workerOwnerManifest) { manifest.WorkerAllowlist[0].Job = "Cooldown_Account" }, want: ".job is invalid"},
+		{name: "duplicate job", edit: func(manifest *workerOwnerManifest) {
+			manifest.WorkerAllowlist = append(manifest.WorkerAllowlist, manifest.WorkerAllowlist[0])
+		}, want: "duplicate job"},
+		{name: "same rollback owner", edit: func(manifest *workerOwnerManifest) { manifest.WorkerAllowlist[0].RollbackOwner = "go" }, want: "different node/go values"},
+		{name: "oversized allowlist", edit: func(manifest *workerOwnerManifest) { manifest.WorkerAllowlist = make([]workerOwnerJob, 257) }, want: "at most 256"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			caseCfg := cfg
+			manifest := validWorkerOwnerManifest(caseCfg)
+			manifest.SchemaVersion = 3
+			manifest.RouteOwners.Worker = "node"
+			manifest.WorkerAllowlist = []workerOwnerJob{{Job: caseCfg.WorkerName, Owner: "go", RollbackOwner: "node"}}
+			test.edit(&manifest)
+			if test.name == "missing worker name" {
+				caseCfg.WorkerName = ""
+			}
+			err := validateWorkerOwnerManifest(manifest, caseCfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateWorkerOwnerManifest() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testing.T) {
 	cfg := enabledWorkerGateConfig(t)
 	var calls []string

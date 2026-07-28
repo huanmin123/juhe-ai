@@ -13,10 +13,14 @@ const MIGRATION_FILENAME_PATTERN = /^([0-9]{6})_[a-z0-9_]+\.sql$/
 export const CURRENT_SCHEMA_VERSION = 92
 const ALLOWED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const MAX_EXACT_ROUTES = 2048
+const MAX_WORKER_JOBS = 256
 const LEGACY_FIELDS = ['deploymentEpoch', 'release', 'routeOwners', 'schemaVersion']
-const CURRENT_FIELDS = [...LEGACY_FIELDS, 'rollbackRouteOwners', 'routeAllowlist']
+const V2_FIELDS = [...LEGACY_FIELDS, 'rollbackRouteOwners', 'routeAllowlist']
+const CURRENT_FIELDS = [...V2_FIELDS, 'workerAllowlist']
 const RELEASE_FIELDS = ['goVersion', 'nodeVersion', 'schemaVersion']
 const ROUTE_FIELDS = ['method', 'owner', 'path', 'rollbackOwner', 'surface']
+const WORKER_JOB_FIELDS = ['job', 'owner', 'rollbackOwner']
+const WORKER_JOB_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 export class OwnerManifestValidationError extends Error {
   constructor(message) {
@@ -195,12 +199,37 @@ function validateRouteAllowlist(routeAllowlist) {
   }
 }
 
+function validateWorkerAllowlist(workerAllowlist) {
+  if (!Array.isArray(workerAllowlist)) fail('workerAllowlist must be an array')
+  if (workerAllowlist.length > MAX_WORKER_JOBS) {
+    fail(`workerAllowlist must contain at most ${MAX_WORKER_JOBS} jobs`)
+  }
+
+  const seenJobs = new Set()
+  for (const [index, workerJob] of workerAllowlist.entries()) {
+    const label = `workerAllowlist[${index}]`
+    if (!isRecord(workerJob)) fail(`${label} must be an object`)
+    requireExactFields(workerJob, WORKER_JOB_FIELDS, label)
+    if (typeof workerJob.job !== 'string' || !WORKER_JOB_PATTERN.test(workerJob.job)) {
+      fail(`${label}.job must be a lowercase kebab-case job name`)
+    }
+    if (seenJobs.has(workerJob.job)) fail(`workerAllowlist contains duplicate job ${JSON.stringify(workerJob.job)}`)
+    seenJobs.add(workerJob.job)
+    if (!ALLOWED_OWNERS.has(workerJob.owner)) fail(`${label}.owner must be node or go`)
+    if (!ALLOWED_OWNERS.has(workerJob.rollbackOwner)) fail(`${label}.rollbackOwner must be node or go`)
+    if (workerJob.owner === workerJob.rollbackOwner) fail(`${label}.owner and rollbackOwner must differ`)
+  }
+}
+
 export function validateOwnerManifest(manifest) {
   if (!isRecord(manifest)) fail('manifest must be an object')
-  if (manifest.schemaVersion !== 1 && manifest.schemaVersion !== 2) {
-    fail('schemaVersion must equal 1 or 2')
+  if (manifest.schemaVersion !== 1 && manifest.schemaVersion !== 2 && manifest.schemaVersion !== 3) {
+    fail('schemaVersion must equal 1, 2, or 3')
   }
-  requireExactFields(manifest, manifest.schemaVersion === 1 ? LEGACY_FIELDS : CURRENT_FIELDS, 'manifest')
+  const expectedFields = manifest.schemaVersion === 1
+    ? LEGACY_FIELDS
+    : manifest.schemaVersion === 2 ? V2_FIELDS : CURRENT_FIELDS
+  requireExactFields(manifest, expectedFields, 'manifest')
   requireNonEmptyString(manifest.deploymentEpoch, 'deploymentEpoch')
 
   if (!isRecord(manifest.release)) fail('release must be an object')
@@ -212,10 +241,11 @@ export function validateOwnerManifest(manifest) {
   }
 
   validateOwnerMap(manifest.routeOwners, 'routeOwners')
-  if (manifest.schemaVersion === 2) {
+  if (manifest.schemaVersion >= 2) {
     validateOwnerMap(manifest.rollbackRouteOwners, 'rollbackRouteOwners')
     validateRouteAllowlist(manifest.routeAllowlist)
   }
+  if (manifest.schemaVersion === 3) validateWorkerAllowlist(manifest.workerAllowlist)
   return manifest
 }
 
@@ -303,6 +333,9 @@ export function assertAllRoutesOwnedBy(manifest, owner) {
   for (const [index, route] of (manifest.routeAllowlist ?? []).entries()) {
     if (route.owner !== owner) fail(`routeAllowlist[${index}] is ${route.owner}, expected ${owner}`)
   }
+  for (const [index, workerJob] of (manifest.workerAllowlist ?? []).entries()) {
+    if (workerJob.owner !== owner) fail(`workerAllowlist[${index}] is ${workerJob.owner}, expected ${owner}`)
+  }
   return manifest
 }
 
@@ -355,9 +388,22 @@ export function resolveRouteOwner(manifest, request) {
   return fallbackOwner
 }
 
+export function resolveWorkerOwner(manifest, job) {
+  validateOwnerManifest(manifest)
+  if (typeof job !== 'string' || !WORKER_JOB_PATTERN.test(job)) {
+    fail('worker owner resolution requires a lowercase kebab-case job name')
+  }
+  for (const workerJob of manifest.workerAllowlist ?? []) {
+    if (workerJob.job === job) return workerJob.owner
+  }
+  return manifest.routeOwners.worker
+}
+
 export function createRollbackManifest(manifest, deploymentEpoch) {
   validateOwnerManifest(manifest)
-  if (manifest.schemaVersion !== 2) fail('automatic rollback requires schemaVersion 2')
+  if (manifest.schemaVersion !== 2 && manifest.schemaVersion !== 3) {
+    fail('automatic rollback requires schemaVersion 2 or 3')
+  }
   requireNonEmptyString(deploymentEpoch, 'rollback deploymentEpoch')
   if (deploymentEpoch === manifest.deploymentEpoch) {
     fail('rollback deploymentEpoch must be different from the active deploymentEpoch')
@@ -371,6 +417,13 @@ export function createRollbackManifest(manifest, deploymentEpoch) {
       ...route,
       owner: route.rollbackOwner,
       rollbackOwner: route.owner
+    }))
+  }
+  if (manifest.schemaVersion === 3) {
+    rollback.workerAllowlist = manifest.workerAllowlist.map(workerJob => ({
+      ...workerJob,
+      owner: workerJob.rollbackOwner,
+      rollbackOwner: workerJob.owner
     }))
   }
   return validateOwnerManifest(rollback)

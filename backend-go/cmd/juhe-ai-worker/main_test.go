@@ -75,11 +75,11 @@ func TestWorkerCommandsUseCapabilityAwareRuntimeGate(t *testing.T) {
 		newLogger: func(string, io.Writer) (*slog.Logger, error) {
 			return slog.New(slog.NewTextHandler(io.Discard, nil)), nil
 		},
-		runWithRuntimeGate: func(_ context.Context, _ config.Config, _ *slog.Logger, runner app.WorkerRunner) error {
+		runWithRuntimeGate: func(_ context.Context, cfg config.Config, _ *slog.Logger, runner app.WorkerRunner) error {
 			if runner == nil {
 				t.Fatal("runtime gate received nil runner")
 			}
-			gated = append(gated, "gate")
+			gated = append(gated, cfg.WorkerName)
 			return nil
 		},
 		runWithoutOwnerGate: func(_ context.Context, runner app.WorkerRunner) error {
@@ -115,6 +115,9 @@ func TestWorkerCommandsUseCapabilityAwareRuntimeGate(t *testing.T) {
 		if len(gated) != before+1 {
 			t.Fatalf("%s runtime gate calls = %d, want one additional call", name, len(gated)-before)
 		}
+		if gated[len(gated)-1] != name {
+			t.Fatalf("%s runtime gate worker name = %q", name, gated[len(gated)-1])
+		}
 	}
 
 	quotaCommand, _, err := root.Find([]string{"gateway-quota-snapshot-build"})
@@ -137,6 +140,9 @@ func TestWorkerCommandsUseCapabilityAwareRuntimeGate(t *testing.T) {
 	}
 	if len(gated) != beforeQuotaGate+1 || len(ungated) != 1 {
 		t.Fatalf("publishing snapshot gate calls = %d, ungated = %d", len(gated)-beforeQuotaGate, len(ungated))
+	}
+	if gated[len(gated)-1] != "gateway-quota-snapshot-build" {
+		t.Fatalf("publishing snapshot worker name = %q", gated[len(gated)-1])
 	}
 
 	modelQualityCommand, _, err := root.Find([]string{"model-quality-health-sync"})
