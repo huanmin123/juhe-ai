@@ -42,7 +42,8 @@ const saveSource = sourceBetween(modalSource, "const saveApiKey = submitAction",
 assert.match(saveSource, /const modalSession = activeModalSession\.value[\s\S]*!isCurrentModalSession\(modalSession\)/, '保存前必须确认打开时会话仍属于当前 owner/scope')
 assert.match(saveSource, /const operationScopeParams = modalSessionScopeParams\(modalSession\)/, '保存作用域必须来自打开时不可变会话')
 assert.doesNotMatch(saveSource, /props\.scopeParams/, '保存不得读取可能已切换 owner 的实时 props scope')
-assert.equal((saveSource.match(/}, operationScopeParams\)/g) ?? []).length, 2, '编辑和新建都必须提交到会话捕获的 owner')
+assert.match(saveSource, /apiKeysApi\.update\([\s\S]*?operationScopeParams\)/, '编辑必须提交到会话捕获的 owner')
+assert.match(saveSource, /apiKeysApi\.create\([\s\S]*?operationScopeParams\)/, '新建必须提交到会话捕获的 owner')
 
 const optionsLoaderSource = sourceBetween(modalSource, 'async function loadRouteStrategyOptions', 'function routeStrategyOptionsRequestKey')
 assert.match(optionsLoaderSource, /const modalSession = activeModalSession\.value[\s\S]*!isCurrentModalSession\(modalSession\)/, '候选加载必须绑定一次弹窗会话')

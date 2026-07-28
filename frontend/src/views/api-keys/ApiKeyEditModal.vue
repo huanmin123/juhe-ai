@@ -84,6 +84,7 @@ import {
   type ApiKeyAvailabilityScheduleForm
 } from './apiKeyFormModel'
 import {
+  buildApiKeyCreatePayload,
   buildApiKeyMutationPatch,
   hasApiKeyMutationChanges,
   type ApiKeyEditableSnapshot
@@ -270,17 +271,9 @@ const saveApiKey = submitAction('api_keys.save', async () => {
       emit('updated', result)
       message.success('API Key 已更新')
     } else {
-      const result = await props.apiKeysApi.create({
-        name: snapshot.name,
-        ...(routeStrategyTouched.value && snapshot.routeStrategyId
-          ? { routeStrategyId: snapshot.routeStrategyId }
-          : {}),
-        status: snapshot.status,
-        expiresAt: snapshot.expiresAt ?? undefined,
-        description: snapshot.description,
-        quotaLimits: snapshot.quotaLimits,
-        availabilitySchedule: snapshot.availabilitySchedule
-      }, operationScopeParams)
+      const result = await props.apiKeysApi.create(buildApiKeyCreatePayload(snapshot, {
+        routeStrategyTouched: routeStrategyTouched.value
+      }), operationScopeParams)
       emit('created', {
         key: result.key,
         title: 'API Key 已创建',

@@ -6,6 +6,7 @@ import type {
   RouteStrategyStatus
 } from '../domain/types.js'
 import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
+import { normalizeRouteStrategyMode } from '../domain/route-strategy.js'
 import { runtimeConfig } from '../config/runtime.js'
 import {
   notifyGatewayApiKeyValidationCacheInvalidationAsync,
@@ -127,6 +128,20 @@ interface ApiKeyRefreshRow {
   updated_at: string
 }
 
+interface ApiKeyUpdateViewRow {
+  id: string
+  name: string
+  key_prefix: string
+  status: 'active' | 'disabled'
+  route_strategy_id: string
+  route_strategy_name: string | null
+  route_strategy_mode: unknown
+  route_strategy_status: unknown
+  expires_at: string | null
+  availability_schedule_json: string | null
+  updated_at: string
+}
+
 export interface ApiKeySecretRecord {
   id: string
   systemAccountId: string
@@ -154,6 +169,24 @@ export interface ApiKeyRefreshOutcome {
 }
 
 export type ApiKeyCreatedRecord = ApiKeySummary & { key: string; revision: string }
+
+export type ApiKeyUpdateView = Pick<
+  ApiKeySummary,
+  | 'id'
+  | 'name'
+  | 'keyPrefix'
+  | 'status'
+  | 'routeStrategyId'
+  | 'routeStrategyName'
+  | 'routeStrategyMode'
+  | 'routeStrategyStatus'
+  | 'expiresAt'
+  | 'availabilitySchedule'
+>
+
+interface ApiKeyUpdateSnapshot extends ApiKeyUpdateView {
+  revision: string
+}
 
 export type ApiKeyMutableField =
   | 'name'
@@ -870,31 +903,89 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   return findApiKeySummary(id, access) ?? next
 }
 
-export async function updateApiKeyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeySummary | undefined> {
+export async function updateApiKeyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<ApiKeyUpdateView | undefined> {
   assertKnownInputKeys(input, apiKeyMutationInputKeys, 'API Key 更新参数')
   const client = await getApiKeyDatabaseClient()
-  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
-  const revisionRow = await client.one<{ updated_at: string }>(`
-    SELECT ${apiKeyRevisionSelectExpression(client)}
-    FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    WHERE api_keys.id = ?${scope.clause}
-    LIMIT 1
-  `, [id, ...scope.params])
-  if (!revisionRow) return undefined
+  let snapshot = await findApiKeyUpdateSnapshotAsync(client, id, access)
+  if (!snapshot) return undefined
 
-  let revision = revisionRow.updated_at
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const outcome = await patchApiKeyAsync(id, input, revision, access)
+      const outcome = await patchApiKeyAsync(id, input, snapshot.revision, access)
       if (!outcome) return undefined
       if (outcome.validationCacheError) throw outcome.validationCacheError
-      return findApiKeySummaryAsync(id, access)
+      return applyApiKeyMutationRowPatch(snapshot, outcome.result.rowPatch)
     } catch (error) {
       if (!(error instanceof ApiKeyRevisionConflictError) || attempt === 2) throw error
-      revision = error.currentRevision
+      snapshot = await findApiKeyUpdateSnapshotAsync(client, id, access)
+      if (!snapshot) return undefined
     }
   }
   return undefined
+}
+
+async function findApiKeyUpdateSnapshotAsync(
+  client: DatabaseClient,
+  id: string,
+  access?: AccessScope
+): Promise<ApiKeyUpdateSnapshot | undefined> {
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
+  const row = await client.one<ApiKeyUpdateViewRow>(`
+    SELECT
+      api_keys.id,
+      api_keys.name,
+      api_keys.key_prefix,
+      api_keys.status,
+      api_keys.route_strategy_id,
+      route_strategies.name AS route_strategy_name,
+      route_strategies.mode AS route_strategy_mode,
+      route_strategies.status AS route_strategy_status,
+      api_keys.expires_at,
+      api_keys.availability_schedule_json,
+      ${apiKeyRevisionSelectExpression(client)}
+    FROM ${apiKeyTable(client, 'api_keys')} api_keys
+    INNER JOIN ${apiKeyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+    WHERE api_keys.id = ?${scope.clause}
+    LIMIT 1
+  `, [id, ...scope.params])
+  if (!row) return undefined
+  return {
+    id: row.id,
+    name: row.name,
+    keyPrefix: row.key_prefix,
+    status: row.status,
+    routeStrategyId: row.route_strategy_id,
+    routeStrategyName: row.route_strategy_name ?? undefined,
+    routeStrategyMode: normalizeRouteStrategyMode(row.route_strategy_mode),
+    routeStrategyStatus: row.route_strategy_status === 'active' || row.route_strategy_status === 'disabled'
+      ? row.route_strategy_status
+      : undefined,
+    expiresAt: row.expires_at ?? undefined,
+    availabilitySchedule: parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json),
+    revision: row.updated_at
+  }
+}
+
+function applyApiKeyMutationRowPatch(
+  snapshot: ApiKeyUpdateSnapshot,
+  patch: ApiKeyMutationRowPatch
+): ApiKeyUpdateView {
+  const { revision: _revision, ...current } = snapshot
+  return {
+    ...current,
+    name: patch.name ?? current.name,
+    status: patch.status ?? current.status,
+    routeStrategyId: patch.routeStrategyId ?? current.routeStrategyId,
+    routeStrategyName: patch.routeStrategyId ? patch.routeStrategyName : current.routeStrategyName,
+    routeStrategyMode: patch.routeStrategyId ? patch.routeStrategyMode : current.routeStrategyMode,
+    routeStrategyStatus: patch.routeStrategyId ? patch.routeStrategyStatus : current.routeStrategyStatus,
+    expiresAt: Object.hasOwn(patch, 'expiresAt') ? patch.expiresAt ?? undefined : current.expiresAt,
+    availabilitySchedule: Object.hasOwn(patch, 'availabilitySchedule')
+      ? patch.availabilitySchedule ?? undefined
+      : current.availabilitySchedule
+  }
 }
 
 function apiKeyPatchSelectColumns(client: DatabaseClient, input: Record<string, unknown>): string {

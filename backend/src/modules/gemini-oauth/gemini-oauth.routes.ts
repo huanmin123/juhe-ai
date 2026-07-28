@@ -269,7 +269,7 @@ geminiOAuthRouter.post('/create-from-code', mutationGuard({
       }
     }, req)
     dispatchPendingAccountHealthCheck(account)
-    res.status(201).json(ok(sanitizeAccountResponse(account)))
+    res.status(201).json(ok({ id: account.id, status: account.status }))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))
@@ -376,7 +376,7 @@ geminiOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       }
     }, req)
     dispatchPendingAccountHealthCheck(account)
-    res.status(201).json(ok(sanitizeAccountResponse(account)))
+    res.status(201).json(ok({ id: account.id, status: account.status }))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
       res.status(400).json(badRequest(error.message))

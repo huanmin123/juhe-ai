@@ -973,6 +973,7 @@ export interface AccountListItem {
   ownerSystemAccountId: string
   ownerSystemAccountName?: string
   providerCode: ProviderCode
+  providerName: string
   providerProtocolProfileId: string
   protocolCode: string
   protocolVersion: string
@@ -1606,6 +1607,11 @@ export interface GroupListPageResult extends Omit<GroupListResult, 'items'> {
 export interface GroupSelectOption {
   id: string
   name: string
+}
+
+export interface RouteStrategyGroupOption extends GroupSelectOption {
+  providerCode: string
+  enabled: boolean
 }
 
 export interface GroupAuthorizationOption extends GroupSelectOption {

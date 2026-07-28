@@ -334,7 +334,7 @@ async function createFixture(baseUrl: string, cookie: string, input: LoadConfig)
 async function warmup(baseUrl: string, cookie: string, fixture: LoadFixture, input: LoadConfig): Promise<void> {
   for (let index = 0; index < input.warmupRequests; index += 1) {
     const account = fixture.accounts[index % fixture.accounts.length] ?? { id: fixture.accountId }
-    await getRaw(baseUrl, `/__aisys__/api/accounts/${account.id}`, cookie, input.requestTimeoutMs)
+    await getRaw(baseUrl, `/__aisys__/api/accounts/${account.id}/edit-basic`, cookie, input.requestTimeoutMs)
   }
 }
 
@@ -411,7 +411,7 @@ async function runWorkers(
       { name: 'GET /groups/options', path: '/__aisys__/api/groups/options?providerCode=gpt&limit=20' },
       { name: 'GET /my-accounts', path: `/__aisys__/api/my-accounts?page=1&pageSize=20&groupId=${encodeURIComponent(loadFixture.groupId)}&status=active&sorts=priority:asc` },
       { name: 'GET /accounts', path: `/__aisys__/api/accounts?keyword=${encodeURIComponent(loadFixture.accountName)}&page=1&pageSize=20` },
-      { name: 'GET /accounts/:id', path: `/__aisys__/api/accounts/${readAccount.id}` },
+      { name: 'GET /accounts/:id/edit-basic', path: `/__aisys__/api/accounts/${readAccount.id}/edit-basic` },
       { name: 'GET /accounts/options', path: `/__aisys__/api/accounts/options?ids=${encodeURIComponent(readAccount.id)}&providerCode=gpt&limit=20` },
       { name: 'GET /my-route-strategies', path: '/__aisys__/api/my-route-strategies?page=1&pageSize=20&mode=all&status=all' },
       { name: 'GET /route-strategies', path: '/__aisys__/api/route-strategies?page=1&pageSize=20&mode=all&status=all' },

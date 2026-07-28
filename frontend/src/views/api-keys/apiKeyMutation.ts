@@ -16,6 +16,24 @@ export interface ApiKeyEditableSnapshot {
   availabilitySchedule: ApiKeyAvailabilitySchedule | null
 }
 
+export function buildApiKeyCreatePayload(
+  snapshot: ApiKeyEditableSnapshot,
+  options: { routeStrategyTouched: boolean }
+): ApiKeyMutationPayload {
+  const description = snapshot.description.trim()
+  return {
+    name: snapshot.name,
+    ...(options.routeStrategyTouched && snapshot.routeStrategyId
+      ? { routeStrategyId: snapshot.routeStrategyId }
+      : {}),
+    ...(snapshot.status === 'disabled' ? { status: snapshot.status } : {}),
+    ...(snapshot.expiresAt ? { expiresAt: snapshot.expiresAt } : {}),
+    ...(description ? { description } : {}),
+    ...(Object.keys(snapshot.quotaLimits).length ? { quotaLimits: snapshot.quotaLimits } : {}),
+    ...(snapshot.availabilitySchedule ? { availabilitySchedule: snapshot.availabilitySchedule } : {})
+  }
+}
+
 const editableFields = [
   'name',
   'routeStrategyId',

@@ -692,7 +692,7 @@ function handleDbServiceMessage(message: unknown): void {
       if (
         runtimeConfig.processRole === 'server'
         && typeof record.requestId === 'string'
-        && typeof record.apiKeyId === 'string'
+        && (record.apiKeyId === undefined || typeof record.apiKeyId === 'string')
         && Array.isArray(record.keyHashes)
       ) {
         void respondToGatewayApiKeyCacheInvalidationRequest(
@@ -974,10 +974,13 @@ function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServer
 }
 
 async function requestServerGatewayApiKeyCacheInvalidationAsync(
-  apiKeyId: string,
+  apiKeyId: string | undefined,
   keyHashes: readonly string[]
 ): Promise<void> {
-  if (runtimeConfig.processRole !== 'db-service' || !process.send) return
+  if (runtimeConfig.processRole !== 'db-service') return
+  if (!process.send) {
+    throw new Error('DB service API Key validation cache 失效 IPC 通道不可用')
+  }
   const requestId = randomUUID()
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1015,7 +1018,7 @@ function finishGatewayApiKeyCacheInvalidationRequest(
 
 async function respondToGatewayApiKeyCacheInvalidationRequest(
   requestId: string,
-  apiKeyId: string,
+  apiKeyId: string | undefined,
   keyHashes: readonly string[]
 ): Promise<void> {
   const child = dbServiceProcess

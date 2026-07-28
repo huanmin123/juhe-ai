@@ -35,6 +35,7 @@
             :options="providerOptions"
             placeholder="全部供应商"
             @change="handleProviderUpdate"
+            @dropdown-visible-change="emit('provider-dropdown', $event)"
           />
         </a-form-item>
         <a-form-item label="账户类型">
@@ -114,6 +115,7 @@
           :options="providerOptions"
           placeholder="全部供应商"
           @change="handleProviderUpdate"
+          @dropdown-visible-change="emit('provider-dropdown', $event)"
         />
       </label>
       <label class="mobile-filter-field">
@@ -236,6 +238,7 @@ const emit = defineEmits<{
   (event: 'group-dropdown', open: boolean): void
   (event: 'group-search', value: string): void
   (event: 'import'): void
+  (event: 'provider-dropdown', open: boolean): void
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'search'): void

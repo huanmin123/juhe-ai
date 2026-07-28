@@ -7,10 +7,13 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
 import { ensureChatApiKeyForSystemAccount, ensureChatApiKeyForSystemAccountAsync, ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
-import { clearGatewayApiKeyValidationCache, clearGatewayApiKeyValidationCacheAsync } from './gateway-api-key.repository.js'
+import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
-import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import {
+  notifyGatewayApiKeyValidationCacheInvalidationAsync,
+  notifyGatewayRuntimeCacheInvalidation
+} from '../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
@@ -708,8 +711,9 @@ export async function updateSystemAccountWithPasswordHashAsync(id: string, input
   }
   invalidateSystemAccountLookupCache(id)
   if (current && gatewayAccountRuntimeChanged(current, updated)) {
-    await clearGatewayApiKeyValidationCacheAsync()
-    notifyGatewayRuntimeCacheInvalidation(gatewayAccountRuntimeInvalidationReason(current, updated))
+    const reason = gatewayAccountRuntimeInvalidationReason(current, updated)
+    notifyGatewayRuntimeCacheInvalidation(reason)
+    await notifyGatewayApiKeyValidationCacheInvalidationAsync(undefined, reason)
   }
   return updated
 }

@@ -19,6 +19,7 @@ type GroupListParams = Parameters<typeof api.groups.listPage>[0]
 type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
 type GroupOptionParams = Parameters<typeof api.groups.options>[0]
+type RouteStrategyGroupOptionParams = Parameters<typeof api.groups.routeStrategyOptions>[0]
 type RouteStrategyListParams = Parameters<typeof api.routeStrategies.list>[0]
 type RouteStrategyMutationPayload = Parameters<typeof api.routeStrategies.create>[0]
 type RouteStrategyMutationScopeParams = Parameters<typeof api.routeStrategies.create>[1]
@@ -78,6 +79,9 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     options: (params?: GroupOptionParams) => isManagementView.value
       ? api.groups.options(params)
       : api.myGroups.options(params),
+    routeStrategyOptions: (params?: RouteStrategyGroupOptionParams) => isManagementView.value
+      ? api.groups.routeStrategyOptions(params)
+      : api.myGroups.routeStrategyOptions(params),
     create: (payload: GroupMutationPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.create(payload, params)
       : api.myGroups.create(payload),

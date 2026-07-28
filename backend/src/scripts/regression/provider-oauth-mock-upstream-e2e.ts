@@ -84,7 +84,7 @@ interface AuthUrlResponse {
 
 interface CreatedAccountResponse {
   id: string
-  providerCode: string
+  status: string
 }
 
 async function testSystemApiAccountBinding(): Promise<void> {
@@ -162,9 +162,10 @@ async function testSystemApiAccountBinding(): Promise<void> {
         temporaryUnavailableContinuousProbeEnabled: false,
         ...oauthFields
       })
-      assert.equal(created.providerCode, expectedProviderCode, `${route} 绑定后 providerCode`)
+      assert.deepEqual(Object.keys(created).sort(), ['id', 'status'], `${route} OAuth 创建响应只能返回后续提示所需字段`)
       const persisted = repositories.findAccountForTest(created.id, { systemAccountId: 'sys_admin', role: 'admin' })
       assert(persisted, `${route} OAuth 账户必须已落库`)
+      assert.equal(persisted.providerCode, expectedProviderCode, `${route} 绑定后 providerCode`)
       assert.equal(typeof persisted.credentials.access_token, 'string', `${route} OAuth 账户必须持久化 access_token`)
       assert.equal(typeof persisted.credentials.refresh_token, 'string', `${route} OAuth 账户必须持久化 refresh_token`)
       if (route === 'openai') assert.equal(persisted.credentials.account_id, 'chatgpt-account-mock')

@@ -96,7 +96,8 @@ try {
     }),
     cacheInvalidation.registerApiKeyQuotaCacheInvalidator((apiKeyId) => {
       quotaInvalidations.push(apiKeyId)
-    })
+    }),
+    cacheInvalidation.registerGatewayApiKeyValidationServerInvalidator(async () => undefined)
   )
 
   const initialBinding = quotaBinding(created.id)
@@ -459,7 +460,12 @@ function assertSourceContracts(): void {
 
   const legacyAsyncUpdateSource = sourceBetween(repositorySource, 'export async function updateApiKeyAsync(', 'export async function patchApiKeyAsync(')
   assert.match(legacyAsyncUpdateSource, /patchApiKeyAsync/, '生产异步兼容 writer 必须复用字段级 PATCH')
-  assert.doesNotMatch(legacyAsyncUpdateSource, /SET name|apiKeySummariesFromRowsAsync/, '异步兼容 writer 不得回退整行覆盖或写前完整物化')
+  assert.match(legacyAsyncUpdateSource, /findApiKeyUpdateSnapshotAsync/, '生产异步兼容 writer 应读取公开响应实际需要的窄快照')
+  assert.match(legacyAsyncUpdateSource, /applyApiKeyMutationRowPatch/, '生产异步兼容 writer 应在内存合并字段级 PATCH 回执')
+  assert.doesNotMatch(legacyAsyncUpdateSource, /SET name|findApiKeySummaryAsync|apiKeySummariesFromRowsAsync/, '异步兼容 writer 不得回退整行覆盖或完整摘要物化')
+  const updateSnapshotSource = sourceBetween(repositorySource, 'async function findApiKeyUpdateSnapshotAsync(', 'function applyApiKeyMutationRowPatch(')
+  assert.match(updateSnapshotSource, /api_keys\.key_prefix/, '公开更新回执窄快照应保留实际返回的 Key 前缀')
+  assert.doesNotMatch(updateSnapshotSource, /usage|quota_limits|description|key_suffix|system_accounts/, '公开更新回执不得读取未返回字段、用户关联或 usage')
 
   const revisionSource = sourceBetween(repositorySource, 'function apiKeyRevisionSelectExpression(', 'function apiKeyPageJoins(')
   assert.match(revisionSource, /return `\$\{tableAlias\}\.updated_at`/, 'revision 必须直接读取数据库 text 原值')

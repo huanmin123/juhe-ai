@@ -10,7 +10,7 @@ import type {
 import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
 import type { AccountBalanceQueryConfig } from '../modules/accounts/account-balance.types.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
-import type { AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -82,6 +82,7 @@ export async function findAccountAdvancedDetailAsync(
   const id = accountId.trim()
   if (!id) return undefined
   const client = await accountAdvancedDetailDatabaseClient()
+  const ownerScope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
   const row = await client.one<AccountAdvancedDetailRow>(`
     SELECT
       accounts.id,
@@ -124,8 +125,9 @@ export async function findAccountAdvancedDetailAsync(
       AND source_accounts.deleted_at IS NULL
     WHERE accounts.id = ?
       AND accounts.deleted_at IS NULL
+      ${ownerScope.clause}
     LIMIT 1
-  `, [nowIso(), id])
+  `, [nowIso(), id, ...ownerScope.params])
   if (!row || !canManageResourceOwner(row.system_account_id, access)) return undefined
   const authorized = Boolean(row.authorization_instance_authorization_id || row.authorization_instance_source_account_id)
   if (authorized && !row.active_authorization_id) return undefined
@@ -137,13 +139,16 @@ export async function findAccountAdvancedDetailAsync(
     WHERE account_id = ?
     ORDER BY source_model ASC, source_endpoint_family ASC
   `, [factAccountId])
+  const advancedCredentials = !authorized && row.credentials_encrypted
+    ? projectAdvancedEditableCredentials(decryptJson<AccountCredentials>(row.credentials_encrypted))
+    : undefined
 
   return {
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
     accessType: authorized ? 'authorized' : 'owner',
-    ...(!authorized && row.credentials_encrypted
-      ? { credentials: projectAdvancedEditableCredentials(decryptJson<AccountCredentials>(row.credentials_encrypted)) }
+    ...(advancedCredentials && Object.keys(advancedCredentials).length > 0
+      ? { credentials: advancedCredentials }
       : {}),
     modelMappings: mappingRows.map(accountAdvancedDetailMappingFromRow),
     proxyProfileId: (authorized ? row.source_proxy_profile_id : row.proxy_profile_id) ?? undefined,

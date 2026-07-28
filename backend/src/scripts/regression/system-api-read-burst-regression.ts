@@ -76,6 +76,8 @@ try {
       api_key: 'sk-system-api-read-burst',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.4-mini'],
+    healthCheckModel: 'gpt-5.4-mini',
     groupId: group.id,
     status: 'active'
   }, access)
@@ -122,7 +124,7 @@ try {
     '/__aisys__/api/auth/me',
     '/__aisys__/api/my-accounts?page=1&pageSize=20&sorts=priority:asc',
     '/__aisys__/api/accounts?page=1&pageSize=20&sorts=priority:asc',
-    `/__aisys__/api/accounts/${account.id}`,
+    `/__aisys__/api/accounts/${account.id}/edit-basic`,
     `/__aisys__/api/accounts/${account.id}/advanced`,
     '/__aisys__/api/accounts/options?limit=50',
     '/__aisys__/api/accounts/test-tasks?ids=missing_task',

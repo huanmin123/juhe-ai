@@ -9,6 +9,8 @@ import type { AccessScope } from '../../storage/access-scope.js'
 
 const fixtureAccountCount = 20
 const maxListResponseBytes = 64 * 1024
+const maxEditBasicResponseBytes = 8 * 1024
+const maxMutationResponseBytes = 1 * 1024
 const expectedListBusinessQueries = 4
 const expectedListStatsQueries = 1
 const expectedEditBusinessQueries = 3
@@ -39,6 +41,7 @@ const expectedListItemKeys = [
   'protocolCode',
   'protocolVersion',
   'providerCode',
+  'providerName',
   'providerProtocolProfileId',
   'schedulable',
   'status',
@@ -236,6 +239,12 @@ try {
   assert.equal(queryCalls(editCapture.calls, 'business').length, expectedEditBusinessQueries)
   assert.equal(queryCalls(editCapture.calls, 'stats').length, 0, 'edit-basic 不得访问统计库')
   assert.equal(dmlCalls(editCapture.calls).length, 0, 'edit-basic 必须是纯读取')
+  const editBasicResponse = wireValue({ data: editDetail })
+  const editBasicResponseBytes = Buffer.byteLength(JSON.stringify(editBasicResponse), 'utf8')
+  assert(
+    editBasicResponseBytes <= maxEditBasicResponseBytes,
+    `edit-basic 未压缩 JSON 必须不超过 ${maxEditBasicResponseBytes} 字节，实际 ${editBasicResponseBytes}`
+  )
 
   const noOpCapture = await captureSql(() => patchRepository.patchAccountManagementAsync(target.id, {
     expectedConfigRevision: editDetail.configRevision,
@@ -263,6 +272,12 @@ try {
     '单改备注的 UPDATE SET 只能包含备注、版本和更新时间'
   )
   assert.equal(queryCalls(patchCapture.calls, 'stats').length, 0, '单改备注不得访问统计库')
+  const mutationResponse = wireValue({ data: patchCapture.value })
+  const mutationResponseBytes = Buffer.byteLength(JSON.stringify(mutationResponse), 'utf8')
+  assert(
+    mutationResponseBytes <= maxMutationResponseBytes,
+    `单标量 PATCH mutation 未压缩 JSON 必须不超过 ${maxMutationResponseBytes} 字节，实际 ${mutationResponseBytes}`
+  )
   const stored = businessDatabase.prepare('SELECT notes, config_revision FROM accounts WHERE id = ?').get(target.id) as {
     notes?: string
     config_revision?: number
@@ -281,11 +296,12 @@ try {
     editBasic: {
       businessQueries: queryCalls(editCapture.calls, 'business').length,
       statsQueries: queryCalls(editCapture.calls, 'stats').length,
-      jsonBytes: Buffer.byteLength(JSON.stringify({ data: editDetail }), 'utf8'),
+      jsonBytes: editBasicResponseBytes,
       elapsedMs: roundedMilliseconds(editCapture.elapsedMs)
     },
     notesPatch: {
       updateSetColumns: accountUpdateSetColumns(patchDml[0]?.sql ?? ''),
+      jsonBytes: mutationResponseBytes,
       dmlCount: patchDml.length,
       relatedTableWrites: 0,
       noOpDmlCount: dmlCalls(noOpCapture.calls).length

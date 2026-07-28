@@ -71,6 +71,13 @@ export interface RouteStrategyGroupBindingSummary {
   groupEnabled: boolean
 }
 
+export interface RouteStrategyGroupOption {
+  id: string
+  name: string
+  providerCode: string
+  enabled: boolean
+}
+
 export interface RouteStrategySpeedFirstConfig {
   slowTriggerCount: number
   slowWindowSeconds: number

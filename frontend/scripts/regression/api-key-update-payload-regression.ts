@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 
 import type { ApiKeyMutationResult, ApiKeySummary } from '../../src/types/domain'
 import {
+  buildApiKeyCreatePayload,
   buildApiKeyMutationPatch,
   hasApiKeyMutationChanges,
   mergeApiKeyMutationResult,
@@ -49,6 +50,28 @@ const clearPatch = buildApiKeyMutationPatch(baseline, {
 })
 assert.deepEqual(clearPatch, { expiresAt: null, availabilitySchedule: null }, '清空可空字段必须显式发送 null')
 
+const defaultCreatePayload = buildApiKeyCreatePayload({
+  name: 'Key B',
+  routeStrategyId: 'route_default',
+  status: 'active',
+  expiresAt: null,
+  description: '',
+  quotaLimits: {},
+  availabilitySchedule: null
+}, { routeStrategyTouched: false })
+assert.deepEqual(defaultCreatePayload, { name: 'Key B' }, '新建默认值不得扩大为状态、空说明、空额度、空计划或缓存路由字段')
+assert.deepEqual(buildApiKeyCreatePayload({
+  ...baseline,
+  description: '  configured  '
+}, { routeStrategyTouched: true }), {
+  name: baseline.name,
+  routeStrategyId: baseline.routeStrategyId,
+  expiresAt: baseline.expiresAt,
+  description: 'configured',
+  quotaLimits: baseline.quotaLimits,
+  availabilitySchedule: baseline.availabilitySchedule
+}, '新建只提交用户实际配置的非默认字段')
+
 const current: ApiKeySummary = {
   id: 'key_1',
   revision: 'revision-1',
@@ -86,7 +109,7 @@ assert.match(updateBranch, /hasApiKeyMutationChanges\(patch\)/, '编辑保存必
 assert.match(updateBranch, /expectedRevision:\s*editingRevision/, '编辑 PATCH 必须提交列表 revision')
 assert.doesNotMatch(updateBranch, /emit\('reload'/, '编辑成功后不得追加列表刷新')
 assert.match(modalSource, /@update:value="markRouteStrategyTouched"/, '只有用户实际选择路由时才标记交互')
-assert.match(createBranch, /routeStrategyTouched\.value && snapshot\.routeStrategyId/, '新建时未交互的缓存默认路由只用于展示，不得提交 routeStrategyId')
+assert.match(createBranch, /buildApiKeyCreatePayload\(snapshot,[\s\S]*routeStrategyTouched:\s*routeStrategyTouched\.value/, '新建必须通过最小命令构造器区分缓存默认路由与用户交互')
 assert.doesNotMatch(createBranch, /\.\.\.\(snapshot\.routeStrategyId\s*\?/, '新建不得因缓存默认值自动提交路由')
 
 assert(

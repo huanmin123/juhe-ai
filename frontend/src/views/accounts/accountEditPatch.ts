@@ -25,16 +25,12 @@ export function buildAccountBasicEditSnapshot(
   form: AccountFormModel,
   currentCredentials: Record<string, unknown> = {}
 ): AccountBasicEditSnapshot {
-  const status = form.status === 'active' || form.status === 'disabled'
-    ? form.status
-    : undefined
   return {
     credentials: buildBasicEditCredentials(form, currentCredentials),
     values: compactRecord({
       name: form.name.trim(),
       concurrencyLimit: Math.trunc(Number(form.concurrencyLimit)),
       priority: Math.trunc(Number(form.priority)),
-      status,
       superPriorityEnabled: form.privilege === 'super_priority',
       fallbackEnabled: form.privilege === 'fallback',
       groupId: form.groupId,

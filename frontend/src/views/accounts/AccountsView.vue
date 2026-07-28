@@ -22,6 +22,7 @@
       @group-dropdown="handleFilterGroupOptionsDropdown"
       @group-search="handleFilterGroupOptionsSearch"
       @import="openImportModal"
+      @provider-dropdown="handleProviderFilterDropdown"
       @refresh="refreshData"
       @reset="resetFilters"
       @search="applyFilters"
@@ -385,6 +386,7 @@ const {
   handleSystemAccountOptionsDropdown,
   handleSystemAccountOptionsSearch,
   loadMoreMobileAccounts,
+  loadAccountOptions,
   refreshMobileAccounts: refreshMobileAccountList,
   ensureProviderDefinition,
   loadData: loadAccountListData,
@@ -477,6 +479,14 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   closePriorityEditor()
   await loadAccountListData(options)
+}
+
+function handleProviderFilterDropdown(open: boolean): void {
+  if (!open) return
+  void loadAccountOptions(accountScopeParams.value?.systemAccountId).catch((error) => {
+    console.error(error)
+    message.error('加载供应商筛选选项失败')
+  })
 }
 
 function startPriorityEditor(accountId: string): void {

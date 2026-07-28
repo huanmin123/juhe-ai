@@ -61,7 +61,7 @@
         :is-management-view="isManagementView"
         :menu-items="menuItems(record)"
         :priority-editing="editingPriorityAccountId === record.id"
-        :provider-name="providerName(record.providerCode)"
+        :provider-name="record.providerName || providerName(record.providerCode)"
         :proxy="proxy(record.proxyProfileId)"
         :save-priority="savePriority"
         :selected="isSelected(record.id)"

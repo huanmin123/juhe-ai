@@ -6,7 +6,6 @@ import type {
   AccountCreateResult,
   AccountEditBasicDetail,
   AccountListItem,
-  AccountSummary,
   OAuthAuthURLResult,
   ProviderDefinition
 } from '@/types/domain'
@@ -344,7 +343,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     options.modalOpen.value = false
   }
 
-  async function createOAuthAccountFromUnifiedForm(): Promise<AccountSummary> {
+  async function createOAuthAccountFromUnifiedForm(): Promise<AccountCreateResult> {
     const commonPayload = buildOAuthCreateCommonPayload({
       accounts: options.accounts.value,
       editingId: options.editingId.value,
@@ -391,7 +390,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       ? await api.grokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens }, options.createScopeParams.value)
       : await api.myGrokOAuth.ssoToOAuth({ ...commonPayload, ssoTokens })
     if (!result.failed.length) {
-      message.success(`Grok SSO 导入完成：成功 ${result.created.length} 个`)
+      message.success(`Grok SSO 导入完成：成功 ${result.createdCount} 个`)
       return true
     }
     const failedTokens = result.failed
@@ -399,7 +398,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       .filter((token): token is string => Boolean(token))
     options.form.ssoTokens = failedTokens.join('\n')
     const detail = result.failed.slice(0, 3).map((item) => `第 ${item.index} 项：${item.error}`).join('；')
-    message.warning(`Grok SSO 导入完成：成功 ${result.created.length} 个，失败 ${result.failed.length} 个。${detail}`)
+    message.warning(`Grok SSO 导入完成：成功 ${result.createdCount} 个，失败 ${result.failed.length} 个。${detail}`)
     return false
   }
 
@@ -496,7 +495,7 @@ async function createManagedOAuthAccountFromCode(
   payload: Record<string, unknown>,
   scopeParams: AccountScopeParams,
   isManagementView: boolean
-): Promise<AccountSummary> {
+): Promise<AccountCreateResult> {
   const providerKind = resolveManagedOAuthProvider(form, providers)
   if (providerKind === 'anthropic') {
     return isManagementView
@@ -525,7 +524,7 @@ async function createManagedOAuthAccountFromRefreshToken(
   payload: Record<string, unknown>,
   scopeParams: AccountScopeParams,
   isManagementView: boolean
-): Promise<AccountSummary> {
+): Promise<AccountCreateResult> {
   const providerKind = resolveManagedOAuthProvider(form, providers)
   if (providerKind === 'anthropic') {
     return isManagementView

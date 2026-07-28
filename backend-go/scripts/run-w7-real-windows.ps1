@@ -126,7 +126,8 @@ function Wait-LoopbackPort {
 function Start-IsolatedRedis {
   param(
     [Parameter(Mandatory = $true)][string]$Role,
-    [Parameter(Mandatory = $true)][int]$Port
+    [Parameter(Mandatory = $true)][int]$Port,
+    [Parameter(Mandatory = $true)][System.Collections.Generic.List[object]]$RuntimeRegistry
   )
   $dataDirectory = Join-Path $taskRoot ('redis-' + $Role)
   New-Item -ItemType Directory -Path $dataDirectory | Out-Null
@@ -146,9 +147,10 @@ function Start-IsolatedRedis {
   }
   $process = [System.Diagnostics.Process]::Start($startInfo)
   if ($null -eq $process) { throw "Failed to start isolated Redis $Role" }
+  $runtime = [pscustomobject]@{ Role = $Role; Port = $Port; Process = $process; DataDirectory = $dataDirectory }
+  $RuntimeRegistry.Add($runtime)
   Wait-LoopbackPort -Port $Port
   Invoke-NativeChecked -Executable $redisCliExe -Arguments @('-h', '127.0.0.1', '-p', [string]$Port, 'PING') | Out-Null
-  return [pscustomobject]@{ Role = $Role; Port = $Port; Process = $process; DataDirectory = $dataDirectory }
 }
 
 function Stop-IsolatedRedis {
@@ -187,7 +189,7 @@ function Stop-IsolatedPostgres {
   Invoke-NativeChecked -Executable $pgCtlExe -Arguments @('stop', '-D', $DataDirectory, '-m', 'fast', '-w') | Out-Null
 }
 
-$redisRuntimes = @()
+$redisRuntimes = [System.Collections.Generic.List[object]]::new()
 $postgresStarted = $false
 $evidence = $null
 $cleanupErrors = [System.Collections.Generic.List[string]]::new()
@@ -213,9 +215,9 @@ try {
     '-h', '127.0.0.1', '-p', [string]$postgresPort, '-U', 'postgres', 'juhe_ai_w7'
   ) | Out-Null
 
-  $redisRuntimes += Start-IsolatedRedis -Role 'cache' -Port $cachePort
-  $redisRuntimes += Start-IsolatedRedis -Role 'state' -Port $statePort
-  $redisRuntimes += Start-IsolatedRedis -Role 'queue' -Port $queuePort
+  Start-IsolatedRedis -Role 'cache' -Port $cachePort -RuntimeRegistry $redisRuntimes
+  Start-IsolatedRedis -Role 'state' -Port $statePort -RuntimeRegistry $redisRuntimes
+  Start-IsolatedRedis -Role 'queue' -Port $queuePort -RuntimeRegistry $redisRuntimes
 
   $namespace = 'w7-real-' + [guid]::NewGuid().ToString('N')
   $env:JUHE_AI_ENV = 'test'

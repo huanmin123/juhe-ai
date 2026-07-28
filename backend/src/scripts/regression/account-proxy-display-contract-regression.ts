@@ -80,7 +80,9 @@ try {
   }, userAAccess)
   const createAccount = (name: string, proxyProfileId: string) => repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID, name, type: 'api_key',
-    credentials: { api_key: `sk-${name}`, base_url: 'https://api.openai.com/v1' }, groupId: groupA.id, proxyProfileId, status: 'active'
+    credentials: { api_key: `sk-${name}`, base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.4-mini'], healthCheckModel: 'gpt-5.4-mini',
+    groupId: groupA.id, proxyProfileId, status: 'active'
   }, userAAccess)
   const enabledAccount = createAccount('代理展示启用账户', proxyEnabled.id)
   const disabledAccount = createAccount('代理展示停用账户', proxyDisabled.id)
@@ -156,25 +158,6 @@ try {
   assert.equal(userAuthorizedMissing.proxyProfileId, 'proxy-display-missing', '缺失授权实例应使用来源账户代理 ID')
   assert.equal(userAuthorizedMissing.proxyProfileUnavailable, true)
   assert.equal(Object.hasOwn(userAuthorizedMissing, 'proxyProfileName'), false, '缺失授权实例不可泄露代理名称')
-
-  for (const [path, cookie, id, expectedName] of [
-    ['/__aisys__/api/accounts', adminCookie, disabledAccount.id, '代理展示停用'],
-    ['/__aisys__/api/my-accounts', userACookie, enabledAccount.id, '代理展示启用'],
-    ['/__aisys__/api/my-accounts', userBCookie, authorizedAccount.id, '代理展示启用']
-  ] as const) {
-    const detail = await getData<AccountItem>(baseUrl, `${path}/${id}`, cookie)
-    assert.equal(detail.id, id)
-    assert.equal(typeof detail.proxyProfileId, 'string')
-    assert.equal(detail.proxyProfileName, expectedName, `${path}/${id} 基础详情应返回代理展示名称`)
-  }
-
-  for (const id of [authorizedDisabledAccount.id, authorizedMissingAccount.id]) {
-    const detail = await getData<AccountItem>(baseUrl, `/__aisys__/api/my-accounts/${id}`, userBCookie)
-    assert.equal(detail.proxyProfileUnavailable, true, `授权实例 ${id} 基础详情应标记代理不可用`)
-    assert.equal(Object.hasOwn(detail, 'proxyProfileName'), false, `授权实例 ${id} 基础详情不可泄露代理名称`)
-    assert.equal(Object.hasOwn(detail, 'proxyProfileType'), false, `授权实例 ${id} 基础详情不可泄露代理类型`)
-    assert.equal(Object.hasOwn(detail, 'proxyProfileEnabled'), false, `授权实例 ${id} 基础详情不可泄露代理状态`)
-  }
 
   const source = await import('node:fs/promises').then((fs) => fs.readFile(new URL('../../storage/account-summary.repository.ts', import.meta.url), 'utf8'))
   assert.match(source, /proxy_profiles[\s\S]+IN \(/, '账户代理展示必须按当前页代理 ID 批量读取')

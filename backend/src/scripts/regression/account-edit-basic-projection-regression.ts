@@ -163,10 +163,55 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const deniedQueries: Array<{ sql: string; params: SQLInputValue[] }> = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    const originalGet = statement.get.bind(statement) as typeof statement.get
+    const originalAll = statement.all.bind(statement) as typeof statement.all
+    statement.get = ((...params: SQLInputValue[]) => {
+      deniedQueries.push({ sql, params })
+      return originalGet(...params)
+    }) as typeof statement.get
+    statement.all = ((...params: SQLInputValue[]) => {
+      deniedQueries.push({ sql, params })
+      return originalAll(...params)
+    }) as typeof statement.all
+    return statement
+  }) as typeof database.prepare
+  let deniedDetail: Awaited<ReturnType<typeof editBasicRepository.findAccountEditBasicDetailAsync>>
+  try {
+    deniedDetail = await editBasicRepository.findAccountEditBasicDetailAsync(account.id, {
+      systemAccountId: otherOwner.id,
+      role: 'user'
+    })
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(deniedDetail, undefined, '其他用户不能读取账户基础编辑投影')
+  assert.equal(deniedQueries.length, 1, '跨 owner 查询必须在主投影定位阶段结束，不得继续查询模型或标签')
+  assert.match(
+    deniedQueries[0]!.sql,
+    /WHERE\s+accounts\.id\s*=\s*\?[\s\S]*AND\s+accounts\.system_account_id\s*=\s*\?/i,
+    '包含凭据列的主投影 SQL 必须同时约束账户 owner'
+  )
+  assert.deepEqual(deniedQueries[0]!.params, [account.id, otherOwner.id], '普通用户 owner 条件必须作为 SQL 绑定参数')
+
   assert.equal(
-    await editBasicRepository.findAccountEditBasicDetailAsync(account.id, { systemAccountId: otherOwner.id, role: 'user' }),
+    await editBasicRepository.findAccountEditBasicDetailAsync(account.id, {
+      systemAccountId: access.systemAccountId,
+      role: 'admin',
+      systemAccountFilterId: otherOwner.id
+    }),
     undefined,
-    '其他用户不能读取账户基础编辑投影'
+    '管理员显式目标 scope 不能越过 SQL owner 条件读取其他目标账户'
+  )
+  assert(
+    await editBasicRepository.findAccountEditBasicDetailAsync(account.id, {
+      systemAccountId: access.systemAccountId,
+      role: 'admin',
+      systemAccountFilterId: access.systemAccountId
+    }),
+    '管理员显式选择账户 owner scope 后仍应读取基础编辑投影'
   )
 
   console.log('AI 账户 edit-basic 投影回归通过：只读取基础表单字段、已选模型和标签，不访问统计、运行态或高级策略')

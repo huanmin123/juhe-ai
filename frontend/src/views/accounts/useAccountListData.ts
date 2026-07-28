@@ -33,10 +33,8 @@ interface UseAccountListDataOptions {
 }
 
 interface AccountListLoadOptions extends Record<string, unknown> {
-  forceOptions?: boolean
   forceData?: boolean
   requestIdentity?: number
-  skipOptions?: boolean
 }
 
 interface ProviderDefinitionRequest {
@@ -117,12 +115,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      if (!_loadOptions.skipOptions && (!_loadOptions.forceData || _loadOptions.forceOptions)) {
-        void loadAccountOptions(systemAccountId, Boolean(_loadOptions.forceOptions)).catch((error) => {
-          console.error(error)
-          message.error('加载账户筛选选项失败')
-        })
-      }
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
         items: accountList.items,

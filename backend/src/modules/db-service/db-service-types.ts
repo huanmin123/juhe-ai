@@ -1358,7 +1358,7 @@ export type DbServiceChildMessage =
   | {
     type: 'db_service_gateway_api_key_cache_invalidation_request'
     requestId: string
-    apiKeyId: string
+    apiKeyId?: string
     keyHashes: string[]
   }
   | {
