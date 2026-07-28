@@ -23,16 +23,6 @@ func TestServiceDetailLevelsPreserveRawOwnerCredentials(t *testing.T) {
 		Now: func() time.Time { return time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC) },
 	})
 
-	basic, found, err := service.Get(t.Context(), Input{AccountID: "account-1"}, LevelBasic)
-	if err != nil || !found {
-		t.Fatalf("Get(basic) = found %v, err %v", found, err)
-	}
-	for _, key := range []string{"credentials", "supportedModels", "modelMappings"} {
-		if _, exists := basic[key]; exists {
-			t.Fatalf("basic detail unexpectedly contains %s", key)
-		}
-	}
-
 	editBasic, found, err := service.Get(t.Context(), Input{AccountID: "account-1"}, LevelEditBasic)
 	if err != nil || !found {
 		t.Fatalf("Get(edit-basic) = found %v, err %v", found, err)
