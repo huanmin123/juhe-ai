@@ -69,6 +69,7 @@ import type {
   RouteStrategyListItemResult,
   RouteStrategyListSnapshotResult,
   RouteStrategyListResult,
+  RouteStrategyEditBasicDetail,
   RouteStrategyOptionSummary,
   RouteStrategySummary,
   SystemAccountOptionSummary,
@@ -677,6 +678,11 @@ export type SqliteReadWorkerOperation =
     access?: AccessScope
   }
   | {
+    type: 'find_route_strategy_edit_basic_detail_read_only'
+    id: string
+    access?: AccessScope
+  }
+  | {
     type: 'list_proxies_read_only'
   }
   | {
@@ -931,6 +937,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_route_strategy_list_snapshot_read_only' } ? RouteStrategyListSnapshotResult :
   T extends { type: 'list_route_strategy_options_read_only' } ? RouteStrategyOptionSummary[] :
   T extends { type: 'find_route_strategy_summary_read_only' } ? RouteStrategySummary | undefined :
+  T extends { type: 'find_route_strategy_edit_basic_detail_read_only' } ? RouteStrategyEditBasicDetail | undefined :
   T extends { type: 'list_proxies_read_only' } ? ProxyProfileSummary[] :
   T extends { type: 'list_proxies_page_read_only' } ? ProxyProfileListResult :
   T extends { type: 'list_proxy_options_read_only' } ? ProxyProfileOptionSummary[] :

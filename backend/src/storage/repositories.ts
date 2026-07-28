@@ -545,6 +545,8 @@ export {
   createRouteStrategyAsync,
   deleteRouteStrategy,
   deleteRouteStrategyAsync,
+  findRouteStrategyEditBasicDetail,
+  findRouteStrategyEditBasicDetailAsync,
   findRouteStrategySummary,
   findRouteStrategySummaryAsync,
   ensureDefaultRouteStrategiesForSystemAccount,

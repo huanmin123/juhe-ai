@@ -1,4 +1,4 @@
-import type { AccountGroupOptionSummary, GroupEditDetail, GroupListResult, GroupOptionSummary, GroupSummary } from '@/types/domain'
+import type { AccountGroupOptionSummary, GroupEditDetail, GroupListResult, GroupMutationResult, GroupOptionSummary, GroupSummary } from '@/types/domain'
 import type { GroupListParams, GroupOptionParams, ListParams } from '../contracts'
 import { http, unwrap } from '../http'
 import { groupListParams, groupOptionParams } from '../params'
@@ -15,7 +15,7 @@ export const groupsApi = {
     .map(({ canAuthorize, ...option }) => ({ ...option, permissions: { canAuthorize } })),
   accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
-  update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload, { params })),
+  update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupMutationResult>(http.patch(`/groups/${id}`, payload, { params })),
   returnAuthorization: (id: string, params?: ListParams) => http.post(`/groups/${id}/return-authorization`, {}, { params }),
   delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
 }
@@ -30,7 +30,7 @@ export const myGroupsApi = {
     .map(({ canAuthorize, ...option }) => ({ ...option, permissions: { canAuthorize } })),
   accountOptions: (params?: MyGroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
   create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
-  update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
+  update: (id: string, payload: Record<string, unknown>) => unwrap<GroupMutationResult>(http.patch(`/my-groups/${id}`, payload)),
   returnAuthorization: (id: string) => http.post(`/my-groups/${id}/return-authorization`, {}),
   delete: (id: string) => http.delete(`/my-groups/${id}`)
 }

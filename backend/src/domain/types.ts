@@ -1933,6 +1933,19 @@ export interface RouteStrategySummary {
   updatedAt: string
 }
 
+export interface RouteStrategyEditBasicDetail {
+  id: string
+  systemAccountId?: string
+  name: string
+  description?: string
+  mode: RouteStrategyMode
+  status: RouteStrategyStatus
+  isDefault: boolean
+  normalRoutingConfig?: RouteStrategyNormalRoutingConfig
+  hybridRoutingConfig?: ApiKeyHybridRoutingConfig
+  groupBindings: RouteStrategyGroupBindingSummary[]
+}
+
 export interface RouteStrategyListItem {
   id: string
   systemAccountId?: string

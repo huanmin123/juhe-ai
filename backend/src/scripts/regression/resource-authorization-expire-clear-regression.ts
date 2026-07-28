@@ -235,7 +235,8 @@ try {
   assert(!enabledOptionIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户不应进入正常且可调度 options')
   const rateLimitedOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'rate_limited', limit: 50 }).map((item) => item.id)
   assert(rateLimitedOptionIds.includes(quotaAuthorizedAccount.id), '授权额度用完账户 options 应归入限流中状态筛选')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(quotaAuthorizedAccount.id, {
+  await assert.rejects(() => repositories.updateAuthorizedAccountBindingDispatchAsync(quotaAuthorizedAccount.id, {
+    expectedConfigRevision: authorizedDispatchRevision(quotaAuthorizedAccount.id, granteeAccess),
     superPriorityEnabled: true
   }, granteeAccess), /授权额度已用完/, '授权额度用完后不应允许开启本地调度标记')
   assert.throws(() => repositories.migrateAccountTraffic({
@@ -274,7 +275,8 @@ try {
   assert.equal(ownerPausedAuthorizedAccount?.effectiveAvailability.status, 'source_unschedulable', '所有者停调时授权实例实际状态应标记为来源停调')
   assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountStatus, 'active', '授权实例列表应返回来源账户状态供页面解释')
   assert.equal(ownerPausedAuthorizedAccount?.authorizationInstanceSourceAccountSchedulable, false, '授权实例列表应返回来源账户调度开关供页面提示')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAuthorizedInstance.id, {
+  await assert.rejects(() => repositories.updateAuthorizedAccountBindingDispatchAsync(ownerPausedAuthorizedInstance.id, {
+    expectedConfigRevision: authorizedDispatchRevision(ownerPausedAuthorizedInstance.id, granteeAccess),
     fallbackEnabled: true
   }, granteeAccess), /授权方原账户已关闭调度/, '所有者停调后不应允许被授权用户开启调度标记')
   const ownerDisabledStatusIds = repositories.listAccountsPage(ownerAccess, { status: 'disabled', page: 1, pageSize: 50 }).items.map((item) => item.id)
@@ -360,7 +362,8 @@ try {
   const sourceScheduleDisabledOptionIds = repositories.listAccountOptions(granteeAccess, { status: 'disabled', limit: 50 }).map((item) => item.id)
   assert(sourceScheduleDisabledOptionIds.includes(ownerScheduleInactiveAuthorizedInstance.id), '来源时段外的授权账户 options 应归入停用状态筛选')
   assert.equal(repositories.listOpenAIAccountsForGroup(granteeQuotaGroup.id, grantee.id).some((item) => item.id === ownerScheduleInactiveAuthorizedInstance.id), false, '所有者时段外后授权实例不应进入网关候选')
-  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerScheduleInactiveAuthorizedInstance.id, {
+  await assert.rejects(() => repositories.updateAuthorizedAccountBindingDispatchAsync(ownerScheduleInactiveAuthorizedInstance.id, {
+    expectedConfigRevision: authorizedDispatchRevision(ownerScheduleInactiveAuthorizedInstance.id, granteeAccess),
     fallbackEnabled: true
   }, granteeAccess), /授权方原账户已停用/, '所有者时段外后不应允许被授权用户开启调度标记')
   const ownerScheduleInactiveTestAccount = repositories.findAccountForTest(ownerScheduleInactiveAuthorizedInstance.id, granteeAccess)
@@ -474,6 +477,15 @@ function authorizedInstanceForSource(sourceAccountId: string, access: { systemAc
     .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
   assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
   return account
+}
+
+function authorizedDispatchRevision(
+  accountId: string,
+  access: { systemAccountId: string; role: 'user' }
+): number {
+  const revision = repositories.listAccounts(access).find((account) => account.id === accountId)?.configRevision
+  assert(Number.isInteger(revision) && Number(revision) >= 1, `授权账户 ${accountId} 必须携带配置版本`)
+  return Number(revision)
 }
 
 function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {

@@ -26,16 +26,16 @@
 
 | 场景 | p95 / 内存结果 |
 | --- | --- |
-| 请求历史 100 items | 0.0035 ms |
-| 请求历史 1000 dirty items | 0.0391 ms |
-| 请求历史 10000 dirty items | 0.4294 ms |
-| JSON safe repair clean 1000 items | 0.1397 ms |
-| JSON safe repair dirty 1000 items | 0.6627 ms |
-| JSON safe repair clean 10000 items | 2.4843 ms |
-| JSON safe repair dirty 10000 items | 4.6986 ms |
-| SSE safe repair clean 1000 identities | 1.0599 ms |
-| SSE safe repair clean 10000 identities | 14.7209 ms，heap 约 4.63 MB |
-| SSE 同一 identity 100000 delta | retained heap 约 14 KB |
+| 请求历史 100 dirty items | 0.0043 ms |
+| 请求历史 1000 dirty items | 0.0412 ms |
+| 请求历史 10000 dirty items | 0.7064 ms |
+| JSON safe repair clean 1000 items | 0.1628 ms |
+| JSON safe repair dirty 1000 items | 0.6151 ms |
+| JSON safe repair clean 10000 items | 2.9864 ms |
+| JSON safe repair dirty 10000 items | 6.6439 ms |
+| SSE safe repair clean 1000 identities | 1.5094 ms |
+| SSE safe repair clean 10000 identities | 16.7006 ms，retained heap 约 4.68 MB |
+| SSE 同一 identity 100000 delta | retained heap 约 12.8 KB |
 
 以上数字是本机专项微基准，不代表生产端到端延迟。它们用于证明算法增长和预算；相较模型首 token、工具执行和网络耗时，新增开销不是本故障链路的主要延迟来源。
 
@@ -58,4 +58,3 @@
 - [实施计划](../plans/计划-20260728T071315383Z-CodexResponses双向协议防护修复.md)
 - [问题记录](../bug/问题-0138-CodexResponses双向ID防护失效.md)
 - [长期设计](../functions/Responses协议防火墙与历史会话自愈设计.md)
-

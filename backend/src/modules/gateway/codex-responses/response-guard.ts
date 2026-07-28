@@ -206,7 +206,7 @@ export class CodexResponsesResponseGuard {
     })
     this.#recordDiagnostics(result.issues)
     const bounded = boundedIssues(result.issues)
-    const outcome = result.repairs.length > 0
+    const outcome = result.outcome === 'repairable' && result.repairs.length > 0
       ? result.outcome
       : outcomeAtCommitBoundary(result.outcome, this.#downstreamCommitState)
     return {

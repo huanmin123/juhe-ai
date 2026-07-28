@@ -151,8 +151,11 @@ try {
     '授权实例应按普通授权资源稳定排序，不受所有者超级优先或降级备用影响'
   )
 
-  const localSuperAccount = repositories.updateAuthorizedAccountBindingDispatch(granteeSuperAccount.id, { superPriorityEnabled: true }, granteeAccess)
-  assert.equal(localSuperAccount?.superPriorityEnabled, true, '被授权人应能为自己的授权实例开启超级优先')
+  const localSuperAccount = await repositories.updateAuthorizedAccountBindingDispatchAsync(granteeSuperAccount.id, {
+    expectedConfigRevision: dispatchRevision(granteeSuperAccount.id, granteeAccess),
+    superPriorityEnabled: true
+  }, granteeAccess)
+  assert.equal(localSuperAccount?.patch.superPriorityEnabled, true, '被授权人应能为自己的授权实例开启超级优先')
   assert.equal(bindingRow(granteeSuperAccount.id, granteeGroup.id)?.local_super_priority_enabled, 1, '授权实例超级优先应写入分组绑定')
   assert.equal(accountDispatchRow(granteeSuperAccount.id)?.super_priority_enabled, 0, '授权实例超级优先不应写入实例账户字段')
   assert.equal(repositories.listAccounts(ownerAccess).find((account) => account.id === superAccount.id)?.superPriorityEnabled, true, '实例超级优先不应修改所有者原始配置')
@@ -163,14 +166,23 @@ try {
     '被授权人的实例超级优先应影响自己的分组调度'
   )
 
-  repositories.updateAuthorizedAccountBindingDispatch(granteeSuperAccount.id, { superPriorityEnabled: false }, granteeAccess)
-  const localPriorityAccount = repositories.updateAuthorizedAccountBindingDispatch(granteeFallbackAccount.id, { priority: 7 }, granteeAccess)
-  assert.equal(localPriorityAccount?.priority, 7, '被授权人应能修改当前分组内授权实例优先级')
+  await repositories.updateAuthorizedAccountBindingDispatchAsync(granteeSuperAccount.id, {
+    expectedConfigRevision: dispatchRevision(granteeSuperAccount.id, granteeAccess),
+    superPriorityEnabled: false
+  }, granteeAccess)
+  const localPriorityAccount = await repositories.updateAuthorizedAccountBindingDispatchAsync(granteeFallbackAccount.id, {
+    expectedConfigRevision: dispatchRevision(granteeFallbackAccount.id, granteeAccess),
+    priority: 7
+  }, granteeAccess)
+  assert.equal(localPriorityAccount?.patch.priority, 7, '被授权人应能修改当前分组内授权实例优先级')
   assert.equal(bindingRow(granteeFallbackAccount.id, granteeGroup.id)?.local_priority, 7, '授权实例优先级应写入当前分组绑定')
   assert.equal(accountDispatchRow(granteeFallbackAccount.id)?.priority, 0, '授权实例优先级不应写入实例账户字段')
   assert.equal(bindingRow(otherGranteeFallbackAccount.id, otherGranteeGroup.id)?.local_priority, 0, '授权实例优先级不应影响其他被授权人的绑定')
-  const localFallbackAccount = repositories.updateAuthorizedAccountBindingDispatch(granteeNormalAccount.id, { fallbackEnabled: true }, granteeAccess)
-  assert.equal(localFallbackAccount?.fallbackEnabled, true, '被授权人应能为自己的授权实例开启降级备用')
+  const localFallbackAccount = await repositories.updateAuthorizedAccountBindingDispatchAsync(granteeNormalAccount.id, {
+    expectedConfigRevision: dispatchRevision(granteeNormalAccount.id, granteeAccess),
+    fallbackEnabled: true
+  }, granteeAccess)
+  assert.equal(localFallbackAccount?.patch.fallbackEnabled, true, '被授权人应能为自己的授权实例开启降级备用')
   assert.equal(bindingRow(granteeNormalAccount.id, granteeGroup.id)?.local_fallback_enabled, 1, '授权实例降级备用应写入分组绑定')
   assert.equal(accountDispatchRow(granteeNormalAccount.id)?.fallback_enabled, 0, '授权实例降级备用不应写入实例账户字段')
   assert.equal(repositories.listAccounts(ownerAccess).find((account) => account.id === normalAccount.id)?.fallbackEnabled, false, '实例降级备用不应修改所有者原始配置')
@@ -193,9 +205,12 @@ try {
   assert.equal(repositories.listAccounts(otherGranteeAccess).find((account) => account.id === otherGranteeNormalAccount.id)?.status, 'active', '授权账户迁移不应影响其他被授权人')
   assert(!repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === granteeNormalAccount.id), '迁移后的授权实例不应继续参与被授权人调度')
   assert(repositories.listOpenAIAccountsForGroup(otherGranteeGroup.id, otherGrantee.id).some((account) => account.id === otherGranteeNormalAccount.id), '迁移后不应移除其他被授权人的同来源授权实例调度')
-  const restored = repositories.updateAuthorizedAccountBindingDispatch(granteeNormalAccount.id, { clearFailureState: true }, granteeAccess)
-  assert.equal(restored?.status, 'active', '被授权人应能恢复自己本地临时不可调用的授权账户')
-  assert.equal(restored?.fallbackEnabled, true, '恢复后应继续保留被授权人的实例降级备用')
+  const restored = await repositories.updateAuthorizedAccountBindingDispatchAsync(granteeNormalAccount.id, {
+    expectedConfigRevision: dispatchRevision(granteeNormalAccount.id, granteeAccess),
+    clearFailureState: true
+  }, granteeAccess)
+  assert.equal(restored?.patch.status, 'active', '被授权人应能恢复自己本地临时不可调用的授权账户')
+  assert.equal(repositories.listAccounts(granteeAccess).find((account) => account.id === granteeNormalAccount.id)?.fallbackEnabled, true, '恢复后应继续保留被授权人的实例降级备用')
   assert(repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === granteeNormalAccount.id), '恢复后授权实例应重新参与被授权人调度')
 
   const unchangedAuthorizedMigration = repositories.migrateAccountTraffic({
@@ -230,6 +245,15 @@ function dispatchIds(groupId: string, systemAccountId: string, expectedIds: stri
   return repositories.listOpenAIAccountsForGroup(groupId, systemAccountId)
     .map((account) => account.id)
     .filter((id) => expected.has(id))
+}
+
+function dispatchRevision(
+  accountId: string,
+  access: { systemAccountId: string; role: 'user' }
+): number {
+  const revision = repositories.listAccounts(access).find((account) => account.id === accountId)?.configRevision
+  assert(Number.isInteger(revision) && Number(revision) >= 1, `授权账户 ${accountId} 必须携带配置版本`)
+  return Number(revision)
 }
 
 function authorizedInstanceForSource(sourceAccountId: string, access: { systemAccountId: string; role: 'user' }) {

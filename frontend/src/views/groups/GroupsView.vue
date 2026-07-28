@@ -454,16 +454,22 @@ const saveGroup = submitAction('groups.save', async () => {
     if (targetId) {
       const targetGroup = groups.value.find((item) => item.id === targetId)
       const payload = groupFormPayload(targetGroup)
+      if (!Object.keys(payload).length) {
+        modalOpen.value = false
+        message.info('分组配置未发生变化')
+        return
+      }
       const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(targetGroup))
+      const changedFields = new Set(updated.changedFields)
       updateGroupItems((item) => item.id === targetId, (item) => ({
         ...item,
-        name: updated.name,
-        providerCode: updated.providerCode,
-        description: updated.description,
-        enabled: updated.enabled,
-        groupType: updated.groupType
+        ...(changedFields.has('name') && typeof payload.name === 'string' ? { name: payload.name } : {}),
+        ...(changedFields.has('providerCode') && typeof payload.providerCode === 'string' ? { providerCode: payload.providerCode } : {}),
+        ...(changedFields.has('description') && typeof payload.description === 'string' ? { description: payload.description || undefined } : {}),
+        ...(changedFields.has('enabled') && typeof payload.enabled === 'boolean' ? { enabled: payload.enabled } : {}),
+        ...(changedFields.has('groupType') && (payload.groupType === 'personal' || payload.groupType === 'high_concurrency') ? { groupType: payload.groupType } : {})
       }))
-      message.success(isAuthorizedGroup(updated) ? '授权分组使用配置已更新' : '分组已更新')
+      message.success(targetGroup && isAuthorizedGroup(targetGroup) ? '授权分组使用配置已更新' : '分组已更新')
       void loadData({ quiet: true })
     } else {
       const payload = groupFormPayload()

@@ -25,6 +25,7 @@ type GroupFormSeed = Pick<
 > & Partial<Pick<GroupSummary, 'schedulingPolicy'>>
 
 export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefinition[]>) {
+  let editBaseline: GroupEditForm | undefined
   const form = reactive<GroupEditForm>({
     name: '',
     providerCode: GPT_VENDOR_CODE,
@@ -53,6 +54,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
   }
 
   function resetGroupFormForCreate() {
+    editBaseline = undefined
     const providerCode = defaultProviderCode()
     Object.assign(form, {
       name: '',
@@ -76,6 +78,7 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
       groupType: group.groupType,
       schedulingPolicy
     })
+    editBaseline = currentGroupFormSnapshot()
   }
 
   function setFormMaxQueueWaitSeconds(value: unknown) {
@@ -89,31 +92,72 @@ export function useGroupFormModel(availableProviders: ComputedRef<ProviderDefini
   }
 
   function groupFormPayload(targetGroup?: Pick<GroupSummary, 'accessType'>): Record<string, unknown> {
-    const schedulingPolicy = cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
+    const current = currentGroupFormSnapshot()
+    const schedulingPolicy = writableSchedulingPolicy(current)
     const localSettings = {
-      enabled: form.enabled,
-      groupType: form.groupType,
-      schedulingPolicy: form.groupType === 'high_concurrency'
-        ? {
-            defaultSoftConcurrency: schedulingPolicy.defaultSoftConcurrency,
-            maxQueueWaitMs: schedulingPolicy.maxQueueWaitMs,
-            clientIpConcurrencyLimit: clientIpLimitEnabled.value ? formClientIpConcurrencyLimit.value : 0,
-            clientIpConcurrencyOverflowMode: clientIpLimitEnabled.value
-              ? schedulingPolicy.clientIpConcurrencyOverflowMode
-              : 'reject',
-            imageLaneMaxConcurrency: schedulingPolicy.imageLaneMaxConcurrency
-          }
+      enabled: current.enabled,
+      groupType: current.groupType,
+      schedulingPolicy: current.groupType === 'high_concurrency'
+        ? schedulingPolicy
         : undefined
     }
-    if (targetGroup?.accessType === 'authorized') {
-      return localSettings
+    if (targetGroup) {
+      if (!editBaseline) throw new Error('缺少分组编辑基线，请重新打开编辑弹窗')
+      const payload: Record<string, unknown> = {}
+      if (current.enabled !== editBaseline.enabled) payload.enabled = current.enabled
+      if (current.groupType !== editBaseline.groupType) payload.groupType = current.groupType
+      if (current.groupType === 'high_concurrency'
+        && (editBaseline.groupType !== 'high_concurrency'
+          || !sameSchedulingPolicy(writableSchedulingPolicy(editBaseline), schedulingPolicy))) {
+        payload.schedulingPolicy = schedulingPolicy
+      }
+      if (targetGroup.accessType !== 'authorized') {
+        if (current.name !== editBaseline.name) payload.name = current.name
+        if (current.providerCode !== editBaseline.providerCode) payload.providerCode = current.providerCode
+        if (current.description !== editBaseline.description) payload.description = current.description
+      }
+      return payload
     }
     return {
-      name: form.name,
-      providerCode: form.providerCode,
-      description: form.description,
+      name: current.name,
+      providerCode: current.providerCode,
+      description: current.description,
       ...localSettings
     }
+  }
+
+  function currentGroupFormSnapshot(): GroupEditForm {
+    return {
+      name: form.name.trim(),
+      providerCode: form.providerCode.trim(),
+      description: form.description.trim(),
+      enabled: form.enabled,
+      groupType: form.groupType,
+      schedulingPolicy: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy, { requireComplete: true })
+    }
+  }
+
+  function writableSchedulingPolicy(snapshot: GroupEditForm) {
+    return {
+      defaultSoftConcurrency: snapshot.schedulingPolicy.defaultSoftConcurrency,
+      maxQueueWaitMs: snapshot.schedulingPolicy.maxQueueWaitMs,
+      clientIpConcurrencyLimit: snapshot.schedulingPolicy.clientIpConcurrencyLimit,
+      clientIpConcurrencyOverflowMode: snapshot.schedulingPolicy.clientIpConcurrencyLimit > 0
+        ? snapshot.schedulingPolicy.clientIpConcurrencyOverflowMode
+        : 'reject' as const,
+      imageLaneMaxConcurrency: snapshot.schedulingPolicy.imageLaneMaxConcurrency
+    }
+  }
+
+  function sameSchedulingPolicy(
+    left: ReturnType<typeof writableSchedulingPolicy>,
+    right: ReturnType<typeof writableSchedulingPolicy>
+  ): boolean {
+    return left.defaultSoftConcurrency === right.defaultSoftConcurrency
+      && left.maxQueueWaitMs === right.maxQueueWaitMs
+      && left.clientIpConcurrencyLimit === right.clientIpConcurrencyLimit
+      && left.clientIpConcurrencyOverflowMode === right.clientIpConcurrencyOverflowMode
+      && left.imageLaneMaxConcurrency === right.imageLaneMaxConcurrency
   }
 
   return {

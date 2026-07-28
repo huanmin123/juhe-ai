@@ -32,7 +32,14 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
       const results = await runWithConcurrency(selected, accountBatchConcurrency, async (account): Promise<unknown> => {
         const payload = payloadBuilder(account)
         if (isAuthorizedAccount(account)) {
-          const authorizedPayload = payload as Parameters<typeof api.accounts.updateAuthorizedDispatch>[1]
+          const configRevision = Number(account.configRevision)
+          if (!Number.isInteger(configRevision) || configRevision < 1) {
+            throw new Error(`账户 ${account.name} 的版本信息缺失，请刷新列表后重试`)
+          }
+          const authorizedPayload = {
+            ...payload,
+            expectedConfigRevision: configRevision
+          } as Parameters<typeof api.accounts.updateAuthorizedDispatch>[1]
           return await (options.isManagementView.value
             ? api.accounts.updateAuthorizedDispatch(account.id, authorizedPayload, accountOperationScopeParams(account, options.accountScopeParams.value))
             : api.myAccounts.updateAuthorizedDispatch(account.id, authorizedPayload))

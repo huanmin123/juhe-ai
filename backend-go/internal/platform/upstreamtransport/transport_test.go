@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 )
 
 func TestExecuteReadsCompleteResponseWithBoundedCapture(t *testing.T) {
@@ -25,7 +28,7 @@ func TestExecuteReadsCompleteResponseWithBoundedCapture(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(Options{MaxResponseBodyBytes: 4})
+	client, err := NewClient(Options{MaxResponseBodyBytes: 4, URLPolicy: privateURLPolicy(server.URL)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +61,7 @@ func TestExecuteDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer redirect.Close()
 
-	client, _ := NewClient(Options{})
+	client, _ := NewClient(Options{URLPolicy: privateURLPolicy(redirect.URL)})
 	defer client.CloseIdleConnections()
 	request, _ := http.NewRequest(http.MethodGet, redirect.URL, nil)
 	result, err := client.Execute(t.Context(), request)
@@ -77,7 +80,7 @@ func TestExecuteSupportsHTTPSWithCallerTrustRoots(t *testing.T) {
 	}))
 	defer server.Close()
 	serverTransport := server.Client().Transport.(*http.Transport)
-	client, err := NewClient(Options{TLSConfig: serverTransport.TLSClientConfig})
+	client, err := NewClient(Options{TLSConfig: serverTransport.TLSClientConfig, URLPolicy: privateURLPolicy(server.URL)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,28 +341,50 @@ func TestNewClientConfiguresHTTPAndSOCKSProxyTransports(t *testing.T) {
 	socksClient.CloseIdleConnections()
 }
 
-func TestExecuteUsesHTTPProxy(t *testing.T) {
+func TestExecuteRejectsPlainHTTPForwardProxyBeforeAttempt(t *testing.T) {
 	t.Parallel()
-	var observedURL string
+	var calls atomic.Int32
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		observedURL = request.URL.String()
-		response.Header().Set("X-Proxy", "observed")
-		_, _ = io.WriteString(response, "proxied")
+		calls.Add(1)
 	}))
 	defer proxyServer.Close()
 
-	client, err := NewClient(Options{ProxyURL: proxyServer.URL})
+	client, err := NewClient(Options{ProxyURL: proxyServer.URL, URLPolicy: publicURLPolicy("8.8.8.8")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.CloseIdleConnections()
 	request, _ := http.NewRequest(http.MethodGet, "http://upstream.example.test/probe?mode=proxy", nil)
 	result, err := client.Execute(t.Context(), request)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	if kind, ok := FailureKindOf(err); !ok || kind != FailureInvalidRequest || result.Attempted {
+		t.Fatalf("result=%+v error=%v kind=%q", result, err, kind)
 	}
-	if observedURL != request.URL.String() || string(result.Body) != "proxied" || result.Header.Get("X-Proxy") != "observed" {
-		t.Fatalf("observedURL=%q result=%+v", observedURL, result)
+	if calls.Load() != 0 {
+		t.Fatalf("forward proxy calls = %d", calls.Load())
+	}
+}
+
+func TestExecutePinsHTTPSConnectTargetThroughForwardProxy(t *testing.T) {
+	t.Parallel()
+	var method, target string
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		method, target = request.Method, request.Host
+		response.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxyServer.Close()
+
+	client, err := NewClient(Options{ProxyURL: proxyServer.URL, URLPolicy: publicURLPolicy("8.8.8.8")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	request, _ := http.NewRequest(http.MethodGet, "https://upstream.example.test/probe", nil)
+	result, executeErr := client.Execute(t.Context(), request)
+	if executeErr == nil || !result.Attempted {
+		t.Fatalf("result=%+v error=%v", result, executeErr)
+	}
+	if method != http.MethodConnect || target != "8.8.8.8:443" {
+		t.Fatalf("proxy request = %s %s", method, target)
 	}
 }
 
@@ -421,4 +446,24 @@ func mustParseTestURL(t *testing.T, rawURL string) *url.URL {
 		t.Fatal(err)
 	}
 	return value
+}
+
+type transportResolverFunc func(context.Context, string, string) ([]netip.Addr, error)
+
+func (f transportResolverFunc) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	return f(ctx, network, host)
+}
+
+func privateURLPolicy(origin string) upstreamurlpolicy.Config {
+	return upstreamurlpolicy.Config{PrivateBaseURLAllowlist: []string{origin}}
+}
+
+func publicURLPolicy(addresses ...string) upstreamurlpolicy.Config {
+	return upstreamurlpolicy.Config{Resolver: transportResolverFunc(func(context.Context, string, string) ([]netip.Addr, error) {
+		result := make([]netip.Addr, 0, len(addresses))
+		for _, address := range addresses {
+			result = append(result, netip.MustParseAddr(address))
+		}
+		return result, nil
+	})}
 }

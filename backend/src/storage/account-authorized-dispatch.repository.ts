@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountStatus, RequestQuotaLimits } from '../domain/types.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getBusinessDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import {
   createPostgresDatabaseClient,
   createSqliteDatabaseClient,
@@ -435,7 +435,7 @@ async function authorizationQuotaExceeded(
     }
     return false
   }
-  const costs = loadRequestQuotaCostsBatch(checks.map((check) => check.input))
+  const costs = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
   return checks.some((check) => {
     const value = costs.get(requestQuotaCostKey(check.input))
     return Boolean(value && isRequestQuotaExceeded(check.limits, value))

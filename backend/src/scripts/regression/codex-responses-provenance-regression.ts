@@ -543,7 +543,46 @@ const strictStreamResult = await pipeUpstreamStream(
 assert.equal(strictStreamResult.completed, false)
 assert.equal(strictStreamResult.responseInspection?.upstreamErrorCode, 'codex_responses_protocol_intercepted')
 assert.equal(strictStreamResult.codexResponsesGuard?.mode, 'strict_intercept')
+assert.equal(strictStreamResult.responseInspection?.retryEnabled, true)
+assert.equal(strictStreamResult.responseInspection?.accountSwitch, 'request_next_account')
 assert.equal(strictStreamChunks.length, 0, '严格拦截必须在下游写入前阻止污染事件')
+
+const strictLateCommitState = new GatewayDownstreamCommitState()
+strictLateCommitState.markSemanticCommitted(16)
+const strictLateGuard = createCodexResponsesResponseGuard({
+  marker: createCodexResponsesGuardMarker('raw_upstream'),
+  downstreamCommitState: strictLateCommitState,
+  mode: 'strict_intercept'
+})
+const strictLateResponse = {
+  ...strictStreamResponse,
+  headersSent: true,
+  writableEnded: false
+}
+const strictLateResult = await pipeUpstreamStream(
+  strictStreamUpstream(),
+  strictLateResponse as never,
+  {
+    firstResponseTimeoutMs: 5_000,
+    firstByteTimeoutMs: 5_000,
+    idleTimeoutMs: 5_000,
+    uncommittedAttemptMaxLifetimeMs: 30_000,
+    noAvailableAccountWaitMs: 5_000
+  },
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'responses',
+    interpretProtocolFailures: false,
+    downstreamCommitState: strictLateCommitState,
+    codexResponsesGuard: strictLateGuard
+  }
+)
+assert.equal(strictLateResult.completed, false)
+assert.equal(strictLateResult.responseInspection?.retryEnabled, false)
+assert.equal(strictLateResult.responseInspection?.accountSwitch, 'none', '语义提交后严格拦截不得拼接另一账户响应')
 
 const safeBlockedCommitState = new GatewayDownstreamCommitState()
 const safeBlockedGuard = createCodexResponsesResponseGuard({

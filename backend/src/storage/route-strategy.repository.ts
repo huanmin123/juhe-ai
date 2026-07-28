@@ -13,6 +13,7 @@ import {
 import type {
   RouteStrategyGroupBindingSummary,
   ApiKeyHybridRoutingConfig,
+  RouteStrategyEditBasicDetail,
   RouteStrategyNormalRoutingConfig,
   RouteStrategyListItem,
   RouteStrategyListItemResult,
@@ -95,6 +96,17 @@ interface RouteStrategyRow {
   api_key_count?: number | string | null
   created_at: string
   updated_at: string
+}
+
+interface RouteStrategyEditBasicRow {
+  id: string
+  system_account_id: string
+  name: string
+  description: string | null
+  mode: RouteStrategyMode | string
+  status: RouteStrategyStatus | string
+  is_default?: number | boolean | string | null
+  config_json: string | null
 }
 
 interface RouteStrategyGroupBindingRow {
@@ -403,6 +415,47 @@ export async function findRouteStrategySummaryAsync(id: string, access?: AccessS
   return row ? (await routeStrategySummariesFromRowsAsync([row], access, client))[0] : undefined
 }
 
+export function findRouteStrategyEditBasicDetail(id: string, access?: AccessScope): RouteStrategyEditBasicDetail | undefined {
+  return findRouteStrategyEditBasicDetailReadOnly(id, access)
+}
+
+export function findRouteStrategyEditBasicDetailReadOnly(id: string, access?: AccessScope): RouteStrategyEditBasicDetail | undefined {
+  const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
+  const row = getBusinessDatabase()
+    .prepare(`
+      SELECT ${routeStrategyEditBasicColumns()}
+      FROM route_strategies
+      WHERE route_strategies.id = ?${scope.clause}
+    `)
+    .get(id, ...scope.params) as unknown as RouteStrategyEditBasicRow | undefined
+  if (!row) return undefined
+  const bindings = loadRouteStrategyGroupBindingSummariesByRouteStrategyIds([row.id]).get(row.id) ?? []
+  return routeStrategyEditBasicDetailFromRow(row, bindings, includeSystemAccountFields(access))
+}
+
+export async function findRouteStrategyEditBasicDetailAsync(id: string, access?: AccessScope): Promise<RouteStrategyEditBasicDetail | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'find_route_strategy_edit_basic_detail_read_only',
+        id,
+        access
+      })
+    }
+    return findRouteStrategyEditBasicDetailReadOnly(id, access)
+  }
+  const client = await getRouteStrategyDatabaseClient()
+  const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
+  const row = await client.one<RouteStrategyEditBasicRow>(`
+    SELECT ${routeStrategyEditBasicColumnsForClient()}
+    FROM ${routeStrategyTable(client, 'route_strategies')} route_strategies
+    WHERE route_strategies.id = ?${scope.clause}
+  `, [id, ...scope.params])
+  if (!row) return undefined
+  const bindings = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync([row.id], client)
+  return routeStrategyEditBasicDetailFromRow(row, bindings.get(row.id) ?? [], includeSystemAccountFields(access))
+}
+
 export function createRouteStrategy(input: Record<string, unknown>, access?: AccessScope): RouteStrategySummary {
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由创建参数')
   const systemAccountId = manageableSystemAccountId(access) ?? currentSystemAccountId(access)
@@ -507,45 +560,31 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
   const systemAccountId = routeStrategySystemAccountId(id)
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
-  const current = findRouteStrategySummary(id, { systemAccountId, role: 'super_admin', systemAccountFilterId: systemAccountId })
+  const current = findRouteStrategyEditBasicDetail(id, { systemAccountId, role: 'super_admin', systemAccountFilterId: systemAccountId })
   if (!current) return undefined
-  const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
+  const scalarPatch = routeStrategyScalarPatch(input, current)
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
-  const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
-  const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
-  const config = normalizeRouteStrategyConfigForWrite({
-    normalRoutingConfig: mode === 'normal'
-      ? (hasNormalRoutingConfigInput ? input.normalRoutingConfig : current.normalRoutingConfig)
-      : (hasNormalRoutingConfigInput ? input.normalRoutingConfig : undefined),
-    hybridRoutingConfig: mode === 'hybrid_smart'
-      ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
-      : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
-  }, mode)
-  const nextName = normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
-  assertRouteStrategyNameChangeAllowed(current, nextName)
-  const next = {
-    name: nextName,
-    description: hasOwnInput(input, 'description') ? normalizeNullableTextInput(input.description, '策略路由说明') : current.description,
-    mode,
-    status: hasOwnInput(input, 'status') ? normalizeRouteStrategyStatus(input.status, current.status) : current.status,
-    configJson: routeStrategyConfigJson(config)
-  }
   const now = nowIso()
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
+  let changed = false
   try {
-    const bindings = bindingInputs
-      ? normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId)
-      : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
-    database
-      .prepare(`
-        UPDATE route_strategies
-        SET name = ?, description = ?, mode = ?, status = ?, config_json = ?, updated_at = ?
-        WHERE id = ? AND system_account_id = ?
-      `)
-      .run(next.name, next.description ?? null, next.mode, next.status, next.configJson, now, id, systemAccountId)
-    replaceRouteStrategyGroups(database, id, systemAccountId, next.mode, bindings, now)
+    const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
+    const bindings = bindingInputs ? normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId) : undefined
+    if (bindings) {
+      validateRouteStrategyModeBindings(scalarPatch.mode, bindings)
+    } else if (scalarPatch.mode !== current.mode) {
+      validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
+    }
+    const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
+    if (scalarPatch.assignments.length || bindingsChanged) {
+      updateRouteStrategyScalarColumns(database, id, systemAccountId, scalarPatch, now)
+      if (bindingsChanged) {
+        replaceRouteStrategyGroups(database, id, systemAccountId, scalarPatch.mode, bindings!, now)
+      }
+      changed = true
+    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -553,11 +592,11 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
     } catch {
     }
     if (isDuplicateRouteStrategyNameError(error)) {
-      throw new Error(`策略路由名称已存在：${next.name}`)
+      throw new Error(`策略路由名称已存在：${scalarPatch.name}`)
     }
     throw error
   }
-  notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  if (changed) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
   return findRouteStrategySummary(id, access)
 }
 
@@ -565,51 +604,41 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
   const ownerSystemAccountId = await routeStrategySystemAccountIdAsync(id)
   if (!ownerSystemAccountId || !canManageApiKeyOwner(ownerSystemAccountId, access)) return undefined
-  const current = await findRouteStrategySummaryAsync(id, { systemAccountId: ownerSystemAccountId, role: 'user' })
+  const current = await findRouteStrategyEditBasicDetailAsync(id, { systemAccountId: ownerSystemAccountId, role: 'user' })
   if (!current) return undefined
-  const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
+  const scalarPatch = routeStrategyScalarPatch(input, current)
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
-  const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
-  const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
-  const config = normalizeRouteStrategyConfigForWrite({
-    normalRoutingConfig: mode === 'normal'
-      ? (hasNormalRoutingConfigInput ? input.normalRoutingConfig : current.normalRoutingConfig)
-      : (hasNormalRoutingConfigInput ? input.normalRoutingConfig : undefined),
-    hybridRoutingConfig: mode === 'hybrid_smart'
-      ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
-      : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
-  }, mode)
-  const nextName = normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
-  assertRouteStrategyNameChangeAllowed(current, nextName)
-  const next = {
-    name: nextName,
-    description: hasOwnInput(input, 'description') ? normalizeNullableTextInput(input.description, '策略路由说明') : current.description,
-    mode,
-    status: hasOwnInput(input, 'status') ? normalizeRouteStrategyStatus(input.status, current.status) : current.status,
-    configJson: routeStrategyConfigJson(config)
-  }
   const now = nowIso()
   const client = await getRouteStrategyDatabaseClient()
+  let changed = false
   try {
     await client.transaction(async (tx) => {
+      await lockRouteStrategyMutationRowAsync(tx, id, ownerSystemAccountId)
+      const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
       const bindings = bindingInputs
         ? await normalizeRouteStrategyGroupBindingsAsync(bindingInputs, ownerSystemAccountId, tx, true)
-        : routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
-      await tx.execute(`
-        UPDATE ${routeStrategyTable(tx, 'route_strategies')}
-        SET name = ?, description = ?, mode = ?, status = ?, config_json = ?, updated_at = ?
-        WHERE id = ? AND system_account_id = ?
-      `, [next.name, next.description ?? null, next.mode, next.status, next.configJson, now, id, ownerSystemAccountId])
-      await replaceRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, next.mode, bindings, now)
+        : undefined
+      if (bindings) {
+        validateRouteStrategyModeBindings(scalarPatch.mode, bindings)
+      } else if (scalarPatch.mode !== current.mode) {
+        validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
+      }
+      const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
+      if (!scalarPatch.assignments.length && !bindingsChanged) return
+      await updateRouteStrategyScalarColumnsAsync(tx, id, ownerSystemAccountId, scalarPatch, now)
+      if (bindingsChanged) {
+        await replaceRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, scalarPatch.mode, bindings!, now)
+      }
+      changed = true
     })
   } catch (error) {
     if (isDuplicateRouteStrategyNameError(error)) {
-      throw new Error(`策略路由名称已存在：${next.name}`)
+      throw new Error(`策略路由名称已存在：${scalarPatch.name}`)
     }
     throw error
   }
-  notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
+  if (changed) notifyGatewayRuntimeCacheInvalidation('route_strategy_updated')
   return findRouteStrategySummaryAsync(id, access)
 }
 
@@ -1047,6 +1076,27 @@ function routeStrategySummaryFromRow(
   }
 }
 
+function routeStrategyEditBasicDetailFromRow(
+  row: RouteStrategyEditBasicRow,
+  groupBindings: RouteStrategyGroupBindingSummary[],
+  includeOwner: boolean
+): RouteStrategyEditBasicDetail {
+  const mode = normalizeRouteStrategyMode(row.mode)
+  const config = parseRouteStrategyRuntimeConfigJson(row.config_json)
+  return {
+    id: row.id,
+    systemAccountId: includeOwner ? row.system_account_id : undefined,
+    name: row.name,
+    description: row.description ?? undefined,
+    mode,
+    status: normalizeRouteStrategyStatus(row.status, 'active'),
+    isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
+    normalRoutingConfig: mode === 'normal' ? config.normalRoutingConfig ?? defaultNormalRoutingConfig() : undefined,
+    hybridRoutingConfig: mode === 'hybrid_smart' ? config.hybridRoutingConfig : undefined,
+    groupBindings
+  }
+}
+
 function routeStrategyListItemFromRow(
   row: RouteStrategyRow,
   includeOwner: boolean,
@@ -1096,6 +1146,106 @@ async function routeStrategyOptionsFromRowsAsync(rows: RouteStrategyRow[], acces
     status: normalizeRouteStrategyStatus(row.status, 'active'),
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default)
   }))
+}
+
+interface RouteStrategyScalarPatch {
+  name: string
+  mode: RouteStrategyMode
+  assignments: Array<{ column: 'name' | 'description' | 'mode' | 'status' | 'config_json'; value: string | null }>
+}
+
+function routeStrategyScalarPatch(
+  input: Record<string, unknown>,
+  current: RouteStrategyEditBasicDetail
+): RouteStrategyScalarPatch {
+  const assignments: RouteStrategyScalarPatch['assignments'] = []
+  const mode = hasOwnInput(input, 'mode') ? normalizeRouteStrategyMode(input.mode) : current.mode
+  const name = hasOwnInput(input, 'name')
+    ? normalizeOptionalRequiredTextInput(input, 'name', current.name, '策略路由名称')
+    : current.name
+  if (hasOwnInput(input, 'name')) {
+    assertRouteStrategyNameChangeAllowed(current, name)
+    if (name !== current.name) assignments.push({ column: 'name', value: name })
+  }
+  if (hasOwnInput(input, 'description')) {
+    const description = normalizeNullableTextInput(input.description, '策略路由说明') ?? null
+    if (description !== (current.description ?? null)) assignments.push({ column: 'description', value: description })
+  }
+  if (hasOwnInput(input, 'mode') && mode !== current.mode) {
+    assignments.push({ column: 'mode', value: mode })
+  }
+  if (hasOwnInput(input, 'status')) {
+    const status = normalizeRouteStrategyStatus(input.status, current.status)
+    if (status !== current.status) assignments.push({ column: 'status', value: status })
+  }
+
+  const hasNormalRoutingConfigInput = hasOwnInput(input, 'normalRoutingConfig')
+  const hasHybridRoutingConfigInput = hasOwnInput(input, 'hybridRoutingConfig')
+  if (hasOwnInput(input, 'mode') || hasNormalRoutingConfigInput || hasHybridRoutingConfigInput) {
+    const config = normalizeRouteStrategyConfigForWrite({
+      normalRoutingConfig: mode === 'normal'
+        ? (hasNormalRoutingConfigInput ? input.normalRoutingConfig : current.normalRoutingConfig)
+        : (hasNormalRoutingConfigInput ? input.normalRoutingConfig : undefined),
+      hybridRoutingConfig: mode === 'hybrid_smart'
+        ? (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : current.hybridRoutingConfig)
+        : (hasHybridRoutingConfigInput ? input.hybridRoutingConfig : undefined)
+    }, mode)
+    const nextConfigJson = routeStrategyConfigJson(config)
+    const currentConfigJson = routeStrategyConfigJson({
+      normalRoutingConfig: current.mode === 'normal' ? current.normalRoutingConfig : undefined,
+      hybridRoutingConfig: current.mode === 'hybrid_smart' ? current.hybridRoutingConfig : undefined
+    })
+    if (nextConfigJson !== currentConfigJson) {
+      assignments.push({ column: 'config_json', value: nextConfigJson })
+    }
+  }
+
+  return { name, mode, assignments }
+}
+
+function updateRouteStrategyScalarColumns(
+  database: DatabaseSync,
+  routeStrategyId: string,
+  systemAccountId: string,
+  patch: RouteStrategyScalarPatch,
+  now: string
+): void {
+  const assignments = [...patch.assignments.map((item) => `${item.column} = ?`), 'updated_at = ?']
+  database.prepare(`
+    UPDATE route_strategies
+    SET ${assignments.join(', ')}
+    WHERE id = ? AND system_account_id = ?
+  `).run(...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId)
+}
+
+async function updateRouteStrategyScalarColumnsAsync(
+  client: DatabaseClient,
+  routeStrategyId: string,
+  systemAccountId: string,
+  patch: RouteStrategyScalarPatch,
+  now: string
+): Promise<void> {
+  const assignments = [...patch.assignments.map((item) => `${item.column} = ?`), 'updated_at = ?']
+  await client.execute(`
+    UPDATE ${routeStrategyTable(client, 'route_strategies')}
+    SET ${assignments.join(', ')}
+    WHERE id = ? AND system_account_id = ?
+  `, [...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId])
+}
+
+function routeStrategyGroupBindingsEqual(
+  left: RouteStrategyGroupBindingWrite[],
+  right: RouteStrategyGroupBindingWrite[]
+): boolean {
+  if (left.length !== right.length) return false
+  return left.every((binding, index) => {
+    const other = right[index]
+    if (!other) return false
+    return binding.groupId === other.groupId
+      && binding.priority === other.priority
+      && normalizeApiKeyGroupBindingWeight(binding.weight) === normalizeApiKeyGroupBindingWeight(other.weight)
+      && binding.status === other.status
+  })
 }
 
 function normalizeRouteStrategyConfigForWrite(
@@ -1478,6 +1628,23 @@ function routeStrategyListColumns(): string {
     'route_strategies.created_at',
     'route_strategies.updated_at'
   ].join(', ')
+}
+
+function routeStrategyEditBasicColumns(): string {
+  return [
+    'route_strategies.id',
+    'route_strategies.system_account_id',
+    'route_strategies.name',
+    'route_strategies.description',
+    'route_strategies.mode',
+    'route_strategies.status',
+    'route_strategies.is_default',
+    'route_strategies.config_json'
+  ].join(', ')
+}
+
+function routeStrategyEditBasicColumnsForClient(): string {
+  return routeStrategyEditBasicColumns()
 }
 
 function routeStrategyListItemColumns(): string {

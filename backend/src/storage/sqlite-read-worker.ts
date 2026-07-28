@@ -109,6 +109,7 @@ import {
 } from './resource-authorization-read.repository.js'
 import { getResourceAuthorizationUsageReadOnly } from './resource-authorization-usage.repository.js'
 import {
+  findRouteStrategyEditBasicDetailReadOnly,
   findRouteStrategySummaryReadOnly,
   listRouteStrategyListItemsPageReadOnly,
   listRouteStrategyListSnapshotReadOnly,
@@ -426,6 +427,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listRouteStrategyOptionsReadOnly(operation.access, operation.options)
     case 'find_route_strategy_summary_read_only':
       return findRouteStrategySummaryReadOnly(operation.id, operation.access)
+    case 'find_route_strategy_edit_basic_detail_read_only':
+      return findRouteStrategyEditBasicDetailReadOnly(operation.id, operation.access)
     case 'list_proxies_read_only':
       return listProxiesReadOnly()
     case 'list_proxies_page_read_only':

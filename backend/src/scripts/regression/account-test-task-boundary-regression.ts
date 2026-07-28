@@ -9,6 +9,8 @@ const dispatchRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-
 const sessionRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-session.routes.ts')
 const statusRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-status.routes.ts')
 const taskRepository = source(backendRoot, 'storage', 'account-test-tasks.repository.ts')
+const manualTestContextRepository = source(backendRoot, 'storage', 'account-manual-test-context.repository.ts')
+const modelMappingsRepository = source(backendRoot, 'storage', 'account-model-mappings.repository.ts')
 const postgresTaskRepository = taskRepository.slice(
   taskRepository.indexOf('export async function createAccountTestSessionAsync'),
   taskRepository.indexOf('function getAccountTestTaskRow(')
@@ -34,8 +36,8 @@ assert.match(
 )
 assert.match(
   dispatchRoutes,
-  /findAccountManualTestCapabilitiesContextAsync\(req\.params\.id, requestAccess\)/,
-  '列表测试选项必须一次读取账户能力上下文'
+  /findAccountManualTestListContextAsync\(req\.params\.id, requestAccess\)/,
+  '列表测试选项必须一次读取不含能力和凭据的最小账户上下文'
 )
 const listRouteSource = dispatchRoutes.slice(
   dispatchRoutes.indexOf("router.get('/:id/test-options'"),
@@ -74,6 +76,51 @@ assert.match(
   /accountManualTestModelCapabilitiesAsync\(account, req\.params\.modelId\)/,
   '模型能力端点必须复用后端账户和模型能力计算'
 )
+const capabilitiesContextFunctionSource = section(
+  manualTestContextRepository,
+  'export async function findAccountManualTestCapabilitiesContextAsync',
+  'async function findVisibleAccountManualTestContextRowAsync'
+)
+assert.match(
+  capabilitiesContextFunctionSource,
+  /loadModelMappingsForAccountModelAsync\(row\.fact_account_id, modelId\)/,
+  'PostgreSQL 模型能力上下文必须只读取当前 factAccountId 和 modelId 的映射'
+)
+assert.match(
+  capabilitiesContextFunctionSource,
+  /loadModelMappingsForAccountModel\(row\.fact_account_id, modelId\)/,
+  'SQLite 模型能力上下文必须只读取当前 factAccountId 和 modelId 的映射'
+)
+assert.doesNotMatch(
+  capabilitiesContextFunctionSource,
+  /loadModelMappingsByAccountIds/,
+  '模型能力上下文不得复用账户级全量映射加载器'
+)
+for (const [label, loaderSource] of [
+  [
+    'SQLite',
+    section(
+      modelMappingsRepository,
+      'export function loadModelMappingsForAccountModel(',
+      'export async function loadModelMappingsForAccountModelAsync('
+    )
+  ],
+  [
+    'PostgreSQL',
+    section(
+      modelMappingsRepository,
+      'export async function loadModelMappingsForAccountModelAsync(',
+      'function accountModelMappingsFromRows('
+    )
+  ]
+] as const) {
+  assert.match(
+    loaderSource,
+    /WHERE\s+account_id\s*=\s*\?\s+AND\s+source_model\s*=\s*\?/,
+    `${label} 当前模型映射查询必须同时按 accountId 和 sourceModel 过滤`
+  )
+  assert.doesNotMatch(loaderSource, /account_id\s+IN\s*\(/, `${label} 当前模型映射查询不得加载账户全部映射`)
+}
 const modelCapabilitiesFunctionSource = testOptionsService.slice(
   testOptionsService.indexOf('export async function accountManualTestModelCapabilitiesAsync'),
   testOptionsService.indexOf('export function accountManualTestEndpointModesForModel')

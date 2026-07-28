@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 	"golang.org/x/net/http/httpguts"
+	"juhe-ai/backend-go/internal/platform/upstreamurlpolicy"
 )
 
 const (
@@ -105,6 +105,7 @@ type Client struct {
 	maxResponseBodyBytes int64
 	urlPolicy            upstreamurlpolicy.Config
 	customTransport      bool
+	forwardHTTPProxy     bool
 }
 
 // Result contains bounded diagnostic bytes and the transport evidence needed
@@ -139,6 +140,14 @@ func NewClient(options Options) (*Client, error) {
 		}
 		roundTripper = owned
 	}
+	forwardHTTPProxy := false
+	if rawProxyURL := strings.TrimSpace(options.ProxyURL); rawProxyURL != "" {
+		parsedProxy, parseErr := parseProxyURL(rawProxyURL)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		forwardHTTPProxy = parsedProxy.Scheme == "http" || parsedProxy.Scheme == "https"
+	}
 	return &Client{
 		httpClient: &http.Client{
 			Transport: recordingRoundTripper{next: roundTripper},
@@ -152,6 +161,7 @@ func NewClient(options Options) (*Client, error) {
 		maxResponseBodyBytes: maxBody,
 		urlPolicy:            options.URLPolicy,
 		customTransport:      options.Transport != nil,
+		forwardHTTPProxy:     forwardHTTPProxy,
 	}, nil
 }
 
@@ -369,6 +379,9 @@ func (c *Client) executionTransport(request *http.Request, plan *upstreamurlpoli
 	if transport.Proxy == nil {
 		transport.DialContext = plan.DialContext
 		return transport, nil
+	}
+	if c.forwardHTTPProxy && request.URL.Scheme == "http" {
+		return nil, fmt.Errorf("plain HTTP upstream through an HTTP(S) forward proxy cannot preserve both a DNS-pinned target and the original Host header")
 	}
 	addresses := plan.Addresses()
 	if len(addresses) == 0 {

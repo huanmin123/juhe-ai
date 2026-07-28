@@ -541,6 +541,19 @@ export interface AccountMutationResult {
   changedFields: string[]
 }
 
+export interface AuthorizedAccountDispatchMutationPatch {
+  status?: AccountStatus
+  schedulable?: boolean
+  priority?: number
+  superPriorityEnabled?: boolean
+  fallbackEnabled?: boolean
+  failureStateCleared?: true
+}
+
+export interface AuthorizedAccountDispatchMutationResult extends AccountMutationResult {
+  patch: AuthorizedAccountDispatchMutationPatch
+}
+
 export interface AccountCreateResult {
   id: string
   status: AccountStatus
@@ -945,6 +958,11 @@ export type GroupEditDetail = Pick<
   GroupSummary,
   'id' | 'systemAccountId' | 'name' | 'providerCode' | 'description' | 'enabled' | 'isDefault' | 'groupType' | 'schedulingPolicy' | 'accessType'
 >
+
+export interface GroupMutationResult {
+  id: string
+  changedFields: string[]
+}
 
 export interface GroupListResult {
   items: GroupListItem[]

@@ -205,12 +205,21 @@ export const accountTrafficMigrationSchema = z.object({
 }).strict()
 
 export const authorizedAccountDispatchSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1),
   status: z.enum(['active', 'disabled']).optional(),
   priority: z.number().int().min(0).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clearFailureState: z.boolean().optional()
-}).strict()
+}).strict().superRefine((value, context) => {
+  const changedKeys = Object.keys(value).filter((key) => key !== 'expectedConfigRevision')
+  if (changedKeys.length === 0 || (changedKeys.length === 1 && value.clearFailureState !== true)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '请至少提交一项授权账户调度变更'
+    })
+  }
+})
 
 export const accountBatchEditContextSchema = z.object({
   accountIds: z.array(z.string().trim().min(1)).min(2).max(100)

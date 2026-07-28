@@ -123,6 +123,9 @@ export function useScopedRouteStrategiesApi(isManagementView: Ref<boolean>) {
     detail: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
       ? api.routeStrategies.detail(id, params)
       : api.myRouteStrategies.detail(id),
+    editBasicDetail: (id: string, params?: RouteStrategyMutationScopeParams) => isManagementView.value
+      ? api.routeStrategies.editBasicDetail(id, params)
+      : api.myRouteStrategies.editBasicDetail(id),
     create: (payload: RouteStrategyMutationPayload, params?: RouteStrategyMutationScopeParams) => isManagementView.value
       ? api.routeStrategies.create(payload, params)
       : api.myRouteStrategies.create(payload),

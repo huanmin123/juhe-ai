@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict'
+import { fork } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+if (process.env.JUHE_GATEWAY_API_KEY_INVALIDATION_CHILD === '1') {
+  await runDbServiceInvalidationChild()
+  process.exit(0)
+}
 
 const repositorySource = readFileSync(new URL('../../storage/gateway-api-key.repository.ts', import.meta.url), 'utf8')
 const invalidationSource = readFileSync(new URL('../../shared/gateway-cache-invalidation.ts', import.meta.url), 'utf8')
@@ -65,6 +72,7 @@ assert.match(dbServiceTypesSource, /type: 'db_service_gateway_api_key_cache_inva
 assert.match(dbServiceTypesSource, /type: 'db_service_gateway_api_key_cache_invalidation_response'/, 'IPC 类型必须声明 API Key 缓存失效回执')
 
 await assertIpcInvalidationAwaitsHandlers()
+await assertMemoryRuntimeStateCrossProcessInvalidation()
 
 console.log('跨实例 API Key 失效回归通过：Redis 读取前确认版本、memory DB service 等待 server 回执，异步旧读受代际围栏保护')
 
@@ -97,6 +105,121 @@ async function assertIpcInvalidationAwaitsHandlers(): Promise<void> {
   } finally {
     unregister()
   }
+}
+
+async function assertMemoryRuntimeStateCrossProcessInvalidation(): Promise<void> {
+  const { runtimeConfig } = await import('../../config/runtime.js')
+  const invalidation = await import('../../shared/gateway-cache-invalidation.js')
+  const dbServiceIpc = await import('../../modules/db-service/db-service-ipc.js')
+  runtimeConfig.processRole = 'server'
+  runtimeConfig.runtimeStateDriver = 'memory'
+
+  let observedMetadata: unknown
+  const unregister = invalidation.registerGatewayApiKeyValidationCacheInvalidator(async (apiKeyId, metadata) => {
+    if (apiKeyId !== 'key_cross_process_regression') return
+    await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    observedMetadata = metadata
+  })
+  const child = fork(fileURLToPath(import.meta.url), [], {
+    execArgv: process.execArgv,
+    env: {
+      ...process.env,
+      JUHE_GATEWAY_API_KEY_INVALIDATION_CHILD: '1',
+      JUHE_AI_RUNTIME_MODE: 'standalone',
+      JUHE_AI_PROCESS_ROLE: 'db-service',
+      JUHE_AI_DATABASE_DRIVER: 'sqlite',
+      JUHE_AI_CACHE_DRIVER: 'memory',
+      JUHE_AI_RUNTIME_STATE_DRIVER: 'memory'
+    },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+  })
+  let childOutput = ''
+  child.stdout?.on('data', (chunk) => { childOutput += String(chunk) })
+  child.stderr?.on('data', (chunk) => { childOutput += String(chunk) })
+  try {
+    dbServiceIpc.attachDbServiceProcess(child)
+    let listenerReadyResolve: (() => void) | undefined
+    let readyResolve: (() => void) | undefined
+    let completedResolve: (() => void) | undefined
+    const listenerReady = new Promise<void>((resolve) => { listenerReadyResolve = resolve })
+    const ready = new Promise<void>((resolve) => { readyResolve = resolve })
+    const completed = new Promise<void>((resolve) => { completedResolve = resolve })
+    const failed = new Promise<never>((_resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`跨进程 API Key 失效回归超时：${childOutput}`)), 10_000)
+      child.on('message', (message: unknown) => {
+        if (!isRecord(message)) return
+        if (message.type === 'gateway_api_key_invalidation_regression_listener_ready') listenerReadyResolve?.()
+        if (message.type === 'gateway_api_key_invalidation_regression_ready') readyResolve?.()
+        if (message.type === 'gateway_api_key_invalidation_regression_completed') {
+          clearTimeout(timeout)
+          completedResolve?.()
+        }
+      })
+      child.once('exit', (code) => {
+        if (code === 0 && observedMetadata) return
+        clearTimeout(timeout)
+        reject(new Error(`跨进程 API Key 失效子进程异常退出 ${code ?? 'unknown'}：${childOutput}`))
+      })
+    })
+    await Promise.race([listenerReady, failed])
+    child.send({ type: 'gateway_api_key_invalidation_regression_bootstrap' })
+    await Promise.race([ready, failed])
+    child.send({ type: 'gateway_api_key_invalidation_regression_start' })
+    await Promise.race([completed, failed])
+    assert.deepEqual(observedMetadata, {
+      source: 'local',
+      keyHashes: ['hash-before-cross-process', 'hash-after-cross-process']
+    }, 'memory runtime-state 下 server 应在 DB service 收到回执前执行专用失效 handler')
+  } finally {
+    unregister()
+    if (!child.killed && child.exitCode === null) child.kill()
+  }
+}
+
+async function runDbServiceInvalidationChild(): Promise<void> {
+  const bootstrap = waitForParentMessage('gateway_api_key_invalidation_regression_bootstrap', '等待跨进程 API Key 失效回归 bootstrap 超时')
+  await sendChildMessageAsync({ type: 'gateway_api_key_invalidation_regression_listener_ready' })
+  await bootstrap
+  const { runtimeConfig } = await import('../../config/runtime.js')
+  runtimeConfig.processRole = 'db-service'
+  runtimeConfig.runtimeStateDriver = 'memory'
+  await import('../../modules/db-service/db-service-ipc.js')
+  const invalidation = await import('../../shared/gateway-cache-invalidation.js')
+  await sendChildMessageAsync({ type: 'gateway_api_key_invalidation_regression_ready' })
+  await waitForParentMessage('gateway_api_key_invalidation_regression_start', '等待跨进程 API Key 失效回归启动超时')
+  await invalidation.notifyGatewayApiKeyValidationCacheInvalidationAsync(
+    'key_cross_process_regression',
+    'api_key_updated',
+    ['hash-before-cross-process', 'hash-after-cross-process']
+  )
+  await sendChildMessageAsync({ type: 'gateway_api_key_invalidation_regression_completed' })
+}
+
+async function waitForParentMessage(type: string, timeoutMessage: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(timeoutMessage)), 5_000)
+    const listener = (message: unknown): void => {
+      if (!isRecord(message) || message.type !== type) return
+      clearTimeout(timeout)
+      process.off('message', listener)
+      resolve()
+    }
+    process.on('message', listener)
+  })
+}
+
+async function sendChildMessageAsync(message: Record<string, unknown>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (!process.send) return reject(new Error('跨进程 API Key 失效回归缺少父进程 IPC'))
+    process.send(message, (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function assertOrdered(sourceText: string, markers: string[], message: string): void {

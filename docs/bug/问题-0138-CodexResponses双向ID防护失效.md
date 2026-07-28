@@ -46,11 +46,13 @@
 
 | 验证类型 | 覆盖 | 状态 |
 | --- | --- | --- |
-| 请求回归 | 真实账户派发、适配器重新引入、OAuth 字符串 body、字段保持 | 待最终回填 |
-| SSE 回归 | reasoning 先提交、后续坏 custom tool identity、完整 delta/done/output/completed | 待最终回填 |
-| 状态边界 | 未映射 identity 已观察后禁止补映射 | 待最终回填 |
-| 策略回归 | safe repair、strict、提交前换号、提交后不换号 | 待最终回填 |
-| 性能 | 100/1000/10000 item 与 SSE identity、100000 same-identity delta | 待最终回填 |
+| 请求回归 | 真实账户派发、适配器重新引入、OAuth 字符串 body、字段保持 | 通过 |
+| SSE 回归 | reasoning 先提交、后续坏 custom tool identity、完整 delta/done/output/completed | 通过 |
+| 状态边界 | 未映射 identity 已观察后禁止补映射 | 通过 |
+| 策略回归 | safe repair、strict、提交前换号、提交后不换号 | 通过 |
+| 性能 | 100/1000/10000 item 与 SSE identity、100000 same-identity delta | 通过 |
+
+仓库级 typecheck/build 已执行，但被本轮范围外的授权账户派发未完成改动阻断；失败文件与本修复无交集，本轮专项回归均通过。
 
 ## 下次遇到
 
@@ -58,4 +60,3 @@
 - “已检测”不等于“已修复”；确认修复后的字节是否真正写给客户端。
 - “发生过换号”不等于会话已恢复；要确认污染字段已从下一轮最终出站请求移除，并区分后续候选自己的无流量超时。
 - 模型检测可以证明协议和行为异常，不能仅凭隐藏 reasoning 文案证明模型真假。
-

@@ -491,6 +491,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { buildRouteStrategyMutationPatch, hasRouteStrategyMutationChanges } from './routeStrategyMutation'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -499,6 +500,7 @@ import type {
   ApiKeyHybridQualityPreference,
   ApiKeyHybridRoutingConfig,
   GroupOptionSummary,
+  RouteStrategyEditBasicDetail,
   RouteStrategyNormalRoutingConfig,
   RouteStrategyNormalSchedulingPreference,
   RouteStrategySpeedFirstConfig,
@@ -593,6 +595,7 @@ const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingIsDefault = ref(false)
 const editingSystemAccountId = ref<string>()
+let editingBaseline: RouteStrategyMutationPayload | undefined
 let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
@@ -838,6 +841,7 @@ watch(() => modelProviderCodes.value.join('\u0000'), () => {
 })
 watch(modalOpen, (open) => {
   if (open) return
+  editingBaseline = undefined
   clearGroupOptionsSearchTimer()
   clearModelOptionsSearchTimer()
   resetModelOptions()
@@ -1045,6 +1049,7 @@ function openCreate() {
   editingId.value = undefined
   editingIsDefault.value = false
   editingSystemAccountId.value = undefined
+  editingBaseline = undefined
   form.name = ''
   form.description = ''
   form.mode = 'normal'
@@ -1067,7 +1072,7 @@ async function openEdit(record: RouteStrategyListItem) {
   editDetailRequestToken = requestToken
   const requestSignature = editDetailRequestSignature(record.id, operationScopeParams?.systemAccountId)
   try {
-    const detail = await routeStrategiesApi.detail(record.id, operationScopeParams)
+    const detail = await routeStrategiesApi.editBasicDetail(record.id, operationScopeParams)
     if (!isCurrentEditDetailRequest(requestToken, requestSignature, record.id, operationScopeParams?.systemAccountId)) return
     fillEditForm(detail, record.systemAccountId)
   } catch (error) {
@@ -1097,7 +1102,7 @@ function isCurrentEditDetailRequest(token: number, signature: string, recordId: 
     && signature === editDetailRequestSignature(recordId, systemAccountId)
 }
 
-function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: string) {
+function fillEditForm(record: RouteStrategyEditBasicDetail, fallbackSystemAccountId?: string) {
   editingId.value = record.id
   editingIsDefault.value = record.isDefault
   editingSystemAccountId.value = record.systemAccountId ?? fallbackSystemAccountId
@@ -1115,6 +1120,8 @@ function fillEditForm(record: RouteStrategySummary, fallbackSystemAccountId?: st
   resetGroupOptions()
   resetRouteModelOptions()
   groupOptionsRaw.value = selectedGroupOptionsFromBindings(record.groupBindings)
+  const baseline = buildRouteStrategyFormPayload(false)
+  editingBaseline = baseline === false ? undefined : baseline
   modalOpen.value = true
 }
 
@@ -1135,27 +1142,21 @@ async function saveRouteStrategy() {
     return
   }
   if (!validateGroupBindingsForMode(groupBindings)) return
+  const completePayload = buildRouteStrategyFormPayload()
+  if (completePayload === false) return
+  const payload = editingId.value
+    ? (editingBaseline ? buildRouteStrategyMutationPatch(editingBaseline, completePayload) : undefined)
+    : completePayload
+  if (!payload) {
+    message.error('策略路由编辑基线缺失，请关闭弹窗后重试')
+    return
+  }
+  if (editingId.value && !hasRouteStrategyMutationChanges(payload)) {
+    message.info('没有需要保存的修改')
+    return
+  }
   saving.value = true
   try {
-    const payload: RouteStrategyMutationPayload = {
-      name,
-      description: form.description.trim() || null,
-      mode: form.mode,
-      status: form.status,
-      groupBindings
-    }
-    if (form.mode === 'hybrid_smart') {
-      const hybridRoutingConfig = buildHybridRoutingConfigPayload()
-      if (hybridRoutingConfig === false) return
-      payload.hybridRoutingConfig = hybridRoutingConfig
-      payload.normalRoutingConfig = null
-    } else if (form.mode === 'normal') {
-      payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
-      payload.hybridRoutingConfig = null
-    } else {
-      payload.normalRoutingConfig = null
-      payload.hybridRoutingConfig = null
-    }
     const operationScopeParams = routeStrategyOperationScopeParams()
     if (isManagementView.value && !operationScopeParams?.systemAccountId) {
       message.warning('请先选择目标系统账户')
@@ -1181,6 +1182,34 @@ async function saveRouteStrategy() {
   } finally {
     saving.value = false
   }
+}
+
+function buildRouteStrategyFormPayload(reportValidation = true): RouteStrategyMutationPayload | false {
+  const payload: RouteStrategyMutationPayload = {
+    name: form.name.trim(),
+    description: form.description.trim() || null,
+    mode: form.mode,
+    status: form.status,
+    groupBindings: form.groupBindings.map((binding, index) => ({
+      groupId: binding.groupId.trim(),
+      priority: bindingOrderUsesPosition.value ? index + 1 : binding.priority,
+      weight: binding.weight,
+      status: binding.status
+    }))
+  }
+  if (form.mode === 'hybrid_smart') {
+    const hybridRoutingConfig = buildHybridRoutingConfigPayload(reportValidation)
+    if (hybridRoutingConfig === false) return false
+    payload.hybridRoutingConfig = hybridRoutingConfig
+    payload.normalRoutingConfig = null
+  } else if (form.mode === 'normal') {
+    payload.normalRoutingConfig = buildNormalRoutingConfigPayload()
+    payload.hybridRoutingConfig = null
+  } else {
+    payload.normalRoutingConfig = null
+    payload.hybridRoutingConfig = null
+  }
+  return payload
 }
 
 async function deleteRouteStrategy(record: RouteStrategyListItem) {
@@ -1337,7 +1366,7 @@ function selectedGroupOptionsFromBindings(bindings: RouteStrategyGroupBindingSum
   return [...selectedGroups.values()]
 }
 
-function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem | RouteStrategySummary, 'systemAccountId'>): { systemAccountId: string } | undefined {
+function routeStrategyOperationScopeParams(record?: Pick<RouteStrategyListItem | RouteStrategySummary | RouteStrategyEditBasicDetail, 'systemAccountId'>): { systemAccountId: string } | undefined {
   const systemAccountId = record?.systemAccountId?.trim()
     || editingSystemAccountId.value?.trim()
     || routeStrategyScopeParams.value?.systemAccountId
@@ -1810,10 +1839,10 @@ function removeHybridLevelRoute(index: number) {
   normalizeHybridLevelRouteRanges()
 }
 
-function buildHybridRoutingConfigPayload(): ApiKeyHybridRoutingConfig | false {
+function buildHybridRoutingConfigPayload(reportValidation = true): ApiKeyHybridRoutingConfig | false {
   normalizeHybridLevelRouteRanges()
   const scoringModel = form.hybrid.scoringModel.trim()
-  if (!scoringModel) {
+  if (!scoringModel && reportValidation) {
     message.warning('请选择混合智能路由评分模型')
     return false
   }
@@ -1823,12 +1852,12 @@ function buildHybridRoutingConfigPayload(): ApiKeyHybridRoutingConfig | false {
     targetModel: route.targetModel.trim(),
     enabled: true
   }))
-  if (!levelRoutes.every((route) => route.targetModel)) {
+  if (!levelRoutes.every((route) => route.targetModel) && reportValidation) {
     message.warning('请选择每个等级范围的目标模型')
     return false
   }
   const distinctModels = new Set(levelRoutes.map((route) => route.targetModel.toLowerCase()))
-  if (distinctModels.size < 2) {
+  if (distinctModels.size < 2 && reportValidation) {
     message.warning('混合智能路由至少需要两个不同目标模型')
     return false
   }

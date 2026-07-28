@@ -24,6 +24,7 @@ const [
   { accountsRouter },
   { accountManualTestCapabilitiesContextFromDraft, resolveAccountManualTestSelectionAsync },
   { forceSelfAccessScope, requireAdmin, requireAuth },
+  { loadModelMappingsForAccountModel },
   { saveCustomProviderModel },
   { requestContextMiddleware },
   { closeSqliteReadWorkerPool },
@@ -33,6 +34,7 @@ const [
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/accounts/account-test-options.service.js'),
   import('../../modules/auth/auth.middleware.js'),
+  import('../../storage/account-model-mappings.repository.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../shared/request-context.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
@@ -104,6 +106,8 @@ try {
       systemAccountId: user.id,
       status: 'active',
       supportedApiProtocols: ['responses'],
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2,
       actorSystemAccountId: user.id
     })
   }
@@ -125,6 +129,8 @@ try {
     status: 'active',
     mode: 'image',
     supportedApiProtocols: ['responses', 'images'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
     actorSystemAccountId: user.id
   })
   saveCustomProviderModel({
@@ -143,7 +149,20 @@ try {
     name: '账户测试选项 HTTP 账户',
     type: 'api_key',
     groupId: group.id,
-    supportedModels: [encodedModelId],
+    supportedModels: [encodedModelId, responsesOnlyModelId],
+    modelMappings: [{
+      sourceModel: encodedModelId,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: responsesOnlyModelId,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }, {
+      sourceModel: mixedImageResponsesModelId,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: encodedModelId,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }],
     healthCheckModel: encodedModelId,
     credentials: {
       api_key: 'sk-account-test-options-http',
@@ -151,6 +170,11 @@ try {
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     }
   }, userAccess)
+  assert.deepEqual(
+    loadModelMappingsForAccountModel(account.id, encodedModelId).map((mapping) => mapping.sourceModel),
+    [encodedModelId],
+    '当前模型映射加载器不得返回同账户其他模型的映射'
+  )
   await assert.rejects(
     resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, imageModelId, 'responses_sse'),
     /不支持本次检查协议/,
@@ -403,7 +427,11 @@ function assertCapabilitiesQueryBoundary(sqlList: string[], label: string): void
 
 function assertLightweightCatalogQueries(sqlList: string[], label: string, targeted: boolean): void {
   const catalogQueries = sqlList.filter((sql) => /FROM\s+(?:provider_model_catalog|custom_provider_models)/i.test(sql))
-  assert(catalogQueries.length <= 2, `${label}模型目录最多允许内置与自定义各一次查询，实际 ${catalogQueries.length}`)
+  const maxCatalogQueries = targeted ? 4 : 2
+  assert(
+    catalogQueries.length <= maxCatalogQueries,
+    `${label}模型目录最多允许按当前模型${targeted ? '及其映射目标模型' : ''}定点读取内置与自定义目录，实际 ${catalogQueries.length}`
+  )
   assert(catalogQueries.length > 0, `${label}必须读取轻量模型目录`)
   for (const sql of catalogQueries) {
     assert.doesNotMatch(

@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import type { AccountListItem } from '@/types/domain'
 import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
+import { mergeAuthorizedDispatchMutation } from './accountListMutations'
 import {
   authorizedAccountUnavailableText,
   canEditAccount,
@@ -78,10 +79,22 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
       try {
+        const configRevision = Number(account.configRevision)
+        if (!Number.isInteger(configRevision) || configRevision < 1) {
+          message.warning('账户配置版本缺失，请刷新列表后重试')
+          return
+        }
+        const updatePayload = { ...payload, expectedConfigRevision: configRevision }
         const updated = options.isManagementView.value
-          ? await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
-          : await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
-        options.updateLoadedAccount(updated)
+          ? await api.accounts.updateAuthorizedDispatch(account.id, updatePayload, scopeParams)
+          : await api.myAccounts.updateAuthorizedDispatch(account.id, updatePayload)
+        if (updated.patch.status !== undefined
+          || updated.patch.schedulable !== undefined
+          || updated.patch.failureStateCleared === true) {
+          await options.loadData()
+        } else {
+          options.updateLoadedAccount(mergeAuthorizedDispatchMutation(account, updated))
+        }
         message.success(successText)
       } catch (error) {
         console.error(error)

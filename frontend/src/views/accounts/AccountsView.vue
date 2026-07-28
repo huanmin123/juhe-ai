@@ -338,6 +338,7 @@ import { useAccountListData } from './useAccountListData'
 import { useAccountProxyOptions } from './useAccountProxyOptions'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
+import { mergeAuthorizedDispatchMutation } from './accountListMutations'
 import { buildAccountBalancePayload, formatAccountBalance } from './accountBalanceQuery'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
@@ -539,10 +540,15 @@ async function saveAccountPriority(account: AccountListItem, priority: number): 
   const scopeParams = accountOperationScopeParams(account, accountScopeParams.value)
   try {
     if (isAuthorizedAccount(account)) {
+      const configRevision = Number(account.configRevision)
+      if (!Number.isInteger(configRevision) || configRevision < 1) {
+        message.warning('账户配置版本缺失，请刷新列表后重试')
+        return false
+      }
       const updated = isManagementView.value
-        ? await api.accounts.updateAuthorizedDispatch(account.id, { priority }, scopeParams)
-        : await api.myAccounts.updateAuthorizedDispatch(account.id, { priority })
-      updateLoadedAccount(updated)
+        ? await api.accounts.updateAuthorizedDispatch(account.id, { priority, expectedConfigRevision: configRevision }, scopeParams)
+        : await api.myAccounts.updateAuthorizedDispatch(account.id, { priority, expectedConfigRevision: configRevision })
+      updateLoadedAccount(mergeAuthorizedDispatchMutation(account, updated))
     } else {
       const configRevision = Number(account.configRevision)
       if (!Number.isInteger(configRevision) || configRevision < 1) {

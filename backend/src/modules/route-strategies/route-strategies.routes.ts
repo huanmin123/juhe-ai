@@ -7,6 +7,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   createRouteStrategyAsync,
   deleteRouteStrategyAsync,
+  findRouteStrategyEditBasicDetailAsync,
   findRouteStrategySummaryAsync,
   listCompleteRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
@@ -150,6 +151,24 @@ routeStrategiesRouter.get('/options', async (req, res, next) => {
   }
 })
 
+routeStrategiesRouter.get('/:id/edit-basic', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  try {
+    const routeStrategy = await findRouteStrategyEditBasicDetailAsync(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!routeStrategy) {
+      res.status(404).json({ message: '策略路由不存在' })
+      return
+    }
+    res.json(ok(routeStrategy))
+  } catch (error) {
+    next(error)
+  }
+})
+
 routeStrategiesRouter.get('/:id', async (req, res, next) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
@@ -229,9 +248,9 @@ routeStrategiesRouter.patch('/:id', async (req, res, next) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  let before: Awaited<ReturnType<typeof findRouteStrategySummaryAsync>>
+  let before: Awaited<ReturnType<typeof findRouteStrategyEditBasicDetailAsync>>
   try {
-    before = await findRouteStrategySummaryAsync(req.params.id, requestAccess)
+    before = await findRouteStrategyEditBasicDetailAsync(req.params.id, requestAccess)
   } catch (error) {
     next(error)
     return
@@ -242,13 +261,24 @@ routeStrategiesRouter.patch('/:id', async (req, res, next) => {
     return
   }
   try {
+    let didChange = false
     const routeStrategy = await runLoggedOperationAsync(async () => {
       const routeStrategy = await updateRouteStrategyAsync(req.params.id, parsed.data as Record<string, unknown>, requestAccess)
       if (!routeStrategy) throw new Error('策略路由不存在')
       const ownerSystemAccountId = resolveOperationOwner(routeStrategy as unknown as Record<string, unknown>, requestAccess)
+      const changes = diffSafeFields(before as unknown as Record<string, unknown> | undefined, routeStrategy as unknown as Record<string, unknown>, {
+        name: '名称',
+        description: '说明',
+        mode: '路由模式',
+        status: '状态',
+        groupBindings: '绑定分组',
+        normalRoutingConfig: '普通路由调度配置',
+        hybridRoutingConfig: '混合智能路由配置'
+      })
+      didChange = changes.length > 0
       return {
         result: routeStrategy,
-        log: {
+        log: didChange ? {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'route_strategies',
@@ -258,20 +288,14 @@ routeStrategiesRouter.patch('/:id', async (req, res, next) => {
           resourceId: routeStrategy.id,
           resourceName: routeStrategy.name,
           summary: `更新策略路由：${routeStrategy.name}`,
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, routeStrategy as unknown as Record<string, unknown>, {
-            name: '名称',
-            description: '说明',
-            mode: '路由模式',
-            status: '状态',
-            groupBindings: '绑定分组',
-            normalRoutingConfig: '普通路由调度配置',
-            hybridRoutingConfig: '混合智能路由配置'
-          }),
+          changes,
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
-        }
+        } : undefined
       }
     }, req)
-    await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
+    if (didChange) {
+      await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
+    }
     res.json(ok(routeStrategy))
   } catch (error) {
     if (error instanceof Error && error.message === '策略路由不存在') {

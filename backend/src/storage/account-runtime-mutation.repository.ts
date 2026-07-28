@@ -10,6 +10,7 @@ import { accountEnabledGroupId } from './account-group-binding-write.repository.
 import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
+import { normalizedDispatchPriority } from './account-write-input.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'

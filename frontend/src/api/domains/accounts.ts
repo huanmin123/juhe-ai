@@ -10,6 +10,7 @@ import type {
   AccountEditBasicDetail,
   AccountListResult,
   AccountMutationResult,
+  AuthorizedAccountDispatchMutationResult,
   AccountOptionSummary,
   AccountSummary,
   AccountTagSummary,
@@ -63,6 +64,15 @@ export interface AccountUpdatePayload extends Record<string, unknown> {
   expectedConfigRevision: number
 }
 
+export interface AuthorizedAccountDispatchPayload {
+  expectedConfigRevision: number
+  status?: 'active' | 'disabled'
+  priority?: number
+  superPriorityEnabled?: boolean
+  fallbackEnabled?: boolean
+  clearFailureState?: boolean
+}
+
 export const accountsApi = {
   list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
@@ -84,7 +94,7 @@ export const accountsApi = {
   batchEditContext: (accountIds: string[], params?: ListParams) => unwrap<AccountSummary[]>(http.post('/accounts/batch-edit-context', { accountIds }, { params })),
   batchUpdate: (payload: AccountBatchEditRequest, params?: ListParams) => unwrap<AccountBatchEditResult>(http.post('/accounts/batch-update', payload, { params })),
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
-  updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
+  updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload, params?: ListParams) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
   testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/accounts/${id}/test-options`, { params, signal: options?.signal })),
   testModelCapabilities: (id: string, modelId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { params, signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }, params?: ListParams) => unwrap<AccountMutationResult>(http.post(`/accounts/${id}/group`, payload, { params })),
@@ -122,7 +132,7 @@ export const myAccountsApi = {
   batchEditContext: (accountIds: string[]) => unwrap<AccountSummary[]>(http.post('/my-accounts/batch-edit-context', { accountIds })),
   batchUpdate: (payload: AccountBatchEditRequest) => unwrap<AccountBatchEditResult>(http.post('/my-accounts/batch-update', payload)),
   updateTags: (id: string, payload: { tags: string[]; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.patch(`/my-accounts/${id}/tags`, payload)),
-  updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
+  updateAuthorizedDispatch: (id: string, payload: AuthorizedAccountDispatchPayload) => unwrap<AuthorizedAccountDispatchMutationResult>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
   testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/my-accounts/${id}/test-options`, { params, signal: options?.signal })),
   testModelCapabilities: (id: string, modelId: string, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/my-accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string; expectedConfigRevision: number }) => unwrap<AccountMutationResult>(http.post(`/my-accounts/${id}/group`, payload)),

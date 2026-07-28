@@ -1,15 +1,16 @@
 import type { Router } from 'express'
 
-import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { updateAuthorizedAccountBindingDispatchAsync } from '../../storage/repositories.js'
+import {
+  AuthorizedAccountDispatchRevisionConflictError,
+  updateAuthorizedAccountBindingDispatchAsync,
+  type AuthorizedAccountDispatchMutationResult
+} from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
-import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { operationMode, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { authorizedAccountDispatchSchema } from './account-request.schemas.js'
-import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
   router.patch('/:id/authorized-dispatch', async (req, res) => {
@@ -21,67 +22,81 @@ export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const parsed = authorizedAccountDispatchSchema.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json(badRequest('授权账户调度参数无效'))
+      res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '授权账户调度参数无效'))
       return
     }
     try {
       const account = await runLoggedOperationAsync(async () => {
-        const account = await updateAuthorizedAccountBindingDispatchAsync(req.params.id, parsed.data, requestAccess)
-        if (!account) {
+        const patched = await updateAuthorizedAccountBindingDispatchAsync(req.params.id, parsed.data, requestAccess)
+        if (!patched) {
           throw new Error('授权账户不存在或尚未绑定分组')
         }
-        const ownerSystemAccountId = effectiveRequestSystemAccountId(requestAccess)
+        const ownerSystemAccountId = patched.ownerSystemAccountId || effectiveRequestSystemAccountId(requestAccess)
         return {
-          result: account,
-          log: {
+          result: patched,
+          log: patched.changedFields.length > 0 ? {
             operationScopeSystemAccountId: ownerSystemAccountId,
             mode: operationMode(requestAccess),
             module: 'accounts',
             action: 'authorized_dispatch',
             operationKey: 'accounts.authorized_dispatch',
             resourceType: 'account',
-            resourceId: account.id,
-            resourceName: account.name,
-            summary: `调整授权账户使用设置：${account.name}`,
-            changes: [
-              ...(Object.prototype.hasOwnProperty.call(parsed.data, 'status') ? [safeChange('status', '实例状态', undefined, parsed.data.status)] : []),
-              ...(Object.prototype.hasOwnProperty.call(parsed.data, 'priority') ? [safeChange('priority', '分组内优先级', undefined, parsed.data.priority)] : []),
-              ...(Object.prototype.hasOwnProperty.call(parsed.data, 'superPriorityEnabled') ? [safeChange('superPriorityEnabled', '分组内超级优先', undefined, parsed.data.superPriorityEnabled)] : []),
-              ...(Object.prototype.hasOwnProperty.call(parsed.data, 'fallbackEnabled') ? [safeChange('fallbackEnabled', '分组内降级备用', undefined, parsed.data.fallbackEnabled)] : []),
-              ...(parsed.data.clearFailureState === true ? [safeChange('clearFailureState', '恢复实例异常状态', false, true)] : [])
-            ],
+            resourceId: patched.id,
+            resourceName: patched.name,
+            summary: `调整授权账户使用设置：${patched.name}`,
+            changes: patched.changes.map((change) => safeChange(
+              change.field,
+              authorizedDispatchChangeLabel(change.field),
+              change.before,
+              change.after
+            )),
             viewers: viewer(ownerSystemAccountId, 'resource_owner')
-          }
+          } : undefined
         }
       }, req)
-      if (!account) {
-        res.status(404).json({ message: '授权账户不存在或尚未绑定分组' })
-        return
-      }
-      if (parsed.data.clearFailureState === true || parsed.data.status === 'active') {
+      if (account.runtimeRestoreRequired) {
         await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
       }
-      res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
+      res.json(ok({
+        id: account.id,
+        configRevision: account.configRevision,
+        changedFields: account.changedFields,
+        patch: account.patch
+      }))
     } catch (error) {
-      res.status(400).json(badRequest(error instanceof Error ? error.message : '更新授权账户调度设置失败'))
+      if (error instanceof AuthorizedAccountDispatchRevisionConflictError) {
+        res.status(409).json(badRequest('账户配置已被其他操作更新，请刷新后重试'))
+        return
+      }
+      const message = error instanceof Error ? error.message : '更新授权账户调度设置失败'
+      if (message === '授权账户不存在或尚未绑定分组') {
+        res.status(404).json({ message })
+        return
+      }
+      res.status(400).json(badRequest(message))
     }
   })
 }
 
-async function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: RequestAccessScope): Promise<void> {
-  const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
-    : undefined
+async function clearAccountGatewayRuntimeAfterRestore(
+  account: Pick<AuthorizedAccountDispatchMutationResult, 'id' | 'authorizedBinding'>,
+  _access?: RequestAccessScope
+): Promise<void> {
   await clearServerAccountRuntimeAvailability({
     accountId: account.id,
-    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
-      ? {
-          systemAccountId,
-          groupId: account.boundGroupId,
-          accountAuthorizationId: account.accountAuthorizationId
-        }
-      : undefined
+    authorizedBinding: account.authorizedBinding
   }).catch(() => undefined)
+}
+
+function authorizedDispatchChangeLabel(field: string): string {
+  return ({
+    status: '实例状态',
+    schedulable: '参与调度',
+    priority: '分组内优先级',
+    superPriorityEnabled: '分组内超级优先',
+    fallbackEnabled: '分组内降级备用',
+    failureState: '恢复实例异常状态'
+  } as Record<string, string>)[field] ?? field
 }
 
 function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | undefined {

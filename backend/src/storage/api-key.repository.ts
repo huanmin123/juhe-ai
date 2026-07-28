@@ -105,15 +105,15 @@ interface ApiKeyMutationRow {
   id: string
   system_account_id: string
   name: string
-  key_hash: string
-  description: string | null
-  route_strategy_id: string
-  status: 'active' | 'disabled'
+  key_hash?: string
+  description?: string | null
+  route_strategy_id?: string
+  status?: 'active' | 'disabled'
   is_default?: number | string | boolean | null
   purpose?: string | null
-  expires_at: string | null
-  quota_limits_json: string | null
-  availability_schedule_json: string | null
+  expires_at?: string | null
+  quota_limits_json?: string | null
+  availability_schedule_json?: string | null
   updated_at: string
 }
 
@@ -897,6 +897,49 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
   return undefined
 }
 
+function apiKeyPatchSelectColumns(client: DatabaseClient, input: Record<string, unknown>): string {
+  const columns = new Set<string>([
+    'api_keys.id',
+    'api_keys.system_account_id',
+    'api_keys.name',
+    apiKeyRevisionSelectExpression(client)
+  ])
+  const hasInput = (field: string): boolean => Object.hasOwn(input, field)
+  const hasNameInput = hasInput('name')
+  const hasRouteStrategyInput = hasInput('routeStrategyId')
+  const hasStatusInput = hasInput('status')
+  const hasExpiresAtInput = hasInput('expiresAt')
+  const hasQuotaLimitsInput = hasInput('quotaLimits')
+  const hasScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
+
+  if (hasNameInput || hasRouteStrategyInput) {
+    columns.add('api_keys.is_default')
+    columns.add('api_keys.purpose')
+  }
+  if (hasInput('description')) columns.add('api_keys.description')
+  if (hasRouteStrategyInput) columns.add('api_keys.route_strategy_id')
+  if (hasStatusInput || hasQuotaLimitsInput || hasScheduleInput) {
+    columns.add('api_keys.status')
+    columns.add('api_keys.quota_limits_json')
+  }
+  if (hasExpiresAtInput) columns.add('api_keys.expires_at')
+  if (hasScheduleInput) columns.add('api_keys.availability_schedule_json')
+  if (hasRouteStrategyInput || hasStatusInput || hasExpiresAtInput || hasQuotaLimitsInput || hasScheduleInput) {
+    columns.add('api_keys.key_hash')
+  }
+  return [...columns].join(',\n          ')
+}
+
+function requiredApiKeyMutationColumn<K extends keyof ApiKeyMutationRow>(
+  row: ApiKeyMutationRow,
+  column: K
+): Exclude<ApiKeyMutationRow[K], undefined> {
+  if (!Object.hasOwn(row, column)) {
+    throw new Error(`API Key PATCH 内部投影缺少字段：${String(column)}`)
+  }
+  return row[column] as Exclude<ApiKeyMutationRow[K], undefined>
+}
+
 export async function patchApiKeyAsync(
   id: string,
   input: Record<string, unknown>,
@@ -914,19 +957,7 @@ export async function patchApiKeyAsync(
       const lockClause = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
       const current = await tx.one<ApiKeyMutationRow>(`
         SELECT
-          api_keys.id,
-          api_keys.system_account_id,
-          api_keys.name,
-          api_keys.key_hash,
-          api_keys.description,
-          api_keys.route_strategy_id,
-          api_keys.status,
-          api_keys.is_default,
-          api_keys.purpose,
-          api_keys.expires_at,
-          api_keys.quota_limits_json,
-          api_keys.availability_schedule_json,
-          ${apiKeyRevisionSelectExpression(tx)}
+          ${apiKeyPatchSelectColumns(tx, input)}
         FROM ${apiKeyTable(tx, 'api_keys')} api_keys
         WHERE api_keys.id = ?${scope.clause}
         LIMIT 1${lockClause}
@@ -943,9 +974,18 @@ export async function patchApiKeyAsync(
       const setClauses: string[] = []
       const setParams: unknown[] = []
       let nextName = current.name
-      let nextStatus = current.status
-      let nextQuotaLimitsJson = current.quota_limits_json
-      let nextAvailabilitySchedule = parseApiKeyAvailabilityScheduleJson(current.availability_schedule_json)
+      const hasStatusInput = Object.hasOwn(input, 'status')
+      const hasQuotaLimitsInput = Object.hasOwn(input, 'quotaLimits')
+      const hasScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
+      let nextStatus = hasStatusInput || hasQuotaLimitsInput || hasScheduleInput
+        ? requiredApiKeyMutationColumn(current, 'status')
+        : undefined
+      let nextQuotaLimitsJson = hasStatusInput || hasQuotaLimitsInput || hasScheduleInput
+        ? requiredApiKeyMutationColumn(current, 'quota_limits_json')
+        : undefined
+      let nextAvailabilitySchedule = hasScheduleInput
+        ? parseApiKeyAvailabilityScheduleJson(requiredApiKeyMutationColumn(current, 'availability_schedule_json'))
+        : undefined
       const mutationNow = new Date()
 
       const addChange = (field: ApiKeyMutableField, previous: unknown, next: unknown): void => {
@@ -958,8 +998,8 @@ export async function patchApiKeyAsync(
         const value = normalizedApiKeyName(input.name)
         assertApiKeyNameChangeAllowed({
           name: current.name,
-          isDefault: normalizeApiKeyDefaultFlag(current.is_default),
-          purpose: current.purpose === 'chat' ? 'chat' : 'general'
+          isDefault: normalizeApiKeyDefaultFlag(requiredApiKeyMutationColumn(current, 'is_default')),
+          purpose: requiredApiKeyMutationColumn(current, 'purpose') === 'chat' ? 'chat' : 'general'
         }, value)
         if (value !== current.name) {
           nextName = value
@@ -972,7 +1012,7 @@ export async function patchApiKeyAsync(
 
       if (Object.hasOwn(input, 'description')) {
         const value = normalizeOptionalApiKeyDescription(input.description)
-        const previous = current.description ?? undefined
+        const previous = requiredApiKeyMutationColumn(current, 'description') ?? undefined
         if (value !== previous) {
           addChange('description', previous, value)
           setClauses.push('description = ?')
@@ -983,8 +1023,12 @@ export async function patchApiKeyAsync(
 
       if (Object.hasOwn(input, 'routeStrategyId')) {
         const candidate = typeof input.routeStrategyId === 'string' ? input.routeStrategyId.trim() : input.routeStrategyId
-        if (candidate !== current.route_strategy_id) {
-          if (normalizeApiKeyDefaultFlag(current.is_default) && current.purpose !== 'chat') {
+        const currentRouteStrategyId = requiredApiKeyMutationColumn(current, 'route_strategy_id')
+        if (candidate !== currentRouteStrategyId) {
+          if (
+            normalizeApiKeyDefaultFlag(requiredApiKeyMutationColumn(current, 'is_default'))
+            && requiredApiKeyMutationColumn(current, 'purpose') !== 'chat'
+          ) {
             throw new Error('默认 API Key 不允许更换策略路由')
           }
           const routeStrategyId = await assertRouteStrategySelectableForApiKeyAsync(
@@ -995,7 +1039,7 @@ export async function patchApiKeyAsync(
           )
           const routeStrategy = await apiKeyRouteStrategyReferenceAsync(tx, current.system_account_id, routeStrategyId)
           if (!routeStrategy) throw new Error('API Key 绑定的策略路由不存在或不属于当前用户')
-          addChange('routeStrategyId', current.route_strategy_id, routeStrategyId)
+          addChange('routeStrategyId', currentRouteStrategyId, routeStrategyId)
           setClauses.push('route_strategy_id = ?')
           setParams.push(routeStrategyId)
           Object.assign(rowPatch, {
@@ -1009,7 +1053,7 @@ export async function patchApiKeyAsync(
 
       if (Object.hasOwn(input, 'expiresAt')) {
         const value = normalizeOptionalApiKeyExpiresAt(input.expiresAt)
-        const previous = current.expires_at ?? undefined
+        const previous = requiredApiKeyMutationColumn(current, 'expires_at') ?? undefined
         if (value !== previous) {
           addChange('expiresAt', previous, value)
           setClauses.push('expires_at = ?')
@@ -1018,19 +1062,20 @@ export async function patchApiKeyAsync(
         }
       }
 
-      if (Object.hasOwn(input, 'quotaLimits')) {
-        const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits, parseRequestQuotaLimitsJson(current.quota_limits_json))
+      if (hasQuotaLimitsInput) {
+        const currentQuotaLimitsJson = requiredApiKeyMutationColumn(current, 'quota_limits_json')
+        const currentQuotaLimits = parseRequestQuotaLimitsJson(currentQuotaLimitsJson)
+        const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits, currentQuotaLimits)
         const quotaLimitsJson = requestQuotaLimitsJson(quotaLimits)
-        if (quotaLimitsJson !== current.quota_limits_json) {
+        if (quotaLimitsJson !== currentQuotaLimitsJson) {
           nextQuotaLimitsJson = quotaLimitsJson
-          addChange('quotaLimits', parseRequestQuotaLimitsJson(current.quota_limits_json), quotaLimits)
+          addChange('quotaLimits', currentQuotaLimits, quotaLimits)
           setClauses.push('quota_limits_json = ?')
           setParams.push(quotaLimitsJson)
           rowPatch.quotaLimits = quotaLimits
         }
       }
 
-      const hasScheduleInput = isApiKeyAvailabilityScheduleInputPresent(input)
       if (hasScheduleInput) {
         const schedule = apiKeyAvailabilityScheduleFromRequest(input)
         if (apiKeyAvailabilityScheduleJson(schedule) !== apiKeyAvailabilityScheduleJson(nextAvailabilitySchedule)) {
@@ -1045,17 +1090,20 @@ export async function patchApiKeyAsync(
         }
       }
 
-      const requestedStatus = Object.hasOwn(input, 'status')
-        ? normalizeApiKeyStatus(input.status, current.status)
-        : current.status
-      nextStatus = hasScheduleInput
-        ? apiKeyStatusForScheduleMutation({ requestedStatus, schedule: nextAvailabilitySchedule, now: mutationNow })
-        : requestedStatus
-      if (nextStatus !== current.status) {
-        addChange('status', current.status, nextStatus)
-        setClauses.push('status = ?')
-        setParams.push(nextStatus)
-        rowPatch.status = nextStatus
+      if (hasStatusInput || hasScheduleInput) {
+        const currentStatus = requiredApiKeyMutationColumn(current, 'status')
+        const requestedStatus = hasStatusInput
+          ? normalizeApiKeyStatus(input.status, currentStatus)
+          : currentStatus
+        nextStatus = hasScheduleInput
+          ? apiKeyStatusForScheduleMutation({ requestedStatus, schedule: nextAvailabilitySchedule, now: mutationNow })
+          : requestedStatus
+        if (nextStatus !== currentStatus) {
+          addChange('status', currentStatus, nextStatus)
+          setClauses.push('status = ?')
+          setParams.push(nextStatus)
+          rowPatch.status = nextStatus
+        }
       }
 
       if (!changedFields.length) {
@@ -1092,7 +1140,9 @@ export async function patchApiKeyAsync(
       }
 
       rowPatch.revision = revision
-      committedKeyHash = current.key_hash
+      if (changedFields.some((field) => ['routeStrategyId', 'status', 'expiresAt', 'quotaLimits'].includes(field))) {
+        committedKeyHash = requiredApiKeyMutationColumn(current, 'key_hash')
+      }
       return {
         result: { id: current.id, revision, changedFields, rowPatch },
         ownerSystemAccountId: current.system_account_id,

@@ -127,10 +127,19 @@ try {
       SELECT RAISE(ABORT, 'unrelated api key column updated');
     END
   `)
-  const noOp = await repositories.patchApiKeyAsync(created.id, { description: '初始说明' }, created.revision, access)
+  const noOpCapture = await captureBusinessSql(() => (
+    repositories.patchApiKeyAsync(created.id, { description: '初始说明' }, created.revision, access)
+  ))
+  const noOp = noOpCapture.result
   assert(noOp)
   assert.deepEqual(noOp.result.changedFields, [], '相同值 PATCH 应为 no-op')
   assert.equal(noOp.result.revision, created.revision, 'no-op 不得推进 revision')
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(noOpCapture.sql),
+    ['description', 'id', 'name', 'system_account_id', 'updated_at'],
+    '说明 PATCH 只应读取定位、审计、revision 与说明旧值'
+  )
+  assert.equal(noOpCapture.sql.length, 1, '说明 no-op 应只执行一条窄 SELECT，不得产生 DML 或关系同步')
   assert.deepEqual(runtimeInvalidations, [], 'no-op 不得失效 gateway runtime')
   assert.deepEqual(quotaInvalidations, [], 'no-op 不得失效 quota cache')
 
@@ -152,14 +161,20 @@ try {
   database.exec('DROP TRIGGER api_key_demand_write_unrelated_columns_guard')
 
   const staleRevision = descriptionPatch.result.revision
-  const namePatch = await repositories.patchApiKeyAsync(
+  const namePatchCapture = await captureBusinessSql(() => repositories.patchApiKeyAsync(
     created.id,
     { name: `${created.name} 改` },
     staleRevision,
     access
-  )
+  ))
+  const namePatch = namePatchCapture.result
   assert(namePatch)
   assert.deepEqual(namePatch.result.changedFields, ['name'])
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(namePatchCapture.sql),
+    ['id', 'is_default', 'name', 'purpose', 'system_account_id', 'updated_at'],
+    '名称 PATCH 只应额外读取默认 Key 限制所需字段'
+  )
   assert.deepEqual(runtimeInvalidations, [], '名称变更不得失效 gateway runtime')
   assert.deepEqual(quotaInvalidations, [], '名称变更不得失效 quota cache')
 
@@ -179,14 +194,20 @@ try {
 
   const initialGatewayRuntime = await gatewayRuntimeCache.readCachedGatewayRuntimeAsync(created.key)
   assert.equal(initialGatewayRuntime.apiKey?.route_strategy_id, preferredRoute.id, '运行时预热应读取变更前路由')
-  const routePatch = await repositories.patchApiKeyAsync(
+  const routePatchCapture = await captureBusinessSql(() => repositories.patchApiKeyAsync(
     created.id,
     { routeStrategyId: alternateRoute.id },
     namePatch.result.revision,
     access
-  )
+  ))
+  const routePatch = routePatchCapture.result
   assert(routePatch)
   assert.deepEqual(routePatch.result.changedFields, ['routeStrategyId'])
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(routePatchCapture.sql),
+    ['id', 'is_default', 'key_hash', 'name', 'purpose', 'route_strategy_id', 'system_account_id', 'updated_at'],
+    '路由 PATCH 只应读取默认 Key 限制、旧路由与定点鉴权失效所需字段'
+  )
   const gatewayRuntimeAfterRoutePatch = await gatewayRuntimeCache.readCachedGatewayRuntimeAsync(created.key)
   assert.equal(
     gatewayRuntimeAfterRoutePatch.apiKey?.route_strategy_id,
@@ -227,10 +248,16 @@ try {
   assert.deepEqual(quotaInvalidations, [], '回滚事务不得触发 quota 失效')
   database.exec('DROP TRIGGER api_key_demand_write_quota_binding_failure')
 
-  const quotaPatch = await repositories.patchApiKeyAsync(created.id, {
+  const quotaPatchCapture = await captureBusinessSql(() => repositories.patchApiKeyAsync(created.id, {
     quotaLimits: { hourly: { enabled: true, hours: 7, limit: 2.5 } }
-  }, expiresPatch.result.revision, access)
+  }, expiresPatch.result.revision, access))
+  const quotaPatch = quotaPatchCapture.result
   assert(quotaPatch)
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(quotaPatchCapture.sql),
+    ['id', 'key_hash', 'name', 'quota_limits_json', 'status', 'system_account_id', 'updated_at'],
+    '额度 PATCH 只应额外读取额度同步与鉴权失效所需字段'
+  )
   assert.equal(quotaBinding(created.id)?.window_hours, 7, '真实额度变化应在同一事务更新小时窗口')
   assert.equal(runtimeInvalidations.length, 0, '额度变化只需定点 validation/quota 失效，不得清理全局 gateway runtime')
   assert.deepEqual(quotaInvalidations, [created.id], '额度变化应只失效当前 API Key 的 quota cache')
@@ -249,10 +276,32 @@ try {
   const gatewayRuntimeAfterEnable = await gatewayRuntimeCache.readCachedGatewayRuntimeAsync(created.key)
   assert.equal(gatewayRuntimeAfterEnable.apiKey?.status, 'active', '重新启用后下一次运行时读取必须立即恢复当前 Key')
 
-  const statusNoOp = await repositories.patchApiKeyAsync(created.id, { status: 'active' }, active.result.revision, access)
+  const statusNoOpCapture = await captureBusinessSql(() => (
+    repositories.patchApiKeyAsync(created.id, { status: 'active' }, active.result.revision, access)
+  ))
+  const statusNoOp = statusNoOpCapture.result
   assert(statusNoOp)
   assert.deepEqual(statusNoOp.result.changedFields, [], '相同状态 PATCH 应为 no-op')
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(statusNoOpCapture.sql),
+    ['id', 'key_hash', 'name', 'quota_limits_json', 'status', 'system_account_id', 'updated_at'],
+    '状态 PATCH 必须携带额度联动与鉴权失效所需最小字段'
+  )
+  assert.equal(statusNoOpCapture.sql.length, 1, '状态 no-op 应只执行一条窄 SELECT，不得同步额度或写 revision')
   assert.equal(runtimeInvalidations.length, 0, '相同状态不得触发 gateway runtime 失效')
+
+  const scheduleNoOpCapture = await captureBusinessSql(() => (
+    repositories.patchApiKeyAsync(created.id, { availabilitySchedule: null }, statusNoOp.result.revision, access)
+  ))
+  const scheduleNoOp = scheduleNoOpCapture.result
+  assert(scheduleNoOp)
+  assert.deepEqual(scheduleNoOp.result.changedFields, [], '相同时间计划 PATCH 应为 no-op')
+  assert.deepEqual(
+    apiKeyPatchSelectColumnsFromSql(scheduleNoOpCapture.sql),
+    ['availability_schedule_json', 'id', 'key_hash', 'name', 'quota_limits_json', 'status', 'system_account_id', 'updated_at'],
+    '时间计划 PATCH 只应读取计划、状态联动、额度同步与鉴权失效所需字段'
+  )
+  assert.equal(scheduleNoOpCapture.sql.length, 1, '时间计划 no-op 应只执行一条窄 SELECT，不得产生 DML')
 
   const runtimeInvalidationsBeforeRefresh = runtimeInvalidations.length
   const quotaInvalidationsBeforeRefresh = quotaInvalidations.length
@@ -349,6 +398,33 @@ function rawApiKeyRow(apiKeyId: string): {
   return row
 }
 
+async function captureBusinessSql<T>(operation: () => Promise<T>): Promise<{ result: T; sql: string[] }> {
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const sql: string[] = []
+  database.prepare = ((statementSql: string) => {
+    sql.push(statementSql)
+    return originalPrepare(statementSql)
+  }) as typeof database.prepare
+  try {
+    return { result: await operation(), sql }
+  } finally {
+    database.prepare = originalPrepare
+  }
+}
+
+function apiKeyPatchSelectColumnsFromSql(sql: readonly string[]): string[] {
+  const selectSql = sql.find((statementSql) => (
+    /\bFROM\s+["`]?api_keys["`]?\s+api_keys\b/i.test(statementSql)
+    && /\bWHERE\s+api_keys\.id\s*=\s*\?/i.test(statementSql)
+  ))
+  assert(selectSql, `未捕获到 API Key PATCH 定位 SELECT：${sql.join('\n')}`)
+  const selectList = selectSql.match(/\bSELECT\b([\s\S]*?)\bFROM\s+["`]?api_keys["`]?\s+api_keys\b/i)?.[1]
+  assert(selectList, `无法解析 API Key PATCH SELECT 投影：${selectSql}`)
+  return [...selectList.matchAll(/\bapi_keys\.([a-z_]+)\b/gi)]
+    .map((match) => match[1].toLowerCase())
+    .sort()
+}
+
 function assertSourceContracts(): void {
   const repositorySource = readFileSync(fileURLToPath(new URL('../../storage/api-key.repository.ts', import.meta.url)), 'utf8')
   const listSource = sourceBetween(repositorySource, 'function queryApiKeys(', 'function buildPostgresApiKeyKeywordCte(')
@@ -364,6 +440,7 @@ function assertSourceContracts(): void {
   const patchSource = sourceBetween(repositorySource, 'export async function patchApiKeyAsync(', 'function apiKeyStatusForScheduleMutation(')
   assert.match(patchSource, /SET \$\{setClauses\.join\(', '\)\}/, 'PATCH 必须按真实变化动态生成 SET')
   assert.match(patchSource, /AND updated_at = \?/, 'PATCH 必须由数据库 CAS 保护 revision')
+  assert.match(patchSource, /apiKeyPatchSelectColumns\(tx, input\)/, 'PATCH 定位 SELECT 必须按提交字段生成投影')
   assert.doesNotMatch(patchSource, /findApiKeySummary/, 'PATCH 不得在写前或写后物化完整摘要')
   assert.doesNotMatch(patchSource, /notifyGatewayRuntimeCacheInvalidation|runtime:\s*true/, 'PATCH 定点 validation 失效后不得清理无关全局 runtime cache')
 

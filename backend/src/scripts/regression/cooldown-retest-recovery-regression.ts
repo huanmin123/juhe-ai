@@ -1136,11 +1136,15 @@ try {
     })
     statement.run(integrityCase.originalValue, integrityCase.targetId)
     if (integrityCase.allowExpiredAccountMaintenance) {
-      const reactivated = repositories.updateAuthorizedAccountBindingDispatch(authorizedInstance.id, {
+      const reactivatedRevision = repositories.listAccounts(granteeAccess)
+        .find((account) => account.id === authorizedInstance.id)?.configRevision
+      assert(Number.isInteger(reactivatedRevision) && Number(reactivatedRevision) >= 1, '授权实例恢复必须携带配置版本')
+      const reactivated = await repositories.updateAuthorizedAccountBindingDispatchAsync(authorizedInstance.id, {
+        expectedConfigRevision: Number(reactivatedRevision),
         status: 'active',
         clearFailureState: true
       }, granteeAccess)
-      assert.equal(reactivated?.status, 'active', '目标过期维护后授权实例必须能恢复测试基线')
+      assert.equal(reactivated?.patch.status, 'active', '目标过期维护后授权实例必须能恢复测试基线')
       const reactivatedTestAccount = repositories.findAccountForTest(authorizedInstance.id, granteeAccess)
       assert(reactivatedTestAccount, '目标过期维护后必须重新读取授权测试账户')
       const recooled = repositories.markAccountTestTemporaryUnavailable(reactivatedTestAccount, '恢复授权完整性矩阵冷却基线', granteeAccess)

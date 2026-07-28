@@ -1,6 +1,10 @@
 import { toRaw } from 'vue'
 
-import type { AccountBalanceSnapshot, AccountListItem } from '@/types/domain'
+import type {
+  AccountBalanceSnapshot,
+  AccountListItem,
+  AuthorizedAccountDispatchMutationResult
+} from '@/types/domain'
 
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
@@ -52,6 +56,21 @@ export function replaceAccountListRow(
     todayUsage: current.todayUsage
   }
   return nextAccounts
+}
+
+export function mergeAuthorizedDispatchMutation(
+  account: AccountListItem,
+  mutation: AuthorizedAccountDispatchMutationResult
+): AccountListItem {
+  const {
+    failureStateCleared: _failureStateCleared,
+    ...listPatch
+  } = mutation.patch
+  return {
+    ...account,
+    ...listPatch,
+    configRevision: mutation.configRevision
+  }
 }
 
 export function replaceAccountBalanceSnapshot(
