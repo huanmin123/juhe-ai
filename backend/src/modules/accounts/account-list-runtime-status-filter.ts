@@ -1,7 +1,6 @@
 import {
   accountFilterStatuses,
-  accountMatchesStatusFilters,
-  isAccountStatus
+  accountMatchesStatusFilters
 } from '../../domain/account-status-classification.js'
 import type { AccountListItem } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -113,19 +112,13 @@ export async function listAccountsPageWithRuntimeStatusFilter(
 }
 
 export function accountRuntimeStatusCandidateSourceOptions(
-  options: AccountListOptions
+  _options: AccountListOptions
 ): Pick<AccountListOptions, 'status' | 'schedulable'> {
-  const normalized = normalizeAccountListOptions(options)
-  const statuses = accountStatusFilterValues(normalized.status).filter(isAccountStatus)
-  let status: string | undefined
-  if (statuses.length > 0 && !statuses.includes('rate_limited')) {
-    const sourceStatuses = new Set(statuses)
-    if (sourceStatuses.has('temporary_unavailable')) sourceStatuses.add('active')
-    status = [...sourceStatuses].join(',')
-  }
+  // Runtime, authorization and expiry facts can override every persisted status.
+  // Candidate SQL must stay conservative; the adaptive window keeps dense filters cheap.
   return {
-    status,
-    schedulable: normalized.schedulable === 'enabled' ? 'enabled' : 'all'
+    status: undefined,
+    schedulable: 'all'
   }
 }
 

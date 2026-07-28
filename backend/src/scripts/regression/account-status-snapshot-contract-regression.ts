@@ -40,13 +40,13 @@ assert.throws(() => parseAccountStatusSnapshotAccountIds(`account_${'x'.repeat(8
 
 assert.deepEqual(
   accountRuntimeStatusCandidateSourceOptions({ status: 'active', page: 1, pageSize: 20 }),
-  { status: 'active', schedulable: 'all' },
-  '正常状态筛选只能从数据库有效状态为 active 的保守候选集读取'
+  { status: undefined, schedulable: 'all' },
+  '运行态、授权和到期事实可能覆盖持久状态，active 候选不得提前下推'
 )
 assert.deepEqual(
   accountRuntimeStatusCandidateSourceOptions({ status: 'temporary_unavailable', page: 1, pageSize: 20 }),
-  { status: 'temporary_unavailable,active', schedulable: 'all' },
-  '临时不可用可能由 active 运行态降级，候选集必须同时保留 active'
+  { status: undefined, schedulable: 'all' },
+  '临时不可用候选不得依赖持久状态推断'
 )
 assert.deepEqual(
   accountRuntimeStatusCandidateSourceOptions({ status: 'rate_limited', schedulable: 'cooling' }),
@@ -55,8 +55,8 @@ assert.deepEqual(
 )
 assert.deepEqual(
   accountRuntimeStatusCandidateSourceOptions({ schedulable: 'enabled' }),
-  { status: undefined, schedulable: 'enabled' },
-  '可调度筛选可以下推数据库可调度条件，运行态只会继续降级该候选集'
+  { status: undefined, schedulable: 'all' },
+  '授权绑定、账户到期和运行态会改变可调度性，enabled 候选不得提前下推'
 )
 assert.deepEqual(
   accountRuntimeStatusCandidateSourceOptions({ schedulable: 'disabled' }),
@@ -383,7 +383,7 @@ try {
     snapshotBatchDatabase.prepare = originalSnapshotPrepare
   }
   assert(largeRuntimeFilteredPage, '运行态状态筛选必须返回分页结果')
-  assert.deepEqual(statusProjectionBatchSizes, [100, 5], '105 个候选必须按 100 ID 运行态快照边界执行两次 hydrate')
+  assert.deepEqual(statusProjectionBatchSizes, [100, 6], '105 行分页加一条 lookahead 必须按 100 ID 运行态快照边界执行两次 hydrate')
   assert.equal(largeRuntimeFilteredPage.items.length, 105, 'pageSize > 100 的运行态状态筛选不得漏掉第 101 条之后的匹配账户')
   assert.equal(
     largeRuntimeFilteredPage.items.every((item) => item.effectiveAvailability.status === 'instance_pending_test'),
@@ -417,7 +417,7 @@ try {
   `).run(user.id)
   const businessDatabase = databaseModule.getBusinessDatabase()
   const originalPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
-  const candidateQueries: Array<{ limit: number; offset: number; status: unknown }> = []
+  const candidateQueries: Array<{ limit: number; offset: number; sql: string }> = []
   businessDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/WITH\s+account_rows\s+AS\s*\(/i.test(sql) && /ranked_group_bindings/i.test(sql)) {
@@ -426,7 +426,7 @@ try {
         candidateQueries.push({
           limit: Number(params.at(-2)),
           offset: Number(params.at(-1)),
-          status: params.at(-3)
+          sql
         })
         return originalAll(...params)
       }) as typeof statement.all
@@ -444,15 +444,24 @@ try {
     businessDatabase.prepare = originalPrepare
   }
   assert(denseActivePage, '正常状态运行态筛选必须返回分页结果')
-  assert.deepEqual(candidateQueries, [
-    { limit: 22, offset: 0, status: 'active' }
-  ], 'active 首屏候选 SQL 只能执行一次，并只读取 21 个候选加一条 lookahead')
+  assert(
+    candidateQueries.length >= 1 && candidateQueries.length <= 2,
+    'active 首屏必须先读取窄候选，并且最多执行一次自适应扩容'
+  )
+  assert.deepEqual(
+    { limit: candidateQueries[0]!.limit, offset: candidateQueries[0]!.offset },
+    { limit: 22, offset: 0 },
+    'active 首屏必须先读取 21 个候选加一条 lookahead'
+  )
+  for (const candidateQuery of candidateQueries) {
+    assert.doesNotMatch(candidateQuery.sql, /account_rows\.status\s+IN/i, '运行态状态筛选不得把持久状态提前下推到候选 SQL')
+  }
   assert.equal(denseActivePage.items.length, 20, '正常状态首屏必须返回完整 20 行')
   assert.equal(denseActivePage.hasMore, true, '21 个候选命中时必须保留下一页提示')
   assert.equal(
     denseActivePage.items.every((item) => item.effectiveAvailability.available),
     true,
-    'active 候选下推后仍必须以完整运行态投影做最终判定'
+    'active 筛选必须以完整运行态投影做最终判定'
   )
 } finally {
   try {

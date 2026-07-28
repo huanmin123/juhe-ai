@@ -36,7 +36,12 @@ const rows: ProviderModelOptionRow[] = [
   optionRow('global-selected', 'openai', 'gpt-selected', 'global', '2024-01-01'),
   optionRow('personal-selected', 'openai', 'gpt-selected', 'personal', '2024-01-01'),
   optionRow('builtin-alpha', 'openai', 'gpt-alpha', 'built_in', '2025-01-01'),
-  optionRow('builtin-beta', 'openai', 'gpt-beta', 'built_in', '2026-01-01'),
+  {
+    ...optionRow('builtin-beta', 'openai', 'gpt-beta', 'built_in', '2026-01-01'),
+    supportedApiProtocols: ['responses'],
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['high']
+  },
   optionRow('builtin-unknown', 'openai', 'gpt-unknown', 'built_in'),
   optionRow('builtin-invalid', 'openai', 'gpt-invalid-date', 'built_in', 'not-a-date'),
   optionRow('anthropic-alpha', 'anthropic', 'claude-alpha', 'built_in', '2025-06-01')
@@ -50,11 +55,29 @@ assert.deepEqual(
     selectedIds: ['gpt-selected']
   }),
   [
-    { id: 'gpt-beta', name: 'gpt-beta' },
-    { id: 'gpt-alpha', name: 'gpt-alpha' },
-    { id: 'gpt-selected', name: 'gpt-selected' }
+    {
+      id: 'gpt-beta',
+      name: 'gpt-beta',
+      supportedApiProtocols: ['responses'],
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    },
+    {
+      id: 'gpt-alpha',
+      name: 'gpt-alpha',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    },
+    {
+      id: 'gpt-selected',
+      name: 'gpt-selected',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
   ],
-  '单供应商选项必须补齐已选项，同时保持发布时间倒序并只返回 id/name'
+  '单供应商选项必须补齐已选项，同时保持发布时间倒序并只返回选择所需标识与小型能力字段'
 )
 
 assert.deepEqual(
@@ -64,10 +87,22 @@ assert.deepEqual(
     selectedIds: []
   }),
   [
-    { id: 'claude-alpha', name: 'claude-alpha' },
-    { id: 'gpt-alpha', name: 'gpt-alpha' }
+    {
+      id: 'claude-alpha',
+      name: 'claude-alpha',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    },
+    {
+      id: 'gpt-alpha',
+      name: 'gpt-alpha',
+      supportedApiProtocols: [],
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
   ],
-  '跨供应商选项也必须按模型 ID 合并并只返回 id/name'
+  '跨供应商选项也必须按模型 ID 合并并保持窄能力 DTO'
 )
 
 assert.deepEqual(
@@ -80,7 +115,7 @@ assert.deepEqual(
   '无发布时间或发布时间非法的模型必须排在有发布时间的模型之后，并按模型 ID 稳定排序'
 )
 
-console.log('供应商模型轻量选项回归通过：发布时间倒序、未知日期兜底、已选补齐和精确 DTO 均符合预期')
+console.log('供应商模型轻量选项回归通过：发布时间倒序、未知日期兜底、已选补齐和窄能力 DTO 均符合预期')
 
 function optionRow(
   id: string,

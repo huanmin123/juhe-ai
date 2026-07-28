@@ -96,7 +96,8 @@ try {
     }),
     cacheInvalidation.registerApiKeyQuotaCacheInvalidator((apiKeyId) => {
       quotaInvalidations.push(apiKeyId)
-    })
+    }),
+    cacheInvalidation.registerGatewayApiKeyValidationServerInvalidator(async () => undefined)
   )
 
   const initialBinding = quotaBinding(created.id)
