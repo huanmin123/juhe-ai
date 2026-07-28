@@ -42,7 +42,6 @@ function providerListItemToDefinition(item: ProviderListItem): ProviderDefinitio
   return {
     ...item,
     defaultProtocolProfileId: '',
-    protocolCode: '',
     protocolVersion: '',
     protocolProfiles: []
   }

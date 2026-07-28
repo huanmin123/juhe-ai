@@ -5,16 +5,16 @@ import {
 import type { AccountListItem } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions } from '../../storage/account-list-options.js'
+import { loadAccountTagsByAccountIdsAsync } from '../../storage/account-tags.repository.js'
 import {
-  listAccountManagementItemsPageAsync,
+  listAccountManagementCandidatePrefixAsync,
+  maxAccountManagementCandidatePrefixSize,
   type AccountManagementListPage,
   type AccountManagementListResult
 } from '../../storage/account-management-list.repository.js'
 import {
   chunkValues,
-  defaultListWindowRows,
-  pagedTotalUpperBound,
-  pageUpperBoundForWindow
+  pagedTotalUpperBound
 } from '../../storage/query-utils.js'
 import { hydrateAccountListPage } from './account-status-snapshot.service.js'
 
@@ -28,13 +28,12 @@ export interface AccountRuntimeStatusCandidateProgress {
   totalMatchedCount: number
   latestCandidateCount: number
   latestMatchedCount: number
-  prefixQueryCount: number
 }
 
-const maxCandidateBatchSize = 200
+export class AccountRuntimeStatusFilterScanLimitError extends Error {}
+
+const initialSparseCandidatePrefixSize = 200
 const maxRuntimeStatusHydrationBatchSize = 100
-const maxCandidateRows = defaultListWindowRows - 1
-const maxAdaptivePrefixQueryCount = 3
 
 export function accountListNeedsRuntimeStatusFilter(options: AccountListOptions): boolean {
   const normalized = normalizeAccountListOptions(options)
@@ -50,7 +49,8 @@ export async function listAccountsPageWithRuntimeStatusFilter(
 
   const statusFilters = accountStatusFilterValues(listOptions.status)
   const pageSize = listOptions.pageSize
-  const skipTarget = (listOptions.page - 1) * pageSize
+  const requestedPage = accountRuntimeStatusRequestedPage(options.page)
+  const skipTarget = (requestedPage - 1) * pageSize
   const requiredMatchCount = skipTarget + pageSize + 1
   const candidateSourceOptions = accountRuntimeStatusCandidateSourceOptions(listOptions)
   const output: AccountListItem[] = []
@@ -59,16 +59,13 @@ export async function listAccountsPageWithRuntimeStatusFilter(
   let exhausted = false
   let generatedAt = new Date().toISOString()
   let candidateWindow = initialAccountRuntimeStatusCandidateWindow(listOptions)
-  let prefixQueryCount = 0
 
   while (output.length <= pageSize && !exhausted && candidateWindow) {
-    const basePage = await listAccountManagementItemsPageAsync(access, {
+    const basePage = await listAccountManagementCandidatePrefixAsync(access, {
       ...listOptions,
       ...candidateSourceOptions,
-      page: candidateWindow.page,
-      pageSize: candidateWindow.pageSize
-    })
-    if (candidateWindow.page === 1) prefixQueryCount += 1
+      page: 1
+    }, candidateWindow.pageSize)
     const freshBasePage = accountRuntimeStatusFreshCandidatePage(basePage, seenCandidateIds)
     const hydratedPage = await hydrateAccountRuntimeStatusCandidatePage(access, freshBasePage)
     generatedAt = hydratedPage.generatedAt
@@ -91,21 +88,27 @@ export async function listAccountsPageWithRuntimeStatusFilter(
       requiredMatchCount,
       totalMatchedCount: matchedCount,
       latestCandidateCount: freshBasePage.items.length,
-      latestMatchedCount,
-      prefixQueryCount
+      latestMatchedCount
     })
-    if (!nextWindow) break
+    if (!nextWindow) {
+      throw new AccountRuntimeStatusFilterScanLimitError(
+        `运行态筛选单次最多检查 ${maxAccountManagementCandidatePrefixSize} 个账户，请缩小筛选范围`
+      )
+    }
     candidateWindow = nextWindow
   }
 
-  const hasMore = listOptions.page < pageUpperBoundForWindow(pageSize)
-    && (output.length > pageSize || !exhausted)
+  const hasMore = output.length > pageSize
   const items = output.slice(0, pageSize)
+  const tagsByAccount = await loadAccountTagsByAccountIdsAsync(items.map((item) => item.id))
   return {
-    items,
-    total: pagedTotalUpperBound(listOptions.page, pageSize, items.length, hasMore),
+    items: items.map((item) => ({
+      ...item,
+      tags: tagsByAccount.get(item.id) ?? []
+    })),
+    total: pagedTotalUpperBound(requestedPage, pageSize, items.length, hasMore),
     hasMore,
-    page: listOptions.page,
+    page: requestedPage,
     pageSize,
     generatedAt
   }
@@ -126,10 +129,17 @@ export function initialAccountRuntimeStatusCandidateWindow(
   options: AccountListOptions
 ): AccountRuntimeStatusCandidateWindow {
   const normalized = normalizeAccountListOptions(options)
-  const requiredMatchCount = (normalized.page - 1) * normalized.pageSize + normalized.pageSize + 1
+  const requestedPage = accountRuntimeStatusRequestedPage(options.page)
+  const requestedMatchEnd = requestedPage * normalized.pageSize
+  if (!Number.isSafeInteger(requestedMatchEnd) || requestedMatchEnd > maxAccountManagementCandidatePrefixSize) {
+    throw new AccountRuntimeStatusFilterScanLimitError(
+      `运行态筛选单次最多检查 ${maxAccountManagementCandidatePrefixSize} 个账户，请缩小筛选范围`
+    )
+  }
+  const requiredMatchCount = requestedMatchEnd + 1
   return {
     page: 1,
-    pageSize: Math.min(maxCandidateBatchSize, Math.max(1, requiredMatchCount))
+    pageSize: Math.min(initialSparseCandidatePrefixSize, Math.max(1, requiredMatchCount))
   }
 }
 
@@ -138,26 +148,34 @@ export function nextAccountRuntimeStatusCandidateWindow(
   progress: AccountRuntimeStatusCandidateProgress
 ): AccountRuntimeStatusCandidateWindow | undefined {
   if (progress.totalMatchedCount >= progress.requiredMatchCount) return undefined
-  if (current.page === 1 && current.pageSize < maxCandidateBatchSize) {
-    const remainingMatches = Math.max(1, progress.requiredMatchCount - progress.totalMatchedCount)
-    const observedYield = progress.latestCandidateCount > 0
-      ? progress.latestMatchedCount / progress.latestCandidateCount
-      : 0
-    const forceFullPrefix = observedYield <= 0 || progress.prefixQueryCount >= maxAdaptivePrefixQueryCount
-    const estimatedAdditionalCandidates = forceFullPrefix
-      ? maxCandidateBatchSize - current.pageSize
-      : Math.max(1, Math.ceil(remainingMatches / observedYield))
-    return {
-      page: 1,
-      pageSize: Math.min(
-        maxCandidateBatchSize,
-        Math.max(current.pageSize + 1, current.pageSize + estimatedAdditionalCandidates)
-      )
-    }
+  const remainingMatches = Math.max(1, progress.requiredMatchCount - progress.totalMatchedCount)
+  const observedYield = progress.latestCandidateCount > 0
+    ? progress.latestMatchedCount / progress.latestCandidateCount
+    : 0
+  const estimatedAdditionalCandidates = observedYield > 0
+    ? Math.max(1, Math.ceil(remainingMatches / observedYield))
+    : current.pageSize < initialSparseCandidatePrefixSize
+      ? initialSparseCandidatePrefixSize - current.pageSize
+      : current.pageSize
+  const desiredPrefixSize = current.pageSize + estimatedAdditionalCandidates
+  const maximumGrowthSize = current.pageSize < initialSparseCandidatePrefixSize
+    ? initialSparseCandidatePrefixSize
+    : Math.min(maxAccountManagementCandidatePrefixSize, current.pageSize * 2)
+  const nextPrefixSize = Math.min(maxAccountManagementCandidatePrefixSize, maximumGrowthSize, desiredPrefixSize)
+  if (nextPrefixSize <= current.pageSize) return undefined
+  return {
+    page: 1,
+    pageSize: Math.max(current.pageSize + 1, nextPrefixSize)
   }
-  const nextPage = current.page + 1
-  if ((nextPage - 1) * maxCandidateBatchSize >= maxCandidateRows) return undefined
-  return { page: nextPage, pageSize: maxCandidateBatchSize }
+}
+
+function accountRuntimeStatusRequestedPage(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new AccountRuntimeStatusFilterScanLimitError('运行态筛选页码超出安全整数范围')
+  }
+  return typeof value === 'number' && Number.isSafeInteger(value)
+    ? Math.max(1, value)
+    : 1
 }
 
 function accountRuntimeStatusFreshCandidatePage(

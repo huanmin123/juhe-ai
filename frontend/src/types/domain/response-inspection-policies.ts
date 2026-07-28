@@ -44,10 +44,19 @@ export interface ResponseInspectionPolicyOverview {
   updatedAt?: string
 }
 
-export interface ResponseInspectionPolicyDetail extends ResponseInspectionPolicyOverview {
+export interface ResponseInspectionPolicyDetail {
+  id: string
+  name: string
+  enabled: boolean
+  priority: number
+  scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: ResponseInspectionPolicyProtocolCode
+  providerCode?: string
+  providerName?: string
   match: ResponseInspectionPolicyMatch
+  action: ResponseInspectionPolicyAction
   notes?: string
-  createdAt?: string
+  updatedAt?: string
 }
 
 export interface ResponseInspectionPolicyProviderOption {

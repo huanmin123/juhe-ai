@@ -32,7 +32,10 @@ import {
   accountResponseInspectionPolicyValidationMessage,
   validateAccountCredentialsResponseInspectionRules
 } from '../modules/accounts/account-response-inspection-policy-validation.js'
-import { assertAccountGptRequestOverridesSupportedAsync } from '../modules/accounts/account-gpt-request-overrides.validation.js'
+import {
+  accountGptRequestOverridesNeedModelCatalog,
+  assertAccountGptRequestOverridesSupportedAsync
+} from '../modules/accounts/account-gpt-request-overrides.validation.js'
 import {
   applyAccountCredentialsPatch,
   credentialsRecordValue,
@@ -58,11 +61,13 @@ import { accountCredentialFingerprint } from './account-identity.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   assertAccountSupportedModelsRequired,
-  normalizeAccountModelMappingsForProvider,
   normalizeAccountModelMappingsForProviderAsync,
-  normalizeAccountSupportedModelsForProvider,
   normalizeAccountSupportedModelsForProviderAsync
 } from './account-model-normalization.js'
+import {
+  loadAccountModelValidationContextAsync,
+  type AccountModelValidationContext
+} from './account-model-validation.repository.js'
 import {
   normalizeAccountModelMappingsInput,
   replaceAccountModelMappingsInClientAsync
@@ -343,14 +348,46 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
   if (requiresModelState) {
     currentSupportedModels = await loadSupportedModelsInClient(client, row.id)
     currentModelMappings = await loadModelMappingsInClient(client, row.id)
-    nextSupportedModels = await normalizedSupportedModelsForPatch(client, row, input, currentSupportedModels)
+    const validationSupportedModels = hasOwnInput(input, 'supportedModels')
+      ? normalizeAccountSupportedModelsInput(input.supportedModels) ?? []
+      : currentSupportedModels
+    const validationModelMappings = hasOwnInput(input, 'modelMappings')
+      ? normalizeAccountModelMappingsInput(input.modelMappings) ?? []
+      : currentModelMappings
+    const supportedModelsNeedValidation = !isHybridProviderCode(row.provider_code)
+      && hasOwnInput(input, 'supportedModels')
+      && !unorderedStringListEquals(currentSupportedModels, validationSupportedModels)
+    const modelMappingsNeedValidation = validationModelMappings.length > 0
+      && (endpointModesChanged || (
+        hasOwnInput(input, 'modelMappings')
+        && !accountModelMappingsEqual(currentModelMappings, validationModelMappings)
+      ))
+    const requestOverridesNeedValidation = (
+      hasCredentialInput || hasOwnInput(input, 'supportedModels')
+    ) && accountGptRequestOverridesNeedModelCatalog(nextCredentials)
+    const modelValidationContext = supportedModelsNeedValidation
+      || modelMappingsNeedValidation
+      || requestOverridesNeedValidation
+      ? await loadAccountModelValidationContextAsync(client, {
+          providerCode: row.provider_code,
+          systemAccountId: row.system_account_id,
+          models: validationSupportedModels,
+          mappings: modelMappingsNeedValidation ? validationModelMappings : []
+        })
+      : undefined
+    nextSupportedModels = await normalizedSupportedModelsForPatch(
+      row,
+      input,
+      currentSupportedModels,
+      modelValidationContext
+    )
     nextModelMappings = await normalizedModelMappingsForPatch(
-      client,
       row,
       input,
       currentModelMappings,
       nextCredentials,
-      endpointModesChanged
+      endpointModesChanged,
+      modelValidationContext
     )
     assertAccountSupportedModelsRequired(nextSupportedModels)
     assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
@@ -376,7 +413,8 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
         accountType: row.type,
         credentials: nextCredentials,
         supportedModels: nextSupportedModels,
-        systemAccountId: row.system_account_id
+        systemAccountId: row.system_account_id,
+        validationContext: modelValidationContext
       })
     }
   }
@@ -1232,27 +1270,32 @@ async function executeAccountCasUpdate(
 }
 
 async function normalizedSupportedModelsForPatch(
-  client: DatabaseClient,
   row: AccountPatchRow,
   input: AccountManagementPatchInput,
-  current: string[]
+  current: string[],
+  validationContext?: AccountModelValidationContext
 ): Promise<string[]> {
   if (!hasOwnInput(input, 'supportedModels')) return current
   const normalized = normalizeAccountSupportedModelsInput(input.supportedModels) ?? []
   if (unorderedStringListEquals(current, normalized)) return normalized
   const profile = protocolProfileFromRow(row)
-  return client.driver === 'postgres'
-    ? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, row.provider_code, row.system_account_id, profile) ?? []
-    : normalizeAccountSupportedModelsForProvider(input.supportedModels, row.provider_code, row.system_account_id, profile) ?? []
+  return await normalizeAccountSupportedModelsForProviderAsync(
+    input.supportedModels,
+    row.provider_code,
+    row.system_account_id,
+    profile,
+    false,
+    validationContext
+  ) ?? []
 }
 
 async function normalizedModelMappingsForPatch(
-  client: DatabaseClient,
   row: AccountPatchRow,
   input: AccountManagementPatchInput,
   current: AccountModelMapping[],
   credentials: Record<string, unknown>,
-  endpointModesChanged: boolean
+  endpointModesChanged: boolean,
+  validationContext?: AccountModelValidationContext
 ): Promise<AccountModelMapping[]> {
   const hasInput = hasOwnInput(input, 'modelMappings')
   if (!hasInput && !endpointModesChanged) return current
@@ -1261,9 +1304,10 @@ async function normalizedModelMappingsForPatch(
   if (!endpointModesChanged && accountModelMappingsEqual(current, normalized)) return normalized
   const profile = protocolProfileFromRow(row)
   const options = { supportedEndpointModes: supportedEndpointModes(credentials) }
-  return client.driver === 'postgres'
-    ? await normalizeAccountModelMappingsForProviderAsync(source, row.provider_code, row.system_account_id, profile, options) ?? []
-    : normalizeAccountModelMappingsForProvider(source, row.provider_code, row.system_account_id, profile, options) ?? []
+  return await normalizeAccountModelMappingsForProviderAsync(source, row.provider_code, row.system_account_id, profile, {
+    ...options,
+    validationContext
+  }) ?? []
 }
 
 async function loadSupportedModelsInClient(client: DatabaseClient, accountId: string): Promise<string[]> {

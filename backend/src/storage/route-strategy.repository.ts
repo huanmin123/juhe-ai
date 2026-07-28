@@ -47,6 +47,7 @@ const ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR = '策略路由只能绑定自己的�
 const DEFAULT_ROUTE_STRATEGY_NAME = '默认路由'
 const maxRouteStrategyListSnapshotIds = 200
 const routeStrategyMutationInputKeys = new Set([
+  'expectedUpdatedAt',
   'name',
   'description',
   'mode',
@@ -119,6 +120,13 @@ export interface RouteStrategyPatchOutcome {
   changes: RouteStrategyPatchChange[]
 }
 
+export class RouteStrategyVersionConflictError extends Error {
+  constructor(readonly currentUpdatedAt?: string) {
+    super('策略路由已被其他操作更新，请刷新后重试')
+    this.name = 'RouteStrategyVersionConflictError'
+  }
+}
+
 type RouteStrategyGroupBindingStatus = 'active' | 'disabled'
 
 interface RouteStrategyGroupBindingInput {
@@ -158,6 +166,12 @@ interface RouteStrategyEditBasicRow {
   status: RouteStrategyStatus | string
   is_default?: number | boolean | string | null
   config_json: string | null
+  updated_at: string
+}
+
+interface RouteStrategyMutationTargetRow {
+  system_account_id: string
+  updated_at: string
 }
 
 interface RouteStrategyGroupBindingRow {
@@ -614,34 +628,43 @@ export function updateRouteStrategy(id: string, input: Record<string, unknown>, 
 
 export function patchRouteStrategy(id: string, input: Record<string, unknown>, access?: AccessScope): RouteStrategyPatchOutcome | undefined {
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
-  const systemAccountId = routeStrategySystemAccountId(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) return undefined
-  const current = findRouteStrategyEditBasicDetail(id, { systemAccountId, role: 'super_admin', systemAccountFilterId: systemAccountId })
-  if (!current) return undefined
-  const scalarPatch = routeStrategyScalarPatch(input, current)
+  const expectedUpdatedAt = requiredTextInput(input.expectedUpdatedAt, '策略路由配置版本')
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
-  const now = nowIso()
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   let outcome: RouteStrategyPatchOutcome | undefined
+  let patchName: string | undefined
   try {
+    const target = routeStrategyMutationTarget(database, id, access)
+    if (!target || !canManageApiKeyOwner(target.system_account_id, access)) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return undefined
+    }
+    if (target.updated_at !== expectedUpdatedAt) {
+      throw new RouteStrategyVersionConflictError(target.updated_at)
+    }
+    const current = loadRouteStrategyEditBasicDetailForPatch(database, id, target.system_account_id, expectedUpdatedAt)
+    if (!current) throw new RouteStrategyVersionConflictError(routeStrategyCurrentUpdatedAt(database, id, target.system_account_id))
+    const scalarPatch = routeStrategyScalarPatch(input, current)
+    patchName = scalarPatch.name
     const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
-    const bindings = bindingInputs ? normalizeRouteStrategyGroupBindings(bindingInputs, systemAccountId) : undefined
+    const bindings = bindingInputs ? normalizeRouteStrategyGroupBindings(bindingInputs, target.system_account_id) : undefined
     if (bindings) {
       validateRouteStrategyModeBindings(scalarPatch.mode, bindings)
     } else if (scalarPatch.mode !== current.mode) {
       validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
     }
     const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
+    const updatedAt = nextRouteStrategyUpdatedAt(expectedUpdatedAt)
     let writtenBindings: RouteStrategyGroupBindingSummary[] | undefined
     if (scalarPatch.assignments.length || bindingsChanged) {
-      updateRouteStrategyScalarColumns(database, id, systemAccountId, scalarPatch, now)
+      updateRouteStrategyScalarColumns(database, id, target.system_account_id, expectedUpdatedAt, scalarPatch, updatedAt)
       if (bindingsChanged) {
-        writtenBindings = replaceRouteStrategyGroups(database, id, systemAccountId, scalarPatch.mode, bindings!, now)
+        writtenBindings = reconcileRouteStrategyGroups(database, id, target.system_account_id, scalarPatch.mode, current.groupBindings, bindings!, updatedAt)
       }
     }
-    outcome = routeStrategyPatchOutcome(current, systemAccountId, scalarPatch, writtenBindings, now)
+    outcome = routeStrategyPatchOutcome(current, target.system_account_id, scalarPatch, writtenBindings, updatedAt)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -649,7 +672,7 @@ export function patchRouteStrategy(id: string, input: Record<string, unknown>, a
     } catch {
     }
     if (isDuplicateRouteStrategyNameError(error)) {
-      throw new Error(`策略路由名称已存在：${scalarPatch.name}`)
+      throw new Error(`策略路由名称已存在：${patchName ?? String(input.name ?? '').trim()}`)
     }
     throw error
   }
@@ -664,8 +687,7 @@ export async function updateRouteStrategyAsync(id: string, input: Record<string,
 
 export async function patchRouteStrategyAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<RouteStrategyPatchOutcome | undefined> {
   assertKnownInputKeys(input, routeStrategyMutationInputKeys, '策略路由更新参数')
-  const ownerSystemAccountId = await routeStrategySystemAccountIdAsync(id)
-  if (!ownerSystemAccountId || !canManageApiKeyOwner(ownerSystemAccountId, access)) return undefined
+  const expectedUpdatedAt = requiredTextInput(input.expectedUpdatedAt, '策略路由配置版本')
   const hasGroupBindingsInput = hasOwnInput(input, 'groupBindings')
   const bindingInputs = hasGroupBindingsInput ? routeStrategyGroupBindingInputsFromRequest(input) : undefined
   const client = await getRouteStrategyDatabaseClient()
@@ -673,8 +695,14 @@ export async function patchRouteStrategyAsync(id: string, input: Record<string, 
   let patchName: string | undefined
   try {
     await client.transaction(async (tx) => {
-      const current = await loadLockedRouteStrategyEditBasicDetailAsync(tx, id, ownerSystemAccountId)
-      if (!current) return
+      const target = await loadLockedRouteStrategyMutationTargetAsync(tx, id, access)
+      if (!target || !canManageApiKeyOwner(target.system_account_id, access)) return
+      if (target.updated_at !== expectedUpdatedAt) {
+        throw new RouteStrategyVersionConflictError(target.updated_at)
+      }
+      const ownerSystemAccountId = target.system_account_id
+      const current = await loadLockedRouteStrategyEditBasicDetailAsync(tx, id, ownerSystemAccountId, expectedUpdatedAt)
+      if (!current) throw new RouteStrategyVersionConflictError(target.updated_at)
       const scalarPatch = routeStrategyScalarPatch(input, current)
       patchName = scalarPatch.name
       const currentBindings = routeStrategyGroupBindingWritesFromSummary(current.groupBindings)
@@ -687,15 +715,15 @@ export async function patchRouteStrategyAsync(id: string, input: Record<string, 
         validateRouteStrategyModeBindings(scalarPatch.mode, currentBindings)
       }
       const bindingsChanged = Boolean(bindings && !routeStrategyGroupBindingsEqual(bindings, currentBindings))
-      const now = nowIso()
+      const updatedAt = nextRouteStrategyUpdatedAt(expectedUpdatedAt)
       let writtenBindings: RouteStrategyGroupBindingSummary[] | undefined
       if (scalarPatch.assignments.length || bindingsChanged) {
-        await updateRouteStrategyScalarColumnsAsync(tx, id, ownerSystemAccountId, scalarPatch, now)
+        await updateRouteStrategyScalarColumnsAsync(tx, id, ownerSystemAccountId, expectedUpdatedAt, scalarPatch, updatedAt)
       }
       if (bindingsChanged) {
-        writtenBindings = await replaceRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, scalarPatch.mode, bindings!, now)
+        writtenBindings = await reconcileRouteStrategyGroupsAsync(tx, id, ownerSystemAccountId, scalarPatch.mode, current.groupBindings, bindings!, updatedAt)
       }
-      outcome = routeStrategyPatchOutcome(current, ownerSystemAccountId, scalarPatch, writtenBindings, now)
+      outcome = routeStrategyPatchOutcome(current, ownerSystemAccountId, scalarPatch, writtenBindings, updatedAt)
     })
   } catch (error) {
     if (isDuplicateRouteStrategyNameError(error)) {
@@ -1165,7 +1193,8 @@ function routeStrategyEditBasicDetailFromRow(
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
     normalRoutingConfig: mode === 'normal' ? config.normalRoutingConfig ?? defaultNormalRoutingConfig() : undefined,
     hybridRoutingConfig: mode === 'hybrid_smart' ? config.hybridRoutingConfig : undefined,
-    groupBindings
+    groupBindings,
+    updatedAt: row.updated_at
   }
 }
 
@@ -1351,30 +1380,44 @@ function updateRouteStrategyScalarColumns(
   database: DatabaseSync,
   routeStrategyId: string,
   systemAccountId: string,
+  expectedUpdatedAt: string,
   patch: RouteStrategyScalarPatch,
   now: string
 ): void {
   const assignments = [...patch.assignments.map((item) => `${item.column} = ?`), 'updated_at = ?']
-  database.prepare(`
+  const result = database.prepare(`
     UPDATE route_strategies
     SET ${assignments.join(', ')}
-    WHERE id = ? AND system_account_id = ?
-  `).run(...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId)
+    WHERE id = ? AND system_account_id = ? AND updated_at = ?
+  `).run(...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId, expectedUpdatedAt)
+  if (Number(result.changes ?? 0) === 0) {
+    throw new RouteStrategyVersionConflictError(routeStrategyCurrentUpdatedAt(database, routeStrategyId, systemAccountId))
+  }
 }
 
 async function updateRouteStrategyScalarColumnsAsync(
   client: DatabaseClient,
   routeStrategyId: string,
   systemAccountId: string,
+  expectedUpdatedAt: string,
   patch: RouteStrategyScalarPatch,
   now: string
 ): Promise<void> {
   const assignments = [...patch.assignments.map((item) => `${item.column} = ?`), 'updated_at = ?']
-  await client.execute(`
+  const result = await client.execute(`
     UPDATE ${routeStrategyTable(client, 'route_strategies')}
     SET ${assignments.join(', ')}
-    WHERE id = ? AND system_account_id = ?
-  `, [...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId])
+    WHERE id = ? AND system_account_id = ? AND updated_at = ?
+  `, [...patch.assignments.map((item) => item.value), now, routeStrategyId, systemAccountId, expectedUpdatedAt])
+  if (result.changes === 0) throw new RouteStrategyVersionConflictError()
+}
+
+function nextRouteStrategyUpdatedAt(currentUpdatedAt: string): string {
+  const now = nowIso()
+  const currentMs = Date.parse(currentUpdatedAt)
+  const nowMs = Date.parse(now)
+  if (!Number.isFinite(currentMs) || !Number.isFinite(nowMs) || nowMs > currentMs) return now
+  return new Date(currentMs + 1).toISOString()
 }
 
 function routeStrategyGroupBindingsEqual(
@@ -1567,6 +1610,112 @@ async function replaceRouteStrategyGroupsAsync(client: DatabaseClient, routeStra
     result.push(routeStrategyGroupBindingSummaryFromWrite(id, binding))
   }
   return routeStrategyGroupBindingsForPresentation(result)
+}
+
+function reconcileRouteStrategyGroups(
+  database: DatabaseSync,
+  routeStrategyId: string,
+  systemAccountId: string,
+  mode: RouteStrategyMode,
+  currentBindings: RouteStrategyGroupBindingSummary[],
+  bindings: RouteStrategyGroupBindingWrite[],
+  now: string
+): RouteStrategyGroupBindingSummary[] {
+  validateRouteStrategyModeBindings(mode, bindings)
+  const currentByGroupId = new Map(currentBindings.map((binding) => [binding.groupId, binding]))
+  const nextGroupIds = new Set(bindings.map((binding) => binding.groupId))
+  const removedGroupIds = currentBindings
+    .filter((binding) => !nextGroupIds.has(binding.groupId))
+    .map((binding) => binding.groupId)
+  if (removedGroupIds.length) {
+    database.prepare(`
+      DELETE FROM route_strategy_groups
+      WHERE route_strategy_id = ? AND system_account_id = ?
+        AND group_id IN (${sqlPlaceholders(removedGroupIds.length)})
+    `).run(routeStrategyId, systemAccountId, ...removedGroupIds)
+  }
+
+  const insert = database.prepare(`
+    INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const update = database.prepare(`
+    UPDATE route_strategy_groups
+    SET priority = ?, weight = ?, status = ?, updated_at = ?
+    WHERE id = ? AND route_strategy_id = ? AND system_account_id = ? AND group_id = ?
+  `)
+  const result: RouteStrategyGroupBindingSummary[] = []
+  for (const binding of bindings) {
+    const current = currentByGroupId.get(binding.groupId)
+    if (!current) {
+      const id = newId('rsg')
+      insert.run(id, routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now)
+      result.push(routeStrategyGroupBindingSummaryFromWrite(id, binding))
+      continue
+    }
+    if (!routeStrategyGroupBindingSummaryMatchesWrite(current, binding)) {
+      update.run(binding.priority, binding.weight, binding.status, now, current.id, routeStrategyId, systemAccountId, binding.groupId)
+    }
+    result.push(routeStrategyGroupBindingSummaryFromWrite(current.id, binding))
+  }
+  return routeStrategyGroupBindingsForPresentation(result)
+}
+
+async function reconcileRouteStrategyGroupsAsync(
+  client: DatabaseClient,
+  routeStrategyId: string,
+  systemAccountId: string,
+  mode: RouteStrategyMode,
+  currentBindings: RouteStrategyGroupBindingSummary[],
+  bindings: RouteStrategyGroupBindingWrite[],
+  now: string
+): Promise<RouteStrategyGroupBindingSummary[]> {
+  validateRouteStrategyModeBindings(mode, bindings)
+  const currentByGroupId = new Map(currentBindings.map((binding) => [binding.groupId, binding]))
+  const nextGroupIds = new Set(bindings.map((binding) => binding.groupId))
+  const removedGroupIds = currentBindings
+    .filter((binding) => !nextGroupIds.has(binding.groupId))
+    .map((binding) => binding.groupId)
+  if (removedGroupIds.length) {
+    await client.execute(`
+      DELETE FROM ${routeStrategyTable(client, 'route_strategy_groups')}
+      WHERE route_strategy_id = ? AND system_account_id = ?
+        AND group_id IN (${sqlPlaceholders(removedGroupIds.length)})
+    `, [routeStrategyId, systemAccountId, ...removedGroupIds])
+  }
+
+  const result: RouteStrategyGroupBindingSummary[] = []
+  for (const binding of bindings) {
+    const current = currentByGroupId.get(binding.groupId)
+    if (!current) {
+      const id = newId('rsg')
+      await client.execute(`
+        INSERT INTO ${routeStrategyTable(client, 'route_strategy_groups')} (
+          id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [id, routeStrategyId, systemAccountId, binding.groupId, binding.priority, binding.weight, binding.status, now, now])
+      result.push(routeStrategyGroupBindingSummaryFromWrite(id, binding))
+      continue
+    }
+    if (!routeStrategyGroupBindingSummaryMatchesWrite(current, binding)) {
+      await client.execute(`
+        UPDATE ${routeStrategyTable(client, 'route_strategy_groups')}
+        SET priority = ?, weight = ?, status = ?, updated_at = ?
+        WHERE id = ? AND route_strategy_id = ? AND system_account_id = ? AND group_id = ?
+      `, [binding.priority, binding.weight, binding.status, now, current.id, routeStrategyId, systemAccountId, binding.groupId])
+    }
+    result.push(routeStrategyGroupBindingSummaryFromWrite(current.id, binding))
+  }
+  return routeStrategyGroupBindingsForPresentation(result)
+}
+
+function routeStrategyGroupBindingSummaryMatchesWrite(
+  current: RouteStrategyGroupBindingSummary,
+  binding: RouteStrategyGroupBindingWrite
+): boolean {
+  return current.priority === binding.priority
+    && normalizeApiKeyGroupBindingWeight(current.weight) === normalizeApiKeyGroupBindingWeight(binding.weight)
+    && current.status === binding.status
 }
 
 function routeStrategyGroupBindingSummaryFromWrite(id: string, binding: RouteStrategyGroupBindingWrite): RouteStrategyGroupBindingSummary {
@@ -1811,7 +1960,8 @@ function routeStrategyEditBasicColumns(): string {
     'route_strategies.mode',
     'route_strategies.status',
     'route_strategies.is_default',
-    'route_strategies.config_json'
+    'route_strategies.config_json',
+    'route_strategies.updated_at'
   ].join(', ')
 }
 
@@ -2032,6 +2182,53 @@ function routeStrategySystemAccountId(id: string): string | undefined {
   return row?.system_account_id
 }
 
+function routeStrategyMutationTarget(
+  database: DatabaseSync,
+  routeStrategyId: string,
+  access?: AccessScope
+): RouteStrategyMutationTargetRow | undefined {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  return database.prepare(`
+    SELECT system_account_id, updated_at
+    FROM route_strategies
+    WHERE id = ?${ownerSystemAccountId ? ' AND system_account_id = ?' : ''}
+    LIMIT 1
+  `).get(...(ownerSystemAccountId ? [routeStrategyId, ownerSystemAccountId] : [routeStrategyId])) as unknown as RouteStrategyMutationTargetRow | undefined
+}
+
+function loadRouteStrategyEditBasicDetailForPatch(
+  database: DatabaseSync,
+  routeStrategyId: string,
+  systemAccountId: string,
+  expectedUpdatedAt: string
+): RouteStrategyEditBasicDetail | undefined {
+  const row = database.prepare(`
+    SELECT ${routeStrategyEditBasicColumns()}
+    FROM route_strategies
+    WHERE route_strategies.id = ?
+      AND route_strategies.system_account_id = ?
+      AND route_strategies.updated_at = ?
+    LIMIT 1
+  `).get(routeStrategyId, systemAccountId, expectedUpdatedAt) as unknown as RouteStrategyEditBasicRow | undefined
+  if (!row) return undefined
+  const bindings = loadRouteStrategyGroupBindingSummariesByRouteStrategyIds([routeStrategyId])
+  return routeStrategyEditBasicDetailFromRow(row, bindings.get(routeStrategyId) ?? [], false)
+}
+
+function routeStrategyCurrentUpdatedAt(
+  database: DatabaseSync,
+  routeStrategyId: string,
+  systemAccountId: string
+): string | undefined {
+  const row = database.prepare(`
+    SELECT updated_at
+    FROM route_strategies
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1
+  `).get(routeStrategyId, systemAccountId) as { updated_at?: string } | undefined
+  return row?.updated_at
+}
+
 async function routeStrategySystemAccountIdAsync(id: string): Promise<string | undefined> {
   const client = await getRouteStrategyDatabaseClient()
   const row = await client.one<{ system_account_id?: string }>(`
@@ -2193,18 +2390,36 @@ async function lockRouteStrategyMutationRowAsync(client: DatabaseClient, routeSt
 async function loadLockedRouteStrategyEditBasicDetailAsync(
   client: DatabaseClient,
   routeStrategyId: string,
-  systemAccountId: string
+  systemAccountId: string,
+  expectedUpdatedAt: string
 ): Promise<RouteStrategyEditBasicDetail | undefined> {
   const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
   const row = await client.one<RouteStrategyEditBasicRow>(`
     SELECT ${routeStrategyEditBasicColumnsForClient()}
     FROM ${routeStrategyTable(client, 'route_strategies')} route_strategies
-    WHERE route_strategies.id = ? AND route_strategies.system_account_id = ?
+    WHERE route_strategies.id = ?
+      AND route_strategies.system_account_id = ?
+      AND route_strategies.updated_at = ?
     LIMIT 1${lockClause}
-  `, [routeStrategyId, systemAccountId])
+  `, [routeStrategyId, systemAccountId, expectedUpdatedAt])
   if (!row) return undefined
   const bindings = await loadRouteStrategyGroupBindingSummariesByRouteStrategyIdsAsync([routeStrategyId], client)
   return routeStrategyEditBasicDetailFromRow(row, bindings.get(routeStrategyId) ?? [], false)
+}
+
+async function loadLockedRouteStrategyMutationTargetAsync(
+  client: DatabaseClient,
+  routeStrategyId: string,
+  access?: AccessScope
+): Promise<RouteStrategyMutationTargetRow | undefined> {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const lockClause = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  return client.one<RouteStrategyMutationTargetRow>(`
+    SELECT system_account_id, updated_at
+    FROM ${routeStrategyTable(client, 'route_strategies')}
+    WHERE id = ?${ownerSystemAccountId ? ' AND system_account_id = ?' : ''}
+    LIMIT 1${lockClause}
+  `, ownerSystemAccountId ? [routeStrategyId, ownerSystemAccountId] : [routeStrategyId])
 }
 
 async function getRouteStrategyDatabaseClient(): Promise<DatabaseClient> {

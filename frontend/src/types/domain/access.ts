@@ -126,6 +126,7 @@ export interface RouteStrategyEditBasicDetail {
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
+  updatedAt: string
 }
 
 export type RouteStrategyMutableField =

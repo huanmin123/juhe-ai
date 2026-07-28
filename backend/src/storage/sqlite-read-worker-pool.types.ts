@@ -187,6 +187,7 @@ export type SqliteReadWorkerOperation =
     type: 'list_account_management_items_page_read_only'
     access?: AccessScope
     options?: AccountListOptions
+    candidateLimit?: number
   }
   | {
     type: 'list_account_status_snapshots_read_only'

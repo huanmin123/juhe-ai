@@ -118,7 +118,7 @@
       :total="schedulesTotal"
       @account-change="handleScheduleAccountChange"
       @account-dropdown-visible-change="handleScheduleAccountOptionsDropdown"
-      @account-search="loadScheduleAccountOptions"
+      @account-search="handleScheduleAccountSearch"
       @model-dropdown-visible-change="handleScheduleModelOptionsDropdown"
       @delete="deleteSchedule"
       @page-change="handleSchedulePageChange"
@@ -160,7 +160,8 @@ import type {
   ModelQualityPolicy,
   ModelQualityPolicyUpdateInput,
   ModelQualitySchedule,
-  ModelQualityScheduleMutationInput
+  ModelQualityScheduleMutationInput,
+  ModelQualitySchedulePatchInput
 } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import {
@@ -206,6 +207,8 @@ interface ModelChecksPageState {
   systemAccountFilterSelection?: PrincipalSelection
 }
 
+let cachedModelCheckOptions: ModelCheckOptions | undefined
+
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
 const accountsApi = useScopedModelCheckAccountOptionsApi(isManagementView)
@@ -250,24 +253,19 @@ const schedulesPage = ref(1)
 const schedulesPageSize = 10
 const scheduleAccountOptions = ref<Array<{ label: string; value: string; modelCheckModels: string[] }>>([])
 let scheduleAccountOptionsRequestId = 0
+let scheduleAccountSearchTimer: ReturnType<typeof setTimeout> | undefined
+let scheduleAccountOptionsAbortController: AbortController | undefined
 let scheduleAccountOptionsLoadingKeyword: string | undefined
 let scheduleAccountOptionsLoadedKeyword: string | undefined
 let scheduleAccountModelOptionsRequestId = 0
+let scheduleAccountModelOptionsAbortController: AbortController | undefined
 let scheduleAccountModelOptionsLoadingId: string | undefined
 let scheduleAccountOptionsGeneration = 0
 let schedulesRequestId = 0
 let pageActive = true
 const scheduleAccountModelOptionsLoadedIds = new Set<string>()
 const scheduleAccountModelOptionsById = new Map<string, { label: string; value: string; modelCheckModels: string[] }>()
-const qualityPolicy = ref<ModelQualityPolicy>({
-  systemAccountId: '',
-  revision: 0,
-  profile: 'quick',
-  manualEnforcementEnabled: true,
-  penaltyThreshold: 70,
-  penaltyAction: 'fallback',
-  recoveryIntervalMinutes: 10
-})
+const qualityPolicy = ref<ModelQualityPolicy>(defaultQualityPolicy())
 const submitting = computed(() => modelCheckRunSession.submitting)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
@@ -402,10 +400,18 @@ const terminalStatusText = computed(() => submitting.value ? modelCheckRunSessio
 const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
 const terminalWaitingText = computed(() => modelCheckRunSession.detached ? '后端检测继续运行，旧进度流不会回放' : '等待下一个检测事件')
 
-async function loadOptions() {
+async function loadOptions(force = false) {
+  if (!force && cachedModelCheckOptions) {
+    options.value = cachedModelCheckOptions
+    form.model = cachedModelCheckOptions.defaultModel
+    form.profile = qualityPolicy.value.profile
+    ensureRunModelMatchesTarget()
+    return
+  }
   optionsLoading.value = true
   try {
     const nextOptions = await modelChecksApi.options(modelCheckScopeParams.value)
+    cachedModelCheckOptions = nextOptions
     options.value = nextOptions
     form.model = nextOptions.defaultModel
     form.profile = qualityPolicy.value.profile
@@ -438,9 +444,14 @@ async function loadQualityPolicy() {
 }
 
 async function saveQualityPolicy(input: ModelQualityPolicyUpdateInput) {
+  const patch = qualityPolicyPatch(qualityPolicy.value, input)
+  if (Object.keys(patch).length === 1) {
+    message.info('配置没有变化')
+    return
+  }
   qualityPolicySaving.value = true
   try {
-    qualityPolicy.value = await modelChecksApi.saveQualityPolicy(input, modelCheckScopeParams.value)
+    qualityPolicy.value = await modelChecksApi.saveQualityPolicy(patch, modelCheckScopeParams.value)
     form.profile = qualityPolicy.value.profile
     message.success('手动检测质量配置已保存')
   } catch (error) {
@@ -500,6 +511,9 @@ async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '
   const requestKey = JSON.stringify([normalizedKeyword, normalizedSelectedAccountId])
   if (scheduleAccountOptionsLoadingKeyword === requestKey || scheduleAccountOptionsLoadedKeyword === requestKey) return
   const requestId = ++scheduleAccountOptionsRequestId
+  scheduleAccountOptionsAbortController?.abort()
+  const controller = new AbortController()
+  scheduleAccountOptionsAbortController = controller
   const generation = scheduleAccountOptionsGeneration
   const requestContextKey = scheduleRequestContextKey()
   scheduleAccountOptionsLoadingKeyword = requestKey
@@ -511,7 +525,7 @@ async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '
       keyword: normalizedKeyword || undefined,
       selectedIds: normalizedSelectedAccountId ? [normalizedSelectedAccountId] : undefined,
       limit: 50
-    })
+    }, { signal: controller.signal })
     if (!isCurrentScheduleAccountOptionsRequest(requestId, generation, requestContextKey)) return
     const nextOptions = items.map((item) => ({
       label: item.name,
@@ -523,22 +537,32 @@ async function loadScheduleAccountOptions(keyword: string, selectedAccountId = '
     scheduleAccountOptionsLoadedKeyword = requestKey
   } catch (error) {
     if (!isCurrentScheduleAccountOptionsRequest(requestId, generation, requestContextKey)) return
+    if (controller.signal.aborted) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载检查账户选项失败'))
   } finally {
     if (generation === scheduleAccountOptionsGeneration && requestId === scheduleAccountOptionsRequestId) {
       scheduleAccountOptionsLoadingKeyword = undefined
       scheduleAccountOptionsSearchLoading.value = false
+      if (scheduleAccountOptionsAbortController === controller) scheduleAccountOptionsAbortController = undefined
     }
   }
 }
 
 function handleScheduleAccountOptionsDropdown(open: boolean, accountId: string) {
   if (!open) return
+  clearTimeout(scheduleAccountSearchTimer)
   void loadScheduleAccountOptions('', accountId)
 }
 
+function handleScheduleAccountSearch(value: string, accountId: string): void {
+  clearTimeout(scheduleAccountSearchTimer)
+  scheduleAccountSearchTimer = setTimeout(() => void loadScheduleAccountOptions(value, accountId), 250)
+}
+
 function handleScheduleAccountChange(): void {
+  scheduleAccountModelOptionsAbortController?.abort()
+  scheduleAccountModelOptionsAbortController = undefined
   scheduleAccountModelOptionsRequestId += 1
   scheduleAccountModelOptionsLoadingId = undefined
   scheduleAccountModelOptionsLoading.value = false
@@ -555,6 +579,9 @@ async function loadScheduleAccountModelOptions(accountId: string): Promise<void>
     || scheduleAccountModelOptionsLoadedIds.has(selectedId)
     || scheduleAccountModelOptionsLoadingId === selectedId) return
   const requestId = ++scheduleAccountModelOptionsRequestId
+  scheduleAccountModelOptionsAbortController?.abort()
+  const controller = new AbortController()
+  scheduleAccountModelOptionsAbortController = controller
   const generation = scheduleAccountOptionsGeneration
   const requestContextKey = scheduleRequestContextKey()
   scheduleAccountModelOptionsLoadingId = selectedId
@@ -565,7 +592,7 @@ async function loadScheduleAccountModelOptions(accountId: string): Promise<void>
       purpose: 'run',
       selectedIds: [selectedId],
       limit: 1
-    })
+    }, { signal: controller.signal })
     if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
     const item = items.find((option) => option.id === selectedId)
     if (!item) throw new Error('当前检查账户不可用')
@@ -578,12 +605,14 @@ async function loadScheduleAccountModelOptions(accountId: string): Promise<void>
     scheduleAccountOptions.value = mergeScheduleAccountOptions(scheduleAccountOptions.value)
   } catch (error) {
     if (!isCurrentScheduleAccountModelOptionsRequest(requestId, generation, requestContextKey)) return
+    if (controller.signal.aborted) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载检查模型失败'))
   } finally {
     if (generation === scheduleAccountOptionsGeneration && requestId === scheduleAccountModelOptionsRequestId) {
       scheduleAccountModelOptionsLoadingId = undefined
       scheduleAccountModelOptionsLoading.value = false
+      if (scheduleAccountModelOptionsAbortController === controller) scheduleAccountModelOptionsAbortController = undefined
     }
   }
 }
@@ -624,6 +653,12 @@ function mergeScheduleAccountOptions(
 }
 
 function resetScheduleAccountOptionsState() {
+  clearTimeout(scheduleAccountSearchTimer)
+  scheduleAccountSearchTimer = undefined
+  scheduleAccountOptionsAbortController?.abort()
+  scheduleAccountModelOptionsAbortController?.abort()
+  scheduleAccountOptionsAbortController = undefined
+  scheduleAccountModelOptionsAbortController = undefined
   scheduleAccountOptionsGeneration += 1
   scheduleAccountOptionsRequestId += 1
   scheduleAccountModelOptionsRequestId += 1
@@ -638,11 +673,29 @@ function resetScheduleAccountOptionsState() {
 }
 
 async function saveSchedule(input: ModelQualityScheduleMutationInput) {
+  const existing = input.expectedRevision === undefined
+    ? undefined
+    : schedules.value.find((item) => item.accountId === input.accountId)
+  const patch = existing ? qualitySchedulePatch(existing, input) : undefined
+  if (existing && patch && Object.keys(patch).length === 1) {
+    message.info('定时检查计划没有变化')
+    scheduleFormResetToken.value += 1
+    return
+  }
   scheduleSaving.value = true
   try {
-    await modelChecksApi.saveQualitySchedule(input, modelCheckScopeParams.value)
+    const saved = existing && patch
+      ? await modelChecksApi.patchQualitySchedule(existing.id, patch, modelCheckScopeParams.value)
+      : await modelChecksApi.saveQualitySchedule(input, modelCheckScopeParams.value)
+    const index = schedules.value.findIndex((item) => item.id === saved.id)
+    if (index >= 0) schedules.value.splice(index, 1, saved)
+    else if (schedulesPage.value === 1) {
+      schedules.value = [saved, ...schedules.value].slice(0, schedulesPageSize)
+      schedulesTotal.value += 1
+    } else {
+      await loadSchedules()
+    }
     message.success('定时检查计划已保存')
-    await loadSchedules()
     scheduleFormResetToken.value += 1
   } catch (error) {
     console.error(error)
@@ -655,8 +708,16 @@ async function saveSchedule(input: ModelQualityScheduleMutationInput) {
 async function deleteSchedule(id: string) {
   try {
     await modelChecksApi.deleteQualitySchedule(id, modelCheckScopeParams.value)
+    const removed = schedules.value.find((item) => item.id === id)
+    if (removed) {
+      schedules.value = schedules.value.filter((item) => item.id !== id)
+      schedulesTotal.value = Math.max(0, schedulesTotal.value - 1)
+    }
     message.success('定时检查计划已删除')
-    await loadSchedules()
+    if (schedules.value.length === 0 && schedulesPage.value > 1) {
+      schedulesPage.value -= 1
+      await loadSchedules()
+    }
     scheduleFormResetToken.value += 1
   } catch (error) {
     console.error(error)
@@ -804,7 +865,7 @@ function handleSystemAccountFilterChange() {
   }
   resetSystemAccountOptionsSearch()
   resetModelCheckScopedState()
-  void Promise.all([loadOptions(), loadQualityPolicy()])
+  void loadOptions()
   void reloadRuns()
 }
 
@@ -821,6 +882,41 @@ function resetModelCheckScopedState() {
   schedulesOpen.value = false
   schedules.value = []
   schedulesTotal.value = 0
+  qualityPolicy.value = defaultQualityPolicy()
+}
+
+function defaultQualityPolicy(): ModelQualityPolicy {
+  return {
+    systemAccountId: '',
+    revision: 0,
+    profile: 'quick',
+    manualEnforcementEnabled: true,
+    penaltyThreshold: 70,
+    penaltyAction: 'fallback',
+    recoveryIntervalMinutes: 10
+  }
+}
+
+function qualityPolicyPatch(policy: ModelQualityPolicy, input: ModelQualityPolicyUpdateInput): ModelQualityPolicyUpdateInput {
+  const patch: ModelQualityPolicyUpdateInput = { expectedRevision: input.expectedRevision }
+  if (input.profile !== undefined && policy.profile !== input.profile) patch.profile = input.profile
+  if (input.manualEnforcementEnabled !== undefined && policy.manualEnforcementEnabled !== input.manualEnforcementEnabled) patch.manualEnforcementEnabled = input.manualEnforcementEnabled
+  if (input.penaltyThreshold !== undefined && policy.penaltyThreshold !== input.penaltyThreshold) patch.penaltyThreshold = input.penaltyThreshold
+  if (input.penaltyAction !== undefined && policy.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
+  if (input.recoveryIntervalMinutes !== undefined && policy.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
+  return patch
+}
+
+function qualitySchedulePatch(schedule: ModelQualitySchedule, input: ModelQualityScheduleMutationInput): ModelQualitySchedulePatchInput {
+  const patch: ModelQualitySchedulePatchInput = { expectedRevision: input.expectedRevision ?? schedule.revision }
+  if (schedule.model !== input.model) patch.model = input.model
+  if (schedule.intervalMinutes !== input.intervalMinutes) patch.intervalMinutes = input.intervalMinutes
+  if (schedule.profile !== input.profile) patch.profile = input.profile
+  if (schedule.penaltyThreshold !== input.penaltyThreshold) patch.penaltyThreshold = input.penaltyThreshold
+  if (schedule.penaltyAction !== input.penaltyAction) patch.penaltyAction = input.penaltyAction
+  if (schedule.recoveryIntervalMinutes !== input.recoveryIntervalMinutes) patch.recoveryIntervalMinutes = input.recoveryIntervalMinutes
+  if (schedule.enabled !== (input.enabled !== false)) patch.enabled = input.enabled !== false
+  return patch
 }
 
 function resetRunForm() {
@@ -1051,7 +1147,7 @@ onMounted(async () => {
   pageActive = true
   updateViewportWidth()
   window.addEventListener('resize', updateViewportWidth)
-  await Promise.all([loadOptions(), loadQualityPolicy(), loadRuns()])
+  await Promise.all([loadOptions(), loadRuns()])
   await syncActiveModelCheckRun()
 })
 

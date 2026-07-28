@@ -65,6 +65,13 @@ export interface BuiltInProviderModelRecord extends ProviderModelPricing {
   longContextOutputCostMultiplier?: number
 }
 
+export type BuiltInProviderModelPatchState = Pick<BuiltInProviderModelRecord,
+  'id' | 'providerCode' | 'model' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
+  & Partial<BuiltInProviderModelRecord>
+
+export type BuiltInProviderModelMutationRecord = Pick<BuiltInProviderModelRecord,
+  'id' | 'providerCode' | 'model' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
+
 export interface ProviderModelTestCatalogRecord {
   id: string
   providerCode: string
@@ -203,6 +210,7 @@ export interface ProviderModelPricePatch {
   cachedInputUsdPer1M?: number | null
   cacheWriteUsdPer1M?: number | null
   cacheWrite1hUsdPer1M?: number | null
+  cacheStorageUsdPer1MPerHour?: number | null
   serviceTierPrices?: unknown
   imageInputUsdPer1M?: number | null
   imageOutputUsdPer1M?: number | null
@@ -226,30 +234,40 @@ export interface ProviderModelConfigurationPatch extends ProviderModelPricePatch
   maxOutputTokens?: number | null
 }
 
-export function listBuiltInProviderModels(providerCodes: string[]): BuiltInProviderModelRecord[] {
+export function listBuiltInProviderModels(
+  providerCodes: string[],
+  options: { includeInactive?: boolean } = {}
+): BuiltInProviderModelRecord[] {
   if (!providerCodes.length) return []
   const placeholders = providerCodes.map(() => '?').join(', ')
+  const availabilityFilter = options.includeInactive ? '' : `
+      AND status = 'active'
+      AND catalog_visible = 1
+      AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))`
   const rows = getBusinessDatabase().prepare(`
     SELECT ${columns()} FROM provider_model_catalog
     WHERE provider_code IN (${placeholders})
-      AND status = 'active'
-      AND catalog_visible = 1
-      AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
+      ${availabilityFilter}
     ORDER BY provider_code, catalog_order, model, id
   `).all(...providerCodes as SQLInputValue[]) as unknown as ProviderModelCatalogRow[]
   return rows.map(fromRow)
 }
 
-export async function listBuiltInProviderModelsAsync(providerCodes: string[]): Promise<BuiltInProviderModelRecord[]> {
-  if (runtimeConfig.databaseDriver !== 'postgres') return listBuiltInProviderModels(providerCodes)
+export async function listBuiltInProviderModelsAsync(
+  providerCodes: string[],
+  options: { includeInactive?: boolean } = {}
+): Promise<BuiltInProviderModelRecord[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return listBuiltInProviderModels(providerCodes, options)
   if (!providerCodes.length) return []
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const availabilityFilter = options.includeInactive ? '' : `
+      AND status = 'active'
+      AND catalog_visible = TRUE
+      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)`
   const rows = await client.query<ProviderModelCatalogRow>(`
     SELECT ${columns()} FROM juhe_business.provider_model_catalog
     WHERE provider_code = ANY(?::text[])
-      AND status = 'active'
-      AND catalog_visible = TRUE
-      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
+      ${availabilityFilter}
     ORDER BY provider_code, catalog_order, model, id
   `, [providerCodes])
   return rows.map(fromRow)
@@ -342,31 +360,107 @@ export async function findBuiltInProviderModelByIdAsync(id: string): Promise<Bui
   return row ? fromRow(row) : undefined
 }
 
+export async function findBuiltInProviderModelPatchStateAsync(
+  id: string,
+  submitted: Record<string, unknown>
+): Promise<BuiltInProviderModelPatchState | undefined> {
+  const selectedColumns = builtInProviderModelPatchColumns(submitted)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const row = getBusinessDatabase().prepare(`SELECT ${selectedColumns} FROM provider_model_catalog WHERE id = ? LIMIT 1`)
+      .get(id) as unknown as ProviderModelCatalogRow | undefined
+    return row ? fromRow(row) : undefined
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await client.one<ProviderModelCatalogRow>(`
+    SELECT ${selectedColumns}
+    FROM juhe_business.provider_model_catalog
+    WHERE id = ?
+    LIMIT 1
+  `, [id])
+  return row ? fromRow(row) : undefined
+}
+
+export async function patchBuiltInProviderModelConfigurationAsync(input: {
+  current: BuiltInProviderModelPatchState
+  patch: ProviderModelConfigurationPatch
+  expectedUpdatedAt: string
+}): Promise<BuiltInProviderModelMutationRecord | undefined> {
+  const { assignments, params } = configurationPatchAssignments(
+    input.patch,
+    runtimeConfig.databaseDriver === 'postgres'
+  )
+  if (!assignments.length) return builtInProviderModelMutationRecord(input.current)
+  const marksManualOverride = Object.keys(input.patch).some((field) => field !== 'status' && field !== 'catalogVisible')
+  const sourceAssignment = marksManualOverride
+    ? ', source = ?'
+    : ", source = CASE WHEN source = 'manual-override' THEN source ELSE ? END"
+  const updatedAt = nextProviderModelUpdatedAt(input.expectedUpdatedAt)
+  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ? AND updated_at = ?`
+  const writeParams = [
+    ...params,
+    marksManualOverride ? 'manual-override' : 'manual-visibility-override',
+    updatedAt,
+    input.current.id,
+    input.expectedUpdatedAt
+  ]
+  const changes = runtimeConfig.databaseDriver !== 'postgres'
+    ? Number(getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[]).changes)
+    : Number((await createPostgresDatabaseClient(await getPostgresPool()).execute(
+        sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'),
+        writeParams
+      )).changes)
+  if (changes === 0) return undefined
+  await notifyCommittedModelCacheInvalidationAsync('provider_model_configuration_updated')
+  return builtInProviderModelMutationRecord({ ...input.current, ...input.patch, updatedAt })
+}
+
 export async function updateBuiltInProviderModelPricesAsync(id: string, patch: ProviderModelPricePatch): Promise<BuiltInProviderModelRecord | undefined> {
   return updateBuiltInProviderModelConfigurationAsync(id, patch)
 }
 
-export async function updateBuiltInProviderModelConfigurationAsync(id: string, patch: ProviderModelConfigurationPatch): Promise<BuiltInProviderModelRecord | undefined> {
-  const { assignments, params } = configurationPatchAssignments(patch)
+export async function updateBuiltInProviderModelConfigurationAsync(
+  id: string,
+  patch: ProviderModelConfigurationPatch,
+  expectedUpdatedAt?: string
+): Promise<BuiltInProviderModelRecord | undefined> {
+  const { assignments, params } = configurationPatchAssignments(patch, runtimeConfig.databaseDriver === 'postgres')
   if (!assignments.length) return findBuiltInProviderModelByIdAsync(id)
   const marksManualOverride = Object.keys(patch).some((field) => field !== 'status' && field !== 'catalogVisible')
   const sourceAssignment = marksManualOverride
     ? ', source = ?'
     : ", source = CASE WHEN source = 'manual-override' THEN source ELSE ? END"
-  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ?`
-  const writeParams = [...params, marksManualOverride ? 'manual-override' : 'manual-visibility-override', nowIso(), id]
+  const updatedAt = nextProviderModelUpdatedAt(expectedUpdatedAt)
+  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}${sourceAssignment}, updated_at = ? WHERE id = ?${expectedUpdatedAt ? ' AND updated_at = ?' : ''}`
+  const writeParams = [
+    ...params,
+    marksManualOverride ? 'manual-override' : 'manual-visibility-override',
+    updatedAt,
+    id,
+    ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])
+  ]
+  let changes = 0
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[])
+    changes = Number(getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[]).changes)
   } else {
     const client = createPostgresDatabaseClient(await getPostgresPool())
-    await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)
+    changes = (await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)).changes
   }
+  if (changes === 0) return undefined
   const saved = await findBuiltInProviderModelByIdAsync(id)
   if (saved) await notifyCommittedModelCacheInvalidationAsync('provider_model_configuration_updated')
   return saved
 }
 
-function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): { assignments: string[]; params: unknown[] } {
+function nextProviderModelUpdatedAt(current?: string): string {
+  const currentMs = current ? Date.parse(current) : Number.NaN
+  const nextMs = Math.max(Date.now(), Number.isFinite(currentMs) ? currentMs + 1 : 0)
+  return new Date(nextMs).toISOString()
+}
+
+function configurationPatchAssignments(
+  patch: ProviderModelConfigurationPatch,
+  postgresBoolean = false
+): { assignments: string[]; params: unknown[] } {
   const assignments: string[] = []
   const params: unknown[] = []
   const addValue = (field: keyof ProviderModelConfigurationPatch, column: string, normalize: (value: unknown) => unknown = (value) => value) => {
@@ -375,7 +469,7 @@ function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): 
     params.push(normalize(patch[field]))
   }
   addValue('status', 'status')
-  addValue('catalogVisible', 'catalog_visible', (value) => value ? 1 : 0)
+  addValue('catalogVisible', 'catalog_visible', (value) => postgresBoolean ? Boolean(value) : (value ? 1 : 0))
   addValue('mode', 'mode', nullableText)
   addValue('supportedApiProtocols', 'supported_api_protocols_json', stringListJSON)
   addValue('supportedServiceTiers', 'supported_service_tiers_json', stringListJSON)
@@ -396,6 +490,7 @@ function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): 
   addPrice('cachedInputUsdPer1M', 'cached_input_usd_per_1m')
   addPrice('cacheWriteUsdPer1M', 'cache_write_usd_per_1m')
   addPrice('cacheWrite1hUsdPer1M', 'cache_write_1h_usd_per_1m')
+  addPrice('cacheStorageUsdPer1MPerHour', 'cache_storage_usd_per_1m_per_hour')
   if (Object.prototype.hasOwnProperty.call(patch, 'serviceTierPrices')) {
     assignments.push('service_tier_prices_json = ?')
     params.push(JSON.stringify(normalizeServiceTierPrices(patch.serviceTierPrices)))
@@ -445,6 +540,84 @@ const priceKeys = [
   'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour',
   'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M', 'outputUsdPerImage'
 ] as const
+
+const builtInProviderModelPatchColumnByField: Partial<Record<keyof ProviderModelConfigurationPatch, string>> = {
+  status: 'status',
+  catalogVisible: 'catalog_visible',
+  mode: 'mode',
+  supportedApiProtocols: 'supported_api_protocols_json',
+  supportedServiceTiers: 'supported_service_tiers_json',
+  supportedReasoningEfforts: 'supported_reasoning_efforts_json',
+  defaultReasoningEffort: 'default_reasoning_effort',
+  releaseDate: 'release_date',
+  shutdownDate: 'shutdown_date',
+  contextWindowTokens: 'context_window_tokens',
+  maxInputTokens: 'max_input_tokens',
+  maxOutputTokens: 'max_output_tokens',
+  inputUsdPer1M: 'input_usd_per_1m',
+  outputUsdPer1M: 'output_usd_per_1m',
+  cachedInputUsdPer1M: 'cached_input_usd_per_1m',
+  cacheWriteUsdPer1M: 'cache_write_usd_per_1m',
+  cacheWrite1hUsdPer1M: 'cache_write_1h_usd_per_1m',
+  cacheStorageUsdPer1MPerHour: 'cache_storage_usd_per_1m_per_hour',
+  serviceTierPrices: 'service_tier_prices_json',
+  imageInputUsdPer1M: 'image_input_usd_per_1m',
+  imageOutputUsdPer1M: 'image_output_usd_per_1m',
+  audioInputUsdPer1M: 'audio_input_usd_per_1m',
+  audioOutputUsdPer1M: 'audio_output_usd_per_1m',
+  outputUsdPerImage: 'output_usd_per_image'
+}
+
+const builtInProviderModelValidationFields = new Set<keyof ProviderModelConfigurationPatch>([
+  'mode', 'supportedApiProtocols', 'supportedServiceTiers', 'supportedReasoningEfforts',
+  'defaultReasoningEffort', 'releaseDate', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens',
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'serviceTierPrices',
+  'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+])
+
+function builtInProviderModelPatchColumns(submitted: Record<string, unknown>): string {
+  const requestedFields = Object.keys(submitted)
+    .filter((field): field is keyof ProviderModelConfigurationPatch => field in builtInProviderModelPatchColumnByField)
+  const requiresValidation = submitted.status === 'active'
+    || requestedFields.some((field) => builtInProviderModelValidationFields.has(field))
+  const projectedFields = new Set<keyof ProviderModelConfigurationPatch>(requestedFields)
+  if (requiresValidation) {
+    for (const field of builtInProviderModelValidationFields) projectedFields.add(field)
+  }
+  const columns = new Set([
+    'id', 'provider_code', 'model', 'status', 'catalog_visible', 'shutdown_date',
+    'source', 'created_at', 'updated_at'
+  ])
+  for (const field of projectedFields) {
+    const column = builtInProviderModelPatchColumnByField[field]
+    if (column) columns.add(column)
+  }
+  return [...columns].join(', ')
+}
+
+function builtInProviderModelMutationRecord(
+  value: {
+    id: string
+    providerCode: string
+    model: string
+    status: 'active' | 'disabled'
+    catalogVisible: boolean
+    shutdownDate?: string | null
+    updatedAt: string
+  }
+): BuiltInProviderModelMutationRecord {
+  return {
+    id: value.id,
+    providerCode: value.providerCode,
+    model: value.model,
+    status: value.status,
+    catalogVisible: value.catalogVisible,
+    shutdownDate: value.shutdownDate ?? undefined,
+    updatedAt: value.updatedAt
+  }
+}
 
 function columns(): string {
   return `id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,

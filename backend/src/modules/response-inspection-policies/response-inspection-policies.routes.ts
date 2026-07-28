@@ -9,11 +9,13 @@ import {
   getResponseInspectionPolicyDetailAsync,
   listResponseInspectionPoliciesAsync,
   listResponseInspectionPolicyProviderOptionsAsync,
-  updateResponseInspectionPolicyAsync,
-  type ResponseInspectionPolicyDetail
+  patchResponseInspectionPolicyAsync,
+  type ResponseInspectionPolicyDetail,
+  type ResponseInspectionPolicyInput,
+  type ResponseInspectionPolicyOverview
 } from '../../storage/response-inspection-policy.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
-import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
+import { mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const responseInspectionPoliciesRouter = Router()
@@ -90,6 +92,28 @@ const policyBodySchema = z.object({
   }
 })
 
+const policyPatchSchema = z.object({
+  expectedUpdatedAt: z.string().datetime('响应检查策略版本无效'),
+  name: z.string().trim().min(1, '规则名称不能为空').max(100, '规则名称不能超过 100 个字符').optional(),
+  enabled: z.boolean().optional(),
+  priority: z.number().int().min(1).max(9999).optional(),
+  scopeType: z.enum(['protocol', 'provider']).optional(),
+  protocolCode: z.enum([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE]).optional(),
+  providerCode: z.string().trim().min(1, '请选择供应商').max(80, '供应商编码不能超过 80 个字符').nullable().optional(),
+  match: matchSchema,
+  action: z.enum([
+    'observe',
+    'drop_event',
+    'retry_no_avoidance',
+    'retry_next_account',
+    'avoid_account_ttl',
+    'avoid_upstream_bucket_ttl'
+  ]).optional(),
+  notes: z.string().trim().max(1000, '备注不能超过 1000 个字符').nullable().optional()
+}).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+  message: '至少需要提交一个变化字段'
+})
+
 responseInspectionPoliciesRouter.get('/', async (_req, res, next) => {
   try {
     const result = await listResponseInspectionPoliciesAsync()
@@ -122,13 +146,7 @@ responseInspectionPoliciesRouter.get('/:id', async (req, res, next) => {
 
 responseInspectionPoliciesRouter.post('/', mutationGuard({
   operationKey: 'response_inspection_policies.create',
-  fingerprint: (req) => ({
-    name: normalizedText(bodyField(req, 'name')),
-    scopeType: bodyField(req, 'scopeType'),
-    protocolCode: bodyField(req, 'protocolCode'),
-    providerCode: normalizedText(bodyField(req, 'providerCode')),
-    priority: bodyField(req, 'priority')
-  })
+  fingerprint: (req) => ({ payload: req.body })
 }), async (req, res) => {
   const parsed = policyBodySchema.safeParse(req.body)
   if (!parsed.success) {
@@ -150,47 +168,47 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
     safeChange('enabled', '启用状态', undefined, policy.enabled),
     safeChange('priority', '优先级', undefined, policy.priority)
   ])
-  res.status(201).json(ok(policy))
+  res.status(201).json(ok(policyOverview(policy)))
 })
 
-responseInspectionPoliciesRouter.put('/:id', mutationGuard({
+responseInspectionPoliciesRouter.patch('/:id', mutationGuard({
   operationKey: 'response_inspection_policies.update',
   fingerprint: (req) => ({
     id: req.params.id,
-    name: normalizedText(bodyField(req, 'name')),
-    scopeType: bodyField(req, 'scopeType'),
-    protocolCode: bodyField(req, 'protocolCode'),
-    providerCode: normalizedText(bodyField(req, 'providerCode')),
-    enabled: bodyField(req, 'enabled'),
-    priority: bodyField(req, 'priority'),
-    updatedAt: Date.now()
+    payload: req.body
   })
 }), async (req, res) => {
-  const parsed = policyBodySchema.safeParse(req.body)
+  const parsed = policyPatchSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
     return
   }
-  let policy: ResponseInspectionPolicyDetail | undefined
+  const { expectedUpdatedAt, ...patch } = parsed.data
+  let outcome: Awaited<ReturnType<typeof patchResponseInspectionPolicyAsync>>
   try {
-    policy = await updateResponseInspectionPolicyAsync(req.params.id, parsed.data)
+    outcome = await patchResponseInspectionPolicyAsync(req.params.id, patch, expectedUpdatedAt)
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '响应检查策略更新失败'))
     return
   }
-  if (!policy) {
+  if (outcome.status === 'not_found') {
     res.status(404).json({ message: '响应检查策略不存在' })
     return
   }
-  await recordPolicyOperation(req, 'update', policy.id, policy.name, [
-    safeChange('name', '规则名称', undefined, policy.name),
-    safeChange('protocolCode', '协议', undefined, policy.protocolCode),
-    safeChange('scopeType', '作用层级', undefined, policy.scopeType),
-    safeChange('providerCode', '供应商', undefined, policy.providerCode ?? ''),
-    safeChange('enabled', '启用状态', undefined, policy.enabled),
-    safeChange('priority', '优先级', undefined, policy.priority)
-  ])
-  res.json(ok(policy))
+  if (outcome.status === 'conflict') {
+    res.status(409).json({ message: '响应检查策略已被其他操作更新，请刷新后重试' })
+    return
+  }
+  if (outcome.status === 'updated') {
+    await recordPolicyOperation(
+      req,
+      'update',
+      outcome.policy.id,
+      outcome.policy.name,
+      policyOperationChanges(outcome.current, outcome.policy, outcome.changedFields)
+    )
+  }
+  res.json(ok(policyOverview(outcome.policy)))
 })
 
 responseInspectionPoliciesRouter.delete('/:id', mutationGuard({
@@ -238,4 +256,40 @@ function operationActionText(action: 'create' | 'update' | 'delete'): string {
   if (action === 'create') return '创建'
   if (action === 'update') return '更新'
   return '删除'
+}
+
+function policyOverview(policy: ResponseInspectionPolicyDetail): ResponseInspectionPolicyOverview {
+  return {
+    id: policy.id,
+    defaultRule: false,
+    editable: true,
+    name: policy.name,
+    enabled: policy.enabled,
+    priority: policy.priority,
+    scopeType: policy.scopeType,
+    protocolCode: policy.protocolCode,
+    providerCode: policy.providerCode,
+    providerName: policy.providerName,
+    action: policy.action,
+    updatedAt: policy.updatedAt
+  }
+}
+
+function policyOperationChanges(
+  current: ResponseInspectionPolicyDetail,
+  policy: ResponseInspectionPolicyDetail,
+  fields: Array<keyof ResponseInspectionPolicyInput>
+): NonNullable<Parameters<typeof recordOperationLogAsync>[0]['changes']> {
+  const labels: Record<keyof ResponseInspectionPolicyInput, string> = {
+    name: '规则名称',
+    enabled: '启用状态',
+    priority: '优先级',
+    scopeType: '作用层级',
+    protocolCode: '协议',
+    providerCode: '供应商',
+    match: '匹配条件',
+    action: '处置动作',
+    notes: '备注'
+  }
+  return fields.map((field) => safeChange(field, labels[field], current[field], policy[field]))
 }

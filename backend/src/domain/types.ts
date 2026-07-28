@@ -300,6 +300,7 @@ export interface ProviderListItem {
   parentCode?: ProviderCode
   description?: string
   enabled: boolean
+  protocolCode: string
   baseUrl: string
   defaultHealthCheckModel: string
   defaultSupportedModels: string[]
@@ -1109,7 +1110,11 @@ export interface AccountBatchEditTarget {
 export interface AccountBatchEditResult {
   batchId: string
   changedFields: string[]
-  accounts: AccountSummary[]
+  items: Array<{
+    id: string
+    configRevision: number
+    changedFields: string[]
+  }>
 }
 
 export interface AccountApiKeyRuntimeSummary {
@@ -1194,6 +1199,19 @@ export interface AccountUsageStatsRow {
   authorizationCount: number
   authorizationTeamCount: number
 }
+
+export type AccountUsageStatsOption = Pick<AccountUsageStatsRow,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'providerCode'
+  | 'name'
+  | 'type'
+  | 'status'
+  | 'accessType'
+> & { providerName: string }
 
 export interface AccountUsageStatsTrendOverview {
   range: AccountUsageStatsRange
@@ -1374,11 +1392,11 @@ export interface ModelQualityPolicy {
 
 export interface ModelQualityPolicyUpdateInput {
   expectedRevision: number
-  profile: ModelCheckProfile
-  manualEnforcementEnabled: boolean
-  penaltyThreshold: number
-  penaltyAction: ModelQualityPenaltyAction
-  recoveryIntervalMinutes: number
+  profile?: ModelCheckProfile
+  manualEnforcementEnabled?: boolean
+  penaltyThreshold?: number
+  penaltyAction?: ModelQualityPenaltyAction
+  recoveryIntervalMinutes?: number
 }
 
 export interface ModelQualitySchedule {
@@ -1559,6 +1577,7 @@ export interface GroupSummary {
 
 /** Fields needed by the groups table. Details and edit forms use GroupSummary. */
 export interface GroupListItem extends Omit<GroupSummary, 'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'> {
+  updatedAt: string
   accountStats: Pick<GroupAccountStats, 'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'> & {
     currentConcurrency?: number
     todayUsage?: AccountUsageSummary
@@ -1586,6 +1605,7 @@ export interface GroupEditDetail {
   groupType: GroupType
   schedulingPolicy?: GroupSchedulingPolicy
   accessType: ResourceAccessType
+  updatedAt: string
 }
 
 export interface GroupListResult {
@@ -1739,10 +1759,13 @@ export interface ResourceAuthorizationListItem {
   status: AuthorizationStatus
   remark?: string
   expiresAt?: string
+  limits?: RequestQuotaLimits
+  resourceAccountExpiresAt?: string
   effectiveSourceType: ResourceAuthorizationSourceType
   effectiveSourceTeamId?: string
   effectiveSourceTeamName?: string
   createdAt: string
+  updatedAt: string
   sourceSummary: {
     activeSourceCount: number
     hasManual: boolean
@@ -1753,6 +1776,14 @@ export interface ResourceAuthorizationListItem {
     }>
   }
   permissions: Pick<ResourcePermissions, 'canEdit' | 'canAuthorize'>
+}
+
+export interface ResourceAuthorizationMutationResult {
+  id: string
+  status: AuthorizationStatus
+  expiresAt?: string
+  limits?: RequestQuotaLimits
+  updatedAt: string
 }
 
 export interface ResourceAuthorizationListResult {
@@ -1950,6 +1981,7 @@ export interface RouteStrategyEditBasicDetail {
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
   hybridRoutingConfig?: ApiKeyHybridRoutingConfig
   groupBindings: RouteStrategyGroupBindingSummary[]
+  updatedAt: string
 }
 
 export interface RouteStrategyListItem {

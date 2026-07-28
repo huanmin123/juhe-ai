@@ -1,7 +1,7 @@
-import type { AuthorizationStatus, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AuthorizationStatus, ResourceAuthorizationMutationResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { currentSystemAccountId, type AccessScope } from './access-scope.js'
+import { currentSystemAccountId, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { replaceAccountNameSearchTermsAsync } from './account-name-search.repository.js'
 import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { maxAuthorizationExpirySweepBatchSize } from './authorization-sweep-limits.js'
@@ -39,7 +39,22 @@ import { optionalNullableServerDateTimeIso } from './value-utils.js'
 
 const resourceAuthorizationCreateInputKeys = new Set(['resourceType', 'resourceId', 'granteeType', 'granteeId', 'targetGroupId', 'remark', 'expiresAt', 'limits'])
 const resourceAuthorizationUpdateInputKeys = new Set(['status', 'expiresAt', 'limits'])
+const resourceAuthorizationPatchInputKeys = new Set(['status', 'expiresAt', 'limits', 'expectedUpdatedAt'])
 const businessSchemaName = 'juhe_business'
+
+export type ResourceAuthorizationPatchOutcome =
+  | { kind: 'not_found' }
+  | { kind: 'conflict'; currentUpdatedAt?: string }
+  | { kind: 'unchanged' | 'updated'; result: ResourceAuthorizationMutationResult; previous: ResourceAuthorizationMutationResult; context: ResourceAuthorizationPatchContext }
+
+export interface ResourceAuthorizationPatchContext {
+  resourceType: ResourceAuthorizationResourceType
+  resourceId: string
+  resourceOwnerSystemAccountId: string
+  granteeType: 'system_account' | 'team'
+  granteeSystemAccountId?: string
+  granteeTeamId?: string
+}
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
   assertKnownInputKeys(input, resourceAuthorizationCreateInputKeys, '资源授权')
@@ -344,6 +359,219 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
   if (!updated) return undefined
   await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_updated')
   return findResourceAuthorizationAfterWriteAsync(authorizationId, access)
+}
+
+export async function patchResourceAuthorizationAsync(
+  authorizationId: string,
+  input: Record<string, unknown>,
+  access?: AccessScope
+): Promise<ResourceAuthorizationPatchOutcome> {
+  assertKnownInputKeys(input, resourceAuthorizationPatchInputKeys, '资源授权')
+  const expectedUpdatedAt = normalizeRequiredTextInput(input.expectedUpdatedAt, '授权配置版本')
+  if (!expectedUpdatedAt) throw new Error('缺少授权配置版本')
+  return runtimeConfig.databaseDriver === 'postgres'
+    ? patchResourceAuthorizationPostgresAsync(authorizationId, input, expectedUpdatedAt, access)
+    : patchResourceAuthorizationSqlite(authorizationId, input, expectedUpdatedAt, access)
+}
+
+function patchResourceAuthorizationSqlite(
+  authorizationId: string,
+  input: Record<string, unknown>,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): ResourceAuthorizationPatchOutcome {
+  const database = getBusinessDatabase()
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const grant = database.prepare(`
+    SELECT ${resourceAuthorizationGrantPatchSelectColumns()}
+    FROM resource_authorization_grants
+    WHERE id = ?
+      ${ownerSystemAccountId ? 'AND resource_owner_system_account_id = ?' : ''}
+    LIMIT 1
+  `).get(...(ownerSystemAccountId ? [authorizationId, ownerSystemAccountId] : [authorizationId])) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return { kind: 'not_found' }
+  if (grant.updated_at !== expectedUpdatedAt) return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+
+  const now = nextResourceAuthorizationVersion(grant.updated_at)
+  const patch = resourceAuthorizationPatch(grant, input, currentSystemAccountId(access), now)
+  if (patch.validateExpiresAt) {
+    validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, patch.next.expires_at, Date.parse(now), {
+      allowExpired: patch.next.status === 'expired'
+    })
+  }
+  if (!patch.assignments.length) return resourceAuthorizationPatchSuccess('unchanged', grant, grant)
+
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const updateResult = database.prepare(`
+      UPDATE resource_authorization_grants
+      SET ${patch.assignments.join(', ')}
+      WHERE id = ? AND updated_at = ?
+    `).run(...patch.values, authorizationId, expectedUpdatedAt)
+    if (Number(updateResult.changes) === 0) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      const current = database.prepare('SELECT updated_at FROM resource_authorization_grants WHERE id = ? LIMIT 1').get(authorizationId) as { updated_at?: string } | undefined
+      return { kind: 'conflict', currentUpdatedAt: current?.updated_at }
+    }
+    syncResourceAuthorizationGrantRuntime(patch.next, currentSystemAccountId(access), database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  cleanupInactiveAuthorizationBindings(database)
+  refreshAfterResourceAuthorizationBusinessWrite('resource_authorization_updated')
+  return resourceAuthorizationPatchSuccess('updated', grant, patch.next)
+}
+
+async function patchResourceAuthorizationPostgresAsync(
+  authorizationId: string,
+  input: Record<string, unknown>,
+  expectedUpdatedAt: string,
+  access?: AccessScope
+): Promise<ResourceAuthorizationPatchOutcome> {
+  const client = await getResourceAuthorizationWriteClient()
+  const actor = currentSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const outcome = await client.transaction(async (tx): Promise<ResourceAuthorizationPatchOutcome> => {
+    const grant = await tx.one<ResourceAuthorizationGrantRow>(`
+      SELECT ${resourceAuthorizationGrantPatchSelectColumns()}
+      FROM ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
+      WHERE id = ?
+        ${ownerSystemAccountId ? 'AND resource_owner_system_account_id = ?' : ''}
+      LIMIT 1
+      FOR UPDATE
+    `, ownerSystemAccountId ? [authorizationId, ownerSystemAccountId] : [authorizationId])
+    if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return { kind: 'not_found' }
+    if (grant.updated_at !== expectedUpdatedAt) return { kind: 'conflict', currentUpdatedAt: grant.updated_at }
+
+    const now = nextResourceAuthorizationVersion(grant.updated_at)
+    const patch = resourceAuthorizationPatch(grant, input, actor, now)
+    if (patch.validateExpiresAt) {
+      await validateResourceAuthorizationExpiresAtAsync(tx, grant.resource_type, grant.resource_id, patch.next.expires_at, Date.parse(now), {
+        allowExpired: patch.next.status === 'expired'
+      })
+    }
+    if (!patch.assignments.length) return resourceAuthorizationPatchSuccess('unchanged', grant, grant)
+
+    const updateResult = await tx.execute(`
+      UPDATE ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
+      SET ${patch.assignments.join(', ')}
+      WHERE id = ? AND updated_at = ?
+    `, [...patch.values, authorizationId, expectedUpdatedAt])
+    if (updateResult.changes === 0) return { kind: 'conflict' }
+    await syncResourceAuthorizationGrantRuntimeAsync(patch.next, actor, tx, now)
+    return resourceAuthorizationPatchSuccess('updated', grant, patch.next)
+  })
+  if (outcome.kind === 'updated') {
+    await refreshAfterResourceAuthorizationBusinessWriteAsync('resource_authorization_updated')
+  }
+  return outcome
+}
+
+function resourceAuthorizationPatch(
+  grant: ResourceAuthorizationGrantRow,
+  input: Record<string, unknown>,
+  actor: string,
+  now: string
+): { assignments: string[]; values: Array<string | number | bigint | null>; next: ResourceAuthorizationGrantRow; validateExpiresAt: boolean } {
+  const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
+  const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
+  const nextExpiresAt = hasExpiresAtInput ? normalizeResourceAuthorizationExpiresAtInput(input.expiresAt) : grant.expires_at
+  const requestedStatus = hasStatusInput ? normalizeResourceAuthorizationStatus(input.status) : undefined
+  if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
+    throw new Error('到期授权恢复时请同时调整过期时间')
+  }
+  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
+    ? 'expired'
+    : requestedStatus === 'active' || requestedStatus === 'paused'
+      ? requestedStatus
+      : grant.status === 'expired' && hasExpiresAtInput
+        ? 'active'
+        : grant.status
+  const candidateLimits = hasLimitsInput
+    ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
+    : grant.limits_json
+  const nextLimits = hasLimitsInput && resourceAuthorizationLimitsEqual(candidateLimits, grant.limits_json)
+    ? grant.limits_json
+    : candidateLimits
+  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_at ?? now
+  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_by ?? actor
+  const assignments: string[] = []
+  const values: Array<string | number | bigint | null> = []
+  const add = (column: string, value: string | number | bigint | null) => {
+    assignments.push(`${column} = ?`)
+    values.push(value)
+  }
+  if (nextStatus !== grant.status) add('status', nextStatus)
+  if (nextExpiresAt !== grant.expires_at) add('expires_at', nextExpiresAt)
+  if (nextLimits !== grant.limits_json) add('limits_json', nextLimits)
+  if (nextRevokedBy !== grant.revoked_by) add('revoked_by', nextRevokedBy)
+  if (nextRevokedAt !== grant.revoked_at) add('revoked_at', nextRevokedAt)
+  if (assignments.length) add('updated_at', now)
+  return {
+    assignments,
+    values,
+    validateExpiresAt: hasExpiresAtInput || requestedStatus === 'active',
+    next: {
+      ...grant,
+      status: nextStatus,
+      expires_at: nextExpiresAt,
+      limits_json: nextLimits,
+      revoked_by: nextRevokedBy,
+      revoked_at: nextRevokedAt,
+      updated_at: assignments.length ? now : grant.updated_at
+    }
+  }
+}
+
+function resourceAuthorizationPatchSuccess(
+  kind: 'unchanged' | 'updated',
+  previous: ResourceAuthorizationGrantRow,
+  next: ResourceAuthorizationGrantRow
+): ResourceAuthorizationPatchOutcome {
+  return {
+    kind,
+    previous: resourceAuthorizationMutationResult(previous),
+    result: resourceAuthorizationMutationResult(next),
+    context: {
+      resourceType: next.resource_type,
+      resourceId: next.resource_id,
+      resourceOwnerSystemAccountId: next.resource_owner_system_account_id,
+      granteeType: next.grantee_type,
+      granteeSystemAccountId: next.grantee_system_account_id ?? undefined,
+      granteeTeamId: next.grantee_team_id ?? undefined
+    }
+  }
+}
+
+function resourceAuthorizationMutationResult(grant: ResourceAuthorizationGrantRow): ResourceAuthorizationMutationResult {
+  return {
+    id: grant.id,
+    status: grant.status,
+    expiresAt: grant.expires_at ?? undefined,
+    limits: parseRequestQuotaLimitsJson(grant.limits_json),
+    updatedAt: grant.updated_at
+  }
+}
+
+function resourceAuthorizationLimitsEqual(left: string | null, right: string | null): boolean {
+  return JSON.stringify(parseRequestQuotaLimitsJson(left)) === JSON.stringify(parseRequestQuotaLimitsJson(right))
+}
+
+function resourceAuthorizationGrantPatchSelectColumns(): string {
+  return [
+    'id', 'resource_type', 'resource_id', 'resource_owner_system_account_id', 'grantee_type',
+    "grantee_system_account_id", "grantee_team_id", "'use' AS scope", 'status', 'remark', 'expires_at',
+    'limits_json', "'' AS created_by", "'' AS created_at", 'revoked_by', 'revoked_at', 'updated_at'
+  ].join(', ')
+}
+
+function nextResourceAuthorizationVersion(currentUpdatedAt: string): string {
+  const now = Date.now()
+  const current = Date.parse(currentUpdatedAt)
+  return new Date(Number.isFinite(current) && current >= now ? current + 1 : now).toISOString()
 }
 
 export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizationExpirySweepBatchSize): Promise<number> {

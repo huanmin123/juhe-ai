@@ -596,6 +596,7 @@ const modalOpen = ref(false)
 const editingId = ref<string>()
 const editingIsDefault = ref(false)
 const editingSystemAccountId = ref<string>()
+const editingExpectedUpdatedAt = ref<string>()
 let editingBaseline: RouteStrategyMutationPayload | undefined
 let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
@@ -1050,6 +1051,7 @@ function openCreate() {
   editingId.value = undefined
   editingIsDefault.value = false
   editingSystemAccountId.value = undefined
+  editingExpectedUpdatedAt.value = undefined
   editingBaseline = undefined
   form.name = ''
   form.description = ''
@@ -1107,6 +1109,7 @@ function fillEditForm(record: RouteStrategyEditBasicDetail, fallbackSystemAccoun
   editingId.value = record.id
   editingIsDefault.value = record.isDefault
   editingSystemAccountId.value = record.systemAccountId ?? fallbackSystemAccountId
+  editingExpectedUpdatedAt.value = record.updatedAt
   form.name = record.name
   form.description = record.description ?? ''
   form.mode = record.mode
@@ -1164,7 +1167,14 @@ async function saveRouteStrategy() {
       return
     }
     if (editingId.value) {
-      const result = await routeStrategiesApi.update(editingId.value, payload, operationScopeParams)
+      if (!editingExpectedUpdatedAt.value) {
+        message.error('策略路由编辑版本缺失，请关闭弹窗后重试')
+        return
+      }
+      const result = await routeStrategiesApi.update(editingId.value, {
+        ...payload,
+        expectedUpdatedAt: editingExpectedUpdatedAt.value
+      }, operationScopeParams)
       applyRouteStrategyMutationResult(result)
       if (editingIsDefault.value) {
         invalidateUserReferenceData({
@@ -1246,8 +1256,12 @@ async function deleteRouteStrategy(record: RouteStrategyListItem) {
       return
     }
     await routeStrategiesApi.delete(record.id, operationScopeParams)
+    const index = items.value.findIndex((item) => item.id === record.id)
+    if (index >= 0) {
+      items.value.splice(index, 1)
+      total.value = Math.max(0, total.value - 1)
+    }
     message.success('策略路由已删除')
-    await loadRouteStrategies()
   } catch (error) {
     message.error(extractApiErrorMessage(error, '策略路由删除失败'))
   }

@@ -1,4 +1,4 @@
-import type { ResourceAuthorizationSummary } from '@/types/domain'
+import type { RequestQuotaLimits, ResourceAuthorizationListItem } from '@/types/domain'
 import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from './authorizationFormatters'
 import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
@@ -38,7 +38,7 @@ export function createAuthorizationExpireFormModel(): AuthorizationExpireFormMod
   }
 }
 
-export function authorizationExpireFormFromSummary(item: ResourceAuthorizationSummary): AuthorizationExpireFormModel {
+export function authorizationExpireFormFromSummary(item: Pick<ResourceAuthorizationListItem, 'expiresAt' | 'limits'>): AuthorizationExpireFormModel {
   return {
     expiresAt: parseStrictDatePickerValue(item.expiresAt, '授权过期时间'),
     quotaLimits: createQuotaLimitForm(item.limits)
@@ -58,9 +58,23 @@ export function authorizationCreatePayload(form: AuthorizationCreateFormModel, i
   }
 }
 
-export function authorizationExpirePayload(form: AuthorizationExpireFormModel) {
+export interface AuthorizationExpireBaseline {
+  expiresAt: string | null
+  limits: RequestQuotaLimits
+}
+
+export function authorizationExpireBaseline(item: Pick<ResourceAuthorizationListItem, 'expiresAt' | 'limits'>): AuthorizationExpireBaseline {
   return {
-    expiresAt: formatServerDateTimeInput(form.expiresAt),
-    limits: quotaLimitsPayload(form.quotaLimits)
+    expiresAt: item.expiresAt ?? null,
+    limits: item.limits ?? {}
+  }
+}
+
+export function authorizationExpirePayload(form: AuthorizationExpireFormModel, baseline: AuthorizationExpireBaseline) {
+  const expiresAt = formatServerDateTimeInput(form.expiresAt)
+  const limits = quotaLimitsPayload(form.quotaLimits)
+  return {
+    ...(expiresAt !== baseline.expiresAt ? { expiresAt } : {}),
+    ...(JSON.stringify(limits) !== JSON.stringify(baseline.limits) ? { limits } : {})
   }
 }

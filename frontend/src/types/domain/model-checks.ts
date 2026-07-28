@@ -103,11 +103,11 @@ export interface ModelQualityPolicy {
 
 export interface ModelQualityPolicyUpdateInput {
   expectedRevision: number
-  profile: ModelCheckProfile
-  manualEnforcementEnabled: boolean
-  penaltyThreshold: number
-  penaltyAction: ModelQualityPenaltyAction
-  recoveryIntervalMinutes: number
+  profile?: ModelCheckProfile
+  manualEnforcementEnabled?: boolean
+  penaltyThreshold?: number
+  penaltyAction?: ModelQualityPenaltyAction
+  recoveryIntervalMinutes?: number
 }
 
 export interface ModelQualitySchedule {
@@ -199,6 +199,11 @@ export interface ModelQualityScheduleMutationInput {
   enabled?: boolean
   expectedRevision?: number
 }
+
+export type ModelQualitySchedulePatchInput = {
+  expectedRevision: number
+} & Partial<Pick<ModelQualityScheduleMutationInput,
+  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'enabled'>>
 
 export interface ModelCheckRunSummary {
   id: string

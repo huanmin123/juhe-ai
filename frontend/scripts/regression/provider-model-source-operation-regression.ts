@@ -18,7 +18,7 @@ assertIncludes(
 )
 assertIncludes(
   providersViewSource,
-  'await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, payload)',
+  'const result = await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, {',
   '更新自定义模型应调用来源供应商的模型接口'
 )
 assertIncludes(
@@ -28,8 +28,18 @@ assertIncludes(
 )
 assertIncludes(
   providersViewSource,
-  'await reloadActiveProviderModels(true)',
-  '自定义模型变更后应直接重新读取当前模型目录'
+  'if (!wasEditing) await reloadActiveProviderModels(true)',
+  '只有新增模型后才应重新读取当前模型目录'
+)
+assertIncludes(
+  providersViewSource,
+  'applyProviderModelMutationResult(result, patch)',
+  '编辑模型后应使用窄响应局部更新当前行'
+)
+assertIncludes(
+  providersViewSource,
+  'result.defaultHealthCheckModelCleared && isActiveProviderDefaultHealthCheckModel(result.model)',
+  '模型失效后的窄响应必须同步移除当前默认检查标记'
 )
 assertNotIncludes(
   providersViewSource,

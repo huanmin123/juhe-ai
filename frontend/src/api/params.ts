@@ -2,6 +2,7 @@ import type { ModelCheckRunListParams } from '@/types/domain'
 import type {
   AccountListParams,
   AccountOptionParams,
+  AccountUsageStatsOptionParams,
   AccountUsageStatsParams,
   AiPerformanceAccountOptionsParams,
   AiPerformanceParams,
@@ -78,6 +79,16 @@ export function accountOptionsParams(params?: AccountOptionParams, includeSystem
   const status = joinedListParam(params.status)
   if (status) output.status = status
   if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
+  return Object.keys(output).length ? output : undefined
+}
+
+export function accountUsageStatsOptionParams(params?: AccountUsageStatsOptionParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.keyword) output.keyword = params.keyword
+  if (params.limit) output.limit = params.limit
+  if (params.selectedIds?.length) output.selectedIds = params.selectedIds.join(',')
   return Object.keys(output).length ? output : undefined
 }
 

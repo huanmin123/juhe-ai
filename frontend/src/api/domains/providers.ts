@@ -4,7 +4,9 @@ import type {
   ProviderDefaultHealthCheckModelResult,
   ProviderModelOption,
   ProviderModelCapabilities,
+  ProviderModelMutationResult,
   ProviderOption,
+  ProviderModelPatchPayload,
   ProviderModelPricing,
   ProviderModelsParams,
   ProviderModelUpsertPayload
@@ -35,8 +37,8 @@ export const providersApi = {
   createModel: async (code: string, payload: ProviderModelUpsertPayload, params?: ListParams) => {
     return unwrap<ProviderModelPricing>(http.post(`/providers/${code}/models`, payload, { params }))
   },
-  updateModel: async (code: string, id: string, payload: Partial<ProviderModelUpsertPayload>) => {
-    return unwrap<ProviderModelPricing>(http.patch(`/providers/${code}/models/${id}`, payload))
+  updateModel: async (code: string, id: string, payload: ProviderModelPatchPayload) => {
+    return unwrap<ProviderModelMutationResult>(http.patch(`/providers/${code}/models/${id}`, payload))
   },
   deleteModel: async (code: string, id: string) => {
     return unwrap<{ deleted: boolean }>(http.delete(`/providers/${code}/models/${id}`))

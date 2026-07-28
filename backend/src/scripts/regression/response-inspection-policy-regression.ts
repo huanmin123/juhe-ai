@@ -44,8 +44,8 @@ import {
   deleteResponseInspectionPolicyAsync,
   listResponseInspectionPolicyDefaultRules,
   listResponseInspectionPoliciesAsync,
-  updateResponseInspectionPolicy,
-  updateResponseInspectionPolicyAsync
+  patchResponseInspectionPolicy,
+  patchResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
 import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 import { gatewayTimeoutProfileForLane } from '../../modules/gateway/policy/timeout-profile.js'
@@ -1692,7 +1692,7 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(repositorySource.includes('maxManagementResponseInspectionPolicies'), '管理端响应检查策略必须有固定数量上限')
   assert(repositorySource.includes('listResponseInspectionPoliciesAsync'), '管理端响应检查策略列表必须提供 async PG 入口')
   assert(repositorySource.includes('createResponseInspectionPolicyAsync'), '管理端响应检查策略创建必须提供 async PG 入口')
-  assert(repositorySource.includes('updateResponseInspectionPolicyAsync'), '管理端响应检查策略更新必须提供 async PG 入口')
+  assert(repositorySource.includes('patchResponseInspectionPolicyAsync'), '管理端响应检查策略更新必须提供字段级 async PG 入口')
   assert(repositorySource.includes('deleteResponseInspectionPolicyAsync'), '管理端响应检查策略删除必须提供 async PG 入口')
   assert(repositorySource.includes('isProtocolProviderCodeAsync'), '响应检查策略 PG 写入校验供应商协议时不能回退同步 provider lookup')
   assert(repositorySource.includes('SELECT id FROM response_inspection_policies LIMIT ?'), '创建管理端响应检查策略容量预检必须使用固定窗口')
@@ -1700,11 +1700,11 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(repositorySource.includes('positiveMatchKeys'), '排除条件不能作为独立正向 matcher 使用')
   assert(responseFinalizationSource.includes('nonStreamResponseInspectionMaxBytes'), '非流式 JSON 响应检查必须有固定检查窗口')
   assert(responseFinalizationSource.includes('pipeNonStreamUpstreamResponseForInspection'), '非流式 JSON 必须先经过写前检查管道')
-  assert(routeSource.includes("responseInspectionPoliciesRouter.put('/:id'"), '响应检查策略更新接口必须使用 PUT 全量替换，不保留 PATCH partial 语义')
-  assert(!routeSource.includes("responseInspectionPoliciesRouter.patch('/:id'"), '响应检查策略更新接口不应继续暴露 PATCH partial 入口')
+  assert(routeSource.includes("responseInspectionPoliciesRouter.patch('/:id'"), '响应检查策略更新接口必须使用 PATCH 字段级语义')
+  assert(!routeSource.includes("responseInspectionPoliciesRouter.put('/:id'"), '响应检查策略更新接口不应继续暴露 PUT 全量替换入口')
   assert(routeSource.includes('await listResponseInspectionPoliciesAsync()'), '响应检查策略管理端列表路由必须走 async 仓储入口')
   assert(routeSource.includes('await createResponseInspectionPolicyAsync(parsed.data)'), '响应检查策略管理端创建路由必须走 async 仓储入口')
-  assert(routeSource.includes('await updateResponseInspectionPolicyAsync(req.params.id, parsed.data)'), '响应检查策略管理端更新路由必须走 async 仓储入口')
+  assert(routeSource.includes('await patchResponseInspectionPolicyAsync(req.params.id, patch, expectedUpdatedAt)'), '响应检查策略管理端更新路由必须走字段级 async 仓储入口')
   assert(routeSource.includes('await deleteResponseInspectionPolicyAsync(req.params.id)'), '响应检查策略管理端删除路由必须走 async 仓储入口')
   assert(routeSource.includes('recordOperationLogAsync'), '响应检查策略管理端操作日志必须走 async 设置读取入口')
   assert(!routeSource.includes('recordOperationLog({'), '响应检查策略管理端不得重新调用同步操作日志入口')
@@ -1763,7 +1763,7 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
     }), /至少需要一个匹配条件/, 'outputTextExcludes 只能作为排除条件，不能单独构成命中规则')
 
     const created = createResponseInspectionPolicy({
-      name: '全量替换备注清空策略',
+      name: '字段级更新备注保留策略',
       enabled: true,
       priority: 11,
       scopeType: 'protocol',
@@ -1775,24 +1775,51 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
       action: 'observe',
       notes: '等待清空'
     })
-    const updated = updateResponseInspectionPolicy(created.id, {
-      name: '全量替换备注清空策略',
-      enabled: true,
+    const updated = patchResponseInspectionPolicy(created.id, {
       priority: 12,
-      scopeType: 'protocol',
-      protocolCode: OPENAI_PROTOCOL_CODE,
       match: { outputTextIncludes: ['新污染文本'] },
       action: 'retry_no_avoidance'
-    })
-    assert.equal(updated?.notes, undefined, 'PUT 全量替换语义下，未提交 notes 应清空旧备注')
-    assert.equal(updated?.priority, 12, 'PUT 全量替换应使用本次提交的优先级')
+    }, created.updatedAt as string)
+    assert.equal(updated.status, 'updated', '字段级 PATCH 应返回 updated')
+    assert(updated.status === 'updated')
+    assert.equal(updated.policy.notes, '等待清空', 'PATCH 未提交 notes 时必须保留旧备注')
+    assert.equal(updated.policy.priority, 12, 'PATCH 应使用本次提交的优先级')
 
     const database = getBusinessDatabase()
     const row = database.prepare('SELECT notes, action, priority FROM response_inspection_policies WHERE id = ?')
       .get(created.id) as { notes: string | null; action: string; priority: number } | undefined
-    assert.equal(row?.notes, null, '数据库中的旧备注必须被清空')
-    assert.equal(row?.action, 'retry_no_avoidance', '数据库中的 action 必须按全量替换更新')
-    assert.equal(row?.priority, 12, '数据库中的 priority 必须按全量替换更新')
+    assert.equal(row?.notes, '等待清空', '数据库中的旧备注必须在未提交时保留')
+    assert.equal(row?.action, 'retry_no_avoidance', '数据库中的 action 必须按字段级 PATCH 更新')
+    assert.equal(row?.priority, 12, '数据库中的 priority 必须按字段级 PATCH 更新')
+
+    const clearedNotes = patchResponseInspectionPolicy(created.id, { notes: null }, updated.policy.updatedAt as string)
+    assert.equal(clearedNotes.status, 'updated', '显式 notes=null 必须清空备注')
+    const clearedRow = database.prepare('SELECT notes FROM response_inspection_policies WHERE id = ?')
+      .get(created.id) as { notes: string | null } | undefined
+    assert.equal(clearedRow?.notes, null, '只有显式 notes=null 才能清空数据库备注')
+
+    const disabledProviderPolicy = createResponseInspectionPolicy({
+      name: '停用供应商无关字段更新策略',
+      enabled: true,
+      priority: 15,
+      scopeType: 'provider',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      match: { errorCodes: ['disabled_provider_note_patch'] },
+      action: 'observe',
+      notes: '旧备注'
+    })
+    database.prepare('UPDATE providers SET enabled = 0 WHERE code = ?').run(GPT_VENDOR_CODE)
+    try {
+      const noteOnly = patchResponseInspectionPolicy(
+        disabledProviderPolicy.id,
+        { notes: '供应商停用后仍允许修改备注' },
+        disabledProviderPolicy.updatedAt as string
+      )
+      assert.equal(noteOnly.status, 'updated', '无关字段 PATCH 不得重新校验已停用供应商关系')
+    } finally {
+      database.prepare('UPDATE providers SET enabled = 1 WHERE code = ?').run(GPT_VENDOR_CODE)
+    }
 
     const asyncListed = await listResponseInspectionPoliciesAsync()
     assert(asyncListed.policies.some((policy) => policy.id === created.id), 'async 列表 fallback 应读取同步创建的管理端策略')
@@ -1806,17 +1833,17 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
       action: 'observe',
       notes: '等待 async 更新清空'
     })
-    const asyncUpdated = await updateResponseInspectionPolicyAsync(asyncCreated.id, {
+    const asyncUpdated = await patchResponseInspectionPolicyAsync(asyncCreated.id, {
       name: 'async fallback 策略更新',
       enabled: false,
       priority: 14,
-      scopeType: 'protocol',
-      protocolCode: OPENAI_PROTOCOL_CODE,
       match: { errorMessageIncludes: ['async fallback'] },
       action: 'retry_no_avoidance'
-    })
-    assert.equal(asyncUpdated?.notes, undefined, 'async PUT fallback 也应清空旧备注')
-    assert.equal(asyncUpdated?.enabled, false, 'async PUT fallback 应按提交值更新启用状态')
+    }, asyncCreated.updatedAt as string)
+    assert.equal(asyncUpdated.status, 'updated', 'async PATCH fallback 应返回 updated')
+    assert(asyncUpdated.status === 'updated')
+    assert.equal(asyncUpdated.policy.notes, '等待 async 更新清空', 'async PATCH 未提交 notes 时也应保留旧备注')
+    assert.equal(asyncUpdated.policy.enabled, false, 'async PATCH fallback 应按提交值更新启用状态')
     assert.equal(await deleteResponseInspectionPolicyAsync(asyncCreated.id), true, 'async 删除 fallback 应返回 true')
     const asyncListedAfterDelete = await listResponseInspectionPoliciesAsync()
     assert.equal(asyncListedAfterDelete.policies.some((policy) => policy.id === asyncCreated.id), false, 'async 删除 fallback 后列表不应再包含策略')

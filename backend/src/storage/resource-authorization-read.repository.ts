@@ -21,8 +21,6 @@ import { canManageResourceOwner, resourceAuthorizationSelectColumns, usageScope 
 import {
   loadAccountLookupMap,
   loadAccountLookupMapAsync,
-  loadAccountNameMap,
-  loadAccountNameMapAsync,
   loadGroupNameMap,
   loadGroupNameMapAsync,
   loadSystemAccountPrincipalMapByIds,
@@ -89,7 +87,9 @@ type ResourceAuthorizationListRow = Pick<ResourceAuthorizationGrantRow,
   | 'status'
   | 'remark'
   | 'expires_at'
+  | 'limits_json'
   | 'created_at'
+  | 'updated_at'
 >
 
 interface ResourceAuthorizationReadTables {
@@ -623,7 +623,9 @@ function resourceAuthorizationListSelectColumns(alias: string): string {
     'status',
     'remark',
     'expires_at',
-    'created_at'
+    'limits_json',
+    'created_at',
+    'updated_at'
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
@@ -702,14 +704,14 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
 }
 
 function resourceAuthorizationListItems(rows: ResourceAuthorizationListRow[], access?: AccessScope): ResourceAuthorizationListItem[] {
-  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const accounts = loadAccountLookupMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const authorizationInstanceAccountNames = loadAuthorizationInstanceAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
   return rows.map((row) => resourceAuthorizationListItemFromRow(
     row,
-    accountNames,
+    accounts,
     authorizationInstanceAccountNames,
     groupNames,
     systemAccounts,
@@ -720,8 +722,8 @@ function resourceAuthorizationListItems(rows: ResourceAuthorizationListRow[], ac
 
 async function resourceAuthorizationListItemsAsync(rows: ResourceAuthorizationListRow[], access?: AccessScope): Promise<ResourceAuthorizationListItem[]> {
   const client = await getResourceAuthorizationReadDatabaseClient()
-  const [accountNames, authorizationInstanceAccountNames, groupNames, systemAccounts, teamNames] = await Promise.all([
-    loadAccountNameMapAsync(client, rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id)),
+  const [accounts, authorizationInstanceAccountNames, groupNames, systemAccounts, teamNames] = await Promise.all([
+    loadAccountLookupMapAsync(client, rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id)),
     loadAuthorizationInstanceAccountNameMapAsync(client, rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id)),
     loadGroupNameMapAsync(client, rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id)),
     loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? ''])),
@@ -729,7 +731,7 @@ async function resourceAuthorizationListItemsAsync(rows: ResourceAuthorizationLi
   ])
   return rows.map((row) => resourceAuthorizationListItemFromRow(
     row,
-    accountNames,
+    accounts,
     authorizationInstanceAccountNames,
     groupNames,
     systemAccounts,
@@ -740,7 +742,7 @@ async function resourceAuthorizationListItemsAsync(rows: ResourceAuthorizationLi
 
 function resourceAuthorizationListItemFromRow(
   row: ResourceAuthorizationListRow,
-  accountNames: Map<string, string>,
+  accounts: Map<string, { name: string; accountExpiresAt?: string }>,
   authorizationInstanceAccountNames: Map<string, string>,
   groupNames: Map<string, string>,
   systemAccounts: Map<string, { username: string; displayName: string }>,
@@ -753,12 +755,13 @@ function resourceAuthorizationListItemFromRow(
   const isTeamSource = row.grantee_type === 'team'
   const sourceActive = row.status === 'active' || row.status === 'paused'
   const canManage = canManageResourceOwner(row.resource_owner_system_account_id, access)
+  const account = row.resource_type === 'account' ? accounts.get(row.resource_id) : undefined
   return {
     id: row.id,
     resourceType: row.resource_type,
     resourceId: row.resource_id,
     resourceName: row.resource_type === 'account'
-      ? accountNames.get(row.resource_id) ?? authorizationInstanceAccountNames.get(row.resource_id)
+      ? account?.name ?? authorizationInstanceAccountNames.get(row.resource_id)
       : groupNames.get(row.resource_id),
     resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
     resourceOwnerSystemAccountName: owner?.displayName,
@@ -771,10 +774,13 @@ function resourceAuthorizationListItemFromRow(
     status: row.status,
     remark: row.remark ?? undefined,
     expiresAt: row.expires_at ?? undefined,
+    limits: canManage ? parseRequestQuotaLimitsJson(row.limits_json) : undefined,
+    resourceAccountExpiresAt: canManage ? account?.accountExpiresAt : undefined,
     effectiveSourceType: isTeamSource ? 'team' : 'manual',
     effectiveSourceTeamId: canManage ? row.grantee_team_id ?? undefined : undefined,
     effectiveSourceTeamName: canManage ? teamName : undefined,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     sourceSummary: {
       activeSourceCount: sourceActive ? 1 : 0,
       hasManual: sourceActive && !isTeamSource,

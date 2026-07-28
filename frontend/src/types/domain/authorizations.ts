@@ -175,15 +175,26 @@ export interface ResourceAuthorizationListItem {
   status: AuthorizationStatus
   remark?: string
   expiresAt?: string
+  limits?: RequestQuotaLimits
+  resourceAccountExpiresAt?: string
   effectiveSourceType?: AuthorizationSourceType
   effectiveSourceTeamId?: string
   effectiveSourceTeamName?: string
   createdAt: string
+  updatedAt: string
   sourceSummary?: AuthorizationSourceListSummary
   permissions?: {
     canEdit: boolean
     canAuthorize: boolean
   }
+}
+
+export interface ResourceAuthorizationMutationResult {
+  id: string
+  status: AuthorizationStatus
+  expiresAt?: string
+  limits?: RequestQuotaLimits
+  updatedAt: string
 }
 
 export interface ResourceAuthorizationListResult {
@@ -276,6 +287,19 @@ export interface AccountUsageStatsRow {
   authorizationCount: number
   authorizationTeamCount: number
 }
+
+export type AccountUsageStatsOption = Pick<AccountUsageStatsRow,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'providerCode'
+  | 'name'
+  | 'type'
+  | 'status'
+  | 'accessType'
+> & { providerName: string }
 
 export interface AccountUsageStatsOverview {
   range: AccountUsageStatsRange

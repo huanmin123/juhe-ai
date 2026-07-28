@@ -9,7 +9,7 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
-import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync, listAccountUsageOptionsAsync } from '../../storage/account-usage.repository.js'
 import { getAiHealthListAsync } from '../../storage/account-health-monitor.repository.js'
 import {
   getAiPerformanceBaseAsync,
@@ -58,6 +58,11 @@ const aiHealthQuerySchema = z.object({
   keyword: z.string().trim().max(200).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(10).max(50).optional()
+})
+
+const accountUsageOptionsQuerySchema = z.object({
+  keyword: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional()
 })
 
 async function handleUsageOverviewSectionRequest<T>(
@@ -287,6 +292,25 @@ statsRouter.get('/account-usage', async (req, res, next) => {
     const query = parseAccountUsageOptions(req.query, timezone)
     const overview = await getAccountUsageStatsOverviewPageAsync(access, query)
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/account-usage/options', async (req, res, next) => {
+  const parsed = accountUsageOptionsQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '账户候选参数不合法')))
+    return
+  }
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const options = await listAccountUsageOptionsAsync(access, {
+      keyword: parsed.data.keyword,
+      limit: parsed.data.limit,
+      selectedIds: parseAccountIds(req.query.selectedIds ?? req.query['selectedIds[]']).slice(0, 20)
+    })
+    res.json(ok(options))
   } catch (error) {
     next(error)
   }

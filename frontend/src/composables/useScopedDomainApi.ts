@@ -18,6 +18,7 @@ type ApiKeyUpdatePayload = Parameters<typeof api.apiKeys.update>[1]
 type GroupListParams = Parameters<typeof api.groups.listPage>[0]
 type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
+type GroupPatchPayload = Parameters<typeof api.groups.update>[1]
 type GroupOptionParams = Parameters<typeof api.groups.options>[0]
 type RouteStrategyGroupOptionParams = Parameters<typeof api.groups.routeStrategyOptions>[0]
 type RouteStrategyListParams = Parameters<typeof api.routeStrategies.list>[0]
@@ -59,9 +60,9 @@ export function useScopedAccountsApi(isManagementView: Ref<boolean>) {
 
 export function useScopedModelCheckAccountOptionsApi(isManagementView: Ref<boolean>) {
   return {
-    options: (params: Parameters<typeof api.modelChecks.accountOptions>[0]) => isManagementView.value
-      ? api.modelChecks.accountOptions(params)
-      : api.myModelChecks.accountOptions(params)
+    options: (params: Parameters<typeof api.modelChecks.accountOptions>[0], options?: { signal?: AbortSignal }) => isManagementView.value
+      ? api.modelChecks.accountOptions(params, options)
+      : api.myModelChecks.accountOptions(params, options)
   }
 }
 
@@ -85,7 +86,7 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     create: (payload: GroupMutationPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.create(payload, params)
       : api.myGroups.create(payload),
-    update: (id: string, payload: GroupMutationPayload, params?: GroupMutationScopeParams) => isManagementView.value
+    update: (id: string, payload: GroupPatchPayload, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.update(id, payload, params)
       : api.myGroups.update(id, payload),
     returnAuthorization: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
@@ -177,6 +178,9 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
     saveQualitySchedule: (payload: Parameters<typeof api.modelChecks.saveQualitySchedule>[0], params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.saveQualitySchedule(payload, params)
       : api.myModelChecks.saveQualitySchedule(payload),
+    patchQualitySchedule: (id: string, payload: Parameters<typeof api.modelChecks.patchQualitySchedule>[1], params?: ModelCheckScopeParams) => isManagementView.value
+      ? api.modelChecks.patchQualitySchedule(id, payload, params)
+      : api.myModelChecks.patchQualitySchedule(id, payload),
     deleteQualitySchedule: (id: string, params?: ModelCheckScopeParams) => isManagementView.value
       ? api.modelChecks.deleteQualitySchedule(id, params)
       : api.myModelChecks.deleteQualitySchedule(id)

@@ -6,6 +6,7 @@ import { groupListParams, groupOptionParams } from '../params'
 type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault' | 'purpose'>
 type RouteStrategyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'systemAccountId'>
 type MyRouteStrategyGroupOptionParams = Omit<RouteStrategyGroupOptionParams, 'systemAccountId'>
+type GroupPatchPayload = Record<string, unknown> & { expectedUpdatedAt: string }
 
 export const groupsApi = {
   list: async (params?: GroupListParams) => (await unwrap<GroupListResult>(http.get('/groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }) }))).items,
@@ -18,7 +19,7 @@ export const groupsApi = {
   accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
   routeStrategyOptions: (params?: RouteStrategyGroupOptionParams) => unwrap<RouteStrategyGroupOption[]>(http.get('/groups/route-strategy-options', { params: groupOptionParams(params) })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
-  update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupMutationResult>(http.patch(`/groups/${id}`, payload, { params })),
+  update: (id: string, payload: GroupPatchPayload, params?: ListParams) => unwrap<GroupMutationResult>(http.patch(`/groups/${id}`, payload, { params })),
   returnAuthorization: (id: string, params?: ListParams) => http.post(`/groups/${id}/return-authorization`, {}, { params }),
   delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
 }
@@ -34,7 +35,7 @@ export const myGroupsApi = {
   accountOptions: (params?: MyGroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
   routeStrategyOptions: (params?: MyRouteStrategyGroupOptionParams) => unwrap<RouteStrategyGroupOption[]>(http.get('/my-groups/route-strategy-options', { params: groupOptionParams(params, false) })),
   create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
-  update: (id: string, payload: Record<string, unknown>) => unwrap<GroupMutationResult>(http.patch(`/my-groups/${id}`, payload)),
+  update: (id: string, payload: GroupPatchPayload) => unwrap<GroupMutationResult>(http.patch(`/my-groups/${id}`, payload)),
   returnAuthorization: (id: string) => http.post(`/my-groups/${id}/return-authorization`, {}),
   delete: (id: string) => http.delete(`/my-groups/${id}`)
 }

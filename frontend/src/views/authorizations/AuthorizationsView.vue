@@ -129,7 +129,7 @@ import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { rememberAccountSelection } from '@/shared/accountLabelCache'
 import { mergeSelectedGroupOptions } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { ResourceAuthorizationListItem, ResourceAuthorizationSummary } from '@/types/domain'
+import type { ResourceAuthorizationListItem } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
@@ -202,7 +202,7 @@ const authorizationRequestContext = computed(() => JSON.stringify([
   isManagementView.value ? 'management' : 'self'
 ]))
 
-const expireAuthorization = ref<ResourceAuthorizationSummary>()
+const expireAuthorization = ref<ResourceAuthorizationListItem>()
 
 const defaultAuthorizationsPageState = (): AuthorizationsPageState => createDefaultAuthorizationsPageState(authorizationsPageSize)
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
@@ -426,10 +426,8 @@ const {
   authorizationCreating,
   confirmExpireChange,
   createAuthorization,
-  handleActionMenuClick,
-  invalidateExpireDetailRequest
+  handleActionMenuClick
 } = useAuthorizationActions({
-  authorizationRequestContext,
   createAuthorizationScopeParams,
   createExcludedGranteeIds,
   createForm,
@@ -478,13 +476,11 @@ watch(createModalOpen, (open) => {
 
 watch(expireModalOpen, (open) => {
   if (open) return
-  invalidateExpireDetailRequest()
   expireAuthorization.value = undefined
 })
 
 watch(authorizationRequestContext, () => {
   resetCreateOptionSearchState()
-  invalidateExpireDetailRequest()
   createModalOpen.value = false
   expireModalOpen.value = false
   expireAuthorization.value = undefined
@@ -661,7 +657,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   resetCreateOptionSearchState()
   resetFilterOptionSearchState()
-  invalidateExpireDetailRequest()
 })
 
 function applyRouteFilters() {

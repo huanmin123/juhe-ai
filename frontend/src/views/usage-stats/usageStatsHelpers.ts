@@ -1,7 +1,7 @@
 import { formatDateKey, parseDateKey } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
 import type { AccountSelection } from '@/shared/accountLabelCache'
-import type { AccountOptionSummary, AccountUsageStatsRow, AccountUsageSummary } from '@/types/domain'
+import type { AccountUsageStatsOption, AccountUsageStatsRow, AccountUsageSummary } from '@/types/domain'
 import { formatCompactInteger, formatCost, formatInteger, formatPercent } from '@/views/stats/statsFormatters'
 import type { StatsSummaryCardItem } from '@/views/stats/StatsSummaryCards.vue'
 export { metricText, metricValue } from './usageTrendMetrics'
@@ -85,7 +85,7 @@ export function usageTrendDateKeys(range: readonly [string, string]): string[] {
 }
 
 export function placeholderTrendRow(id: string, options: {
-  accountOptionById: Map<string, AccountOptionSummary>
+  accountOptionById: Map<string, AccountUsageStatsOption>
   addedTrendSelectionById: Map<string, AccountSelection>
   dateKeys: string[]
 }): AccountUsageStatsRow | undefined {

@@ -120,13 +120,38 @@ assert.deepEqual(
   ['responses', 'chat_completions'],
   'OpenAI v1 文本自定义模型默认协议应保持 Responses / Chat'
 )
+const lightweightAnthropicProvider = providerFixture({
+  code: 'anthropic',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1',
+  endpointFamilies: []
+})
+lightweightAnthropicProvider.protocolProfiles = []
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(lightweightAnthropicProvider, 'text'),
+  ['messages', 'message_token_counting'],
+  '轻量供应商列表必须仅凭真实 protocolCode 推导 Anthropic 默认协议，不能回退 OpenAI'
+)
+const lightweightGeminiProvider = providerFixture({
+  code: 'gemini',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta',
+  endpointFamilies: []
+})
+lightweightGeminiProvider.protocolProfiles = []
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(lightweightGeminiProvider, 'text'),
+  ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'interactions'],
+  '轻量供应商列表必须仅凭真实 protocolCode 推导 Gemini 默认协议，不能回退 OpenAI'
+)
 assert.match(formatterSource, /from '\.\/providerModelCategoryRules'/, 'providerModelFormatters 应从分类规则文件读取模型类别能力')
 assert.doesNotMatch(formatterSource, /gpt-image|dall-e|whisper|startsWith\('gpt-'|startsWith\('claude-'/, 'providerModelFormatters 不应继续内联模型名前缀分类规则')
 assert.match(categoryRulesSource, /modelNameCategoryRules/, '模型名前缀分类规则应集中在 providerModelCategoryRules')
 assert.match(catalogModalSource, /isDefaultHealthCheckModel\(record\).*默认检查/s, '个人模型目录应在当前默认模型名称旁保留默认检查标签')
 assert.doesNotMatch(catalogModalSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
-assert.match(providersViewSource, /function ensureActiveProviderDetail\(\)[\s\S]*api\.providers\.detail\(provider\.code, modelProviderQueryParams\(\)\)/, '新增或编辑模型前必须按当前作用域读取 provider 详情')
-assert.match(providersViewSource, /activeProviderDetail\.value = detail/, '模型编辑配置必须应用最新 provider 详情')
+assert.doesNotMatch(providersViewSource, /ensureActiveProviderDetail|activeProviderDetail\.value|api\.providers\.detail/, '新增或编辑模型必须直接使用目录行与已加载目录能力，不得预取 provider 详情')
+assert.match(providersViewSource, /defaultProtocolsForCurrentProviderCategory[\s\S]*providerModels\.value/, '新增模型协议默认值必须优先复用已加载目录能力')
+assert.match(providersViewSource, /defaultProtocolsForProviderModelCategory\(activeProvider\.value \?\? undefined, category\)/, '空模型目录必须复用轻量供应商列表中的协议常量')
 assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
 assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
 assert.match(providersViewSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(isManagementView\.value, authState\.isAdmin\.value\)\)/, '新增和编辑必须使用统一的价格维护判定')

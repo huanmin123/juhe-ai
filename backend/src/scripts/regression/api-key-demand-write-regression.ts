@@ -329,8 +329,10 @@ try {
   const gatewayRuntimeForRefreshedSecret = await gatewayRuntimeCache.readCachedGatewayRuntimeAsync(refreshed.result.key)
   assert.equal(gatewayRuntimeForRefreshedSecret.apiKey?.id, created.id, '密钥刷新后新密钥必须立即读取当前运行时')
 
+  let persistentInvalidationAttempts = 0
   const unregisterFailingValidationInvalidator = cacheInvalidation.registerGatewayApiKeyValidationCacheInvalidator((apiKeyId, metadata) => {
     if (apiKeyId === created.id && metadata.source === 'local') {
+      persistentInvalidationAttempts += 1
       throw new Error('forced validation cache invalidation failure')
     }
   })
@@ -350,6 +352,27 @@ try {
     )
   } finally {
     unregisterFailingValidationInvalidator()
+  }
+  assert.equal(persistentInvalidationAttempts, 3, 'validation cache 持续失败应在有界重试耗尽后报错')
+
+  let transientInvalidationAttempts = 0
+  const unregisterTransientValidationInvalidator = cacheInvalidation.registerGatewayApiKeyValidationCacheInvalidator((apiKeyId, metadata) => {
+    if (apiKeyId === created.id && metadata.source === 'local') {
+      transientInvalidationAttempts += 1
+      if (transientInvalidationAttempts < 3) {
+        throw new Error('forced transient validation cache invalidation failure')
+      }
+    }
+  })
+  try {
+    const recoveredAfterRetry = await repositories.patchApiKeyAsync(created.id, {
+      expiresAt: '2098-01-01T00:00:00.000Z'
+    }, rawApiKeyRow(created.id).updated_at, access)
+    assert(recoveredAfterRetry, 'validation cache 短暂失败后 PATCH 应保留已提交 outcome')
+    assert.equal(recoveredAfterRetry.validationCacheError, undefined, '有界重试成功后不应伪造失败')
+    assert.equal(transientInvalidationAttempts, 3, '短暂失败应在第三次尝试恢复')
+  } finally {
+    unregisterTransientValidationInvalidator()
   }
 
   const gatewayRuntimeBeforeDelete = await gatewayRuntimeCache.readCachedGatewayRuntimeAsync(syncCreated.key)
@@ -538,6 +561,12 @@ function assertSourceContracts(): void {
   const externalAsyncUpdateSource = sourceBetween(externalPushSource, 'export async function updatePublicApiKeyAsync(', 'export function deletePublicApiKey(')
   assert.doesNotMatch(externalAsyncUpdateSource, /findApiKeySummaryAsync/, '外部公开 API Key 异步更新不得在写前宽读完整摘要')
   assert.match(externalAsyncUpdateSource, /updateApiKeyAsync\(apiKeyId,/, '外部公开 API Key 生产更新必须走字段级异步 writer')
+  const externalAsyncDeleteSource = sourceBetween(externalPushSource, 'export async function deletePublicApiKeyAsync(', 'export function listPublicApiKeys(')
+  assert.match(externalAsyncDeleteSource, /if \(result\.deleted && result\.validationCacheError\)[\s\S]*throw result\.validationCacheError/, '外部公开删除不得吞掉已提交后的 validation cache 失效失败')
+
+  const externalRoutesSource = readFileSync(fileURLToPath(new URL('../../modules/external-integrations/external-integrations.routes.ts', import.meta.url)), 'utf8')
+  const externalDeleteRouteSource = sourceBetween(externalRoutesSource, "'/api-key/del'", "'/account/add'")
+  assert.match(externalDeleteRouteSource, /ApiKeyValidationCacheInvalidationError[\s\S]*res\.status\(500\)/, '外部公开删除应把提交后失效失败分类为服务端错误')
 
   const userReferenceSource = readFileSync(fileURLToPath(new URL('../../storage/user-reference-data.repository.ts', import.meta.url)), 'utf8')
   const preferredDefaultSource = sourceBetween(userReferenceSource, 'export async function findPreferredDefaultRouteStrategyReferenceAsync(', 'function userReferenceDataFromRows(')

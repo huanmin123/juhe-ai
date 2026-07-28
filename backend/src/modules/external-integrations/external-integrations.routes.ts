@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { normalizeNormalRoutingConfig } from '../../domain/route-strategy.js'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { ExternalIntegrationSourceAuthContext } from '../../storage/external-integration-source-types.js'
 import {
@@ -23,7 +24,7 @@ import {
   externalIntegrationRouteStrategyListReadScope,
   externalIntegrationRouteStrategyUpdateWriteScope
 } from '../../storage/external-integration-source-constants.js'
-import { createOperationLogAsync } from '../../storage/repositories.js'
+import { ApiKeyValidationCacheInvalidationError, createOperationLogAsync } from '../../storage/repositories.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { apiKeyAvailabilityScheduleSchema } from '../api-keys/api-key-availability-schedule.schema.js'
 import { getExternalIntegrationSourceContext, requireExternalIntegrationSource } from './external-source-auth.middleware.js'
@@ -495,6 +496,10 @@ externalIntegrationsRouter.post(
       const result = await updatePublicRouteStrategyAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: '路由策略不存在' } : ok(result))
     } catch (error) {
+      if (error instanceof GatewayApiKeyValidationCacheInvalidationError) {
+        res.status(500).json({ message: '路由策略已更新，但 API Key validation cache 失效失败' })
+        return
+      }
       const message = error instanceof Error ? error.message : '路由策略修改失败'
       res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
     }
@@ -589,6 +594,10 @@ externalIntegrationsRouter.post(
       const result = await deletePublicApiKeyAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
     } catch (error) {
+      if (error instanceof ApiKeyValidationCacheInvalidationError) {
+        res.status(500).json({ message: 'API Key 已删除，但 validation cache 失效失败' })
+        return
+      }
       res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 删除失败'))
     }
   }

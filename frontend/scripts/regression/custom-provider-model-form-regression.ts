@@ -5,6 +5,7 @@ import {
   applyConfigurationTemplateToCustomModelForm,
   availableCustomModelStatusOptions,
   buildCustomModelCapabilityOptions,
+  buildCustomModelMutationPatch,
   buildCustomModelPayload,
   canManageModelPricesForView,
   emptyCustomModelForm,
@@ -91,6 +92,16 @@ const userPayload = buildCustomModelPayload(form, 'text', { includeRequestCapabi
 assert.equal(userPayload?.configurationTemplateId, template.id, '普通用户请求应提交配置模板 ID')
 assert.equal('inputUsdPer1M' in (userPayload ?? {}), false, '普通用户请求仍不得提交价格')
 assert.equal(userPayload?.defaultReasoningEffort, null, '创建契约必须明确由上游决定默认思考级别')
+const mutationPatch = buildCustomModelMutationPatch(
+  { ...userPayload, maxOutputTokens: 128_000 },
+  { ...userPayload, maxOutputTokens: 64_000 }
+)
+assert.deepEqual(mutationPatch, { maxOutputTokens: 64_000 }, '编辑模型必须只提交实际变化字段')
+assert.deepEqual(
+  buildCustomModelMutationPatch(userPayload ?? {}, structuredClone(userPayload ?? {})),
+  {},
+  '编辑模型没有变化时必须生成空 PATCH'
+)
 const providersViewSource = readFileSync(new URL('../../src/views/providers/ProvidersView.vue', import.meta.url), 'utf8')
 assert.match(
   providersViewSource,

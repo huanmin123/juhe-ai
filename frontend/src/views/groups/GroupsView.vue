@@ -162,7 +162,7 @@ const {
   setFormClientIpConcurrencyLimit,
   setFormMaxQueueWaitSeconds
 } = useGroupFormModel(availableProviders)
-type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId'> & {
+type GroupEditTarget = Pick<GroupListItem, 'id' | 'systemAccountId' | 'updatedAt'> & {
   accessType: 'owner' | 'authorized'
   providerLocked: boolean
 }
@@ -325,6 +325,7 @@ function groupEditTarget(group: GroupListItem): GroupEditTarget {
   return {
     id: group.id,
     systemAccountId: group.systemAccountId,
+    updatedAt: group.updatedAt,
     accessType: isAuthorizedGroup(group) ? 'authorized' : 'owner',
     providerLocked: groupStats(group).total > 0
   }
@@ -452,7 +453,7 @@ async function openEdit(group: GroupListItem) {
       || authRevision !== authState.revision.value
       || pageSystemAccountId !== groupScopeParams.value?.systemAccountId) return
     applyGroupToForm({ ...detail, accessType: target.accessType })
-    editingTarget = target
+    editingTarget = { ...target, updatedAt: detail.updatedAt }
     editingAccessType.value = target.accessType
     editingProviderLocked.value = target.providerLocked
     editingId.value = group.id
@@ -484,21 +485,23 @@ const saveGroup = submitAction('groups.save', async () => {
         message.warning('分组列表已变化，请重新打开编辑弹窗')
         return
       }
-      const payload = groupEditPatch()
-      if (!Object.keys(payload).length) {
+      const patch = groupEditPatch()
+      if (!Object.keys(patch).length) {
         modalOpen.value = false
         message.info('分组配置未发生变化')
         return
       }
+      const payload = { ...patch, expectedUpdatedAt: target.updatedAt }
       const updated = await groupsApi.update(targetId, payload, groupOperationScopeParams(target))
       const changedFields = new Set(updated.changedFields)
       updateGroupItems((item) => item.id === targetId, (item) => ({
         ...item,
-        ...(changedFields.has('name') && typeof payload.name === 'string' ? { name: payload.name } : {}),
-        ...(changedFields.has('providerCode') && typeof payload.providerCode === 'string' ? { providerCode: payload.providerCode } : {}),
-        ...(changedFields.has('description') && typeof payload.description === 'string' ? { description: payload.description || undefined } : {}),
-        ...(changedFields.has('enabled') && typeof payload.enabled === 'boolean' ? { enabled: payload.enabled } : {}),
-        ...(changedFields.has('groupType') && (payload.groupType === 'personal' || payload.groupType === 'high_concurrency') ? { groupType: payload.groupType } : {})
+        updatedAt: updated.updatedAt,
+        ...(changedFields.has('name') && typeof patch.name === 'string' ? { name: patch.name } : {}),
+        ...(changedFields.has('providerCode') && typeof patch.providerCode === 'string' ? { providerCode: patch.providerCode } : {}),
+        ...(changedFields.has('description') && typeof patch.description === 'string' ? { description: patch.description || undefined } : {}),
+        ...(changedFields.has('enabled') && typeof patch.enabled === 'boolean' ? { enabled: patch.enabled } : {}),
+        ...(changedFields.has('groupType') && (patch.groupType === 'personal' || patch.groupType === 'high_concurrency') ? { groupType: patch.groupType } : {})
       }))
       message.success(target.accessType === 'authorized' ? '授权分组使用配置已更新' : '分组已更新')
     } else {

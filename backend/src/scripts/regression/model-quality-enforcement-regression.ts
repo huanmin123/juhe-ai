@@ -73,6 +73,14 @@ try {
   const business = databaseModule.getBusinessDatabase()
   business.prepare("UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?").run(account.id)
   business.prepare("UPDATE accounts SET status = 'active', schedulable = 1, priority = 0 WHERE id = ?").run(accountWithoutRunnableModel.id)
+  const policyNoopOwner = repositories.createSystemAccount({
+    username: 'model_quality_policy_noop', displayName: 'ModelQualityPolicyNoop', password: 'password',
+    role: 'user', status: 'active', mustChangePassword: false
+  })
+  const policyPatchOwner = repositories.createSystemAccount({
+    username: 'model_quality_policy_patch', displayName: 'ModelQualityPolicyPatch', password: 'password',
+    role: 'user', status: 'active', mustChangePassword: false
+  })
 
   const defaultPolicy = await qualityRepository.getModelQualityPolicyAsync('sys_admin')
   assert.equal(defaultPolicy.profile, 'quick')
@@ -81,6 +89,26 @@ try {
   assert.equal(defaultPolicy.penaltyAction, 'fallback')
   assert.equal(defaultPolicy.recoveryIntervalMinutes, 10)
   await assert.rejects(() => qualityRepository.saveModelQualityPolicyAsync('sys_admin', { ...defaultPolicy, expectedRevision: 0, penaltyThreshold: 39 }), /40 到 100/)
+  const defaultNoop = await qualityRepository.saveModelQualityPolicyAsync(policyNoopOwner.id, { expectedRevision: 0, profile: 'quick' })
+  assert.equal(defaultNoop.revision, 0)
+  assert.equal(businessRowCount(databaseModule.getBusinessDatabase(), 'model_quality_policies', policyNoopOwner.id), 0, '默认值 PATCH 必须保持零 DML')
+
+  const narrowPolicy = await qualityRepository.saveModelQualityPolicyAsync(policyPatchOwner.id, {
+    expectedRevision: 0,
+    penaltyAction: 'quality_isolate'
+  })
+  const narrowPolicyBefore = databaseModule.getBusinessDatabase().prepare('SELECT * FROM model_quality_policies WHERE system_account_id = ?').get(policyPatchOwner.id) as Record<string, unknown>
+  const narrowPolicyAfterResult = await qualityRepository.saveModelQualityPolicyAsync(policyPatchOwner.id, {
+    expectedRevision: narrowPolicy.revision,
+    penaltyThreshold: 66
+  })
+  const narrowPolicyAfter = databaseModule.getBusinessDatabase().prepare('SELECT * FROM model_quality_policies WHERE system_account_id = ?').get(policyPatchOwner.id) as Record<string, unknown>
+  assert.deepEqual(changedColumns(narrowPolicyBefore, narrowPolicyAfter).filter((key) => key !== 'updated_at').sort(), ['penalty_threshold', 'revision'])
+  const narrowPolicyNoop = await qualityRepository.saveModelQualityPolicyAsync(policyPatchOwner.id, {
+    expectedRevision: narrowPolicyAfterResult.revision,
+    penaltyThreshold: 66
+  })
+  assert.equal(narrowPolicyNoop.revision, narrowPolicyAfterResult.revision, '同值策略 PATCH 不得推进 revision')
 
   const policy = await qualityRepository.saveModelQualityPolicyAsync('sys_admin', {
     expectedRevision: 0,
@@ -100,9 +128,14 @@ try {
     penaltyAction: 'quality_isolate' as const,
     recoveryIntervalMinutes: 45
   }
-  await assert.rejects(() => qualityRepository.upsertModelQualityScheduleAsync('sys_admin', { ...scheduleInput, intervalMinutes: 9 }), /10 到 10080/)
-  await assert.rejects(() => qualityRepository.upsertModelQualityScheduleAsync('sys_admin', { ...scheduleInput, model: 'gpt-5.4' }), /账户模型限制或供应商协议不支持/)
-  const schedule = await qualityRepository.upsertModelQualityScheduleAsync('sys_admin', scheduleInput)
+  await assert.rejects(() => qualityRepository.createModelQualityScheduleAsync('sys_admin', { ...scheduleInput, intervalMinutes: 9 }), /10 到 10080/)
+  await assert.rejects(() => qualityRepository.createModelQualityScheduleAsync('sys_admin', { ...scheduleInput, model: 'gpt-5.4' }), /账户模型限制或供应商协议不支持/)
+  const schedule = await qualityRepository.createModelQualityScheduleAsync('sys_admin', scheduleInput)
+  await assert.rejects(
+    () => qualityRepository.createModelQualityScheduleAsync('sys_admin', scheduleInput),
+    /字段级更新/,
+    '创建接口不得继续兼任全量编辑'
+  )
   assert.equal(schedule.intervalMinutes, 60)
   assert.equal(schedule.profile, 'full')
   assert.equal(schedule.penaltyThreshold, 58)
@@ -173,12 +206,24 @@ try {
     completedAt: '2026-07-26T00:01:30.000Z'
   })
   assert.equal(scheduledRecovered.result, 'recovered')
-  const updatedSchedule = await qualityRepository.upsertModelQualityScheduleAsync('sys_admin', {
-    ...scheduleInput,
+  const scheduleRowBeforePatch = business.prepare('SELECT * FROM model_quality_schedules WHERE id = ?').get(schedule.id) as Record<string, unknown>
+  const updatedSchedule = await qualityRepository.patchModelQualityScheduleAsync('sys_admin', schedule.id, {
     expectedRevision: schedule.revision,
     penaltyThreshold: 61
   })
   assert.equal(updatedSchedule.revision, schedule.revision + 1)
+  const scheduleRowAfterPatch = business.prepare('SELECT * FROM model_quality_schedules WHERE id = ?').get(schedule.id) as Record<string, unknown>
+  assert.deepEqual(changedColumns(scheduleRowBeforePatch, scheduleRowAfterPatch).filter((key) => key !== 'updated_at').sort(), ['penalty_threshold', 'revision'])
+  const noopSchedule = await qualityRepository.patchModelQualityScheduleAsync('sys_admin', schedule.id, {
+    expectedRevision: updatedSchedule.revision,
+    penaltyThreshold: 61
+  })
+  assert.equal(noopSchedule.revision, updatedSchedule.revision, '同值计划 PATCH 不得推进 revision')
+  await assert.rejects(
+    () => qualityRepository.patchModelQualityScheduleAsync('sys_admin', schedule.id, { expectedRevision: schedule.revision, enabled: false }),
+    /已变化/,
+    '计划 PATCH 必须拒绝过期 revision'
+  )
   const staleScheduledAccountRevision = Number((business.prepare('SELECT config_revision FROM accounts WHERE id = ?').get(account.id) as { config_revision: number }).config_revision)
   const staleScheduledEnforcement = await qualityRepository.applyModelQualityEnforcementAsync({
     systemAccountId: 'sys_admin', accountId: account.id, runId: 'mcr_stale_scheduled_quality_penalty',
@@ -346,3 +391,13 @@ try {
 }
 
 process.exit(0)
+
+function changedColumns(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+  return Object.keys(after).filter((key) => before[key] !== after[key])
+}
+
+function businessRowCount(database: ReturnType<typeof databaseModule.getBusinessDatabase>, tableName: string, systemAccountId: string): number {
+  if (tableName !== 'model_quality_policies') throw new Error('不支持的回归表')
+  const row = database.prepare('SELECT COUNT(*) AS count FROM model_quality_policies WHERE system_account_id = ?').get(systemAccountId) as { count: number }
+  return Number(row.count)
+}

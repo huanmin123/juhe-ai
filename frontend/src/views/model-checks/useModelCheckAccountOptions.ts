@@ -27,7 +27,7 @@ interface ModelCheckAccountOptionsApi {
     keyword?: string
     limit: number
     selectedIds?: string[]
-  }): Promise<ModelCheckAccountOption[]>
+  }, options?: { signal?: AbortSignal }): Promise<ModelCheckAccountOption[]>
 }
 
 interface UseModelCheckAccountOptionsInput {
@@ -37,8 +37,6 @@ interface UseModelCheckAccountOptionsInput {
   knownTargetName: (id: string) => string | undefined
   identityKey: ComputedRef<string>
 }
-
-const accountOptionsInFlight = new Map<string, Promise<ModelCheckAccountOption[]>>()
 
 export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsInput) {
   const targetOptionsLoading = ref(false)
@@ -54,6 +52,12 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   let targetOptionsRequestId = 0
   let comparisonOptionsRequestId = 0
   let historyTargetOptionsRequestId = 0
+  let targetSearchTimer: ReturnType<typeof setTimeout> | undefined
+  let comparisonSearchTimer: ReturnType<typeof setTimeout> | undefined
+  let historySearchTimer: ReturnType<typeof setTimeout> | undefined
+  let targetAbortController: AbortController | undefined
+  let comparisonAbortController: AbortController | undefined
+  let historyAbortController: AbortController | undefined
   let active = true
   onActivated(() => { active = true })
   onDeactivated(invalidateAccountOptionRequests)
@@ -61,6 +65,13 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
 
   function invalidateAccountOptionRequests() {
     active = false
+    clearSearchTimers()
+    targetAbortController?.abort()
+    comparisonAbortController?.abort()
+    historyAbortController?.abort()
+    targetAbortController = undefined
+    comparisonAbortController = undefined
+    historyAbortController = undefined
     targetOptionsRequestId += 1
     comparisonOptionsRequestId += 1
     historyTargetOptionsRequestId += 1
@@ -71,31 +82,36 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
+    const identityKey = input.identityKey.value
     const selectedIds = [input.form.targetId].filter(Boolean).sort()
-    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds])
     const requestId = ++targetOptionsRequestId
+    targetAbortController?.abort()
+    const controller = new AbortController()
+    targetAbortController = controller
     targetOptionsLoading.value = true
     try {
-      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+      const accounts = await input.accountsApi.options({
         purpose: 'run',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
         limit: 50,
         selectedIds
-      }))
-      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId)) return
+      }, { signal: controller.signal })
+      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId, identityKey)) return
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
         .filter((account) => canSelectModelCheckAccount(account))
         .map(accountTargetOption)
       targetOptions.value = nextOptions
     } catch (error) {
-      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId)) return
+      if (!isCurrentAccountOptionRequest(requestId, targetOptionsRequestId, systemAccountId, identityKey)) return
+      if (controller.signal.aborted) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载检测目标失败'))
     } finally {
       if (requestId === targetOptionsRequestId) {
         targetOptionsLoading.value = false
+        if (targetAbortController === controller) targetAbortController = undefined
       }
     }
   }
@@ -103,21 +119,24 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadComparisonOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
+    const identityKey = input.identityKey.value
     const targetId = input.form.targetId
     const model = input.form.model
     const selectedIds = [input.form.targetId, input.form.trustedComparisonAccountId ?? ''].filter(Boolean).sort()
-    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'run', normalizedKeyword, 50, selectedIds, input.form.targetId, input.form.model])
     const requestId = ++comparisonOptionsRequestId
+    comparisonAbortController?.abort()
+    const controller = new AbortController()
+    comparisonAbortController = controller
     comparisonOptionsLoading.value = true
     try {
-      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+      const accounts = await input.accountsApi.options({
         purpose: 'run',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
         limit: 50,
         selectedIds
-      }))
-      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId)
+      }, { signal: controller.signal })
+      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId, identityKey)
         || targetId !== input.form.targetId
         || model !== input.form.model) return
       rememberAccountProfiles(accounts)
@@ -130,14 +149,16 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         .map(accountTargetOption)
       comparisonOptions.value = nextOptions
     } catch (error) {
-      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId)
+      if (!isCurrentAccountOptionRequest(requestId, comparisonOptionsRequestId, systemAccountId, identityKey)
         || targetId !== input.form.targetId
         || model !== input.form.model) return
+      if (controller.signal.aborted) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载可信对比账户失败'))
     } finally {
       if (requestId === comparisonOptionsRequestId) {
         comparisonOptionsLoading.value = false
+        if (comparisonAbortController === controller) comparisonAbortController = undefined
       }
     }
   }
@@ -145,20 +166,23 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
   async function loadHistoryTargetOptions(keyword = '') {
     const normalizedKeyword = keyword.trim()
     const systemAccountId = input.modelCheckScopeParams.value?.systemAccountId
+    const identityKey = input.identityKey.value
     const selectedHistoryTargetId = selectedHistoryTargetAccount.value?.id
     const selectedIds = [selectedHistoryTargetId ?? ''].filter(Boolean).sort()
-    const requestKey = JSON.stringify(['/account-options', input.identityKey.value, 'history', normalizedKeyword, 50, selectedIds])
     const requestId = ++historyTargetOptionsRequestId
+    historyAbortController?.abort()
+    const controller = new AbortController()
+    historyAbortController = controller
     historyTargetOptionsLoading.value = true
     try {
-      const accounts = await loadShared(requestKey, () => input.accountsApi.options({
+      const accounts = await input.accountsApi.options({
         purpose: 'history',
         systemAccountId,
         keyword: normalizedKeyword || undefined,
         limit: 50,
         selectedIds
-      }))
-      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId)
+      }, { signal: controller.signal })
+      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId, identityKey)
         || selectedHistoryTargetId !== selectedHistoryTargetAccount.value?.id) return
       rememberAccountProfiles(accounts)
       const nextOptions = accounts
@@ -166,18 +190,27 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
         .map(accountTargetOption)
       historyTargetOptions.value = nextOptions
     } catch (error) {
-      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId)
+      if (!isCurrentAccountOptionRequest(requestId, historyTargetOptionsRequestId, systemAccountId, identityKey)
         || selectedHistoryTargetId !== selectedHistoryTargetAccount.value?.id) return
+      if (controller.signal.aborted) return
       console.error(error)
       message.error(extractApiErrorMessage(error, '加载历史账户筛选项失败'))
     } finally {
       if (requestId === historyTargetOptionsRequestId) {
         historyTargetOptionsLoading.value = false
+        if (historyAbortController === controller) historyAbortController = undefined
       }
     }
   }
 
   function resetAccountOptionsState() {
+    clearSearchTimers()
+    targetAbortController?.abort()
+    comparisonAbortController?.abort()
+    historyAbortController?.abort()
+    targetAbortController = undefined
+    comparisonAbortController = undefined
+    historyAbortController = undefined
     resetRunAccountSelection()
     selectedHistoryTargetAccount.value = undefined
     targetOptions.value = []
@@ -200,14 +233,16 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     selectedComparisonAccount.value = undefined
   }
 
-  function isCurrentAccountOptionRequest(requestId: number, latestRequestId: number, systemAccountId: string | undefined) {
+  function isCurrentAccountOptionRequest(requestId: number, latestRequestId: number, systemAccountId: string | undefined, identityKey: string) {
     return active
       && requestId === latestRequestId
       && systemAccountId === input.modelCheckScopeParams.value?.systemAccountId
+      && identityKey === input.identityKey.value
   }
 
   function handleTargetSearch(value: string) {
-    void loadTargetOptions(value)
+    clearTimeout(targetSearchTimer)
+    targetSearchTimer = setTimeout(() => void loadTargetOptions(value), 250)
   }
 
   function handleTargetValueUpdate(value: SelectValue) {
@@ -225,26 +260,31 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
 
   function handleTargetDropdownVisibleChange(open: boolean) {
     if (open) {
+      clearTimeout(targetSearchTimer)
       void loadTargetOptions()
     }
   }
 
   function handleComparisonSearch(value: string) {
-    void loadComparisonOptions(value)
+    clearTimeout(comparisonSearchTimer)
+    comparisonSearchTimer = setTimeout(() => void loadComparisonOptions(value), 250)
   }
 
   function handleComparisonDropdownVisibleChange(open: boolean) {
     if (open) {
+      clearTimeout(comparisonSearchTimer)
       void loadComparisonOptions()
     }
   }
 
   function handleHistoryTargetSearch(value: string) {
-    void loadHistoryTargetOptions(value)
+    clearTimeout(historySearchTimer)
+    historySearchTimer = setTimeout(() => void loadHistoryTargetOptions(value), 250)
   }
 
   function handleHistoryTargetDropdownVisibleChange(open: boolean) {
     if (open) {
+      clearTimeout(historySearchTimer)
       void loadHistoryTargetOptions()
     }
   }
@@ -307,6 +347,15 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     return selectedAccountForId(id, options)?.name || input.knownTargetName(id) || accountLabelForId(id)
   }
 
+  function clearSearchTimers(): void {
+    clearTimeout(targetSearchTimer)
+    clearTimeout(comparisonSearchTimer)
+    clearTimeout(historySearchTimer)
+    targetSearchTimer = undefined
+    comparisonSearchTimer = undefined
+    historySearchTimer = undefined
+  }
+
   return {
     comparisonOptions,
     comparisonOptionsLoading,
@@ -336,14 +385,4 @@ export function useModelCheckAccountOptions(input: UseModelCheckAccountOptionsIn
     selectValueOrUndefined,
     targetOptionText
   }
-}
-
-function loadShared(key: string, loader: () => Promise<ModelCheckAccountOption[]>): Promise<ModelCheckAccountOption[]> {
-  const existing = accountOptionsInFlight.get(key)
-  if (existing) return existing
-  const request = loader().finally(() => {
-    if (accountOptionsInFlight.get(key) === request) accountOptionsInFlight.delete(key)
-  })
-  accountOptionsInFlight.set(key, request)
-  return request
 }

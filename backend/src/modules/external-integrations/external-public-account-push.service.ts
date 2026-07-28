@@ -946,6 +946,9 @@ export async function deletePublicApiKeyAsync(input: PublicApiKeyDeleteInput): P
   if (result.cleanupTarget) {
     await submitApiKeyRelatedCleanupAsync(result.cleanupTarget)
   }
+  if (result.deleted && result.validationCacheError) {
+    throw result.validationCacheError
+  }
   return publicApiKeyResponse(result.deleted ? 'deleted' : 'not_found', target, result.deleted ? deletedApiKey : null)
 }
 

@@ -67,6 +67,7 @@ try {
   const database = databaseModule.getBusinessDatabase()
   const insertedProviderFixture = insertProviderFixture(database, 205)
   providerFixture = insertedProviderFixture
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   const custom = policyRepository.createResponseInspectionPolicy({
     name: '渐进加载详情回归策略',
     enabled: true,
@@ -99,28 +100,69 @@ try {
     match: { errorCodes: ['http_created_error'] },
     action: 'retry_no_avoidance',
     notes: 'HTTP 创建详情备注'
-  }, 201), 'HTTP create detail')
+  }, 201), 'HTTP create overview')
   httpCreatedPolicyId = String(createdByHttp.id ?? '')
   assert(httpCreatedPolicyId, 'HTTP POST 必须返回策略 ID')
-  assert.deepEqual(createdByHttp.match, { errorCodes: ['http_created_error'] }, 'HTTP POST 必须返回完整 match')
-  assert.equal(createdByHttp.notes, 'HTTP 创建详情备注', 'HTTP POST 必须返回完整 notes')
-  assert.equal(typeof createdByHttp.createdAt, 'string', 'HTTP POST 必须返回 createdAt')
+  assertOverviewShape(createdByHttp)
+  assert.equal(typeof createdByHttp.updatedAt, 'string', 'HTTP POST 窄响应必须返回列表合并所需版本')
 
-  const updatedByHttp = asRecord(await requestJsonData(`${baseUrl}/${encodeURIComponent(httpCreatedPolicyId)}`, adminCookie, 'PUT', {
-    name: 'HTTP 更新渐进加载策略',
-    enabled: false,
-    priority: 733,
-    scopeType: 'protocol',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    match: { errorMessageIncludes: ['http updated error'] },
-    action: 'observe',
-    notes: 'HTTP 更新详情备注'
-  }), 'HTTP update detail')
-  assert.deepEqual(updatedByHttp.match, { errorMessageIncludes: ['http updated error'] }, 'HTTP PUT 必须返回更新后的完整 match')
-  assert.equal(updatedByHttp.notes, 'HTTP 更新详情备注', 'HTTP PUT 必须返回更新后的 notes')
-  assert.equal(typeof updatedByHttp.createdAt, 'string', 'HTTP PUT 必须继续返回 createdAt')
+  const patchSql: string[] = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/^\s*UPDATE\s+response_inspection_policies\b/i.test(sql)) {
+      const originalRun = statement.run.bind(statement) as typeof statement.run
+      statement.run = ((...params: SQLInputValue[]) => {
+        patchSql.push(sql)
+        return originalRun(...params)
+      }) as typeof statement.run
+    }
+    return statement
+  }) as typeof database.prepare
+  let updatedByHttp: Record<string, unknown>
+  try {
+    updatedByHttp = asRecord(await requestJsonData(`${baseUrl}/${encodeURIComponent(httpCreatedPolicyId)}`, adminCookie, 'PATCH', {
+      expectedUpdatedAt: createdByHttp.updatedAt,
+      notes: 'HTTP 更新详情备注'
+    }), 'HTTP update overview')
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assertOverviewShape(updatedByHttp)
+  assert.equal(patchSql.length, 1, '单字段 PATCH 必须只执行一条策略 UPDATE')
+  assert.match(patchSql[0] ?? '', /SET\s+notes\s*=\s*\?,\s*updated_at\s*=\s*\?/i, '备注 PATCH 只能更新 notes 与 updated_at')
+  assert.doesNotMatch(patchSql[0] ?? '', /\b(?:name|enabled|priority|scope_type|protocol_code|provider_code|match_json|action)\s*=/i, '备注 PATCH 不得覆盖其他业务列')
 
-  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const noOpSql: string[] = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/^\s*UPDATE\s+response_inspection_policies\b/i.test(sql)) noOpSql.push(sql)
+    return statement
+  }) as typeof database.prepare
+  let noOpByHttp: Record<string, unknown>
+  try {
+    noOpByHttp = asRecord(await requestJsonData(`${baseUrl}/${encodeURIComponent(httpCreatedPolicyId)}`, adminCookie, 'PATCH', {
+      expectedUpdatedAt: updatedByHttp.updatedAt,
+      notes: 'HTTP 更新详情备注'
+    }), 'HTTP no-op overview')
+  } finally {
+    database.prepare = originalPrepare
+  }
+  assert.equal(noOpSql.length, 0, '同值 PATCH 必须零 DML')
+  assert.equal(noOpByHttp.updatedAt, updatedByHttp.updatedAt, '同值 PATCH 不得推进版本')
+
+  const staleResponse = await fetch(`${baseUrl}/${encodeURIComponent(httpCreatedPolicyId)}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: createdByHttp.updatedAt, enabled: false })
+  })
+  assert.equal(staleResponse.status, 409, '旧版本 PATCH 必须返回 409')
+  const emptyPatchResponse = await fetch(`${baseUrl}/${encodeURIComponent(httpCreatedPolicyId)}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: updatedByHttp.updatedAt })
+  })
+  assert.equal(emptyPatchResponse.status, 400, '空 PATCH 必须返回 400')
+
   const overviewSql: string[] = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
@@ -164,12 +206,20 @@ try {
   assert.equal(customDetail.id, custom.id)
   assert.deepEqual(customDetail.match, { outputTextIncludes: ['large matcher payload'] })
   assert.equal(customDetail.notes, '详情备注只能由 detail 返回')
-  assert.equal(typeof customDetail.createdAt, 'string', 'custom detail 必须包含 createdAt')
+  assert.equal(typeof customDetail.updatedAt, 'string', 'custom detail 必须包含 CAS 版本')
+  assert.equal(Object.hasOwn(customDetail, 'createdAt'), false, 'custom detail 不得返回编辑未使用的 createdAt')
+  assert.equal(Object.hasOwn(customDetail, 'defaultRule'), false, 'custom detail 不得重复返回列表已有 defaultRule')
+  assert.equal(Object.hasOwn(customDetail, 'editable'), false, 'custom detail 不得重复返回列表已有 editable')
+
+  const httpDetail = asRecord(await requestData(`${baseUrl}/${httpCreatedPolicyId}`, adminCookie), 'HTTP patched detail')
+  assert.deepEqual(httpDetail.match, { errorCodes: ['http_created_error'] }, '备注 PATCH 不得覆盖未提交 matcher')
+  assert.equal(httpDetail.notes, 'HTTP 更新详情备注', '备注 PATCH 应保存目标字段')
 
   const defaultId = String(defaultRules[0]?.id ?? '')
   const defaultDetail = asRecord(await requestData(`${baseUrl}/${encodeURIComponent(defaultId)}`, adminCookie), 'default detail')
   assert.equal(defaultDetail.id, defaultId, '默认规则 detail 必须可按 ID 查询')
   assert(defaultDetail.match && typeof defaultDetail.match === 'object', '默认规则 detail 必须包含 matcher')
+  assert.equal(Object.hasOwn(defaultDetail, 'createdAt'), false, '默认规则 detail 不得返回未展示的 createdAt')
   assert.equal((await fetch(`${baseUrl}/missing_policy_id`, { headers: { cookie: adminCookie } })).status, 404, '不存在策略 detail 必须返回 404')
 
   const providerOptionsSql: string[] = []
@@ -261,7 +311,7 @@ async function requestData(url: string, cookie: string): Promise<unknown> {
 async function requestJsonData(
   url: string,
   cookie: string,
-  method: 'POST' | 'PUT',
+  method: 'POST' | 'PATCH',
   body: unknown,
   expectedStatus = 200
 ): Promise<unknown> {

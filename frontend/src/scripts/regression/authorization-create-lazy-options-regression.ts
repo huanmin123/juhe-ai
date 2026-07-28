@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { authorizationCreateTargetGroupTip } from '../../views/authorizations/authorizationCreateState'
+import {
+  authorizationExpireBaseline,
+  authorizationExpireFormFromSummary,
+  authorizationExpirePayload
+} from '../../views/authorizations/authorizationFormModel'
 import { createAuthorizationOptionSingleflight } from '../../views/authorizations/authorizationOptionResource'
 
 const viewSource = readFileSync(
@@ -142,28 +147,29 @@ for (const [loaderName, nextLoaderName, selectedField] of [
 
 const expireOpenSource = sourceBetween(
   actionSource,
-  'async function openExpireModal',
-  'function invalidateExpireDetailRequest'
+  'function openExpireModal',
+  'async function confirmExpireChange'
 )
-assert.match(expireOpenSource, /requestToken = \+\+expireDetailRequestToken/, '到期编辑详情请求必须使用独立请求代次')
-assert.match(expireOpenSource, /requestContext/, '到期编辑详情请求必须绑定登录身份和页面上下文')
-assert.match(expireOpenSource, /resourceOwnerSystemAccountId/, '到期编辑详情请求必须绑定资源 owner')
-assert.match(expireOpenSource, /item\.id/, '到期编辑详情请求必须绑定授权记录')
-assert.match(expireOpenSource, /activeExpireDetailRequestSignature === requestSignature/, '到期编辑详情响应必须校验完整请求签名')
-assert.ok((expireOpenSource.match(/if \(!isCurrent\(\)\) return/g) ?? []).length >= 3, '到期编辑的迟到响应、网络错误和结构错误都必须静默丢弃')
+assert.match(expireOpenSource, /authorizationExpireFormFromSummary\(item\)/, '到期编辑必须直接复用列表行初值')
+assert.match(expireOpenSource, /authorizationExpireBaseline\(item\)/, '到期编辑必须保存列表行 baseline')
+assert.match(expireOpenSource, /expireModalOpen\.value = true/, '到期编辑应同步打开弹窗')
+assert.doesNotMatch(expireOpenSource, /api\..*detail|await /, '打开到期编辑弹窗不得请求详情或其他候选')
 
-const expireModalLifecycleSource = sourceBetween(
-  viewSource,
-  'watch(expireModalOpen',
-  'watch(authorizationRequestContext'
-)
-assert.match(expireModalLifecycleSource, /invalidateExpireDetailRequest\(\)/, '关闭到期编辑弹窗必须使详情请求失效')
-const requestContextLifecycleSource = sourceBetween(
-  viewSource,
-  'watch(authorizationRequestContext',
-  'async function loadMetaData'
-)
-assert.match(requestContextLifecycleSource, /invalidateExpireDetailRequest\(\)/, '登录身份或页面上下文切换必须使到期编辑详情请求失效')
+const expireSubmitSource = sourceBetween(actionSource, 'async function confirmExpireChange', 'function validateAuthorizationExpiresAt')
+assert.match(expireSubmitSource, /authorizationExpirePayload\(expireForm, expireBaseline\)/, '到期编辑必须只生成相对 baseline 的变化字段')
+assert.match(expireSubmitSource, /expectedUpdatedAt: authorization\.updatedAt/, '到期编辑必须提交 CAS 版本')
+assert.match(expireSubmitSource, /if \(!Object\.keys\(changes\)\.length\)/, '到期编辑同值保存必须在前端成为 no-op')
+assert.doesNotMatch(expireSubmitSource, /loadData\(/, '到期编辑成功后必须本地合并最小结果，不得重载列表')
+
+const expireSource = {
+  expiresAt: '2099-01-01T00:00:00.000Z',
+  limits: { daily: { enabled: true as const, limit: 5 } }
+}
+const expireForm = authorizationExpireFormFromSummary(expireSource)
+const expireBaseline = authorizationExpireBaseline(expireSource)
+assert.deepEqual(authorizationExpirePayload(expireForm, expireBaseline), {}, '有效期与额度同值保存必须生成空 PATCH')
+expireForm.quotaLimits.daily.limit = 6
+assert.deepEqual(Object.keys(authorizationExpirePayload(expireForm, expireBaseline)), ['limits'], '只修改额度时 PATCH 不得回传有效期')
 
 await verifySingleflightLifecycle()
 

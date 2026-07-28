@@ -174,7 +174,13 @@ export function defaultProtocolsForProviderModelCategory(
   category: ModelCategoryKey
 ): ProviderModelApiProtocol[] {
   const protocols = providerProfileApiProtocolsForModelCategory(provider, category)
-  return protocols.length ? protocols : defaultProtocolsForModelCategory(category)
+  if (protocols.length) return protocols
+  const protocolCode = provider?.protocolCode?.trim().toLowerCase()
+  if (category === 'text' && protocolCode === 'anthropic') return ['messages', 'message_token_counting']
+  if (category === 'text' && protocolCode === 'gemini') {
+    return ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'interactions']
+  }
+  return defaultProtocolsForModelCategory(category)
 }
 
 export function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {

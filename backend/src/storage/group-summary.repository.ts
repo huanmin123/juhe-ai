@@ -208,6 +208,7 @@ function groupListItemFromRow(
     groupType: groupTypeFromRow(row),
     accessType: row.access_type ?? 'owner',
     groupAuthorizationId: row.authorization_id ?? undefined,
+    updatedAt: row.updated_at,
     authorizationStatus: row.authorization_status ?? undefined,
     authorizationExpiresAt: row.authorization_expires_at ?? undefined,
     authorizationSourceSummary: authorized
@@ -398,7 +399,8 @@ function groupEditDetailFromRow(row: GroupListRow, access?: AccessScope): GroupE
     isDefault: authorized ? false : Number(row.is_default) === 1,
     groupType: groupTypeFromRow(row),
     schedulingPolicy: groupSchedulingPolicyFromRow(row),
-    accessType: row.access_type ?? 'owner'
+    accessType: row.access_type ?? 'owner',
+    updatedAt: row.updated_at
   }
 }
 

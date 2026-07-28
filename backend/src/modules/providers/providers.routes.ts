@@ -9,7 +9,7 @@ import {
   listProviderListItemsAsync
 } from '../../storage/repositories.js'
 import { isAdminRole, type ProviderDefinition, type ProviderListItem, type ProviderModelPricing } from '../../domain/types.js'
-import { isHybridProviderCode } from '../../domain/provider-protocol.js'
+import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, isHybridProviderCode } from '../../domain/provider-protocol.js'
 import {
   clearProviderDefaultHealthCheckModelPreferenceIfModelAsync,
   listProviderDefaultHealthCheckModelPreferencesAsync,
@@ -24,17 +24,20 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import {
   findCustomProviderModelAsync,
+  findCustomProviderModelPatchState,
   findProviderModelCapabilitiesAsync,
   customProviderModelBindingsAsync,
   listProviderModelCatalogAsync,
+  patchCustomProviderModelConfigurationAsync,
   removeCustomProviderModelAsync,
   saveCustomProviderModelAsync,
-  type ProviderModelCatalogItem
+  type ProviderModelCatalogItem,
+  type ProviderModelPatchField
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import {
-  findBuiltInProviderModelByIdAsync,
-  updateBuiltInProviderModelConfigurationAsync
+  findBuiltInProviderModelPatchStateAsync,
+  patchBuiltInProviderModelConfigurationAsync
 } from '../../storage/provider-model-catalog.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import {
@@ -300,7 +303,14 @@ const customModelSchema = z.object({
   capabilityNotes: nullableTrimmedStringSchema,
   notes: nullableTrimmedStringSchema
 }).strict()
-const customModelPatchSchema = customModelSchema.omit({ configurationTemplateId: true }).partial().refine((value) => Object.keys(value).length > 0, {
+const expectedModelUpdatedAtSchema = z.string().datetime()
+const customModelPatchSchema = customModelSchema.omit({
+  configurationTemplateId: true,
+  scope: true,
+  model: true
+}).partial().extend({
+  expectedUpdatedAt: expectedModelUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的模型内容'
 })
 const builtInModelPatchSchema = customModelSchema.omit({
@@ -311,7 +321,9 @@ const builtInModelPatchSchema = customModelSchema.omit({
   pricingNotes: true,
   capabilityNotes: true,
   notes: true
-}).extend({ status: z.enum(['active', 'disabled']).optional() }).partial().refine((value) => Object.keys(value).length > 0, {
+}).extend({ status: z.enum(['active', 'disabled']).optional() }).partial().extend({
+  expectedUpdatedAt: expectedModelUpdatedAtSchema
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供有效的内置模型配置'
 })
 
@@ -396,7 +408,8 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       res.status(401).json({ message: '请先登录' })
       return
     }
-    const builtIn = await findBuiltInProviderModelByIdAsync(req.params.id)
+    const submittedBody = requestRecord(req.body)
+    const builtIn = await findBuiltInProviderModelPatchStateAsync(req.params.id, submittedBody)
     if (builtIn) {
       if (builtIn.providerCode !== req.params.code) {
         sendNotFound(res, '模型不存在')
@@ -411,35 +424,61 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         res.status(400).json(badRequest('内置模型配置参数无效'))
         return
       }
-      const configurationPatch = builtIn.providerCode === 'gpt'
-        ? { ...parsedConfiguration.data, defaultReasoningEffort: null }
-        : parsedConfiguration.data
+      const { expectedUpdatedAt, ...submittedConfiguration } = parsedConfiguration.data
+      if (builtIn.updatedAt !== expectedUpdatedAt) {
+        res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
+        return
+      }
+      const configurationPatch = providerModelConfigurationChanges(builtIn, submittedConfiguration)
+      if (!Object.keys(configurationPatch).length) {
+        res.json(ok(providerModelMutationResult(builtIn)))
+        return
+      }
       const next = { ...builtIn, ...configurationPatch }
-      const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
-      if (capabilityMessage) {
-        res.status(400).json(badRequest(capabilityMessage))
-        return
+      if (requiresBuiltInModelPatchValidation(configurationPatch)) {
+        const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
+        if (capabilityMessage) {
+          res.status(400).json(badRequest(capabilityMessage))
+          return
+        }
+        const completenessMessage = validateBuiltInModelCompleteness(next)
+        if (completenessMessage) {
+          res.status(400).json(badRequest(completenessMessage))
+          return
+        }
       }
-      const completenessMessage = validateBuiltInModelCompleteness(next)
-      if (completenessMessage) {
-        res.status(400).json(badRequest(completenessMessage))
-        return
-      }
-      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, configurationPatch)
+      const becameUnavailable = providerModelAvailabilityTransitionedToUnavailable(builtIn, next)
+      const saved = await patchBuiltInProviderModelConfigurationAsync({
+        current: builtIn,
+        patch: configurationPatch,
+        expectedUpdatedAt
+      })
       if (!saved) {
-        sendNotFound(res, '模型不存在')
+        res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
         return
+      }
+      if (becameUnavailable) {
+        await clearProviderModelDefaultReferences({
+          providerCode: saved.providerCode,
+          model: saved.model,
+          clearSystemDefault: true
+        })
       }
       await recordOperationLogAsync({
         module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
         resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
         summary: `更新模型配置：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
-        changes: [safeChange('configuration', '模型配置', providerModelConfigurationSnapshot(builtIn), providerModelConfigurationSnapshot(saved))]
+        changes: [safeChange(
+          'configuration',
+          '模型配置',
+          providerModelPatchSnapshot(builtIn, Object.keys(configurationPatch)),
+          providerModelPatchSnapshot(next, Object.keys(configurationPatch))
+        )]
       }, req)
-      res.json(ok(saved))
+      res.json(ok(providerModelMutationResult(saved, becameUnavailable)))
       return
     }
-    const existing = await findCustomProviderModelAsync(req.params.id)
+    const existing = await findCustomProviderModelPatchState(req.params.id, submittedBody)
     if (!existing || existing.providerCode !== req.params.code) {
       sendNotFound(res, '自定义模型不存在')
       return
@@ -453,46 +492,55 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       res.status(400).json(badRequest('自定义模型参数无效'))
       return
     }
-    if (parsed.data.model !== undefined && parsed.data.model.trim() !== existing.model.trim()) {
-      res.status(400).json(badRequest('模型 ID 创建后不能修改'))
+    const { expectedUpdatedAt, ...submittedPatch } = parsed.data
+    if (existing.updatedAt !== expectedUpdatedAt) {
+      res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
       return
     }
     const next = {
       ...existing,
-      ...parsed.data,
+      ...submittedPatch,
       defaultReasoningEffort: null,
       scope: existing.scope
     }
-    const validation = await validateCustomModelPricing({
-      providerCode: existing.providerCode,
-      ownerSystemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
-      input: next
-    })
-    if (!validation.success) {
-      res.status(400).json(badRequest(validation.message))
-      return
+    if (requiresCustomModelPatchValidation(submittedPatch)) {
+      const validation = await validateCustomModelPricing({
+        providerCode: existing.providerCode,
+        ownerSystemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
+        input: next
+      })
+      if (!validation.success) {
+        res.status(400).json(badRequest(validation.message))
+        return
+      }
     }
     try {
-      const saved = await saveCustomProviderModelAsync({
-        ...next,
-        providerCode: existing.providerCode,
-        systemAccountId: existing.systemAccountId,
-        actorSystemAccountId: context.systemAccountId
+      const becameUnavailable = providerModelAvailabilityTransitionedToUnavailable(existing, next)
+      const outcome = await patchCustomProviderModelConfigurationAsync({
+        current: existing,
+        expectedUpdatedAt,
+        fields: Object.keys(submittedPatch) as ProviderModelPatchField[],
+        next: {
+          ...next,
+          providerCode: existing.providerCode,
+          systemAccountId: existing.systemAccountId,
+          actorSystemAccountId: context.systemAccountId
+        }
       })
-      if (saved.status !== 'active') {
-        await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
+      if (outcome.kind === 'conflict') {
+        res.status(409).json({ message: '模型已被其他操作更新，请刷新后重试' })
+        return
+      }
+      const saved = outcome.record
+      if (outcome.kind === 'updated' && becameUnavailable) {
+        await clearProviderModelDefaultReferences({
           providerCode: saved.providerCode,
           systemAccountId: saved.scope === 'global' ? undefined : saved.systemAccountId,
-          model: saved.model
+          model: saved.model,
+          clearSystemDefault: saved.scope === 'global'
         })
-        if (saved.scope === 'global') {
-          await clearProviderSystemDefaultHealthCheckModelIfModelAsync({
-            providerCode: saved.providerCode,
-            model: saved.model
-          })
-        }
       }
-      res.json(ok(saved))
+      res.json(ok(providerModelMutationResult(saved, outcome.kind === 'updated' && becameUnavailable)))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
     }
@@ -582,6 +630,7 @@ function providerListItem(provider: ProviderDefinition): ProviderListItem {
     parentCode: provider.parentCode,
     description: provider.description,
     enabled: provider.enabled,
+    protocolCode: provider.protocolCode,
     baseUrl: provider.baseUrl,
     defaultHealthCheckModel: provider.defaultHealthCheckModel,
     defaultSupportedModels: provider.defaultSupportedModels,
@@ -873,18 +922,107 @@ function serviceTierPriceKeys(value: unknown): string[] {
     .filter(Boolean)
 }
 
-function providerModelConfigurationSnapshot(value: ProviderModelPricing): Record<string, unknown> {
+function providerModelConfigurationChanges<TPatch extends Record<string, unknown>>(
+  current: object,
+  requested: TPatch
+): TPatch {
+  const currentRecord = current as Record<string, unknown>
+  return Object.fromEntries(Object.entries(requested).filter(([field, value]) => (
+    !providerModelConfigurationValuesEqual(currentRecord[field], value)
+  ))) as TPatch
+}
+
+function providerModelConfigurationValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (left == null && right == null) return true
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function providerModelMutationResult(value: {
+  id: string
+  providerCode: string
+  model: string
+  status: 'draft' | 'active' | 'disabled'
+  updatedAt: string
+}, defaultHealthCheckModelCleared = false) {
   return {
-    status: value.status, mode: value.mode, supportedApiProtocols: value.supportedApiProtocols,
-    supportedServiceTiers: value.supportedServiceTiers, supportedReasoningEfforts: value.supportedReasoningEfforts,
-    defaultReasoningEffort: value.defaultReasoningEffort, releaseDate: value.releaseDate, shutdownDate: value.shutdownDate,
-    contextWindowTokens: value.contextWindowTokens, maxInputTokens: value.maxInputTokens, maxOutputTokens: value.maxOutputTokens,
-    inputUsdPer1M: value.inputUsdPer1M, outputUsdPer1M: value.outputUsdPer1M,
-    cachedInputUsdPer1M: value.cachedInputUsdPer1M, cacheWriteUsdPer1M: value.cacheWriteUsdPer1M,
-    cacheWrite1hUsdPer1M: value.cacheWrite1hUsdPer1M, cacheStorageUsdPer1MPerHour: value.cacheStorageUsdPer1MPerHour,
-    serviceTierPrices: value.serviceTierPrices,
-    imageInputUsdPer1M: value.imageInputUsdPer1M, imageOutputUsdPer1M: value.imageOutputUsdPer1M,
-    audioInputUsdPer1M: value.audioInputUsdPer1M, audioOutputUsdPer1M: value.audioOutputUsdPer1M,
-    outputUsdPerImage: value.outputUsdPerImage
+    id: value.id,
+    providerCode: value.providerCode,
+    model: value.model,
+    status: value.status,
+    updatedAt: value.updatedAt,
+    ...(defaultHealthCheckModelCleared ? { defaultHealthCheckModelCleared: true } : {})
   }
+}
+
+const providerModelValidationFields = new Set([
+  'mode', 'supportedServiceTiers', 'supportedReasoningEfforts', 'defaultReasoningEffort',
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M', 'cacheStorageUsdPer1MPerHour', 'serviceTierPrices',
+  'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+])
+
+function requiresCustomModelPatchValidation(patch: Record<string, unknown>): boolean {
+  return patch.status === 'active' || Object.keys(patch).some((field) => providerModelValidationFields.has(field))
+}
+
+function requiresBuiltInModelPatchValidation(patch: Record<string, unknown>): boolean {
+  return requiresCustomModelPatchValidation(patch)
+    || Object.keys(patch).some((field) => ['supportedApiProtocols', 'releaseDate', 'contextWindowTokens', 'maxInputTokens', 'maxOutputTokens'].includes(field))
+}
+
+function providerModelAvailabilityTransitionedToUnavailable(
+  current: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null },
+  next: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null }
+): boolean {
+  return providerModelIsAvailable(current) && !providerModelIsAvailable(next)
+}
+
+function providerModelIsAvailable(value: { status?: string; catalogVisible?: boolean; shutdownDate?: string | null }): boolean {
+  if (value.status !== 'active' || value.catalogVisible === false) return false
+  const shutdownDate = value.shutdownDate?.trim()
+  return !shutdownDate || shutdownDate > new Date().toISOString().slice(0, 10)
+}
+
+async function clearProviderModelDefaultReferences(input: {
+  providerCode: string
+  systemAccountId?: string
+  model: string
+  clearSystemDefault: boolean
+}): Promise<void> {
+  const providerCodes = await providerModelDefaultReferenceCodes(input.providerCode)
+  await Promise.all(providerCodes.flatMap((providerCode) => [
+    clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
+      providerCode,
+      systemAccountId: input.systemAccountId,
+      model: input.model
+    }),
+    ...(input.clearSystemDefault
+      ? [clearProviderSystemDefaultHealthCheckModelIfModelAsync({ providerCode, model: input.model })]
+      : [])
+  ]))
+}
+
+async function providerModelDefaultReferenceCodes(providerCode: string): Promise<string[]> {
+  const normalized = providerCode.trim()
+  if (!normalized || normalized === HYBRID_PROVIDER_CODE) return normalized ? [normalized] : []
+  const [provider] = await listProvidersAsync(normalized)
+  if (!provider) return [normalized]
+  const protocolCodes = new Set(provider.protocolProfiles.filter((profile) => profile.enabled).map((profile) => profile.protocolCode))
+  const codes = new Set([normalized])
+  if (protocolCodes.has('openai')) codes.add(OPENAI_COMPATIBLE_PROVIDER_CODE)
+  if (['openai', 'anthropic', 'gemini'].some((protocolCode) => protocolCodes.has(protocolCode))) codes.add(HYBRID_PROVIDER_CODE)
+  return [...codes]
+}
+
+function providerModelPatchSnapshot(value: object, fields: string[]): Record<string, unknown> {
+  const record = value as Record<string, unknown>
+  return Object.fromEntries(fields.map((field) => [field, record[field]]))
+}
+
+function requestRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
 }

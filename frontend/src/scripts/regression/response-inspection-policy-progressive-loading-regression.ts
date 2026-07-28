@@ -12,6 +12,11 @@ import {
   defaultResponseInspectionProviderCode,
   responseInspectionProviderSelectOptions
 } from '@/views/response-inspection-policies/responseInspectionProviderOptions'
+import {
+  buildResponseInspectionPolicyPatch,
+  hasResponseInspectionPolicyChanges,
+  responseInspectionPolicyPayloadFromDetail
+} from '@/views/response-inspection-policies/responseInspectionPolicyMutation'
 
 const emptyList: ResponseInspectionPolicyListResult = { defaultRules: [], policies: [] }
 const options: ResponseInspectionPolicyProviderOption[] = [
@@ -25,6 +30,7 @@ await verifyListRaceIsolation()
 await verifyModalIntentAndDetailRaceIsolation()
 await verifyProviderOptionsIntentIsolationAndRetry()
 verifyLocalProviderDefaultsAndSelectedOptions()
+verifyFieldLevelMutationPayloads()
 verifyViewUsesCoordinator()
 
 console.log('响应检查策略前端渐进加载回归通过：请求矩阵、按需详情/options、缓存重试和竞态隔离均符合预期')
@@ -238,9 +244,34 @@ function verifyLocalProviderDefaultsAndSelectedOptions(): void {
   )
 }
 
+function verifyFieldLevelMutationPayloads(): void {
+  const baseline = responseInspectionPolicyPayloadFromDetail(detail('mutation'))
+  assert.deepEqual(buildResponseInspectionPolicyPatch(baseline, structuredClone(baseline)), {}, '同值表单必须生成空 patch')
+  assert.equal(hasResponseInspectionPolicyChanges({}), false, '空 patch 必须被识别为 no-op')
+  assert.deepEqual(
+    buildResponseInspectionPolicyPatch(baseline, { ...structuredClone(baseline), priority: 9 }),
+    { priority: 9 },
+    '单字段修改只能提交目标字段'
+  )
+  assert.deepEqual(
+    buildResponseInspectionPolicyPatch(baseline, { ...structuredClone(baseline), notes: undefined }),
+    { notes: null },
+    '清空备注必须显式提交 null'
+  )
+  assert.deepEqual(
+    buildResponseInspectionPolicyPatch(
+      { ...structuredClone(baseline), scopeType: 'provider', providerCode: 'gpt' },
+      { ...structuredClone(baseline), scopeType: 'protocol', providerCode: undefined }
+    ),
+    { scopeType: 'protocol', providerCode: null },
+    '切换到协议层必须显式清空旧供应商'
+  )
+}
+
 function verifyViewUsesCoordinator(): void {
   const source = readFileSync(resolve('../frontend/src/views/response-inspection-policies/ResponseInspectionPoliciesView.vue'), 'utf8')
   const modalSource = readFileSync(resolve('../frontend/src/views/response-inspection-policies/ResponseInspectionPolicyFormModal.vue'), 'utf8')
+  const apiSource = readFileSync(resolve('../frontend/src/api/domains/responseInspectionPolicies.ts'), 'utf8')
   assert.match(source, /onMounted\(loadPolicies\)/, '页面首屏必须从 overview loader 启动')
   assert.match(source, /list:\s*\(signal\)[\s\S]{0,180}responseInspectionPolicies\.list\(\{ signal \}\)/, 'overview 请求必须受协调器 AbortSignal 管理')
   const createFunction = functionSource(source, 'function openCreate')
@@ -252,6 +283,16 @@ function verifyViewUsesCoordinator(): void {
   const editFunction = functionSource(source, 'async function openEdit')
   assert.match(editFunction, /loadPolicyDetailForIntent\(intent, policy\.id\)/, '编辑操作必须加载必要 detail')
   assert.doesNotMatch(editFunction, /Promise\.all|providerOptions|loadProviderOptions/, '打开编辑弹窗不得并行或提前加载 provider options')
+  const saveFunction = functionSource(source, 'async function savePolicy')
+  assert.match(saveFunction, /buildResponseInspectionPolicyPatch\(editingBaseline\.value, payload\)/, '编辑保存必须按详情基线生成字段差量')
+  assert.match(saveFunction, /expectedUpdatedAt: editingExpectedUpdatedAt\.value/, '编辑 PATCH 必须提交 CAS 版本')
+  assert.match(saveFunction, /hasResponseInspectionPolicyChanges\(patch\)/, '编辑无变化必须在前端阻止请求')
+  assert.doesNotMatch(saveFunction, /loadPolicies\(/, '保存成功后必须本地合并，不得重拉列表')
+  assert.match(source, /responseInspectionPolicies\.update\(targetId, \{/, '编辑保存必须走字段级 update API')
+  assert.match(apiSource, /update:[\s\S]{0,220}http\.patch\(`/, '响应检查策略更新 API 必须使用 PATCH')
+  assert.doesNotMatch(apiSource, /update:[\s\S]{0,220}http\.put\(`/, '响应检查策略更新 API 不得保留 PUT 全量替换')
+  const removeFunction = functionSource(source, 'async function removePolicy')
+  assert.doesNotMatch(removeFunction, /loadPolicies\(/, '删除成功后必须本地移除，不得重拉列表')
   const dropdownFunction = functionSource(source, 'async function loadProviderOptionsOnDropdown')
   assert.match(dropdownFunction, /!open \|\| modalMode\.value === 'view'/, '关闭下拉和查看模式不得加载 provider options')
   assert.match(dropdownFunction, /activeProviderOptionsRequest/, '同一 intent 的在途下拉加载必须在页面层复用，避免重复错误提示')
@@ -287,11 +328,18 @@ function overview(id: string) {
 }
 
 function detail(id: string): ResponseInspectionPolicyDetail {
+  const item = overview(id)
   return {
-    ...overview(id),
+    id: item.id,
+    name: item.name,
+    enabled: item.enabled,
+    priority: item.priority,
+    scopeType: item.scopeType,
+    protocolCode: item.protocolCode,
+    action: item.action,
+    updatedAt: item.updatedAt,
     match: { outputTextIncludes: [id] },
-    notes: `${id} notes`,
-    createdAt: '2026-07-23T00:00:00.000Z'
+    notes: `${id} notes`
   }
 }
 

@@ -1315,6 +1315,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       id?: string
       model: string
       status: string
+      updatedAt: string
       contextWindowTokens?: number
       maxInputTokens?: number
       maxOutputTokens?: number
@@ -1330,7 +1331,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       `${baseUrl}/__aisys__/api/providers/gpt/models/${userATemplate.id}`,
       adminCookie,
       'PATCH',
-      { releaseDate: null },
+      { expectedUpdatedAt: userATemplate.updatedAt, releaseDate: null },
       400,
       '管理员不得清空内置可见模型的发布时间'
     )
@@ -1338,7 +1339,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       `${baseUrl}/__aisys__/api/providers/gpt/models/${userATemplate.id}`,
       adminCookie,
       'PATCH',
-      { supportedApiProtocols: [] },
+      { expectedUpdatedAt: userATemplate.updatedAt, supportedApiProtocols: [] },
       400,
       '管理员不得清空内置可见模型的接口协议'
     )
@@ -1371,7 +1372,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.deepEqual(copiedUserModel.supportedServiceTiers, ['priority', 'flex'], '配置复制应继承服务等级')
     assert.equal(copiedUserModel.defaultReasoningEffort, null, '配置复制不得继承默认思考级别，新增模型应由上游决定')
 
-    const userAModel = await postEnvelope<{ id: string; model: string; scope: string }>(
+    const userAModel = await postEnvelope<{ id: string; model: string; scope: string; updatedAt: string }>(
       baseUrl,
       '/__aisys__/api/providers/openai/models',
       userACookie,
@@ -1438,6 +1439,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       id: string
       model: string
       providerCode: string
+      updatedAt: string
       supportedServiceTiers: string[]
       supportedReasoningEfforts: string[]
       defaultReasoningEffort?: string | null
@@ -1459,27 +1461,34 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.deepEqual(userAGptModel.supportedServiceTiers, ['priority'], 'GPT 自定义模型 API 应返回服务等级能力')
     assert.deepEqual(userAGptModel.supportedReasoningEfforts, ['low', 'high'], 'GPT 自定义模型 API 应返回思考能力')
     assert.equal(userAGptModel.defaultReasoningEffort, null, 'GPT 新增自定义模型必须忽略默认思考级别并交给上游决定')
-    const userAGptUnrelatedPatch = await patchEnvelope<{ defaultReasoningEffort?: string | null }>(
+    const userAGptUnrelatedPatch = await patchEnvelope<{ id: string; providerCode: string; model: string; status: string; updatedAt: string }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
-	  { notes: 'round-trip' }
+	  { expectedUpdatedAt: userAGptModel.updatedAt, notes: 'round-trip' }
 	)
-	assert.equal(userAGptUnrelatedPatch.defaultReasoningEffort, null, '无关 PATCH 必须保持新增模型默认思考级别为空')
-	const userAGptClearedDefault = await patchEnvelope<{ defaultReasoningEffort: string | null }>(
+	assert.deepEqual(Object.keys(userAGptUnrelatedPatch).sort(), ['id', 'model', 'providerCode', 'status', 'updatedAt'], '模型 PATCH 只应返回当前行局部更新所需字段')
+	const userAGptClearedDefault = await patchEnvelope<{ updatedAt: string }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
-	  { defaultReasoningEffort: null }
+	  { expectedUpdatedAt: userAGptUnrelatedPatch.updatedAt, defaultReasoningEffort: null }
 	)
-	assert.equal(userAGptClearedDefault.defaultReasoningEffort, null, 'null PATCH 必须在响应中显式清空默认思考级别')
-	const userAGptRestoredDefault = await patchEnvelope<{ defaultReasoningEffort?: string | null }>(
+	assert.equal(userAGptClearedDefault.updatedAt, userAGptUnrelatedPatch.updatedAt, '同值 PATCH 必须是零写入且不得推进版本')
+	const userAGptRestoredDefault = await patchEnvelope<{ updatedAt: string }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
-	  { defaultReasoningEffort: 'high' }
+	  { expectedUpdatedAt: userAGptClearedDefault.updatedAt, defaultReasoningEffort: 'high' }
 	)
-	assert.equal(userAGptRestoredDefault.defaultReasoningEffort, null, 'string PATCH 也必须保持默认思考级别为空并交给上游决定')
+	assert.equal(userAGptRestoredDefault.updatedAt, userAGptClearedDefault.updatedAt, 'GPT 默认思考级别由上游决定时不得产生无效写入')
+	const userAGptAfterPatches = (await getEnvelope<Array<{ id?: string; notes?: string; defaultReasoningEffort?: string | null }>>(
+	  baseUrl,
+	  '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true',
+	  userACookie
+	)).find((item) => item.id === userAGptModel.id)
+	assert.equal(userAGptAfterPatches?.notes, 'round-trip', '字段级 PATCH 必须保存实际变化字段')
+	assert.equal(userAGptAfterPatches?.defaultReasoningEffort, null, '无关 PATCH 必须保持默认思考级别为空')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
       adminCookie,
@@ -1539,7 +1548,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       201,
 	  'GPT 自定义模型 API 必须忽略默认思考级别并交给上游决定'
     )
-    const userAGptClearableModel = await postEnvelope<{ id: string; model: string }>(
+    const userAGptClearableModel = await postEnvelope<{ id: string; model: string; updatedAt: string }>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models',
       userACookie,
@@ -1557,20 +1566,16 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       `${baseUrl}/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
       userACookie,
       'PATCH',
-      { mode: 'image' },
+      { expectedUpdatedAt: userAGptClearableModel.updatedAt, mode: 'image' },
       400,
       'GPT 文本模型保留非空能力字段时不应直接切换为图片模式'
     )
-    const userAGptClearedModel = await patchEnvelope<{
-      mode?: string
-      supportedServiceTiers: string[]
-      supportedReasoningEfforts: string[]
-      defaultReasoningEffort: string | null
-    }>(
+    const userAGptClearedModel = await patchEnvelope<{ updatedAt: string }>(
       baseUrl,
       `/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
       userACookie,
       {
+        expectedUpdatedAt: userAGptClearableModel.updatedAt,
         status: 'draft',
         mode: 'image',
         supportedApiProtocols: ['images'],
@@ -1578,10 +1583,18 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         supportedReasoningEfforts: []
       }
     )
-    assert.equal(userAGptClearedModel.mode, 'image', 'API 显式清空文本能力后应允许切换为 GPT 图片模型')
-    assert.deepEqual(userAGptClearedModel.supportedServiceTiers, [], 'API 应接受空数组清理服务等级能力')
-    assert.deepEqual(userAGptClearedModel.supportedReasoningEfforts, [], 'API 应接受空数组清理思考能力')
-    assert.equal(userAGptClearedModel.defaultReasoningEffort, null, 'API 更新后必须显式返回空默认思考级别')
+    const clearedModelFromCatalog = (await getEnvelope<Array<{
+      id?: string
+      mode?: string
+      supportedServiceTiers: string[]
+      supportedReasoningEfforts: string[]
+      defaultReasoningEffort: string | null
+    }>>(baseUrl, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', userACookie))
+      .find((item) => item.id === userAGptClearableModel.id)
+    assert.equal(clearedModelFromCatalog?.mode, 'image', 'API 显式清空文本能力后应允许切换为 GPT 图片模型')
+    assert.deepEqual(clearedModelFromCatalog?.supportedServiceTiers, [], 'API 应接受空数组清理服务等级能力')
+    assert.deepEqual(clearedModelFromCatalog?.supportedReasoningEfforts, [], 'API 应接受空数组清理思考能力')
+    assert.equal(clearedModelFromCatalog?.defaultReasoningEffort, null, 'API 更新后必须保持空默认思考级别')
 
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,
@@ -1643,7 +1656,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(adminGlobalModel.scope, 'global', '管理员应能创建全局模型')
     assert.equal(adminGlobalModel.systemAccountId, undefined, '全局模型不应绑定系统账户')
 
-    const adminPersonalModel = await postEnvelope<{ id: string; model: string; scope: string }>(
+    const adminPersonalModel = await postEnvelope<{ id: string; model: string; scope: string; updatedAt: string }>(
       baseUrl,
       '/__aisys__/api/providers/openai/models',
       adminCookie,
@@ -1745,27 +1758,41 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       baseUrl,
       `/__aisys__/api/providers/openai/models/${adminPersonalModel.id}`,
       adminCookie,
-      { maxOutputTokens: 4096 }
+      { expectedUpdatedAt: adminPersonalModel.updatedAt, maxOutputTokens: 4096 }
     )
-    const adminUpdatedUserAGptModel = await patchEnvelope<{ model: string; maxOutputTokens?: number }>(
+    const adminUpdatedUserAGptModel = await patchEnvelope<{ updatedAt: string }>(
       baseUrl,
       `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
       adminCookie,
-      { maxOutputTokens: 3072 }
+      { expectedUpdatedAt: userAGptRestoredDefault.updatedAt, maxOutputTokens: 3072 }
     )
-    assert.equal(adminUpdatedUserAGptModel.maxOutputTokens, 3072, '管理员应能维护目标用户个人模型')
-    const userAUpdatedModel = await patchEnvelope<{ model: string; maxOutputTokens?: number }>(
+    assert.notEqual(adminUpdatedUserAGptModel.updatedAt, userAGptRestoredDefault.updatedAt, '管理员修改目标用户模型必须推进版本')
+    const userAUpdatedModel = await patchEnvelope<{ updatedAt: string }>(
       baseUrl,
       `/__aisys__/api/providers/openai/models/${userAModel.id}`,
       userACookie,
-      { maxOutputTokens: 2048 }
+      { expectedUpdatedAt: userAModel.updatedAt, maxOutputTokens: 2048 }
     )
-    assert.equal(userAUpdatedModel.maxOutputTokens, 2048, '普通用户应能编辑自己的个人模型')
+    assert.notEqual(userAUpdatedModel.updatedAt, userAModel.updatedAt, '普通用户编辑自己的个人模型必须推进版本')
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
+      userACookie,
+      'PATCH',
+      { expectedUpdatedAt: userAModel.updatedAt, maxOutputTokens: 1024 },
+      409,
+      '过期版本的模型 PATCH 必须拒绝覆盖较新的修改'
+    )
+    const userAModelAfterPatch = (await getEnvelope<Array<{ id?: string; maxOutputTokens?: number }>>(
+      baseUrl,
+      '/__aisys__/api/providers/openai/models?includeInactive=true&includeUnpriced=true',
+      userACookie
+    )).find((item) => item.id === userAModel.id)
+    assert.equal(userAModelAfterPatch?.maxOutputTokens, 2048, '字段级模型 PATCH 必须只保留已提交的新值')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
       adminCookie,
       'PATCH',
-      { model: 'gpt-http-user-a-renamed' },
+      { expectedUpdatedAt: userAUpdatedModel.updatedAt, model: 'gpt-http-user-a-renamed' },
       400,
       '自定义模型创建后不应允许修改模型 ID'
     )

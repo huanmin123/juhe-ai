@@ -25,6 +25,10 @@ import {
   assertAccountModelMappingProtocolAllowed
 } from './account-model-mapping-protocol-matrix.js'
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
+import type {
+  AccountModelValidationContext,
+  AccountModelValidationFact
+} from './account-model-validation.repository.js'
 import { isOpenAIProtocolProviderCode, isOpenAIProtocolProviderCodeAsync, listAnthropicProtocolProviderCodes, listAnthropicProtocolProviderCodesAsync, listGeminiProtocolProviderCodes, listGeminiProtocolProviderCodesAsync, listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 
 export function normalizeAccountSupportedModelsForProvider(
@@ -57,19 +61,28 @@ export async function normalizeAccountSupportedModelsForProviderAsync(
   providerCode: string,
   systemAccountId: string,
   providerProfile?: ProviderProtocolProfileDefinition,
-  filterIncompatibleDefaults = false
+  filterIncompatibleDefaults = false,
+  validationContext?: AccountModelValidationContext
 ): Promise<string[] | undefined> {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
   if (isHybridProviderCode(providerCode)) return models
 
-  const allProviderModels = await listProviderModelCatalogAsync({
-    providerCode,
-    systemAccountId,
-    includeUnpriced: true
-  })
-  const providerModels = new Set(allProviderModels.filter((item) => providerModelSupportsProtocolProfile(item.supportedApiProtocols, providerProfile)).map((item) => item.model))
-  const allModelIds = new Set(allProviderModels.map((item) => item.model))
+  const allProviderModels = validationContext
+    ? models
+        .map((model) => validationContext.accountModel(model))
+        .filter((item): item is AccountModelValidationFact => item !== undefined)
+    : await listProviderModelCatalogAsync({
+        providerCode,
+        systemAccountId,
+        includeUnpriced: true
+      })
+  const providerModels = new Set(allProviderModels
+    .filter((item) => providerModelSupportsProtocolProfile(item.supportedApiProtocols, providerProfile))
+    .map((item) => item.model))
+  const allModelIds = validationContext
+    ? validationContext.accountModelIds()
+    : new Set(allProviderModels.map((item) => item.model))
   const invalidModels = models.filter((model) => !providerModels.has(model) && !(filterIncompatibleDefaults && allModelIds.has(model)))
   if (invalidModels.length > 0) {
     throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
@@ -169,6 +182,7 @@ export async function normalizeAccountModelMappingsForProviderAsync(
   providerProfile?: ProviderProtocolProfileDefinition,
   options: {
     supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
+    validationContext?: AccountModelValidationContext
   } = {}
 ): Promise<AccountModelMapping[] | undefined> {
   const mappings = normalizeAccountModelMappingsInput(value)
@@ -186,7 +200,11 @@ export async function normalizeAccountModelMappingsForProviderAsync(
         supportedEndpointModes: options.supportedEndpointModes
       })
     }
-    await assertMappingModelsInProtocolPoolsAsync(mappings, systemAccountId)
+    if (options.validationContext) {
+      assertMappingModelsInValidationContext(mappings, options.validationContext)
+    } else {
+      await assertMappingModelsInProtocolPoolsAsync(mappings, systemAccountId)
+    }
     return mappings
   }
   for (const mapping of mappings) {
@@ -196,7 +214,16 @@ export async function normalizeAccountModelMappingsForProviderAsync(
     })
   }
 
-  const accountModelPool = await upstreamModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile)
+  const selectedProfileSupportsMappings = isOpenAIProtocolProfile(normalizedProfile)
+    || isAnthropicProtocolProfile(normalizedProfile)
+    || isGeminiProtocolProfile(normalizedProfile)
+  const accountModelPool = options.validationContext && selectedProfileSupportsMappings
+    ? new Set(mappings
+        .flatMap((mapping) => [mapping.sourceModel, mapping.upstreamModel])
+        .filter((model) => options.validationContext?.accountModel(model)?.priced))
+    : options.validationContext
+      ? new Set<string>()
+      : await upstreamModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile)
   const sourceModelPool = accountModelPool
   const invalidSourceModels = mappings
     .filter((mapping) => !sourceModelPool.has(mapping.sourceModel))
@@ -210,11 +237,17 @@ export async function normalizeAccountModelMappingsForProviderAsync(
   if (invalidUpstreamModels.length > 0) {
     throw new Error(`账号模型别名目标模型不在当前供应商模型目录中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
   }
-  const invalidUpstreamProtocolModels: string[] = []
-  for (const mapping of mappings) {
-    const upstreamModelPool = await accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile, mapping.upstreamEndpointFamily)
-    if (!upstreamModelPool.has(mapping.upstreamModel)) {
-      invalidUpstreamProtocolModels.push(mapping.upstreamModel)
+  const invalidUpstreamProtocolModels: string[] = options.validationContext && selectedProfileSupportsMappings
+    ? mappings
+        .filter((mapping) => !options.validationContext?.endpointModel(mapping.upstreamEndpointFamily, mapping.upstreamModel)?.priced)
+        .map((mapping) => mapping.upstreamModel)
+    : options.validationContext ? mappings.map((mapping) => mapping.upstreamModel) : []
+  if (!options.validationContext) {
+    for (const mapping of mappings) {
+      const upstreamModelPool = await accountEndpointModelPoolForAccountAsync(providerCode, systemAccountId, normalizedProfile, mapping.upstreamEndpointFamily)
+      if (!upstreamModelPool.has(mapping.upstreamModel)) {
+        invalidUpstreamProtocolModels.push(mapping.upstreamModel)
+      }
     }
   }
   if (invalidUpstreamProtocolModels.length > 0) {
@@ -497,6 +530,24 @@ async function assertMappingModelsInProtocolPoolsAsync(mappings: AccountModelMap
       invalidUpstreamModels.push(mapping.upstreamModel)
     }
   }
+  if (invalidSourceModels.length > 0) {
+    throw new Error(`账号模型别名来源模型不在对应协议模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
+  }
+  if (invalidUpstreamModels.length > 0) {
+    throw new Error(`账号模型别名目标模型不在对应上游协议模型池中：${invalidUpstreamModels.slice(0, 5).join('、')}`)
+  }
+}
+
+function assertMappingModelsInValidationContext(
+  mappings: readonly AccountModelMapping[],
+  context: AccountModelValidationContext
+): void {
+  const invalidSourceModels = mappings
+    .filter((mapping) => !context.endpointModel(mapping.sourceEndpointFamily, mapping.sourceModel)?.priced)
+    .map((mapping) => mapping.sourceModel)
+  const invalidUpstreamModels = mappings
+    .filter((mapping) => !context.endpointModel(mapping.upstreamEndpointFamily, mapping.upstreamModel)?.priced)
+    .map((mapping) => mapping.upstreamModel)
   if (invalidSourceModels.length > 0) {
     throw new Error(`账号模型别名来源模型不在对应协议模型池中：${invalidSourceModels.slice(0, 5).join('、')}`)
   }

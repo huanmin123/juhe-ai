@@ -8,6 +8,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { GroupSchedulingPolicy } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
+import { convertQuestionPlaceholdersToPostgres } from '../../storage/database-client.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-demand-write-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -95,23 +96,45 @@ const unregisterInvalidator = cacheInvalidation.registerGatewayRuntimeCacheInval
 
 try {
   const originalStoredPolicyJson = groupPolicyJson(group.id)
+  const initialUpdatedAt = storedGroup().updated_at
   invalidations.length = 0
-  const descriptionPatch = await captureSql(() => repositories.patchGroupAsync(group.id, { description: '新说明' }, ownerAccess))
+  const descriptionPatch = await captureSql(() => repositories.patchGroupAsync(group.id, {
+    description: '新说明',
+    expectedUpdatedAt: initialUpdatedAt
+  }, ownerAccess))
   assert.deepEqual(descriptionPatch.result?.changedFields, ['description'])
   const descriptionReadSql = selectSql(descriptionPatch.calls)
   assert.match(descriptionReadSql, /groups\.description/i, '说明 PATCH 必须读取当前说明')
   assert.doesNotMatch(descriptionReadSql, /groups\.(?:provider_code|enabled|group_type|scheduling_policy_json)/i, '说明 PATCH 不得读取未提交的供应商、状态或调度策略')
   assert.deepEqual(dmlSql(descriptionPatch.calls), [expectSql(/UPDATE\s+"?groups"?\s+SET\s+"?description"?\s*=\s*\?,\s*updated_at\s*=\s*\?/i, descriptionPatch.calls)], '说明 PATCH 只能更新说明和更新时间')
+  assert.match(dmlSql(descriptionPatch.calls)[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/i, 'owner 与版本条件必须同时进入 UPDATE SQL')
+  const descriptionDmlCall = descriptionPatch.calls.find((call) => call.kind === 'run' && /UPDATE\s+"?groups"?/i.test(call.sql))
+  assert(descriptionDmlCall)
+  const postgresDescriptionSql = convertQuestionPlaceholdersToPostgres(descriptionDmlCall.sql)
+  assert.match(postgresDescriptionSql, /SET\s+"?description"?\s*=\s*\$1,\s*updated_at\s*=\s*\$2[\s\S]*WHERE\s+id\s*=\s*\$3\s+AND\s+system_account_id\s*=\s*\$4\s+AND\s+updated_at\s*=\s*\$5/i, 'PostgreSQL owner PATCH 参数顺序必须保持字段、新版本、ID、owner、旧版本')
+  assert.equal(descriptionDmlCall.params.length, 5, 'PostgreSQL 绑定参数数量必须与 CAS SQL 占位符一致')
+  assert.equal(descriptionPatch.result?.updatedAt, storedGroup().updated_at, 'PATCH 必须返回实际保存的新版本')
+  assert.ok((descriptionPatch.result?.updatedAt ?? '') > initialUpdatedAt, '实际写入必须单调推进版本')
   assert.equal(storedGroup().scheduling_policy_json, originalStoredPolicyJson, '说明 PATCH 不得覆盖高并发调度策略')
   assert.deepEqual(invalidations, [], '说明不参与网关运行态或名称 lookup，不得扩大缓存失效范围')
 
   const updatedAt = storedGroup().updated_at
   invalidations.length = 0
-  const noChange = await captureSql(() => repositories.patchGroupAsync(group.id, { description: '新说明' }, ownerAccess))
+  const noChange = await captureSql(() => repositories.patchGroupAsync(group.id, {
+    description: '新说明',
+    expectedUpdatedAt: updatedAt
+  }, ownerAccess))
   assert.deepEqual(noChange.result?.changedFields, [], '同值 PATCH 必须返回空变化字段')
   assert.deepEqual(dmlSql(noChange.calls), [], '同值 PATCH 不得执行 DML')
   assert.equal(storedGroup().updated_at, updatedAt, '同值 PATCH 不得推进 updated_at')
   assert.deepEqual(invalidations, [], '同值 PATCH 不得失效网关缓存')
+
+  const stalePatch = await captureSqlOutcome(() => repositories.patchGroupAsync(group.id, {
+    description: '过期版本不得覆盖',
+    expectedUpdatedAt: initialUpdatedAt
+  }, ownerAccess))
+  assert.equal((stalePatch.error as Error | undefined)?.name, 'GroupPatchConflictError')
+  assert.deepEqual(dmlSql(stalePatch.calls), [], '过期版本必须在任何 DML 前拒绝')
 
   const crossOwner = await captureSql(() => repositories.patchGroupAsync(group.id, { description: '越权修改' }, outsiderAccess))
   assert.equal(crossOwner.result, undefined, '无授权的其他用户不得定位分组')
@@ -208,27 +231,40 @@ try {
   repositories.deleteRouteStrategy(granteeStrategy.id, granteeAccess)
 
   invalidations.length = 0
-  const authorizedDisable = await captureSql(() => repositories.patchGroupAsync(group.id, { enabled: false }, granteeAccess))
+  const authorizedSourceVersion = storedGroup().updated_at
+  const authorizedDisable = await captureSql(() => repositories.patchGroupAsync(group.id, {
+    enabled: false,
+    expectedUpdatedAt: authorizedSourceVersion
+  }, granteeAccess))
   assert.deepEqual(authorizedDisable.result?.changedFields, ['enabled'])
   assert.equal(authorizationSettingsCount(), 1, '首次真实本地变化才应创建授权分组设置行')
   const insertedSettings = authorizationSettings()
+  assert.equal(authorizedDisable.result?.updatedAt, insertedSettings.updated_at)
+  assert.ok(insertedSettings.updated_at > authorizedSourceVersion, '首次授权本地设置必须单调推进有效版本')
   assert.equal(insertedSettings.enabled, 0)
   assert.equal(insertedSettings.group_type, 'high_concurrency', '首次局部覆盖必须保留来源分组类型')
   assert.equal(JSON.parse(insertedSettings.scheduling_policy_json ?? '{}').defaultSoftConcurrency, 12, '首次局部覆盖必须保留当前来源调度策略')
   assert.deepEqual(invalidations, ['group_authorization_settings_updated'])
 
   invalidations.length = 0
-  const authorizedEnable = await captureSql(() => repositories.patchGroupAsync(group.id, { enabled: true }, granteeAccess))
+  const authorizedEnable = await captureSql(() => repositories.patchGroupAsync(group.id, {
+    enabled: true,
+    expectedUpdatedAt: insertedSettings.updated_at
+  }, granteeAccess))
   assert.deepEqual(authorizedEnable.result?.changedFields, ['enabled'])
   const authorizedDml = dmlSql(authorizedEnable.calls)
   assert.equal(authorizedDml.length, 1)
   assert.match(authorizedDml[0], /UPDATE\s+"?group_authorization_settings"?\s+SET\s+"?enabled"?\s*=\s*\?,\s*updated_at\s*=\s*\?/i, '已有授权设置的 enabled PATCH 只能更新 enabled')
+  assert.match(authorizedDml[0], /AND\s+updated_at\s*=\s*\?/i, '授权本地设置 UPDATE 必须携带版本条件')
   assert.doesNotMatch(authorizedDml[0], /group_type\s*=|scheduling_policy_json\s*=/i, '授权 enabled PATCH 不得覆盖未提交的高并发策略')
   assert.equal(authorizationSettings().scheduling_policy_json, insertedSettings.scheduling_policy_json)
   assert.deepEqual(invalidations, ['group_authorization_settings_updated'])
 
   invalidations.length = 0
-  const authorizedSameEnable = await captureSql(() => repositories.patchGroupAsync(group.id, { enabled: true }, granteeAccess))
+  const authorizedSameEnable = await captureSql(() => repositories.patchGroupAsync(group.id, {
+    enabled: true,
+    expectedUpdatedAt: authorizedEnable.result?.updatedAt
+  }, granteeAccess))
   assert.deepEqual(authorizedSameEnable.result?.changedFields, [])
   assert.deepEqual(dmlSql(authorizedSameEnable.calls), [])
   assert.deepEqual(invalidations, [])
@@ -352,8 +388,8 @@ function authorizationSettingsCount(): number {
   return Number(row.total ?? 0)
 }
 
-function authorizationSettings(): { enabled: number; group_type: string; scheduling_policy_json: string | null } {
-  const row = database.prepare('SELECT enabled, group_type, scheduling_policy_json FROM group_authorization_settings WHERE group_id = ? AND system_account_id = ?').get(group.id, grantee.id) as unknown as { enabled: number; group_type: string; scheduling_policy_json: string | null } | undefined
+function authorizationSettings(): { enabled: number; group_type: string; scheduling_policy_json: string | null; updated_at: string } {
+  const row = database.prepare('SELECT enabled, group_type, scheduling_policy_json, updated_at FROM group_authorization_settings WHERE group_id = ? AND system_account_id = ?').get(group.id, grantee.id) as unknown as { enabled: number; group_type: string; scheduling_policy_json: string | null; updated_at: string } | undefined
   assert(row)
   return row
 }

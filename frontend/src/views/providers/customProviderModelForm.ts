@@ -141,6 +141,22 @@ export function buildCustomModelPayload(
   return payload
 }
 
+export function buildCustomModelMutationPatch(
+  baseline: Partial<ProviderModelUpsertPayload>,
+  current: Partial<ProviderModelUpsertPayload>
+): Partial<ProviderModelUpsertPayload> {
+  const patch: Partial<ProviderModelUpsertPayload> = {}
+  for (const key of editableProviderModelPayloadKeys) {
+    if (providerModelPayloadValuesEqual(baseline[key], current[key])) continue
+    Object.assign(patch, { [key]: cloneProviderModelPayloadValue(current[key]) })
+  }
+  return patch
+}
+
+export function hasCustomModelMutationChanges(patch: Partial<ProviderModelUpsertPayload>): boolean {
+  return Object.keys(patch).length > 0
+}
+
 export function clearCustomModelGptCapabilities(form: CustomModelForm): void {
   form.supportedServiceTiers = []
   form.supportedReasoningEfforts = []
@@ -231,6 +247,44 @@ export function availableCustomModelModeOptions(providerCode: string, providerMo
 
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
   return Object.fromEntries(Object.entries(value ?? {}).map(([tier, prices]) => [tier, { ...prices }]))
+}
+
+const editableProviderModelPayloadKeys = [
+  'status',
+  'mode',
+  'supportedApiProtocols',
+  'supportedServiceTiers',
+  'supportedReasoningEfforts',
+  'defaultReasoningEffort',
+  'releaseDate',
+  'shutdownDate',
+  'contextWindowTokens',
+  'maxInputTokens',
+  'maxOutputTokens',
+  'inputUsdPer1M',
+  'outputUsdPer1M',
+  'cachedInputUsdPer1M',
+  'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M',
+  'cacheStorageUsdPer1MPerHour',
+  'serviceTierPrices',
+  'imageInputUsdPer1M',
+  'imageOutputUsdPer1M',
+  'audioInputUsdPer1M',
+  'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+] as const satisfies ReadonlyArray<keyof ProviderModelUpsertPayload>
+
+function providerModelPayloadValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (left === undefined || right === undefined) return false
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function cloneProviderModelPayloadValue<T>(value: T): T {
+  if (Array.isArray(value)) return [...value] as T
+  if (value && typeof value === 'object') return structuredClone(value)
+  return value
 }
 
 export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, category: ModelCategoryKey): void {

@@ -67,7 +67,7 @@
               @update:value="handleComparisonValueUpdate"
             />
           </a-form-item>
-          <a-button :loading="optionsLoading" @click="emit('refresh')">
+          <a-button :loading="optionsLoading" @click="emit('refresh', true)">
             <template #icon>
               <ReloadOutlined />
             </template>
@@ -161,7 +161,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'comparison-dropdown-visible-change', open: boolean): void
   (event: 'comparison-search', value: string): void
-  (event: 'refresh'): void
+  (event: 'refresh', force?: boolean): void
   (event: 'reset'): void
   (event: 'quality-policy-open'): void
   (event: 'quality-policy-save', value: ModelQualityPolicyUpdateInput): void

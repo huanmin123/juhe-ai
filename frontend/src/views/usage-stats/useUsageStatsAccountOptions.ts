@@ -2,8 +2,7 @@ import { message } from '@/lib/antd'
 import { ref, type Ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountOptionSummary } from '@/types/domain'
-import { mergeOptionsById } from './usageStatsHelpers'
+import type { AccountUsageStatsOption } from '@/types/domain'
 
 interface UseUsageStatsAccountOptionsOptions {
   isManagementView: () => boolean
@@ -13,7 +12,7 @@ interface UseUsageStatsAccountOptionsOptions {
 }
 
 export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptionsOptions) {
-  const accountOptionRows = ref<AccountOptionSummary[]>([])
+  const accountOptionRows = ref<AccountUsageStatsOption[]>([])
   const accountOptionsLoading = ref(false)
   const accountOptionsKeyword = ref('')
   let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
@@ -35,10 +34,10 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     accountOptionsLoadingKey = requestKey
     accountOptionsLoadingPromise = (async () => {
       try {
-        let nextOptions = options.isManagementView()
-          ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-          : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
-        nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
+        const request = { keyword: requestKeyword, limit: 50, selectedIds }
+        const nextOptions = options.isManagementView()
+          ? await api.stats.accountUsageOptions({ systemAccountId, ...request })
+          : await api.myStats.accountUsageOptions(request)
         applyOptions(nextOptions, requestSeq)
       } catch (error) {
         if (requestSeq !== accountOptionsRequestSeq) return
@@ -57,23 +56,9 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     return accountOptionsLoadingPromise
   }
 
-  function applyOptions(nextOptions: AccountOptionSummary[], requestSeq: number): void {
+  function applyOptions(nextOptions: AccountUsageStatsOption[], requestSeq: number): void {
     if (requestSeq !== accountOptionsRequestSeq) return
     accountOptionRows.value = nextOptions
-  }
-
-  async function ensureSelectedAccountOptions(nextOptions: AccountOptionSummary[], systemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
-    const selectedIds = [...new Set(options.selectedIds())]
-    const missingIds = selectedIds.filter((id) => !nextOptions.some((account) => account.id === id))
-    if (!missingIds.length) return nextOptions
-    try {
-      const selectedOptions = options.isManagementView()
-        ? await api.accounts.options({ systemAccountId, ids: missingIds, limit: 50 })
-        : await api.myAccounts.options({ ids: missingIds, limit: 50 })
-      return mergeOptionsById(selectedOptions, nextOptions)
-    } catch {
-      return nextOptions
-    }
   }
 
   function handleAccountOptionsSearch(value: string) {
@@ -104,7 +89,6 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     accountOptionsLoading,
     accountOptionsKeyword,
     loadAccountOptions,
-    ensureSelectedAccountOptions,
     handleAccountOptionsSearch,
     handleAccountOptionsDropdown,
     clearAccountOptionsSearchTimer
