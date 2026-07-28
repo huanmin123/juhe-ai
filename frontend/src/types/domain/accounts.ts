@@ -600,7 +600,11 @@ export interface AccountBatchEditRequest {
 export interface AccountBatchEditResult {
   batchId: string
   changedFields: string[]
-  accounts: AccountSummary[]
+  items: Array<{
+    id: string
+    configRevision: number
+    changedFields: string[]
+  }>
 }
 
 export interface AccountApiKeyRuntimeSummary {
@@ -944,6 +948,7 @@ export interface GroupListItem extends Omit<
   GroupSummary,
   'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'
 > {
+  updatedAt: string
   accountStats: Pick<
     GroupAccountStats,
     'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'
@@ -959,11 +964,12 @@ export interface GroupListItem extends Omit<
 export type GroupEditDetail = Pick<
   GroupSummary,
   'id' | 'systemAccountId' | 'name' | 'providerCode' | 'description' | 'enabled' | 'isDefault' | 'groupType' | 'schedulingPolicy' | 'accessType'
->
+> & { updatedAt: string }
 
 export interface GroupMutationResult {
   id: string
   changedFields: string[]
+  updatedAt: string
 }
 
 export interface GroupListResult {

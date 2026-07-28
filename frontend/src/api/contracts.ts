@@ -16,6 +16,7 @@ import type {
   RequestQuotaLimits,
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyMatch,
+  ResponseInspectionPolicyProtocolCode,
   ResponseInspectionPolicyScopeType,
   RuntimeLogLevel,
   UsageRecordTrafficSource
@@ -149,6 +150,12 @@ export interface AccountOptionParams extends ListParams {
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+}
+
+export interface AccountUsageStatsOptionParams extends ListParams {
+  keyword?: string
+  limit?: number
+  selectedIds?: string[]
 }
 
 export interface AccountTestOptionsParams extends ListParams {
@@ -355,17 +362,26 @@ export interface ExternalIntegrationSourceListParams {
   status?: ExternalIntegrationSourceStatus | 'all'
 }
 
-export interface ResponseInspectionPolicyPayload {
+export interface ResponseInspectionPolicyCreatePayload {
   name: string
   enabled: boolean
   priority: number
   scopeType: ResponseInspectionPolicyScopeType
-  protocolCode: string
+  protocolCode: ResponseInspectionPolicyProtocolCode
   providerCode?: string
   match: ResponseInspectionPolicyMatch
   action: ResponseInspectionPolicyAction
   notes?: string
 }
+
+export type ResponseInspectionPolicyPatchChanges = Partial<Omit<ResponseInspectionPolicyCreatePayload, 'providerCode' | 'notes'>> & {
+  providerCode?: string | null
+  notes?: string | null
+}
+
+export type ResponseInspectionPolicyPatchPayload = {
+  expectedUpdatedAt: string
+} & ResponseInspectionPolicyPatchChanges
 
 export interface ModelCheckScopeParams {
   systemAccountId?: string

@@ -80,6 +80,9 @@ export function listModelCheckAccountOptions(access: AccessScope | undefined, op
   const rows = queryAccountOptionRowsForAccess(access, base)
   const selected = options.selectedIds?.length ? queryAccountOptionRowsForAccess(access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
   const selectedRows = selectModelCheckRows([...rows, ...selected])
+  if (options.purpose === 'history') {
+    return finalizeModelCheckOptions(modelCheckHistoryOptionsFromRows(selectedRows), options)
+  }
   const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
   return finalizeModelCheckOptions(
     modelCheckOptionsFromRows(
@@ -99,6 +102,9 @@ export async function listModelCheckAccountOptionsAsync(access: AccessScope | un
   const rows = await queryAccountOptionRowsForAccessAsync(client, access, base)
   const selected = options.selectedIds?.length ? await queryAccountOptionRowsForAccessAsync(client, access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
   const selectedRows = selectModelCheckRows([...rows, ...selected])
+  if (options.purpose === 'history') {
+    return finalizeModelCheckOptions(modelCheckHistoryOptionsFromRows(selectedRows), options)
+  }
   const resourceAccountIds = selectedRows.map(modelCheckResourceAccountId)
   const [supportedModelsByAccountId, modelMappingsByAccountId] = await Promise.all([
     loadSupportedModelsByAccountIdsAsync(resourceAccountIds),
@@ -108,6 +114,18 @@ export async function listModelCheckAccountOptionsAsync(access: AccessScope | un
     modelCheckOptionsFromRows(selectedRows, supportedModelsByAccountId, modelMappingsByAccountId),
     options
   )
+}
+
+function modelCheckHistoryOptionsFromRows(rows: AccountOptionRow[]): ModelCheckAccountOption[] {
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    providerCode: row.provider_code,
+    providerProtocolProfileId: row.provider_protocol_profile_id,
+    protocolCode: row.protocol_code,
+    protocolVersion: row.protocol_version,
+    modelCheckModels: []
+  }))
 }
 
 function selectModelCheckRows(rows: AccountOptionRow[]): AccountOptionRow[] {

@@ -72,7 +72,7 @@
 import { message } from '@/lib/antd'
 import { computed, reactive, ref, watch } from 'vue'
 
-import type { ResponseInspectionPolicyPayload } from '@/api/client'
+import type { ResponseInspectionPolicyCreatePayload } from '@/api/client'
 import type {
   ResponseInspectionPolicyAction,
   ResponseInspectionPolicyDetail,
@@ -134,7 +134,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  submit: [payload: ResponseInspectionPolicyPayload]
+  submit: [payload: ResponseInspectionPolicyCreatePayload]
   cancel: []
   'provider-options-dropdown-visible-change': [open: boolean]
 }>()
@@ -248,7 +248,7 @@ function submitForm(): void {
   emit('submit', buildPayload())
 }
 
-function buildPayload(): ResponseInspectionPolicyPayload {
+function buildPayload(): ResponseInspectionPolicyCreatePayload {
   return {
     name: form.name.trim(),
     enabled: form.enabled,

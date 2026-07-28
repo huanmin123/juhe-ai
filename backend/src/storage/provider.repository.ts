@@ -78,7 +78,7 @@ export function listProviderListItems(): ProviderListItem[] {
   const rows = getBusinessDatabase().prepare(`
     SELECT p.id, p.code, p.name, p.parent_code, p.description, p.enabled,
       p.default_supported_models_json,
-      ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
+      ppp.protocol_code, ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
     FROM providers p
     LEFT JOIN provider_protocol_profiles ppp ON ppp.id = (
       SELECT candidate.id FROM provider_protocol_profiles candidate
@@ -100,7 +100,7 @@ export async function listProviderListItemsAsync(): Promise<ProviderListItem[]> 
   const rows = await client.query<ProviderListRow>(`
     SELECT p.id, p.code, p.name, p.parent_code, p.description, p.enabled,
       p.default_supported_models_json,
-      ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
+      ppp.protocol_code, ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
     FROM ${providers} p
     LEFT JOIN ${profiles} ppp ON ppp.id = (
       SELECT candidate.id FROM ${profiles} candidate
@@ -117,7 +117,7 @@ export async function listProviderListItemsAsync(): Promise<ProviderListItem[]> 
 interface ProviderListRow {
   id: string; code: ProviderCode; name: string; parent_code: ProviderCode | null; description: string | null; enabled: number | boolean
   default_supported_models_json: string | null; base_url: string | null; default_health_check_model: string | null
-  account_types_json: string | null; capabilities_json: string | null
+  protocol_code: string | null; account_types_json: string | null; capabilities_json: string | null
 }
 
 export interface ProviderOptionRecord {
@@ -167,6 +167,7 @@ function mapProviderListRow(row: ProviderListRow): ProviderListItem {
   return {
     id: row.id, code: row.code, name: row.name, parentCode: row.parent_code ?? undefined,
     description: row.description ?? undefined, enabled: Number(row.enabled) === 1,
+    protocolCode: row.protocol_code ?? '',
     baseUrl: row.base_url ?? '', defaultHealthCheckModel: row.default_health_check_model ?? '',
     defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
     accountTypes: parseJsonArray(row.account_types_json ?? '') as AccountType[], capabilities: parseJsonArray(row.capabilities_json ?? '')
@@ -593,27 +594,59 @@ export function requireEnabledProviderProtocolProfile(providerCode: string, prof
 }
 
 export async function requireEnabledProviderProtocolProfileAsync(providerCode: string, profileIdInput: unknown): Promise<ProviderProtocolProfileDefinition> {
-  const provider = (await listProvidersAsync()).find((item) => item.code === providerCode)
-  if (!provider) {
-    throw new Error(`不支持的供应商：${providerCode}`)
-  }
-  if (!provider.enabled) {
-    throw new Error(`供应商已停用：${providerCode}`)
-  }
+  return requireEnabledProviderProtocolProfileInClientAsync(await getProviderDatabaseClient(), providerCode, profileIdInput)
+}
+
+export async function requireEnabledProviderProtocolProfileInClientAsync(
+  client: DatabaseClient,
+  providerCode: string,
+  profileIdInput: unknown
+): Promise<ProviderProtocolProfileDefinition> {
   const profileId = typeof profileIdInput === 'string' && profileIdInput.trim()
     ? profileIdInput.trim()
     : ''
+  const row = await client.one<ProviderProtocolProfileRow & { provider_enabled: number | boolean | string }>(`
+    SELECT ppp.id, ppp.provider_code, ppp.name, ppp.description, ppp.enabled,
+      ppp.protocol_code, ppp.protocol_version, ppp.base_url,
+      ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json,
+      p.enabled AS provider_enabled
+    FROM ${providerTable(client, 'providers')} p
+    LEFT JOIN ${providerTable(client, 'provider_protocol_profiles')} ppp
+      ON ppp.provider_code = p.code
+      AND ppp.id = ?
+    WHERE p.code = ?
+    LIMIT 1
+  `, [profileId, providerCode])
+  if (!row) {
+    throw new Error(`不支持的供应商：${providerCode}`)
+  }
+  if (Number(row.provider_enabled) !== 1) {
+    throw new Error(`供应商已停用：${providerCode}`)
+  }
   if (!profileId) {
     throw new Error('供应商协议档案不能为空')
   }
-  const profile = await findProviderProtocolProfileAsync(profileId)
-  if (!profile || profile.providerCode !== providerCode) {
+  if (!row.id || row.provider_code !== providerCode) {
     throw new Error(`供应商协议档案无效：${profileId || providerCode}`)
   }
-  if (!profile.enabled) {
-    throw new Error(`供应商协议档案已停用：${profile.name}`)
+  if (Number(row.enabled) !== 1) {
+    throw new Error(`供应商协议档案已停用：${row.name}`)
   }
-  return profile
+  const families = await providerEndpointFamiliesByProfileIdAsync(client, [profileId])
+  return {
+    id: row.id,
+    providerCode: row.provider_code,
+    name: row.name,
+    description: row.description ?? undefined,
+    enabled: true,
+    protocolCode: row.protocol_code,
+    protocolVersion: row.protocol_version,
+    baseUrl: row.base_url,
+    defaultHealthCheckModel: row.default_health_check_model,
+    accountTypes: parseJsonArray(row.account_types_json) as AccountType[],
+    capabilities: parseJsonArray(row.capabilities_json),
+    endpointFamilies: families.get(profileId) ?? []
+  }
 }
 
 function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtocolProfileDefinition[] {

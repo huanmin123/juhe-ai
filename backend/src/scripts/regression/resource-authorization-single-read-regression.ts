@@ -84,6 +84,47 @@ try {
   assert.equal(updated?.id, targetId, '更新授权应通过单条读取返回目标授权摘要')
   assert.equal(updated?.expiresAt, '2099-01-01T00:00:00.000Z', '更新授权应保留新的过期时间')
 
+  const grantPatchSql: string[] = []
+  const database = databaseModule.getBusinessDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  database.prepare = ((sql: string) => {
+    if (/^\s*UPDATE\s+resource_authorization_grants\s+SET/i.test(sql)) grantPatchSql.push(sql)
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    const unchanged = await repositories.patchResourceAuthorizationAsync(targetId, {
+      expectedUpdatedAt: updated?.updatedAt,
+      expiresAt: updated?.expiresAt
+    }, ownerAccess)
+    assert.equal(unchanged.kind, 'unchanged', '授权同值 PATCH 必须成为 no-op')
+    assert.equal(grantPatchSql.length, 0, '授权同值 PATCH 不得执行 grant DML')
+
+    const unauthorized = await repositories.patchResourceAuthorizationAsync(targetId, {
+      expectedUpdatedAt: updated?.updatedAt,
+      expiresAt: '2099-02-01T00:00:00.000Z'
+    }, { systemAccountId: grantee.id, role: 'user' })
+    assert.equal(unauthorized.kind, 'not_found', '非资源 owner 不得读取或锁定目标授权后再做内存授权')
+    assert.equal(grantPatchSql.length, 0, '跨用户授权 PATCH 不得执行 grant DML')
+
+    const changed = await repositories.patchResourceAuthorizationAsync(targetId, {
+      expectedUpdatedAt: updated?.updatedAt,
+      expiresAt: '2099-02-01T00:00:00.000Z'
+    }, ownerAccess)
+    assert.equal(changed.kind, 'updated', '授权过期时间变化应执行字段级 PATCH')
+    assert.equal(grantPatchSql.length, 1, '授权真实变化只能执行一条 grant DML')
+    assert.match(grantPatchSql[0] ?? '', /SET\s+expires_at\s*=\s*\?,\s*updated_at\s*=\s*\?/i, '只修改过期时间时动态 SET 只能覆盖 expires_at / updated_at')
+    assert.doesNotMatch(grantPatchSql[0] ?? '', /limits_json|remark|created_by/i, '过期时间 PATCH 不得覆盖额度、备注或创建字段')
+
+    const stale = await repositories.patchResourceAuthorizationAsync(targetId, {
+      expectedUpdatedAt: updated?.updatedAt,
+      expiresAt: '2099-03-01T00:00:00.000Z'
+    }, ownerAccess)
+    assert.equal(stale.kind, 'conflict', '旧授权版本必须被 CAS 拒绝')
+    assert.equal(grantPatchSql.length, 1, 'CAS 冲突不得继续写入 grant')
+  } finally {
+    database.prepare = originalPrepare
+  }
+
   databaseModule.getBusinessDatabase()
     .prepare("UPDATE resource_authorization_grants SET expires_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
     .run(dueAuthorizationId)

@@ -15,7 +15,7 @@ import {
   viewer
 } from '../operation-logs/operation-log.service.js'
 import { accountBatchEditContextSchema, accountBatchEditSchema } from './account-request.schemas.js'
-import { sanitizeAccountBatchEditDetailResponse, sanitizeAccountResponse } from './account-response-sanitizer.js'
+import { sanitizeAccountBatchEditDetailResponse } from './account-response-sanitizer.js'
 import { batchEditAccountsAsync, loadAccountBatchEditContextAsync } from './account-batch-edit.service.js'
 
 export function registerAccountBatchEditRoutes(router: Router): void {
@@ -66,14 +66,11 @@ export function registerAccountBatchEditRoutes(router: Router): void {
     }
     try {
       const result = await runLoggedOperationAsync(async () => {
-        const result = await batchEditAccountsAsync(parsed.data, requestAccess)
-        const ownerSystemAccountId = result.accounts[0]?.ownerSystemAccountId
-          ?? result.accounts[0]?.systemAccountId
-          ?? requestAccess.systemAccountFilterId
-          ?? requestAccess.systemAccountId
+        const serviceResult = await batchEditAccountsAsync(parsed.data, requestAccess)
+        const { ownerSystemAccountId, ...result } = serviceResult
         return {
           result,
-          log: {
+          log: result.changedFields.length > 0 ? {
             operationScopeSystemAccountId: ownerSystemAccountId,
             mode: operationMode(requestAccess),
             module: 'accounts',
@@ -81,26 +78,22 @@ export function registerAccountBatchEditRoutes(router: Router): void {
             operationKey: 'accounts.batch_update',
             resourceType: 'account_batch',
             resourceId: result.batchId,
-            resourceName: `${result.accounts.length} 个 AI 账户`,
-            summary: `批量更新 ${result.accounts.length} 个 AI 账户`,
+            resourceName: `${result.items.length} 个 AI 账户`,
+            summary: `批量更新 ${result.items.length} 个 AI 账户`,
             changes: [
               safeChange('batchUpdateFields', '批量覆盖字段', [], result.changedFields)
             ],
-            targets: result.accounts.map((account) => ownerTarget({
+            targets: result.items.map((account) => ownerTarget({
               targetType: 'account',
               targetId: account.id,
-              targetName: account.name,
-              ownerSystemAccountId: account.ownerSystemAccountId ?? account.systemAccountId,
+              ownerSystemAccountId,
               relation: 'affected'
             })),
             viewers: viewer(ownerSystemAccountId, 'resource_owner')
-          }
+          } : undefined
         }
       }, req)
-      res.json(ok({
-        ...result,
-        accounts: result.accounts.map(sanitizeAccountResponse)
-      }))
+      res.json(ok(result))
     } catch (error) {
       if (error instanceof AccountBatchUpdateVersionConflictError) {
         res.status(409).json({ message: error.message })

@@ -33,6 +33,7 @@ const routePatchSource = sourceBetween(routeSource, "routeStrategiesRouter.patch
 assert.doesNotMatch(routePatchSource, /findRouteStrategy(?:EditBasicDetail|Summary)Async/, 'PATCH 路由不得在写入前后读取完整策略路由或编辑详情')
 assert.match(routePatchSource, /patchRouteStrategyAsync[\s\S]*result: mutation\.result/, 'PATCH 路由必须直接返回仓储最小 mutation result')
 assert.match(routePatchSource, /log: mutation\.result\.changedFields\.length[\s\S]*if \(routeStrategy\.changedFields\.length\)[\s\S]*clearNormalRouteSpeedFirstRuntime/, 'no-op PATCH 必须跳过操作日志和运行态清理')
+assert.match(routePatchSource, /RouteStrategyVersionConflictError[\s\S]*status\(409\)/, 'PATCH 路由必须把 CAS 冲突映射为 409')
 
 let server: ReturnType<ReturnType<typeof express>['listen']> | undefined
 
@@ -45,6 +46,11 @@ try {
   }, access)
   const replacementGroup = repositories.createGroup({
     name: '策略路由按需写替换分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const addedGroup = repositories.createGroup({
+    name: '策略路由按需写新增分组',
     providerCode: 'gpt',
     enabled: true
   }, access)
@@ -69,19 +75,22 @@ try {
     'name',
     'normalRoutingConfig',
     'status',
-    'systemAccountId'
+    'systemAccountId',
+    'updatedAt'
   ].sort(), 'edit-basic 必须保持精确字段白名单')
   assert.equal(readCapture.queries.length, 2, `edit-basic 只应读取主投影和绑定投影，实际 ${readCapture.queries.length} 条`)
   const editSql = readCapture.queries.join('\n')
   assert.doesNotMatch(editSql, /api_keys|COUNT\s*\(|system_accounts/i, 'edit-basic 不得读取 API Key 计数或 owner 详情')
-  assert.doesNotMatch(readCapture.queries[0] ?? '', /created_at|updated_at/i, 'edit-basic 主投影不得读取时间字段')
+  assert.doesNotMatch(readCapture.queries[0] ?? '', /created_at/i, 'edit-basic 主投影不得读取创建时间')
+  assert.match(readCapture.queries[0] ?? '', /updated_at/i, 'edit-basic 必须携带 CAS 所需的更新时间版本')
   assert.doesNotMatch(editSql, /SELECT\s+\*/i, 'edit-basic 不得使用 SELECT *')
 
   const initialBinding = bindingRow(routeStrategy.id)
   const initialUpdatedAt = routeStrategyRow(routeStrategy.id).updated_at
 
   const sameValue = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
-    description: '初始说明'
+    description: '初始说明',
+    expectedUpdatedAt: initialUpdatedAt
   }, access))
   assert(sameValue.result, '同值 PATCH 应返回最小 mutation result')
   assert.deepEqual(sameValue.result.result, { id: routeStrategy.id, changedFields: [], rowPatch: {} }, '同值 PATCH 响应必须保持最小 no-op 形态')
@@ -90,21 +99,26 @@ try {
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '同值 PATCH 不得重写分组绑定')
 
   const descriptionPatch = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
-    description: '只修改说明'
+    description: '只修改说明',
+    expectedUpdatedAt: initialUpdatedAt
   }, access))
   assert(descriptionPatch.result, '说明 PATCH 应返回 mutation result')
   assert.deepEqual(Object.keys(descriptionPatch.result.result).sort(), ['changedFields', 'id', 'rowPatch'], '仓储 PATCH 不得返回完整 RouteStrategySummary')
   assert.deepEqual(descriptionPatch.result.result.changedFields, ['description'])
   assert.equal(descriptionPatch.result.result.rowPatch.description, '只修改说明')
   assert.equal(typeof descriptionPatch.result.result.rowPatch.updatedAt, 'string')
+  const descriptionUpdatedAt = descriptionPatch.result.result.rowPatch.updatedAt!
+  assert(Date.parse(descriptionUpdatedAt) > Date.parse(initialUpdatedAt), '真实 PATCH 必须单调推进更新时间版本')
   assert.equal(descriptionPatch.statements.length, 1, '说明 PATCH 只应执行一条聚合根 UPDATE')
   assert.match(descriptionPatch.statements[0] ?? '', /SET\s+description\s*=\s*\?,\s*updated_at\s*=\s*\?/i)
+  assert.match(descriptionPatch.statements[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?\s+AND\s+updated_at\s*=\s*\?/i, '聚合根 UPDATE 必须同时定位 id、owner 和版本')
   assert.doesNotMatch(descriptionPatch.statements[0] ?? '', /name\s*=|mode\s*=|status\s*=|config_json\s*=/i, '说明 PATCH 不得覆盖未提交列')
   assert.doesNotMatch(descriptionPatch.queries.join('\n'), /api_keys|system_accounts|COUNT\s*\(/i, 'PATCH 审计差异不得触发完整摘要或 owner 宽读')
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '未提交 groupBindings 时不得重写绑定')
 
   const namePatch = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
-    name: '策略路由按需写回归-改名'
+    name: '策略路由按需写回归-改名',
+    expectedUpdatedAt: descriptionUpdatedAt
   }, access))
   assert.equal(namePatch.statements.length, 1, '名称 PATCH 只应执行一条聚合根 UPDATE')
   assert.match(namePatch.statements[0] ?? '', /SET\s+name\s*=\s*\?,\s*updated_at\s*=\s*\?/i)
@@ -114,15 +128,17 @@ try {
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '连续标量 PATCH 仍不得重写绑定')
 
   const sameBindings = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
-    groupBindings: [{ groupId: primaryGroup.id, priority: 1, weight: 1, status: 'active' }]
+    groupBindings: [{ groupId: primaryGroup.id, priority: 1, weight: 1, status: 'active' }],
+    expectedUpdatedAt: namePatch.result!.result.rowPatch.updatedAt!
   }, access))
   assert.deepEqual(sameBindings.statements, [], '相同 groupBindings PATCH 必须识别为 no-op')
   assert.deepEqual(bindingRow(routeStrategy.id), initialBinding, '相同绑定不得刷新关系行 ID 或时间')
 
   const changedBindings = captureDml(() => repositories.patchRouteStrategy(routeStrategy.id, {
-    groupBindings: [{ groupId: replacementGroup.id, priority: 1, weight: 1, status: 'active' }]
+    groupBindings: [{ groupId: replacementGroup.id, priority: 1, weight: 1, status: 'active' }],
+    expectedUpdatedAt: namePatch.result!.result.rowPatch.updatedAt!
   }, access))
-  assert.equal(changedBindings.statements.length, 3, '绑定确实变化时才应更新聚合时间并重建关系行')
+  assert.equal(changedBindings.statements.length, 3, '替换一个绑定只应更新聚合根、删除旧关系并插入新关系')
   assert.match(changedBindings.statements[0] ?? '', /UPDATE\s+route_strategies/i)
   assert.match(changedBindings.statements[1] ?? '', /DELETE\s+FROM\s+route_strategy_groups/i)
   assert.match(changedBindings.statements[2] ?? '', /INSERT\s+INTO\s+route_strategy_groups/i)
@@ -130,8 +146,49 @@ try {
   assert.equal(changedBindings.result?.result.rowPatch.bindingCount, 1)
   assert.equal(changedBindings.result?.result.rowPatch.groupBindingPreview?.[0]?.groupId, replacementGroup.id)
 
+  const deltaStrategy = repositories.createRouteStrategy({
+    name: '策略路由绑定差量回归',
+    mode: 'weighted',
+    status: 'active',
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, weight: 50, status: 'active' },
+      { groupId: replacementGroup.id, priority: 2, weight: 50, status: 'active' }
+    ]
+  }, access)
+  const beforeAddRows = bindingRows(deltaStrategy.id)
+  const addBindingPatch = captureDml(() => repositories.patchRouteStrategy(deltaStrategy.id, {
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, weight: 50, status: 'active' },
+      { groupId: replacementGroup.id, priority: 2, weight: 50, status: 'active' },
+      { groupId: addedGroup.id, priority: 3, weight: 1, status: 'active' }
+    ],
+    expectedUpdatedAt: deltaStrategy.updatedAt
+  }, access))
+  assert.equal(addBindingPatch.statements.length, 2, '单增绑定只应写聚合根和一条 INSERT')
+  assert.match(addBindingPatch.statements[1] ?? '', /INSERT\s+INTO\s+route_strategy_groups/i)
+  const afterAddRows = bindingRows(deltaStrategy.id)
+  for (const previous of beforeAddRows) {
+    assert.equal(afterAddRows.find((row) => row.group_id === previous.group_id)?.id, previous.id, '单增绑定不得重建已有关系行')
+  }
+
+  const removeBindingPatch = captureDml(() => repositories.patchRouteStrategy(deltaStrategy.id, {
+    groupBindings: [
+      { groupId: primaryGroup.id, priority: 1, weight: 50, status: 'active' },
+      { groupId: replacementGroup.id, priority: 2, weight: 50, status: 'active' }
+    ],
+    expectedUpdatedAt: addBindingPatch.result!.result.rowPatch.updatedAt!
+  }, access))
+  assert.equal(removeBindingPatch.statements.length, 2, '单删绑定只应写聚合根和一条 DELETE')
+  assert.match(removeBindingPatch.statements[1] ?? '', /DELETE\s+FROM\s+route_strategy_groups/i)
+  const afterRemoveRows = bindingRows(deltaStrategy.id)
+  assert.equal(afterRemoveRows.some((row) => row.group_id === addedGroup.id), false)
+  for (const previous of beforeAddRows) {
+    assert.equal(afterRemoveRows.find((row) => row.group_id === previous.group_id)?.id, previous.id, '单删绑定不得重建保留的关系行')
+  }
+
   const asyncNoop = await captureDmlAsync(() => repositories.patchRouteStrategyAsync(routeStrategy.id, {
-    name: '策略路由按需写回归-改名'
+    name: '策略路由按需写回归-改名',
+    expectedUpdatedAt: changedBindings.result!.result.rowPatch.updatedAt!
   }, access))
   assert(asyncNoop.result, '异步同值 PATCH 应返回现有策略路由')
   assert.deepEqual(asyncNoop.statements, [], '异步同值 PATCH 不得执行任何 DML')
@@ -142,15 +199,18 @@ try {
     status: 'active',
     groupBindings: [{ groupId: primaryGroup.id, priority: 1, weight: 1, status: 'active' }]
   }, access)
+  const concurrentExpectedUpdatedAt = concurrentInvariantStrategy.updatedAt
   const concurrentResults = await Promise.allSettled([
     repositories.patchRouteStrategyAsync(concurrentInvariantStrategy.id, {
       groupBindings: [
         { groupId: primaryGroup.id, priority: 1, weight: 1, status: 'active' },
         { groupId: replacementGroup.id, priority: 2, weight: 1, status: 'active' }
-      ]
+      ],
+      expectedUpdatedAt: concurrentExpectedUpdatedAt
     }, access),
     repositories.patchRouteStrategyAsync(concurrentInvariantStrategy.id, {
-      mode: 'normal'
+      mode: 'normal',
+      expectedUpdatedAt: concurrentExpectedUpdatedAt
     }, access)
   ])
   assert.equal(concurrentResults.filter((result) => result.status === 'rejected').length, 1, '互相冲突的并发模式/绑定 PATCH 必须拒绝其中一个')
@@ -175,7 +235,8 @@ try {
     groupBindings: [
       { groupId: replacementGroup.id, priority: 1, weight: 50, status: 'disabled' },
       { groupId: primaryGroup.id, priority: 2, weight: 50, status: 'active' }
-    ]
+    ],
+    expectedUpdatedAt: mixedStatusStrategy.updatedAt
   }, access))
   assert.deepEqual(mixedStatusNoop.statements, [], 'active 优先展示顺序不得导致相同绑定被误判为变化')
 
@@ -192,6 +253,13 @@ try {
     undefined,
     '其他用户不得读取策略路由 edit-basic'
   )
+  const wrongOwnerPatch = await captureDmlAsync(() => repositories.patchRouteStrategyAsync(routeStrategy.id, {
+    description: '越权修改不得发生',
+    expectedUpdatedAt: changedBindings.result!.result.rowPatch.updatedAt!
+  }, { systemAccountId: otherOwner.id, role: 'user' }))
+  assert.equal(wrongOwnerPatch.result, undefined, '其他用户 PATCH 应表现为资源不存在')
+  assert.deepEqual(wrongOwnerPatch.statements, [], '其他用户 PATCH 不得执行 DML')
+  assert.match(wrongOwnerPatch.queries[0] ?? '', /WHERE\s+id\s*=\s*\?\s+AND\s+system_account_id\s*=\s*\?/i, '普通用户 owner 条件必须进入首条定位 SQL')
 
   const app = express()
   app.use(express.json())
@@ -221,13 +289,17 @@ try {
     'name',
     'normalRoutingConfig',
     'status',
-    'systemAccountId'
+    'systemAccountId',
+    'updatedAt'
   ].sort(), 'HTTP 层不得给 edit-basic 追加完整详情字段')
 
   const patchResponse = await fetch(`http://127.0.0.1:${address.port}/route-strategies/${routeStrategy.id}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ description: 'HTTP 最小响应说明' })
+    body: JSON.stringify({
+      description: 'HTTP 最小响应说明',
+      expectedUpdatedAt: payload.data.updatedAt
+    })
   })
   assert.equal(patchResponse.status, 200)
   const patchPayload = await patchResponse.json() as { data?: Record<string, unknown> }
@@ -235,16 +307,40 @@ try {
   assert.deepEqual(Object.keys(patchPayload.data).sort(), ['changedFields', 'id', 'rowPatch'], 'PATCH HTTP 响应不得返回完整策略路由摘要')
   assert.deepEqual(patchPayload.data.changedFields, ['description'])
   assert.deepEqual(Object.keys(patchPayload.data.rowPatch as Record<string, unknown>).sort(), ['description', 'updatedAt'])
+  const httpUpdatedAt = (patchPayload.data.rowPatch as { updatedAt?: string }).updatedAt
+  assert(httpUpdatedAt, 'HTTP PATCH 必须返回新的 CAS 版本')
 
   const noOpHttp = await captureDmlAsync(() => fetch(`http://127.0.0.1:${address.port}/route-strategies/${routeStrategy.id}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ description: 'HTTP 最小响应说明' })
+    body: JSON.stringify({
+      description: 'HTTP 最小响应说明',
+      expectedUpdatedAt: httpUpdatedAt
+    })
   }))
   assert.equal(noOpHttp.result.status, 200)
   assert.deepEqual(noOpHttp.statements, [], 'HTTP no-op PATCH 必须保持零 DML')
   const noOpPayload = await noOpHttp.result.json() as { data?: Record<string, unknown> }
   assert.deepEqual(noOpPayload.data, { id: routeStrategy.id, changedFields: [], rowPatch: {} }, 'HTTP no-op PATCH 必须返回最小 no-op 结果')
+
+  const staleHttp = await fetch(`http://127.0.0.1:${address.port}/route-strategies/${routeStrategy.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      description: '过期版本不得覆盖',
+      expectedUpdatedAt: payload.data.updatedAt
+    })
+  })
+  assert.equal(staleHttp.status, 409, '过期版本 PATCH 必须返回 409')
+  const stalePayload = await staleHttp.json() as { currentUpdatedAt?: string }
+  assert.equal(stalePayload.currentUpdatedAt, httpUpdatedAt, '冲突响应应返回当前版本供前端提示刷新')
+
+  const missingVersionHttp = await fetch(`http://127.0.0.1:${address.port}/route-strategies/${routeStrategy.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ description: '缺少版本不得写入' })
+  })
+  assert.equal(missingVersionHttp.status, 400, '缺少 expectedUpdatedAt 必须在 HTTP 边界返回 400')
 
   console.log('策略路由按需读写回归通过：PATCH 返回最小 mutation result，审计不宽读，绑定按变化写入，no-op 为零 DML')
 } finally {
@@ -270,6 +366,17 @@ function bindingRow(routeStrategyId: string): { id: string; group_id: string; pr
       WHERE route_strategy_id = ?
     `)
     .get(routeStrategyId) as unknown as { id: string; group_id: string; priority: number; weight: number; status: string; created_at: string; updated_at: string }
+}
+
+function bindingRows(routeStrategyId: string): Array<{ id: string; group_id: string; priority: number; weight: number; status: string; created_at: string; updated_at: string }> {
+  return databaseModule.getBusinessDatabase()
+    .prepare(`
+      SELECT id, group_id, priority, weight, status, created_at, updated_at
+      FROM route_strategy_groups
+      WHERE route_strategy_id = ?
+      ORDER BY priority ASC, id ASC
+    `)
+    .all(routeStrategyId) as unknown as Array<{ id: string; group_id: string; priority: number; weight: number; status: string; created_at: string; updated_at: string }>
 }
 
 function captureQueries<T>(operation: () => T): { result: T; queries: string[] } {

@@ -76,6 +76,7 @@ import type {
   ModelQualityRecoveryCandidate,
   ModelQualityRecoveryCompletionResult,
   ModelQualityScheduledRunCandidate,
+  ModelQualitySchedulePatchInput,
   ModelQualityScheduleMutationInput
 } from '../../storage/model-quality.repository.js'
 import type { ModelQualityPolicy, ModelQualityPolicyUpdateInput, ModelQualitySchedule } from '../../domain/types.js'
@@ -451,7 +452,8 @@ export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'pr
 
 export type ModelQualityDbServiceCommand =
   | { kind: 'save_policy'; systemAccountId: string; input: ModelQualityPolicyUpdateInput }
-  | { kind: 'upsert_schedule'; systemAccountId: string; input: ModelQualityScheduleMutationInput }
+  | { kind: 'create_schedule'; systemAccountId: string; input: ModelQualityScheduleMutationInput }
+  | { kind: 'patch_schedule'; systemAccountId: string; scheduleId: string; input: ModelQualitySchedulePatchInput }
   | { kind: 'delete_schedule'; systemAccountId: string; scheduleId: string }
   | { kind: 'apply_enforcement'; input: ModelQualityEnforcementInput }
   | { kind: 'claim_due_schedules'; ownerId: string; now?: string; limit?: number; leaseMinutes?: number }

@@ -128,6 +128,7 @@ export async function listCustomProviderModelOptionsAsync(input: {
   const whereParts = [
     providerFilter,
     "status = 'active'",
+    client ? 'catalog_visible = TRUE' : 'catalog_visible = 1',
     client
       ? "(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)"
       : "(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))",
@@ -266,6 +267,21 @@ export interface UpsertCustomProviderModelInput {
   actorSystemAccountId: string
 }
 
+export type CustomProviderModelPatchField = Exclude<keyof UpsertCustomProviderModelInput,
+  'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId' | 'actorSystemAccountId'>
+
+export type CustomProviderModelPatchState = Pick<CustomProviderModelRecord,
+  'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
+  & Partial<CustomProviderModelRecord>
+
+export type CustomProviderModelMutationRecord = Pick<CustomProviderModelRecord,
+  'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
+
+export interface CustomProviderModelPatchOutcome {
+  kind: 'updated' | 'no_op' | 'conflict'
+  record: CustomProviderModelMutationRecord
+}
+
 interface CustomProviderModelRow {
   id: string
   provider_code: string
@@ -315,6 +331,8 @@ export function listCustomProviderModelsForCatalog(input: {
   const params: SQLInputValue[] = [input.providerCode]
   if (!input.includeInactive) {
     clauses.push("status = 'active'")
+    clauses.push('catalog_visible = 1')
+    clauses.push("(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))")
   }
   if (input.systemAccountId) {
     clauses.push("((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
@@ -346,6 +364,8 @@ export async function listCustomProviderModelsForCatalogAsync(input: {
   const params: unknown[] = [input.providerCode]
   if (!input.includeInactive) {
     clauses.push("status = 'active'")
+    clauses.push('catalog_visible = TRUE')
+    clauses.push("(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)")
   }
   if (input.systemAccountId) {
     clauses.push("((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))")
@@ -379,6 +399,8 @@ export async function listCustomProviderModelTestCatalogAsync(input: {
       FROM custom_provider_models
       WHERE provider_code IN (${placeholders})
         AND status = 'active'
+        AND catalog_visible = 1
+        AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
         ${clause}
       ORDER BY provider_code ASC, scope ASC, model COLLATE NOCASE ASC, id ASC
     `).all(...providerCodes, ...params as SQLInputValue[]) as unknown as CustomProviderModelTestCatalogRow[]
@@ -391,6 +413,8 @@ export async function listCustomProviderModelTestCatalogAsync(input: {
     FROM ${customProviderModelsTable(client)}
     WHERE provider_code = ANY(?::text[])
       AND status = 'active'
+      AND catalog_visible = TRUE
+      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
       ${clause}
     ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC
   `, [providerCodes, ...params])
@@ -419,6 +443,8 @@ export async function findCustomProviderModelTestCatalogAsync(input: {
       WHERE provider_code IN (${placeholders})
         AND model = ?
         AND status = 'active'
+        AND catalog_visible = 1
+        AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
         ${clause}
       ORDER BY provider_code ASC, scope ASC, id ASC
     `).all(...providerCodes, model, ...params as SQLInputValue[]) as unknown as CustomProviderModelTestCatalogRow[]
@@ -431,6 +457,8 @@ export async function findCustomProviderModelTestCatalogAsync(input: {
     WHERE provider_code = ANY(?::text[])
       AND model = ?
       AND status = 'active'
+      AND catalog_visible = TRUE
+      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
       ${clause}
     ORDER BY provider_code ASC, scope ASC, id ASC
   `, [providerCodes, model, ...params])
@@ -451,6 +479,27 @@ export async function findCustomProviderModelByIdAsync(id: string): Promise<Cust
   const client = await getCustomProviderModelsDatabaseClient()
   const row = await client.one<CustomProviderModelRow>(`
     SELECT ${customProviderModelColumns()}
+    FROM ${customProviderModelsTable(client)}
+    WHERE id = ?
+    LIMIT 1
+  `, [id])
+  return row ? customProviderModelFromRow(row) : undefined
+}
+
+export async function findCustomProviderModelPatchStateAsync(
+  id: string,
+  submitted: Record<string, unknown>
+): Promise<CustomProviderModelPatchState | undefined> {
+  const selectedColumns = customProviderModelPatchColumns(submitted)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const row = getBusinessDatabase()
+      .prepare(`SELECT ${selectedColumns} FROM custom_provider_models WHERE id = ? LIMIT 1`)
+      .get(id) as unknown as CustomProviderModelRow | undefined
+    return row ? customProviderModelFromRow(row) : undefined
+  }
+  const client = await getCustomProviderModelsDatabaseClient()
+  const row = await client.one<CustomProviderModelRow>(`
+    SELECT ${selectedColumns}
     FROM ${customProviderModelsTable(client)}
     WHERE id = ?
     LIMIT 1
@@ -695,6 +744,56 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   return saved
 }
 
+export async function patchCustomProviderModelAsync(input: {
+  current: CustomProviderModelPatchState
+  next: UpsertCustomProviderModelInput
+  fields: CustomProviderModelPatchField[]
+  expectedUpdatedAt: string
+}): Promise<CustomProviderModelPatchOutcome> {
+  if (input.current.updatedAt !== input.expectedUpdatedAt) {
+    return { kind: 'conflict', record: customProviderModelMutationRecord(input.current) }
+  }
+  const { assignments, params } = customProviderModelPatchAssignments(input.current as CustomProviderModelRecord, input.next, input.fields)
+  if (!assignments.length) return { kind: 'no_op', record: customProviderModelMutationRecord(input.current) }
+
+  const updatedAt = nextUpdatedAt(input.current.updatedAt)
+  const writeParams = [
+    ...params,
+    input.next.actorSystemAccountId,
+    updatedAt,
+    input.current.id,
+    input.expectedUpdatedAt
+  ]
+  const updateSql = `
+    UPDATE custom_provider_models
+    SET ${assignments.join(', ')}, updated_by = ?, updated_at = ?
+    WHERE id = ? AND updated_at = ?
+  `
+  let changes = 0
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    changes = Number(
+      getBusinessDatabase().prepare(updateSql).run(...writeParams as SQLInputValue[]).changes
+    )
+  } else {
+    const client = await getCustomProviderModelsDatabaseClient()
+    changes = Number(
+      (await client.execute(
+        updateSql.replace('custom_provider_models', customProviderModelsTable(client)),
+        writeParams
+      )).changes
+    )
+  }
+  if (changes === 0) return { kind: 'conflict', record: customProviderModelMutationRecord(input.current) }
+
+  const saved = customProviderModelMutationRecord({
+    ...input.current,
+    ...input.next,
+    updatedAt
+  })
+  await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
+  return { kind: 'updated', record: saved }
+}
+
 export function deleteCustomProviderModel(
   id: string,
   options: { notifyCache?: boolean } = {}
@@ -936,6 +1035,102 @@ function customProviderModelColumns(): string {
   `
 }
 
+const customProviderModelPatchColumnByField: Partial<Record<CustomProviderModelPatchField, string>> = {
+  status: 'status',
+  catalogVisible: 'catalog_visible',
+  mode: 'mode',
+  supportedApiProtocols: 'supported_api_protocols_json',
+  supportedServiceTiers: 'supported_service_tiers_json',
+  supportedReasoningEfforts: 'supported_reasoning_efforts_json',
+  defaultReasoningEffort: 'default_reasoning_effort',
+  releaseDate: 'release_date',
+  shutdownDate: 'shutdown_date',
+  contextWindowTokens: 'context_window_tokens',
+  maxInputTokens: 'max_input_tokens',
+  maxOutputTokens: 'max_output_tokens',
+  inputUsdPer1M: 'input_usd_per_1m',
+  outputUsdPer1M: 'output_usd_per_1m',
+  cachedInputUsdPer1M: 'cached_input_usd_per_1m',
+  cacheWriteUsdPer1M: 'cache_write_usd_per_1m',
+  cacheWrite1hUsdPer1M: 'cache_write_1h_usd_per_1m',
+  cacheStorageUsdPer1MPerHour: 'cache_storage_usd_per_1m_per_hour',
+  serviceTierPrices: 'service_tier_prices_json',
+  imageInputUsdPer1M: 'image_input_usd_per_1m',
+  imageOutputUsdPer1M: 'image_output_usd_per_1m',
+  audioInputUsdPer1M: 'audio_input_usd_per_1m',
+  audioOutputUsdPer1M: 'audio_output_usd_per_1m',
+  outputUsdPerImage: 'output_usd_per_image',
+  pricingNotes: 'pricing_notes',
+  capabilityNotes: 'capability_notes',
+  notes: 'notes'
+}
+
+const customProviderModelValidationFields = new Set<CustomProviderModelPatchField>([
+  'mode',
+  'supportedServiceTiers',
+  'supportedReasoningEfforts',
+  'defaultReasoningEffort',
+  'inputUsdPer1M',
+  'outputUsdPer1M',
+  'cachedInputUsdPer1M',
+  'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M',
+  'cacheStorageUsdPer1MPerHour',
+  'serviceTierPrices',
+  'imageInputUsdPer1M',
+  'imageOutputUsdPer1M',
+  'audioInputUsdPer1M',
+  'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+])
+
+function customProviderModelPatchColumns(submitted: Record<string, unknown>): string {
+  const requestedFields = Object.keys(submitted)
+    .filter((field): field is CustomProviderModelPatchField => field in customProviderModelPatchColumnByField)
+  const requiresValidation = submitted.status === 'active'
+    || requestedFields.some((field) => customProviderModelValidationFields.has(field))
+  const projectedFields = new Set<CustomProviderModelPatchField>(requestedFields)
+  if (requiresValidation) {
+    projectedFields.add('status')
+    for (const field of customProviderModelValidationFields) projectedFields.add(field)
+  }
+  const columns = new Set([
+    'id', 'provider_code', 'model', 'scope', 'system_account_id', 'status', 'catalog_visible',
+    'shutdown_date', 'created_by', 'created_at', 'updated_at'
+  ])
+  for (const field of projectedFields) {
+    const column = customProviderModelPatchColumnByField[field]
+    if (column) columns.add(column)
+  }
+  return [...columns].join(', ')
+}
+
+function customProviderModelMutationRecord(
+  value: {
+    id: string
+    providerCode: string
+    model: string
+    scope: CustomProviderModelScope
+    systemAccountId?: string
+    status: CustomProviderModelStatus
+    catalogVisible: boolean
+    shutdownDate?: string | null
+    updatedAt: string
+  }
+): CustomProviderModelMutationRecord {
+  return {
+    id: value.id,
+    providerCode: value.providerCode,
+    model: value.model,
+    scope: value.scope,
+    systemAccountId: value.systemAccountId,
+    status: value.status,
+    catalogVisible: value.catalogVisible,
+    shutdownDate: value.shutdownDate ?? undefined,
+    updatedAt: value.updatedAt
+  }
+}
+
 function customProviderModelTestCatalogScope(input: { systemAccountId?: string }): { clause: string; params: string[] } {
   const systemAccountId = input.systemAccountId?.trim()
   return systemAccountId
@@ -1043,6 +1238,70 @@ function normalizeProtocols(values: string[] | null | undefined): CustomProvider
   return [...new Set((values ?? [])
     .map((value) => value.trim())
     .filter((value): value is CustomProviderModelApiProtocol => customProviderModelApiProtocols.has(value as CustomProviderModelApiProtocol)))]
+}
+
+function customProviderModelPatchAssignments(
+  current: CustomProviderModelRecord,
+  next: UpsertCustomProviderModelInput,
+  requestedFields: CustomProviderModelPatchField[]
+): { assignments: string[]; params: unknown[] } {
+  const requested = new Set<CustomProviderModelPatchField>(requestedFields)
+  const assignments: string[] = []
+  const params: unknown[] = []
+  const add = (field: CustomProviderModelPatchField, column: string, nextValue: unknown, currentValue: unknown) => {
+    if (!requested.has(field) || patchValuesEqual(nextValue, currentValue)) return
+    assignments.push(`${column} = ?`)
+    params.push(nextValue)
+  }
+  const capabilities = normalizeCustomProviderModelCapabilities(current.providerCode, next)
+  const nullableOptionalText = (value: unknown) => optionalText(value) ?? null
+  const nullableOptionalDate = (value: unknown) => optionalDate(value) ?? null
+  const nullableOptionalInteger = (value: unknown) => optionalInteger(value) ?? null
+  const nullableOptionalNumber = (value: unknown) => optionalNumber(value) ?? null
+
+  add('status', 'status', next.status ?? current.status, current.status)
+  add(
+    'catalogVisible',
+    'catalog_visible',
+    runtimeConfig.databaseDriver === 'postgres' ? next.catalogVisible !== false : (next.catalogVisible === false ? 0 : 1),
+    runtimeConfig.databaseDriver === 'postgres' ? current.catalogVisible : (current.catalogVisible ? 1 : 0)
+  )
+  add('mode', 'mode', nullableOptionalText(next.mode), nullableOptionalText(current.mode))
+  add('supportedApiProtocols', 'supported_api_protocols_json', JSON.stringify(normalizeProtocols(next.supportedApiProtocols)), JSON.stringify(normalizeProtocols(current.supportedApiProtocols)))
+  add('supportedServiceTiers', 'supported_service_tiers_json', JSON.stringify(capabilities.supportedServiceTiers), JSON.stringify(current.supportedServiceTiers))
+  add('supportedReasoningEfforts', 'supported_reasoning_efforts_json', JSON.stringify(capabilities.supportedReasoningEfforts), JSON.stringify(current.supportedReasoningEfforts))
+  add('defaultReasoningEffort', 'default_reasoning_effort', capabilities.defaultReasoningEffort ?? null, current.defaultReasoningEffort ?? null)
+  add('releaseDate', 'release_date', nullableOptionalDate(next.releaseDate), nullableOptionalDate(current.releaseDate))
+  add('shutdownDate', 'shutdown_date', nullableOptionalDate(next.shutdownDate), nullableOptionalDate(current.shutdownDate))
+  add('contextWindowTokens', 'context_window_tokens', nullableOptionalInteger(next.contextWindowTokens), nullableOptionalInteger(current.contextWindowTokens))
+  add('maxInputTokens', 'max_input_tokens', nullableOptionalInteger(next.maxInputTokens), nullableOptionalInteger(current.maxInputTokens))
+  add('maxOutputTokens', 'max_output_tokens', nullableOptionalInteger(next.maxOutputTokens), nullableOptionalInteger(current.maxOutputTokens))
+  add('inputUsdPer1M', 'input_usd_per_1m', nullableOptionalNumber(next.inputUsdPer1M), nullableOptionalNumber(current.inputUsdPer1M))
+  add('outputUsdPer1M', 'output_usd_per_1m', nullableOptionalNumber(next.outputUsdPer1M), nullableOptionalNumber(current.outputUsdPer1M))
+  add('cachedInputUsdPer1M', 'cached_input_usd_per_1m', nullableOptionalNumber(next.cachedInputUsdPer1M), nullableOptionalNumber(current.cachedInputUsdPer1M))
+  add('cacheWriteUsdPer1M', 'cache_write_usd_per_1m', nullableOptionalNumber(next.cacheWriteUsdPer1M), nullableOptionalNumber(current.cacheWriteUsdPer1M))
+  add('cacheWrite1hUsdPer1M', 'cache_write_1h_usd_per_1m', nullableOptionalNumber(next.cacheWrite1hUsdPer1M), nullableOptionalNumber(current.cacheWrite1hUsdPer1M))
+  add('cacheStorageUsdPer1MPerHour', 'cache_storage_usd_per_1m_per_hour', nullableOptionalNumber(next.cacheStorageUsdPer1MPerHour), nullableOptionalNumber(current.cacheStorageUsdPer1MPerHour))
+  add('serviceTierPrices', 'service_tier_prices_json', JSON.stringify(normalizeServiceTierPrices(next.serviceTierPrices)), JSON.stringify(normalizeServiceTierPrices(current.serviceTierPrices)))
+  add('imageInputUsdPer1M', 'image_input_usd_per_1m', nullableOptionalNumber(next.imageInputUsdPer1M), nullableOptionalNumber(current.imageInputUsdPer1M))
+  add('imageOutputUsdPer1M', 'image_output_usd_per_1m', nullableOptionalNumber(next.imageOutputUsdPer1M), nullableOptionalNumber(current.imageOutputUsdPer1M))
+  add('audioInputUsdPer1M', 'audio_input_usd_per_1m', nullableOptionalNumber(next.audioInputUsdPer1M), nullableOptionalNumber(current.audioInputUsdPer1M))
+  add('audioOutputUsdPer1M', 'audio_output_usd_per_1m', nullableOptionalNumber(next.audioOutputUsdPer1M), nullableOptionalNumber(current.audioOutputUsdPer1M))
+  add('outputUsdPerImage', 'output_usd_per_image', nullableOptionalNumber(next.outputUsdPerImage), nullableOptionalNumber(current.outputUsdPerImage))
+  add('pricingNotes', 'pricing_notes', nullableOptionalText(next.pricingNotes), nullableOptionalText(current.pricingNotes))
+  add('capabilityNotes', 'capability_notes', nullableOptionalText(next.capabilityNotes), nullableOptionalText(current.capabilityNotes))
+  add('notes', 'notes', nullableOptionalText(next.notes), nullableOptionalText(current.notes))
+  return { assignments, params }
+}
+
+function patchValuesEqual(left: unknown, right: unknown): boolean {
+  return left === right || JSON.stringify(left) === JSON.stringify(right)
+}
+
+function nextUpdatedAt(current: string): string {
+  const currentMs = Date.parse(current)
+  const nextMs = Math.max(Date.now(), Number.isFinite(currentMs) ? currentMs + 1 : 0)
+  return new Date(nextMs).toISOString()
 }
 
 function parseStringArray(raw: string | null | undefined): CustomProviderModelApiProtocol[] {

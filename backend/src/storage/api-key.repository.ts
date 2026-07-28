@@ -1379,7 +1379,7 @@ async function invalidateRequiredApiKeyValidationCacheAsync(
       apiKeyId,
       reason,
       cache: 'gateway_api_key'
-    }), 'API Key 已提交，但 validation cache 必需失效失败')
+    }), 'API Key 已提交，但 validation cache 必需失效重试耗尽')
     return new ApiKeyValidationCacheInvalidationError(apiKeyId, error)
   }
 }

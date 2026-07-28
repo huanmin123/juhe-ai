@@ -127,6 +127,7 @@ interface AccountManagementListRow {
 }
 
 const proxyProfileUnavailableMessage = '代理不存在或已停用，请选择一个已启用的代理'
+export const maxAccountManagementCandidatePrefixSize = 10_000
 
 export async function listAccountManagementItemsPageAsync(
   access?: AccessScope,
@@ -145,19 +146,45 @@ export async function listAccountManagementItemsPageAsync(
   return listAccountManagementItemsPageDirect(client, access, options)
 }
 
+export async function listAccountManagementCandidatePrefixAsync(
+  access: AccessScope | undefined,
+  options: AccountListOptions,
+  candidateLimit: number
+): Promise<AccountManagementListPage> {
+  const normalizedLimit = normalizedAccountManagementCandidateLimit(candidateLimit)
+  if (runtimeConfig.databaseDriver === 'sqlite' && sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_account_management_items_page_read_only',
+      access,
+      options,
+      candidateLimit: normalizedLimit
+    })
+  }
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : sqliteAccountManagementListClient()
+  return listAccountManagementItemsPageDirect(client, access, options, normalizedLimit)
+}
+
 export async function listAccountManagementItemsPageReadOnly(
   access?: AccessScope,
-  options?: AccountListOptions
+  options?: AccountListOptions,
+  candidateLimit?: number
 ): Promise<AccountManagementListPage> {
-  return listAccountManagementItemsPageDirect(sqliteAccountManagementListClient(), access, options)
+  return listAccountManagementItemsPageDirect(sqliteAccountManagementListClient(), access, options, candidateLimit)
 }
 
 async function listAccountManagementItemsPageDirect(
   client: DatabaseClient,
   access: AccessScope | undefined,
-  options: AccountListOptions | undefined
+  options: AccountListOptions | undefined,
+  candidateLimit?: number
 ): Promise<AccountManagementListPage> {
   const listOptions = normalizeAccountListOptions(options)
+  const resultPage = candidateLimit === undefined ? listOptions.page : 1
+  const resultPageSize = candidateLimit === undefined
+    ? listOptions.pageSize
+    : normalizedAccountManagementCandidateLimit(candidateLimit)
   const scopedAccountId = manageableSystemAccountId(access)
   if (!scopedAccountId && !canAccessAll(access)) {
     throw new Error('缺少系统账户上下文')
@@ -321,11 +348,13 @@ async function listAccountManagementItemsPageDirect(
   `, [
     ...(scopedAccountId ? [scopedAccountId] : []),
     ...filters.params,
-    listOptions.pageSize + 1,
-    (listOptions.page - 1) * listOptions.pageSize
+    resultPageSize + 1,
+    (resultPage - 1) * resultPageSize
   ])
-  const pageRows = takePageRows(rows, listOptions.pageSize)
-  const tagsByAccount = await loadAccountTagsByAccountIdsAsync(pageRows.rows.map((row) => row.id))
+  const pageRows = takePageRows(rows, resultPageSize)
+  const tagsByAccount: Map<string, AccountManagementListBaseItem['tags']> = candidateLimit === undefined
+    ? await loadAccountTagsByAccountIdsAsync(pageRows.rows.map((row) => row.id))
+    : new Map()
   const items = pageRows.rows.map((row) => accountManagementListItemFromRow(
     row,
     includeSystemAccountFields(access),
@@ -334,10 +363,10 @@ async function listAccountManagementItemsPageDirect(
   ))
   return {
     items,
-    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(resultPage, resultPageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
-    page: listOptions.page,
-    pageSize: listOptions.pageSize
+    page: resultPage,
+    pageSize: resultPageSize
   }
 }
 
@@ -489,16 +518,19 @@ function accountManagementListFilters(
     params.push(options.type)
   }
   const statuses = accountStatusFilterValues(options.status)
+  const effectiveStatus = statuses.length || options.schedulable !== 'all'
+    ? accountManagementEffectiveStatusSql()
+    : undefined
   if (statuses.length) {
-    clauses.push(`${accountManagementEffectiveStatusSql()} IN (${statuses.map(() => '?').join(', ')})`)
+    clauses.push(`${effectiveStatus} IN (${statuses.map(() => '?').join(', ')})`)
     params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
-    clauses.push(`${accountManagementEffectiveSchedulableSql()} = 1`)
+    clauses.push(`${effectiveStatus} = 'active'`)
   } else if (options.schedulable === 'disabled') {
-    clauses.push(`(${accountManagementEffectiveSchedulableSql()} = 0 AND ${accountManagementCoolingSql()} = 0)`)
+    clauses.push(`${effectiveStatus} NOT IN ('active', 'rate_limited', 'temporary_unavailable')`)
   } else if (options.schedulable === 'cooling') {
-    clauses.push(`${accountManagementCoolingSql()} = 1`)
+    clauses.push(`${effectiveStatus} IN ('rate_limited', 'temporary_unavailable')`)
   }
   return { clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params }
 }
@@ -552,6 +584,9 @@ function accountManagementEffectiveStatusSql(): string {
         WHEN account_rows.source_status <> 'active' THEN account_rows.source_status
         WHEN account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${current} THEN 'temporary_unavailable'
         WHEN COALESCE(account_rows.source_schedulable, 0) <> 1 THEN 'disabled'
+        WHEN account_rows.last_error_code = 'account_expired'
+          OR (account_rows.account_expires_at IS NOT NULL AND account_rows.account_expires_at <= ${current})
+        THEN 'disabled'
         WHEN account_rows.status <> 'active' THEN account_rows.status
         WHEN account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current} THEN 'temporary_unavailable'
         WHEN account_rows.schedulable <> 1 THEN 'disabled'
@@ -570,24 +605,9 @@ function accountManagementEffectiveStatusSql(): string {
   END`
 }
 
-function accountManagementEffectiveSchedulableSql(): string {
-  const status = accountManagementEffectiveStatusSql()
-  return `CASE WHEN ${status} = 'active' THEN 1 ELSE 0 END`
-}
-
-function accountManagementCoolingSql(): string {
-  const current = `'${nowIso().replace(/'/g, "''")}'`
-  return `CASE WHEN
-    account_rows.status IN ('rate_limited', 'temporary_unavailable')
-    OR account_rows.source_status IN ('rate_limited', 'temporary_unavailable')
-    OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ${current})
-    OR (account_rows.source_cooldown_until IS NOT NULL AND account_rows.source_cooldown_until > ${current})
-    THEN 1 ELSE 0 END`
-}
-
 function accountManagementGroupBindStatus(row: AccountManagementListRow): AccountGroupBindStatus | undefined {
   if (!row.bound_group_id || row.binding_system_account_id !== row.system_account_id) return undefined
-  if (row.bound_group_account_authorization_id && row.bound_group_account_authorization_id !== row.authorization_id) {
+  if (row.bound_group_account_authorization_id !== row.authorization_id) {
     return 'authorization_unavailable'
   }
   return 'bound'
@@ -619,6 +639,13 @@ function accountManagementPermissions(
 
 function sqliteAccountManagementListClient(): DatabaseClient {
   return createSqliteDatabaseClient(getBusinessDatabase())
+}
+
+function normalizedAccountManagementCandidateLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maxAccountManagementCandidatePrefixSize) {
+    throw new Error(`账户运行态筛选候选上限必须在 1-${maxAccountManagementCandidatePrefixSize} 之间`)
+  }
+  return value
 }
 
 function businessTable(client: DatabaseClient, tableName: string): string {

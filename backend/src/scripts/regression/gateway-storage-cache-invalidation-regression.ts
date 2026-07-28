@@ -122,12 +122,17 @@ try {
     name: '缓存失效新空分组',
     providerCode: 'gpt',
   }, ownerAccess)
-  repositories.updateRouteStrategy(apiKey.routeStrategyId, {
-    groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }]
+  const routeStrategyBeforeEmptyGroup = repositories.findRouteStrategySummary(apiKey.routeStrategyId, ownerAccess)
+  assert(routeStrategyBeforeEmptyGroup, '切换空分组前必须读取策略路由版本')
+  const routeStrategyAfterEmptyGroup = repositories.updateRouteStrategy(apiKey.routeStrategyId, {
+    groupBindings: [{ groupId: emptyGroup.id, priority: 1, status: 'active' }],
+    expectedUpdatedAt: routeStrategyBeforeEmptyGroup.updatedAt
   }, ownerAccess)
+  assert(routeStrategyAfterEmptyGroup, '策略路由应成功切换到空分组')
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [], '直接新建空分组并切换 API Key 后运行配置应立即使用新分组')
   repositories.updateRouteStrategy(apiKey.routeStrategyId, {
-    groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }]
+    groupBindings: [{ groupId: ownerGroupId, priority: 1, status: 'active' }],
+    expectedUpdatedAt: routeStrategyAfterEmptyGroup.updatedAt
   }, ownerAccess)
   assert.deepEqual(await runtimeAccountIds(apiKey.key), [account.id], '直接切回原分组后运行配置应立即恢复原账号')
 
@@ -177,10 +182,13 @@ try {
     name: '缓存失效被授权分组',
     providerCode: 'gpt',
   }, granteeAccess)
+  const revokedBindingRouteStrategyBeforeReplace = repositories.findRouteStrategySummary(granteeAuthorizedGroupApiKey.routeStrategyId, granteeAccess)
+  assert(revokedBindingRouteStrategyBeforeReplace, '替换已回收授权分组前必须读取策略路由版本')
   const replacedRevokedGroupBindingRouteStrategy = repositories.updateRouteStrategy(granteeAuthorizedGroupApiKey.routeStrategyId, {
     groupBindings: [
       { groupId: granteeGroup.id, priority: 1, status: 'active' }
     ],
+    expectedUpdatedAt: revokedBindingRouteStrategyBeforeReplace.updatedAt,
   }, granteeAccess)
   assert(replacedRevokedGroupBindingRouteStrategy, '授权回收后应允许策略路由切换到当前用户自己的分组')
   assert.deepEqual(await runtimeAccountIds(granteeAuthorizedGroupApiKey.key), [], '切换到空分组后运行配置仍不应返回候选账号')

@@ -83,6 +83,11 @@ export interface ModelQualityScheduleMutationInput {
   expectedRevision?: number
 }
 
+export type ModelQualitySchedulePatchInput = {
+  expectedRevision: number
+} & Partial<Pick<ModelQualityScheduleMutationInput,
+  'model' | 'intervalMinutes' | 'profile' | 'penaltyThreshold' | 'penaltyAction' | 'recoveryIntervalMinutes' | 'enabled'>>
+
 export interface ModelQualityEnforcementInput {
   systemAccountId: string
   accountId: string
@@ -152,19 +157,45 @@ export function defaultModelQualityPolicy(systemAccountId: string): ModelQuality
 
 export async function getModelQualityPolicyAsync(systemAccountId: string): Promise<ModelQualityPolicy> {
   const client = await businessClient()
-  const row = await client.one<ModelQualityPolicyRow>(`
-    SELECT * FROM ${table(client, 'model_quality_policies')}
+  const row = await loadModelQualityPolicyRow(client, systemAccountId)
+  return row ? policyFromRow(row) : defaultModelQualityPolicy(systemAccountId)
+}
+
+async function loadModelQualityPolicyRow(client: DatabaseClient, systemAccountId: string): Promise<ModelQualityPolicyRow | undefined> {
+  return await client.one<ModelQualityPolicyRow>(`
+    SELECT system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold,
+           penalty_action, recovery_interval_minutes, created_at, updated_at
+    FROM ${table(client, 'model_quality_policies')}
     WHERE system_account_id = ?
     LIMIT 1
   `, [systemAccountId])
-  return row ? policyFromRow(row) : defaultModelQualityPolicy(systemAccountId)
 }
 
 export async function saveModelQualityPolicyAsync(systemAccountId: string, input: ModelQualityPolicyUpdateInput): Promise<ModelQualityPolicy> {
   assertPolicyInput(input)
   const client = await businessClient()
+  const existing = await loadModelQualityPolicyRow(client, systemAccountId)
+  if (existing && existing.revision !== input.expectedRevision) {
+    throw new Error('模型质量检测配置已被其他操作修改，请刷新后重试')
+  }
+  if (!existing && input.expectedRevision !== 0) {
+    throw new Error('模型质量检测配置已被其他操作修改，请刷新后重试')
+  }
   const now = nowIso()
-  if (input.expectedRevision === 0) {
+  if (!existing) {
+    const defaults = defaultModelQualityPolicy(systemAccountId)
+    const next = {
+      profile: input.profile ?? defaults.profile,
+      manualEnforcementEnabled: input.manualEnforcementEnabled ?? defaults.manualEnforcementEnabled,
+      penaltyThreshold: input.penaltyThreshold ?? defaults.penaltyThreshold,
+      penaltyAction: input.penaltyAction ?? defaults.penaltyAction,
+      recoveryIntervalMinutes: input.recoveryIntervalMinutes ?? defaults.recoveryIntervalMinutes
+    }
+    if (next.profile === defaults.profile
+      && next.manualEnforcementEnabled === defaults.manualEnforcementEnabled
+      && next.penaltyThreshold === defaults.penaltyThreshold
+      && next.penaltyAction === defaults.penaltyAction
+      && next.recoveryIntervalMinutes === defaults.recoveryIntervalMinutes) return defaults
     const result = await client.execute(`
       INSERT INTO ${table(client, 'model_quality_policies')} (
         system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold,
@@ -173,39 +204,54 @@ export async function saveModelQualityPolicyAsync(systemAccountId: string, input
       ON CONFLICT(system_account_id) DO NOTHING
     `, [
       systemAccountId,
-      input.profile,
-      input.manualEnforcementEnabled ? 1 : 0,
-      input.penaltyThreshold,
-      input.penaltyAction,
-      input.recoveryIntervalMinutes,
+      next.profile,
+      next.manualEnforcementEnabled ? 1 : 0,
+      next.penaltyThreshold,
+      next.penaltyAction,
+      next.recoveryIntervalMinutes,
       now,
       now
     ])
     if (result.changes <= 0) throw new Error('模型质量检测配置已被其他操作修改，请刷新后重试')
   } else {
+    const assignments: string[] = []
+    const values: unknown[] = []
+    if (input.profile !== undefined && input.profile !== existing.profile) {
+      assignments.push('profile = ?')
+      values.push(input.profile)
+    }
+    if (input.manualEnforcementEnabled !== undefined && input.manualEnforcementEnabled !== (existing.manual_enforcement_enabled === 1)) {
+      assignments.push('manual_enforcement_enabled = ?')
+      values.push(input.manualEnforcementEnabled ? 1 : 0)
+    }
+    if (input.penaltyThreshold !== undefined && input.penaltyThreshold !== Number(existing.penalty_threshold)) {
+      assignments.push('penalty_threshold = ?')
+      values.push(input.penaltyThreshold)
+    }
+    if (input.penaltyAction !== undefined && input.penaltyAction !== existing.penalty_action) {
+      assignments.push('penalty_action = ?')
+      values.push(input.penaltyAction)
+    }
+    if (input.recoveryIntervalMinutes !== undefined && input.recoveryIntervalMinutes !== Number(existing.recovery_interval_minutes)) {
+      assignments.push('recovery_interval_minutes = ?')
+      values.push(input.recoveryIntervalMinutes)
+    }
+    if (!assignments.length) return policyFromRow(existing)
     const result = await client.execute(`
       UPDATE ${table(client, 'model_quality_policies')}
-      SET revision = revision + 1,
-          profile = ?,
-          manual_enforcement_enabled = ?,
-          penalty_threshold = ?,
-          penalty_action = ?,
-          recovery_interval_minutes = ?,
-          updated_at = ?
+      SET ${assignments.join(', ')}, revision = revision + 1, updated_at = ?
       WHERE system_account_id = ? AND revision = ?
     `, [
-      input.profile,
-      input.manualEnforcementEnabled ? 1 : 0,
-      input.penaltyThreshold,
-      input.penaltyAction,
-      input.recoveryIntervalMinutes,
+      ...values,
       now,
       systemAccountId,
       input.expectedRevision
     ])
     if (result.changes <= 0) throw new Error('模型质量检测配置已被其他操作修改，请刷新后重试')
   }
-  return await getModelQualityPolicyAsync(systemAccountId)
+  const saved = await loadModelQualityPolicyRow(client, systemAccountId)
+  if (!saved) throw new Error('模型质量检测配置保存失败')
+  return policyFromRow(saved)
 }
 
 export async function listModelQualitySchedulesAsync(
@@ -222,7 +268,7 @@ export async function listModelQualitySchedulesAsync(
     SELECT COUNT(*) AS count FROM ${schedules} WHERE system_account_id = ?
   `, [systemAccountId])
   const rows = await client.query<ModelQualityScheduleRow>(`
-    SELECT mqs.*,
+    SELECT ${modelQualityScheduleSelectColumns()},
            accounts.name AS account_name,
            accounts.provider_code,
            aqe.action AS enforcement_action,
@@ -244,17 +290,112 @@ export async function listModelQualitySchedulesAsync(
   }
 }
 
-export async function upsertModelQualityScheduleAsync(
+export async function createModelQualityScheduleAsync(
   systemAccountId: string,
   input: ModelQualityScheduleMutationInput
 ): Promise<ModelQualitySchedule> {
+  if (input.expectedRevision !== undefined) throw new Error('创建定时检查配置不接受 revision，请使用字段级更新')
   const accountId = requiredText(input.accountId, '定时检查账户不能为空')
   const model = requiredText(input.model, '定时检查模型不能为空')
   const intervalMinutes = strictInteger(input.intervalMinutes, 10, 10080, '定时检查间隔必须是 10 到 10080 的整数分钟')
   assertSchedulePolicyInput(input)
   const client = await businessClient()
-  const accounts = table(client, 'accounts')
   const schedules = table(client, 'model_quality_schedules')
+  const existing = await client.one<{ id: string; revision: number }>(`
+    SELECT id, revision FROM ${schedules}
+    WHERE system_account_id = ? AND account_id = ?
+    LIMIT 1
+  `, [systemAccountId, accountId])
+  const now = nowIso()
+  const enabled = input.enabled !== false
+  if (existing) throw new Error('该账户已存在定时检查配置，请使用字段级更新')
+  await assertModelQualityScheduleModelAllowed(client, systemAccountId, accountId, model)
+  const id = newId('mqs')
+  const inserted = await client.execute(`
+    INSERT INTO ${schedules} (
+      id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold,
+      penalty_action, recovery_interval_minutes, enabled, revision,
+      next_run_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    ON CONFLICT(system_account_id, account_id) DO NOTHING
+  `, [id, systemAccountId, accountId, model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, now])
+  if (inserted.changes <= 0) throw new Error('该账户已存在定时检查配置，请使用字段级更新')
+  const row = await findScheduleRow(client, systemAccountId, accountId)
+  if (!row) throw new Error('定时检查配置保存失败')
+  return scheduleFromRow(row)
+}
+
+export async function patchModelQualityScheduleAsync(
+  systemAccountId: string,
+  scheduleId: string,
+  input: ModelQualitySchedulePatchInput
+): Promise<ModelQualitySchedule> {
+  assertSchedulePatchInput(input)
+  const client = await businessClient()
+  const schedules = table(client, 'model_quality_schedules')
+  const existing = await client.one<{
+    id: string
+    account_id: string
+    model: string
+    interval_minutes: number
+    profile: ModelCheckProfile
+    penalty_threshold: number
+    penalty_action: ModelQualityPenaltyAction
+    recovery_interval_minutes: number
+    enabled: number
+    revision: number
+  }>(`
+    SELECT id, account_id, model, interval_minutes, profile, penalty_threshold,
+           penalty_action, recovery_interval_minutes, enabled, revision
+    FROM ${schedules}
+    WHERE id = ? AND system_account_id = ?
+    LIMIT 1
+  `, [scheduleId, systemAccountId])
+  if (!existing) throw new Error('定时检查配置不存在')
+  if (existing.revision !== input.expectedRevision) throw new Error('定时检查配置已变化，请刷新后重试')
+
+  if (input.model !== undefined && input.model !== existing.model) {
+    await assertModelQualityScheduleModelAllowed(client, systemAccountId, existing.account_id, input.model)
+  }
+
+  const assignments: string[] = []
+  const values: unknown[] = []
+  const append = (column: string, value: unknown): void => {
+    assignments.push(`${column} = ?`)
+    values.push(value)
+  }
+  if (input.model !== undefined && input.model !== existing.model) append('model', input.model)
+  if (input.intervalMinutes !== undefined && input.intervalMinutes !== Number(existing.interval_minutes)) {
+    append('interval_minutes', input.intervalMinutes)
+    append('next_run_at', addMinutes(nowIso(), input.intervalMinutes))
+  }
+  if (input.profile !== undefined && input.profile !== existing.profile) append('profile', input.profile)
+  if (input.penaltyThreshold !== undefined && input.penaltyThreshold !== Number(existing.penalty_threshold)) append('penalty_threshold', input.penaltyThreshold)
+  if (input.penaltyAction !== undefined && input.penaltyAction !== existing.penalty_action) append('penalty_action', input.penaltyAction)
+  if (input.recoveryIntervalMinutes !== undefined && input.recoveryIntervalMinutes !== Number(existing.recovery_interval_minutes)) append('recovery_interval_minutes', input.recoveryIntervalMinutes)
+  if (input.enabled !== undefined && input.enabled !== (existing.enabled === 1)) append('enabled', input.enabled ? 1 : 0)
+
+  if (assignments.length) {
+    const now = nowIso()
+    const result = await client.execute(`
+      UPDATE ${schedules}
+      SET ${assignments.join(', ')}, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND system_account_id = ? AND revision = ?
+    `, [...values, now, scheduleId, systemAccountId, input.expectedRevision])
+    if (result.changes <= 0) throw new Error('定时检查配置已变化，请刷新后重试')
+  }
+
+  const row = await findScheduleRow(client, systemAccountId, existing.account_id)
+  if (!row) throw new Error('定时检查配置保存失败')
+  return scheduleFromRow(row)
+}
+
+async function assertModelQualityScheduleModelAllowed(
+  client: DatabaseClient,
+  systemAccountId: string,
+  accountId: string,
+  model: string
+): Promise<void> {
   const account = await client.one<{
     id: string
     provider_code: string
@@ -262,7 +403,8 @@ export async function upsertModelQualityScheduleAsync(
     protocol_code: string
     protocol_version: string
   }>(`
-    SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version FROM ${accounts}
+    SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version
+    FROM ${table(client, 'accounts')}
     WHERE id = ? AND system_account_id = ? AND deleted_at IS NULL
       AND authorization_instance_authorization_id IS NULL
     LIMIT 1
@@ -284,41 +426,6 @@ export async function upsertModelQualityScheduleAsync(
     const allowedModelText = allowedModels.length ? `；可选模型：${allowedModels.join('、')}` : ''
     throw new Error(`账户模型限制或供应商协议不支持定时检查模型 ${model}${allowedModelText}`)
   }
-  const existing = await client.one<{ id: string; revision: number }>(`
-    SELECT id, revision FROM ${schedules}
-    WHERE system_account_id = ? AND account_id = ?
-    LIMIT 1
-  `, [systemAccountId, accountId])
-  const now = nowIso()
-  const enabled = input.enabled !== false
-  if (!existing) {
-    if (input.expectedRevision !== undefined && input.expectedRevision !== 0) {
-      throw new Error('定时检查配置已变化，请刷新后重试')
-    }
-    const id = newId('mqs')
-    await client.execute(`
-      INSERT INTO ${schedules} (
-        id, system_account_id, account_id, model, interval_minutes, profile, penalty_threshold,
-        penalty_action, recovery_interval_minutes, enabled, revision,
-        next_run_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `, [id, systemAccountId, accountId, model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, now])
-  } else {
-    if (input.expectedRevision !== undefined && input.expectedRevision !== existing.revision) {
-      throw new Error('定时检查配置已变化，请刷新后重试')
-    }
-    const result = await client.execute(`
-      UPDATE ${schedules}
-      SET model = ?, interval_minutes = ?, profile = ?, penalty_threshold = ?, penalty_action = ?,
-          recovery_interval_minutes = ?, enabled = ?, revision = revision + 1,
-          next_run_at = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
-      WHERE id = ? AND revision = ?
-    `, [model, intervalMinutes, input.profile, input.penaltyThreshold, input.penaltyAction, input.recoveryIntervalMinutes, enabled ? 1 : 0, addMinutes(now, intervalMinutes), now, existing.id, existing.revision])
-    if (result.changes <= 0) throw new Error('定时检查配置已变化，请刷新后重试')
-  }
-  const row = await findScheduleRow(client, systemAccountId, accountId)
-  if (!row) throw new Error('定时检查配置保存失败')
-  return scheduleFromRow(row)
 }
 
 export async function deleteModelQualityScheduleAsync(systemAccountId: string, scheduleId: string): Promise<boolean> {
@@ -707,7 +814,7 @@ export async function applyModelQualityEnforcementAsync(input: ModelQualityEnfor
 
 async function findScheduleRow(client: DatabaseClient, systemAccountId: string, accountId: string): Promise<ModelQualityScheduleRow | undefined> {
   return await client.one<ModelQualityScheduleRow>(`
-    SELECT mqs.*,
+    SELECT ${modelQualityScheduleSelectColumns()},
            accounts.name AS account_name,
            accounts.provider_code,
            aqe.action AS enforcement_action,
@@ -785,12 +892,13 @@ function invalidateQualityAccount(accountId: string): void {
 
 function assertPolicyInput(input: ModelQualityPolicyUpdateInput): void {
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) throw new Error('检测配置 revision 无效')
-  if (input.profile !== 'quick' && input.profile !== 'full') throw new Error('检测 profile 仅支持 quick 或 full')
-  strictInteger(input.penaltyThreshold, 40, 100, '处罚阈值必须是 40 到 100 的整数')
-  if (input.penaltyAction !== 'disable' && input.penaltyAction !== 'fallback' && input.penaltyAction !== 'quality_isolate') {
+  if (input.profile !== undefined && input.profile !== 'quick' && input.profile !== 'full') throw new Error('检测 profile 仅支持 quick 或 full')
+  if (input.manualEnforcementEnabled !== undefined && typeof input.manualEnforcementEnabled !== 'boolean') throw new Error('手动检测处罚开关无效')
+  if (input.penaltyThreshold !== undefined) strictInteger(input.penaltyThreshold, 40, 100, '处罚阈值必须是 40 到 100 的整数')
+  if (input.penaltyAction !== undefined && input.penaltyAction !== 'disable' && input.penaltyAction !== 'fallback' && input.penaltyAction !== 'quality_isolate') {
     throw new Error('处罚方式无效')
   }
-  strictInteger(input.recoveryIntervalMinutes, 10, 10080, '质量隔离恢复周期必须是 10 到 10080 的整数分钟')
+  if (input.recoveryIntervalMinutes !== undefined) strictInteger(input.recoveryIntervalMinutes, 10, 10080, '质量隔离恢复周期必须是 10 到 10080 的整数分钟')
 }
 
 function assertSchedulePolicyInput(input: ModelQualityScheduleMutationInput): void {
@@ -798,6 +906,17 @@ function assertSchedulePolicyInput(input: ModelQualityScheduleMutationInput): vo
   strictInteger(input.penaltyThreshold, 40, 100, '定时处罚阈值必须是 40 到 100 的整数')
   if (input.penaltyAction !== 'disable' && input.penaltyAction !== 'fallback' && input.penaltyAction !== 'quality_isolate') throw new Error('定时处罚方式无效')
   strictInteger(input.recoveryIntervalMinutes, 10, 10080, '定时质量隔离恢复周期必须是 10 到 10080 的整数分钟')
+}
+
+function assertSchedulePatchInput(input: ModelQualitySchedulePatchInput): void {
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('定时检查配置 revision 无效')
+  if (input.model !== undefined) requiredText(input.model, '定时检查模型不能为空')
+  if (input.intervalMinutes !== undefined) strictInteger(input.intervalMinutes, 10, 10080, '定时检查间隔必须是 10 到 10080 的整数分钟')
+  if (input.profile !== undefined && input.profile !== 'quick' && input.profile !== 'full') throw new Error('定时检测 profile 仅支持 quick 或 full')
+  if (input.penaltyThreshold !== undefined) strictInteger(input.penaltyThreshold, 40, 100, '定时处罚阈值必须是 40 到 100 的整数')
+  if (input.penaltyAction !== undefined && input.penaltyAction !== 'disable' && input.penaltyAction !== 'fallback' && input.penaltyAction !== 'quality_isolate') throw new Error('定时处罚方式无效')
+  if (input.recoveryIntervalMinutes !== undefined) strictInteger(input.recoveryIntervalMinutes, 10, 10080, '定时质量隔离恢复周期必须是 10 到 10080 的整数分钟')
+  if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('定时检查启用状态无效')
 }
 
 function schedulePolicy(row: {
@@ -844,7 +963,9 @@ async function scheduledEnforcementConfigurationMatches(client: DatabaseClient, 
 
 async function manualEnforcementConfigurationMatches(client: DatabaseClient, input: ModelQualityEnforcementInput): Promise<boolean> {
   const policy = await client.one<ModelQualityPolicyRow>(`
-    SELECT * FROM ${table(client, 'model_quality_policies')}
+    SELECT system_account_id, revision, profile, manual_enforcement_enabled, penalty_threshold,
+           penalty_action, recovery_interval_minutes, created_at, updated_at
+    FROM ${table(client, 'model_quality_policies')}
     WHERE system_account_id = ?
     LIMIT 1
   `, [input.systemAccountId])
@@ -860,6 +981,28 @@ async function manualEnforcementConfigurationMatches(client: DatabaseClient, inp
     && Number(policy.penalty_threshold) === input.penaltyThreshold
     && policy.penalty_action === input.action
     && Number(policy.recovery_interval_minutes) === input.recoveryIntervalMinutes
+}
+
+function modelQualityScheduleSelectColumns(): string {
+  return [
+    'mqs.id',
+    'mqs.system_account_id',
+    'mqs.account_id',
+    'mqs.model',
+    'mqs.interval_minutes',
+    'mqs.profile',
+    'mqs.penalty_threshold',
+    'mqs.penalty_action',
+    'mqs.recovery_interval_minutes',
+    'mqs.enabled',
+    'mqs.revision',
+    'mqs.next_run_at',
+    'mqs.last_run_id',
+    'mqs.last_run_at',
+    'mqs.last_run_status',
+    'mqs.created_at',
+    'mqs.updated_at'
+  ].join(', ')
 }
 
 async function businessClient(): Promise<DatabaseClient> {

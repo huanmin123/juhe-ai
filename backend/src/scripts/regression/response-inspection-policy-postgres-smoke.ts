@@ -9,7 +9,7 @@ import {
   listActiveResponseInspectionPoliciesForGatewayAsync,
   listResponseInspectionPolicyProviderOptionsAsync,
   listResponseInspectionPoliciesAsync,
-  updateResponseInspectionPolicyAsync
+  patchResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
@@ -44,10 +44,10 @@ try {
   assert.ok(createdDetail, 'PG detail 应返回刚创建的管理端响应检查策略')
   assert.deepEqual(createdDetail.match, { errorCodes: [`${marker}_protocol_error`] }, 'PG detail 必须保留完整 matcher')
   assert.equal(createdDetail.notes, 'response inspection policy postgres smoke', 'PG detail 必须保留备注')
-  assert.equal(typeof createdDetail.createdAt, 'string', 'PG detail 必须保留 createdAt')
+  assert.equal(typeof createdDetail.updatedAt, 'string', 'PG detail 必须携带 CAS 版本')
 
   const defaultDetail = await getResponseInspectionPolicyDetailAsync(listed.defaultRules[0]?.id ?? '')
-  assert.ok(defaultDetail?.defaultRule, 'PG detail 必须支持系统默认规则')
+  assert.ok(defaultDetail, 'PG detail 必须支持系统默认规则')
   assert(defaultDetail.match && Object.keys(defaultDetail.match).length > 0, 'PG 默认规则 detail 必须包含 matcher')
 
   const providerOptions = await listResponseInspectionPolicyProviderOptionsAsync()
@@ -62,22 +62,28 @@ try {
   })
   assert.ok(activeProtocolPolicies.some((policy) => policy.id === created.id), 'PG 网关 active 查询应返回启用的 protocol 策略')
 
-  const providerScoped = await updateResponseInspectionPolicyAsync(created.id, {
+  const providerOutcome = await patchResponseInspectionPolicyAsync(created.id, {
     name: `响应检查策略 PG smoke provider ${marker}`,
-    enabled: true,
     priority: 778,
     scopeType: 'provider',
-    protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,
     match: {
       errorMessageIncludes: [`${marker} provider updated`]
     },
     action: 'retry_no_avoidance',
     notes: null
-  })
-  assert.ok(providerScoped, 'PG update 应返回更新后的响应检查策略')
+  }, createdDetail.updatedAt as string)
+  assert.equal(providerOutcome.status, 'updated', 'PG PATCH 应返回更新结果')
+  assert(providerOutcome.status === 'updated')
+  const providerScoped = providerOutcome.policy
   assert.equal(providerScoped.providerCode, GPT_VENDOR_CODE, 'PG provider scoped 更新应保留供应商编码')
   assert.equal(providerScoped.notes, undefined, 'PG update 应支持清空备注')
+
+  const noop = await patchResponseInspectionPolicyAsync(created.id, { priority: 778 }, providerScoped.updatedAt as string)
+  assert.equal(noop.status, 'noop', 'PG 同值 PATCH 必须零写')
+  assert(noop.status === 'noop')
+  assert.equal(noop.policy.updatedAt, providerScoped.updatedAt, 'PG no-op 不得推进版本')
+  assert.equal((await patchResponseInspectionPolicyAsync(created.id, { enabled: false }, createdDetail.updatedAt as string)).status, 'conflict', 'PG 旧版本 PATCH 必须冲突')
 
   const activeProviderPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
     protocolCode: OPENAI_PROTOCOL_CODE,
@@ -90,18 +96,10 @@ try {
   })
   assert.equal(activeProtocolAfterProviderUpdate.some((policy) => policy.id === created.id), false, 'PG provider scoped 策略不应泄漏到纯 protocol active 查询')
 
-  const disabled = await updateResponseInspectionPolicyAsync(created.id, {
-    name: providerScoped.name,
-    enabled: false,
-    priority: providerScoped.priority,
-    scopeType: 'provider',
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    providerCode: GPT_VENDOR_CODE,
-    match: providerScoped.match,
-    action: providerScoped.action
-  })
-  assert.ok(disabled, 'PG disable update 应返回更新后的响应检查策略')
-  assert.equal(disabled.enabled, false, 'PG disable update 应写回 enabled=false')
+  const disabledOutcome = await patchResponseInspectionPolicyAsync(created.id, { enabled: false }, providerScoped.updatedAt as string)
+  assert.equal(disabledOutcome.status, 'updated', 'PG disable PATCH 应返回更新结果')
+  assert(disabledOutcome.status === 'updated')
+  assert.equal(disabledOutcome.policy.enabled, false, 'PG disable update 应写回 enabled=false')
 
   const activeAfterDisable = await listActiveResponseInspectionPoliciesForGatewayAsync({
     protocolCode: OPENAI_PROTOCOL_CODE,

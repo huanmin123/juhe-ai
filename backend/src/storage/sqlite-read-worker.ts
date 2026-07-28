@@ -203,7 +203,7 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
     case 'list_account_items_page_read_only':
       return listAccountItemsPageReadOnly(operation.access, operation.options)
     case 'list_account_management_items_page_read_only':
-      return listAccountManagementItemsPageReadOnly(operation.access, operation.options)
+      return listAccountManagementItemsPageReadOnly(operation.access, operation.options, operation.candidateLimit)
     case 'list_account_status_snapshots_read_only':
       return listAccountStatusProjectionsReadOnly(operation.access, operation.accountIds)
     case 'find_account_summary_read_only':

@@ -44,7 +44,7 @@
             max-tag-count="responsive"
             placeholder="输入账户名称添加账户"
             @change="handleAddedTrendAccountsChange"
-            @dropdown-visible-change="handleProviderAwareAccountOptionsDropdown"
+            @dropdown-visible-change="handleAccountOptionsDropdown"
             @search="handleAccountOptionsSearch"
           />
         </div>
@@ -135,11 +135,10 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
-import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountUsageStatsListResult, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageStatsListResult, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -182,9 +181,6 @@ const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow }
 const overview = ref<AccountUsageStatsListResult>()
 const rangeSummary = ref<AccountUsageSummary>()
 const rangeSummaryLoading = ref(false)
-const providers = ref<ProviderDefinition[]>([])
-const usageStatsOptionsLoaded = ref(false)
-const usageStatsOptionsScopeKey = ref('')
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
@@ -305,8 +301,7 @@ const {
   accountOptionsKeyword,
   clearAccountOptionsSearchTimer,
   handleAccountOptionsDropdown,
-  handleAccountOptionsSearch,
-  loadAccountOptions
+  handleAccountOptionsSearch
 } = useUsageStatsAccountOptions({
   isManagementView: () => isManagementView.value,
   systemAccountId: () => scopedSystemAccountId(filters.systemAccountId),
@@ -314,8 +309,8 @@ const {
   pageActive
 })
 
-const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const rows = computed(() => orderedUsageRows(accountUsageRows.value))
+const providerNamesByCode = computed(() => new Map(accountOptionRows.value.map((account) => [account.providerCode, account.providerName])))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizeUsageStatsDateRange(dateRange.value))
@@ -362,33 +357,6 @@ const summaryCards = computed(() => {
     summary: displaySummary.value
   })
 })
-
-async function loadUsageStatsOptions(force = false): Promise<void> {
-  const scopeKey = isManagementView.value ? 'management' : 'self'
-  if (force) {
-    resetSystemAccountOptionsSearch()
-  }
-  if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
-    return
-  }
-  const providerList = await loadProviderOptionsResource({
-    apply: (nextProviders) => {
-      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-    },
-    force,
-    isManagementView: isManagementView.value
-  })
-  providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
-  usageStatsOptionsLoaded.value = true
-  usageStatsOptionsScopeKey.value = scopeKey
-}
-
-function handleProviderAwareAccountOptionsDropdown(open: boolean): void {
-  handleAccountOptionsDropdown(open)
-  if (open) {
-    void loadUsageStatsOptions()
-  }
-}
 
 function refreshUsageStats() {
   resetAccountUsagePagination()
@@ -555,13 +523,11 @@ function toggleTrendAccount(id: string) {
 function handleAddedTrendAccountsChange(value: string[], previousValue: string[]) {
   accountOptionsKeyword.value = ''
   updateAddedTrendAccounts(value, previousValue)
-  void loadAccountOptions()
   void loadData({ quiet: true })
 }
 
 function removeAddedTrendAccount(id: string) {
   if (!removeAddedTrendAccountSelection(id)) return
-  void loadAccountOptions()
   void loadData({ quiet: true })
   renderChart()
 }
@@ -578,7 +544,10 @@ function disabledDate(current: Dayjs) {
 }
 
 function providerName(providerCode?: string) {
-  return providerDisplayName(providerCode, availableProviders.value)
+  const normalizedCode = providerCode?.trim()
+  return normalizedCode
+    ? providerNamesByCode.value.get(normalizedCode) ?? providerDisplayName(normalizedCode, FALLBACK_PROVIDERS)
+    : providerDisplayName(providerCode, FALLBACK_PROVIDERS)
 }
 
 async function renderUsageTrendChart() {

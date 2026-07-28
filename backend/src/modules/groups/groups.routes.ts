@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, listRouteStrategyGroupOptionsAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, GroupPatchConflictError, createGroupAsync, deleteGroupAsync, findGroupEditDetailAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listGroupSelectOptionsAsync, listProvidersAsync, listRouteStrategyGroupOptionsAsync, patchGroupAsync, returnGroupAuthorizationForGranteeAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -26,7 +26,9 @@ const groupSchema = z.object({
     imageLaneMaxConcurrency: z.number().int().min(0).max(1_000_000).optional()
   }).strict().optional()
 }).strict()
-const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(value).length > 0, {
+const groupPatchSchema = groupSchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime({ message: '分组版本格式不正确' })
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的分组内容'
 })
 
@@ -281,10 +283,14 @@ groupsRouter.patch('/:id', async (req, res, next) => {
         } : undefined
       }
     }, req)
-    res.json(ok({ id: mutation.id, changedFields: mutation.changedFields }))
+    res.json(ok({ id: mutation.id, changedFields: mutation.changedFields, updatedAt: mutation.updatedAt }))
   } catch (error) {
     if (error instanceof DefaultGroupReadonlyError) {
       res.status(400).json(badRequest(error.message))
+      return
+    }
+    if (error instanceof GroupPatchConflictError) {
+      res.status(409).json(badRequest(error.message))
       return
     }
     if (error instanceof Error && error.message === '分组不存在') {

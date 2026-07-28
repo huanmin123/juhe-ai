@@ -5,14 +5,19 @@ import {
   deleteCustomProviderModelAsync,
   findCustomProviderModelById,
   findCustomProviderModelByIdAsync,
+  findCustomProviderModelPatchStateAsync,
   findCustomProviderModelTestCatalogAsync,
   listCustomProviderModelsForCatalog,
   listCustomProviderModelsForCatalogAsync,
   listCustomProviderModelTestCatalogAsync,
+  patchCustomProviderModelAsync,
   upsertCustomProviderModel,
   upsertCustomProviderModelAsync,
   type CustomProviderModelAccountBindingSummary,
   type CustomProviderModelRecord,
+  type CustomProviderModelPatchField,
+  type CustomProviderModelPatchState,
+  type CustomProviderModelPatchOutcome,
   type CustomProviderModelTestCatalogRecord,
   type CustomProviderModelScope,
   type CustomProviderModelStatus,
@@ -327,7 +332,9 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
   }
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
-  const builtIn = listBuiltInProviderModels(builtInSourceProviderCodes).map(toBuiltInCatalogItem)
+  const builtIn = listBuiltInProviderModels(builtInSourceProviderCodes, {
+    includeInactive: options.includeInactive
+  }).map(toBuiltInCatalogItem)
   const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
       providerCode,
       systemAccountId: options.systemAccountId,
@@ -346,7 +353,9 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
 async function buildProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
   const sourceProviderCodes = await modelCatalogSourceProviderCodesAsync(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
-  const builtIn = (await listBuiltInProviderModelsAsync(builtInSourceProviderCodes)).map(toBuiltInCatalogItem)
+  const builtIn = (await listBuiltInProviderModelsAsync(builtInSourceProviderCodes, {
+    includeInactive: options.includeInactive
+  })).map(toBuiltInCatalogItem)
   const customCatalogs = await Promise.all(sourceProviderCodes.map((providerCode) => listCustomProviderModelsForCatalogAsync({
     providerCode,
     systemAccountId: options.systemAccountId,
@@ -399,6 +408,24 @@ export function findCustomProviderModel(id: string): CustomProviderModelRecord |
 
 export async function findCustomProviderModelAsync(id: string): Promise<CustomProviderModelRecord | undefined> {
   return findCustomProviderModelByIdAsync(id)
+}
+
+export async function findCustomProviderModelPatchState(
+  id: string,
+  submitted: Record<string, unknown>
+): Promise<CustomProviderModelPatchState | undefined> {
+  return findCustomProviderModelPatchStateAsync(id, submitted)
+}
+
+export type ProviderModelPatchField = CustomProviderModelPatchField
+
+export async function patchCustomProviderModelConfigurationAsync(input: {
+  current: CustomProviderModelPatchState
+  next: UpsertCustomProviderModelInput
+  fields: ProviderModelPatchField[]
+  expectedUpdatedAt: string
+}): Promise<CustomProviderModelPatchOutcome> {
+  return patchCustomProviderModelAsync(input)
 }
 
 export function removeCustomProviderModel(id: string): boolean {

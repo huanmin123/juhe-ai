@@ -1,9 +1,12 @@
 import type { AccountType } from '../../domain/types.js'
 import {
   listProviderModelCatalog,
-  listProviderModelCatalogAsync,
-  type ProviderModelCatalogItem
+  listProviderModelCatalogAsync
 } from '../model-pricing/model-catalog.service.js'
+import type {
+  AccountModelValidationContext,
+  AccountModelValidationFact
+} from '../../storage/account-model-validation.repository.js'
 import {
   readGptAccountRequestOverrides,
   type GptAccountRequestOverrides
@@ -39,14 +42,19 @@ export async function assertAccountGptRequestOverridesSupportedAsync(input: {
   credentials: Record<string, unknown> | undefined
   supportedModels: readonly string[]
   systemAccountId?: string
+  validationContext?: AccountModelValidationContext
 }): Promise<void> {
   const overrides = readGptAccountRequestOverrides(input.credentials)
   if (!overrides.serviceTier && !overrides.reasoningEffort) return
-  const catalog = await listProviderModelCatalogAsync({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    includeUnpriced: true
-  })
+  const catalog = input.validationContext
+    ? uniqueTextList(input.supportedModels)
+        .map((model) => input.validationContext?.accountModel(model))
+        .filter((item): item is AccountModelValidationFact => item !== undefined)
+    : await listProviderModelCatalogAsync({
+        providerCode: input.providerCode,
+        systemAccountId: input.systemAccountId,
+        includeUnpriced: true
+      })
   assertAccountGptRequestOverridesSupportedByCatalog({
     providerCode: input.providerCode,
     accountType: input.accountType,
@@ -57,12 +65,19 @@ export async function assertAccountGptRequestOverridesSupportedAsync(input: {
   })
 }
 
+export function accountGptRequestOverridesNeedModelCatalog(
+  credentials: Record<string, unknown> | undefined
+): boolean {
+  const overrides = readGptAccountRequestOverrides(credentials)
+  return Boolean(overrides.serviceTier || overrides.reasoningEffort)
+}
+
 export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
   providerCode?: string
   accountType: AccountType
   overrides: GptAccountRequestOverrides
   supportedModels: readonly string[]
-  catalog: readonly ProviderModelCatalogItem[]
+  catalog: readonly GptAccountOverrideModelFact[]
   supportedEndpointModes?: readonly string[]
 }): void {
   assertProviderSupportsAccountRequestOverrides(input.providerCode ?? 'gpt', input.overrides)
@@ -77,7 +92,7 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
   const catalogByModel = new Map(input.catalog.map((item) => [item.model.trim(), item]))
   const modelItems = supportedModels
     .map((model) => catalogByModel.get(model))
-    .filter((item): item is ProviderModelCatalogItem => item !== undefined)
+    .filter((item): item is GptAccountOverrideModelFact => item !== undefined)
 
   if (input.overrides.serviceTier) {
     const requiredTier = input.overrides.serviceTier === 'default'
@@ -98,6 +113,12 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
       throw new Error(`所选支持模型中没有模型支持思考级别 ${input.overrides.reasoningEffort}`)
     }
   }
+}
+
+interface GptAccountOverrideModelFact {
+  model: string
+  supportedServiceTiers: readonly string[]
+  supportedReasoningEfforts: readonly string[]
 }
 
 function endpointModesFromCredentials(credentials: Record<string, unknown> | undefined): string[] | undefined {

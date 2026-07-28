@@ -163,7 +163,11 @@ import {
   listOpenAIProtocolProfileIds,
   listOpenAIProtocolProfileIdsAsync
 } from './provider.repository.js'
-import { requireEnabledProviderProtocolProfile, requireEnabledProviderProtocolProfileAsync } from './provider.repository.js'
+import {
+  requireEnabledProviderProtocolProfile,
+  requireEnabledProviderProtocolProfileInClientAsync
+} from './provider.repository.js'
+import { loadAccountModelValidationContextAsync } from './account-model-validation.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ProxyProfileUnavailableError, resolveEnabledProxyProfileId, resolveProxyUrlsForProfilesAsync } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -193,6 +197,7 @@ export {
   createResourceAuthorization,
   createResourceAuthorizationAsync,
   expireDueResourceAuthorizationsAsync,
+  patchResourceAuthorizationAsync,
   revokeResourceAuthorization,
   revokeResourceAuthorizationAsync,
   updateResourceAuthorizationAsync,
@@ -412,6 +417,7 @@ export { normalizeAccountCredentialsForWrite } from './account-credentials-norma
 
 export {
   DefaultGroupReadonlyError,
+  GroupPatchConflictError,
   createGroup,
   createGroupAsync,
   createGroupInClientAsync,
@@ -574,7 +580,8 @@ export {
   type RouteStrategyListOptions,
   type RouteStrategyOptionListOptions,
   type RouteStrategyPatchOutcome,
-  type RouteStrategyPatchResult
+  type RouteStrategyPatchResult,
+  RouteStrategyVersionConflictError
 } from './route-strategy.repository.js'
 export {
   findPreferredDefaultRouteStrategyReferenceAsync,
@@ -2108,7 +2115,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const now = new Date(nowMs).toISOString()
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
-  const providerProfile = await requireEnabledProviderProtocolProfileAsync(providerCode, input.providerProtocolProfileId)
+  const providerProfile = await requireEnabledProviderProtocolProfileInClientAsync(client, providerCode, input.providerProtocolProfileId)
   const explicitGroupId = hasOwnInput(input, 'groupId') ? normalizeNullableIdInput(input.groupId, '账户分组') : undefined
   const explicitGroup = explicitGroupId ? await groupOwnerAndProviderForAccountWriteAsync(client, explicitGroupId) : undefined
   const requestedSystemAccountId = writeSystemAccountId(access)
@@ -2144,15 +2151,25 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
     : []
+  const requestedSupportedModels = normalizeAccountSupportedModelsInput(supportedModelsInput) ?? []
+  const requestedModelMappings = normalizeAccountModelMappingsInput(input.modelMappings) ?? []
+  const modelValidationContext = await loadAccountModelValidationContextAsync(client, {
+    providerCode,
+    systemAccountId,
+    models: isHybridProviderCode(providerCode) ? [] : requestedSupportedModels,
+    mappings: requestedModelMappings
+  })
   const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
     supportedModelsInput,
     providerCode,
     systemAccountId,
     providerProfile,
-    !hasOwnInput(input, 'supportedModels')
+    !hasOwnInput(input, 'supportedModels'),
+    modelValidationContext
   ) ?? []
   const modelMappings = await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, providerCode, systemAccountId, providerProfile, {
-    supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+    supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[],
+    validationContext: modelValidationContext
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)

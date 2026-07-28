@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
@@ -137,9 +138,10 @@ try {
       }
     }
   }, access)
-  assert.equal(firstResult.accounts.length, 2, '正常批量编辑应返回全部账户')
-  for (const account of firstResult.accounts) {
-    assert.equal(account.configRevision, 2, '成功批量编辑应把 config_revision 加 1')
+  assert.equal(firstResult.items.length, 2, '正常批量编辑应返回全部账户的最小结果')
+  for (const item of firstResult.items) {
+    const account = requiredAccount(item.id)
+    assert.equal(item.configRevision, 2, '成功批量编辑应把 config_revision 加 1')
     assert.equal(account.concurrencyLimit, 7, '并发限制应直接覆盖')
     assert.equal(account.priority, 9, '优先级应直接覆盖')
     assert.equal(account.notes, '批量覆盖备注', '备注应直接覆盖')
@@ -207,8 +209,9 @@ try {
       healthCheckModel: { enabled: true, value: 'gpt-5.6-sol' }
     }
   }, access)
-  for (const account of connectionResult.accounts) {
-    assert.equal(account.configRevision, 3, '模型配置成功覆盖应增加版本')
+  for (const item of connectionResult.items) {
+    const account = requiredAccount(item.id)
+    assert.equal(item.configRevision, 3, '模型配置成功覆盖应增加版本')
     assert.equal(account.status, 'active', '支持模型和检查模型变化不应改变账户状态')
     assert.equal(account.schedulable, true, '支持模型和检查模型变化不应停止正常调度')
     assert.deepEqual(account.supportedModels?.sort(), ['gpt-5.5', 'gpt-5.6-sol'], '支持模型应直接覆盖')
@@ -240,8 +243,9 @@ try {
       reasoningEffortOverride: { enabled: true, value: 'high' }
     }
   }, access)
-  for (const account of overrideResult.accounts) {
-    assert.equal(account.configRevision, 4, 'GPT 覆盖成功后应增加配置版本')
+  for (const item of overrideResult.items) {
+    const account = requiredAccount(item.id)
+    assert.equal(item.configRevision, 4, 'GPT 覆盖成功后应增加配置版本')
     assert.equal(account.status, 'active', 'GPT 请求覆盖变化不应改变账户状态')
     assert.equal(account.schedulable, true, 'GPT 请求覆盖变化不应停止账户调度')
     const stored = repositories.findAccountForTest(account.id, access)
@@ -255,8 +259,8 @@ try {
       supportedModels: { enabled: true, value: ['gpt-5.6-sol', 'gpt-5.5'] }
     }
   }, access)
-  for (const account of expandedModelsResult.accounts) {
-    assert.equal(account.configRevision, 5, '增加低能力模型时应保留由其他模型支持的期望覆盖')
+  for (const item of expandedModelsResult.items) {
+    assert.equal(item.configRevision, 5, '增加低能力模型时应保留由其他模型支持的期望覆盖')
   }
 
   const clearedOverrideResult = await batchEditAccountsAsync({
@@ -267,9 +271,9 @@ try {
       reasoningEffortOverride: { enabled: true, value: '' }
     }
   }, access)
-  for (const account of clearedOverrideResult.accounts) {
-    assert.equal(account.configRevision, 6, '清除 GPT 覆盖后应增加配置版本')
-    const stored = repositories.findAccountForTest(account.id, access)
+  for (const item of clearedOverrideResult.items) {
+    assert.equal(item.configRevision, 6, '清除 GPT 覆盖后应增加配置版本')
+    const stored = repositories.findAccountForTest(item.id, access)
     assert.equal(stored?.credentials.service_tier_override, undefined, 'null 应清除服务等级覆盖')
     assert.equal(stored?.credentials.reasoning_effort_override, undefined, '空字符串应清除思考级别覆盖')
   }
@@ -369,9 +373,10 @@ try {
     UPDATE accounts
     SET balance_query_enabled = 1,
         balance_query_config_json = ?,
-        balance_query_next_refresh_at = ?
+        balance_query_next_refresh_at = ?,
+        account_expires_at = ?
     WHERE id IN (?, ?)
-  `).run('{}', new Date().toISOString(), multiA.id, multiB.id)
+  `).run('{}', new Date().toISOString(), '2020-01-01T00:00:00.000Z', multiA.id, multiB.id)
   for (const account of [multiA, multiB]) {
     balanceRepository.replaceAccountBalanceSnapshot({
       accountId: account.id,
@@ -379,22 +384,63 @@ try {
       snapshot: { status: 'fresh', remainingUsd: '3.210000' }
     })
   }
-  await batchEditAccountsAsync({
+  const beforeNotesRows = accountDatabaseRows([multiA.id, multiB.id])
+  const beforeNotesRelations = accountRelationSnapshot([multiA.id, multiB.id])
+  const notesResult = await batchEditAccountsAsync({
     targets: targets(requiredAccount(multiA.id), requiredAccount(multiB.id)),
     updates: { notes: { enabled: true, value: '多 Key 批量保存' } }
   }, access)
+  assert.deepEqual(notesResult.changedFields, ['notes'], '备注批量响应只应声明真实变化字段')
+  assert.deepEqual(
+    Object.keys(notesResult).sort(),
+    ['batchId', 'changedFields', 'items', 'ownerSystemAccountId'],
+    '服务层批量结果只能包含窄响应和操作日志所需 owner'
+  )
+  assert(notesResult.items.every((item) => (
+    Object.keys(item).sort().join(',') === 'changedFields,configRevision,id'
+    && item.changedFields.length === 1
+    && item.changedFields[0] === 'notes'
+  )), '逐账户批量结果只能返回 id、revision 和真实变化字段')
+  const afterNotesRows = accountDatabaseRows([multiA.id, multiB.id])
+  for (let index = 0; index < beforeNotesRows.length; index += 1) {
+    const changed = changedRecordKeys(beforeNotesRows[index] ?? {}, afterNotesRows[index] ?? {})
+    assert(changed.includes('notes'), '备注批量更新必须写入 notes')
+    assert(changed.includes('config_revision'), '备注批量更新必须推进 revision')
+    assert(changed.every((key) => ['notes', 'config_revision', 'updated_at'].includes(key)), '备注批量更新不得覆盖其他账户列')
+    assert.equal(afterNotesRows[index]?.status, 'active', '已过期账户修改无关备注不得隐式停用')
+    assert.equal(afterNotesRows[index]?.schedulable, 1, '已过期账户修改无关备注不得隐式改变调度态')
+    assert.equal(afterNotesRows[index]?.last_error_code, null, '已过期账户修改无关备注不得写入过期错误')
+  }
+  assert.deepEqual(accountRelationSnapshot([multiA.id, multiB.id]), beforeNotesRelations, '只改备注不得读取后再覆盖模型、映射或标签关系')
   const multiRows = databaseModule.getBusinessDatabase().prepare(`
     SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
     FROM accounts WHERE id IN (?, ?)
   `).all(multiA.id, multiB.id) as Array<Record<string, unknown>>
   assert.equal(multiRows.length, 2)
   for (const row of multiRows) {
-    assert.equal(row.balance_query_enabled, 0, '批量编辑入口必须中央关闭多 Key 账户余额')
-    assert.equal(row.balance_query_next_refresh_at, null, '批量编辑关闭余额必须在同一事务清空调度')
-    assert.deepEqual(JSON.parse(String(row.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '批量编辑必须为旧空配置写入已配置关闭标记')
+    assert.equal(row.balance_query_enabled, 1, '只改备注不得隐式关闭多 Key 账户余额')
+    assert.notEqual(row.balance_query_next_refresh_at, null, '只改备注不得清空余额刷新调度')
+    assert.deepEqual(JSON.parse(String(row.balance_query_config_json)), {}, '只改备注不得覆盖余额查询配置')
   }
-  await waitFor(() => balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size === 0)
-  assert.equal(balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size, 0, '批量事务提交后登记的有界后台任务必须最终幂等清理旧余额快照')
+  assert.equal(balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size, 2, '只改备注不得清理余额快照')
+
+  const beforeNoopRows = accountDatabaseRows([multiA.id, multiB.id])
+  const noopNotesResult = await batchEditAccountsAsync({
+    targets: targets(requiredAccount(multiA.id), requiredAccount(multiB.id)),
+    updates: { notes: { enabled: true, value: '多 Key 批量保存' } }
+  }, access)
+  assert.deepEqual(noopNotesResult.changedFields, [], '同值备注批量更新应返回空变化字段')
+  assert(noopNotesResult.items.every((item) => item.changedFields.length === 0 && item.configRevision === 2), '同值备注不得推进逐账户 revision')
+  assert.deepEqual(accountDatabaseRows([multiA.id, multiB.id]), beforeNoopRows, '同值备注必须零账户 DML')
+
+  const beforeNoopRelations = accountRelationSnapshot([multiA.id, multiB.id])
+  const noopTagsResult = await batchEditAccountsAsync({
+    targets: targets(requiredAccount(multiA.id), requiredAccount(multiB.id)),
+    updates: { tags: { enabled: true, value: [] } }
+  }, access)
+  assert.deepEqual(noopTagsResult.changedFields, [], '同值空标签批量更新应返回空变化字段')
+  assert.deepEqual(accountDatabaseRows([multiA.id, multiB.id]), beforeNoopRows, '同值标签必须零账户 DML')
+  assert.deepEqual(accountRelationSnapshot([multiA.id, multiB.id]), beforeNoopRelations, '同值标签必须零关系表 DML')
 
   await assertBatchModelMappingTargetCapabilities(group.id)
 
@@ -419,8 +465,15 @@ function assertRouteAndSchemaBoundary(): void {
   assert(systemApiSource.includes("app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)"), '批量编辑路由必须服务个人账户作用域')
   assert(systemApiSource.includes("app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)"), '批量编辑路由必须服务管理账户作用域')
   assert(repositorySource.includes("client.driver === 'postgres' ? ' FOR UPDATE' : ''"), 'PostgreSQL 批量编辑必须锁定目标账户')
-  assert(repositorySource.includes('config_revision = config_revision + 1'), '批量编辑成功后必须递增配置版本')
-  assert(repositorySource.includes('balance_query_enabled = CASE WHEN ? = 1 THEN 0'), 'SQLite/PostgreSQL 批量编辑 SQL 必须统一关闭多 Key 余额')
+  assert(repositorySource.includes("assignments.push(`${client.dialect.quoteIdentifier('config_revision')} = ${client.dialect.quoteIdentifier('config_revision')} + 1`)"), '批量编辑真实变化后必须递增配置版本')
+  assert(repositorySource.includes("ownerScopeClause") && repositorySource.includes("system_account_id')} = ?"), '普通用户 owner 条件必须进入锁行 SQL')
+  assert(repositorySource.includes('accountBatchProjection(requestedFields)'), '批量锁行必须按请求字段生成读取投影')
+  assert(repositorySource.includes("if (fields.has('tags'))"), '标签关系必须只在请求标签字段时读取')
+  assert(repositorySource.includes("fields.has('modelMappings') || fields.has('supportedModels') || fields.has('supportedEndpointModes')"), '模型映射关系必须按模型相关字段读取')
+  assert(!repositorySource.includes('balance_query_enabled = CASE WHEN ? = 1 THEN 0'), '无关批量修改不得隐式关闭多 Key 余额')
+  assert(!batchRouteSource.includes('sanitizeAccountResponse'), '批量保存响应不得重新物化完整账户摘要')
+  assert(!batchRouteSource.includes('result.accounts'), '批量保存响应和操作日志不得依赖完整账户数组')
+  assert(batchRouteSource.includes('log: result.changedFields.length > 0 ?'), '整批 no-op 不得写入操作日志')
   assert(!repositorySource.includes('updateAccountAsync('), '批量编辑 repository 不能循环调用单账户更新')
   assert.match(
     buildPostgresSchemaSql(),
@@ -488,12 +541,34 @@ function targets(...accounts: Array<{ id: string; configRevision?: number }>) {
   }))
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('等待批量余额快照后台清理超时')
-    await new Promise((resolve) => setTimeout(resolve, 5))
+function accountDatabaseRows(accountIds: string[]): Array<Record<string, unknown>> {
+  const placeholders = accountIds.map(() => '?').join(', ')
+  return databaseModule.getBusinessDatabase()
+    .prepare(`SELECT * FROM accounts WHERE id IN (${placeholders}) ORDER BY id ASC`)
+    .all(...accountIds) as Array<Record<string, unknown>>
+}
+
+function accountRelationSnapshot(accountIds: string[]): Record<string, unknown[]> {
+  const placeholders = accountIds.map(() => '?').join(', ')
+  const database = databaseModule.getBusinessDatabase()
+  return {
+    supportedModels: database.prepare(`
+      SELECT * FROM account_supported_models WHERE account_id IN (${placeholders}) ORDER BY account_id, model
+    `).all(...accountIds) as unknown[],
+    modelMappings: database.prepare(`
+      SELECT * FROM account_model_mappings WHERE account_id IN (${placeholders})
+      ORDER BY account_id, source_model, source_endpoint_family
+    `).all(...accountIds) as unknown[],
+    tags: database.prepare(`
+      SELECT * FROM account_tag_bindings WHERE account_id IN (${placeholders}) ORDER BY account_id, tag_id
+    `).all(...accountIds) as unknown[]
   }
+}
+
+function changedRecordKeys(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter((key) => !isDeepStrictEqual(before[key], after[key]))
+    .sort()
 }
 
 function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: string): void {
@@ -554,8 +629,9 @@ async function assertBatchModelMappingTargetCapabilities(groupId: string): Promi
       modelMappings: { enabled: true, value: [disabledMapping] }
     }
   }, access)
-  assert.equal(accepted.accounts.length, 2, '批量后端应允许目标族能力缺失的停用映射')
-  for (const account of accepted.accounts) {
+  assert.equal(accepted.items.length, 2, '批量后端应允许目标族能力缺失的停用映射')
+  for (const item of accepted.items) {
+    const account = requiredAccount(item.id)
     assert.deepEqual(account.modelMappings, [disabledMapping], '批量后端应原样保留停用映射')
   }
 }

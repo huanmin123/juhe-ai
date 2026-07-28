@@ -240,8 +240,9 @@ function assertSourceBoundaries(): void {
   assertIncludes(authorizationActionsSource, 'await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))', '管理侧授权回收必须带资源 owner 作用域')
   assertIncludes(authorizationActionsSource, 'await api.myAuthorizations.returnAuthorization(item.id)', '个人侧授权归还必须走 my-authorizations return')
   assertIncludes(authorizationActionsSource, 'await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))', '管理侧授权状态更新必须带资源 owner 作用域')
-  assertIncludes(authorizationActionsSource, 'const resourceOwnerSystemAccountId = item.resourceOwnerSystemAccountId', '管理侧打开有效期弹窗必须在异步请求前固定资源 owner')
-  assertIncludes(authorizationActionsSource, 'await api.authorizations.detail(item.id, resourceOwnerSystemAccountId ? { systemAccountId: resourceOwnerSystemAccountId } : undefined)', '管理侧打开有效期弹窗必须按 grant ID 与点击瞬间的 owner 读取详情')
+  assertIncludes(authorizationActionsSource, 'authorizationExpireFormFromSummary(item)', '打开有效期弹窗必须直接复用授权列表行')
+  assertNotIncludes(authorizationActionsSource, 'api.authorizations.detail(item.id', '打开有效期弹窗不得额外读取完整授权详情')
+  assertIncludes(authorizationActionsSource, 'expectedUpdatedAt: authorization.updatedAt', '管理侧有效期更新必须提交列表行 CAS 版本')
   assertIncludes(authorizationActionsSource, 'await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))', '管理侧有效期更新必须走专用 expire 路径并带 owner 作用域')
   assertIncludes(authorizationActionsSource, 'return { systemAccountId: item.resourceOwnerSystemAccountId }', '授权操作作用域必须来自资源归属系统账户')
 

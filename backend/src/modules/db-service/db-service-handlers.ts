@@ -138,7 +138,8 @@ import {
   completeModelQualityRecoveryAsync,
   deleteModelQualityScheduleAsync,
   saveModelQualityPolicyAsync,
-  upsertModelQualityScheduleAsync
+  patchModelQualityScheduleAsync,
+  createModelQualityScheduleAsync
 } from '../../storage/model-quality.repository.js'
 import {
   listActiveClientIpPolicies,
@@ -1191,7 +1192,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'model_quality_command': {
       const command = operation.command
       if (command.kind === 'save_policy') return { kind: 'policy', policy: await saveModelQualityPolicyAsync(command.systemAccountId, command.input) }
-      if (command.kind === 'upsert_schedule') return { kind: 'schedule', schedule: await upsertModelQualityScheduleAsync(command.systemAccountId, command.input) }
+      if (command.kind === 'create_schedule') return { kind: 'schedule', schedule: await createModelQualityScheduleAsync(command.systemAccountId, command.input) }
+      if (command.kind === 'patch_schedule') return { kind: 'schedule', schedule: await patchModelQualityScheduleAsync(command.systemAccountId, command.scheduleId, command.input) }
       if (command.kind === 'delete_schedule') return { kind: 'deleted', deleted: await deleteModelQualityScheduleAsync(command.systemAccountId, command.scheduleId) }
       if (command.kind === 'apply_enforcement') return { kind: 'enforcement', enforcement: await applyModelQualityEnforcementAsync(command.input) }
       if (command.kind === 'claim_due_schedules') return { kind: 'claimed', candidates: await claimDueModelQualitySchedulesAsync(command.ownerId, command) }

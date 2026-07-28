@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gateway-cache-invalidation.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
@@ -12,6 +13,7 @@ import {
   listCompleteRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
   patchRouteStrategyAsync,
+  RouteStrategyVersionConflictError,
   type RouteStrategyListOptions
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -123,7 +125,9 @@ const routeStrategyCreateSchema = routeStrategyMutationSchema.refine((value) => 
   message: '策略路由至少需要绑定一个分组'
 })
 
-const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().refine((value) => Object.keys(value).length > 0, {
+const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().extend({
+  expectedUpdatedAt: z.string().datetime({ message: '策略路由配置版本格式不正确' })
+}).refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
   message: '请提供要修改的策略路由内容'
 })
 
@@ -284,6 +288,17 @@ routeStrategiesRouter.patch('/:id', async (req, res) => {
     }
     res.json(ok(routeStrategy))
   } catch (error) {
+    if (error instanceof GatewayApiKeyValidationCacheInvalidationError) {
+      res.status(500).json({ message: '策略路由已更新，但 API Key validation cache 失效失败' })
+      return
+    }
+    if (error instanceof RouteStrategyVersionConflictError) {
+      res.status(409).json({
+        message: error.message,
+        currentUpdatedAt: error.currentUpdatedAt
+      })
+      return
+    }
     if (error instanceof Error && error.message === '策略路由不存在') {
       res.status(404).json({ message: '策略路由不存在' })
       return

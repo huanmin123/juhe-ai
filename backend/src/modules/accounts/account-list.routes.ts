@@ -5,6 +5,7 @@ import { listAccountManagementItemsPageAsync, type AccountManagementListResult }
 import { listAccountOptionsAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import {
+  AccountRuntimeStatusFilterScanLimitError,
   accountListNeedsRuntimeStatusFilter,
   listAccountsPageWithRuntimeStatusFilter
 } from './account-list-runtime-status-filter.js'
@@ -41,6 +42,10 @@ export function registerAccountListRoutes(router: Router): void {
       ].join(', '))
       res.json(ok(completePage))
     } catch (error) {
+      if (error instanceof AccountRuntimeStatusFilterScanLimitError) {
+        res.status(422).json({ message: error.message })
+        return
+      }
       next(error)
     }
   })

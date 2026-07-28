@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { normalizeUserRequestLimitExpiresOn } from '../../domain/user-request-limits.js'
 import { badRequest, ok } from '../../shared/http.js'
+import { GatewayApiKeyValidationCacheInvalidationError } from '../../shared/gateway-cache-invalidation.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin, requireSuperAdmin } from '../auth/auth.middleware.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
@@ -196,6 +197,10 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
     }, req)
     res.json(ok(account))
   } catch (error) {
+    if (error instanceof GatewayApiKeyValidationCacheInvalidationError) {
+      res.status(500).json({ message: '系统账户已更新，但 API Key validation cache 失效失败' })
+      return
+    }
     if (error instanceof Error && error.message === '系统账户不存在') {
       res.status(404).json({ message: '系统账户不存在' })
       return

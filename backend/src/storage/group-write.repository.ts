@@ -76,6 +76,7 @@ const groupCreateInputKeys = new Set([
 ])
 
 const groupUpdateInputKeys = new Set([
+  'expectedUpdatedAt',
   'name',
   'providerCode',
   'description',
@@ -85,6 +86,7 @@ const groupUpdateInputKeys = new Set([
 ])
 
 const authorizedGroupSettingsInputKeys = new Set([
+  'expectedUpdatedAt',
   'enabled',
   'groupType',
   'schedulingPolicy'
@@ -133,6 +135,13 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
 export async function createGroupAsync(input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
   const client = await getGroupWriteDatabaseClient()
   return client.transaction(async (tx) => createGroupInClientAsync(tx, input, access))
+}
+
+export class GroupPatchConflictError extends Error {
+  constructor() {
+    super('分组已被其他操作更新，请刷新后重试')
+    this.name = 'GroupPatchConflictError'
+  }
 }
 
 export async function createGroupInClientAsync(client: DatabaseClient, input: Record<string, unknown>, access?: AccessScope): Promise<GroupSummary> {
@@ -210,6 +219,7 @@ export interface GroupManagementPatchResult {
   accessType: 'owner' | 'authorized'
   changedFields: string[]
   changes: GroupManagementPatchChange[]
+  updatedAt: string
 }
 
 interface GroupPatchRow {
@@ -226,12 +236,14 @@ interface GroupPatchRow {
   source_enabled?: number | boolean | string | null
   group_type?: GroupType | null
   scheduling_policy_json?: string | null
+  updated_at: string
 }
 
 interface GroupPatchPlan {
   columns: Map<string, unknown>
   changes: GroupManagementPatchChange[]
   name: string
+  updatedAt: string
 }
 
 export function patchGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupManagementPatchResult | undefined {
@@ -248,6 +260,7 @@ export function patchGroup(id: string, input: Record<string, unknown>, access?: 
     if (current.access_type === 'owner' && databaseBoolean(current.is_default)) {
       throw new DefaultGroupReadonlyError()
     }
+    assertExpectedGroupUpdatedAt(current, input)
     if (current.access_type === 'authorized') {
       assertKnownInputKeys(input, authorizedGroupSettingsInputKeys, '授权分组使用配置')
     }
@@ -292,6 +305,7 @@ export async function patchGroupAsync(id: string, input: Record<string, unknown>
       if (current.access_type === 'owner' && databaseBoolean(current.is_default)) {
         throw new DefaultGroupReadonlyError()
       }
+      assertExpectedGroupUpdatedAt(current, input)
       const plan = buildGroupPatchPlan(current, input)
       if (plan.columns.size > 0) {
         if (current.access_type === 'authorized') {
@@ -373,7 +387,7 @@ function buildGroupPatchPlan(current: GroupPatchRow, input: Record<string, unkno
       addChange('schedulingPolicy', beforePolicy, afterPolicy)
     }
   }
-  return { columns, changes, name: nextName }
+  return { columns, changes, name: nextName, updatedAt: current.updated_at }
 }
 
 function applyOwnedGroupPatch(database: DatabaseSync, current: GroupPatchRow, plan: GroupPatchPlan): void {
@@ -388,8 +402,11 @@ function applyOwnedGroupPatch(database: DatabaseSync, current: GroupPatchRow, pl
     assertRouteStrategiesCanLoseGroupAvailability(database, current.id, current.name, '停用分组')
   }
   const assignments = [...plan.columns.keys()].map((column) => `${column} = ?`)
-  database.prepare(`UPDATE groups SET ${assignments.join(', ')}, updated_at = ? WHERE id = ? AND system_account_id = ?`)
-    .run(...sqlitePatchValues(plan.columns.values()), nowIso(), current.id, current.system_account_id)
+  const updatedAt = nextGroupUpdatedAt(current.updated_at)
+  const update = database.prepare(`UPDATE groups SET ${assignments.join(', ')}, updated_at = ? WHERE id = ? AND system_account_id = ? AND updated_at = ?`)
+    .run(...sqlitePatchValues(plan.columns.values()), updatedAt, current.id, current.system_account_id, current.updated_at)
+  assertGroupPatchApplied(update.changes)
+  plan.updatedAt = updatedAt
 }
 
 async function applyOwnedGroupPatchAsync(client: DatabaseClient, current: GroupPatchRow, plan: GroupPatchPlan): Promise<void> {
@@ -404,11 +421,14 @@ async function applyOwnedGroupPatchAsync(client: DatabaseClient, current: GroupP
     await assertRouteStrategiesCanLoseGroupAvailabilityAsync(client, current.id, current.name, '停用分组')
   }
   const assignments = [...plan.columns.keys()].map((column) => `${client.dialect.quoteIdentifier(column)} = ?`)
-  await client.execute(`
+  const updatedAt = nextGroupUpdatedAt(current.updated_at)
+  const update = await client.execute(`
     UPDATE ${groupWriteTable(client, 'groups')}
     SET ${assignments.join(', ')}, updated_at = ?
-    WHERE id = ? AND system_account_id = ?
-  `, [...plan.columns.values(), nowIso(), current.id, current.system_account_id])
+    WHERE id = ? AND system_account_id = ? AND updated_at = ?
+  `, [...plan.columns.values(), updatedAt, current.id, current.system_account_id, current.updated_at])
+  assertGroupPatchApplied(update.changes)
+  plan.updatedAt = updatedAt
 }
 
 function applyAuthorizedGroupPatch(database: DatabaseSync, current: GroupPatchRow, plan: GroupPatchPlan, access?: AccessScope): void {
@@ -420,8 +440,11 @@ function applyAuthorizedGroupPatch(database: DatabaseSync, current: GroupPatchRo
   }
   if (databaseBoolean(current.settings_exists)) {
     const assignments = [...plan.columns.keys()].map((column) => `${column} = ?`)
-    database.prepare(`UPDATE group_authorization_settings SET ${assignments.join(', ')}, updated_at = ? WHERE authorization_id = ? AND system_account_id = ? AND group_id = ?`)
-      .run(...sqlitePatchValues(plan.columns.values()), nowIso(), authorizationId, granteeSystemAccountId, current.id)
+    const updatedAt = nextGroupUpdatedAt(current.updated_at)
+    const update = database.prepare(`UPDATE group_authorization_settings SET ${assignments.join(', ')}, updated_at = ? WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? AND updated_at = ?`)
+      .run(...sqlitePatchValues(plan.columns.values()), updatedAt, authorizationId, granteeSystemAccountId, current.id, current.updated_at)
+    assertGroupPatchApplied(update.changes)
+    plan.updatedAt = updatedAt
     return
   }
   const initial = authorizedGroupSettingsInsertValues(database, current, plan)
@@ -431,6 +454,7 @@ function applyAuthorizedGroupPatch(database: DatabaseSync, current: GroupPatchRo
       scheduling_policy_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(authorizationId, granteeSystemAccountId, current.id, initial.enabled, initial.groupType, initial.schedulingPolicyJson, initial.now, initial.now)
+  plan.updatedAt = initial.now
 }
 
 async function applyAuthorizedGroupPatchAsync(client: DatabaseClient, current: GroupPatchRow, plan: GroupPatchPlan, access?: AccessScope): Promise<void> {
@@ -442,11 +466,14 @@ async function applyAuthorizedGroupPatchAsync(client: DatabaseClient, current: G
   }
   if (databaseBoolean(current.settings_exists)) {
     const assignments = [...plan.columns.keys()].map((column) => `${client.dialect.quoteIdentifier(column)} = ?`)
-    await client.execute(`
+    const updatedAt = nextGroupUpdatedAt(current.updated_at)
+    const update = await client.execute(`
       UPDATE ${groupWriteTable(client, 'group_authorization_settings')}
       SET ${assignments.join(', ')}, updated_at = ?
-      WHERE authorization_id = ? AND system_account_id = ? AND group_id = ?
-    `, [...plan.columns.values(), nowIso(), authorizationId, granteeSystemAccountId, current.id])
+      WHERE authorization_id = ? AND system_account_id = ? AND group_id = ? AND updated_at = ?
+    `, [...plan.columns.values(), updatedAt, authorizationId, granteeSystemAccountId, current.id, current.updated_at])
+    assertGroupPatchApplied(update.changes)
+    plan.updatedAt = updatedAt
     return
   }
   const initial = await authorizedGroupSettingsInsertValuesAsync(client, current, plan)
@@ -456,6 +483,7 @@ async function applyAuthorizedGroupPatchAsync(client: DatabaseClient, current: G
       scheduling_policy_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `, [authorizationId, granteeSystemAccountId, current.id, initial.enabled, initial.groupType, initial.schedulingPolicyJson, initial.now, initial.now])
+  plan.updatedAt = initial.now
 }
 
 function authorizedGroupSettingsInsertValues(database: DatabaseSync, current: GroupPatchRow, plan: GroupPatchPlan) {
@@ -493,7 +521,7 @@ function authorizedGroupSettingsValues(
     enabled: enabledValue,
     groupType: groupTypeValue,
     schedulingPolicyJson,
-    now: nowIso()
+    now: nextGroupUpdatedAt(current.updated_at)
   }
 }
 
@@ -504,7 +532,8 @@ function groupPatchResult(current: GroupPatchRow, plan: GroupPatchPlan): GroupMa
     ownerSystemAccountId: current.system_account_id,
     accessType: current.access_type,
     changedFields: plan.changes.map((change) => change.field).sort(),
-    changes: plan.changes
+    changes: plan.changes,
+    updatedAt: plan.updatedAt
   }
 }
 
@@ -615,7 +644,8 @@ function groupPatchColumnPairs(input: Record<string, unknown>): Array<{ alias: s
     { alias: 'is_default', owner: 'groups.is_default', authorized: '0' },
     { alias: 'access_type', owner: "'owner'", authorized: "'authorized'" },
     { alias: 'authorization_id', owner: 'NULL', authorized: 'authorization_rows.id' },
-    { alias: 'settings_exists', owner: '0', authorized: 'CASE WHEN authorization_settings.authorization_id IS NULL THEN 0 ELSE 1 END' }
+    { alias: 'settings_exists', owner: '0', authorized: 'CASE WHEN authorization_settings.authorization_id IS NULL THEN 0 ELSE 1 END' },
+    { alias: 'updated_at', owner: 'groups.updated_at', authorized: 'COALESCE(authorization_settings.updated_at, groups.updated_at)' }
   ]
   if (hasOwnInput(input, 'providerCode')) {
     columns.push({ alias: 'provider_code', owner: 'groups.provider_code', authorized: 'groups.provider_code' })
@@ -705,6 +735,23 @@ async function lockGroupAuthorizationMutationRowAsync(client: DatabaseClient, au
 
 function databaseBoolean(value: unknown): boolean {
   return value === true || value === 1 || value === '1' || value === 'true'
+}
+
+function assertExpectedGroupUpdatedAt(current: GroupPatchRow, input: Record<string, unknown>): void {
+  if (!hasOwnInput(input, 'expectedUpdatedAt')) return
+  const expectedUpdatedAt = requiredTextInput(input.expectedUpdatedAt, '分组版本')
+  if (expectedUpdatedAt !== current.updated_at) throw new GroupPatchConflictError()
+}
+
+function assertGroupPatchApplied(changes: number | bigint | undefined): void {
+  if (Number(changes ?? 0) !== 1) throw new GroupPatchConflictError()
+}
+
+function nextGroupUpdatedAt(currentUpdatedAt: string): string {
+  const now = nowIso()
+  if (now > currentUpdatedAt) return now
+  const currentMs = Date.parse(currentUpdatedAt)
+  return Number.isFinite(currentMs) ? new Date(currentMs + 1).toISOString() : now
 }
 
 function requiredPatchText(value: unknown, label: string): string {

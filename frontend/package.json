@@ -111,6 +111,7 @@
     "test:api-key-refresh-row": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-refresh-row-regression.ts",
     "test:account-test-display-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-display-formatters-regression.ts",
     "test:model-check-provider-capabilities": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-provider-capabilities-regression.ts",
+    "test:model-check-demand-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/model-check-demand-loading-regression.ts",
     "test:provider-catalog-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/provider-catalog-progressive-loading-regression.ts",
     "test:settings-sections-progressive-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/settings-sections-progressive-loading-regression.ts",
     "test:model-check-trust-contract": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-trust-contract-regression.ts",

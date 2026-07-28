@@ -37,6 +37,7 @@ const groupLoadSource = sourceBetween(viewSource, 'async function loadGroupOptio
 const modelDropdownSource = sourceBetween(viewSource, 'function handleModelOptionsDropdown', 'function handleModelOptionsSearch')
 const modelSearchSource = sourceBetween(viewSource, 'function handleModelOptionsSearch', 'function normalizeBindingRowsForMode')
 const saveSource = sourceBetween(viewSource, 'async function saveRouteStrategy', 'async function deleteRouteStrategy')
+const deleteSource = sourceBetween(viewSource, 'async function deleteRouteStrategy', 'function addBinding')
 
 for (const [name, source] of [
   ['路由模式 watch', modeWatchSource],
@@ -50,7 +51,7 @@ for (const [name, source] of [
 assert.match(openEditSource, /routeStrategiesApi\.editBasicDetail\(/, '编辑弹窗必须只加载策略路由 edit-basic 投影')
 assert.doesNotMatch(openEditSource, /routeStrategiesApi\.detail\(/, '编辑弹窗不得回退到完整策略路由详情')
 assert.match(apiSource, /\/route-strategies\/\$\{id\}\/edit-basic/, '管理与个人策略路由 API 必须暴露 edit-basic 接口')
-assert.match(typesSource, /interface RouteStrategyEditBasicDetail[\s\S]*groupBindings:/, '前端必须使用独立的策略路由编辑 DTO')
+assert.match(typesSource, /interface RouteStrategyEditBasicDetail[\s\S]*groupBindings:[\s\S]*updatedAt:/, '编辑 DTO 只应额外携带 PATCH CAS 所需的 updatedAt')
 assert.match(openEditSource, /editDetailRequestSignature\(record\.id, operationScopeParams\?\.systemAccountId\)/, '编辑详情必须绑定记录与 owner 作用域签名')
 assert.match(openEditSource, /isCurrentEditDetailRequest\(/, '编辑详情写回和错误提示必须校验当前请求上下文')
 assert.match(openCreateSource, /resetRouteModelOptions\(\)/, '新增弹窗必须清除上一弹窗的模型候选和搜索定时器，且不得为此发请求')
@@ -80,6 +81,9 @@ assert.match(modelOptionsSource, /params\.force !== true && loadedScopeKey === s
 assert.match(saveSource, /routeStrategiesApi\.update[\s\S]*if \(editingIsDefault\.value\)[\s\S]*invalidateUserReferenceData\([\s\S]*viewScope: isManagementView\.value \? 'admin' : 'self'[\s\S]*systemAccountId: operationScopeParams\?\.systemAccountId/, '默认路由更新后必须只失效对应用户 scope 的共享默认资源缓存')
 assert.match(saveSource, /buildRouteStrategyMutationPatch\(editingBaseline, completePayload\)/, '策略路由编辑保存必须根据打开时基线生成字段级 PATCH')
 assert.match(saveSource, /!hasRouteStrategyMutationChanges\(payload\)[\s\S]*没有需要保存的修改/, '策略路由未修改保存不得发出 PATCH')
+assert.match(fillEditFormSource, /editingExpectedUpdatedAt\.value = record\.updatedAt/, '编辑表单必须记录 edit-basic 返回的 CAS 版本')
+assert.match(saveSource, /expectedUpdatedAt: editingExpectedUpdatedAt\.value/, 'PATCH 必须携带打开编辑时的 expectedUpdatedAt')
+assert.match(apiSource, /interface RouteStrategyPatchPayload[\s\S]*expectedUpdatedAt: string/, '前端 PATCH API 类型必须强制 expectedUpdatedAt')
 const updateBranch = sourceBetween(saveSource, 'if (editingId.value) {', '} else {')
 assert.match(updateBranch, /const result = await routeStrategiesApi\.update[\s\S]*applyRouteStrategyMutationResult\(result\)/, '编辑成功必须用最小 mutation result 本地合并列表行')
 assert.doesNotMatch(updateBranch, /loadRouteStrategies\(/, '编辑成功不得重新加载策略路由列表')
@@ -87,6 +91,8 @@ const createBranch = sourceBetween(saveSource, '} else {\n      await routeStrat
 assert.doesNotMatch(createBranch, /invalidateUserReferenceData/, '普通路由创建不得无条件失效共享默认资源缓存')
 const createCompletionBranch = sourceBetween(saveSource, '} else {\n      await routeStrategiesApi.create', '\n    }\n  } catch')
 assert.match(createCompletionBranch, /await loadRouteStrategies\(\)/, '创建成功可以重新加载策略路由列表以接收服务端生成字段')
+assert.match(deleteSource, /items\.value\.splice\(index, 1\)[\s\S]*total\.value = Math\.max/, '删除成功必须直接移除当前列表行并收敛总数')
+assert.doesNotMatch(deleteSource, /loadRouteStrategies\(/, '删除成功不得重新加载策略路由列表')
 
 const baseline = {
   name: '基线路由',

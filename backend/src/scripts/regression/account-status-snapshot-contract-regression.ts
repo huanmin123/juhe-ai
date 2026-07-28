@@ -12,6 +12,7 @@ import {
   parseAccountStatusSnapshotAccountIds
 } from '../../modules/accounts/account-status-snapshot.service.js'
 import {
+  AccountRuntimeStatusFilterScanLimitError,
   accountRuntimeStatusCandidateSourceOptions,
   initialAccountRuntimeStatusCandidateWindow,
   listAccountsPageWithRuntimeStatusFilter,
@@ -74,46 +75,40 @@ assert.equal(nextAccountRuntimeStatusCandidateWindow(denseCandidateWindow, {
   requiredMatchCount: 21,
   totalMatchedCount: 21,
   latestCandidateCount: 21,
-  latestMatchedCount: 21,
-  prefixQueryCount: 1
+  latestMatchedCount: 21
 }), undefined, '首批已获得 pageSize + 1 个命中时必须立即停止扩窗')
 
 const sparseCandidateWindows: Array<{ page: number; pageSize: number }> = []
 let sparseWindow: { page: number; pageSize: number } | undefined = denseCandidateWindow
 let sparseCoveredRows = 0
-let sparsePrefixQueryCount = 0
-while (sparseWindow) {
+for (let iteration = 0; sparseWindow && iteration < 5; iteration += 1) {
   sparseCandidateWindows.push(sparseWindow)
   const latestCandidateCount = sparseWindow.page === 1
     ? sparseWindow.pageSize - sparseCoveredRows
     : sparseWindow.pageSize
   sparseCoveredRows += latestCandidateCount
-  if (sparseWindow.page === 1) sparsePrefixQueryCount += 1
   sparseWindow = nextAccountRuntimeStatusCandidateWindow(sparseWindow, {
     requiredMatchCount: 21,
     totalMatchedCount: 0,
     latestCandidateCount,
-    latestMatchedCount: 0,
-    prefixQueryCount: sparsePrefixQueryCount
+    latestMatchedCount: 0
   })
 }
 assert.deepEqual(sparseCandidateWindows, [
   { page: 1, pageSize: 21 },
   { page: 1, pageSize: 200 },
-  { page: 2, pageSize: 200 },
-  { page: 3, pageSize: 200 },
-  { page: 4, pageSize: 200 },
-  { page: 5, pageSize: 200 }
-], '零命中极端场景必须快速扩到有界批量，查询数不能随 20 行小页膨胀到数十次')
-assert.equal(sparseCoveredRows, 1000, '运行态筛选最多检查管理列表既有的 1000 行窗口')
-assert.equal(Math.max(...sparseCandidateWindows.map((window) => window.pageSize)), 200, '单次候选查询批量不得超过 200')
+  { page: 1, pageSize: 400 },
+  { page: 1, pageSize: 800 },
+  { page: 1, pageSize: 1600 }
+], '零命中极端场景必须使用递增前缀而非 OFFSET 分段，并在 200 行后指数扩容')
+assert.equal(sparseCoveredRows, 1600, '递增前缀不得停在旧的 1000 行管理窗口')
+assert.equal(sparseCandidateWindows.every((window) => window.page === 1), true, '候选扩容必须始终从有序结果前缀开始')
 
 const nearDenseNextWindow = nextAccountRuntimeStatusCandidateWindow(denseCandidateWindow, {
   requiredMatchCount: 21,
   totalMatchedCount: 20,
   latestCandidateCount: 21,
-  latestMatchedCount: 20,
-  prefixQueryCount: 1
+  latestMatchedCount: 20
 })
 assert.deepEqual(nearDenseNextWindow, { page: 1, pageSize: 23 }, '高命中率只应补取估算缺口，不应直接过取 50 或 80 条')
 assert.deepEqual(
@@ -121,6 +116,22 @@ assert.deepEqual(
   { page: 1, pageSize: 200 },
   '深分页首批也必须受 200 行内存边界约束'
 )
+assert.throws(
+  () => initialAccountRuntimeStatusCandidateWindow({ page: 501, pageSize: 20, status: 'active' }),
+  AccountRuntimeStatusFilterScanLimitError,
+  '超过 10000 候选扫描预算的深页必须显式失败，不得回压页码或生成无界 LIMIT'
+)
+assert.throws(
+  () => initialAccountRuntimeStatusCandidateWindow({ page: 1e308, pageSize: 20, status: 'active' }),
+  /安全整数范围/,
+  '非安全整数页码必须在进入 SQL 前拒绝'
+)
+assert.equal(nextAccountRuntimeStatusCandidateWindow({ page: 1, pageSize: 10_000 }, {
+  requiredMatchCount: 21,
+  totalMatchedCount: 0,
+  latestCandidateCount: 10_000,
+  latestMatchedCount: 0
+}), undefined, '达到扫描预算后不得继续扩大候选前缀')
 
 const repositorySource = readFileSync(resolve('src/storage/account-status-snapshot.repository.ts'), 'utf8')
 const runtimeStatusFilterSource = readFileSync(resolve('src/modules/accounts/account-list-runtime-status-filter.ts'), 'utf8')
@@ -132,11 +143,12 @@ assert.match(repositorySource, /authorization_effective_source_team_id/, '状态
 assert.match(repositorySource, /list_account_status_snapshots_read_only/, 'SQLite 状态投影必须投递到 read worker')
 assert.doesNotMatch(runtimeStatusFilterSource, /pageSize\s*\*\s*4/, '运行态筛选不得恢复固定四倍候选批量')
 assert.match(runtimeStatusFilterSource, /seenCandidateIds/, '前缀扩窗必须去重，重复查询的候选不得重复 hydrate')
-assert.match(
+assert.doesNotMatch(
   runtimeStatusFilterSource,
-  /listOptions\.page\s*<\s*pageUpperBoundForWindow\(pageSize\)/,
-  '运行态筛选到达全局可访问页上限后不得继续返回不可访问的 hasMore'
+  /pageUpperBoundForWindow|defaultListWindowRows|maxCandidateRows/,
+  '运行态筛选不得保留 1000 行窗口或页码回压'
 )
+assert.match(runtimeStatusFilterSource, /listAccountManagementCandidatePrefixAsync/, '运行态筛选必须使用专用递增前缀读取入口')
 assert.match(
   runtimeStatusFilterSource,
   /maxRuntimeStatusHydrationBatchSize\s*=\s*100[\s\S]*chunkValues\(page\.items, maxRuntimeStatusHydrationBatchSize\)/,
@@ -144,6 +156,9 @@ assert.match(
 )
 const readWorkerSource = readFileSync(resolve('src/storage/sqlite-read-worker.ts'), 'utf8')
 assert.match(readWorkerSource, /case 'list_account_status_snapshots_read_only'/, 'SQLite read worker 必须实现状态投影 operation')
+assert.match(readWorkerSource, /listAccountManagementItemsPageReadOnly\(operation\.access, operation\.options, operation\.candidateLimit\)/, 'SQLite read worker 必须透传内部候选前缀上限')
+const readWorkerTypesSource = readFileSync(resolve('src/storage/sqlite-read-worker-pool.types.ts'), 'utf8')
+assert.match(readWorkerTypesSource, /type: 'list_account_management_items_page_read_only'[\s\S]*candidateLimit\?: number/, 'SQLite read worker operation 必须声明候选前缀上限')
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-status-snapshot-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databaseDriver = 'sqlite'
@@ -158,10 +173,11 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, statusSnapshotRepository] = await Promise.all([
+const [databaseModule, repositories, statusSnapshotRepository, sqliteReadWorkerPool] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-status-snapshot.repository.js')
+  import('../../storage/account-status-snapshot.repository.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 try {
@@ -311,11 +327,41 @@ try {
     'authorization_unavailable',
     '授权实例绑定缺少 authorization ID 时必须与候选 SQL 一致判为失效'
   )
+  const invalidBindingBasePage = await repositories.listAccountManagementItemsPageReadOnly(granteeAccess, {
+    ids: [authorizedInstance.id],
+    page: 1,
+    pageSize: 20,
+    status: 'disabled'
+  })
+  assert.equal(invalidBindingBasePage.items[0]?.groupBindStatus, 'authorization_unavailable', '窄列表与状态快照必须一致地把 NULL binding authorization 判为失效')
   databaseModule.getBusinessDatabase().prepare(`
     UPDATE group_accounts
     SET account_authorization_id = ?
     WHERE account_id = ? AND system_account_id = ?
   `).run(authorizedInstance.accountAuthorizationId, authorizedInstance.id, grantee.id)
+  databaseModule.getBusinessDatabase().prepare("UPDATE accounts SET status = 'active', schedulable = 1 WHERE id IN (?, ?)")
+    .run(account.id, authorizedInstance.id)
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET account_expires_at = '2000-01-01T00:00:00.000Z'
+    WHERE id = ?
+  `).run(authorizedInstance.id)
+  const expiredInstanceBasePage = await repositories.listAccountManagementItemsPageReadOnly(granteeAccess, {
+    ids: [authorizedInstance.id],
+    page: 1,
+    pageSize: 20,
+    status: 'disabled'
+  })
+  assert.deepEqual(expiredInstanceBasePage.items.map((item) => item.id), [authorizedInstance.id], '授权实例自身到期必须进入候选 SQL 的 disabled 判定')
+  const expiredInstancePage = await listAccountsPageWithRuntimeStatusFilter(granteeAccess, {
+    ids: [authorizedInstance.id],
+    page: 1,
+    pageSize: 20,
+    status: 'disabled'
+  })
+  assert.equal(expiredInstancePage?.items[0]?.effectiveAvailability.status, 'instance_expired', '授权实例自身到期必须由运行态投影判为 instance_expired')
+  databaseModule.getBusinessDatabase().prepare('UPDATE accounts SET account_expires_at = NULL WHERE id = ?')
+    .run(authorizedInstance.id)
   databaseModule.getBusinessDatabase().prepare(`
     UPDATE accounts
     SET status = 'pending_test', schedulable = 0,
@@ -331,7 +377,7 @@ try {
   databaseModule.getBusinessDatabase().prepare("UPDATE accounts SET status = 'rate_limited', schedulable = 0 WHERE id = ?")
     .run(account.id)
 
-  for (let index = 0; index < 105; index += 1) {
+  for (let index = 0; index < 140; index += 1) {
     repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -348,7 +394,8 @@ try {
   }
   const largeBasePage = await repositories.listAccountManagementItemsPageReadOnly(userAccess, {
     page: 1,
-    pageSize: 200
+    pageSize: 200,
+    keyword: '账户快照批量回归账户 '
   })
   assert(largeBasePage.items.length > 100, '回归夹具必须形成 pageSize > 100 的真实账户页')
   const largeHydratedPage = await hydrateAccountListPage(userAccess, largeBasePage)
@@ -376,19 +423,26 @@ try {
   try {
     largeRuntimeFilteredPage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
       page: 1,
-      pageSize: 120,
-      status: 'pending_test'
+      pageSize: 128,
+      status: 'pending_test',
+      keyword: '账户快照批量回归账户 '
     })
   } finally {
     snapshotBatchDatabase.prepare = originalSnapshotPrepare
   }
   assert(largeRuntimeFilteredPage, '运行态状态筛选必须返回分页结果')
-  assert.deepEqual(statusProjectionBatchSizes, [100, 6], '105 行分页加一条 lookahead 必须按 100 ID 运行态快照边界执行两次 hydrate')
-  assert.equal(largeRuntimeFilteredPage.items.length, 105, 'pageSize > 100 的运行态状态筛选不得漏掉第 101 条之后的匹配账户')
+  assert.deepEqual(statusProjectionBatchSizes, [100, 29], '128 行分页加一条 lookahead 必须按 100 ID 运行态快照边界执行两次 hydrate')
+  assert.equal(largeRuntimeFilteredPage.items.length, 128, 'pageSize=128 的运行态状态筛选不得漏掉第 101 条之后的匹配账户')
+  assert.equal(largeRuntimeFilteredPage.hasMore, true, '第 129 个匹配必须形成准确的 hasMore')
   assert.equal(
     largeRuntimeFilteredPage.items.every((item) => item.effectiveAvailability.status === 'instance_pending_test'),
     true,
     '运行态筛选返回的每一行都必须使用完整状态投影'
+  )
+  assert.deepEqual(
+    largeRuntimeFilteredPage.items.map((item) => item.id),
+    largeBasePage.items.slice(0, 128).map((item) => item.id),
+    '100 + 29 两个 hydrate 批次合并后必须保持候选 SQL 顺序'
   )
   const disabledPrecedenceAccount = largeBasePage.items.find((item) => item.name.startsWith('账户快照批量回归账户 '))
   assert(disabledPrecedenceAccount, '回归夹具必须包含可用于停调优先级检查的账户')
@@ -410,14 +464,67 @@ try {
     'error 的优先级高于残留 cooldown，停调筛选不得因下推原始 cooling 字段漏掉该账户'
   )
   assert.equal(disabledPrecedencePage.items[0]?.effectiveAvailability.status, 'instance_error')
+  const disabledPrecedenceBasePage = await repositories.listAccountManagementItemsPageReadOnly(userAccess, {
+    ids: [disabledPrecedenceAccount.id],
+    page: 1,
+    pageSize: 20,
+    schedulable: 'disabled'
+  })
+  assert.deepEqual(
+    disabledPrecedenceBasePage.items.map((item) => item.id),
+    [disabledPrecedenceAccount.id],
+    '候选 SQL 的 cooling 判定必须服从有效状态优先级，error + 残留 cooldown 仍属于 disabled'
+  )
   databaseModule.getBusinessDatabase().prepare(`
     UPDATE accounts
     SET status = 'active', schedulable = 1, cooldown_until = NULL
     WHERE system_account_id = ? AND name LIKE '账户快照批量回归账户 %'
   `).run(user.id)
+  const deepTemplate = largeBasePage.items[0]
+  assert(deepTemplate, '深分页回归必须有可复制的账户模板')
+  const deepPrefix = '运行态深分页回归账户 '
+  const deepAccountCount = 1060
+  const deepActiveStart = 1030
+  const deepDatabase = databaseModule.getBusinessDatabase()
+  const accountColumns = deepDatabase.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
+  const quotedColumns = accountColumns.map(({ name }) => `"${name.replace(/"/g, '""')}"`)
+  const cloneExpressions = accountColumns.map(({ name }, index) => {
+    if (name === 'id' || name === 'name' || name === 'status' || name === 'priority' || name === 'schedulable' || name === 'created_at' || name === 'updated_at') return '?'
+    return quotedColumns[index]
+  })
+  const cloneAccount = deepDatabase.prepare(`
+    INSERT INTO accounts (${quotedColumns.join(', ')})
+    SELECT ${cloneExpressions.join(', ')}
+    FROM accounts
+    WHERE id = ?
+  `)
+  deepDatabase.exec('BEGIN')
+  try {
+    for (let index = 0; index < deepAccountCount; index += 1) {
+      const suffix = String(index).padStart(4, '0')
+      const timestamp = new Date(Date.UTC(2026, 6, 28, 0, 0, 0, index)).toISOString()
+      cloneAccount.run(
+        `acc_runtime_deep_${suffix}`,
+        `${deepPrefix}${suffix}`,
+        index < deepActiveStart ? 'error' : 'active',
+        100000,
+        index < deepActiveStart ? 0 : 1,
+        timestamp,
+        timestamp,
+        deepTemplate.id
+      )
+    }
+    deepDatabase.exec('COMMIT')
+  } catch (error) {
+    deepDatabase.exec('ROLLBACK')
+    throw error
+  }
+  repositories.updateAccountTags(`acc_runtime_deep_${String(deepActiveStart).padStart(4, '0')}`, ['运行态尾页标签'], userAccess)
   const businessDatabase = databaseModule.getBusinessDatabase()
   const originalPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
   const candidateQueries: Array<{ limit: number; offset: number; sql: string }> = []
+  const runtimeHydrationBatchSizes: number[] = []
+  const runtimeHydrationAccountIds: string[] = []
   businessDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/WITH\s+account_rows\s+AS\s*\(/i.test(sql) && /ranked_group_bindings/i.test(sql)) {
@@ -431,29 +538,83 @@ try {
         return originalAll(...params)
       }) as typeof statement.all
     }
+    if (/SELECT\s+accounts\.id,\s*accounts\.system_account_id,\s*accounts\.status,\s*accounts\.schedulable/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        runtimeHydrationBatchSizes.push(Math.max(0, params.length - 1))
+        runtimeHydrationAccountIds.push(...params.slice(0, -1).map(String))
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
     return statement
   }) as typeof businessDatabase.prepare
   let denseActivePage: Awaited<ReturnType<typeof listAccountsPageWithRuntimeStatusFilter>>
+  let denseCandidateQueries: typeof candidateQueries
+  let denseHydrationBatchSizes: number[]
+  let deepActivePage: Awaited<ReturnType<typeof listAccountsPageWithRuntimeStatusFilter>>
+  let deepActiveSecondPage: Awaited<ReturnType<typeof listAccountsPageWithRuntimeStatusFilter>>
+  let deepCandidateQueries: typeof candidateQueries
+  let deepHydrationBatchSizes: number[]
+  let deepHydrationAccountIds: string[]
+  let deepUnboundedPage: Awaited<ReturnType<typeof listAccountsPageWithRuntimeStatusFilter>>
+  let deepUnboundedCandidateQueries: typeof candidateQueries
   try {
+    const denseQueryStart = candidateQueries.length
+    const denseHydrationStart = runtimeHydrationBatchSizes.length
     denseActivePage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
       page: 1,
       pageSize: 20,
-      status: 'active'
+      status: 'active',
+      keyword: '账户快照批量回归账户 '
     })
+    denseCandidateQueries = candidateQueries.slice(denseQueryStart)
+    denseHydrationBatchSizes = runtimeHydrationBatchSizes.slice(denseHydrationStart)
+    const deepQueryStart = candidateQueries.length
+    const deepHydrationStart = runtimeHydrationBatchSizes.length
+    const deepHydrationAccountIdStart = runtimeHydrationAccountIds.length
+    deepActivePage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
+      page: 1,
+      pageSize: 20,
+      status: 'active',
+      keyword: deepPrefix,
+      sorts: [{ field: 'name', order: 'asc' }]
+    })
+    deepCandidateQueries = candidateQueries.slice(deepQueryStart)
+    deepHydrationBatchSizes = runtimeHydrationBatchSizes.slice(deepHydrationStart)
+    deepHydrationAccountIds = runtimeHydrationAccountIds.slice(deepHydrationAccountIdStart)
+    deepActiveSecondPage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
+      page: 2,
+      pageSize: 20,
+      status: 'active',
+      keyword: deepPrefix,
+      sorts: [{ field: 'name', order: 'asc' }]
+    })
+    businessDatabase.prepare(`
+      UPDATE accounts
+      SET status = 'active', schedulable = 1
+      WHERE system_account_id = ? AND name LIKE ?
+    `).run(user.id, `${deepPrefix}%`)
+    const deepUnboundedQueryStart = candidateQueries.length
+    deepUnboundedPage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
+      page: 53,
+      pageSize: 20,
+      status: 'active',
+      keyword: deepPrefix,
+      sorts: [{ field: 'name', order: 'asc' }]
+    })
+    deepUnboundedCandidateQueries = candidateQueries.slice(deepUnboundedQueryStart)
   } finally {
     businessDatabase.prepare = originalPrepare
   }
   assert(denseActivePage, '正常状态运行态筛选必须返回分页结果')
-  assert(
-    candidateQueries.length >= 1 && candidateQueries.length <= 2,
-    'active 首屏必须先读取窄候选，并且最多执行一次自适应扩容'
-  )
+  assert.equal(denseCandidateQueries.length, 1, 'active 高命中首屏必须只执行一次候选查询')
+  assert.deepEqual(denseHydrationBatchSizes, [21], 'active 高命中首屏必须只 hydrate pageSize + 1 个候选')
   assert.deepEqual(
-    { limit: candidateQueries[0]!.limit, offset: candidateQueries[0]!.offset },
+    { limit: denseCandidateQueries[0]!.limit, offset: denseCandidateQueries[0]!.offset },
     { limit: 22, offset: 0 },
     'active 首屏必须先读取 21 个候选加一条 lookahead'
   )
-  for (const candidateQuery of candidateQueries) {
+  for (const candidateQuery of denseCandidateQueries) {
     assert.doesNotMatch(candidateQuery.sql, /account_rows\.status\s+IN/i, '运行态状态筛选不得把持久状态提前下推到候选 SQL')
   }
   assert.equal(denseActivePage.items.length, 20, '正常状态首屏必须返回完整 20 行')
@@ -463,6 +624,71 @@ try {
     true,
     'active 筛选必须以完整运行态投影做最终判定'
   )
+  assert(deepActivePage, '超过 1000 个候选后的运行态筛选必须返回分页结果')
+  assert.deepEqual(
+    deepCandidateQueries.map(({ limit, offset }) => ({ limit, offset })),
+    [
+      { limit: 22, offset: 0 },
+      { limit: 201, offset: 0 },
+      { limit: 401, offset: 0 },
+      { limit: 801, offset: 0 },
+      { limit: 1601, offset: 0 }
+    ],
+    '稀疏筛选必须按 21/200/400/800/1600 递增前缀读取，且永不使用 OFFSET 分段'
+  )
+  assert.equal(deepHydrationBatchSizes.every((size) => size > 0 && size <= 100), true, '每个运行态 hydrate 批次必须保持 100 ID 边界')
+  assert.equal(deepHydrationBatchSizes.reduce((sum, size) => sum + size, 0), deepAccountCount, '递增前缀只应 hydrate 新候选，每个账户恰好一次')
+  assert.deepEqual(
+    deepHydrationAccountIds,
+    Array.from({ length: deepAccountCount }, (_, index) => `acc_runtime_deep_${String(index).padStart(4, '0')}`),
+    '多轮重叠前缀必须去重并按候选顺序恰好 hydrate 每个账户一次'
+  )
+  assert.deepEqual(
+    deepActivePage.items.map((item) => item.name),
+    Array.from({ length: 20 }, (_, index) => `${deepPrefix}${String(deepActiveStart + index).padStart(4, '0')}`),
+    '超过 1000 个非命中候选后仍必须按请求排序返回第一批命中'
+  )
+  assert.deepEqual(deepActivePage.items[0]?.tags.map((tag) => tag.name), ['运行态尾页标签'], '候选扩容不得重复加载标签，但最终返回页必须补齐标签')
+  assert.equal(deepActivePage.hasMore, true, '尾部仍有第 21 个命中时 hasMore 必须为 true')
+  assert(deepActiveSecondPage, '超过 1000 个候选后的第二页必须可访问')
+  assert.deepEqual(
+    deepActiveSecondPage.items.map((item) => item.name),
+    Array.from({ length: 10 }, (_, index) => `${deepPrefix}${String(deepActiveStart + 20 + index).padStart(4, '0')}`),
+    '第二页必须接续返回尾部命中且不重复、不漏行'
+  )
+  assert.equal(deepActiveSecondPage.hasMore, false, '扫描完整候选后 hasMore 必须准确收敛为 false')
+  assert(deepUnboundedPage, '旧 1000 行窗口之外的运行态页必须可访问')
+  assert.equal(deepUnboundedPage.page, 53, '运行态筛选不得把第 53 页回压到旧的第 50 页上限')
+  assert.deepEqual(
+    deepUnboundedPage.items.map((item) => item.name),
+    Array.from({ length: 20 }, (_, index) => `${deepPrefix}${String(1040 + index).padStart(4, '0')}`),
+    '第 53 页必须返回第 1041 至 1060 个匹配账户'
+  )
+  assert.equal(deepUnboundedPage.hasMore, false, '第 53 页恰好到达尾部时不得返回 hasMore 假阳性')
+  assert.deepEqual(
+    deepUnboundedCandidateQueries.map(({ limit, offset }) => ({ limit, offset })),
+    [{ limit: 201, offset: 0 }, { limit: 401, offset: 0 }, { limit: 801, offset: 0 }, { limit: 1062, offset: 0 }],
+    '深页高命中率应最多翻倍扩容到所需匹配数，仍不得使用 OFFSET'
+  )
+  runtimeConfig.processRole = 'db-service'
+  try {
+    const workerDeepPage = await listAccountsPageWithRuntimeStatusFilter(userAccess, {
+      page: 53,
+      pageSize: 20,
+      status: 'active',
+      keyword: deepPrefix,
+      sorts: [{ field: 'name', order: 'asc' }]
+    })
+    assert.deepEqual(
+      workerDeepPage?.items.map((item) => item.name),
+      deepUnboundedPage.items.map((item) => item.name),
+      '真实 SQLite read-worker 多轮扩窗必须与直接读取返回同一第 53 页'
+    )
+    assert.deepEqual(workerDeepPage?.items[0]?.tags.map((tag) => tag.name), [], '第 53 页标签补齐必须在 read-worker 路径保持正确')
+  } finally {
+    await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
+    runtimeConfig.processRole = 'worker'
+  }
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

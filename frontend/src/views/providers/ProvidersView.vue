@@ -239,19 +239,21 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
-import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
+import type { ProviderDefinition, ProviderModelMutationResult, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
   availableCustomModelModeOptions,
   availableCustomModelStatusOptions,
   buildCustomModelCapabilityOptions,
+  buildCustomModelMutationPatch,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
   canManageModelPricesForView,
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
   emptyCustomModelForm,
+  hasCustomModelMutationChanges,
   normalizeCustomModelRequestCapabilities,
   reconcileCustomModelServiceTierPrices,
   type CustomModelForm
@@ -287,8 +289,7 @@ import {
 const route = useRoute()
 const loading = ref(false)
 const modelLoading = ref(false)
-const providerDetailLoading = ref(false)
-const modelModalLoading = computed(() => modelLoading.value || providerDetailLoading.value)
+const modelModalLoading = computed(() => modelLoading.value)
 const customModelSaving = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
@@ -298,7 +299,6 @@ const selectedModelCategory = ref<ModelCategoryKey>('text')
 const modelModalOpen = ref(false)
 const customModelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
-const activeProviderDetail = ref<ProviderDefinition | null>(null)
 const activeProviderScopedDefaultHealthCheckModel = ref<string>()
 const modelSystemAccountFilter = ref('')
 const modelSystemAccountFilterSelection = ref<PrincipalSelection>()
@@ -306,12 +306,10 @@ const editingCustomModelId = ref<string>()
 const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
+const editingCustomModelBaseline = ref<Partial<ProviderModelUpsertPayload>>()
+const editingExpectedUpdatedAt = ref<string>()
 let modelRequestSequence = 0
 let providerListRequestSequence = 0
-let providerDetailRequestSequence = 0
-let activeProviderDetailCode: string | undefined
-let providerDetailLoadingKey: string | undefined
-let providerDetailLoadingPromise: Promise<boolean> | undefined
 let pageActive = true
 let pageWasDeactivated = false
 
@@ -354,14 +352,9 @@ const currentCategoryModels = computed(() => {
 const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
-const activeProviderConfiguration = computed(() => activeProviderDetail.value ?? activeProvider.value)
 const activeProviderDefaultHealthCheckModel = computed(() => {
   if (activeProviderScopedDefaultHealthCheckModel.value !== undefined) {
     return activeProviderScopedDefaultHealthCheckModel.value
-  }
-  const detail = activeProviderDetail.value
-  if (detail && detail.code === activeProvider.value?.code) {
-    return detail.defaultHealthCheckModel ?? ''
   }
   const selectedOwnerId = modelSystemAccountFilter.value.trim()
   const viewerId = authState.currentUser.value?.id ?? ''
@@ -399,7 +392,7 @@ const customModelStatusOptions = computed(() => {
 })
 const customModelApiProtocolOptions = computed(() => {
   const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
-  for (const protocol of defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
+  for (const protocol of defaultProtocolsForCurrentProviderCategory(customModelPricingCategory.value)) supported.add(protocol)
   return apiProtocolOptions.filter((option) => supported.has(option.value))
 })
 const customModelModeOptions = computed(() => availableCustomModelModeOptions(
@@ -512,22 +505,24 @@ function resetModelModal() {
   resetCustomModelForm()
 }
 
-async function openCreateCustomModel() {
+function openCreateCustomModel() {
   if (!activeProvider.value) return
   ensureModelSystemAccountFilter()
-  if (!await ensureActiveProviderDetail()) return
   resetCustomModelForm()
   customModelForm.scope = 'personal'
   customModelForm.status = 'active'
   customModelForm.mode = selectedModelCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, selectedModelCategory.value)
+  customModelForm.supportedApiProtocols = defaultProtocolsForCurrentProviderCategory(selectedModelCategory.value)
   applyDefaultConfigurationTemplate()
   customModelModalOpen.value = true
 }
 
-async function openEditCustomModel(record: ProviderModelPricing) {
+function openEditCustomModel(record: ProviderModelPricing) {
   if (!record.id || (record.scope === 'built_in' && !isManagementView.value)) return
-  if (!await ensureActiveProviderDetail()) return
+  if (!record.updatedAt) {
+    message.error('模型编辑版本缺失，请刷新模型目录后重试')
+    return
+  }
   resetCustomModelForm()
   editingCustomModelId.value = record.id
   editingCustomModelProviderCode.value = record.providerCode
@@ -535,11 +530,16 @@ async function openEditCustomModel(record: ProviderModelPricing) {
   editingOriginalStatus.value = record.status ?? 'active'
   Object.assign(customModelForm, createCustomModelFormFromPricing(record, providerModels.value))
   ensureServiceTierPriceRows()
+  const baseline = record.scope === 'built_in' ? buildBuiltInModelPayload() : buildCurrentCustomModelPayload()
+  if (!baseline) return
+  editingCustomModelBaseline.value = structuredClone(baseline)
+  editingExpectedUpdatedAt.value = record.updatedAt
   customModelModalOpen.value = true
 }
 
 async function saveCustomModel() {
   if (!activeProvider.value) return
+  const wasEditing = Boolean(editingCustomModelId.value)
   const targetProviderCode = editingCustomModelId.value
     ? editingCustomModelProviderCode.value ?? activeProvider.value.code
     : activeProvider.value.code
@@ -548,7 +548,20 @@ async function saveCustomModel() {
     if (editingCustomModelId.value) {
       const payload = editingBuiltInModel.value ? buildBuiltInModelPayload() : buildCurrentCustomModelPayload()
       if (!payload) return
-      await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, payload)
+      if (!editingCustomModelBaseline.value || !editingExpectedUpdatedAt.value) {
+        message.error('模型编辑基线缺失，请关闭弹窗后重试')
+        return
+      }
+      const patch = buildCustomModelMutationPatch(editingCustomModelBaseline.value, payload)
+      if (!hasCustomModelMutationChanges(patch)) {
+        message.info('没有需要保存的修改')
+        return
+      }
+      const result = await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, {
+        expectedUpdatedAt: editingExpectedUpdatedAt.value,
+        ...patch
+      })
+      applyProviderModelMutationResult(result, patch)
       message.success(editingBuiltInModel.value ? '内置模型已更新' : '自定义模型已更新')
     } else {
       const payload = buildCurrentCustomModelPayload()
@@ -558,7 +571,7 @@ async function saveCustomModel() {
     }
     customModelModalOpen.value = false
     resetCustomModelForm()
-    await reloadActiveProviderModels(true)
+    if (!wasEditing) await reloadActiveProviderModels(true)
   } catch (error) {
     console.error(error)
     message.error(extractModelErrorMessage(error, '自定义模型保存失败'))
@@ -642,6 +655,8 @@ function resetCustomModelForm() {
   editingCustomModelProviderCode.value = undefined
   editingModelScope.value = undefined
   editingOriginalStatus.value = undefined
+  editingCustomModelBaseline.value = undefined
+  editingExpectedUpdatedAt.value = undefined
   Object.assign(customModelForm, {
     ...emptyCustomModelForm,
     supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols],
@@ -669,54 +684,7 @@ function handleModelSystemAccountChange(): void {
   void reloadActiveProviderModels(true)
 }
 
-function ensureActiveProviderDetail(): Promise<boolean> {
-  const provider = activeProvider.value
-  if (!provider) return Promise.resolve(false)
-  if (activeProviderDetailCode === provider.code && activeProviderDetail.value?.code === provider.code) return Promise.resolve(true)
-  const requestSignature = modelRequestSignature(provider.code)
-  const requestKey = `${provider.code}:${requestSignature}`
-  if (providerDetailLoadingKey === requestKey && providerDetailLoadingPromise) return providerDetailLoadingPromise
-  const requestSequence = ++providerDetailRequestSequence
-  providerDetailLoading.value = true
-  const request = (async () => {
-    try {
-      const detail = await api.providers.detail(provider.code, modelProviderQueryParams())
-      if (!isCurrentProviderDetailRequest(requestSequence, requestSignature, provider.code)) return false
-      activeProviderDetail.value = detail
-      activeProviderDetailCode = provider.code
-      return true
-    } catch (error) {
-      if (!isCurrentProviderDetailRequest(requestSequence, requestSignature, provider.code)) return false
-      console.error(error)
-      message.error(extractModelErrorMessage(error, '加载供应商模型配置失败'))
-      return false
-    } finally {
-      if (requestSequence === providerDetailRequestSequence) {
-        providerDetailLoading.value = false
-        providerDetailLoadingKey = undefined
-        providerDetailLoadingPromise = undefined
-      }
-    }
-  })()
-  providerDetailLoadingKey = requestKey
-  providerDetailLoadingPromise = request
-  return request
-}
-
-function isCurrentProviderDetailRequest(sequence: number, signature: string, providerCode: string): boolean {
-  return pageActive
-    && sequence === providerDetailRequestSequence
-    && signature === modelRequestSignature(providerCode)
-    && activeProvider.value?.code === providerCode
-}
-
 function invalidateActiveProviderDetail(): void {
-  providerDetailRequestSequence += 1
-  providerDetailLoading.value = false
-  providerDetailLoadingKey = undefined
-  providerDetailLoadingPromise = undefined
-  activeProviderDetailCode = undefined
-  activeProviderDetail.value = null
   activeProviderScopedDefaultHealthCheckModel.value = undefined
 }
 
@@ -765,7 +733,7 @@ function handleCustomModelServiceTiersChange(): void {
 
 function handleCustomModelModeChange() {
   const category = customModelPricingCategory.value
-  customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProviderConfiguration.value ?? undefined, category)
+  customModelForm.supportedApiProtocols = defaultProtocolsForCurrentProviderCategory(category)
   customModelForm.configurationTemplateId = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
   if (!showCustomModelRequestCapabilities.value) {
@@ -789,6 +757,31 @@ function handleConfigurationTemplateChange(id?: string) {
 function applyDefaultConfigurationTemplate(): void {
   const id = configurationTemplateOptions.value[0]?.value
   if (id) handleConfigurationTemplateChange(id)
+}
+
+function defaultProtocolsForCurrentProviderCategory(category: ModelCategoryKey) {
+  const catalogProtocols = providerModels.value
+    .filter((item) => getModelCategory(item) === category)
+    .flatMap((item) => item.supportedApiProtocols ?? [])
+  return catalogProtocols.length
+    ? [...new Set(catalogProtocols)]
+    : defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
+}
+
+function applyProviderModelMutationResult(
+  result: ProviderModelMutationResult,
+  patch: Partial<ProviderModelUpsertPayload>
+): void {
+  const normalizedPatch = Object.fromEntries(Object.entries(patch).map(([key, value]) => [
+    key,
+    value === null ? undefined : value
+  ]))
+  providerModels.value = providerModels.value.map((item) => item.id === result.id
+    ? { ...item, ...normalizedPatch, status: result.status, updatedAt: result.updatedAt } as ProviderModelPricing
+    : item)
+  if (result.defaultHealthCheckModelCleared && isActiveProviderDefaultHealthCheckModel(result.model)) {
+    applyProviderDefaultHealthCheckModel(result.providerCode, '')
+  }
 }
 
 async function setDefaultHealthCheckModel(record: ProviderModelPricing) {
@@ -878,9 +871,6 @@ function isActiveProviderDefaultHealthCheckModel(model: string): boolean {
 
 function applyProviderDefaultHealthCheckModel(providerCode: string, defaultHealthCheckModel: string) {
   activeProviderScopedDefaultHealthCheckModel.value = defaultHealthCheckModel
-  if (activeProviderDetail.value?.code === providerCode) {
-    activeProviderDetail.value = providerWithDefaultHealthCheckModel(activeProviderDetail.value, defaultHealthCheckModel)
-  }
   const selectedOwnerId = modelSystemAccountFilter.value.trim()
   const viewerId = authState.currentUser.value?.id ?? ''
   if (!isManagementView.value || (selectedOwnerId && selectedOwnerId === viewerId)) {

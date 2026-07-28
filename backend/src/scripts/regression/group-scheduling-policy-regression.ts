@@ -63,6 +63,7 @@ interface GroupSummaryResponse {
 interface GroupMutationResponse {
   id: string
   changedFields: string[]
+  updatedAt: string
 }
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -175,7 +176,15 @@ try {
   assert.equal(storedPolicy.imageLaneMaxConcurrency, 0, '图像通道上限 0 应按自动策略写入 JSON 配置')
   assert(stored.scheduling_policy_json, '高并发分组应写入完整调度策略 JSON')
 
+  const missingVersionResponse = await fetch(`${baseUrl}/__aisys__/api/groups/${highConcurrencyGroup.id}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ description: '缺少版本不得保存' })
+  })
+  assert.equal(missingVersionResponse.status, 400, '分组 PATCH 必须强制要求客户端版本')
+  const initialHttpVersion = groupUpdatedAt(highConcurrencyGroup.id)
   const routeUpdatedGroup = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
+    expectedUpdatedAt: initialHttpVersion,
     schedulingPolicy: {
       defaultSoftConcurrency: 4,
       maxQueueWaitMs: 600000,
@@ -184,11 +193,19 @@ try {
       imageLaneMaxConcurrency: 0
     }
   })
-  assert.deepEqual(Object.keys(routeUpdatedGroup).sort(), ['changedFields', 'id'], '分组 PATCH 只能返回写入结果，不得回传完整摘要')
+  assert.deepEqual(Object.keys(routeUpdatedGroup).sort(), ['changedFields', 'id', 'updatedAt'], '分组 PATCH 只能返回写入结果与新版本，不得回传完整摘要')
   assert.equal(routeUpdatedGroup.id, highConcurrencyGroup.id)
   assert.deepEqual(routeUpdatedGroup.changedFields, ['schedulingPolicy'], '分组 PATCH 应只报告实际变化字段')
   assert.equal(repositories.findGroupSummary(highConcurrencyGroup.id, access)?.schedulingPolicy?.defaultSoftConcurrency, 4, '分组更新路由应保存前端提交的高并发调度策略')
+  const staleResponse = await fetch(`${baseUrl}/__aisys__/api/groups/${highConcurrencyGroup.id}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ description: '过期版本不得覆盖', expectedUpdatedAt: initialHttpVersion })
+  })
+  assert.equal(staleResponse.status, 409, '过期分组版本必须返回 HTTP 409')
+  assert.equal(groupUpdatedAt(highConcurrencyGroup.id), routeUpdatedGroup.updatedAt, '过期 PATCH 不得推进版本')
   const routeNoopGroup = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
+    expectedUpdatedAt: routeUpdatedGroup.updatedAt,
     schedulingPolicy: {
       defaultSoftConcurrency: 4,
       maxQueueWaitMs: 600000,
@@ -197,13 +214,14 @@ try {
       imageLaneMaxConcurrency: 0
     }
   })
-  assert.deepEqual(routeNoopGroup, { id: highConcurrencyGroup.id, changedFields: [] }, '分组同值 PATCH 必须明确返回 no-op，不得回传完整摘要')
+  assert.deepEqual(routeNoopGroup, { id: highConcurrencyGroup.id, changedFields: [], updatedAt: routeUpdatedGroup.updatedAt }, '分组同值 PATCH 必须返回未推进的当前版本，不得回传完整摘要')
   database.prepare("UPDATE providers SET enabled = 0 WHERE code = 'gpt'").run()
   try {
     const sameDisabledProviderNoop = await patchEnvelope<GroupMutationResponse>(baseUrl, `/__aisys__/api/groups/${highConcurrencyGroup.id}`, adminCookie, {
+      expectedUpdatedAt: routeNoopGroup.updatedAt,
       providerCode: 'gpt'
     })
-    assert.deepEqual(sameDisabledProviderNoop, { id: highConcurrencyGroup.id, changedFields: [] }, '同值供应商 PATCH 不得因当前供应商已停用而触发校验')
+    assert.deepEqual(sameDisabledProviderNoop, { id: highConcurrencyGroup.id, changedFields: [], updatedAt: routeNoopGroup.updatedAt }, '同值供应商 PATCH 不得因当前供应商已停用而触发校验')
   } finally {
     database.prepare("UPDATE providers SET enabled = 1 WHERE code = 'gpt'").run()
   }
@@ -293,6 +311,12 @@ function tableColumns(tableName: string): string[] {
   return (databaseModule.getBusinessDatabase().prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>)
     .map((column) => column.name)
     .filter((name): name is string => Boolean(name))
+}
+
+function groupUpdatedAt(groupId: string): string {
+  const row = databaseModule.getBusinessDatabase().prepare('SELECT updated_at FROM groups WHERE id = ?').get(groupId) as unknown as { updated_at?: string } | undefined
+  assert(row?.updated_at, '分组版本不存在')
+  return row.updated_at
 }
 
 function assertCurrentColumns(tableName: string, expectedColumns: string[]): void {

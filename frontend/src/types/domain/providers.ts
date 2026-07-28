@@ -83,6 +83,7 @@ export interface ProviderListItem {
   parentCode?: ProviderCode
   description?: string
   enabled: boolean
+  protocolCode: string
   baseUrl: string
   defaultHealthCheckModel: string
   defaultSupportedModels: string[]
@@ -231,4 +232,20 @@ export interface ProviderModelUpsertPayload {
   audioInputUsdPer1M?: number | null
   audioOutputUsdPer1M?: number | null
   outputUsdPerImage?: number | null
+}
+
+export type ProviderModelPatchPayload = Partial<Omit<
+  ProviderModelUpsertPayload,
+  'configurationTemplateId' | 'scope' | 'model'
+>> & {
+  expectedUpdatedAt: string
+}
+
+export interface ProviderModelMutationResult {
+  id: string
+  providerCode: ProviderCode
+  model: string
+  status: ProviderModelStatus
+  updatedAt: string
+  defaultHealthCheckModelCleared?: boolean
 }

@@ -8,9 +8,9 @@ import {
   findResourceAuthorizationAsync,
   getResourceAuthorizationUsageAsync,
   listResourceAuthorizationsPageAsync,
+  patchResourceAuthorizationAsync,
   revokeResourceAuthorizationAsync,
-  returnResourceAuthorizationForGranteeAsync,
-  updateResourceAuthorizationAsync
+  returnResourceAuthorizationForGranteeAsync
 } from '../../storage/repositories.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 import { normalizeAccountUsageStatsRange, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
@@ -117,6 +117,7 @@ const createAuthorizationSchema = z.object({
 })
 
 const updateAuthorizationSchema = z.object({
+  expectedUpdatedAt: z.string().datetime({ message: '授权配置版本格式不正确' }),
   status: z.enum(['active', 'paused']).optional(),
   expiresAt: z.union([
     authorizationExpiresAtSchema,
@@ -128,12 +129,15 @@ const updateAuthorizationSchema = z.object({
 })
 
 const updateAuthorizationExpireSchema = z.object({
+  expectedUpdatedAt: z.string().datetime({ message: '授权配置版本格式不正确' }),
   expiresAt: z.union([
     authorizationExpiresAtSchema,
     z.null()
-  ]),
+  ]).optional(),
   limits: requestQuotaLimitsSchema.nullable().optional()
-}).strict()
+}).strict().refine((value) => Object.prototype.hasOwnProperty.call(value, 'expiresAt') || Object.prototype.hasOwnProperty.call(value, 'limits'), {
+  message: '请提供要修改的授权内容'
+})
 
 authorizationsRouter.get('/', async (req, res, next) => {
   const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')
@@ -430,40 +434,40 @@ authorizationsRouter.patch('/:id', async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = await runLoggedOperationAsync(async () => {
-      const before = await findResourceAuthorizationAsync(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = await updateResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
-      if (!authorization) {
-        throw new Error('授权记录不存在')
-      }
+    const outcome = await runLoggedOperationAsync(async () => {
+      const outcome = await patchResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
       return {
-        result: authorization,
-        log: {
-          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+        result: outcome,
+        log: outcome.kind === 'updated' ? {
+          operationScopeSystemAccountId: outcome.context.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'authorizations',
           action: 'update',
           operationKey: 'authorizations.update',
           resourceType: 'authorization',
-          resourceId: authorization.id,
-          resourceName: authorization.resourceName ?? authorization.resourceId,
-          summary: `更新资源授权：${authorization.resourceName ?? authorization.resourceId}`,
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
+          resourceId: outcome.result.id,
+          resourceName: outcome.context.resourceId,
+          summary: `更新资源授权：${outcome.context.resourceId}`,
+          changes: diffSafeFields(outcome.previous as unknown as Record<string, unknown>, outcome.result as unknown as Record<string, unknown>, {
             status: '状态',
             expiresAt: '过期时间',
             limits: '额度限制'
           }),
-          targets: authorizationTargets(authorization),
-          viewers: authorizationViewers(authorization)
-        }
+          targets: authorizationPatchTargets(outcome.context),
+          viewers: authorizationPatchViewers(outcome.context)
+        } : undefined
       }
     }, req)
-    res.json(ok(authorization))
-  } catch (error) {
-    if (error instanceof Error && error.message === '授权记录不存在') {
+    if (outcome.kind === 'not_found') {
       sendNotFound(res, '授权记录不存在')
       return
     }
+    if (outcome.kind === 'conflict') {
+      res.status(409).json({ message: '授权配置已被其他操作更新，请刷新后重试', currentUpdatedAt: outcome.currentUpdatedAt })
+      return
+    }
+    res.json(ok(outcome.result))
+  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
   }
 })
@@ -486,40 +490,40 @@ authorizationsRouter.patch('/:id/expire', async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = await runLoggedOperationAsync(async () => {
-      const before = await findResourceAuthorizationAsync(paramsParsed.data.id, requestAccess, { includeUsage: false })
-      const authorization = await updateResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
-      if (!authorization) {
-        throw new Error('授权记录不存在')
-      }
+    const outcome = await runLoggedOperationAsync(async () => {
+      const outcome = await patchResourceAuthorizationAsync(paramsParsed.data.id, parsed.data, requestAccess)
       return {
-        result: authorization,
-        log: {
-          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+        result: outcome,
+        log: outcome.kind === 'updated' ? {
+          operationScopeSystemAccountId: outcome.context.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
           module: 'authorizations',
           action: 'update_expire',
           operationKey: 'authorizations.update_expire',
           resourceType: 'authorization',
-          resourceId: authorization.id,
-          resourceName: authorization.resourceName ?? authorization.resourceId,
-          summary: `更新授权有效期：${authorization.resourceName ?? authorization.resourceId}`,
-          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
+          resourceId: outcome.result.id,
+          resourceName: outcome.context.resourceId,
+          summary: `更新授权有效期：${outcome.context.resourceId}`,
+          changes: diffSafeFields(outcome.previous as unknown as Record<string, unknown>, outcome.result as unknown as Record<string, unknown>, {
             expiresAt: '过期时间',
             limits: '额度限制',
             status: '状态'
           }),
-          targets: authorizationTargets(authorization),
-          viewers: authorizationViewers(authorization)
-        }
+          targets: authorizationPatchTargets(outcome.context),
+          viewers: authorizationPatchViewers(outcome.context)
+        } : undefined
       }
     }, req)
-    res.json(ok(authorization))
-  } catch (error) {
-    if (error instanceof Error && error.message === '授权记录不存在') {
+    if (outcome.kind === 'not_found') {
       sendNotFound(res, '授权记录不存在')
       return
     }
+    if (outcome.kind === 'conflict') {
+      res.status(409).json({ message: '授权配置已被其他操作更新，请刷新后重试', currentUpdatedAt: outcome.currentUpdatedAt })
+      return
+    }
+    res.json(ok(outcome.result))
+  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
   }
 })
@@ -585,6 +589,46 @@ function authorizationTargets(authorization: ResourceAuthorizationSummary) {
     relation: 'grantee'
   }))
   return targets
+}
+
+interface AuthorizationPatchContext {
+  resourceType: 'account' | 'group'
+  resourceId: string
+  resourceOwnerSystemAccountId: string
+  granteeType: 'system_account' | 'team'
+  granteeSystemAccountId?: string
+  granteeTeamId?: string
+}
+
+function authorizationPatchTargets(context: AuthorizationPatchContext) {
+  const targets = [ownerTarget({
+    targetType: context.resourceType,
+    targetId: context.resourceId,
+    ownerSystemAccountId: context.resourceOwnerSystemAccountId,
+    relation: 'owner'
+  })]
+  if (context.granteeType === 'team') {
+    targets.push(ownerTarget({
+      targetType: 'system_team',
+      targetId: context.granteeTeamId,
+      relation: 'grantee'
+    }))
+  } else {
+    targets.push(ownerTarget({
+      targetType: 'system_account',
+      targetId: context.granteeSystemAccountId,
+      ownerSystemAccountId: context.granteeSystemAccountId,
+      relation: 'grantee'
+    }))
+  }
+  return targets
+}
+
+function authorizationPatchViewers(context: AuthorizationPatchContext) {
+  return viewers(
+    viewer(context.resourceOwnerSystemAccountId, 'authorization_owner'),
+    viewer(context.granteeType === 'system_account' ? context.granteeSystemAccountId : undefined, 'authorization_grantee')
+  )
 }
 
 function authorizationViewers(authorization: ResourceAuthorizationSummary) {

@@ -73,10 +73,19 @@ export interface ResponseInspectionPolicyOverview {
   updatedAt?: string
 }
 
-export interface ResponseInspectionPolicyDetail extends ResponseInspectionPolicyOverview {
+export interface ResponseInspectionPolicyDetail {
+  id: string
+  name: string
+  enabled: boolean
+  priority: number
+  scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
+  providerCode?: string
+  providerName?: string
   match: ResponseInspectionPolicyMatch
+  action: ResponseInspectionPolicyAction
   notes?: string
-  createdAt?: string
+  updatedAt?: string
 }
 
 export interface ResponseInspectionPolicyProviderOption {
@@ -97,6 +106,18 @@ export interface ResponseInspectionPolicyInput {
   notes?: string | null
 }
 
+export type ResponseInspectionPolicyPatch = Partial<ResponseInspectionPolicyInput>
+
+export type ResponseInspectionPolicyPatchOutcome =
+  | { status: 'not_found' }
+  | { status: 'conflict' }
+  | {
+    status: 'noop' | 'updated'
+    current: ResponseInspectionPolicyDetail
+    policy: ResponseInspectionPolicyDetail
+    changedFields: Array<keyof ResponseInspectionPolicyInput>
+  }
+
 interface ResponseInspectionPolicyRow {
   id: string
   name: string
@@ -112,6 +133,8 @@ interface ResponseInspectionPolicyRow {
   updated_at: string
 }
 
+type ResponseInspectionPolicyPatchRow = Omit<ResponseInspectionPolicyRow, 'created_at'>
+
 interface ResponseInspectionPolicyOverviewRow {
   id: string
   name: string
@@ -125,7 +148,7 @@ interface ResponseInspectionPolicyOverviewRow {
   updated_at: string
 }
 
-interface ResponseInspectionPolicyDetailRow extends ResponseInspectionPolicyRow {
+interface ResponseInspectionPolicyDetailRow extends Omit<ResponseInspectionPolicyRow, 'created_at'> {
   provider_name: string | null
 }
 
@@ -161,6 +184,24 @@ const inputKeys = new Set([
   'match',
   'action',
   'notes'
+])
+
+const patchablePolicyFields = [
+  'name',
+  'enabled',
+  'priority',
+  'scopeType',
+  'protocolCode',
+  'providerCode',
+  'match',
+  'action',
+  'notes'
+] as const satisfies readonly (keyof ResponseInspectionPolicyInput)[]
+
+const policyScopeFields = new Set<keyof ResponseInspectionPolicyInput>([
+  'scopeType',
+  'protocolCode',
+  'providerCode'
 ])
 
 const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic', 'generic_gemini', 'gemini_cli'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
@@ -484,72 +525,174 @@ export async function createResponseInspectionPolicyAsync(input: ResponseInspect
   return policyDetailFromSummary(policy, await responseInspectionPolicyProviderNameAsync(policy.providerCode))
 }
 
-export function updateResponseInspectionPolicy(id: string, input: ResponseInspectionPolicyInput): ResponseInspectionPolicyDetail | undefined {
-  assertKnownInputKeys(input, inputKeys, '响应检查策略')
-  const current = findResponseInspectionPolicyRow(id)
-  if (!current) return undefined
-  const policy = normalizePolicyInput(input, {
+export function patchResponseInspectionPolicy(
+  id: string,
+  patch: ResponseInspectionPolicyPatch,
+  expectedUpdatedAt: string
+): ResponseInspectionPolicyPatchOutcome {
+  assertKnownInputKeys(patch, inputKeys, '响应检查策略')
+  const currentRow = findResponseInspectionPolicyRow(id)
+  if (!currentRow) return { status: 'not_found' }
+  if (currentRow.updated_at !== expectedUpdatedAt) return { status: 'conflict' }
+
+  const current = policyFromPatchRow(currentRow)
+  const updatedAt = nextPolicyUpdatedAt(expectedUpdatedAt)
+  const policy = normalizePolicyInput(mergedPolicyInput(current, patch), {
     id,
-    createdAt: current.created_at,
-    updatedAt: nowIso()
+    updatedAt,
+    validateProviderMembership: responseInspectionPolicyPatchTouchesScope(patch)
   })
-  getBusinessDatabase()
+  const mutation = responseInspectionPolicyMutation(current, policy, patch)
+  const currentProviderName = responseInspectionPolicyProviderName(current.providerCode)
+  const currentDetail = policyDetailFromSummary(current, currentProviderName)
+  if (mutation.changedFields.length === 0) {
+    return { status: 'noop', current: currentDetail, policy: currentDetail, changedFields: [] }
+  }
+
+  const result = getBusinessDatabase()
     .prepare(`
       UPDATE response_inspection_policies
-      SET name = ?, enabled = ?, priority = ?, scope_type = ?, protocol_code = ?,
-          provider_code = ?, match_json = ?, action = ?, notes = ?, updated_at = ?
-      WHERE id = ?
+      SET ${mutation.assignments.join(', ')}, updated_at = ?
+      WHERE id = ? AND updated_at = ?
     `)
-    .run(
-      policy.name,
-      policy.enabled ? 1 : 0,
-      policy.priority,
-      policy.scopeType,
-      policy.protocolCode,
-      policy.providerCode ?? null,
-      JSON.stringify(policy.match),
-      policy.action,
-      policy.notes ?? null,
-      policy.updatedAt ?? nowIso(),
-      id
-    )
+    .run(...mutation.values, updatedAt, id, expectedUpdatedAt)
+  if (Number(result.changes) === 0) return { status: 'conflict' }
+
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
-  return policyDetailFromSummary(policy, responseInspectionPolicyProviderName(policy.providerCode))
+  return {
+    status: 'updated',
+    current: currentDetail,
+    policy: policyDetailFromSummary(
+      policy,
+      policy.providerCode === current.providerCode ? currentProviderName : responseInspectionPolicyProviderName(policy.providerCode)
+    ),
+    changedFields: mutation.changedFields
+  }
 }
 
-export async function updateResponseInspectionPolicyAsync(id: string, input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicyDetail | undefined> {
+export async function patchResponseInspectionPolicyAsync(
+  id: string,
+  patch: ResponseInspectionPolicyPatch,
+  expectedUpdatedAt: string
+): Promise<ResponseInspectionPolicyPatchOutcome> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateResponseInspectionPolicy(id, input)
+    return patchResponseInspectionPolicy(id, patch, expectedUpdatedAt)
   }
-  assertKnownInputKeys(input, inputKeys, '响应检查策略')
-  const current = await findResponseInspectionPolicyRowAsync(id)
-  if (!current) return undefined
-  const policy = await normalizePolicyInputAsync(input, {
+  assertKnownInputKeys(patch, inputKeys, '响应检查策略')
+  const currentRow = await findResponseInspectionPolicyRowAsync(id)
+  if (!currentRow) return { status: 'not_found' }
+  if (currentRow.updated_at !== expectedUpdatedAt) return { status: 'conflict' }
+
+  const current = policyFromPatchRow(currentRow)
+  const updatedAt = nextPolicyUpdatedAt(expectedUpdatedAt)
+  const policy = await normalizePolicyInputAsync(mergedPolicyInput(current, patch), {
     id,
-    createdAt: current.created_at,
-    updatedAt: nowIso()
+    updatedAt,
+    validateProviderMembership: responseInspectionPolicyPatchTouchesScope(patch)
   })
+  const mutation = responseInspectionPolicyMutation(current, policy, patch)
+  const currentProviderName = await responseInspectionPolicyProviderNameAsync(current.providerCode)
+  const currentDetail = policyDetailFromSummary(current, currentProviderName)
+  if (mutation.changedFields.length === 0) {
+    return { status: 'noop', current: currentDetail, policy: currentDetail, changedFields: [] }
+  }
+
   const client = await getResponseInspectionPolicyDatabaseClient()
-  await client.execute(`
+  const result = await client.execute(`
     UPDATE ${responseInspectionPoliciesTable(client)}
-    SET name = ?, enabled = ?, priority = ?, scope_type = ?, protocol_code = ?,
-        provider_code = ?, match_json = ?, action = ?, notes = ?, updated_at = ?
-    WHERE id = ?
-  `, [
-    policy.name,
-    policy.enabled ? 1 : 0,
-    policy.priority,
-    policy.scopeType,
-    policy.protocolCode,
-    policy.providerCode ?? null,
-    JSON.stringify(policy.match),
-    policy.action,
-    policy.notes ?? null,
-    policy.updatedAt ?? nowIso(),
-    id
-  ])
+    SET ${mutation.assignments.join(', ')}, updated_at = ?
+    WHERE id = ? AND updated_at = ?
+  `, [...mutation.values, updatedAt, id, expectedUpdatedAt])
+  if (Number(result.changes) === 0) return { status: 'conflict' }
+
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
-  return policyDetailFromSummary(policy, await responseInspectionPolicyProviderNameAsync(policy.providerCode))
+  return {
+    status: 'updated',
+    current: currentDetail,
+    policy: policyDetailFromSummary(
+      policy,
+      policy.providerCode === current.providerCode ? currentProviderName : await responseInspectionPolicyProviderNameAsync(policy.providerCode)
+    ),
+    changedFields: mutation.changedFields
+  }
+}
+
+function mergedPolicyInput(
+  current: ResponseInspectionPolicySummary,
+  patch: ResponseInspectionPolicyPatch
+): ResponseInspectionPolicyInput {
+  return {
+    name: current.name,
+    enabled: current.enabled,
+    priority: current.priority,
+    scopeType: current.scopeType,
+    protocolCode: current.protocolCode,
+    providerCode: current.providerCode,
+    match: current.match,
+    action: current.action,
+    notes: current.notes,
+    ...patch
+  }
+}
+
+function responseInspectionPolicyPatchTouchesScope(patch: ResponseInspectionPolicyPatch): boolean {
+  return Object.keys(patch).some((field) => policyScopeFields.has(field as keyof ResponseInspectionPolicyInput))
+}
+
+function responseInspectionPolicyMutation(
+  current: ResponseInspectionPolicySummary,
+  policy: ResponseInspectionPolicySummary,
+  patch: ResponseInspectionPolicyPatch
+): {
+  assignments: string[]
+  values: Array<string | number | null>
+  changedFields: Array<keyof ResponseInspectionPolicyInput>
+} {
+  const assignments: string[] = []
+  const values: Array<string | number | null> = []
+  const changedFields: Array<keyof ResponseInspectionPolicyInput> = []
+  const selectedFields = new Set(Object.keys(patch))
+
+  for (const field of patchablePolicyFields) {
+    if (!selectedFields.has(field) || responseInspectionPolicyFieldEqual(field, current, policy)) continue
+    const assignment = responseInspectionPolicyAssignment(field, policy)
+    assignments.push(`${assignment.column} = ?`)
+    values.push(assignment.value)
+    changedFields.push(field)
+  }
+  return { assignments, values, changedFields }
+}
+
+function responseInspectionPolicyAssignment(
+  field: keyof ResponseInspectionPolicyInput,
+  policy: ResponseInspectionPolicySummary
+): { column: string; value: string | number | null } {
+  switch (field) {
+    case 'name': return { column: 'name', value: policy.name }
+    case 'enabled': return { column: 'enabled', value: policy.enabled ? 1 : 0 }
+    case 'priority': return { column: 'priority', value: policy.priority }
+    case 'scopeType': return { column: 'scope_type', value: policy.scopeType }
+    case 'protocolCode': return { column: 'protocol_code', value: policy.protocolCode }
+    case 'providerCode': return { column: 'provider_code', value: policy.providerCode ?? null }
+    case 'match': return { column: 'match_json', value: JSON.stringify(policy.match) }
+    case 'action': return { column: 'action', value: policy.action }
+    case 'notes': return { column: 'notes', value: policy.notes ?? null }
+  }
+}
+
+function responseInspectionPolicyFieldEqual(
+  field: keyof ResponseInspectionPolicyInput,
+  left: ResponseInspectionPolicySummary,
+  right: ResponseInspectionPolicySummary
+): boolean {
+  if (field === 'match') return JSON.stringify(left.match) === JSON.stringify(right.match)
+  if (field === 'providerCode' || field === 'notes') return (left[field] ?? null) === (right[field] ?? null)
+  return left[field] === right[field]
+}
+
+function nextPolicyUpdatedAt(expectedUpdatedAt: string): string {
+  const expectedMs = Date.parse(expectedUpdatedAt)
+  return new Date(Math.max(Date.now(), Number.isFinite(expectedMs) ? expectedMs + 1 : 0)).toISOString()
 }
 
 export function deleteResponseInspectionPolicy(id: string): boolean {
@@ -622,22 +765,22 @@ async function listResponseInspectionPolicyOverviewRowsAsync(): Promise<Response
   `, [maxManagementResponseInspectionPolicies])
 }
 
-function findResponseInspectionPolicyRow(id: string): ResponseInspectionPolicyRow | undefined {
+function findResponseInspectionPolicyRow(id: string): ResponseInspectionPolicyPatchRow | undefined {
   return getBusinessDatabase()
     .prepare(`
       SELECT id, name, enabled, priority, scope_type, protocol_code, provider_code,
-        match_json, action, notes, created_at, updated_at
+        match_json, action, notes, updated_at
       FROM response_inspection_policies
       WHERE id = ?
     `)
-    .get(id) as unknown as ResponseInspectionPolicyRow | undefined
+    .get(id) as unknown as ResponseInspectionPolicyPatchRow | undefined
 }
 
-async function findResponseInspectionPolicyRowAsync(id: string): Promise<ResponseInspectionPolicyRow | undefined> {
+async function findResponseInspectionPolicyRowAsync(id: string): Promise<ResponseInspectionPolicyPatchRow | undefined> {
   const client = await getResponseInspectionPolicyDatabaseClient()
-  return await client.one<ResponseInspectionPolicyRow>(`
+  return await client.one<ResponseInspectionPolicyPatchRow>(`
     SELECT id, name, enabled, priority, scope_type, protocol_code, provider_code,
-      match_json, action, notes, created_at, updated_at
+      match_json, action, notes, updated_at
     FROM ${responseInspectionPoliciesTable(client)}
     WHERE id = ?
   `, [id])
@@ -647,7 +790,7 @@ function findResponseInspectionPolicyDetailRow(id: string): ResponseInspectionPo
   return getBusinessDatabase()
     .prepare(`
       SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
-        rip.provider_code, rip.match_json, rip.action, rip.notes, rip.created_at, rip.updated_at,
+        rip.provider_code, rip.match_json, rip.action, rip.notes, rip.updated_at,
         p.name AS provider_name
       FROM response_inspection_policies rip
       LEFT JOIN providers p ON p.code = rip.provider_code
@@ -660,7 +803,7 @@ async function findResponseInspectionPolicyDetailRowAsync(id: string): Promise<R
   const client = await getResponseInspectionPolicyDatabaseClient()
   return await client.one<ResponseInspectionPolicyDetailRow>(`
     SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
-      rip.provider_code, rip.match_json, rip.action, rip.notes, rip.created_at, rip.updated_at,
+      rip.provider_code, rip.match_json, rip.action, rip.notes, rip.updated_at,
       p.name AS provider_name
     FROM ${responseInspectionPoliciesTable(client)} rip
     LEFT JOIN ${providersTable(client)} p ON p.code = rip.provider_code
@@ -740,8 +883,9 @@ function normalizePolicyInput(
   input: ResponseInspectionPolicyInput,
   options: {
     id: string
-    createdAt: string
+    createdAt?: string
     updatedAt: string
+    validateProviderMembership?: boolean
   }
 ): ResponseInspectionPolicySummary {
   const scopeType = normalizeScopeType(input.scopeType)
@@ -749,7 +893,10 @@ function normalizePolicyInput(
   const providerCode = scopeType === 'provider'
     ? normalizeProviderCode(input.providerCode)
     : undefined
-  if (scopeType === 'provider' && (providerCode === undefined || !isProtocolProviderCode(providerCode, protocolCode))) {
+  if (scopeType === 'provider' && providerCode === undefined) {
+    throw new Error('响应检查策略供应商必须使用同协议启用档案')
+  }
+  if (providerCode !== undefined && options.validateProviderMembership !== false && !isProtocolProviderCode(providerCode, protocolCode)) {
     throw new Error('响应检查策略供应商必须使用同协议启用档案')
   }
   if (scopeType === 'protocol' && input.providerCode) {
@@ -777,8 +924,9 @@ async function normalizePolicyInputAsync(
   input: ResponseInspectionPolicyInput,
   options: {
     id: string
-    createdAt: string
+    createdAt?: string
     updatedAt: string
+    validateProviderMembership?: boolean
   }
 ): Promise<ResponseInspectionPolicySummary> {
   const scopeType = normalizeScopeType(input.scopeType)
@@ -786,7 +934,10 @@ async function normalizePolicyInputAsync(
   const providerCode = scopeType === 'provider'
     ? normalizeProviderCode(input.providerCode)
     : undefined
-  if (scopeType === 'provider' && (providerCode === undefined || !(await isProtocolProviderCodeAsync(providerCode, protocolCode)))) {
+  if (scopeType === 'provider' && providerCode === undefined) {
+    throw new Error('响应检查策略供应商必须使用同协议启用档案')
+  }
+  if (providerCode !== undefined && options.validateProviderMembership !== false && !(await isProtocolProviderCodeAsync(providerCode, protocolCode))) {
     throw new Error('响应检查策略供应商必须使用同协议启用档案')
   }
   if (scopeType === 'protocol' && input.providerCode) {
@@ -825,6 +976,24 @@ function policyFromRow(row: ResponseInspectionPolicyRow): ResponseInspectionPoli
     action: normalizeAction(row.action),
     notes: row.notes ?? undefined,
     createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function policyFromPatchRow(row: ResponseInspectionPolicyPatchRow): ResponseInspectionPolicySummary {
+  return {
+    id: row.id,
+    defaultRule: false,
+    editable: true,
+    name: row.name,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    scopeType: normalizeScopeType(row.scope_type),
+    protocolCode: row.protocol_code,
+    providerCode: row.provider_code ?? undefined,
+    match: normalizeMatch(parseJsonObject(row.match_json)),
+    action: normalizeAction(row.action),
+    notes: row.notes ?? undefined,
     updatedAt: row.updated_at
   }
 }
@@ -871,18 +1040,24 @@ function policyDetailFromSummary(
   providerName?: string
 ): ResponseInspectionPolicyDetail {
   return {
-    ...policyOverviewFromSummary(policy, providerName),
+    id: policy.id,
+    name: policy.name,
+    enabled: policy.enabled,
+    priority: policy.priority,
+    scopeType: policy.scopeType,
+    protocolCode: policy.protocolCode,
+    providerCode: policy.providerCode,
+    providerName,
     match: clonePolicyMatch(policy.match),
+    action: policy.action,
     notes: policy.notes,
-    createdAt: policy.createdAt
+    updatedAt: policy.updatedAt
   }
 }
 
 function policyDetailFromRow(row: ResponseInspectionPolicyDetailRow): ResponseInspectionPolicyDetail {
   return {
     id: row.id,
-    defaultRule: false,
-    editable: true,
     name: row.name,
     enabled: row.enabled === 1,
     priority: row.priority,
@@ -893,7 +1068,6 @@ function policyDetailFromRow(row: ResponseInspectionPolicyDetailRow): ResponseIn
     match: normalizeMatch(parseJsonObject(row.match_json)),
     action: normalizeAction(row.action),
     notes: row.notes ?? undefined,
-    createdAt: row.created_at,
     updatedAt: row.updated_at
   }
 }

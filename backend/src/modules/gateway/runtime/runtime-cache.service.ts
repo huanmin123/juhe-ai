@@ -196,7 +196,12 @@ const responseInspectionPolicySharedCache = createSharedJsonCache<ResponseInspec
   ttlMs: responseInspectionPolicyRetainTtlMs
 })
 
-const pendingGatewayRuntimeLoads = new Map<string, Promise<DbServiceGatewayRuntime>>()
+interface PendingGatewayRuntimeLoad {
+  generation: GatewayRuntimeLoadGeneration
+  promise: Promise<DbServiceGatewayRuntime>
+}
+
+const pendingGatewayRuntimeLoads = new Map<string, PendingGatewayRuntimeLoad>()
 const pendingGroupUsageAccessRefreshes = new Map<string, Promise<void>>()
 const pendingOpenAIAccountsRefreshes = new Map<string, Promise<void>>()
 const pendingProviderModelCatalogLoads = new Map<string, Promise<ProviderModelCatalogItem[]>>()
@@ -206,6 +211,7 @@ let gatewayApiKeyRuntimeCacheGeneration = 0
 let providerModelCatalogCacheGeneration = 0
 const sharedCacheFailureLoggedAt = new Map<string, number>()
 const sharedCacheFailureLogIntervalMs = 30_000
+const gatewayRuntimeLoadAttemptLimit = 3
 
 function isGatewayRuntimeCacheGenerationCurrent(generation: number): boolean {
   return generation === gatewayRuntimeCacheGeneration
@@ -925,21 +931,28 @@ async function loadActiveResponseInspectionPoliciesAndPopulateCache(
 }
 
 async function loadGatewayRuntimeOnce(apiKey: string, cacheKey: string): Promise<DbServiceGatewayRuntime> {
-  const pending = pendingGatewayRuntimeLoads.get(cacheKey)
-  if (pending) {
-    return await pending
-  }
-
-  const generation = gatewayRuntimeLoadGeneration()
-  const load = loadGatewayRuntimeAndPopulateCaches(apiKey, cacheKey, generation)
-  pendingGatewayRuntimeLoads.set(cacheKey, load)
-  try {
-    return await load
-  } finally {
-    if (pendingGatewayRuntimeLoads.get(cacheKey) === load) {
-      pendingGatewayRuntimeLoads.delete(cacheKey)
+  for (let attempt = 0; attempt < gatewayRuntimeLoadAttemptLimit; attempt += 1) {
+    let pending = pendingGatewayRuntimeLoads.get(cacheKey)
+    if (!pending) {
+      const generation = gatewayRuntimeLoadGeneration()
+      pending = {
+        generation,
+        promise: loadGatewayRuntimeAndPopulateCaches(apiKey, cacheKey, generation)
+      }
+      pendingGatewayRuntimeLoads.set(cacheKey, pending)
+    }
+    try {
+      const runtime = await pending.promise
+      if (isGatewayRuntimeLoadGenerationCurrent(pending.generation)) {
+        return runtime
+      }
+    } finally {
+      if (pendingGatewayRuntimeLoads.get(cacheKey) === pending) {
+        pendingGatewayRuntimeLoads.delete(cacheKey)
+      }
     }
   }
+  throw new Error('网关 API Key 运行时在连续失效后仍发生变化，请重试')
 }
 
 async function loadGatewayRuntimeAndPopulateCaches(

@@ -5,7 +5,7 @@ import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationListItem, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationListItem, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import {
   extractApiErrorMessage,
   formatDateTime,
@@ -13,14 +13,15 @@ import {
 } from './authorizationFormatters'
 import {
   authorizationCreatePayload,
+  authorizationExpireBaseline,
   authorizationExpireFormFromSummary,
   authorizationExpirePayload,
+  type AuthorizationExpireBaseline,
   type AuthorizationCreateFormModel,
   type AuthorizationExpireFormModel
 } from './authorizationFormModel'
 
 interface UseAuthorizationActionsOptions {
-  authorizationRequestContext: ComputedRef<string>
   createAuthorizationScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   createExcludedGranteeIds: ComputedRef<string[]>
   createForm: AuthorizationCreateFormModel
@@ -29,7 +30,7 @@ interface UseAuthorizationActionsOptions {
   createTargetGroupVisible: ComputedRef<boolean>
   createTeams: Ref<SystemTeamPrincipalSummary[]>
   createUsers: Ref<SystemAccountPrincipalSummary[]>
-  expireAuthorization: Ref<ResourceAuthorizationSummary | undefined>
+  expireAuthorization: Ref<ResourceAuthorizationListItem | undefined>
   expireForm: AuthorizationExpireFormModel
   expireModalOpen: Ref<boolean>
   isManagementView: ComputedRef<boolean>
@@ -44,7 +45,6 @@ interface UseAuthorizationActionsOptions {
 
 export function useAuthorizationActions(options: UseAuthorizationActionsOptions) {
   const {
-    authorizationRequestContext,
     createAuthorizationScopeParams,
     createExcludedGranteeIds,
     createForm,
@@ -64,8 +64,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
   } = options
   const { submitAction, submittingRef } = useSubmitAction('authorizations')
   const authorizationCreating = submittingRef('authorizations.create')
-  let expireDetailRequestToken = 0
-  let activeExpireDetailRequestSignature: string | undefined
+  let expireBaseline: AuthorizationExpireBaseline | undefined
 
   const createAuthorization = submitAction('authorizations.create', async () => {
     if (isManagementView.value && !createForm.ownerSystemAccountId) {
@@ -204,7 +203,10 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
 
   async function updateAuthorizationStatus(item: ResourceAuthorizationListItem, status: 'active' | 'paused') {
     try {
-      const payload: { status: 'active' | 'paused'; expiresAt?: string | null } = { status }
+      const payload: { expectedUpdatedAt: string; status: 'active' | 'paused'; expiresAt?: string | null } = {
+        expectedUpdatedAt: item.updatedAt,
+        status
+      }
       if (status === 'active' && item.expiresAt) {
         const expiresAtTimestamp = serverDateTimeTimestamp(item.expiresAt)
         if (expiresAtTimestamp === undefined || expiresAtTimestamp <= Date.now()) {
@@ -214,65 +216,31 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       const updated = isManagementView.value
         ? await api.authorizations.update(item.id, payload, authorizationOperationScopeParams(item))
         : await api.myAuthorizations.update(item.id, payload)
-      updateAuthorizationItems((authorization) => authorization.id === item.id, () => updated)
+      updateAuthorizationItems((authorization) => authorization.id === item.id, (authorization) => ({ ...authorization, ...updated }))
       message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
-      void loadData({ quiet: true })
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, status === 'active' ? '恢复授权失败' : '暂停授权失败'))
     }
   }
 
-  async function openExpireModal(item: ResourceAuthorizationListItem) {
-    const requestToken = ++expireDetailRequestToken
-    const requestContext = authorizationRequestContext.value
-    const managementView = isManagementView.value
-    const resourceOwnerSystemAccountId = item.resourceOwnerSystemAccountId
-    const requestSignature = JSON.stringify([
-      requestContext,
-      managementView ? 'management' : 'self',
-      resourceOwnerSystemAccountId ?? '',
-      item.id
-    ])
-    activeExpireDetailRequestSignature = requestSignature
-    const isCurrent = () => requestToken === expireDetailRequestToken
-      && activeExpireDetailRequestSignature === requestSignature
-      && authorizationRequestContext.value === requestContext
-      && isManagementView.value === managementView
-    let detail: ResourceAuthorizationSummary
-    try {
-      detail = managementView
-        ? await api.authorizations.detail(item.id, resourceOwnerSystemAccountId ? { systemAccountId: resourceOwnerSystemAccountId } : undefined)
-        : await api.myAuthorizations.detail(item.id)
-    } catch (error) {
-      if (!isCurrent()) return
-      console.error(error)
-      message.error(extractApiErrorMessage(error, '加载授权配置失败'))
-      return
-    }
-    if (!isCurrent()) return
+  function openExpireModal(item: ResourceAuthorizationListItem) {
     let nextForm: AuthorizationExpireFormModel
     try {
-      nextForm = authorizationExpireFormFromSummary(detail)
+      nextForm = authorizationExpireFormFromSummary(item)
     } catch (error) {
-      if (!isCurrent()) return
       message.error(extractApiErrorMessage(error, '授权数据结构异常，请清理后再编辑'))
       return
     }
-    if (!isCurrent()) return
-    expireAuthorization.value = detail
+    expireAuthorization.value = item
+    expireBaseline = authorizationExpireBaseline(item)
     Object.assign(expireForm, nextForm)
     expireModalOpen.value = true
   }
 
-  function invalidateExpireDetailRequest(): void {
-    expireDetailRequestToken += 1
-    activeExpireDetailRequestSignature = undefined
-  }
-
   async function confirmExpireChange() {
     const authorization = expireAuthorization.value
-    if (!authorization) {
+    if (!authorization || !expireBaseline) {
       expireModalOpen.value = false
       return
     }
@@ -280,15 +248,23 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
       return
     }
     try {
-      const payload = authorizationExpirePayload(expireForm)
+      const changes = authorizationExpirePayload(expireForm, expireBaseline)
+      if (!Object.keys(changes).length) {
+        expireModalOpen.value = false
+        expireAuthorization.value = undefined
+        expireBaseline = undefined
+        message.info('授权配置未修改')
+        return
+      }
+      const payload = { expectedUpdatedAt: authorization.updatedAt, ...changes }
       const updated = isManagementView.value
         ? await api.authorizations.updateExpire(authorization.id, payload, authorizationOperationScopeParams(authorization))
         : await api.myAuthorizations.updateExpire(authorization.id, payload)
-      updateAuthorizationItems((item) => item.id === authorization.id, () => updated)
+      updateAuthorizationItems((item) => item.id === authorization.id, (item) => ({ ...item, ...updated }))
       expireModalOpen.value = false
       expireAuthorization.value = undefined
+      expireBaseline = undefined
       message.success('授权配置已更新')
-      void loadData({ quiet: true })
     } catch (error) {
       console.error(error)
       message.error(extractApiErrorMessage(error, '修改授权配置失败'))
@@ -327,7 +303,6 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     authorizationCreating,
     confirmExpireChange,
     createAuthorization,
-    handleActionMenuClick,
-    invalidateExpireDetailRequest
+    handleActionMenuClick
   }
 }

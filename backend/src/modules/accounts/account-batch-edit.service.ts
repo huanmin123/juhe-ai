@@ -1,24 +1,14 @@
 import { isDeepStrictEqual } from 'node:util'
 
-import { accountCircuitCredentialOwnerIdentity } from '../../domain/account-circuit-owner.js'
-
 import type {
   AccountBatchEditResult,
   AccountModelMapping,
   AccountSummary,
-  AccountStatus,
   AccountSupportedEndpointMode
 } from '../../domain/types.js'
-import { errorLogFields, logger } from '../../shared/logger.js'
-import {
-  assertAnthropicEndpointModesCompatible
-} from '../../domain/anthropic-endpoint-modes.js'
-import {
-  assertGeminiEndpointModesCompatible
-} from '../../domain/gemini-endpoint-modes.js'
-import {
-  assertOpenAIEndpointModesCompatible
-} from '../../domain/openai-endpoint-modes.js'
+import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
+import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
+import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { resolveHealthCheckEndpointMode } from '../../domain/account-health-check-endpoint-mode.js'
 import {
   isAnthropicProtocolProfile,
@@ -29,12 +19,14 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   AccountBatchUpdateAccessError,
+  type AccountBatchUpdateItemResult,
   type AccountBatchUpdateLockedAccount,
   type AccountBatchUpdatePreparedAccount,
   updateAccountsBatchAsync
 } from '../../storage/account-batch-update.repository.js'
 import {
   accountAvailabilityScheduleFromRequest,
+  accountAvailabilityScheduleJson,
   accountStatusForScheduleMutation,
   nextAccountAvailabilityScheduleCheckAt
 } from '../../storage/account-availability-schedule.js'
@@ -48,6 +40,7 @@ import {
 import { normalizeAccountTagNamesInput } from '../../storage/account-tags.repository.js'
 import { findAccountSummaryAsync } from '../../storage/account-summary.repository.js'
 import { isAccountExpired } from '../../storage/account-runtime-mutation-helpers.js'
+import { encryptJson } from '../../storage/crypto.js'
 import { normalizeNullableTextInput } from '../../storage/repository-input-normalization.js'
 import { nullableServerDateTimeIso } from '../../storage/value-utils.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
@@ -55,7 +48,6 @@ import { normalizeAccountErrorHandlingRules } from './account-error-policy-valid
 import type { AccountBatchEditRequest } from './account-request.schemas.js'
 import { normalizeAccountResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
-import { effectiveAccountApiKeyCount } from './account-balance-config.js'
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 const modelConfigurationFields = new Set([
@@ -68,14 +60,16 @@ const modelConfigurationFields = new Set([
   'reasoningEffortOverride'
 ])
 
+export interface AccountBatchEditServiceResult extends AccountBatchEditResult {
+  ownerSystemAccountId: string
+}
+
 export async function loadAccountBatchEditContextAsync(
   accountIds: string[],
   access?: AccessScope
 ): Promise<AccountSummary[]> {
   const accounts = await Promise.all(accountIds.map((accountId) => findAccountSummaryAsync(accountId, access)))
-  if (accounts.some((account) => !account)) {
-    throw new AccountBatchUpdateAccessError()
-  }
+  if (accounts.some((account) => !account)) throw new AccountBatchUpdateAccessError()
   const resolved = accounts.filter((account): account is NonNullable<typeof account> => Boolean(account))
   const owners = new Set<string>()
   for (const account of resolved) {
@@ -89,64 +83,32 @@ export async function loadAccountBatchEditContextAsync(
       throw new AccountBatchUpdateAccessError()
     }
     const ownerSystemAccountId = account.ownerSystemAccountId ?? account.systemAccountId
-    if (!ownerSystemAccountId) {
-      throw new AccountBatchUpdateAccessError()
-    }
+    if (!ownerSystemAccountId) throw new AccountBatchUpdateAccessError()
     owners.add(ownerSystemAccountId)
   }
-  if (owners.size !== 1) {
-    throw new AccountBatchUpdateAccessError('批量编辑账户必须属于同一系统账户作用域')
-  }
+  if (owners.size !== 1) throw new AccountBatchUpdateAccessError('批量编辑账户必须属于同一系统账户作用域')
   return resolved
 }
 
 export async function batchEditAccountsAsync(
   input: AccountBatchEditRequest,
   access?: AccessScope
-): Promise<AccountBatchEditResult> {
+): Promise<AccountBatchEditServiceResult> {
   const updates = enabledBatchUpdates(input.updates)
-  const changedFields = Object.keys(updates)
-  if (!changedFields.length) {
-    throw new Error('请至少选择一项需要覆盖的配置')
-  }
-  const fallbackAccounts = await loadAccountBatchEditContextAsync(
-    input.targets.map((target) => target.accountId),
-    access
-  )
-  const repositoryResult = await updateAccountsBatchAsync({
+  const requestedFields = Object.keys(updates)
+  if (!requestedFields.length) throw new Error('请至少选择一项需要覆盖的配置')
+  const result = await updateAccountsBatchAsync({
     targets: input.targets,
+    requestedFields,
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
-  cleanupChangedBalanceSnapshots(
-    repositoryResult.balanceSnapshotCleanupAccountIds,
-    repositoryResult.configRevisions,
-    repositoryResult.batchId
-  )
-  let accounts: AccountSummary[]
-  try {
-    const refreshed = await Promise.all(
-      repositoryResult.accountIds.map((accountId) => findAccountSummaryAsync(accountId, access))
-    )
-    if (refreshed.some((account) => !account)) {
-      throw new Error('部分账户摘要不存在')
-    }
-    accounts = refreshed.filter((account): account is NonNullable<typeof account> => Boolean(account))
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'account_batch_update_summary_refresh_failed',
-      batchId: repositoryResult.batchId,
-      accountCount: repositoryResult.accountIds.length
-    }), '批量编辑已提交，但账户摘要刷新失败，返回提交前安全摘要')
-    accounts = fallbackAccounts.map((account) => ({
-      ...account,
-      configRevision: repositoryResult.configRevisions[account.id] ?? account.configRevision
-    }))
-  }
+  cleanupChangedBalanceSnapshots(result.balanceSnapshotCleanupAccountIds, result.items, result.batchId)
   return {
-    batchId: repositoryResult.batchId,
-    changedFields,
-    accounts
+    batchId: result.batchId,
+    ownerSystemAccountId: result.ownerSystemAccountId,
+    changedFields: result.changedFields,
+    items: result.items
   }
 }
 
@@ -158,10 +120,10 @@ async function prepareBatchUpdatesAsync(
   if (Object.keys(updates).some((field) => modelConfigurationFields.has(field))) {
     assertHomogeneousModelConfigurationBatch(accounts)
   }
-  const proxyProfileId = Object.prototype.hasOwnProperty.call(updates, 'proxyProfileId')
+  const proxyProfileId = hasOwn(updates, 'proxyProfileId')
     ? await enabledProxyProfileIdAsync(client, updates.proxyProfileId, accounts[0]?.systemAccountId)
     : undefined
-  return await Promise.all(accounts.map((account) => prepareAccountUpdateAsync(account, updates, proxyProfileId)))
+  return Promise.all(accounts.map((account) => prepareAccountUpdateAsync(account, updates, proxyProfileId)))
 }
 
 async function prepareAccountUpdateAsync(
@@ -169,23 +131,38 @@ async function prepareAccountUpdateAsync(
   updates: Record<string, unknown>,
   resolvedProxyProfileId: string | undefined
 ): Promise<AccountBatchUpdatePreparedAccount> {
-  const hasCredentialConfigUpdate = hasAnyOwnKey(updates, [
+  const mainColumns = new Map<string, unknown>()
+  const changedFields = new Set<string>()
+  const addChange = (field: string, before: unknown, after: unknown): boolean => {
+    if (isDeepStrictEqual(before, after)) return false
+    changedFields.add(field)
+    return true
+  }
+  const setColumn = (column: string, before: unknown, after: unknown, value = after): boolean => {
+    if (isDeepStrictEqual(before, after)) return false
+    mainColumns.set(column, value)
+    return true
+  }
+
+  const credentialUpdateKeys = [
     'errorHandlingRules',
     'responseInspectionRules',
     'supportedEndpointModes',
     'serviceTierOverride',
     'reasoningEffortOverride'
-  ])
+  ]
+  const hasCredentialConfigUpdate = hasAnyOwnKey(updates, credentialUpdateKeys)
   let nextCredentials = account.credentials
+  let credentialsChanged = false
   if (hasCredentialConfigUpdate) {
     const mergedCredentials = { ...account.credentials }
-    if (Object.prototype.hasOwnProperty.call(updates, 'errorHandlingRules')) {
+    if (hasOwn(updates, 'errorHandlingRules')) {
       mergedCredentials.error_handling_rules = normalizeAccountErrorHandlingRules(updates.errorHandlingRules)
     }
-    if (Object.prototype.hasOwnProperty.call(updates, 'responseInspectionRules')) {
+    if (hasOwn(updates, 'responseInspectionRules')) {
       mergedCredentials.response_inspection_rules = normalizeAccountResponseInspectionRules(updates.responseInspectionRules)
     }
-    if (Object.prototype.hasOwnProperty.call(updates, 'supportedEndpointModes')) {
+    if (hasOwn(updates, 'supportedEndpointModes')) {
       mergedCredentials.supported_endpoint_modes = updates.supportedEndpointModes
     }
     applyNullableCredentialOverride(mergedCredentials, updates, 'serviceTierOverride', 'service_tier_override')
@@ -198,9 +175,26 @@ async function prepareAccountUpdateAsync(
       accountType: account.type,
       clientCompatibility: account.clientCompatibility
     })
+    const credentialFieldMap: Array<[string, string]> = [
+      ['errorHandlingRules', 'error_handling_rules'],
+      ['responseInspectionRules', 'response_inspection_rules'],
+      ['supportedEndpointModes', 'supported_endpoint_modes'],
+      ['serviceTierOverride', 'service_tier_override'],
+      ['reasoningEffortOverride', 'reasoning_effort_override']
+    ]
+    for (const [updateKey, credentialKey] of credentialFieldMap) {
+      if (hasOwn(updates, updateKey)) {
+        credentialsChanged = addChange(updateKey, account.credentials[credentialKey], nextCredentials[credentialKey]) || credentialsChanged
+      }
+    }
+    if (credentialsChanged) mainColumns.set('credentials_encrypted', encryptJson(nextCredentials))
   }
 
-  const nextSupportedModels = Object.prototype.hasOwnProperty.call(updates, 'supportedModels')
+  const supportedModelsRelevant = hasAnyOwnKey(updates, [
+    'supportedModels', 'healthCheckModel', 'modelMappings', 'supportedEndpointModes',
+    'serviceTierOverride', 'reasoningEffortOverride'
+  ])
+  const nextSupportedModels = hasOwn(updates, 'supportedModels')
     ? await normalizeAccountSupportedModelsForProviderAsync(
         updates.supportedModels,
         account.providerCode,
@@ -208,35 +202,54 @@ async function prepareAccountUpdateAsync(
         account
       ) ?? []
     : account.supportedModels
-  assertAccountSupportedModelsRequired(nextSupportedModels)
-  await assertAccountGptRequestOverridesSupportedAsync({
-    providerCode: account.providerCode,
-    accountType: account.type,
-    credentials: nextCredentials,
-    supportedModels: nextSupportedModels,
-    systemAccountId: account.systemAccountId
-  })
+  if (supportedModelsRelevant) assertAccountSupportedModelsRequired(nextSupportedModels)
+  const supportedModelsChanged = hasOwn(updates, 'supportedModels')
+    && !unorderedStringListEquals(account.supportedModels, nextSupportedModels)
+  if (supportedModelsChanged) addChange('supportedModels', account.supportedModels, nextSupportedModels)
 
-  const nextHealthCheckModel = Object.prototype.hasOwnProperty.call(updates, 'healthCheckModel')
-    ? requiredText(updates.healthCheckModel, '账户检查模型')
-    : account.healthCheckModel
-  if (!nextSupportedModels.includes(nextHealthCheckModel)) {
-    throw new Error(`账户 ${account.id} 的检查模型必须属于最终支持模型`)
+  if (supportedModelsChanged || hasAnyOwnKey(updates, ['serviceTierOverride', 'reasoningEffortOverride'])) {
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode: account.providerCode,
+      accountType: account.type,
+      credentials: nextCredentials,
+      supportedModels: nextSupportedModels,
+      systemAccountId: account.systemAccountId
+    })
   }
-  const nextHealthCheckEndpointMode = resolveHealthCheckEndpointMode({
-    value: Object.prototype.hasOwnProperty.call(updates, 'healthCheckEndpointMode')
-      ? updates.healthCheckEndpointMode
-      : account.healthCheckEndpointMode,
-    providerCode: account.providerCode,
-    providerProtocolProfileId: account.providerProtocolProfileId,
-    enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-  })
 
-  const shouldValidateMappings = Object.prototype.hasOwnProperty.call(updates, 'modelMappings')
-    || Object.prototype.hasOwnProperty.call(updates, 'supportedEndpointModes')
+  let nextHealthCheckModel = account.healthCheckModel
+  if (hasOwn(updates, 'healthCheckModel')) nextHealthCheckModel = requiredText(updates.healthCheckModel, '账户检查模型')
+  if (hasOwn(updates, 'healthCheckModel') || supportedModelsChanged) {
+    if (!nextSupportedModels.includes(nextHealthCheckModel)) {
+      throw new Error(`账户 ${account.id} 的检查模型必须属于最终支持模型`)
+    }
+  }
+  const healthCheckModelChanged = hasOwn(updates, 'healthCheckModel')
+    && addChange('healthCheckModel', account.healthCheckModel, nextHealthCheckModel)
+  if (healthCheckModelChanged) mainColumns.set('health_check_model', nextHealthCheckModel)
+
+  let nextHealthCheckEndpointMode = account.healthCheckEndpointMode
+  if (hasOwn(updates, 'healthCheckEndpointMode') || hasOwn(updates, 'supportedEndpointModes')) {
+    nextHealthCheckEndpointMode = resolveHealthCheckEndpointMode({
+      value: hasOwn(updates, 'healthCheckEndpointMode')
+        ? updates.healthCheckEndpointMode
+        : account.healthCheckEndpointMode,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+    })
+  }
+  const healthCheckEndpointModeChanged = addChange(
+    'healthCheckEndpointMode',
+    account.healthCheckEndpointMode,
+    nextHealthCheckEndpointMode
+  )
+  if (healthCheckEndpointModeChanged) mainColumns.set('health_check_endpoint_mode', nextHealthCheckEndpointMode)
+
+  const shouldValidateMappings = hasOwn(updates, 'modelMappings') || hasOwn(updates, 'supportedEndpointModes')
   const nextModelMappings = shouldValidateMappings
     ? await normalizeAccountModelMappingsForProviderAsync(
-        Object.prototype.hasOwnProperty.call(updates, 'modelMappings') ? updates.modelMappings : account.modelMappings,
+        hasOwn(updates, 'modelMappings') ? updates.modelMappings : account.modelMappings,
         account.providerCode,
         account.systemAccountId,
         {
@@ -246,133 +259,146 @@ async function prepareAccountUpdateAsync(
           protocolCode: account.protocolCode,
           protocolVersion: account.protocolVersion
         },
-        {
-          supportedEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-        }
+        { supportedEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[] }
       ) ?? []
     : account.modelMappings
-  assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
-  assertEndpointModesCompatible(account, nextCredentials, nextModelMappings)
+  if (hasOwn(updates, 'modelMappings') || supportedModelsChanged || hasOwn(updates, 'supportedEndpointModes')) {
+    assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
+  }
+  if (shouldValidateMappings || hasOwn(updates, 'healthCheckEndpointMode')) {
+    assertEndpointModesCompatible(account, nextCredentials, nextModelMappings)
+  }
+  const modelMappingsChanged = shouldValidateMappings && !modelMappingsEqual(account.modelMappings, nextModelMappings)
+  if (modelMappingsChanged) addChange('modelMappings', account.modelMappings, nextModelMappings)
 
-  const nextTags = Object.prototype.hasOwnProperty.call(updates, 'tags')
-    ? normalizeAccountTagNamesInput(updates.tags) ?? []
-    : account.tags
-  const nextProxyProfileId = Object.prototype.hasOwnProperty.call(updates, 'proxyProfileId')
-    ? resolvedProxyProfileId
-    : account.proxyProfileId
+  const nextTags = hasOwn(updates, 'tags') ? normalizeAccountTagNamesInput(updates.tags) ?? [] : account.tags
+  const tagsChanged = hasOwn(updates, 'tags') && !unorderedStringListEquals(account.tags, nextTags)
+  if (tagsChanged) addChange('tags', account.tags, nextTags)
+
+  const nextProxyProfileId = hasOwn(updates, 'proxyProfileId') ? resolvedProxyProfileId : account.proxyProfileId
+  const proxyChanged = hasOwn(updates, 'proxyProfileId')
+    && addChange('proxyProfileId', account.proxyProfileId, nextProxyProfileId)
+  if (proxyChanged) {
+    mainColumns.set('proxy_profile_id', nextProxyProfileId ?? null)
+    if (account.balanceQueryEnabled) mainColumns.set('balance_query_next_refresh_at', new Date().toISOString())
+  }
+
   const nextConcurrencyLimit = numberValue(updates, 'concurrencyLimit', account.concurrencyLimit)
+  if (hasOwn(updates, 'concurrencyLimit') && addChange('concurrencyLimit', account.concurrencyLimit, nextConcurrencyLimit)) {
+    mainColumns.set('concurrency_limit', nextConcurrencyLimit)
+  }
   const nextPriority = numberValue(updates, 'priority', account.priority)
   let nextSuperPriorityEnabled = booleanValue(updates, 'superPriorityEnabled', account.superPriorityEnabled)
   let nextFallbackEnabled = booleanValue(updates, 'fallbackEnabled', account.fallbackEnabled)
   if (nextSuperPriorityEnabled && nextFallbackEnabled) {
-    if (updates.superPriorityEnabled === true && !Object.prototype.hasOwnProperty.call(updates, 'fallbackEnabled')) {
-      nextFallbackEnabled = false
-    } else if (updates.fallbackEnabled === true && !Object.prototype.hasOwnProperty.call(updates, 'superPriorityEnabled')) {
-      nextSuperPriorityEnabled = false
-    } else {
-      throw new Error('超级优先和降级备用不能同时开启')
-    }
+    if (updates.superPriorityEnabled === true && !hasOwn(updates, 'fallbackEnabled')) nextFallbackEnabled = false
+    else if (updates.fallbackEnabled === true && !hasOwn(updates, 'superPriorityEnabled')) nextSuperPriorityEnabled = false
+    else throw new Error('超级优先和降级备用不能同时开启')
   }
+  const priorityChanged = addChange('priority', account.priority, nextPriority)
+  const superPriorityChanged = addChange('superPriorityEnabled', account.superPriorityEnabled, nextSuperPriorityEnabled)
+  const fallbackChanged = addChange('fallbackEnabled', account.fallbackEnabled, nextFallbackEnabled)
+  if (priorityChanged) mainColumns.set('priority', nextPriority)
+  if (superPriorityChanged) mainColumns.set('super_priority_enabled', nextSuperPriorityEnabled ? 1 : 0)
+  if (fallbackChanged) mainColumns.set('fallback_enabled', nextFallbackEnabled ? 1 : 0)
+  const dispatchChanged = priorityChanged || superPriorityChanged || fallbackChanged
 
-  const nextAccountExpiresAt = Object.prototype.hasOwnProperty.call(updates, 'accountExpiresAt')
+  const nextAccountExpiresAt = hasOwn(updates, 'accountExpiresAt')
     ? nullableServerDateTimeIso(updates.accountExpiresAt, '账户套餐到期时间') ?? undefined
     : account.accountExpiresAt
-  const nextAvailabilitySchedule = Object.prototype.hasOwnProperty.call(updates, 'availabilitySchedule')
+  const expiresAtChanged = hasOwn(updates, 'accountExpiresAt')
+    && addChange('accountExpiresAt', account.accountExpiresAt, nextAccountExpiresAt)
+  if (expiresAtChanged) mainColumns.set('account_expires_at', nextAccountExpiresAt ?? null)
+
+  const nextAvailabilitySchedule = hasOwn(updates, 'availabilitySchedule')
     ? accountAvailabilityScheduleFromRequest({ availabilitySchedule: updates.availabilitySchedule })
     : account.availabilitySchedule
-  const nextNotes = Object.prototype.hasOwnProperty.call(updates, 'notes')
-    ? normalizeNullableTextInput(updates.notes, '账户备注')
-    : account.notes
+  const currentScheduleJson = accountAvailabilityScheduleJson(account.availabilitySchedule)
+  const nextScheduleJson = accountAvailabilityScheduleJson(nextAvailabilitySchedule)
+  const scheduleChanged = hasOwn(updates, 'availabilitySchedule') && currentScheduleJson !== nextScheduleJson
+  if (scheduleChanged) {
+    changedFields.add('availabilitySchedule')
+    mainColumns.set('availability_schedule_json', nextScheduleJson)
+    mainColumns.set('availability_schedule_next_check_at', nextAccountAvailabilityScheduleCheckAt(nextAvailabilitySchedule))
+  }
+  if (hasOwn(updates, 'notes')) {
+    const nextNotes = normalizeNullableTextInput(updates.notes, '账户备注')
+    if (addChange('notes', account.notes, nextNotes)) mainColumns.set('notes', nextNotes ?? null)
+  }
 
-  const supportedModelsChanged = !unorderedStringListEquals(account.supportedModels, nextSupportedModels)
-  const modelMappingsChanged = !modelMappingsEqual(account.modelMappings, nextModelMappings)
-  const endpointModesChanged = !unorderedStringListEquals(
-    account.credentials.supported_endpoint_modes as string[] | undefined,
-    nextCredentials.supported_endpoint_modes as string[] | undefined
-  )
-  const proxyChanged = account.proxyProfileId !== nextProxyProfileId
-  const healthCheckModelChanged = account.healthCheckModel !== nextHealthCheckModel
-  const healthCheckEndpointModeChanged = account.healthCheckEndpointMode !== nextHealthCheckEndpointMode
+  let nextStatus = account.status
+  let nextSchedulable = account.schedulable
+  const expiredByChangedPackage = expiresAtChanged && isAccountExpired(nextAccountExpiresAt)
+  if (expiredByChangedPackage) {
+    nextStatus = 'disabled'
+    nextSchedulable = false
+    setColumn('cooldown_until', account.cooldownUntil, undefined, null)
+    setColumn('last_error_code', account.lastErrorCode, 'account_expired')
+    setColumn('last_error_message', account.lastErrorMessage, '账户套餐已过期，已自动停用')
+    setColumn('cooldown_retest_failure_count', account.cooldownRetestFailureCount, 0)
+    setColumn('cooldown_retest_observation_started_at', account.cooldownRetestObservationStartedAt, undefined, null)
+    mainColumns.set('cooldown_retest_generation', null)
+    setColumn('cooldown_retest_last_at', account.cooldownRetestLastAt, undefined, null)
+    setColumn('cooldown_retest_last_status_code', account.cooldownRetestLastStatusCode, undefined, null)
+  } else if (scheduleChanged) {
+    nextStatus = accountStatusForScheduleMutation({
+      requestedStatus: account.status,
+      schedule: nextAvailabilitySchedule,
+      now: new Date()
+    })
+    if (nextStatus !== account.status && statusForcesSchedulableOff(nextStatus)) nextSchedulable = false
+  }
+  if (setColumn('status', account.status, nextStatus)) changedFields.add('status')
+  if (setColumn('schedulable', account.schedulable, nextSchedulable, nextSchedulable ? 1 : 0)) {
+    changedFields.add('schedulable')
+  }
+
   const shouldScheduleHealthCheck = proxyChanged
     || supportedModelsChanged
     || healthCheckModelChanged
     || healthCheckEndpointModeChanged
     || modelMappingsChanged
-    || endpointModesChanged
-  const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
-  const scheduledStatus = expiredByPackage
-    ? 'disabled'
-    : Object.prototype.hasOwnProperty.call(updates, 'availabilitySchedule')
-      ? accountStatusForScheduleMutation({
-          requestedStatus: account.status,
-          schedule: nextAvailabilitySchedule,
-          now: new Date()
-        })
-      : account.status
-  const nextStatus: AccountStatus = scheduledStatus
+    || (credentialsChanged && hasOwn(updates, 'supportedEndpointModes'))
+  if (shouldScheduleHealthCheck && nextStatus !== 'disabled') mainColumns.set('next_health_check_at', null)
 
+  const gatewayFields = new Set([
+    'status', 'schedulable', 'concurrencyLimit', 'priority', 'superPriorityEnabled', 'fallbackEnabled',
+    'proxyProfileId', 'supportedModels', 'modelMappings', 'healthCheckModel', 'healthCheckEndpointMode',
+    'availabilitySchedule', 'accountExpiresAt', 'errorHandlingRules', 'responseInspectionRules',
+    'supportedEndpointModes', 'serviceTierOverride', 'reasoningEffortOverride'
+  ])
+  const groupStatsFields = new Set(['status', 'schedulable', 'concurrencyLimit'])
+  const sortedChangedFields = [...changedFields].sort()
   return {
     accountId: account.id,
     expectedConfigRevision: account.configRevision,
-    credentials: hasCredentialConfigUpdate ? nextCredentials : undefined,
-    proxyProfileId: nextProxyProfileId,
-    concurrencyLimit: nextConcurrencyLimit,
-    priority: nextPriority,
-    superPriorityEnabled: nextSuperPriorityEnabled,
-    fallbackEnabled: nextFallbackEnabled,
-    status: nextStatus,
-    schedulable: expiredByPackage || statusForcesSchedulableOff(nextStatus) ? false : account.schedulable,
-    availabilitySchedule: nextAvailabilitySchedule,
-    availabilityScheduleNextCheckAt: nextAccountAvailabilityScheduleCheckAt(nextAvailabilitySchedule),
-    accountExpiresAt: nextAccountExpiresAt,
-    notes: nextNotes,
-    cooldownUntil: expiredByPackage ? undefined : account.cooldownUntil,
-    lastErrorCode: expiredByPackage
-      ? 'account_expired'
-      : account.lastErrorCode,
-    lastErrorMessage: expiredByPackage
-      ? '账户套餐已过期，已自动停用'
-      : account.lastErrorMessage,
-    cooldownRetestFailureCount: expiredByPackage ? 0 : account.cooldownRetestFailureCount,
-    cooldownRetestObservationStartedAt: expiredByPackage
-      ? undefined
-      : account.cooldownRetestObservationStartedAt,
-    cooldownRetestLastAt: expiredByPackage ? undefined : account.cooldownRetestLastAt,
-    cooldownRetestLastStatusCode: expiredByPackage
-      ? undefined
-      : account.cooldownRetestLastStatusCode,
-    healthCheckModel: nextHealthCheckModel,
-    healthCheckEndpointMode: nextHealthCheckEndpointMode,
-    supportedModels: nextSupportedModels,
-    modelMappings: nextModelMappings,
-    tags: nextTags,
-    supportedModelsChanged,
-    modelMappingsChanged,
-    tagsChanged: !unorderedStringListEquals(account.tags, nextTags),
-    dispatchChanged: account.priority !== nextPriority
-      || account.superPriorityEnabled !== nextSuperPriorityEnabled
-      || account.fallbackEnabled !== nextFallbackEnabled,
-    dispatchRevisionChanged: !isDeepStrictEqual(
-      accountCircuitCredentialOwnerIdentity(account.credentials),
-      accountCircuitCredentialOwnerIdentity(nextCredentials)
-    )
-      || account.proxyProfileId !== nextProxyProfileId,
-    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
-    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1,
-    resetBalanceQuery: proxyChanged && account.balanceQueryEnabled
+    changedFields: sortedChangedFields,
+    mainColumns,
+    supportedModels: supportedModelsChanged ? nextSupportedModels : undefined,
+    modelMappings: modelMappingsChanged ? nextModelMappings : undefined,
+    tags: tagsChanged ? nextTags : undefined,
+    dispatchBinding: dispatchChanged ? {
+      priority: nextPriority,
+      superPriorityEnabled: nextSuperPriorityEnabled,
+      fallbackEnabled: nextFallbackEnabled
+    } : undefined,
+    dispatchRevisionChanged: proxyChanged,
+    balanceSnapshotCleanup: proxyChanged && account.balanceQueryEnabled,
+    groupStatsAffected: sortedChangedFields.some((field) => groupStatsFields.has(field)),
+    gatewayRuntimeAffected: sortedChangedFields.some((field) => gatewayFields.has(field))
   }
 }
 
 function cleanupChangedBalanceSnapshots(
   accountIds: string[],
-  configRevisions: Record<string, number>,
+  items: AccountBatchUpdateItemResult[],
   batchId: string
 ): void {
-  if (accountIds.length === 0) return
+  const revisionById = new Map(items.map((item) => [item.id, item.configRevision]))
   for (const accountId of accountIds) {
     cleanupAccountBalanceSnapshotAfterSave({
       accountId,
-      configRevision: configRevisions[accountId] ?? 1,
+      configRevision: revisionById.get(accountId) ?? 1,
       reason: 'batch_balance_identity_changed',
       batchId
     })
@@ -385,21 +411,16 @@ function applyNullableCredentialOverride(
   updateKey: string,
   credentialKey: string
 ): void {
-  if (!Object.prototype.hasOwnProperty.call(updates, updateKey)) return
+  if (!hasOwn(updates, updateKey)) return
   const value = updates[updateKey]
-  if (value === null || value === '') {
-    delete credentials[credentialKey]
-    return
-  }
-  credentials[credentialKey] = value
+  if (value === null || value === '') delete credentials[credentialKey]
+  else credentials[credentialKey] = value
 }
 
 function enabledBatchUpdates(input: AccountBatchEditRequest['updates']): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   for (const [field, update] of Object.entries(input)) {
-    if (update?.enabled) {
-      output[field] = update.value
-    }
+    if (update?.enabled) output[field] = update.value
   }
   return output
 }
@@ -430,9 +451,7 @@ async function enabledProxyProfileIdAsync(
       AND system_account_id = ?
     LIMIT 1
   `, [proxyProfileId, ownerSystemAccountId])
-  if (!row?.id || row.enabled !== 1) {
-    throw new Error('代理不存在或已停用，请选择一个已启用的代理')
-  }
+  if (!row?.id || row.enabled !== 1) throw new Error('代理不存在或已停用，请选择一个已启用的代理')
   return row.id
 }
 
@@ -465,9 +484,7 @@ function assertEndpointModesCompatible(
     })
     return
   }
-  if (isGeminiProtocolProfile(profile)) {
-    assertGeminiEndpointModesCompatible({ modes, accountType: account.type })
-  }
+  if (isGeminiProtocolProfile(profile)) assertGeminiEndpointModesCompatible({ modes, accountType: account.type })
 }
 
 function batchTable(client: DatabaseClient, tableName: string): string {
@@ -477,30 +494,27 @@ function batchTable(client: DatabaseClient, tableName: string): string {
 }
 
 function requiredText(value: unknown, label: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label}不能为空`)
-  }
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label}不能为空`)
   return value.trim()
 }
 
 function numberValue(input: Record<string, unknown>, key: string, fallback: number): number {
-  const value = input[key]
-  return typeof value === 'number' ? value : fallback
+  return typeof input[key] === 'number' ? input[key] as number : fallback
 }
 
 function booleanValue(input: Record<string, unknown>, key: string, fallback: boolean): boolean {
-  const value = input[key]
-  return typeof value === 'boolean' ? value : fallback
+  return typeof input[key] === 'boolean' ? input[key] as boolean : fallback
+}
+
+function hasOwn(input: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key)
 }
 
 function hasAnyOwnKey(input: Record<string, unknown>, keys: string[]): boolean {
-  return keys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
+  return keys.some((key) => hasOwn(input, key))
 }
 
-function unorderedStringListEquals(
-  left: readonly string[] | undefined,
-  right: readonly string[] | undefined
-): boolean {
+function unorderedStringListEquals(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   const normalizedLeft = [...(left ?? [])].sort()
   const normalizedRight = [...(right ?? [])].sort()
   return normalizedLeft.length === normalizedRight.length
@@ -527,7 +541,7 @@ function modelMappingKey(mapping: AccountModelMapping): string {
   ].join('\u0000')
 }
 
-function statusForcesSchedulableOff(status: AccountStatus): boolean {
+function statusForcesSchedulableOff(status: string): boolean {
   return status === 'pending_test'
     || status === 'error'
     || status === 'rate_limited'

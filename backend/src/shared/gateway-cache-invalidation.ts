@@ -3,6 +3,12 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
 import { clearLocalApiKeyLookupCache } from '../storage/repository-lookups.js'
+import {
+  retryAttemptCount,
+  sequenceRetryPolicy,
+  shouldRetryPolicyAttempt,
+  waitForRetryDelay
+} from './retry-policy.js'
 
 export type GatewayRuntimeCacheInvalidationMetadata =
   | {
@@ -53,6 +59,11 @@ const apiKeyQuotaCacheInvalidators = new Set<ApiKeyQuotaInvalidationHandler>()
 const gatewayCacheInvalidationState = createRuntimeStateStore('gateway_cache_invalidation')
 const gatewayCacheInvalidationStateTtlMs = 24 * 60 * 60 * 1000
 const gatewayCacheInvalidationSyncIntervalMs = 1000
+const gatewayApiKeyValidationInvalidationRetryPolicy = sequenceRetryPolicy(
+  'gateway_api_key_validation_cache_invalidation',
+  [25, 75],
+  2
+)
 const gatewayCacheInvalidationTopics: GatewayCacheInvalidationTopic[] = [
   'gateway_runtime_cache',
   'gateway_api_key_validation_cache',
@@ -62,9 +73,75 @@ const gatewayCacheInvalidationTopics: GatewayCacheInvalidationTopic[] = [
 
 const lastSeenGatewayCacheInvalidationVersions = new Map<GatewayCacheInvalidationTopic, string>()
 const deferredGatewayCacheInvalidationTopics = new Set<GatewayCacheInvalidationTopic>()
-let lastGatewayCacheInvalidationSyncAt = 0
-let gatewayCacheInvalidationSyncPromise: Promise<void> | undefined
 let gatewayApiKeyValidationServerInvalidator: GatewayApiKeyValidationServerInvalidator | undefined
+
+export class GatewayApiKeyValidationCacheInvalidationError extends AggregateError {
+  constructor(errors: Iterable<unknown>, readonly apiKeyId: string | undefined) {
+    const failures = [...errors]
+    super(failures, `gateway_api_key_validation_cache 失效重试耗尽，共 ${failures.length} 个失败`)
+    this.name = 'GatewayApiKeyValidationCacheInvalidationError'
+  }
+}
+
+export function createGatewayCacheInvalidationSyncCoordinator(input: {
+  syncRound: () => Promise<void>
+  intervalMs: number
+  now?: () => number
+  onError?: (error: unknown) => void
+}): (options?: { force?: boolean }) => Promise<void> {
+  let lastSyncRequestedAt = 0
+  let completedRound = 0
+  let requestedRound = 0
+  let activeRound: number | undefined
+  let activePromise: Promise<void> | undefined
+
+  const runRequestedRounds = async (): Promise<void> => {
+    while (completedRound < requestedRound) {
+      const round = completedRound + 1
+      activeRound = round
+      await input.syncRound()
+      completedRound = round
+    }
+  }
+
+  return async (options: { force?: boolean } = {}): Promise<void> => {
+    const now = input.now?.() ?? Date.now()
+    if (!options.force && now - lastSyncRequestedAt < input.intervalMs) {
+      await activePromise
+      return
+    }
+    lastSyncRequestedAt = now
+
+    const requiredRound = activeRound === undefined
+      ? completedRound + 1
+      : activeRound + 1
+    requestedRound = Math.max(requestedRound, requiredRound)
+    if (!activePromise) {
+      activePromise = runRequestedRounds()
+        .catch((error) => {
+          requestedRound = completedRound
+          lastSyncRequestedAt = 0
+          input.onError?.(error)
+          throw error
+        })
+        .finally(() => {
+          activeRound = undefined
+          activePromise = undefined
+        })
+    }
+    await activePromise
+  }
+}
+
+const syncGatewayCacheInvalidationCoordinator = createGatewayCacheInvalidationSyncCoordinator({
+  syncRound: syncGatewayCacheInvalidationsFromRuntimeStateUnsafe,
+  intervalMs: gatewayCacheInvalidationSyncIntervalMs,
+  onError: (error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_cache_invalidation_runtime_state_sync_failed'
+    }), '同步 Redis runtime state 网关缓存失效版本失败')
+  }
+})
 
 export function registerGatewayRuntimeCacheInvalidator(handler: GatewayRuntimeCacheInvalidationHandler): () => void {
   gatewayRuntimeCacheInvalidators.add(handler)
@@ -132,46 +209,55 @@ export async function notifyGatewayApiKeyValidationCacheInvalidationAsync(
   reason: string,
   keyHashes: readonly string[] = []
 ): Promise<void> {
-  const errors: unknown[] = []
-  try {
-    const applied = await runCacheInvalidatorsAsync(
-      'gateway_api_key_validation_cache',
-      reason,
-      gatewayApiKeyValidationCacheInvalidators,
-      (handler) => handler(apiKeyId, { source: 'local', keyHashes }),
-      { apiKeyId }
-    )
-    if (!applied) {
-      errors.push(new Error('gateway_api_key_validation_cache 本地失效未完成'))
-    }
-  } catch (error) {
-    errors.push(error)
-  }
-  try {
-    await publishGatewayCacheInvalidationToRuntimeStateAsync(
-      'gateway_api_key_validation_cache',
-      reason,
-      { apiKeyId }
-    )
-  } catch (error) {
-    errors.push(error)
-  }
-  if (
-    runtimeConfig.runtimeStateDriver !== 'redis'
-    && runtimeConfig.processRole === 'db-service'
+  for (
+    let attempt = 0;
+    attempt < retryAttemptCount(gatewayApiKeyValidationInvalidationRetryPolicy);
+    attempt += 1
   ) {
-    if (!gatewayApiKeyValidationServerInvalidator) {
-      errors.push(new Error('gateway_api_key_validation_cache server 失效发布器未注册'))
-    } else {
-      try {
-        await gatewayApiKeyValidationServerInvalidator(apiKeyId, keyHashes)
-      } catch (error) {
-        errors.push(error)
+    const errors: unknown[] = []
+    try {
+      const applied = await runCacheInvalidatorsAsync(
+        'gateway_api_key_validation_cache',
+        reason,
+        gatewayApiKeyValidationCacheInvalidators,
+        (handler) => handler(apiKeyId, { source: 'local', keyHashes }),
+        { apiKeyId }
+      )
+      if (!applied) {
+        errors.push(new Error('gateway_api_key_validation_cache 本地失效未完成'))
+      }
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await publishGatewayCacheInvalidationToRuntimeStateAsync(
+        'gateway_api_key_validation_cache',
+        reason,
+        { apiKeyId }
+      )
+    } catch (error) {
+      errors.push(error)
+    }
+    if (
+      runtimeConfig.runtimeStateDriver !== 'redis'
+      && runtimeConfig.processRole === 'db-service'
+    ) {
+      if (!gatewayApiKeyValidationServerInvalidator) {
+        errors.push(new Error('gateway_api_key_validation_cache server 失效发布器未注册'))
+      } else {
+        try {
+          await gatewayApiKeyValidationServerInvalidator(apiKeyId, keyHashes)
+        } catch (error) {
+          errors.push(error)
+        }
       }
     }
-  }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, `gateway_api_key_validation_cache 失效存在 ${errors.length} 个失败`)
+    if (errors.length === 0) return
+    if (shouldRetryPolicyAttempt(attempt, gatewayApiKeyValidationInvalidationRetryPolicy)) {
+      await waitForRetryDelay(gatewayApiKeyValidationInvalidationRetryPolicy, attempt + 1)
+      continue
+    }
+    throw new GatewayApiKeyValidationCacheInvalidationError(errors, apiKeyId)
   }
 }
 
@@ -216,24 +302,7 @@ export function runGatewayCacheInvalidatorsAfterCommit(effect: () => void): void
 
 export async function syncGatewayCacheInvalidationsFromRuntimeState(options: { force?: boolean } = {}): Promise<void> {
   if (runtimeConfig.runtimeStateDriver !== 'redis') return
-  const now = Date.now()
-  if (!options.force && now - lastGatewayCacheInvalidationSyncAt < gatewayCacheInvalidationSyncIntervalMs) {
-    return gatewayCacheInvalidationSyncPromise
-  }
-  lastGatewayCacheInvalidationSyncAt = now
-  if (!gatewayCacheInvalidationSyncPromise) {
-    gatewayCacheInvalidationSyncPromise = syncGatewayCacheInvalidationsFromRuntimeStateUnsafe()
-      .catch((error) => {
-        logger.warn(errorLogFields(error, {
-          event: 'gateway_cache_invalidation_runtime_state_sync_failed'
-        }), '同步 Redis runtime state 网关缓存失效版本失败')
-        throw error
-      })
-      .finally(() => {
-        gatewayCacheInvalidationSyncPromise = undefined
-      })
-  }
-  return gatewayCacheInvalidationSyncPromise
+  await syncGatewayCacheInvalidationCoordinator(options)
 }
 
 function runCacheInvalidators<THandler>(

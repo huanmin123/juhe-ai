@@ -5,11 +5,12 @@ import type {
   AccountUsageStatsRange,
   AccountUsageStatsOverview,
   AccountUsageStatsListResult,
+  AccountUsageStatsOption,
   AccountUsageStatsRow,
   AccountUsageStatsTrendOverview
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
-import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
+import { canAccessAll, currentSystemAccountId, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -111,6 +112,190 @@ interface AccountUsageMetadataRow {
 }
 
 const accountUsageSelectedAccountLimit = 50
+
+interface AccountUsageOptionRow {
+  id: string
+  system_account_id: string
+  system_account_name: string | null
+  owner_system_account_id: string
+  owner_system_account_name: string | null
+  provider_code: string
+  provider_name: string
+  name: string
+  type: AccountType
+  status: AccountStatus
+  access_type: 'owner' | 'authorized'
+}
+
+export interface AccountUsageOptionListOptions {
+  keyword?: string
+  limit?: number
+  selectedIds?: string[]
+}
+
+export function listAccountUsageOptions(access?: AccessScope, options: AccountUsageOptionListOptions = {}): AccountUsageStatsOption[] {
+  const database = getBusinessDatabase()
+  const scope = accountUsageOptionScope(access)
+  const normalized = normalizeAccountUsageOptionListOptions(options)
+  const searchRows = queryAccountUsageOptionRows(database, scope, normalized.keyword, [], normalized.limit)
+  const selectedRows = normalized.selectedIds.length
+    ? queryAccountUsageOptionRows(database, scope, undefined, normalized.selectedIds, normalized.selectedIds.length)
+    : []
+  return mapAccountUsageOptionRows(dedupeAccountUsageOptionRows([...selectedRows, ...searchRows]), access)
+}
+
+export async function listAccountUsageOptionsAsync(access?: AccessScope, options: AccountUsageOptionListOptions = {}): Promise<AccountUsageStatsOption[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return listAccountUsageOptions(access, options)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const scope = accountUsageOptionScope(access)
+  const normalized = normalizeAccountUsageOptionListOptions(options)
+  const [searchRows, selectedRows] = await Promise.all([
+    queryAccountUsageOptionRowsAsync(client, scope, normalized.keyword, [], normalized.limit),
+    normalized.selectedIds.length
+      ? queryAccountUsageOptionRowsAsync(client, scope, undefined, normalized.selectedIds, normalized.selectedIds.length)
+      : Promise.resolve([])
+  ])
+  return mapAccountUsageOptionRows(dedupeAccountUsageOptionRows([...selectedRows, ...searchRows]), access)
+}
+
+function accountUsageOptionScope(access?: AccessScope): string | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  if (scopedId) return scopedId
+  return canAccessAll(access) ? undefined : currentSystemAccountId(access)
+}
+
+function normalizeAccountUsageOptionListOptions(options: AccountUsageOptionListOptions): { keyword?: string; limit: number; selectedIds: string[] } {
+  const keyword = options.keyword?.trim()
+  const rawLimit = Number(options.limit ?? 50)
+  const limit = Number.isFinite(rawLimit) ? Math.min(50, Math.max(1, Math.trunc(rawLimit))) : 50
+  const selectedIds = [...new Set((options.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 20)
+  return { keyword: keyword || undefined, limit, selectedIds }
+}
+
+function queryAccountUsageOptionRows(
+  database: ReturnType<typeof getBusinessDatabase>,
+  ownerSystemAccountId: string | undefined,
+  keyword: string | undefined,
+  ids: string[],
+  limit: number
+): AccountUsageOptionRow[] {
+  const clauses = ['accounts.deleted_at IS NULL']
+  const params: Array<string | number> = []
+  if (ownerSystemAccountId) {
+    clauses.push('accounts.system_account_id = ?')
+    params.push(ownerSystemAccountId)
+  } else {
+    clauses.push('accounts.authorization_instance_authorization_id IS NULL')
+  }
+  if (ids.length) {
+    clauses.push(`accounts.id IN (${sqlPlaceholders(ids.length)})`)
+    params.push(...ids)
+  } else if (keyword) {
+    clauses.push('accounts.name >= ? AND accounts.name < ?')
+    params.push(keyword, accountUsageOptionKeywordUpperBound(keyword))
+  }
+  return database.prepare(`
+    SELECT
+      accounts.id,
+      accounts.system_account_id,
+      COALESCE(system_accounts.display_name, system_accounts.username) AS system_account_name,
+      COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id) AS owner_system_account_id,
+      COALESCE(owner_accounts.display_name, owner_accounts.username) AS owner_system_account_name,
+      accounts.provider_code,
+      COALESCE(providers.name, accounts.provider_code) AS provider_name,
+      accounts.name,
+      accounts.type,
+      accounts.status,
+      CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN 'owner' ELSE 'authorized' END AS access_type
+    FROM accounts
+    LEFT JOIN providers ON providers.code = accounts.provider_code
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    LEFT JOIN system_accounts owner_accounts
+      ON owner_accounts.id = COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id)
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY accounts.name ASC, accounts.id ASC
+    LIMIT ?
+  `).all(...params, limit) as unknown as AccountUsageOptionRow[]
+}
+
+async function queryAccountUsageOptionRowsAsync(
+  client: DatabaseClient,
+  ownerSystemAccountId: string | undefined,
+  keyword: string | undefined,
+  ids: string[],
+  limit: number
+): Promise<AccountUsageOptionRow[]> {
+  const clauses = ['accounts.deleted_at IS NULL']
+  const params: Array<string | number> = []
+  if (ownerSystemAccountId) {
+    clauses.push('accounts.system_account_id = ?')
+    params.push(ownerSystemAccountId)
+  } else {
+    clauses.push('accounts.authorization_instance_authorization_id IS NULL')
+  }
+  if (ids.length) {
+    clauses.push(`accounts.id IN (${client.dialect.bindPlaceholders(ids.length)})`)
+    params.push(...ids)
+  } else if (keyword) {
+    clauses.push('accounts.name COLLATE "C" >= ? AND accounts.name COLLATE "C" < ? AND starts_with(accounts.name, ?)')
+    params.push(keyword, accountUsageOptionKeywordUpperBound(keyword), keyword)
+  }
+  const accountsTable = accountUsageBusinessTable(client, 'accounts')
+  const providersTable = accountUsageBusinessTable(client, 'providers')
+  const systemAccountsTable = accountUsageBusinessTable(client, 'system_accounts')
+  return client.query<AccountUsageOptionRow>(`
+    SELECT
+      accounts.id,
+      accounts.system_account_id,
+      COALESCE(system_accounts.display_name, system_accounts.username) AS system_account_name,
+      COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id) AS owner_system_account_id,
+      COALESCE(owner_accounts.display_name, owner_accounts.username) AS owner_system_account_name,
+      accounts.provider_code,
+      COALESCE(providers.name, accounts.provider_code) AS provider_name,
+      accounts.name,
+      accounts.type,
+      accounts.status,
+      CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN 'owner' ELSE 'authorized' END AS access_type
+    FROM ${accountsTable} accounts
+    LEFT JOIN ${providersTable} providers ON providers.code = accounts.provider_code
+    LEFT JOIN ${systemAccountsTable} system_accounts ON system_accounts.id = accounts.system_account_id
+    LEFT JOIN ${systemAccountsTable} owner_accounts
+      ON owner_accounts.id = COALESCE(accounts.authorization_instance_owner_system_account_id, accounts.system_account_id)
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
+    LIMIT ?
+  `, [...params, limit])
+}
+
+function mapAccountUsageOptionRows(rows: AccountUsageOptionRow[], access?: AccessScope): AccountUsageStatsOption[] {
+  const includeSystemAccount = includeSystemAccountFields(access)
+  return rows.map((row) => ({
+    id: row.id,
+    systemAccountId: includeSystemAccount ? row.system_account_id : undefined,
+    systemAccountName: includeSystemAccount ? row.system_account_name ?? undefined : undefined,
+    ownerSystemAccountId: row.owner_system_account_id,
+    ownerSystemAccountName: row.owner_system_account_name ?? undefined,
+    providerCode: row.provider_code as AccountUsageStatsOption['providerCode'],
+    providerName: row.provider_name,
+    name: row.name,
+    type: row.type,
+    status: row.status,
+    accessType: row.access_type
+  }))
+}
+
+function dedupeAccountUsageOptionRows(rows: AccountUsageOptionRow[]): AccountUsageOptionRow[] {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return true
+  })
+}
+
+function accountUsageOptionKeywordUpperBound(value: string): string {
+  return `${value}\uffff`
+}
 
 export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsListResult {
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))

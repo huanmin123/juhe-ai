@@ -89,7 +89,8 @@ try {
     granteeType: 'system_account',
     granteeId: grantee.id,
     remark: '轻量列表契约',
-    expiresAt: '2099-01-01T00:00:00.000Z'
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    limits: { daily: { enabled: true, limit: 5 } }
   }, ownerAccess)
   const statsDatabase = databaseModule.getStatsDatabase()
   const usageRange = usageStatsHelpers.normalizeAccountUsageStatsRange({}, await usageStatsHelpers.usageStatsTimezoneAsync())
@@ -134,6 +135,7 @@ try {
     'granteeType',
     'granteeUsername',
     'id',
+    'limits',
     'permissions',
     'remark',
     'resourceId',
@@ -142,10 +144,38 @@ try {
     'resourceOwnerSystemAccountName',
     'resourceType',
     'sourceSummary',
-    'status'
+    'status',
+    'updatedAt'
   ].sort(), '授权列表项只能返回页面展示、方向判断和操作权限所需字段')
   assert.deepEqual(Object.keys(item.permissions as Record<string, unknown>).sort(), ['canAuthorize', 'canEdit'])
   assert.deepEqual(Object.keys(item.sourceSummary as Record<string, unknown>).sort(), ['activeSourceCount', 'hasManual', 'hasTeam', 'teamSources'])
+
+  const initialUpdatedAt = String(item.updatedAt)
+  const unchanged = await requestMutationEnvelope<Record<string, unknown>>(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${String(item.id)}/expire`,
+    ownerCookie,
+    { expectedUpdatedAt: initialUpdatedAt, limits: item.limits }
+  )
+  assert.deepEqual(Object.keys(unchanged).sort(), ['expiresAt', 'id', 'limits', 'status', 'updatedAt'].sort(), '授权 no-op 也只能返回最小 mutation result')
+  assert.equal(unchanged.updatedAt, initialUpdatedAt, '授权 no-op 不得推进版本')
+
+  const changed = await requestMutationEnvelope<Record<string, unknown>>(
+    baseUrl,
+    `/__aisys__/api/my-authorizations/${String(item.id)}/expire`,
+    ownerCookie,
+    { expectedUpdatedAt: initialUpdatedAt, expiresAt: '2099-02-01T00:00:00.000Z' }
+  )
+  assert.deepEqual(Object.keys(changed).sort(), ['expiresAt', 'id', 'limits', 'status', 'updatedAt'].sort(), '授权字段级 PATCH 只能返回最小 mutation result')
+  assert.notEqual(changed.updatedAt, initialUpdatedAt, '授权真实变化必须推进 CAS 版本')
+  assert.equal(changed.expiresAt, '2099-02-01T00:00:00.000Z')
+
+  const staleResponse = await fetch(`${baseUrl}/__aisys__/api/my-authorizations/${String(item.id)}/expire`, {
+    method: 'PATCH',
+    headers: { cookie: ownerCookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedUpdatedAt: initialUpdatedAt, expiresAt: '2099-03-01T00:00:00.000Z' })
+  })
+  assert.equal(staleResponse.status, 409, '旧授权版本必须返回 409 冲突')
 
   const groups = await requestEnvelope<Array<Record<string, unknown>>>(
     baseUrl,
@@ -243,6 +273,18 @@ function sessionCookie(systemAccountId: string): string {
 
 async function requestEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const text = await response.text()
+  assert.equal(response.status, 200, `${path} HTTP ${response.status}: ${text}`)
+  const payload = JSON.parse(text) as ApiEnvelope<T>
+  return payload.data as T
+}
+
+async function requestMutationEnvelope<T>(baseUrl: string, path: string, cookie: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
   const text = await response.text()
   assert.equal(response.status, 200, `${path} HTTP ${response.status}: ${text}`)
   const payload = JSON.parse(text) as ApiEnvelope<T>

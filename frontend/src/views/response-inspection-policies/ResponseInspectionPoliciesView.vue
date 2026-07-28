@@ -55,7 +55,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
+import { api, type ResponseInspectionPolicyCreatePayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -77,6 +77,11 @@ import {
   createResponseInspectionPolicyLoadCoordinator,
   type ResponseInspectionPolicyModalIntent
 } from './responseInspectionPolicyLoadCoordinator'
+import {
+  buildResponseInspectionPolicyPatch,
+  hasResponseInspectionPolicyChanges,
+  responseInspectionPolicyPayloadFromDetail
+} from './responseInspectionPolicyMutation'
 
 type PolicyModalMode = 'create' | 'edit' | 'view'
 
@@ -103,6 +108,8 @@ const guideOpen = ref(false)
 const editingId = ref<string>()
 const activePolicy = ref<ResponseInspectionPolicyDetail>()
 const openingPolicyId = ref<string>()
+const editingBaseline = ref<ResponseInspectionPolicyCreatePayload>()
+const editingExpectedUpdatedAt = ref<string>()
 
 const loadCoordinator = createResponseInspectionPolicyLoadCoordinator({
   list: (signal) => api.responseInspectionPolicies.list({ signal }),
@@ -175,8 +182,14 @@ async function openEdit(policy: ResponseInspectionPolicyOverview): Promise<void>
   if (!loadCoordinator.isCurrentModalIntent(intent, policy.id)) return
   openingPolicyId.value = undefined
   if (!detail) return
+  if (!detail.updatedAt) {
+    message.error('响应检查策略缺少版本，请刷新后重试')
+    return
+  }
   editingId.value = policy.id
   activePolicy.value = detail
+  editingBaseline.value = responseInspectionPolicyPayloadFromDetail(detail)
+  editingExpectedUpdatedAt.value = detail.updatedAt
   modalOpen.value = true
 }
 
@@ -214,26 +227,40 @@ function resetModal(): void {
   providerOptionsLoading.value = false
   providerOptionsReady.value = false
   editingId.value = undefined
+  editingBaseline.value = undefined
+  editingExpectedUpdatedAt.value = undefined
   activePolicy.value = undefined
   modalMode.value = 'create'
 }
 
-async function savePolicy(payload: ResponseInspectionPolicyPayload): Promise<void> {
-  saving.value = true
+async function savePolicy(payload: ResponseInspectionPolicyCreatePayload): Promise<void> {
   const targetId = editingId.value
+  if (targetId && (!editingBaseline.value || !editingExpectedUpdatedAt.value)) {
+    message.error('响应检查策略编辑版本已失效，请重新打开')
+    return
+  }
+  const patch = targetId && editingBaseline.value
+    ? buildResponseInspectionPolicyPatch(editingBaseline.value, payload)
+    : undefined
+  if (patch && !hasResponseInspectionPolicyChanges(patch)) {
+    message.info('响应检查策略没有变化')
+    return
+  }
+  saving.value = true
   try {
-    let savedPolicy: ResponseInspectionPolicyDetail
+    let savedPolicy: ResponseInspectionPolicyOverview
     if (targetId) {
-      savedPolicy = await api.responseInspectionPolicies.update(targetId, payload)
-      upsertPolicyOverview(savedPolicy)
+      savedPolicy = await api.responseInspectionPolicies.update(targetId, {
+        expectedUpdatedAt: editingExpectedUpdatedAt.value as string,
+        ...patch
+      })
       message.success('响应检查策略已更新')
     } else {
       savedPolicy = await api.responseInspectionPolicies.create(payload)
-      upsertPolicyOverview(savedPolicy)
       message.success('响应检查策略已创建')
     }
+    upsertPolicyOverview(savedPolicy)
     resetModal()
-    void loadPolicies()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存响应检查策略失败'))
@@ -248,7 +275,6 @@ async function removePolicy(policy: ResponseInspectionPolicyOverview): Promise<v
     await api.responseInspectionPolicies.delete(policy.id)
     policies.value = policies.value.filter((item) => item.id !== policy.id)
     message.success('响应检查策略已删除')
-    void loadPolicies()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除响应检查策略失败'))
@@ -322,6 +348,8 @@ function prepareModalIntent(policyId?: string): ResponseInspectionPolicyModalInt
   modalOpen.value = false
   activePolicy.value = undefined
   editingId.value = undefined
+  editingBaseline.value = undefined
+  editingExpectedUpdatedAt.value = undefined
   activeProviderOptionsRequest = undefined
   providerOptions.value = []
   providerOptionsLoading.value = false
@@ -331,8 +359,7 @@ function prepareModalIntent(policyId?: string): ResponseInspectionPolicyModalInt
   return activeModalIntent
 }
 
-function upsertPolicyOverview(detail: ResponseInspectionPolicyDetail): void {
-  const overview = policyOverviewFromDetail(detail)
+function upsertPolicyOverview(overview: ResponseInspectionPolicyOverview): void {
   if (overview.defaultRule) {
     defaultRules.value = upsertOverview(defaultRules.value, overview)
     return
@@ -344,23 +371,6 @@ function upsertOverview(items: ResponseInspectionPolicyOverview[], overview: Res
   const next = items.filter((item) => item.id !== overview.id)
   next.push(overview)
   return next.sort((left, right) => left.priority - right.priority || String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')) || left.id.localeCompare(right.id))
-}
-
-function policyOverviewFromDetail(detail: ResponseInspectionPolicyDetail): ResponseInspectionPolicyOverview {
-  return {
-    id: detail.id,
-    defaultRule: detail.defaultRule,
-    editable: detail.editable,
-    name: detail.name,
-    enabled: detail.enabled,
-    priority: detail.priority,
-    scopeType: detail.scopeType,
-    protocolCode: detail.protocolCode,
-    providerCode: detail.providerCode,
-    providerName: detail.providerName,
-    action: detail.action,
-    updatedAt: detail.updatedAt
-  }
 }
 
 onMounted(loadPolicies)
