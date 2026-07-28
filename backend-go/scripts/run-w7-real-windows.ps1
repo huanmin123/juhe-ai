@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$PostgresBin,
-  [Parameter(Mandatory = $true)][string]$RedisBin
+  [Parameter(Mandatory = $true)][string]$RedisBin,
+  [switch]$InjectPostgresStartupFailureAfterControllerExit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +59,18 @@ function Test-CommandLineContainsPath {
   return $normalizedCommandLine.Contains($normalizedPath, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-PostgresCommandLineDataDirectory {
+  param(
+    [Parameter(Mandatory = $true)][string]$CommandLine,
+    [Parameter(Mandatory = $true)][string]$DataDirectory
+  )
+  $normalizedCommandLine = $CommandLine.Replace('\', '/')
+  $normalizedDataDirectory = ([System.IO.Path]::GetFullPath($DataDirectory)).Replace('\', '/')
+  $escapedDataDirectory = [System.Text.RegularExpressions.Regex]::Escape($normalizedDataDirectory)
+  $pattern = '(?i)(?:^|\s)"?-D"?\s+(?:"' + $escapedDataDirectory + '"|' + $escapedDataDirectory + ')(?=$|\s)'
+  return [System.Text.RegularExpressions.Regex]::IsMatch($normalizedCommandLine, $pattern)
+}
+
 function Start-IsolatedPostgres {
   param(
     [Parameter(Mandatory = $true)][string]$DataDirectory,
@@ -94,6 +107,9 @@ function Start-IsolatedPostgres {
     }
     throw "PostgreSQL startup failed with exit code ${exitCode}: $logTail"
   }
+  if ($InjectPostgresStartupFailureAfterControllerExit) {
+    throw "Injected PostgreSQL startup failure after controller exit; task root: $taskRoot"
+  }
 }
 
 function Get-FreeLoopbackPort {
@@ -127,7 +143,7 @@ function Start-IsolatedRedis {
   param(
     [Parameter(Mandatory = $true)][string]$Role,
     [Parameter(Mandatory = $true)][int]$Port,
-    [Parameter(Mandatory = $true)][System.Collections.Generic.List[object]]$RuntimeRegistry
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$RuntimeRegistry
   )
   $dataDirectory = Join-Path $taskRoot ('redis-' + $Role)
   New-Item -ItemType Directory -Path $dataDirectory | Out-Null
@@ -172,25 +188,48 @@ function Stop-IsolatedRedis {
 
 function Stop-IsolatedPostgres {
   param([Parameter(Mandatory = $true)][string]$DataDirectory)
-  $pidPath = Join-Path $DataDirectory 'postmaster.pid'
-  if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) { return }
-  $processId = [int](Get-Content -LiteralPath $pidPath -TotalCount 1)
-  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
-  if ($null -ne $processInfo) {
-    $expectedExecutable = [System.IO.Path]::GetFullPath($postgresExe)
-    $actualExecutable = if ($processInfo.ExecutablePath) { [System.IO.Path]::GetFullPath($processInfo.ExecutablePath) } else { '' }
-    $actualCommandLine = [string]$processInfo.CommandLine
-    if (-not $actualExecutable.Equals($expectedExecutable, [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::IsNullOrWhiteSpace($actualCommandLine) -or
-        -not (Test-CommandLineContainsPath -CommandLine $actualCommandLine -Path $DataDirectory)) {
-      throw "Refusing to stop unverified PostgreSQL PID $processId"
-    }
+  $expectedDataDirectory = [System.IO.Path]::GetFullPath((Join-Path $taskRoot 'pg-data'))
+  $actualDataDirectory = [System.IO.Path]::GetFullPath($DataDirectory)
+  if (-not $actualDataDirectory.Equals($expectedDataDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to stop PostgreSQL outside the isolated W7 data directory: $actualDataDirectory"
   }
-  Invoke-NativeChecked -Executable $pgCtlExe -Arguments @('stop', '-D', $DataDirectory, '-m', 'fast', '-w') | Out-Null
+
+  $pidPath = Join-Path $actualDataDirectory 'postmaster.pid'
+  if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
+    throw "Cannot prove isolated PostgreSQL stopped because postmaster.pid is missing: $pidPath"
+  }
+  $pidLines = @(Get-Content -LiteralPath $pidPath -TotalCount 3)
+  $processId = 0
+  $postmasterStartEpoch = [long]0
+  if ($pidLines.Count -lt 3 -or
+      -not [int]::TryParse([string]$pidLines[0], [ref]$processId) -or
+      $processId -le 0 -or
+      -not [long]::TryParse([string]$pidLines[2], [ref]$postmasterStartEpoch) -or
+      $postmasterStartEpoch -le 0) {
+    throw "Refusing to stop PostgreSQL with invalid postmaster.pid: $pidPath"
+  }
+  $pidDataDirectory = [System.IO.Path]::GetFullPath([string]$pidLines[1])
+  if (-not $pidDataDirectory.Equals($actualDataDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to stop PostgreSQL with mismatched postmaster.pid data directory: $pidDataDirectory"
+  }
+
+  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
+  if ($null -eq $processInfo) { return }
+  $expectedExecutable = [System.IO.Path]::GetFullPath($postgresExe)
+  $actualExecutable = if ($processInfo.ExecutablePath) { [System.IO.Path]::GetFullPath($processInfo.ExecutablePath) } else { '' }
+  $actualCommandLine = [string]$processInfo.CommandLine
+  $processStartEpoch = ([DateTimeOffset]([DateTime]$processInfo.CreationDate)).ToUnixTimeSeconds()
+  if (-not $actualExecutable.Equals($expectedExecutable, [System.StringComparison]::OrdinalIgnoreCase) -or
+      [string]::IsNullOrWhiteSpace($actualCommandLine) -or
+      -not (Test-PostgresCommandLineDataDirectory -CommandLine $actualCommandLine -DataDirectory $actualDataDirectory) -or
+      [Math]::Abs($processStartEpoch - $postmasterStartEpoch) -gt 5) {
+    throw "Refusing to stop unverified PostgreSQL PID $processId"
+  }
+  Invoke-NativeChecked -Executable $pgCtlExe -Arguments @('stop', '-D', $actualDataDirectory, '-m', 'fast', '-w') | Out-Null
 }
 
 $redisRuntimes = [System.Collections.Generic.List[object]]::new()
-$postgresStarted = $false
+$postgresStartAttempted = $false
 $evidence = $null
 $cleanupErrors = [System.Collections.Generic.List[string]]::new()
 New-Item -ItemType Directory -Path $taskRoot | Out-Null
@@ -208,8 +247,8 @@ try {
   Invoke-NativeChecked -Executable $initdbExe -Arguments @(
     '-D', $postgresData, '-U', 'postgres', '-A', 'trust', '--encoding=UTF8', '--locale=C'
   ) | Out-Null
+  $postgresStartAttempted = $true
   Start-IsolatedPostgres -DataDirectory $postgresData -LogPath $postgresLog -Port $postgresPort
-  $postgresStarted = $true
   Wait-LoopbackPort -Port $postgresPort
   Invoke-NativeChecked -Executable $createdbExe -Arguments @(
     '-h', '127.0.0.1', '-p', [string]$postgresPort, '-U', 'postgres', 'juhe_ai_w7'
@@ -265,7 +304,7 @@ try {
       $cleanupErrors.Add("Redis $($runtime.Role): $($_.Exception.Message)")
     }
   }
-  if ($postgresStarted) {
+  if ($postgresStartAttempted) {
     try {
       Stop-IsolatedPostgres -DataDirectory $postgresData
     } catch {

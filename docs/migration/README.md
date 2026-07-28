@@ -132,7 +132,7 @@ Node -> Go 长期迁移与其他功能会同时修改仓库。为避免维护者
 | `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；固定管理侧 / 个人侧 `usage-window`、账户用量 list/summary/trend、AI 性能 base/series/accounts、usage overview 五段渐进读取的窄契约、31 天窗口、预聚合读取、schema catalog / writer owner 分离和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
 | `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
-| `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、五元陈旧任务 fence、授权 quota、payload v3、schema 91 generation/index、neutral defer、`cooldown_retest` 统计排除和 Go 原生 worker 接线门禁；不代表 Probe / Outcomes 或生产 owner 已接管 |
+| `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、五元陈旧任务 fence、授权 quota、payload v3、schema 91 generation/index、neutral defer、`cooldown_retest` 统计排除、原生十模式 Probe、PostgreSQL Outcomes 和 Go worker 接线门禁；已实现 Probe / Outcomes 不代表完整 W7、真实切流或生产 owner 已接管 |
 | `W6-管理端表监控只读Schema共存记录.md` | W6 表监控三条 GET 的 PostgreSQL 只读迁移；固定 Node 单 writer、schema capability gate、缺表不伪造空数据、并行 migration 版本协调和删除门禁 |
 | `W7-模型检测写入与任务契约迁移记录.md` | W7 模型检测 writer/job 契约、Go 主动修复、后续 schema/worker/executor/HTTP 顺序和 Node 删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
