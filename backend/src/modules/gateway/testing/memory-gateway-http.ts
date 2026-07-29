@@ -101,8 +101,13 @@ function createMemoryGatewayRequestFromAdapterInput(input: MemoryGatewayRequestA
 }
 
 export class MemoryGatewayRequest extends EventEmitter {
+  private currentBody: Record<string, unknown> | undefined
+  private currentRawBody: Buffer
+
   constructor(private readonly input: MemoryGatewayRequestAdapterInput) {
     super()
+    this.currentBody = input.body
+    this.currentRawBody = input.rawBody
     if (this.input.signal?.aborted) {
       queueMicrotask(() => this.emit('aborted'))
     } else {
@@ -127,11 +132,19 @@ export class MemoryGatewayRequest extends EventEmitter {
   }
 
   get body(): Record<string, unknown> | undefined {
-    return this.input.body
+    return this.currentBody
+  }
+
+  set body(value: Record<string, unknown> | undefined) {
+    this.currentBody = value
   }
 
   get rawBody(): Buffer {
-    return this.input.rawBody
+    return this.currentRawBody
+  }
+
+  set rawBody(value: Buffer) {
+    this.currentRawBody = value
   }
 
   get ip(): string {

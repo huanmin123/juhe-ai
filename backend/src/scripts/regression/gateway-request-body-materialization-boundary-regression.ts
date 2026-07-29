@@ -5,6 +5,7 @@ import type { Request } from 'express'
 import { buildOpenAIClientCompatibilityBody } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import { buildOpenAIModelMappedJsonBody } from '../../modules/gateway/protocols/openai-v1/model-mapping.js'
 import { replaceGatewayJsonBody } from '../../modules/gateway/request/body.js'
+import { createMemoryGatewayRequest } from '../../modules/gateway/testing/memory-gateway-http.js'
 import {
   parseGatewayRequestJsonBody,
   stopGatewayJsonParseWorker
@@ -100,6 +101,15 @@ try {
   const materializedAfterReplacement = await staleMaterialization
   assert.equal(materializedAfterReplacement, staleRequest.body, '解析期间 Body 改写后不得向调用者返回旧版本对象')
   assert.deepEqual(materializedAfterReplacement, { model: 'current-model' })
+
+  const memoryRequest = createMemoryGatewayRequest({
+    method: 'POST',
+    path: '/v1/responses',
+    body: { model: 'before-rewrite' }
+  })
+  replaceGatewayJsonBody(memoryRequest, { model: 'after-rewrite' })
+  assert.deepEqual(memoryRequest.body, { model: 'after-rewrite' }, '内存网关请求必须支持与 Express 请求相同的 Body 重写')
+  assert.deepEqual(JSON.parse(String((memoryRequest as Request & { rawBody: Buffer }).rawBody)), { model: 'after-rewrite' })
 
   const serializedSyntheticRequestModules = [
     'modules/gateway/codex-responses/compact-preflight.ts',
