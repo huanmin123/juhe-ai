@@ -193,8 +193,8 @@ for (const [name, source] of [
   ['Refresh Token 重授权', reauthorizeFromRefreshRoute]
 ] as const) {
   assert.match(source, /runWithProviderOAuthRefreshLock\(GPT_VENDOR_CODE, account\.id/u, `${name}必须复用供应商 OAuth 刷新锁`)
-  assert.match(source, /findEditableOpenAIOAuthAccount\(account\.id, requestAccess\)/u, `${name}必须在锁内重读账户`)
-  assert.match(source, /oauthTokensChanged\(account\.credentials, current\.credentials\)/u, `${name}必须拒绝覆盖锁等待期间已更新的 token`)
+  assert.match(source, /findRotatableOpenAIOAuthAccount\(account\.id, requestAccess\)/u, `${name}必须在锁内用用途专用投影重读账户`)
+  assert.match(source, /current\.configRevision !== parsed\.data\.expectedConfigRevision/u, `${name}必须拒绝覆盖锁等待期间已更新的配置`)
   assert.doesNotMatch(source, /isBlockedOpenAIOAuthErrorAccount/u, `${name}不得阻断真正需要重新授权的 error 账户`)
 }
 assert.match(
@@ -205,12 +205,11 @@ assert.match(
 
 const credentialUpdateSource = sourceBetween(
   routesSource,
-  'async function updateOpenAIOAuthAccountCredentials',
+  'async function rotateOpenAIOAuthAccountCredentials',
   '\nexport function buildReauthorizedOpenAIOAuthCredentials'
 )
-assert.match(credentialUpdateSource, /expectedConfigRevision:\s*account\.configRevision \?\? 1/u, '重授权写回必须使用 config revision CAS')
-assert.match(credentialUpdateSource, /updated\.status !== 'error' \|\| !updated\.lastErrorCode/u, '非 error 账户不得执行无条件失败态清理')
-assert.match(credentialUpdateSource, /expectedLastErrorCodes:\s*\[updated\.lastErrorCode\]/u, '重授权成功后只能按写回时的旧错误码清理失败态')
+assert.match(credentialUpdateSource, /expectedConfigRevision,/u, '重授权写回必须使用客户端观察到的 config revision CAS')
+assert.doesNotMatch(credentialUpdateSource, /clearAccountFailureStateAsync|updateAccountAsync/u, '重授权凭据更新不得触发无关运行态清理或账户宽写')
 
 console.log('OpenAI OAuth 协议契约回归通过：authorize、token wire、自定义 clientId 与重授权并发写回均符合契约')
 

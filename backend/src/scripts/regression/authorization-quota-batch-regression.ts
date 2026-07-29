@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 
@@ -85,9 +86,11 @@ try {
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `额度批量账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
       credentials: { api_key: `sk-authorization-quota-batch-${index}`, base_url: 'https://api.openai.com/v1' },
+      supportedModels: ['gpt-5.1'],
       groupId: ownerGroup.id
     }, ownerAccess)
     repositories.createResourceAuthorization({
@@ -221,9 +224,11 @@ try {
     assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamGrantee.id] }, adminAccess), '额度批量团队成员添加失败')
     const teamAccount = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '额度批量团队授权账户',
       type: 'api_key',
       credentials: { api_key: 'sk-authorization-quota-team', base_url: 'https://api.openai.com/v1' },
+      supportedModels: ['gpt-5.1'],
       groupId: ownerGroup.id
     }, ownerAccess)
     const teamAuthorizationGrant = repositories.createResourceAuthorization({
