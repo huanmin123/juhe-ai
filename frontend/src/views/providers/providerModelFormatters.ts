@@ -348,8 +348,9 @@ function providerProfileApiProtocolsForModelCategory(
 }
 
 function preferredProviderProfiles(provider: ProviderDefinition): ProviderDefinition['protocolProfiles'] {
-  const defaultProfile = provider.protocolProfiles.find((profile) => profile.id === provider.defaultProtocolProfileId)
-  const remainingProfiles = provider.protocolProfiles.filter((profile) => profile !== defaultProfile)
+  const profiles = provider.protocolProfiles ?? []
+  const defaultProfile = profiles.find((profile) => profile.id === provider.defaultProtocolProfileId)
+  const remainingProfiles = profiles.filter((profile) => profile !== defaultProfile)
   return defaultProfile ? [defaultProfile, ...remainingProfiles] : remainingProfiles
 }
 

@@ -129,6 +129,7 @@ export interface AccountManagementPatchResult {
   id: string
   configRevision: number
   changedFields: string[]
+  authorizationInstancesAffected: boolean
   changes: AccountManagementPatchChange[]
   name: string
   ownerSystemAccountId: string
@@ -825,6 +826,7 @@ async function patchOwnerAccountInTransaction(context: PatchContext): Promise<Ac
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,
     changedFields: [...changedFields].sort(),
+    authorizationInstancesAffected: gatewayRuntimeAffected || row.name !== nextName,
     changes,
     name: nextName,
     ownerSystemAccountId: row.system_account_id,
@@ -950,6 +952,7 @@ async function patchAuthorizedAccountLocalInTransaction(
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,
     changedFields: [...changedFields].sort(),
+    authorizationInstancesAffected: false,
     changes,
     name: row.name,
     ownerSystemAccountId: row.system_account_id,
@@ -1056,6 +1059,7 @@ async function patchAccountFailureStateInTransaction(context: PatchContext): Pro
     id: row.id,
     configRevision: integerValue(row.config_revision) + 1,
     changedFields: ['clearFailureState'],
+    authorizationInstancesAffected: true,
     changes: [{ field: 'clearFailureState', before: false, after: true }],
     name: row.name,
     ownerSystemAccountId: row.system_account_id,
@@ -1618,6 +1622,7 @@ function unchangedPatchResult(row: AccountPatchRow): AccountPatchTransactionResu
     id: row.id,
     configRevision: integerValue(row.config_revision),
     changedFields: [],
+    authorizationInstancesAffected: false,
     changes: [],
     name: row.name,
     ownerSystemAccountId: row.system_account_id,

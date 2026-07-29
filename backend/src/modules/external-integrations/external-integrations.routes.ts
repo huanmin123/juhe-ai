@@ -570,6 +570,10 @@ externalIntegrationsRouter.post(
       const result = await updatePublicApiKeyAsync(parsed.data)
       res.status(result.action === 'not_found' ? 404 : 200).json(result.action === 'not_found' ? { message: 'API Key 不存在' } : ok(result))
     } catch (error) {
+      if (error instanceof ApiKeyValidationCacheInvalidationError) {
+        res.status(500).json({ message: 'API Key 已更新，但 validation cache 失效失败' })
+        return
+      }
       const message = error instanceof Error ? error.message : 'API Key 修改失败'
       res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
     }

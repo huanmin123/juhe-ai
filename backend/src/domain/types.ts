@@ -1047,6 +1047,7 @@ export interface AccountListItem {
   todayUsage: AccountListUsageSummary
   accessType: ResourceAccessType
   accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
   authorizationInstanceSourceAccountExpiresAt?: string

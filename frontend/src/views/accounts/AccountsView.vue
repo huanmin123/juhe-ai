@@ -293,7 +293,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountListItem, AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountListItem, AccountMutationResult, AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -479,6 +479,23 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   closePriorityEditor()
   await loadAccountListData(options)
+}
+
+async function refreshAccountMutationRows(mutation: AccountMutationResult): Promise<void> {
+  const loadedIds = new Set<string>([mutation.id])
+  if (mutation.authorizationInstancesAffected) {
+    for (const account of accounts.value) {
+      if (account.authorizationInstanceSourceAccountId === mutation.id) loadedIds.add(account.id)
+    }
+  }
+  const ids = [...loadedIds]
+  for (let offset = 0; offset < ids.length; offset += 200) {
+    const chunk = ids.slice(offset, offset + 200)
+    const result = isManagementView.value
+      ? await api.accounts.list({ ...accountScopeParams.value, ids: chunk, page: 1, pageSize: chunk.length })
+      : await api.myAccounts.list({ ids: chunk, page: 1, pageSize: chunk.length })
+    for (const account of result.items) updateLoadedAccount(account)
+  }
 }
 
 function handleProviderFilterDropdown(open: boolean): void {
@@ -782,6 +799,7 @@ const {
   ensureProviderDefinition,
   loadGroupOptions,
   loadData,
+  refreshAccountMutationRows,
   providerDefinitions,
   providers,
   draftApiKeyTestSnapshot,

@@ -77,6 +77,7 @@ try {
         api_key: `sk-authorization-team-batch-${index.toString().padStart(3, '0')}`,
         base_url: 'https://api.openai.com/v1'
       },
+      supportedModels: ['gpt-5.1'],
       groupId: group.id
     }, ownerAccess)
     const grant = repositories.createResourceAuthorization({

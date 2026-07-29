@@ -180,6 +180,15 @@ assert.deepEqual(
   ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'interactions'],
   '轻量供应商列表必须仅凭真实 protocolCode 推导 Gemini 默认协议，不能回退 OpenAI'
 )
+const wireLightweightAnthropicProvider = {
+  ...lightweightAnthropicProvider,
+  protocolProfiles: undefined as never
+}
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(wireLightweightAnthropicProvider, 'text'),
+  ['messages', 'message_token_counting'],
+  '轻量供应商 wire DTO 省略 protocolProfiles 时仍必须使用 protocolCode 常量，不能触发无交互详情请求'
+)
 assert.match(formatterSource, /from '\.\/providerModelCategoryRules'/, 'providerModelFormatters 应从分类规则文件读取模型类别能力')
 assert.doesNotMatch(formatterSource, /gpt-image|dall-e|whisper|startsWith\('gpt-'|startsWith\('claude-'/, 'providerModelFormatters 不应继续内联模型名前缀分类规则')
 assert.match(categoryRulesSource, /modelNameCategoryRules/, '模型名前缀分类规则应集中在 providerModelCategoryRules')

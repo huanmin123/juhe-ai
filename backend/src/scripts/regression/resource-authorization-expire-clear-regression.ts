@@ -143,7 +143,9 @@ try {
     name: '授权有效期边界账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-expire-boundary', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     accountExpiresAt,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -189,7 +191,9 @@ try {
     name: '授权额度迁移源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -254,7 +258,9 @@ try {
     name: '授权所有者停调账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-paused', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     schedulable: false,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -301,7 +307,9 @@ try {
     name: '授权所有者冷却账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-cooldown', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   const ownerCooldownUntil = new Date(Date.now() + 60 * 60 * 1000).toISOString()
@@ -331,7 +339,9 @@ try {
     name: '授权所有者时段外账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-schedule-inactive', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     availabilitySchedule: inactiveSourceSchedule,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -376,6 +386,7 @@ try {
     name: '授权所有者停用账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-owner-disabled', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'disabled',
     groupId: ownerAccountGroup.id
   }, ownerAccess)
@@ -407,7 +418,9 @@ try {
     name: '授权有效期团队额度账户',
     type: 'api_key',
     credentials: { api_key: 'sk-resource-authorization-team-quota', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     status: 'active',
+    skipInitialHealthCheck: true,
     groupId: ownerAccountGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({

@@ -397,6 +397,7 @@
     "test:api-key-availability-schedule": "tsx src/scripts/regression/api-key-availability-schedule-regression.ts",
     "test:api-key-management-driver": "tsx src/scripts/regression/api-key-management-driver-regression.ts",
     "test:api-key-demand-write": "tsx src/scripts/regression/api-key-demand-write-regression.ts",
+    "test:api-key-demand-response": "tsx src/scripts/regression/api-key-demand-write-regression.ts",
     "test:sqlite-database-client-transaction-isolation": "tsx src/scripts/regression/sqlite-database-client-transaction-isolation-regression.ts",
     "test:account-availability-schedule": "tsx src/scripts/regression/account-availability-schedule-regression.ts",
     "test:account-import-availability-schedule": "tsx src/scripts/regression/account-import-availability-schedule-regression.ts",

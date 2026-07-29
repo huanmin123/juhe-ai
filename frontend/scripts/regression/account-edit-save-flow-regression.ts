@@ -20,6 +20,7 @@ import {
   visibleSavedAccountApiKeyRuntimeDetails
 } from '../../src/views/accounts/accountApiKeyRuntimeDisplay'
 import { openAIOAuthClientPayload } from '../../src/views/accounts/accountOAuthPayload'
+import { accountListParams } from '../../src/api/params'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -154,6 +155,17 @@ assert.match(
   saveFlowSource,
   /const payload = buildAccountBasicUpdatePatch\([\s\S]*?if \(!payload\) \{[\s\S]*?return[\s\S]*?api\.accounts\.update/,
   '基础编辑无变化时必须在 PATCH 前直接返回'
+)
+assert.match(saveFlowSource, /await refreshEditedAccountRows\(updated\)/, '编辑成功必须定点刷新后端确认的账户行')
+assert.match(
+  accountsViewSource,
+  /mutation\.authorizationInstancesAffected[\s\S]*account\.authorizationInstanceSourceAccountId === mutation\.id[\s\S]*ids: chunk/,
+  '来源账户编辑必须把当前已加载的授权实例纳入定点刷新'
+)
+assert.match(
+  accountsViewSource,
+  /offset \+= 200[\s\S]*api\.accounts\.list\([\s\S]*api\.myAccounts\.list\(/,
+  '受影响账户行必须按管理或个人作用域分批查询，不能重新加载宽列表'
 )
 assert.match(
   editTestSource,
@@ -423,6 +435,11 @@ assert.equal(
   packageJson.scripts?.['test:account-edit-save-flow'],
   'pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts',
   '前端 package script 应暴露账户编辑保存流程回归'
+)
+assert.deepEqual(
+  accountListParams({ ids: ['account-source', 'account-authorized'], page: 1, pageSize: 2 }),
+  { ids: 'account-source,account-authorized', page: 1, pageSize: 2 },
+  '账户列表定点刷新必须把当前加载行 ID 序列化为窄 ids 查询'
 )
 
 console.log('账户编辑保存流程回归通过：详情分层、凭据边界、增量 PATCH、修订号和零请求 no-op 均符合契约')

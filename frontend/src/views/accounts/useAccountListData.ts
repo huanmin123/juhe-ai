@@ -15,10 +15,15 @@ import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, Accoun
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
-import { countActiveAccountFilters } from './accountListFilters'
+import { countActiveAccountFilters, filterAccounts } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import {
+  accountListSortChanged,
+  replaceAccountBalanceSnapshot,
+  replaceAccountListRow,
+  sortAccountListRows
+} from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -94,6 +99,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return systemAccountId ? { systemAccountId } : undefined
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
+  let listMutationRevision = 0
   const {
     items: accounts,
     loading,
@@ -114,9 +120,11 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 个账户，还有更多`
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
+      const requestMutationRevision = listMutationRevision
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
+        get superseded() { return requestMutationRevision !== listMutationRevision },
         items: accountList.items,
         page: accountList.page,
         pageSize: accountList.pageSize,
@@ -213,20 +221,41 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   function removeLoadedAccount(accountId: string): boolean {
+    if (!accounts.value.some((account) => account.id === accountId)) return false
+    listMutationRevision += 1
     return removeAccountItems((account) => account.id === accountId) > 0
   }
 
   function updateLoadedAccountBalance(accountId: string, snapshot: AccountBalanceSnapshot | undefined): boolean {
     const nextAccounts = replaceAccountBalanceSnapshot(accounts.value, accountId, snapshot)
     if (nextAccounts === accounts.value) return false
+    listMutationRevision += 1
     accounts.value = nextAccounts
     return true
   }
 
   function updateLoadedAccount(account: AccountListItem): boolean {
+    const current = accounts.value.find((item) => item.id === account.id)
+    if (!current) return false
     const nextAccounts = replaceAccountListRow(accounts.value, account)
     if (nextAccounts === accounts.value) return false
-    accounts.value = nextAccounts
+    const updated = nextAccounts.find((item) => item.id === account.id)
+    if (!updated) return false
+    const matchesCurrentFilters = filterAccounts({
+      accounts: [updated],
+      filters,
+      isManagementView: options.isManagementView.value
+    }).length === 1
+    const sortChanged = accountListSortChanged(current, updated, accountSorts.value)
+    listMutationRevision += 1
+    if (!matchesCurrentFilters) {
+      removeAccountItems((item) => item.id === account.id)
+    } else {
+      accounts.value = sortAccountListRows(nextAccounts, accountSorts.value)
+    }
+    if (!matchesCurrentFilters || sortChanged) {
+      void loadData({ forceData: true, quiet: true, requestIdentity: listMutationRevision })
+    }
     return true
   }
 

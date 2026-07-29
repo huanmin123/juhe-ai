@@ -54,6 +54,7 @@ export type AccountManagementListBaseItem = Pick<AccountListItem,
   | 'availabilitySchedule'
   | 'accessType'
   | 'accountAuthorizationId'
+  | 'authorizationInstanceSourceAccountId'
   | 'boundGroupId'
   | 'boundGroupName'
   | 'groupBindStatus'
@@ -525,6 +526,7 @@ function accountManagementListItemFromRow(
     availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
     accessType,
     accountAuthorizationId: row.authorization_id ?? undefined,
+    authorizationInstanceSourceAccountId: row.authorization_instance_source_account_id ?? undefined,
     boundGroupId: row.bound_group_id ?? undefined,
     boundGroupName: row.bound_group_name ?? undefined,
     groupBindStatus,

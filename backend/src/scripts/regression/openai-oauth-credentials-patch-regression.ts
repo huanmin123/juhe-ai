@@ -7,7 +7,15 @@ import {
 } from '../../modules/openai-oauth/openai-oauth.routes.js'
 
 const oauthRoutesSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth.routes.ts', import.meta.url), 'utf8')
+const rotationRepositorySource = readFileSync(new URL('../../storage/oauth-credential-rotation.repository.ts', import.meta.url), 'utf8')
 assert.match(oauthRoutesSource, /service_tier_override: z\.enum\(\['default', 'priority', 'flex'\]\)/, 'OAuth 创建接口 schema 必须接受 Flex 覆盖')
+assert.match(oauthRoutesSource, /expectedConfigRevision: z\.number\(\)\.int\(\)\.min\(1\)/, '重新授权必须携带配置版本')
+assert.doesNotMatch(oauthRoutesSource, /updateAccountAsync\(account\.id, \{\s*credentials/, '重新授权不得复用账户全量更新')
+assert.match(oauthRoutesSource, /oauthRotationReceipt\(updated\)/, '重新授权只返回最小 mutation 回执')
+assert.match(rotationRepositorySource, /SELECT id, system_account_id, provider_code, provider_protocol_profile_id,/, '重新授权必须使用用途专用窄投影')
+assert.doesNotMatch(rotationRepositorySource, /todayUsage|usage_stats|permissions|supported_models/i, '重新授权投影不得读取列表统计或关系字段')
+assert.match(rotationRepositorySource, /SET credentials_encrypted = \?,[\s\S]*config_revision = config_revision \+ 1/, '重新授权只更新凭据列和配置版本')
+assert.match(rotationRepositorySource, /AND system_account_id = \?[\s\S]*AND provider_code = \?[\s\S]*AND config_revision = \?/, '重新授权写入必须在 SQL 中同时下推 owner/provider/CAS')
 
 const legacyErrorHandlingRules = [{
   enabled: true,

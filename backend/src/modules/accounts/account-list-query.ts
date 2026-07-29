@@ -47,6 +47,7 @@ export function parseAccountListOptions(query: Record<string, unknown>): Account
     .filter((sort): sort is NonNullable<ReturnType<typeof parseAccountListSort>> => Boolean(sort))
   return {
     sorts,
+    ids: queryTextList(query.ids, 200),
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
     keyword: optionalQueryText(query.keyword),

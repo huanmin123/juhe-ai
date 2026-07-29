@@ -88,6 +88,7 @@ try {
   assert(noOp.result, '无变化 PATCH 应返回当前版本')
   assert.equal(noOp.result.configRevision, 1)
   assert.deepEqual(noOp.result.changedFields, [])
+  assert.equal(noOp.result.authorizationInstancesAffected, false)
   assert.deepEqual(noOp.dml, [], '无变化 PATCH 不得执行任何 DML')
 
   const notesPatch = await captureBusinessDml(() => patchRepository.patchAccountManagementAsync(account.id, {
@@ -110,6 +111,7 @@ try {
     '备注 PATCH 只能读取定位、版本、归属、响应摘要与备注字段'
   )
   assert.equal(notesPatch.result.healthCheckRequired, false, '备注 PATCH 不得触发健康检查')
+  assert.equal(notesPatch.result.authorizationInstancesAffected, false, '备注 PATCH 不影响授权实例列表行')
 
   const scopedOwner = repositories.createSystemAccount({
     username: 'patchscopedowner',
@@ -419,13 +421,14 @@ try {
   })
   assert.equal(response.status, 200)
   const payload = await response.json() as {
-    data?: { id?: string; configRevision?: number; changedFields?: string[] }
+    data?: { id?: string; configRevision?: number; changedFields?: string[]; authorizationInstancesAffected?: boolean }
   }
   assert(payload.data)
-  assert.deepEqual(Object.keys(payload.data).sort(), ['changedFields', 'configRevision', 'id'])
+  assert.deepEqual(Object.keys(payload.data).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'])
   assert.equal(payload.data.id, account.id)
   assert.equal(payload.data.configRevision, 5)
   assert.deepEqual(payload.data.changedFields, ['notes'])
+  assert.equal(payload.data.authorizationInstancesAffected, false)
 
   const staleHttp = await captureBusinessDml(() => fetch(`http://127.0.0.1:${address.port}/accounts/${account.id}`, {
     method: 'PATCH',
@@ -442,12 +445,13 @@ try {
   }))
   assert.equal(noOpHttp.result.status, 200)
   const noOpPayload = await noOpHttp.result.json() as {
-    data?: { id?: string; configRevision?: number; changedFields?: string[] }
+    data?: { id?: string; configRevision?: number; changedFields?: string[]; authorizationInstancesAffected?: boolean }
   }
   assert.deepEqual(noOpPayload.data, {
     id: account.id,
     configRevision: 5,
-    changedFields: []
+    changedFields: [],
+    authorizationInstancesAffected: false
   })
   assert.deepEqual(noOpHttp.dml, [], 'HTTP no-op 不得写账户、关系或审计业务表')
 
@@ -510,6 +514,21 @@ try {
   const authorizationInstance = repositories.listAccounts(authorizationGranteeAccess)
     .find((item) => item.authorizationInstanceSourceAccountId === authorizationSourceAccount.id)
   assert(authorizationInstance, '账户授权应创建被授权者本地实例')
+  const authorizationSourceRename = await patchRepository.patchAccountManagementAsync(
+    authorizationSourceAccount.id,
+    {
+      expectedConfigRevision: authorizationSourceAccount.configRevision ?? 1,
+      name: '授权 PATCH 来源账户已改名'
+    },
+    authorizationOwnerAccess
+  )
+  assert(authorizationSourceRename)
+  assert.equal(authorizationSourceRename.authorizationInstancesAffected, true, '来源名称变化必须通知当前页刷新授权实例')
+  assert.equal(
+    repositories.listAccounts(authorizationGranteeAccess).find((item) => item.id === authorizationInstance.id)?.name,
+    '授权 PATCH 来源账户已改名',
+    '来源名称变化应同步授权实例展示名称'
+  )
   const sourceControlledAuthorizedPatch = await captureBusinessDml(() => assert.rejects(
     patchRepository.patchAccountManagementAsync(authorizationInstance.id, {
       expectedConfigRevision: authorizationInstance.configRevision ?? 1,

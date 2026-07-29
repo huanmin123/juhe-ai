@@ -470,6 +470,7 @@ export interface AccountListItem {
   todayUsage: AccountUsageListSummary
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
+  authorizationInstanceSourceAccountId?: string
   authorizationInstanceSourceAccountStatus?: AccountStatus
   authorizationInstanceSourceAccountSchedulable?: boolean
   authorizationInstanceSourceAccountExpiresAt?: string
@@ -541,6 +542,17 @@ export interface AccountMutationResult {
   id: string
   configRevision: number
   changedFields: string[]
+  authorizationInstancesAffected?: boolean
+}
+
+export type OAuthCredentialRotationPayload = Record<string, unknown> & {
+  expectedConfigRevision: number
+}
+
+export interface OAuthCredentialRotationResult {
+  id: string
+  configRevision: number
+  updatedAt: string
 }
 
 export interface AuthorizedAccountDispatchMutationPatch {

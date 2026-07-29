@@ -10,16 +10,19 @@ import {
   AccountConfigRevisionConflictError,
   ProxyProfileUnavailableError,
   createAccountAsync,
-  findAccountForTestAsync,
   findGroupSummaryAsync,
   listProvidersAsync,
-  resolveProxyUrlForProfileAsync,
-  updateAccountAsync
+  resolveProxyUrlForProfileAsync
 } from '../../storage/repositories.js'
+import {
+  findOAuthCredentialRotationAccountAsync,
+  rotateOAuthCredentialsAsync,
+  type OAuthCredentialRotationAccount,
+  type OAuthCredentialRotationResult
+} from '../../storage/oauth-credential-rotation.repository.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
-import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import {
   accountResponseInspectionPolicyValidationMessage,
   validateAccountResponseInspectionRules
@@ -56,7 +59,6 @@ import {
 } from './grok-oauth.service.js'
 import { normalizeGrokSSOImportTokens } from './grok-sso-device-flow.js'
 import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
-import { shouldRefreshGrokOAuthCredentials } from '../providers/drivers/xai/oauth-dispatch-preparation.js'
 
 export const grokOAuthRouter = Router()
 
@@ -126,10 +128,18 @@ const createFromSSOSchema = z.object({
 
 const reauthorizeFromCodeSchema = z.object({
   sessionId: z.string().min(1),
-  callbackUrl: z.string().min(1)
+  callbackUrl: z.string().min(1),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
-const reauthorizeFromRefreshTokenSchema = z.object({ refreshToken: z.string().min(1) }).strict()
+const reauthorizeFromRefreshTokenSchema = z.object({
+  refreshToken: z.string().min(1),
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
+
+const refreshTokenSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
 
 grokOAuthRouter.post('/auth-url', async (req, res, next) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
@@ -392,7 +402,12 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const account = await findEditableGrokOAuthAccount(req.params.id, requestAccess)
+  const parsed = refreshTokenSchema.safeParse(req.body ?? {})
+  if (!parsed.success) {
+    res.status(400).json(badRequest('Grok 访问令牌刷新参数无效'))
+    return
+  }
+  const account = await findRotatableGrokOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Grok OAuth 账户不存在或无权操作' })
     return
@@ -414,11 +429,10 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       XAI_PROVIDER_CODE,
       account.id,
       async (lockSignal, assertLockOwned) => {
-        const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+        const current = await findRotatableGrokOAuthAccount(account.id, requestAccess)
         if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
-        if (oauthTokensChanged(account.credentials, current.credentials)
-          && !shouldRefreshGrokOAuthCredentials(current.credentials)) {
-          return current
+        if (current.configRevision !== parsed.data.expectedConfigRevision) {
+          throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
         }
         const currentRefreshToken = stringCredential(current.credentials, 'refresh_token')
         if (!currentRefreshToken) throw new Error('Grok OAuth 账户缺少 Refresh Token')
@@ -429,7 +443,13 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
           signal: lockSignal
         })
         await assertLockOwned()
-        return await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return await rotateGrokOAuthAccountCredentials(
+          current,
+          tokenInfo,
+          parsed.data.expectedConfigRevision,
+          undefined,
+          requestAccess
+        )
       },
       { signal: abortController.signal }
     )
@@ -438,7 +458,7 @@ grokOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       buildOAuthUpdateLog(account, updatedAccount, requestAccess, 'refresh_token', '刷新 Grok OAuth Token'),
       req
     )
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(updatedAccount)))
+    res.json(ok(oauthRotationReceipt(updatedAccount)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) return
     handleOAuthAccountUpdateError(error, res, 'Grok 访问令牌刷新失败')
@@ -457,7 +477,7 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
     res.status(400).json(badRequest('Grok 重新授权参数无效'))
     return
   }
-  const account = await findEditableGrokOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableGrokOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Grok OAuth 账户不存在或无权操作' })
     return
@@ -465,10 +485,10 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableGrokOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await exchangeGrokAuthCode({
         sessionId: parsed.data.sessionId,
@@ -479,14 +499,20 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) => 
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        const result = await rotateGrokOAuthAccountCredentials(
+          current,
+          tokenInfo,
+          parsed.data.expectedConfigRevision,
+          undefined,
+          requestAccess
+        )
         return {
           result,
           log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Grok OAuth 账户')
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Grok OAuth 重新授权失败')
   }
@@ -504,7 +530,7 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
     res.status(400).json(badRequest('Grok 刷新令牌参数无效'))
     return
   }
-  const account = await findEditableGrokOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableGrokOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Grok OAuth 账户不存在或无权操作' })
     return
@@ -512,10 +538,10 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(XAI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableGrokOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableGrokOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Grok OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await refreshGrokAuthToken({
         refreshToken: parsed.data.refreshToken,
@@ -525,9 +551,13 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateGrokOAuthAccountCredentials(current, tokenInfo, {
-          refreshToken: parsed.data.refreshToken
-        }, requestAccess)
+        const result = await rotateGrokOAuthAccountCredentials(
+          current,
+          tokenInfo,
+          parsed.data.expectedConfigRevision,
+          { refreshToken: parsed.data.refreshToken },
+          requestAccess
+        )
         return {
           result,
           log: buildOAuthUpdateLog(
@@ -540,7 +570,7 @@ grokOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (req,
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Grok 刷新令牌重新授权失败')
   }
@@ -675,31 +705,39 @@ function buildSafeGrokOAuthCredentials(
   return { ...buildGrokOAuthCredentials(tokenInfo, fallback), ...safeOAuthCredentialsPatch(patch) }
 }
 
-async function findEditableGrokOAuthAccount(accountId: string, access?: AccessScope) {
-  const account = await findAccountForTestAsync(accountId, access)
+async function findRotatableGrokOAuthAccount(
+  accountId: string,
+  access?: AccessScope
+): Promise<OAuthCredentialRotationAccount | undefined> {
+  const account = await findOAuthCredentialRotationAccountAsync(accountId, access)
   if (
     !account
     || account.providerCode !== XAI_PROVIDER_CODE
     || account.providerProtocolProfileId !== XAI_OPENAI_V1_PROFILE_ID
     || !isOpenAIProtocolProfile(account)
     || account.type !== 'oauth'
-    || account.permissions?.canEdit === false
-    || account.permissions?.canViewCredentials === false
   ) return undefined
   return account
 }
 
-async function updateGrokOAuthAccountCredentials(
-  account: NonNullable<Awaited<ReturnType<typeof findEditableGrokOAuthAccount>>>,
+async function rotateGrokOAuthAccountCredentials(
+  account: OAuthCredentialRotationAccount,
   tokenInfo: GrokOAuthTokenInfo,
+  expectedConfigRevision: number,
   fallback?: { refreshToken?: string },
   access?: AccessScope
-) {
+): Promise<OAuthCredentialRotationResult> {
   const credentials = { ...account.credentials, ...buildGrokOAuthCredentials(tokenInfo, fallback) }
   const existingBaseUrl = stringCredential(account.credentials, 'base_url')
   if (existingBaseUrl) credentials.base_url = existingBaseUrl
-  const updated = await updateAccountAsync(account.id, { credentials }, access, {
-    expectedConfigRevision: account.configRevision ?? 1
+  const updated = await rotateOAuthCredentialsAsync({
+    accountId: account.id,
+    expectedConfigRevision,
+    expectedProviderCode: XAI_PROVIDER_CODE,
+    expectedAccountType: 'oauth',
+    expectedProviderProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
+    credentials,
+    access
   })
   if (!updated) throw new Error('Grok OAuth 账户不存在或无法更新')
   return updated
@@ -771,13 +809,16 @@ function buildOAuthCreateLog(
 }
 
 function buildOAuthUpdateLog(
-  before: NonNullable<Awaited<ReturnType<typeof findEditableGrokOAuthAccount>>>,
-  after: NonNullable<Awaited<ReturnType<typeof updateAccountAsync>>>,
+  before: OAuthCredentialRotationAccount,
+  after: OAuthCredentialRotationResult,
   access: AccessScope | undefined,
   action: string,
   summaryPrefix: string
 ): OperationLogRecordInput {
-  const ownerSystemAccountId = resolveOperationOwner(after as unknown as Record<string, unknown>, access)
+  const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown>, access)
+  const beforeRecord = before as unknown as Record<string, unknown>
+  const afterRecord = after as unknown as Record<string, unknown>
+  const resourceName = typeof afterRecord.name === 'string' ? afterRecord.name : before.name
   return {
     operationScopeSystemAccountId: ownerSystemAccountId,
     mode: operationMode(access),
@@ -786,25 +827,26 @@ function buildOAuthUpdateLog(
     operationKey: `grok_oauth.${action}`,
     resourceType: 'account',
     resourceId: after.id,
-    resourceName: after.name,
-    summary: `${summaryPrefix}：${after.name}`,
+    resourceName,
+    summary: `${summaryPrefix}：${resourceName}`,
     changes: [
       safeChange('credentials', 'OAuth 凭据', before.credentials, after.credentials),
-      safeChange('status', '状态', before.status, after.status),
-      safeChange('cooldownUntil', '冷却结束时间', before.cooldownUntil, after.cooldownUntil),
-      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, after.lastErrorCode),
-      safeChange('lastErrorMessage', '错误信息', before.lastErrorMessage, after.lastErrorMessage)
+      safeChange('status', '状态', before.status, afterRecord.status ?? before.status),
+      safeChange('cooldownUntil', '冷却结束时间', beforeRecord.cooldownUntil, afterRecord.cooldownUntil),
+      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, afterRecord.lastErrorCode ?? before.lastErrorCode),
+      safeChange('lastErrorMessage', '错误信息', beforeRecord.lastErrorMessage, afterRecord.lastErrorMessage)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }
 }
 
+function oauthRotationReceipt(
+  result: OAuthCredentialRotationResult
+): Pick<OAuthCredentialRotationResult, 'id' | 'configRevision' | 'updatedAt'> {
+  return { id: result.id, configRevision: result.configRevision, updatedAt: result.updatedAt }
+}
+
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {
   const value = credentials[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
-  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
-    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }

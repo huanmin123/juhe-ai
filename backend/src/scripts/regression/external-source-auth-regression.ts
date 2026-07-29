@@ -176,9 +176,9 @@ async function runChild(): Promise<void> {
   let builtInTestToken = builtInTokenSecret.token
 
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', publicApiPrefix: '/__aipublic__' })
-  let serverApiKeyValidationInvalidations = 0
-  const unregisterServerApiKeyValidationInvalidator = registerGatewayApiKeyValidationServerInvalidator(async () => {
-    serverApiKeyValidationInvalidations += 1
+  const serverApiKeyValidationInvalidationIds = new Set<string | undefined>()
+  const unregisterServerApiKeyValidationInvalidator = registerGatewayApiKeyValidationServerInvalidator(async (apiKeyId) => {
+    serverApiKeyValidationInvalidationIds.add(apiKeyId)
   })
   const server = await listen(app)
   const address = server.address()
@@ -216,7 +216,7 @@ async function runChild(): Promise<void> {
       targetUsername,
       routeStrategy.id,
       roundRobinRouteStrategy.id,
-      () => serverApiKeyValidationInvalidations
+      (apiKeyId) => serverApiKeyValidationInvalidationIds.has(apiKeyId)
     )
     const accountId = await assertPublicAccountCrud(baseUrl, resourceToken, targetUsername, {
       repositories: {
@@ -482,7 +482,7 @@ async function assertPublicApiKeyCrud(
   targetUsername: string,
   routeStrategyId: string,
   nextRouteStrategyId: string,
-  serverApiKeyValidationInvalidationCount: () => number
+  hasServerApiKeyValidationInvalidation: (apiKeyId: string) => boolean
 ): Promise<string> {
   const add = await requestJson(baseUrl, '/__aipublic__/api-key/add', {
     Authorization: `Bearer ${token}`
@@ -503,7 +503,6 @@ async function assertPublicApiKeyCrud(
   assert.equal(list.status, 200)
   assert(list.body.data.items.some((item: any) => item.id === apiKeyId), '公开 API Key 列表应返回新增 Key')
 
-  const invalidationsBeforeUpdate = serverApiKeyValidationInvalidationCount()
   const update = await requestJson(baseUrl, '/__aipublic__/api-key/update', {
     Authorization: `Bearer ${token}`
   }, 'POST', {
@@ -515,10 +514,7 @@ async function assertPublicApiKeyCrud(
   assert.equal(update.body.data.apiKey.routeStrategyId, nextRouteStrategyId)
   assert.equal(update.body.data.apiKey.routeStrategyMode, 'round_robin')
   assert.equal(Object.prototype.hasOwnProperty.call(update.body.data.apiKey, 'key'), false, 'API Key 修改响应不应返回明文密钥')
-  assert(
-    serverApiKeyValidationInvalidationCount() > invalidationsBeforeUpdate,
-    '公开 API Key 修改应等待 server validation cache IPC 失效确认'
-  )
+  assert(hasServerApiKeyValidationInvalidation(apiKeyId), '公开 API Key 修改应等待当前 Key 的 server validation cache IPC 定点失效确认')
   return apiKeyId
 }
 

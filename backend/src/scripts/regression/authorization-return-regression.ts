@@ -211,7 +211,10 @@ try {
   assert.equal(authorizedGroup?.accessType, 'authorized', '被授权分组应在分组列表标记为授权资源')
   assert.equal(authorizedGroup?.permissions?.canEdit, true, '被授权分组应允许调整使用方本地配置')
   assert.equal(authorizedGroup?.permissions?.canReturnAuthorization, true, '个人直授权分组应允许在分组页归还')
+  const authorizedGroupEditDetail = await repositories.findGroupEditDetailAsync(seed.ownerGroupId, granteeAccess)
+  assert(authorizedGroupEditDetail?.updatedAt, '被授权分组编辑详情应返回版本')
   await patchOk(baseUrl, `/__aisys__/api/my-groups/${seed.ownerGroupId}`, seed.granteeCookie, {
+    expectedUpdatedAt: authorizedGroupEditDetail.updatedAt,
     enabled: true,
     groupType: 'high_concurrency',
     schedulingPolicy: {
@@ -235,7 +238,10 @@ try {
   assert.equal(granteeRuntimeGroupAccess?.schedulingPolicy?.clientIpConcurrencyLimit, 3, '授权分组运行态应读取被授权人的本地调度配置')
   const ownerRuntimeGroupAccess = repositories.resolveGroupUsageAccessMetadata(seed.ownerGroupId, seed.ownerId)
   assert.equal(ownerRuntimeGroupAccess?.groupType, 'personal', '授权方运行态仍应读取原分组配置')
+  const updatedAuthorizedGroupEditDetail = await repositories.findGroupEditDetailAsync(seed.ownerGroupId, granteeAccess)
+  assert(updatedAuthorizedGroupEditDetail?.updatedAt, '更新后的被授权分组编辑详情应返回版本')
   await patchOk(baseUrl, `/__aisys__/api/my-groups/${seed.ownerGroupId}`, seed.granteeCookie, {
+    expectedUpdatedAt: updatedAuthorizedGroupEditDetail.updatedAt,
     enabled: false,
     groupType: 'high_concurrency',
     schedulingPolicy: {
@@ -273,6 +279,7 @@ try {
     name: '管理员代归还授权账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorization-return', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1'],
     groupId: seed.ownerGroupId
   }, { systemAccountId: seed.ownerId, role: 'user' as const })
   const adminManagedGrant = repositories.createResourceAuthorization({
@@ -344,7 +351,8 @@ function seedData() {
     groupId: ownerGroup.id,
     name: '授权归还账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorization-return', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-authorization-return', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1']
   }, ownerAccess)
   const teamAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -352,7 +360,8 @@ function seedData() {
     groupId: ownerGroup.id,
     name: '授权归还团队来源账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorization-return-team', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-authorization-return-team', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1']
   }, ownerAccess)
   const mixedAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -360,7 +369,8 @@ function seedData() {
     groupId: ownerGroup.id,
     name: '授权归还团队覆盖个人来源账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-authorization-return-mixed', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-authorization-return-mixed', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.1']
   }, ownerAccess)
   const team = repositories.createSystemTeam({ name: '授权归还团队' }, adminAccess)
   repositories.addSystemTeamMembers(team.id, { systemAccountIds: [grantee.id] }, adminAccess)

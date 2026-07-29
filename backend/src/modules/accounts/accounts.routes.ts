@@ -351,7 +351,8 @@ accountsRouter.patch('/:id', async (req, res) => {
     res.json(ok({
       id: account.id,
       configRevision: account.configRevision,
-      changedFields: account.changedFields
+      changedFields: account.changedFields,
+      authorizationInstancesAffected: account.authorizationInstancesAffected
     }))
   } catch (error) {
     if (error instanceof AccountManagementPatchRevisionConflictError) {

@@ -4,13 +4,14 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync, type OAuthCredentialRotationAccount, type OAuthCredentialRotationResult } from '../../storage/oauth-credential-rotation.repository.js'
 import { GEMINI_PROVIDER_CODE, isGeminiProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
-import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
+import { sanitizeAccountCredentialCarrierResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
@@ -136,7 +137,8 @@ const reauthorizeFromCodeSchema = z.object({
   projectId: optionalTrimmedTextSchema,
   tierId: optionalTrimmedTextSchema,
   quotaProjectId: z.string().trim().min(1).optional(),
-  baseUrl: z.string().trim().url().optional()
+  baseUrl: z.string().trim().url().optional(),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 const reauthorizeFromRefreshTokenSchema = z.object({
@@ -147,7 +149,8 @@ const reauthorizeFromRefreshTokenSchema = z.object({
   projectId: optionalTrimmedTextSchema,
   tierId: optionalTrimmedTextSchema,
   quotaProjectId: z.string().trim().min(1).optional(),
-  baseUrl: z.string().trim().url().optional()
+  baseUrl: z.string().trim().url().optional(),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 function isGeminiOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined): boolean {
@@ -481,7 +484,7 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     res.status(400).json(badRequest('Gemini 重新授权参数无效'))
     return
   }
-  const account = await findEditableGeminiOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableGeminiOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Gemini OAuth 账户不存在或无权操作' })
     return
@@ -489,10 +492,10 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableGeminiOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await exchangeGeminiAuthCode({
         sessionId: parsed.data.sessionId,
@@ -510,14 +513,14 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        const result = await rotateGeminiOAuthAccountCredentials(current, tokenInfo, parsed.data.expectedConfigRevision, undefined, requestAccess)
         return {
           result,
           log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Gemini OAuth 账户')
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Gemini OAuth 重新授权失败')
   }
@@ -535,7 +538,7 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     res.status(400).json(badRequest('Gemini 刷新令牌参数无效'))
     return
   }
-  const account = await findEditableGeminiOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableGeminiOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Gemini OAuth 账户不存在或无权操作' })
     return
@@ -543,10 +546,10 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(GEMINI_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableGeminiOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableGeminiOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Gemini OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await refreshGeminiAuthToken({
         refreshToken: parsed.data.refreshToken,
@@ -563,14 +566,14 @@ geminiOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateGeminiOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+        const result = await rotateGeminiOAuthAccountCredentials(current, tokenInfo, parsed.data.expectedConfigRevision, { refreshToken: parsed.data.refreshToken }, requestAccess)
         return {
           result,
           log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Gemini OAuth 账户')
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Gemini 刷新令牌重新授权失败')
   }
@@ -648,6 +651,44 @@ async function findEditableGeminiOAuthAccount(accountId: string, access?: Access
     return undefined
   }
   return account
+}
+
+async function findRotatableGeminiOAuthAccount(accountId: string, access?: AccessScope): Promise<OAuthCredentialRotationAccount | undefined> {
+  const account = await findOAuthCredentialRotationAccountAsync(accountId, access)
+  return account
+    && account.providerCode === GEMINI_PROVIDER_CODE
+    && isGeminiProtocolProfile(account)
+    && account.type === 'google_oauth'
+    ? account
+    : undefined
+}
+
+async function rotateGeminiOAuthAccountCredentials(
+  account: OAuthCredentialRotationAccount,
+  tokenInfo: GeminiOAuthTokenInfo,
+  expectedConfigRevision: number,
+  fallback?: { refreshToken?: string; quotaProjectId?: string; baseUrl?: string },
+  access?: AccessScope
+): Promise<OAuthCredentialRotationResult> {
+  const credentials = {
+    ...account.credentials,
+    ...buildGeminiOAuthCredentials(tokenInfo, fallback)
+  }
+  const existingBaseUrl = stringCredential(account.credentials, 'base_url')
+  if (existingBaseUrl) credentials.base_url = existingBaseUrl
+  const updated = await rotateOAuthCredentialsAsync({
+    accountId: account.id,
+    expectedConfigRevision,
+    expectedProviderCode: GEMINI_PROVIDER_CODE,
+    expectedAccountType: 'google_oauth',
+    expectedProviderProtocolProfileId: account.providerProtocolProfileId,
+    credentials,
+    access
+  })
+  if (!updated) {
+    throw new Error('Gemini OAuth 账户不存在或无法更新')
+  }
+  return updated
 }
 
 async function updateGeminiOAuthAccountCredentials(
@@ -733,13 +774,15 @@ function buildOAuthCreateLog(
 }
 
 function buildOAuthUpdateLog(
-  before: NonNullable<Awaited<ReturnType<typeof findEditableGeminiOAuthAccount>>>,
-  after: NonNullable<Awaited<ReturnType<typeof updateAccountAsync>>>,
+  before: NonNullable<Awaited<ReturnType<typeof findEditableGeminiOAuthAccount>>> | OAuthCredentialRotationAccount,
+  after: NonNullable<Awaited<ReturnType<typeof updateAccountAsync>>> | OAuthCredentialRotationResult,
   access: AccessScope | undefined,
   action: string,
   summaryPrefix: string
 ): OperationLogRecordInput {
   const ownerSystemAccountId = resolveOperationOwner(after as unknown as Record<string, unknown>, access)
+  const resourceName = 'name' in after && typeof after.name === 'string' ? after.name : before.name
+  const afterRecord = after as Partial<typeof before>
   return {
     operationScopeSystemAccountId: ownerSystemAccountId,
     mode: operationMode(access),
@@ -748,19 +791,23 @@ function buildOAuthUpdateLog(
     operationKey: `gemini_oauth.${action}`,
     resourceType: 'account',
     resourceId: after.id,
-    resourceName: after.name,
-    summary: `${summaryPrefix}：${after.name}`,
+    resourceName,
+    summary: `${summaryPrefix}：${resourceName}`,
     changes: [
       safeChange('credentials', 'OAuth 凭据', before.credentials, after.credentials),
       safeChange('serviceTierOverride', '服务等级覆盖', before.credentials.service_tier_override, after.credentials.service_tier_override),
       safeChange('reasoningEffortOverride', '思考级别覆盖', before.credentials.reasoning_effort_override, after.credentials.reasoning_effort_override),
-      safeChange('status', '状态', before.status, after.status),
-      safeChange('cooldownUntil', '冷却结束时间', before.cooldownUntil, after.cooldownUntil),
-      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, after.lastErrorCode),
-      safeChange('lastErrorMessage', '错误信息', before.lastErrorMessage, after.lastErrorMessage)
+      safeChange('status', '状态', before.status, 'status' in after ? after.status : before.status),
+      safeChange('cooldownUntil', '冷却结束时间', 'cooldownUntil' in before ? before.cooldownUntil : undefined, afterRecord && 'cooldownUntil' in afterRecord ? afterRecord.cooldownUntil : undefined),
+      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, afterRecord && 'lastErrorCode' in afterRecord ? afterRecord.lastErrorCode : before.lastErrorCode),
+      safeChange('lastErrorMessage', '错误信息', 'lastErrorMessage' in before ? before.lastErrorMessage : undefined, afterRecord && 'lastErrorMessage' in afterRecord ? afterRecord.lastErrorMessage : undefined)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }
+}
+
+function oauthRotationReceipt(result: OAuthCredentialRotationResult): Pick<OAuthCredentialRotationResult, 'id' | 'configRevision' | 'updatedAt'> {
+  return { id: result.id, configRevision: result.configRevision, updatedAt: result.updatedAt }
 }
 
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {

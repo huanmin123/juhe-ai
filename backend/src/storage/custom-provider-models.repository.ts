@@ -242,7 +242,6 @@ export interface UpsertCustomProviderModelInput {
   scope?: CustomProviderModelScope
   systemAccountId?: string
   status?: CustomProviderModelStatus
-  catalogVisible?: boolean
   mode?: string | null
   supportedApiProtocols?: string[] | null
   supportedServiceTiers?: string[] | null
@@ -277,6 +276,9 @@ export type CustomProviderModelPatchField = Exclude<keyof UpsertCustomProviderMo
 export type CustomProviderModelPatchState = Pick<CustomProviderModelRecord,
   'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
   & Partial<CustomProviderModelRecord>
+
+export type CustomProviderModelDeleteState = Pick<CustomProviderModelRecord,
+  'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId'>
 
 export type CustomProviderModelMutationRecord = Pick<CustomProviderModelRecord,
   'id' | 'providerCode' | 'model' | 'scope' | 'systemAccountId' | 'status' | 'catalogVisible' | 'shutdownDate' | 'updatedAt'>
@@ -515,6 +517,33 @@ export async function findCustomProviderModelPatchStateAsync(
     LIMIT 1
   `, [id, ...(owner ? [owner] : [])])
   return row ? customProviderModelFromRow(row) : undefined
+}
+
+export async function findCustomProviderModelDeleteStateAsync(
+  id: string,
+  ownerSystemAccountId?: string
+): Promise<CustomProviderModelDeleteState | undefined> {
+  const owner = optionalText(ownerSystemAccountId)
+  const ownerPredicate = owner ? " AND scope = 'personal' AND system_account_id = ?" : ''
+  const columns = 'id, provider_code, model, scope, system_account_id'
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? await getCustomProviderModelsDatabaseClient()
+    : createSqliteDatabaseClient(getBusinessDatabase())
+  const row = await client.one<Pick<CustomProviderModelRow, 'id' | 'provider_code' | 'model' | 'scope' | 'system_account_id'>>(`
+    SELECT ${columns}
+    FROM ${customProviderModelsTable(client)}
+    WHERE id = ?${ownerPredicate}
+    LIMIT 1
+  `, [id, ...(owner ? [owner] : [])])
+  return row
+    ? {
+        id: row.id,
+        providerCode: row.provider_code,
+        model: row.model,
+        scope: row.scope,
+        systemAccountId: optionalText(row.system_account_id)
+      }
+    : undefined
 }
 
 export function upsertCustomProviderModel(
@@ -1101,6 +1130,7 @@ const customProviderModelPatchColumnByField: Partial<Record<CustomProviderModelP
 
 const customProviderModelValidationFields = new Set<CustomProviderModelPatchField>([
   'mode',
+  'supportedApiProtocols',
   'supportedServiceTiers',
   'supportedReasoningEfforts',
   'defaultReasoningEffort',
@@ -1122,6 +1152,7 @@ function customProviderModelPatchColumns(submitted: Record<string, unknown>): st
   const requestedFields = Object.keys(submitted)
     .filter((field): field is CustomProviderModelPatchField => field in customProviderModelPatchColumnByField)
   const requiresValidation = submitted.status === 'active'
+    || Object.prototype.hasOwnProperty.call(submitted, 'shutdownDate')
     || requestedFields.some((field) => customProviderModelValidationFields.has(field))
   const projectedFields = new Set<CustomProviderModelPatchField>(requestedFields)
   if (requiresValidation) {
@@ -1234,7 +1265,8 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     scope: row.scope,
     systemAccountId: optionalText(row.system_account_id),
     status: row.status,
-    catalogVisible: Boolean(row.catalog_visible),
+    // 自定义模型没有独立“隐藏目录”状态；active + 生命周期决定是否发布。
+    catalogVisible: true,
     mode: optionalText(row.mode),
     supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
     supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelCapabilityTokens),

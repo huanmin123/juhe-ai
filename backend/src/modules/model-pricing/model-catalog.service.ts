@@ -5,6 +5,7 @@ import {
   deleteCustomProviderModelAsync,
   findCustomProviderModelById,
   findCustomProviderModelByIdAsync,
+  findCustomProviderModelDeleteStateAsync,
   findCustomProviderModelPatchStateAsync,
   findCustomProviderModelTestCatalogAsync,
   listCustomProviderModelsForCatalog,
@@ -17,6 +18,7 @@ import {
   type CustomProviderModelRecord,
   type CustomProviderModelPatchField,
   type CustomProviderModelPatchState,
+  type CustomProviderModelDeleteState,
   type CustomProviderModelPatchOutcome,
   type CustomProviderModelTestCatalogRecord,
   type CustomProviderModelScope,
@@ -419,6 +421,13 @@ export async function findCustomProviderModelPatchState(
   ownerSystemAccountId?: string
 ): Promise<CustomProviderModelPatchState | undefined> {
   return findCustomProviderModelPatchStateAsync(id, submitted, ownerSystemAccountId)
+}
+
+export async function findCustomProviderModelDeleteState(
+  id: string,
+  ownerSystemAccountId?: string
+): Promise<CustomProviderModelDeleteState | undefined> {
+  return findCustomProviderModelDeleteStateAsync(id, ownerSystemAccountId)
 }
 
 export type ProviderModelPatchField = CustomProviderModelPatchField

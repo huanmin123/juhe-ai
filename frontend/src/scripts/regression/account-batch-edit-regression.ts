@@ -3,12 +3,14 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { api } from '../../api/client'
 import {
   accountBatchEditFieldLabels,
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
   intersectAccountSupportedEndpointModes
 } from '../../views/accounts/accountBatchEditForm'
+import { loadAccountProviderModelOptionsResource } from '../../views/accounts/useAccountProviderModelOptions'
 import type { AccountBatchEditContextItem, AccountSupportedEndpointMode } from '../../types/domain'
 
 const accounts = [
@@ -134,8 +136,8 @@ const accountStrategySource = readFileSync(resolve(frontendRoot, 'src/views/acco
 const accountGptOverridesSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountGptRequestOverridesSection.vue'), 'utf8')
 const generalTabSource = modalSource.match(/<a-tab-pane key="general"[\s\S]*?<a-tab-pane key="rules"/)?.[0] ?? ''
 const modelsTabSource = modalSource.match(/<a-tab-pane key="models"[\s\S]*?<\/a-tab-pane>/)?.[0] ?? ''
-assert.match(modalSource, /batchEditContext\(/, '批量编辑应在打开弹窗后一次性按需读取去敏上下文')
-assert.match(modalSource, /'supportedModels'[\s\S]*'modelMappings'[\s\S]*'supportedEndpointModes'/, '批量上下文必须显式声明模型校验依赖字段')
+assert.match(modalSource, /batchEditContext\(/, '批量编辑应提供字段级去敏上下文读取')
+assert.match(modalSource, /loadedModelContextFields/, '批量编辑必须记录已经按需加载的模型上下文字段')
 assert.doesNotMatch(formSource, /account\.credentials/, '批量编辑表单不得依赖完整 credentials')
 assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
 assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
@@ -188,14 +190,35 @@ const modalOpenWatchSource = modalSource.slice(
   modalSource.indexOf('async function loadContext')
 )
 assert.doesNotMatch(modalOpenWatchSource, /loadModelOptions\(/, '打开批量编辑弹窗不得预取模型候选')
+const initialContextSource = modalSource.slice(
+  modalSource.indexOf('async function loadContext'),
+  modalSource.indexOf('async function ensureModelContext')
+)
+assert.doesNotMatch(initialContextSource, /batchEditContext\(/, '打开批量编辑弹窗不得读取支持模型、模型映射或接口能力')
+assert.match(initialContextSource, /props\.accounts\.map\(accountBatchEditContextFromListItem\)/, '首开必须直接复用列表行的 ID、版本和协议身份')
+const deferredContextSource = modalSource.slice(
+  modalSource.indexOf('async function ensureModelContext'),
+  modalSource.indexOf('async function loadModelOptions')
+)
+assert.match(deferredContextSource, /batchEditContext\(accountIds, requestedFields/, '用户启用模型字段后必须只读取该交互依赖的上下文字段')
+const contextFieldPlannerSource = modalSource.slice(
+  modalSource.indexOf('function modelContextFieldsForEnabledForm'),
+  modalSource.indexOf('function accountBatchEditContextFromListItem')
+)
+assert.match(contextFieldPlannerSource, /!form\.enabled\.supportedModels[\s\S]*fields\.add\('supportedModels'\)/, '已经覆盖支持模型时不得再读取旧支持模型关系')
+assert.match(contextFieldPlannerSource, /!form\.enabled\.supportedEndpointModes[\s\S]*fields\.add\('supportedEndpointModes'\)/, '已经覆盖接口能力时不得再读取旧接口能力')
+assert.match(contextFieldPlannerSource, /form\.enabled\.supportedEndpointModes && !form\.enabled\.modelMappings[\s\S]*fields\.add\('modelMappings'\)/, '仅覆盖接口能力时才按需读取现有映射用于前端校验')
 assert.match(
   modalSource.slice(
     modalSource.indexOf('function handleMappingModelOptionsOpen'),
     modalSource.indexOf('function handleMappingModelOptionsSearch')
   ),
-  /if \(nextOpen\) void loadModelOptions\(loadToken\)/,
+  /ensureModelContext\(modelContextFieldsForEnabledForm\(\)\)[\s\S]*loadModelOptions\(loadToken\)/,
   '批量编辑模型候选必须仅在用户展开模型下拉后加载'
 )
+const supportedModelSelectSource = modelsTabSource.match(/v-model:value="form\.supportedModels"[\s\S]*?\/>/)?.[0] ?? ''
+assert.match(supportedModelSelectSource, /:filter-option="false"/, '支持模型必须使用服务端搜索，不能只过滤首批 50 条')
+assert.match(supportedModelSelectSource, /@search="handleSupportedModelOptionsSearch"/, '支持模型输入搜索必须请求供应商模型目录')
 assert.match(formSource, /configRevision/, '批量编辑请求必须使用乐观版本')
 assert.match(accountsViewSource, /@edit="openBatchEdit"/, '账户列表批量工具栏应接入批量编辑入口')
 assert.match(accountsViewSource, /AccountBatchDisableConfirmModal/, '批量停用必须使用独立二次确认弹窗')
@@ -205,7 +228,52 @@ assert.match(accountApiSource, /batchUpdate:/, '管理侧和用户侧账户 API 
 assert.match(accountApiSource, /batchEditContext:/, '管理侧和用户侧账户 API 应提供批量编辑上下文方法')
 assert.doesNotMatch(accountsViewSource, /batchTestSelected|openBatchTestModal/, '账户列表不得恢复批量测试入口')
 
+await verifySupportedModelSearchBeyondFirstPage()
+
 console.log('账户批量编辑前端回归通过：显式覆盖、清空语义、版本校验和按需详情加载符合契约')
+
+async function verifySupportedModelSearchBeyondFirstPage(): Promise<void> {
+  const originalModelOptions = api.providers.modelOptions
+  const catalog = Array.from({ length: 75 }, (_item, index) => {
+    const id = `catalog-model-${String(index + 1).padStart(3, '0')}`
+    return {
+      id,
+      name: id,
+      supportedApiProtocols: ['responses'] as const,
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
+  })
+  const queries: Array<{ keyword?: string; limit?: number }> = []
+  try {
+    api.providers.modelOptions = async (params) => {
+      queries.push({ keyword: params?.keyword, limit: params?.limit })
+      const keyword = params?.keyword?.trim().toLowerCase()
+      return catalog
+        .filter((item) => !keyword || item.id.includes(keyword))
+        .slice(0, params?.limit ?? 50)
+    }
+    const initial = await loadAccountProviderModelOptionsResource({
+      isManagementView: false,
+      providerCode: 'gpt'
+    })
+    assert.equal(initial.data.length, 50, '首次展开只应读取前 50 个模型候选')
+    assert.equal(initial.data.some((item) => item.value === 'catalog-model-075'), false, '第 75 个模型不应被首批响应提前加载')
+
+    const searched = await loadAccountProviderModelOptionsResource({
+      isManagementView: false,
+      providerCode: 'gpt',
+      keyword: 'catalog-model-075'
+    })
+    assert.deepEqual(searched.data.map((item) => item.value), ['catalog-model-075'], '服务端搜索必须能够取到首批 50 条以后的模型')
+    assert.deepEqual(queries, [
+      { keyword: undefined, limit: 50 },
+      { keyword: 'catalog-model-075', limit: 50 }
+    ], '批量编辑模型目录必须保持 50 条窗口并把搜索词发送到服务端')
+  } finally {
+    api.providers.modelOptions = originalModelOptions
+  }
+}
 
 function accountFixture(
   id: string,

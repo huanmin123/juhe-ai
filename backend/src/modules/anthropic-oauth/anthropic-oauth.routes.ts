@@ -3,20 +3,19 @@ import type { Response } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { AccountConfigRevisionConflictError, ProxyProfileUnavailableError, createAccountAsync, findGroupSummaryAsync, listProvidersAsync, resolveProxyUrlForProfileAsync } from '../../storage/repositories.js'
+import { findOAuthCredentialRotationAccountAsync, rotateOAuthCredentialsAsync, type OAuthCredentialRotationAccount, type OAuthCredentialRotationResult } from '../../storage/oauth-credential-rotation.repository.js'
 import { ANTHROPIC_PROVIDER_CODE, isAnthropicProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, recordOperationLogAsync, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
-import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } from '../accounts/account-response-sanitizer.js'
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
 import { runWithProviderOAuthRefreshLock } from '../providers/drivers/_shared/oauth-refresh-lock.js'
-import { shouldRefreshAnthropicOAuthCredentials } from '../providers/drivers/anthropic/oauth-dispatch-preparation.js'
 import {
   buildAnthropicOAuthCredentials,
   exchangeAnthropicAuthCode,
@@ -97,11 +96,17 @@ const createFromRefreshTokenSchema = z.object({
 
 const reauthorizeFromCodeSchema = z.object({
   sessionId: z.string().min(1),
-  callbackUrl: z.string().min(1)
+  callbackUrl: z.string().min(1),
+  expectedConfigRevision: z.number().int().min(1)
+}).strict()
+
+const refreshAccessTokenSchema = z.object({
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 const reauthorizeFromRefreshTokenSchema = z.object({
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1),
+  expectedConfigRevision: z.number().int().min(1)
 }).strict()
 
 function isAnthropicOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSummaryAsync>> | undefined): boolean {
@@ -320,7 +325,12 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const account = await findEditableAnthropicOAuthAccount(req.params.id, requestAccess)
+  const parsed = refreshAccessTokenSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('Anthropic 访问令牌刷新参数无效'))
+    return
+  }
+  const account = await findRotatableAnthropicOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Anthropic OAuth 账户不存在或无权操作' })
     return
@@ -345,11 +355,10 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       ANTHROPIC_PROVIDER_CODE,
       account.id,
       async (lockSignal, assertLockOwned) => {
-        const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+        const current = await findRotatableAnthropicOAuthAccount(account.id, requestAccess)
         if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
-        if (oauthTokensChanged(account.credentials, current.credentials)
-          && !shouldRefreshAnthropicOAuthCredentials(current.credentials)) {
-          return current
+        if (current.configRevision !== parsed.data.expectedConfigRevision) {
+          throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
         }
         const currentRefreshToken = stringCredential(current.credentials, 'refresh_token')
         if (!currentRefreshToken) throw new Error('Anthropic OAuth 账户缺少 Refresh Token')
@@ -360,7 +369,7 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
           signal: lockSignal
         })
         await assertLockOwned()
-        return await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        return await rotateAnthropicOAuthAccountCredentials(current, tokenInfo, parsed.data.expectedConfigRevision, undefined, requestAccess)
       },
       { signal: abortController.signal }
     )
@@ -368,7 +377,7 @@ anthropicOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
       return
     }
     await recordOperationLogAsync(buildOAuthUpdateLog(account, updatedAccount, requestAccess, 'refresh_token', '刷新 Anthropic OAuth Token'), req)
-    res.json(ok(sanitizeAccountCredentialCarrierResponse(updatedAccount)))
+    res.json(ok(oauthRotationReceipt(updatedAccount)))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
       return
@@ -397,7 +406,7 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
     res.status(400).json(badRequest('Anthropic 重新授权参数无效'))
     return
   }
-  const account = await findEditableAnthropicOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableAnthropicOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Anthropic OAuth 账户不存在或无权操作' })
     return
@@ -405,10 +414,10 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableAnthropicOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await exchangeAnthropicAuthCode({
         sessionId: parsed.data.sessionId,
@@ -419,14 +428,14 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, undefined, requestAccess)
+        const result = await rotateAnthropicOAuthAccountCredentials(current, tokenInfo, parsed.data.expectedConfigRevision, undefined, requestAccess)
         return {
           result,
           log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_code', '重新授权 Anthropic OAuth 账户')
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Anthropic OAuth 重新授权失败')
   }
@@ -444,7 +453,7 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
     res.status(400).json(badRequest('Anthropic 刷新令牌参数无效'))
     return
   }
-  const account = await findEditableAnthropicOAuthAccount(req.params.id, requestAccess)
+  const account = await findRotatableAnthropicOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Anthropic OAuth 账户不存在或无权操作' })
     return
@@ -452,10 +461,10 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
 
   try {
     const updated = await runWithProviderOAuthRefreshLock(ANTHROPIC_PROVIDER_CODE, account.id, async (lockSignal, assertLockOwned) => {
-      const current = await findEditableAnthropicOAuthAccount(account.id, requestAccess)
+      const current = await findRotatableAnthropicOAuthAccount(account.id, requestAccess)
       if (!current) throw new Error('Anthropic OAuth 账户不存在或无权操作')
-      if (oauthTokensChanged(account.credentials, current.credentials)) {
-        throw new AccountConfigRevisionConflictError(account.id, account.configRevision ?? 1, current.configRevision)
+      if (current.configRevision !== parsed.data.expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(account.id, parsed.data.expectedConfigRevision, current.configRevision)
       }
       const tokenInfo = await refreshAnthropicAuthToken({
         refreshToken: parsed.data.refreshToken,
@@ -465,14 +474,14 @@ anthropicOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async 
       })
       await assertLockOwned()
       return await runLoggedOperationAsync(async () => {
-        const result = await updateAnthropicOAuthAccountCredentials(current, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+        const result = await rotateAnthropicOAuthAccountCredentials(current, tokenInfo, parsed.data.expectedConfigRevision, { refreshToken: parsed.data.refreshToken }, requestAccess)
         return {
           result,
           log: buildOAuthUpdateLog(current, result, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 Anthropic OAuth 账户')
         }
       }, req)
     })
-    res.json(ok(sanitizeAccountResponse(updated)))
+    res.json(ok(oauthRotationReceipt(updated)))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'Anthropic 刷新令牌重新授权失败')
   }
@@ -543,28 +552,34 @@ function buildSafeAnthropicOAuthCredentials(
   }
 }
 
-async function findEditableAnthropicOAuthAccount(accountId: string, access?: AccessScope) {
-  const account = await findAccountForTestAsync(accountId, access)
-  if (!account || account.providerCode !== ANTHROPIC_PROVIDER_CODE || !isAnthropicProtocolProfile(account) || account.type !== 'oauth' || account.permissions?.canEdit === false || account.permissions?.canViewCredentials === false) {
-    return undefined
-  }
-  return account
+async function findRotatableAnthropicOAuthAccount(accountId: string, access?: AccessScope): Promise<OAuthCredentialRotationAccount | undefined> {
+  const account = await findOAuthCredentialRotationAccountAsync(accountId, access)
+  return account?.providerCode === ANTHROPIC_PROVIDER_CODE && isAnthropicProtocolProfile(account) && account.type === 'oauth'
+    ? account
+    : undefined
 }
 
-async function updateAnthropicOAuthAccountCredentials(
-  account: NonNullable<Awaited<ReturnType<typeof findEditableAnthropicOAuthAccount>>>,
+async function rotateAnthropicOAuthAccountCredentials(
+  account: OAuthCredentialRotationAccount,
   tokenInfo: AnthropicOAuthTokenInfo,
+  expectedConfigRevision: number,
   fallback?: { refreshToken?: string },
   access?: AccessScope
-) {
+): Promise<OAuthCredentialRotationResult> {
   const credentials = {
     ...account.credentials,
     ...buildAnthropicOAuthCredentials(tokenInfo, fallback)
   }
   const existingBaseUrl = stringCredential(account.credentials, 'base_url')
   if (existingBaseUrl) credentials.base_url = existingBaseUrl
-  const updated = await updateAccountAsync(account.id, { credentials }, access, {
-    expectedConfigRevision: account.configRevision ?? 1
+  const updated = await rotateOAuthCredentialsAsync({
+    accountId: account.id,
+    expectedConfigRevision,
+    expectedProviderCode: ANTHROPIC_PROVIDER_CODE,
+    expectedAccountType: 'oauth',
+    expectedProviderProtocolProfileId: account.providerProtocolProfileId,
+    credentials,
+    access
   })
   if (!updated) {
     throw new Error('Anthropic OAuth 账户不存在或无法更新')
@@ -631,13 +646,14 @@ function buildOAuthCreateLog(
 }
 
 function buildOAuthUpdateLog(
-  before: NonNullable<Awaited<ReturnType<typeof findEditableAnthropicOAuthAccount>>>,
-  after: NonNullable<Awaited<ReturnType<typeof updateAccountAsync>>>,
+  before: OAuthCredentialRotationAccount,
+  after: OAuthCredentialRotationResult,
   access: AccessScope | undefined,
   action: string,
   summaryPrefix: string
 ): OperationLogRecordInput {
   const ownerSystemAccountId = resolveOperationOwner(after as unknown as Record<string, unknown>, access)
+  const resourceName = before.name
   return {
     operationScopeSystemAccountId: ownerSystemAccountId,
     mode: operationMode(access),
@@ -646,27 +662,24 @@ function buildOAuthUpdateLog(
     operationKey: `anthropic_oauth.${action}`,
     resourceType: 'account',
     resourceId: after.id,
-    resourceName: after.name,
-    summary: `${summaryPrefix}：${after.name}`,
+    resourceName,
+    summary: `${summaryPrefix}：${resourceName}`,
     changes: [
       safeChange('credentials', 'OAuth 凭据', before.credentials, after.credentials),
       safeChange('serviceTierOverride', '服务等级覆盖', before.credentials.service_tier_override, after.credentials.service_tier_override),
       safeChange('reasoningEffortOverride', '思考级别覆盖', before.credentials.reasoning_effort_override, after.credentials.reasoning_effort_override),
-      safeChange('status', '状态', before.status, after.status),
-      safeChange('cooldownUntil', '冷却结束时间', before.cooldownUntil, after.cooldownUntil),
-      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, after.lastErrorCode),
-      safeChange('lastErrorMessage', '错误信息', before.lastErrorMessage, after.lastErrorMessage)
+      safeChange('status', '状态', before.status, before.status),
+      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, before.lastErrorCode)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
   }
 }
 
+function oauthRotationReceipt(result: OAuthCredentialRotationResult): Pick<OAuthCredentialRotationResult, 'id' | 'configRevision' | 'updatedAt'> {
+  return { id: result.id, configRevision: result.configRevision, updatedAt: result.updatedAt }
+}
+
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {
   const value = credentials[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function oauthTokensChanged(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
-  return stringCredential(before, 'access_token') !== stringCredential(after, 'access_token')
-    || stringCredential(before, 'refresh_token') !== stringCredential(after, 'refresh_token')
 }

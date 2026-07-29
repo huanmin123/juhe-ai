@@ -565,6 +565,8 @@ function assertSourceContracts(): void {
   assert.match(externalAsyncDeleteSource, /if \(result\.deleted && result\.validationCacheError\)[\s\S]*throw result\.validationCacheError/, '外部公开删除不得吞掉已提交后的 validation cache 失效失败')
 
   const externalRoutesSource = readFileSync(fileURLToPath(new URL('../../modules/external-integrations/external-integrations.routes.ts', import.meta.url)), 'utf8')
+  const externalUpdateRouteSource = sourceBetween(externalRoutesSource, "'/api-key/update'", "'/api-key/del'")
+  assert.match(externalUpdateRouteSource, /ApiKeyValidationCacheInvalidationError[\s\S]*res\.status\(500\)/, '外部公开更新应把提交后失效失败分类为服务端错误')
   const externalDeleteRouteSource = sourceBetween(externalRoutesSource, "'/api-key/del'", "'/account/add'")
   assert.match(externalDeleteRouteSource, /ApiKeyValidationCacheInvalidationError[\s\S]*res\.status\(500\)/, '外部公开删除应把提交后失效失败分类为服务端错误')
 

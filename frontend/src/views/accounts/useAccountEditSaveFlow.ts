@@ -6,6 +6,7 @@ import type {
   AccountCreateResult,
   AccountEditBasicDetail,
   AccountListItem,
+  AccountMutationResult,
   OAuthAuthURLResult,
   ProviderDefinition
 } from '@/types/domain'
@@ -65,6 +66,7 @@ interface UseAccountEditSaveFlowOptions {
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
+  refreshAccountMutationRows: (mutation: AccountMutationResult) => Promise<void>
   mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   mappingCurrentProviderSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   mappingGeminiSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
@@ -152,12 +154,13 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           finishUnchangedEdit()
           return
         }
-        if (options.isManagementView.value) {
-          await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
-        } else {
-          await api.myAccounts.update(options.editingId.value, updatePayload)
-        }
+        const updated = options.isManagementView.value
+          ? await api.accounts.update(options.editingId.value, updatePayload, options.editingAccountScopeParams())
+          : await api.myAccounts.update(options.editingId.value, updatePayload)
+        await refreshEditedAccountRows(updated)
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
+        options.modalOpen.value = false
+        return
       } else if (options.form.type === 'oauth' || options.form.type === 'google_oauth') {
         if (options.form.oauthMode === 'sso_cookie') {
           const importComplete = await importGrokSsoAccounts()
@@ -244,14 +247,12 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
     try {
-      if (options.isManagementView.value) {
-        await api.accounts.update(account.id, payload, scopeParams)
-      } else {
-        await api.myAccounts.update(account.id, payload)
-      }
+      const updated = options.isManagementView.value
+        ? await api.accounts.update(account.id, payload, scopeParams)
+        : await api.myAccounts.update(account.id, payload)
+      await refreshEditedAccountRows(updated)
       message.success('授权账户已更新')
       options.modalOpen.value = false
-      await options.loadData()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '保存授权账户失败'))
@@ -324,14 +325,12 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
     try {
-      if (options.isManagementView.value) {
-        await api.accounts.update(options.editingId.value, payload, options.editingAccountScopeParams())
-      } else {
-        await api.myAccounts.update(options.editingId.value, payload)
-      }
+      const updated = options.isManagementView.value
+        ? await api.accounts.update(options.editingId.value, payload, options.editingAccountScopeParams())
+        : await api.myAccounts.update(options.editingId.value, payload)
+      await refreshEditedAccountRows(updated)
       message.success('账户基础信息已更新')
       options.modalOpen.value = false
-      await options.loadData()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '保存账户失败'))
@@ -341,6 +340,16 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   function finishUnchangedEdit(): void {
     message.info('未检测到账户修改')
     options.modalOpen.value = false
+  }
+
+  async function refreshEditedAccountRows(mutation: AccountMutationResult): Promise<void> {
+    try {
+      await options.refreshAccountMutationRows(mutation)
+    } catch (error) {
+      console.error(error)
+      message.warning('账户已更新，列表局部刷新失败，正在重新加载当前页')
+      await options.loadData()
+    }
   }
 
   async function createOAuthAccountFromUnifiedForm(): Promise<AccountCreateResult> {

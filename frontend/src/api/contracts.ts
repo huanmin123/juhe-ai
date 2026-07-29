@@ -122,6 +122,7 @@ export interface AccountListSortParam {
 }
 
 export interface AccountListParams extends ListParams {
+  ids?: string[]
   sorts?: AccountListSortParam[]
   page?: number
   pageSize?: number

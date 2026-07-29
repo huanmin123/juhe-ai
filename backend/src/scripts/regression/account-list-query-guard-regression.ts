@@ -20,14 +20,20 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, accountManagementListRepository] = await Promise.all([
+const [databaseModule, repositories, accountManagementListRepository, { parseAccountListOptions }] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-management-list.repository.js')
+  import('../../storage/account-management-list.repository.js'),
+  import('../../modules/accounts/account-list-query.js')
 ])
 
 try {
   assertAccountListRouteBoundary()
+  assert.deepEqual(
+    parseAccountListOptions({ ids: 'account-source,account-authorized' }).ids,
+    ['account-source', 'account-authorized'],
+    '账户列表路由必须保留 ids 定点查询，供 PATCH 后刷新当前已加载依赖行'
+  )
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const matchedGroup = repositories.createGroup({

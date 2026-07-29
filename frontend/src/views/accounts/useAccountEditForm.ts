@@ -12,6 +12,7 @@ import type {
   AccountAdvancedDetail,
   AccountEditBasicDetail,
   AccountListItem,
+  AccountMutationResult,
   AccountSummary,
   AccountType,
   GroupOptionSummary,
@@ -89,6 +90,7 @@ interface UseAccountEditFormOptions {
   ensureProviderDefinition: (providerCode: string, systemAccountId?: string, force?: boolean) => Promise<ProviderDefinition | undefined>
   loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: Partial<AccountGroupOptionsScope>, loadOptions?: AccountGroupOptionsLoadOptions) => Promise<void>
   loadData: () => Promise<void>
+  refreshAccountMutationRows: (mutation: AccountMutationResult) => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
   providerDefinitions: ReadonlyValue<ProviderDefinition[]>
   providers: ReadonlyValue<ProviderDefinition[]>
@@ -245,6 +247,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     form,
     isManagementView: options.isManagementView,
     loadData: options.loadData,
+    refreshAccountMutationRows: options.refreshAccountMutationRows,
     mappingAnthropicSourceModelOptions,
     mappingCurrentProviderSourceModelOptions,
     mappingGeminiSourceModelOptions,

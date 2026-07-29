@@ -17,17 +17,13 @@
       </div>
 
       <a-alert
-        v-if="contextError"
+        v-if="contextErrorMessage"
         type="error"
         show-icon
-        :message="contextError"
+        :message="contextErrorMessage"
       />
 
-      <div v-if="loading" class="batch-edit-loading">
-        <a-spin tip="正在获取所选账户的最新配置" />
-      </div>
-
-      <a-form v-else layout="vertical">
+      <a-form layout="vertical">
         <a-tabs v-model:activeKey="activeTab">
           <a-tab-pane key="general" tab="通用配置">
             <div class="batch-edit-section">
@@ -244,11 +240,13 @@
                     allow-clear
                     show-search
                     option-filter-prop="label"
+                    :filter-option="false"
                     :disabled="disabled"
-                     :loading="modelsLoading"
-                     :options="modelOptions"
-                     placeholder="选择账户实际支持的模型"
-                     @dropdown-visible-change="handleMappingModelOptionsOpen"
+                    :loading="modelConfigurationLoading"
+                    :options="modelOptions"
+                    placeholder="选择账户实际支持的模型"
+                    @dropdown-visible-change="handleSupportedModelOptionsOpen"
+                    @search="handleSupportedModelOptionsSearch"
                   />
                 </template>
               </AccountBatchEditField>
@@ -265,10 +263,11 @@
                       v-model:value="form.healthCheckModel"
                       show-search
                       option-filter-prop="label"
-                     :disabled="disabled || !healthCheckModelOptions.length"
-                     :options="healthCheckModelOptions"
-                     placeholder="选择检查模型"
-                     @dropdown-visible-change="handleMappingModelOptionsOpen"
+                      :disabled="disabled || modelContextLoading || !healthCheckModelOptions.length"
+                      :loading="modelContextLoading"
+                      :options="healthCheckModelOptions"
+                      placeholder="选择检查模型"
+                      @dropdown-visible-change="handleHealthCheckModelOptionsOpen"
                     />
                   </template>
                 </AccountBatchEditField>
@@ -282,7 +281,8 @@
                   <template #default="{ disabled }">
                     <a-select
                       v-model:value="form.healthCheckEndpointMode"
-                      :disabled="disabled || !healthCheckEndpointModeOptions.length"
+                      :disabled="disabled || modelContextLoading || !healthCheckEndpointModeOptions.length"
+                      :loading="modelContextLoading"
                       :options="healthCheckEndpointModeOptions"
                       placeholder="选择检查请求形态"
                     />
@@ -313,7 +313,8 @@
                         v-model:value="mapping.sourceModel"
                         show-search
                         option-filter-prop="label"
-                        :disabled="disabled"
+                        :disabled="disabled || modelContextLoading"
+                        :loading="modelConfigurationLoading"
                         :options="mappingSourceModelOptionsFor(mapping)"
                         placeholder="客户端模型"
                         @dropdown-visible-change="handleMappingModelOptionsOpen"
@@ -330,7 +331,8 @@
                         v-model:value="mapping.upstreamModel"
                         show-search
                         option-filter-prop="label"
-                        :disabled="disabled"
+                        :disabled="disabled || modelContextLoading"
+                        :loading="modelConfigurationLoading"
                         :options="mappingUpstreamModelOptionsFor(mapping)"
                         placeholder="上游模型"
                         @dropdown-visible-change="handleMappingModelOptionsOpen"
@@ -371,7 +373,7 @@
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.serviceTierOverride"
-                        :disabled="disabled || modelsLoading || !gptCapabilities.serviceTiers.length"
+                        :disabled="disabled || modelConfigurationLoading || !gptCapabilities.serviceTiers.length"
                         :options="serviceTierOptions"
                       />
                     </template>
@@ -384,7 +386,7 @@
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.reasoningEffortOverride"
-                        :disabled="disabled || modelsLoading || !gptCapabilities.reasoningEfforts.length"
+                        :disabled="disabled || modelConfigurationLoading || !gptCapabilities.reasoningEfforts.length"
                         :options="reasoningEffortOptions"
                       />
                     </template>
@@ -419,7 +421,7 @@
 
 <script setup lang="ts">
 import { DeleteOutlined, PlusOutlined, SwapRightOutlined } from '@ant-design/icons-vue'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ProxySelect from '@/components/ProxySelect.vue'
@@ -491,16 +493,21 @@ const emit = defineEmits<{
 }>()
 
 const activeTab = ref('general')
-const loading = ref(false)
 const saving = ref(false)
 const modelsLoading = ref(false)
+const modelContextLoading = ref(false)
 const contextError = ref('')
+const modelContextError = ref('')
 const accountDetails = ref<AccountBatchEditContextItem[]>([])
 const currentProviderModelOptions = ref<AccountModelSelectOption[]>([])
 const modelOptions = ref<AccountModelSelectOption[]>([])
 const form = reactive<AccountBatchEditForm>(createAccountBatchEditForm())
 let loadToken = 0
 let modelOptionsRequestId = 0
+let modelContextPromise: Promise<void> | undefined
+let modelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
+const loadedModelContextFields = new Set<AccountBatchEditContextField>()
+const pendingModelContextFields = new Set<AccountBatchEditContextField>()
 
 const tagOptions = computed(() => props.tags.map((tag) => ({ label: tag.name, value: tag.name })))
 const accountNameSummary = computed(() => {
@@ -569,6 +576,8 @@ const requestOverridesSupported = computed(() => Boolean(
   homogeneousAccount.value
   && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, effectiveBatchEndpointModes.value)
 ))
+const modelConfigurationLoading = computed(() => modelContextLoading.value || modelsLoading.value)
+const contextErrorMessage = computed(() => contextError.value || modelContextError.value)
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(gptCapabilities.value))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(gptCapabilities.value))
 const serviceTierDescription = computed(() => gptCapabilities.value.serviceTiers.length
@@ -580,9 +589,9 @@ const reasoningEffortDescription = computed(() => gptCapabilities.value.reasonin
 const scheduleForm = computed(() => ({ availabilitySchedule: form.availabilitySchedule }))
 const enabledLabels = computed(() => enabledAccountBatchEditFieldLabels(form))
 const saveDisabled = computed(() => (
-  loading.value
-  || saving.value
-  || Boolean(contextError.value)
+  saving.value
+  || modelContextLoading.value
+  || Boolean(contextErrorMessage.value)
   || props.accounts.length < 2
   || enabledLabels.value.length === 0
 ))
@@ -614,17 +623,33 @@ const upstreamEndpointBaseOptions = [
 ] as const
 
 watch(open, (next) => {
-  if (next) void loadContext()
+  if (next) {
+    void loadContext()
+    return
+  }
+  loadToken += 1
+  modelOptionsRequestId += 1
+  modelsLoading.value = false
+  modelContextLoading.value = false
+  clearModelOptionsSearchTimer()
 }, { immediate: true })
 
 async function loadContext(): Promise<void> {
-  const token = ++loadToken
+  loadToken += 1
+  clearModelOptionsSearchTimer()
   activeTab.value = 'general'
   Object.assign(form, createAccountBatchEditForm())
-  accountDetails.value = []
+  accountDetails.value = props.accounts.map(accountBatchEditContextFromListItem)
   currentProviderModelOptions.value = []
   modelOptions.value = []
+  modelOptionsRequestId += 1
+  modelsLoading.value = false
+  loadedModelContextFields.clear()
+  pendingModelContextFields.clear()
+  modelContextPromise = undefined
+  modelContextLoading.value = false
   contextError.value = ''
+  modelContextError.value = ''
   if (props.accounts.length < 2 || props.accounts.length > 100) {
     contextError.value = '批量编辑一次只能选择 2 到 100 个账户'
     return
@@ -633,27 +658,51 @@ async function loadContext(): Promise<void> {
     contextError.value = '所选账户包含授权实例或无编辑权限账户，请重新选择'
     return
   }
-  loading.value = true
-  try {
-    const accountIds = props.accounts.map((account) => account.id)
-    const fields: AccountBatchEditContextField[] = [
-      'supportedModels',
-      'modelMappings',
-      'supportedEndpointModes'
-    ]
-    const details = props.isManagementView
-      ? await api.accounts.batchEditContext(accountIds, fields, managementScopeParams.value)
-      : await api.myAccounts.batchEditContext(accountIds, fields)
-    if (token !== loadToken || !open.value) return
-    accountDetails.value = details
-    if (accountDetails.value.length !== props.accounts.length) {
-      throw new Error('部分账户详情未能加载')
+}
+
+async function ensureModelContext(fields: readonly AccountBatchEditContextField[]): Promise<void> {
+  for (const field of fields) {
+    if (!loadedModelContextFields.has(field)) pendingModelContextFields.add(field)
+  }
+  while (pendingModelContextFields.size > 0) {
+    if (modelContextPromise) {
+      await modelContextPromise
+      continue
     }
-  } catch (error) {
-    console.error(error)
-    contextError.value = extractApiErrorMessage(error, '获取批量编辑配置失败，请刷新列表后重试')
-  } finally {
-    if (token === loadToken) loading.value = false
+    const token = loadToken
+    const requestedFields = [...pendingModelContextFields]
+      .filter((field) => !loadedModelContextFields.has(field))
+    pendingModelContextFields.clear()
+    if (!requestedFields.length) return
+    modelContextLoading.value = true
+    modelContextError.value = ''
+    const requestPromise = (async () => {
+      try {
+        const accountIds = props.accounts.map((account) => account.id)
+        const details = props.isManagementView
+          ? await api.accounts.batchEditContext(accountIds, requestedFields, managementScopeParams.value)
+          : await api.myAccounts.batchEditContext(accountIds, requestedFields)
+        if (token !== loadToken || !open.value) return
+        if (details.length !== props.accounts.length) throw new Error('部分账户详情未能加载')
+        const detailsById = new Map(details.map((detail) => [detail.id, detail]))
+        accountDetails.value = accountDetails.value.map((account) => ({
+          ...account,
+          ...detailsById.get(account.id)
+        }))
+        for (const field of requestedFields) loadedModelContextFields.add(field)
+      } catch (error) {
+        console.error(error)
+        modelContextError.value = extractApiErrorMessage(error, '获取批量编辑模型配置失败，请重试')
+      } finally {
+        if (token === loadToken) modelContextLoading.value = false
+      }
+    })()
+    modelContextPromise = requestPromise
+    try {
+      await requestPromise
+    } finally {
+      if (modelContextPromise === requestPromise) modelContextPromise = undefined
+    }
   }
 }
 
@@ -685,25 +734,77 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
   }
 }
 
-function handleMappingModelOptionsOpen(nextOpen: boolean): void {
+function handleSupportedModelOptionsOpen(nextOpen: boolean): void {
   if (nextOpen) void loadModelOptions(loadToken)
 }
 
-function handleMappingModelOptionsSearch(value: string): void {
-  void loadModelOptions(loadToken, value.trim())
+function handleSupportedModelOptionsSearch(value: string): void {
+  scheduleModelOptionsSearch(value)
 }
+
+function handleHealthCheckModelOptionsOpen(nextOpen: boolean): void {
+  if (nextOpen) void ensureModelContext(modelContextFieldsForEnabledForm())
+}
+
+function handleMappingModelOptionsOpen(nextOpen: boolean): void {
+  if (!nextOpen) return
+  void (async () => {
+    await ensureModelContext(modelContextFieldsForEnabledForm())
+    if (!contextErrorMessage.value) await loadModelOptions(loadToken)
+  })()
+}
+
+function handleMappingModelOptionsSearch(value: string): void {
+  scheduleModelOptionsSearch(value, modelContextFieldsForEnabledForm())
+}
+
+function scheduleModelOptionsSearch(
+  value: string,
+  contextFields: readonly AccountBatchEditContextField[] = []
+): void {
+  clearModelOptionsSearchTimer()
+  modelOptionsSearchTimer = setTimeout(() => {
+    modelOptionsSearchTimer = undefined
+    void (async () => {
+      await ensureModelContext(contextFields)
+      if (!contextErrorMessage.value) await loadModelOptions(loadToken, value.trim())
+    })()
+  }, 250)
+}
+
+function clearModelOptionsSearchTimer(): void {
+  if (!modelOptionsSearchTimer) return
+  clearTimeout(modelOptionsSearchTimer)
+  modelOptionsSearchTimer = undefined
+}
+
+watch(
+  () => modelContextFieldsForEnabledForm(),
+  (fields) => {
+    if (fields.length) {
+      void ensureModelContext(fields)
+      return
+    }
+    modelContextError.value = ''
+  }
+)
 
 watch(
   () => [form.enabled.serviceTierOverride, form.enabled.reasoningEffortOverride] as const,
   ([serviceTierEnabled, reasoningEffortEnabled], [previousServiceTierEnabled, previousReasoningEffortEnabled]) => {
     if ((serviceTierEnabled && !previousServiceTierEnabled) || (reasoningEffortEnabled && !previousReasoningEffortEnabled)) {
-      void loadModelOptions(loadToken)
+      void (async () => {
+        await ensureModelContext(modelContextFieldsForEnabledForm())
+        if (!contextErrorMessage.value) await loadModelOptions(loadToken)
+      })()
     }
   }
 )
 
 async function save(): Promise<void> {
   if (saveDisabled.value) return
+  await ensureModelContext(modelContextFieldsForEnabledForm())
+  if (contextErrorMessage.value) return
   const result = buildAccountBatchEditRequest(accountDetails.value, form, {
     mappingAnthropicSourceModelOptions: currentProviderModelOptions.value,
     mappingCurrentProviderSourceModelOptions: currentProviderModelOptions.value,
@@ -737,8 +838,17 @@ async function save(): Promise<void> {
 
 function close(): void {
   loadToken += 1
+  modelOptionsRequestId += 1
+  modelsLoading.value = false
+  clearModelOptionsSearchTimer()
   open.value = false
 }
+
+onBeforeUnmount(() => {
+  loadToken += 1
+  modelOptionsRequestId += 1
+  clearModelOptionsSearchTimer()
+})
 
 function addMapping(): void {
   const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(mappingContext())
@@ -808,6 +918,40 @@ function normalizedTextList(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
 }
 
+function modelContextFieldsForEnabledForm(): AccountBatchEditContextField[] {
+  const fields = new Set<AccountBatchEditContextField>()
+  if (!form.enabled.supportedModels && (
+    form.enabled.healthCheckModel
+    || form.enabled.modelMappings
+    || form.enabled.serviceTierOverride
+    || form.enabled.reasoningEffortOverride
+  )) {
+    fields.add('supportedModels')
+  }
+  if (!form.enabled.supportedEndpointModes && (
+    form.enabled.healthCheckEndpointMode
+    || form.enabled.modelMappings
+  )) {
+    fields.add('supportedEndpointModes')
+  }
+  if (form.enabled.supportedEndpointModes && !form.enabled.modelMappings) {
+    fields.add('modelMappings')
+  }
+  return [...fields]
+}
+
+function accountBatchEditContextFromListItem(account: AccountListItem): AccountBatchEditContextItem {
+  return {
+    id: account.id,
+    configRevision: Number(account.configRevision),
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId ?? '',
+    protocolCode: account.protocolCode ?? '',
+    protocolVersion: account.protocolVersion ?? '',
+    type: account.type
+  }
+}
+
 </script>
 
 <style scoped>
@@ -848,12 +992,6 @@ function normalizedTextList(values: string[]): string[] {
 
 .batch-edit-summary-hint {
   flex-shrink: 0;
-}
-
-.batch-edit-loading {
-  display: grid;
-  min-height: 320px;
-  place-items: center;
 }
 
 .batch-edit-section {

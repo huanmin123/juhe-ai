@@ -46,6 +46,7 @@ export function accountListParams(params?: AccountListParams, includeSystemAccou
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.keyword) output.keyword = params.keyword

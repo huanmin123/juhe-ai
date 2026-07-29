@@ -248,7 +248,7 @@ async function runHttpSmoke(): Promise<void> {
     const systemAccountOptions = await getEnvelope<Array<{ id: string; username: string }>>(baseUrl, '/__aisys__/api/system-accounts/options?ids=sys_admin', cookie)
     assert.deepEqual(systemAccountOptions.map((account) => account.id), ['sys_admin'], 'performance smoke 应能读取系统账户选项')
     const suffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
-    const createdAccount = await postEnvelope<{ id: string; username: string; status: string }>(baseUrl, '/__aisys__/api/system-accounts', {
+    const createdAccount = await postEnvelope<{ id: string; username: string; status: string; updatedAt: string }>(baseUrl, '/__aisys__/api/system-accounts', {
       username: `smoke_sys_${suffix}`,
       displayName: `烟测系统账户${suffix}`,
       password: `Pwd${suffix}`,
@@ -258,7 +258,8 @@ async function runHttpSmoke(): Promise<void> {
     }, cookie)
     createdSystemAccountIds.push(createdAccount.id)
     assert.equal(createdAccount.status, 'active', 'performance smoke 应能创建系统账户')
-    const disabledAccount = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/system-accounts/${createdAccount.id}`, {
+    const disabledAccount = await patchEnvelope<{ id: string; status: string; updatedAt: string }>(baseUrl, `/__aisys__/api/system-accounts/${createdAccount.id}`, {
+      expectedUpdatedAt: createdAccount.updatedAt,
       status: 'disabled',
       imageGenerationEnabled: true
     }, cookie)
@@ -290,7 +291,7 @@ async function runHttpSmoke(): Promise<void> {
     createdCustomModelIds.push(customModelTarget.id)
     assert.equal(customModelTarget.providerCode, 'gpt', 'performance smoke 自定义模型应归属目标供应商')
     assert.equal(customModelTarget.scope, 'personal', 'performance smoke 自定义模型应固定为个人模型')
-    const customModelAlias = await postEnvelope<{ id: string; model: string; inputUsdPer1M?: number; outputUsdPer1M?: number }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
+    const customModelAlias = await postEnvelope<{ id: string; model: string; inputUsdPer1M?: number; outputUsdPer1M?: number; updatedAt: string }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
       model: `smoke-custom-alias-${suffix}`,
       supportedApiProtocols: ['responses'],
       inputUsdPer1M: 1,
@@ -302,10 +303,14 @@ async function runHttpSmoke(): Promise<void> {
     const customModels = await getEnvelope<Array<{ id?: string; model: string; scope: string }>>(baseUrl, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
     assert.ok(customModels.some((item) => item.id === customModelTarget.id && item.model === customModelTarget.model), 'performance smoke 应能在模型目录列表查回自定义目标模型')
     assert.ok(customModels.some((item) => item.id === customModelAlias.id && item.model === customModelAlias.model), 'performance smoke 应能在模型目录列表查回自定义别名模型')
-    const updatedCustomModel = await patchEnvelope<{ id: string; maxOutputTokens?: number }>(baseUrl, `/__aisys__/api/providers/gpt/models/${customModelAlias.id}`, {
+    const updatedCustomModel = await patchEnvelope<{ id: string; model: string; providerCode: string; status: string; updatedAt: string }>(baseUrl, `/__aisys__/api/providers/gpt/models/${customModelAlias.id}`, {
+      expectedUpdatedAt: customModelAlias.updatedAt,
       maxOutputTokens: 2048
     }, cookie)
-    assert.equal(updatedCustomModel.maxOutputTokens, 2048, 'performance smoke 应能更新自定义模型')
+    assert.deepEqual(Object.keys(updatedCustomModel).sort(), ['id', 'model', 'providerCode', 'status', 'updatedAt'], 'performance smoke 模型 PATCH 应只返回局部刷新所需字段')
+    assert.notEqual(updatedCustomModel.updatedAt, customModelAlias.updatedAt, 'performance smoke 模型实际变化应推进版本')
+    const updatedCustomModels = await getEnvelope<Array<{ id?: string; maxOutputTokens?: number }>>(baseUrl, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
+    assert.equal(updatedCustomModels.find((item) => item.id === customModelAlias.id)?.maxOutputTokens, 2048, 'performance smoke 应能在模型目录查回字段级 PATCH 结果')
     await deleteNoContentEnvelope(baseUrl, `/__aisys__/api/providers/gpt/models/${customModelAlias.id}`, cookie)
     createdCustomModelIds.splice(createdCustomModelIds.indexOf(customModelAlias.id), 1)
     await deleteNoContentEnvelope(baseUrl, `/__aisys__/api/providers/gpt/models/${customModelTarget.id}`, cookie)
@@ -314,7 +319,7 @@ async function runHttpSmoke(): Promise<void> {
     console.log(`[performance-system-api-smoke:${label}] groups`)
     const groups = await getEnvelope<{ items: Array<{ id: string; name: string; providerCode: string }>; hasMore: boolean }>(baseUrl, '/__aisys__/api/groups?page=1&pageSize=20', cookie)
     assert.ok(groups.items.some((group) => group.providerCode === 'gpt'), 'performance smoke 应能读取分组列表')
-    const groupOptions = await getEnvelope<Array<{ id: string; providerCode: string }>>(baseUrl, '/__aisys__/api/groups/options?providerCode=gpt&limit=10', cookie)
+    const groupOptions = await getEnvelope<Array<{ id: string; providerCode: string }>>(baseUrl, '/__aisys__/api/groups/options?providerCode=gpt&limit=10&purpose=account', cookie)
     assert.ok(groupOptions.some((group) => group.providerCode === 'gpt'), 'performance smoke 应能读取分组选项')
     const groupSuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
     const createdGroup = await postEnvelope<{ id: string; name: string; groupType: string }>(baseUrl, '/__aisys__/api/groups', {
@@ -333,7 +338,9 @@ async function runHttpSmoke(): Promise<void> {
     }, cookie)
     createdGroupIds.push(createdGroup.id)
     assert.equal(createdGroup.groupType, 'high_concurrency', 'performance smoke 应能创建高并发分组')
-    const updatedGroup = await patchEnvelope<{ id: string; changedFields: string[] }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
+    const createdGroupEdit = await getEnvelope<{ updatedAt: string }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}/edit-basic`, cookie)
+    const updatedGroup = await patchEnvelope<{ id: string; changedFields: string[]; updatedAt: string }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
+      expectedUpdatedAt: createdGroupEdit.updatedAt,
       name: `烟测分组${groupSuffix}改`
     }, cookie)
     assert.deepEqual(updatedGroup.changedFields, ['name'], 'performance smoke 分组 PATCH 应只确认实际变化字段')
@@ -345,12 +352,13 @@ async function runHttpSmoke(): Promise<void> {
     assert.deepEqual(granteeAccounts.map((account) => account.id), ['sys_admin'], 'performance smoke 应能读取授权被授权账号选项')
     const granteeTeams = await getEnvelope<Array<{ id: string; name: string }>>(baseUrl, '/__aisys__/api/authorization-options/grantee-teams?limit=5', cookie)
     assert.ok(Array.isArray(granteeTeams), 'performance smoke 应能读取授权被授权团队选项')
-    const granteeGroups = await getEnvelope<Array<{ id: string; providerCode: string }>>(
+    const granteeGroups = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
       '/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=sys_admin&providerCode=gpt&preferDefault=true&limit=20',
       cookie
     )
-    assert.ok(granteeGroups.some((group) => group.id === createdGroup.id && group.providerCode === 'gpt'), 'performance smoke 应能读取授权目标分组选项')
+    assert.ok(granteeGroups.some((group) => group.id === createdGroup.id), 'performance smoke 应能读取授权目标分组选项')
+    assert.ok(granteeGroups.every((group) => Object.keys(group).sort().join(',') === 'id,name'), 'performance smoke 授权目标分组选项应保持 id/name 窄投影')
 
     console.log(`[performance-system-api-smoke:${label}] authorizations`)
     const authorizationsPage = await getEnvelope<{ items: Array<{ id: string }>; page: number; pageSize: number; hasMore: boolean }>(
@@ -429,12 +437,13 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(initialAiAccountAdvancedDetail.configRevision, initialAiAccountBasicDetail.configRevision, 'performance smoke 分层详情应返回同一配置版本')
     assert.equal(Object.prototype.hasOwnProperty.call(initialAiAccountAdvancedDetail.credentials ?? {}, 'base_url'), false, 'performance smoke AI 账户高级详情不应重复返回基础凭据')
     assert.equal(initialAiAccountAdvancedDetail.modelMappings?.[0]?.upstreamModel, smokeModel, 'performance smoke AI 账户高级详情应返回模型映射')
-    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; configRevision: number; changedFields: string[] }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; configRevision: number; changedFields: string[]; authorizationInstancesAffected: boolean }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
       expectedConfigRevision: initialAiAccountBasicDetail.configRevision,
       status: 'temporary_unavailable'
     }, cookie)
-    assert.deepEqual(Object.keys(temporarilyUnavailableAiAccount).sort(), ['changedFields', 'configRevision', 'id'], 'performance smoke AI 账户 PATCH 只应返回变更定位字段')
+    assert.deepEqual(Object.keys(temporarilyUnavailableAiAccount).sort(), ['authorizationInstancesAffected', 'changedFields', 'configRevision', 'id'], 'performance smoke AI 账户 PATCH 只应返回变更定位字段和授权实例影响信号')
     assert(temporarilyUnavailableAiAccount.changedFields.includes('status'), 'performance smoke 应能把停用 AI 账户切换为临时不可用')
+    assert.equal(temporarilyUnavailableAiAccount.authorizationInstancesAffected, true, '来源账户状态变化应标记授权实例受影响')
     const temporarilyUnavailableDetail = await getEnvelope<{ id: string; configRevision: number; status: string }>(
       baseUrl,
       `/__aisys__/api/accounts/${createdAiAccount.id}/edit-basic`,
@@ -513,22 +522,26 @@ async function runHttpSmoke(): Promise<void> {
       cookie
     )
     assert.ok(aiAccountOptions.some((item) => item.id === createdAiAccount.id && item.providerCode === 'gpt'), 'performance smoke 应能在 AI 账户 options 查回新建账户')
-    const activeUsageGrantee = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/system-accounts/${createdAccount.id}`, {
+    const activeUsageGrantee = await patchEnvelope<{ id: string; status: string; updatedAt: string }>(baseUrl, `/__aisys__/api/system-accounts/${createdAccount.id}`, {
+      expectedUpdatedAt: disabledAccount.updatedAt,
       status: 'active'
     }, cookie)
     assert.equal(activeUsageGrantee.status, 'active', 'performance smoke 授权 usage 夹具应使用启用的被授权账号')
-    const createdAccountGranteeGroups = await getEnvelope<Array<{ id: string; providerCode: string }>>(
+    const createdAccountReferenceData = await getEnvelope<{
+      providerDefaults: Array<{ providerCode: string; defaultGroup: { id: string; name: string } }>
+    }>(
       baseUrl,
-      `/__aisys__/api/authorization-options/grantee-groups?granteeSystemAccountId=${encodeURIComponent(createdAccount.id)}&providerCode=gpt&preferDefault=true&limit=20`,
+      `/__aisys__/api/ui-bootstrap/options?systemAccountId=${encodeURIComponent(createdAccount.id)}`,
       cookie
     )
-    const createdAccountTargetGroup = createdAccountGranteeGroups.find((group) => group.providerCode === 'gpt')
-    assert.ok(createdAccountTargetGroup?.id, 'performance smoke 授权创建应能读取被授权账号目标分组')
+    const createdAccountTargetGroup = createdAccountReferenceData.providerDefaults.find((item) => item.providerCode === 'gpt')?.defaultGroup
+    assert.ok(createdAccountTargetGroup?.id, 'performance smoke 授权创建应从用户常量缓存接口读取 GPT 默认分组')
     const createdAuthorization = await postEnvelope<{
       id: string
       status: string
       resourceId: string
       granteeSystemAccountId?: string
+      updatedAt: string
     }>(baseUrl, '/__aisys__/api/authorizations?systemAccountId=sys_admin', {
       resourceType: 'account',
       resourceId: createdAiAccount.id,
@@ -547,18 +560,25 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(createdAuthorization.status, 'active', 'performance smoke 应能创建个人资源授权')
     assert.equal(createdAuthorization.resourceId, createdAiAccount.id, 'performance smoke 创建授权应指向目标 AI 账户')
     assert.equal(createdAuthorization.granteeSystemAccountId, createdAccount.id, 'performance smoke 创建授权应指向被授权账号')
-    const authorizedInstanceId = await markCreatedAuthorizationInstanceUnavailable(createdAuthorization.id, createdAccount.id)
-    const restoredAuthorizedAccount = await patchEnvelope<{ id: string; status: string; schedulable: boolean; accessType?: string }>(
+    const authorizedInstance = await markCreatedAuthorizationInstanceUnavailable(createdAuthorization.id, createdAccount.id)
+    const restoredAuthorizedAccount = await patchEnvelope<{
+      id: string
+      configRevision: number
+      changedFields: string[]
+      patch: { status?: string; schedulable?: boolean }
+    }>(
       baseUrl,
-      `/__aisys__/api/accounts/${authorizedInstanceId}/authorized-dispatch?systemAccountId=${encodeURIComponent(createdAccount.id)}`,
-      { clearFailureState: true },
+      `/__aisys__/api/accounts/${authorizedInstance.id}/authorized-dispatch?systemAccountId=${encodeURIComponent(createdAccount.id)}`,
+      { expectedConfigRevision: authorizedInstance.configRevision, clearFailureState: true },
       cookie
     )
-    assert.equal(restoredAuthorizedAccount.id, authorizedInstanceId, 'performance smoke 授权实例恢复应返回目标账户')
-    assert.equal(restoredAuthorizedAccount.accessType, 'authorized', 'performance smoke 授权实例恢复应保持授权视图')
-    assert.equal(restoredAuthorizedAccount.status, 'active', 'performance smoke 应能恢复授权实例异常状态')
-    assert.equal(restoredAuthorizedAccount.schedulable, true, 'performance smoke 授权实例恢复后应参与调度')
-    const revokedCreatedAuthorization = await deleteEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/authorizations/${createdAuthorization.id}`, cookie)
+    assert.equal(restoredAuthorizedAccount.id, authorizedInstance.id, 'performance smoke 授权实例恢复应返回目标账户')
+    assert.deepEqual(Object.keys(restoredAuthorizedAccount).sort(), ['changedFields', 'configRevision', 'id', 'patch'], 'performance smoke 授权调度 PATCH 只能返回局部刷新结果')
+    assert.equal(restoredAuthorizedAccount.patch.status, 'active', 'performance smoke 应能恢复授权实例异常状态')
+    assert.equal(restoredAuthorizedAccount.patch.schedulable, true, 'performance smoke 授权实例恢复后应参与调度')
+    const revokedCreatedAuthorization = await deleteEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/authorizations/${createdAuthorization.id}`, cookie, {
+      expectedUpdatedAt: createdAuthorization.updatedAt
+    })
     assert.equal(revokedCreatedAuthorization.status, 'revoked', 'performance smoke 新建授权应能回收')
     await cleanupCreatedAuthorizationGrants(createdAuthorizationGrantIds)
     const authorizationUsageSeed = await seedAuthorizationUsageDetail(createdAiAccount.id, createdAccount.id)
@@ -571,6 +591,7 @@ async function runHttpSmoke(): Promise<void> {
       usageBySystemAccountPageSize: number
       usageBySystemAccountHasMore: boolean
       usageRange?: { startDate: string; endDate: string }
+      updatedAt: string
     }>(
       baseUrl,
       `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}/usage?startDate=${authorizationUsageSeed.startDate}&endDate=${authorizationUsageSeed.endDate}&page=1&pageSize=5`,
@@ -586,16 +607,18 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(authorizationUsage.usageBySystemAccountPageSize, 5, 'performance smoke 授权 usage 明细应返回 pageSize')
     assert.equal(authorizationUsage.usageBySystemAccountHasMore, false, 'performance smoke 单个个人授权 usage 明细不应存在下一页')
     assert.equal(authorizationUsage.usageRange?.startDate, authorizationUsageSeed.startDate, 'performance smoke 授权 usage 应返回查询起始日期')
-    const pausedAuthorization = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}`, {
+    const pausedAuthorization = await patchEnvelope<{ id: string; status: string; updatedAt: string }>(baseUrl, `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}`, {
+      expectedUpdatedAt: authorizationUsage.updatedAt,
       status: 'paused'
     }, cookie)
     assert.equal(pausedAuthorization.id, authorizationUsageSeed.grantId, 'performance smoke 应能更新已存在授权')
     assert.equal(pausedAuthorization.status, 'paused', 'performance smoke 授权更新后应暂停')
     const nextAuthorizationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-    const expireUpdatedAuthorization = await patchEnvelope<{ id: string; status: string; expiresAt?: string | null; limits?: { hourly?: { hours?: number } } }>(
+    const expireUpdatedAuthorization = await patchEnvelope<{ id: string; status: string; expiresAt?: string | null; limits?: { hourly?: { hours?: number } }; updatedAt: string }>(
       baseUrl,
       `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}/expire`,
       {
+        expectedUpdatedAt: pausedAuthorization.updatedAt,
         expiresAt: nextAuthorizationExpiresAt,
         limits: {
           hourly: {
@@ -610,7 +633,9 @@ async function runHttpSmoke(): Promise<void> {
     assert.equal(expireUpdatedAuthorization.status, 'paused', 'performance smoke 更新授权有效期不应改变暂停状态')
     assert.equal(expireUpdatedAuthorization.expiresAt, nextAuthorizationExpiresAt, 'performance smoke 应能更新授权有效期')
     assert.equal(expireUpdatedAuthorization.limits?.hourly?.hours, 3, 'performance smoke 应能更新授权小时额度窗口')
-    const revokedAuthorization = await deleteEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}`, cookie)
+    const revokedAuthorization = await deleteEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/authorizations/${authorizationUsageSeed.grantId}`, cookie, {
+      expectedUpdatedAt: expireUpdatedAuthorization.updatedAt
+    })
     assert.equal(revokedAuthorization.id, authorizationUsageSeed.grantId, 'performance smoke 应能回收已存在授权')
     assert.equal(revokedAuthorization.status, 'revoked', 'performance smoke 授权回收后应为 revoked')
     await cleanupCreatedAuthorizationUsageSeeds(createdAuthorizationUsageSeeds)
@@ -619,7 +644,13 @@ async function runHttpSmoke(): Promise<void> {
 
     console.log(`[performance-system-api-smoke:${label}] api-keys`)
     const apiKeySuffix = `${label}${Date.now()}${Math.random().toString(16).slice(2, 6)}`
-    const createdRouteStrategy = await postEnvelope<{ id: string; name: string; groupBindings: Array<{ groupId: string; weight: number }> }>(baseUrl, '/__aisys__/api/route-strategies', {
+    const createdRouteStrategy = await postEnvelope<{
+      id: string
+      name: string
+      updatedAt: string
+      bindingCount: number
+      groupBindingPreview: Array<{ groupId: string }>
+    }>(baseUrl, '/__aisys__/api/route-strategies', {
       name: `烟测普通路由${apiKeySuffix}`,
       description: 'performance smoke normal route strategy',
       mode: 'normal',
@@ -627,8 +658,9 @@ async function runHttpSmoke(): Promise<void> {
       status: 'active'
     }, cookie)
     createdRouteStrategyIds.push(createdRouteStrategy.id)
-    assert.equal(createdRouteStrategy.groupBindings[0]?.groupId, createdGroup.id, 'performance smoke 策略路由应绑定目标分组')
-    const createdApiKeyResponse = await postCreatedEnvelopeWithHeaders<{ id: string; name: string; key: string; routeStrategyId: string }>(baseUrl, '/__aisys__/api/api-keys', {
+    assert.equal(createdRouteStrategy.bindingCount, 1, 'performance smoke 策略路由窄列表回执应返回绑定数')
+    assert.equal(createdRouteStrategy.groupBindingPreview[0]?.groupId, createdGroup.id, 'performance smoke 策略路由窄列表回执应预览目标分组')
+    const createdApiKeyResponse = await postCreatedEnvelopeWithHeaders<{ id: string; key: string; keyPrefix: string; keySuffix: string; revision: string }>(baseUrl, '/__aisys__/api/api-keys', {
       name: `烟测APIKey${apiKeySuffix}`,
       description: 'performance smoke api key',
       routeStrategyId: createdRouteStrategy.id,
@@ -638,21 +670,27 @@ async function runHttpSmoke(): Promise<void> {
     const createdApiKey = createdApiKeyResponse.data
     createdApiKeyIds.push(createdApiKey.id)
     assert.ok(createdApiKey.key.startsWith('sk-'), 'performance smoke 应能创建 API Key 并返回一次性明文')
-    assert.equal(createdApiKey.routeStrategyId, createdRouteStrategy.id, 'performance smoke API Key 应绑定目标策略路由')
-    const apiKeys = await getEnvelope<{ items: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/api-keys?keyword=${encodeURIComponent(`烟测APIKey${apiKeySuffix}`)}&page=1&pageSize=20`, cookie)
-    assert.ok(apiKeys.items.some((item) => item.id === createdApiKey.id), 'performance smoke 应能读取 API Key 列表')
+    assert.deepEqual(Object.keys(createdApiKey).sort(), ['id', 'key', 'keyPrefix', 'keySuffix', 'revision'], 'performance smoke API Key 创建只应返回一次性密钥与定位字段')
+    const apiKeys = await getEnvelope<{ items: Array<{ id: string; name: string; routeStrategyId?: string; routeStrategyMode?: string }> }>(baseUrl, `/__aisys__/api/api-keys?keyword=${encodeURIComponent(`烟测APIKey${apiKeySuffix}`)}&page=1&pageSize=20`, cookie)
+    const listedApiKey = apiKeys.items.find((item) => item.id === createdApiKey.id)
+    assert.ok(listedApiKey, 'performance smoke 应能读取 API Key 列表')
+    assert.equal(listedApiKey.routeStrategyId, createdRouteStrategy.id, 'performance smoke API Key 列表窄行应保留目标策略路由')
     const secretResponse = await getEnvelopeWithHeaders<{ key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/secret`, cookie)
     assertNoStoreResponseHeaders(secretResponse.headers, 'API Key secret 响应')
     const secret = secretResponse.data
     assert.equal(secret.key, createdApiKey.key, 'performance smoke 应能读取 API Key 完整密钥')
-    const updatedRouteStrategy = await patchEnvelope<{ id: string; groupBindings: Array<{ weight: number }> }>(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}`, {
+    const updatedRouteStrategy = await patchEnvelope<{ id: string; changedFields: string[]; rowPatch: { updatedAt?: string } }>(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}`, {
+      expectedUpdatedAt: createdRouteStrategy.updatedAt,
       groupBindings: [{ groupId: createdGroup.id, priority: 1, weight: 20, status: 'active' }]
     }, cookie)
-    assert.equal(updatedRouteStrategy.groupBindings[0]?.weight, 20, 'performance smoke 应能更新策略路由分组权重')
-    const updatedApiKey = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, {
+    assert.deepEqual(updatedRouteStrategy.changedFields, ['groupBindings'], 'performance smoke 策略路由 PATCH 应只报告绑定变化')
+    const updatedRouteStrategyDetail = await getEnvelope<{ groupBindings: Array<{ weight: number }> }>(baseUrl, `/__aisys__/api/route-strategies/${createdRouteStrategy.id}/edit-basic`, cookie)
+    assert.equal(updatedRouteStrategyDetail.groupBindings[0]?.weight, 20, 'performance smoke 应能在编辑详情查回策略路由分组权重')
+    const updatedApiKey = await patchEnvelope<{ id: string; revision: string; changedFields: string[]; rowPatch: { status?: string } }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}`, {
+      expectedRevision: createdApiKey.revision,
       status: 'disabled'
     }, cookie)
-    assert.equal(updatedApiKey.status, 'disabled', 'performance smoke 应能更新 API Key')
+    assert.equal(updatedApiKey.rowPatch.status, 'disabled', 'performance smoke 应能通过局部回执确认 API Key 状态更新')
     const refreshedApiKeyResponse = await postOkEnvelopeWithHeaders<{ id: string; key: string }>(baseUrl, `/__aisys__/api/api-keys/${createdApiKey.id}/refresh-key`, {}, cookie)
     assertNoStoreResponseHeaders(refreshedApiKeyResponse.headers, 'API Key 刷新响应')
     const refreshedApiKey = refreshedApiKeyResponse.data
@@ -665,7 +703,7 @@ async function runHttpSmoke(): Promise<void> {
 
     const hybridRouteStrategy = await postEnvelope<{
       id: string
-      hybridRoutingConfig?: { scoringModel?: string; scoringTimeoutMs?: number; levelRoutes?: Array<{ targetModel: string }> }
+      updatedAt: string
     }>(baseUrl, '/__aisys__/api/route-strategies', {
       name: `烟测混合路由${apiKeySuffix}`,
       description: 'performance smoke hybrid route strategy',
@@ -700,10 +738,14 @@ async function runHttpSmoke(): Promise<void> {
       status: 'active'
     }, cookie)
     createdRouteStrategyIds.push(hybridRouteStrategy.id)
+    const hybridRouteStrategyDetail = await getEnvelope<{
+      updatedAt: string
+      hybridRoutingConfig?: { scoringModel?: string; scoringTimeoutMs?: number; levelRoutes?: Array<{ targetModel: string }> }
+    }>(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}/edit-basic`, cookie)
     const hybridApiKey = await postEnvelope<{
       id: string
-      routeStrategyId: string
-      routeStrategyMode?: string
+      key: string
+      revision: string
     }>(baseUrl, '/__aisys__/api/api-keys', {
       name: `烟测混合APIKey${apiKeySuffix}`,
       description: 'performance smoke hybrid api key',
@@ -711,23 +753,27 @@ async function runHttpSmoke(): Promise<void> {
       status: 'active'
     }, cookie)
     createdApiKeyIds.push(hybridApiKey.id)
-    assert.equal(hybridApiKey.routeStrategyId, hybridRouteStrategy.id, 'performance smoke 混合 API Key 应绑定混合策略路由')
-    assert.equal(hybridApiKey.routeStrategyMode, 'hybrid_smart', 'performance smoke API Key 摘要应返回混合策略模式')
-    assert.equal(hybridRouteStrategy.hybridRoutingConfig?.scoringModel, smokeModel, 'performance smoke 混合路由应通过模型目录校验并保存评分模型')
-    assert.equal(hybridRouteStrategy.hybridRoutingConfig?.levelRoutes?.[0]?.targetModel, smokeModel, 'performance smoke 混合路由应保存等级目标模型')
-    const updatedHybridRouteStrategy = await patchEnvelope<{ id: string; hybridRoutingConfig?: { scoringTimeoutMs?: number } }>(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, {
+    const hybridApiKeys = await getEnvelope<{ items: Array<{ id: string; routeStrategyId?: string; routeStrategyMode?: string }> }>(baseUrl, `/__aisys__/api/api-keys?keyword=${encodeURIComponent(`烟测混合APIKey${apiKeySuffix}`)}&page=1&pageSize=20`, cookie)
+    const listedHybridApiKey = hybridApiKeys.items.find((item) => item.id === hybridApiKey.id)
+    assert.equal(listedHybridApiKey?.routeStrategyId, hybridRouteStrategy.id, 'performance smoke 混合 API Key 列表窄行应保留混合策略路由')
+    assert.equal(listedHybridApiKey?.routeStrategyMode, 'hybrid_smart', 'performance smoke API Key 列表窄行应返回混合策略模式')
+    assert.equal(hybridRouteStrategyDetail.hybridRoutingConfig?.scoringModel, smokeModel, 'performance smoke 混合路由应通过模型目录校验并保存评分模型')
+    assert.equal(hybridRouteStrategyDetail.hybridRoutingConfig?.levelRoutes?.[0]?.targetModel, smokeModel, 'performance smoke 混合路由应保存等级目标模型')
+    const updatedHybridRouteStrategy = await patchEnvelope<{ id: string; rowPatch: { hybridRoutingConfig?: { scoringTimeoutMs?: number } } }>(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, {
+      expectedUpdatedAt: hybridRouteStrategyDetail.updatedAt,
       hybridRoutingConfig: {
-        ...hybridRouteStrategy.hybridRoutingConfig,
+        ...hybridRouteStrategyDetail.hybridRoutingConfig,
         scoringTimeoutMs: 12_000
       }
     }, cookie)
-    assert.equal(updatedHybridRouteStrategy.hybridRoutingConfig?.scoringTimeoutMs, 12_000, 'performance smoke 应能更新混合路由配置')
+    assert.equal(updatedHybridRouteStrategy.rowPatch.hybridRoutingConfig?.scoringTimeoutMs, 12_000, 'performance smoke 应能通过局部回执确认混合路由配置更新')
     await deleteNoContent(baseUrl, `/__aisys__/api/api-keys/${hybridApiKey.id}`, cookie)
     createdApiKeyIds.splice(createdApiKeyIds.indexOf(hybridApiKey.id), 1)
     await deleteNoContent(baseUrl, `/__aisys__/api/route-strategies/${hybridRouteStrategy.id}`, cookie)
     createdRouteStrategyIds.splice(createdRouteStrategyIds.indexOf(hybridRouteStrategy.id), 1)
 
     const disabledGroup = await patchEnvelope<{ id: string; changedFields: string[] }>(baseUrl, `/__aisys__/api/groups/${createdGroup.id}`, {
+      expectedUpdatedAt: updatedGroup.updatedAt,
       enabled: false
     }, cookie)
     assert.deepEqual(disabledGroup.changedFields, ['enabled'], 'performance smoke 分组状态 PATCH 应只确认实际变化字段')
@@ -807,10 +853,11 @@ async function deleteNoContentEnvelope(baseUrl: string, path: string, cookie: st
   assert.equal(response.status, 200, `${path} DELETE 应返回 HTTP 200，实际 HTTP ${response.status}: ${text}`)
 }
 
-async function deleteEnvelope<T = unknown>(baseUrl: string, path: string, cookie: string): Promise<T> {
+async function deleteEnvelope<T = unknown>(baseUrl: string, path: string, cookie: string, body?: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'DELETE',
-    headers: { cookie },
+    headers: body ? { cookie, 'content-type': 'application/json' } : { cookie },
+    body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(10_000)
   })
   const text = await response.text()
@@ -840,10 +887,13 @@ function smokeDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
-async function markCreatedAuthorizationInstanceUnavailable(grantId: string, granteeSystemAccountId: string): Promise<string> {
+async function markCreatedAuthorizationInstanceUnavailable(
+  grantId: string,
+  granteeSystemAccountId: string
+): Promise<{ id: string; configRevision: number }> {
   const businessClient = await createBusinessDatabaseClient()
-  const instance = await businessClient.one<{ id: string }>(`
-    SELECT accounts.id
+  const instance = await businessClient.one<{ id: string; config_revision: number }>(`
+    SELECT accounts.id, accounts.config_revision
     FROM ${businessTable(businessClient, 'resource_authorization_grants')} grants
     INNER JOIN ${businessTable(businessClient, 'resource_authorizations')} authorizations
       ON authorizations.resource_type = grants.resource_type
@@ -872,7 +922,7 @@ async function markCreatedAuthorizationInstanceUnavailable(grantId: string, gran
         updated_at = ?
     WHERE id = ?
   `, [cooldownUntil, now, now, instance.id])
-  return instance.id
+  return { id: instance.id, configRevision: instance.config_revision }
 }
 
 async function seedAuthorizationUsageDetail(accountId: string, granteeSystemAccountId: string): Promise<AuthorizationUsageSeed> {
@@ -1180,36 +1230,44 @@ async function cleanupCreatedAiAccounts(accountIds: string[]): Promise<void> {
   if (!accountIds.length) {
     return
   }
-  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
-    const [{ createPostgresDatabaseClient }, { getPostgresPool }] = await Promise.all([
-      import('../../storage/database-client.js'),
-      import('../../storage/postgres-client.js')
-    ])
-    const client = createPostgresDatabaseClient(await getPostgresPool())
-    for (const id of accountIds.splice(0)) {
-      await client.execute('DELETE FROM "juhe_business"."group_accounts" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_supported_models" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_model_mappings" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_tag_bindings" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_name_search_terms" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_name_search_documents" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."account_api_key_runtime_states" WHERE account_id = ?', [id])
-      await client.execute('DELETE FROM "juhe_business"."accounts" WHERE id = ?', [id])
-    }
-    return
-  }
-  const { getBusinessDatabase } = await import('../../storage/database.js')
-  const database = getBusinessDatabase()
+  const client = await createBusinessDatabaseClient()
   for (const id of accountIds.splice(0)) {
-    database.prepare('DELETE FROM group_accounts WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_supported_models WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_model_mappings WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_tag_bindings WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_name_search_terms WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_name_search_documents WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM account_api_key_runtime_states WHERE account_id = ?').run(id)
-    database.prepare('DELETE FROM accounts WHERE id = ?').run(id)
+    await cleanupAuthorizedAccountDependentsForSource(client, id)
+    for (const tableName of [
+      'group_accounts',
+      'account_supported_models',
+      'account_model_mappings',
+      'account_tag_bindings',
+      'account_name_search_terms',
+      'account_name_search_documents',
+      'account_api_key_runtime_states'
+    ]) {
+      await client.execute(`DELETE FROM ${businessTable(client, tableName)} WHERE account_id = ?`, [id])
+    }
+    await client.execute(`DELETE FROM ${businessTable(client, 'accounts')} WHERE id = ?`, [id])
   }
+}
+
+async function cleanupAuthorizedAccountDependentsForSource(client: DatabaseClient, sourceAccountId: string): Promise<void> {
+  const accounts = businessTable(client, 'accounts')
+  const authorizations = businessTable(client, 'resource_authorizations')
+  const instanceFilter = `SELECT id FROM ${accounts} WHERE authorization_instance_source_account_id = ?`
+  for (const tableName of [
+    'group_accounts',
+    'account_supported_models',
+    'account_model_mappings',
+    'account_tag_bindings',
+    'account_name_search_terms',
+    'account_name_search_documents',
+    'account_api_key_runtime_states'
+  ]) {
+    await client.execute(`DELETE FROM ${businessTable(client, tableName)} WHERE account_id IN (${instanceFilter})`, [sourceAccountId])
+  }
+  await client.execute(`DELETE FROM ${accounts} WHERE authorization_instance_source_account_id = ?`, [sourceAccountId])
+  const authorizationFilter = `SELECT id FROM ${authorizations} WHERE resource_type = 'account' AND resource_id = ?`
+  await client.execute(`DELETE FROM ${businessTable(client, 'resource_authorization_sources')} WHERE authorization_id IN (${authorizationFilter})`, [sourceAccountId])
+  await client.execute(`DELETE FROM ${businessTable(client, 'resource_authorization_grants')} WHERE resource_type = 'account' AND resource_id = ?`, [sourceAccountId])
+  await client.execute(`DELETE FROM ${authorizations} WHERE resource_type = 'account' AND resource_id = ?`, [sourceAccountId])
 }
 
 async function cleanupCreatedSystemAccounts(systemAccountIds: string[]): Promise<void> {
