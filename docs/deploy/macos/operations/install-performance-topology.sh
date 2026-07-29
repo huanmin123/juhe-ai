@@ -177,6 +177,21 @@ assert_runtime_directory() {
   esac
 }
 
+migrate_runtime_ownership() {
+  for runtime_root in "$LOG_DIR" "$SPOOL_DIR"; do
+    find "$runtime_root" -xdev -exec chown -h "$SERVICE_USER" {} +
+  done
+}
+
+assert_release_read_only() {
+  while IFS= read -r -d '' release_entry; do
+    if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$release_entry"; then
+      echo "release entry must not be writable by the service user: $release_entry" >&2
+      return 1
+    fi
+  done < <(find "$CURRENT_DIR" -xdev \( -type d -o -type f \) -print0)
+}
+
 if [ "$SCOPE" = system ]; then
   for managed_path in "$BASE_DIR" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$BASE_DIR/shared" "$SPOOL_DIR"; do
     [ ! -L "$managed_path" ] || { echo "system runtime path must not be a symbolic link: $managed_path" >&2; exit 1; }
@@ -194,17 +209,26 @@ if [ "$SCOPE" = system ]; then
   RESOLVED_BASE_DIR="$(cd "$BASE_DIR" && pwd -P)"
   [ "$RESOLVED_BASE_DIR" != / ] || { echo 'system base directory must not resolve to /' >&2; exit 1; }
   for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
-  chown -h "$SERVICE_USER" "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"
-  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
+  if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$CURRENT_DIR"; then
+    echo 'release directory must not be writable by the service user' >&2
+    exit 1
+  fi
+  assert_release_read_only
   for readable in \
     "$CURRENT_DIR/backend/dist/server.js" \
     "$CURRENT_DIR/backend/dist/scripts/preflight/check-node-sqlite.js" \
     "$CURRENT_DIR/backend/.env"; do
     /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -r "$readable" \
       || { echo "service user cannot read required release file: $readable" >&2; exit 1; }
+    if /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$readable"; then
+      echo "required release file must not be writable by the service user: $readable" >&2
+      exit 1
+    fi
   done
   /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -x "$NODE_BIN" \
     || { echo "service user cannot execute node: $NODE_BIN" >&2; exit 1; }
+  migrate_runtime_ownership
+  for runtime_path in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do assert_runtime_directory "$runtime_path"; done
   for writable in "$LOG_DIR" "$RUNTIME_LOG_DIR" "$SPOOL_DIR"; do
     /usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test -w "$writable" \
       || { echo "service user cannot write runtime directory: $writable" >&2; exit 1; }
@@ -536,15 +560,19 @@ health_identity_matches() {
 rollback() {
   set +e
   rollback_failed=0
-  if [ ! -f "$NGINX_BACKUP" ]; then
-    echo 'no previous nginx config exists; preserving candidate services for manual recovery' >&2
-    return 1
+  nginx_candidate=
+  if [ -f "$NGINX_BACKUP" ]; then
+    mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"
+  else
+    nginx_candidate="$NGINX_CONFIG.performance-candidate.$$"
+    if [ -f "$NGINX_CONFIG" ]; then mv -f -- "$NGINX_CONFIG" "$nginx_candidate"; fi
   fi
-  mv -f -- "$NGINX_BACKUP" "$NGINX_CONFIG"
   if ! nginx_test >/dev/null 2>&1 || ! nginx_reload >/dev/null 2>&1; then
-    echo 'previous nginx config could not be reloaded; preserving candidate services for manual recovery' >&2
+    if [ -n "$nginx_candidate" ] && [ -f "$nginx_candidate" ]; then mv -f -- "$nginx_candidate" "$NGINX_CONFIG"; fi
+    echo 'previous nginx state could not be reloaded; preserving candidate services for manual recovery' >&2
     return 1
   fi
+  if [ -n "$nginx_candidate" ]; then rm -f -- "$nginx_candidate"; fi
   for name in $(service_names); do
     plist="$(service_plist_path "$name")"
     run_script="$(service_run_path "$name")"

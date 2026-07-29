@@ -48,7 +48,7 @@ if ($healthCheckIndex -lt 0 -or $healthStableIndex -lt 0 -or $healthCheckIndex -
 }
 
 $performanceInstaller = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'install-performance-topology.sh')
-foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', '/usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test', 'assert_runtime_directory', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'rollback')) {
+foreach ($contract in @('--dry-run', '--apply', '--service-user', '--release-dir', '--nginx-bin', '--nginx-main-config', 'GATEWAY_COUNT=3', 'USAGE_WORKERS=2', 'LOG_WORKERS=2', 'least_conn', 'JUHE_AI_PERFORMANCE_NODE_ROLE', 'JUHE_AI_ACCOUNT_HEALTH_CHECK_DISPATCH_URL', 'location ^~ /__aiinternal__/', 'proxy_next_upstream off;', 'X-Juhe-Topology-Install', 'INSTALL_TOKEN', 'activation_service_names', 'wait_for_health', 'wait_for_ingress', 'wait_for_metrics_registry', 'performance_metrics_registry_time_ms', 'metrics_registry_role_pids', 'VERIFIED_HEALTH_JSON', 'VERIFIED_GATEWAY_METRICS_ROLE_PIDS', 'health.processPid', 'health.dbServicePid', 'worker.replicaIndex + 1', '--print-redis-time-ms', '--observed-after-ms', '--role-pid', 'check-performance-process-metrics-registry.js', 'health_identity_matches', '/__aisys__/api/health', 'nginx_test', 'nginx_reload', '<key>UserName</key>', '--service-user must resolve to a non-root uid', '/usr/bin/sudo -n -u "$SERVICE_USER" /usr/bin/test', 'assert_runtime_directory', 'migrate_runtime_ownership', 'assert_release_read_only', 'RESOLVED_BASE_DIR', 'chown -h "$SERVICE_USER"', 'system base directory must not be writable by the service user', 'release directory must not be writable by the service user', 'release entry must not be writable by the service user', 'required release file must not be writable by the service user', 'rollback')) {
   if (-not $performanceInstaller.Contains($contract, [StringComparison]::Ordinal)) { throw "Performance topology installer contract missing: $contract" }
 }
 if ($performanceInstaller -match 'proxy_next_upstream_tries') {
@@ -135,6 +135,9 @@ $rollbackFunction = $performanceInstaller.Substring($rollbackFunctionStart, $onE
 $runtimeDirectoryFunctionStart = $performanceInstaller.IndexOf('assert_runtime_directory() {', [StringComparison]::Ordinal)
 $runtimeDirectoryFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeDirectoryFunctionStart, [StringComparison]::Ordinal) + 3
 $runtimeDirectoryFunction = $performanceInstaller.Substring($runtimeDirectoryFunctionStart, $runtimeDirectoryFunctionEnd - $runtimeDirectoryFunctionStart)
+$runtimeOwnershipFunctionStart = $performanceInstaller.IndexOf('migrate_runtime_ownership() {', [StringComparison]::Ordinal)
+$runtimeOwnershipFunctionEnd = $performanceInstaller.IndexOf("`n}", $runtimeOwnershipFunctionStart, [StringComparison]::Ordinal) + 3
+$runtimeOwnershipFunction = $performanceInstaller.Substring($runtimeOwnershipFunctionStart, $runtimeOwnershipFunctionEnd - $runtimeOwnershipFunctionStart)
 
 $cutover = Get-Content -Raw -LiteralPath (Join-Path $operationsRoot 'temporary-cutover.sh')
 foreach ($contract in @('assert_pid_cwd_port_health', 'API_HEALTH_PATH', 'rollback_target', "trap 'on_exit", '--dry-run', '--apply')) {
@@ -233,6 +236,44 @@ fi
     & $bash.Source -c $runtimeDirectoryHarness
     if ($LASTEXITCODE -ne 0) { throw 'Performance topology runtime directory containment harness failed' }
 
+    $runtimeOwnershipHarness = @'
+set -euo pipefail
+root="$(mktemp -d)"
+trap 'rm -rf -- "$root"' EXIT
+LOG_DIR="$root/logs"
+SPOOL_DIR="$root/spool"
+SERVICE_USER=juhe-runtime
+outside="$root/outside"
+mkdir -p "$LOG_DIR/runtime" "$SPOOL_DIR/gateway-1" "$outside" "$root/bin"
+printf 'log\n' > "$LOG_DIR/runtime/root-owned.log"
+printf 'spool\n' > "$SPOOL_DIR/gateway-1/root-owned.json"
+printf 'outside\n' > "$outside/untouched"
+chmod 600 "$LOG_DIR/runtime/root-owned.log" "$SPOOL_DIR/gateway-1/root-owned.json" "$outside/untouched"
+ln -s "$outside" "$SPOOL_DIR/external-link"
+export CHOWN_LOG="$root/chown.log"
+cat > "$root/bin/chown" <<'EOF'
+#!/bin/sh
+[ "$1" = -h ] || exit 91
+[ "$2" = juhe-runtime ] || exit 92
+shift 2
+for path do printf '%s\n' "$path" >> "$CHOWN_LOG"; done
+EOF
+chmod +x "$root/bin/chown"
+PATH="$root/bin:$PATH"
+export PATH
+__RUNTIME_OWNERSHIP_FUNCTION__
+migrate_runtime_ownership
+grep -Fxq "$LOG_DIR/runtime/root-owned.log" "$CHOWN_LOG"
+grep -Fxq "$SPOOL_DIR/gateway-1/root-owned.json" "$CHOWN_LOG"
+grep -Fxq "$SPOOL_DIR/external-link" "$CHOWN_LOG"
+if grep -Fxq "$outside/untouched" "$CHOWN_LOG"; then
+  echo 'runtime ownership migration followed a symbolic link outside the managed trees' >&2
+  exit 93
+fi
+'@.Replace('__RUNTIME_OWNERSHIP_FUNCTION__', $runtimeOwnershipFunction)
+    & $bash.Source -c $runtimeOwnershipHarness
+    if ($LASTEXITCODE -ne 0) { throw 'Performance topology root-to-nonroot runtime ownership harness failed' }
+
     $rollbackHarness = @'
 set -euo pipefail
 root="$(mktemp -d)"
@@ -266,6 +307,17 @@ rm -f -- "$NGINX_BACKUP"
 if rollback; then echo 'rollback accepted a missing prior nginx config' >&2; exit 74; fi
 grep -qx CANDIDATE "$NGINX_CONFIG" || exit 75
 [ ! -s "$events" ] || { echo 'rollback stopped services without a prior nginx config' >&2; exit 76; }
+printf 'CANDIDATE\n' > "$NGINX_CONFIG"
+rm -f -- "$NGINX_BACKUP"
+printf 'CANDIDATE PLIST\n' > "$root/control-1.plist"
+printf 'CANDIDATE RUN\n' > "$root/control-1.sh"
+: > "$events"
+FAIL_NGINX_RELOAD=0
+if ! rollback; then echo 'rollback failed to remove a first-install candidate topology' >&2; exit 81; fi
+[ ! -e "$NGINX_CONFIG" ] || { echo 'rollback retained first-install nginx candidate config' >&2; exit 82; }
+[ ! -e "$root/control-1.plist" ] || exit 83
+[ ! -e "$root/control-1.sh" ] || exit 84
+rg -q -- '^bootout ' "$events" || exit 85
 printf 'CANDIDATE\n' > "$NGINX_CONFIG"
 printf 'OLD\n' > "$NGINX_BACKUP"
 printf 'CANDIDATE PLIST\n' > "$root/control-1.plist"
